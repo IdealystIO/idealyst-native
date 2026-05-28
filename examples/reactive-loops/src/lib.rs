@@ -226,6 +226,66 @@ fn CountGrid(props: &CountGridProps) -> Element {
 }
 
 // ---------------------------------------------------------------------------
+// Counter-example — state in the RENDER SCOPE instead of the data.
+//
+// `EphemeralRow` allocates its `count` with `signal!` INSIDE the
+// component. Because `for label in labels` is a `Primitive::Each` that
+// fully rebuilds the list on any change, every add re-mounts each row
+// and re-allocates a FRESH signal — so the count RESETS to 0×. This is
+// the opposite of `ItemRow` (count in the `Row` DATA, survives rebuild).
+//
+// It's not a framework bug — it's the consequence of putting per-item
+// state in the ephemeral render scope under a rebuilding list. The fix
+// is "state lives in the data" (what `ItemRow` does), or keyed
+// reconciliation that preserves unchanged scopes (a future option).
+// ---------------------------------------------------------------------------
+
+struct EphemeralRowProps {
+    label: String,
+}
+
+#[component]
+fn EphemeralRow(props: &EphemeralRowProps) -> Element {
+    let label = props.label.clone();
+    // Allocated in the render scope — re-created on every list rebuild,
+    // so this count does NOT survive an add. (Compare `ItemRow`.)
+    let count = signal!(0);
+    let inc = move || count.update(|n| *n += 1);
+    ui! {
+        Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+            Typography(content = label)
+            Typography(content = rx!(format!("clicked {}×", count.get())), muted = true)
+            Button(label = "+".to_string(), on_click = inc)
+        }
+    }
+}
+
+struct EphemeralListProps {
+    labels: Signal<Vec<String>>,
+}
+
+#[component]
+fn EphemeralList(props: &EphemeralListProps) -> Element {
+    let labels = props.labels;
+    let add = move || labels.update(|l| {
+        let n = l.len() + 1;
+        l.push(format!("Row {}", n));
+    });
+    ui! {
+        Card(padding = CardPadding::Md) {
+            Typography(content = "Render-scope state — RESETS on rebuild (anti-pattern)".to_string(), kind = typography_kind::H3)
+            Typography(content = "Each row's count lives in the COMPONENT, not the data. Click a few +, then Add row — every count snaps back to 0×, because the list rebuild re-allocates each signal. The Dynamic list above keeps its counts because that state lives in the data.".to_string(), muted = true)
+            Button(label = "Add row".to_string(), on_click = add)
+            Stack(gap = StackGap::Sm) {
+                for label in labels {
+                    EphemeralRow(label = label)
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // App entry — last, so every component's invocation macro is in scope.
 // ---------------------------------------------------------------------------
 
@@ -243,6 +303,9 @@ pub fn app() -> Element {
     // row count rather than a magic number.
     let next_id: Signal<u32> = signal!(items.get().len() as u32);
 
+    // Separate list for the render-scope-state counter-example below.
+    let labels: Signal<Vec<String>> = signal!(vec!["alpha".to_string(), "beta".to_string()]);
+
     ui! {
         Stack(gap = StackGap::Xl, padding = StackPadding::Lg) {
             Header()
@@ -250,6 +313,7 @@ pub fn app() -> Element {
             // count is DERIVED from the list, not a separate signal:
             // `rx!` makes it live so the grid tracks add/remove.
             CountGrid(count = rx!(items.get().len()))
+            EphemeralList(labels = labels)
             Legend()
         }
     }

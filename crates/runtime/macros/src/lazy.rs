@@ -63,57 +63,39 @@ use quote::quote;
 use sha2::{Digest, Sha256};
 
 pub fn emit(input: TokenStream) -> TokenStream {
-    // Tokens-as-bytes hash. Stable across rebuilds because token
-    // text is deterministic; unique per call site (different
-    // contents → different hash → different chunk).
-    //
-    // Strip ALL whitespace before hashing: build-web's `syn` harvest
-    // (which generates the side-module crate in `--dynamic-split` mode)
-    // must compute the SAME hash from the same body, but it runs in a
-    // non-proc-macro context where `proc_macro2`'s fallback `to_string`
-    // spaces tokens differently than `proc_macro`'s here. Token *content*
-    // is identical across the two; only whitespace differs. Stripping it
-    // makes the hash agree on both sides. (It can mangle string-literal
-    // internals, but identically on both sides — the hash only needs to
-    // be consistent, not reversible.)
-    let normalized: String = input.to_string().chars().filter(|c| !c.is_whitespace()).collect();
-    let hash = stable_hash(&normalized);
+    // Tokens-as-bytes hash. Stable across rebuilds because token text is
+    // deterministic; unique per call site (different contents → different
+    // hash → different chunk name).
+    let token_text = input.to_string();
+    let hash = stable_hash(&token_text);
 
-    // `--dynamic-split` web build: the body is NOT compiled into the main
-    // module — build-web harvests it into a generated PIC `--shared` side
-    // module (`__idealyst_lazy_body_<hash>`). Here we emit ONLY a stub that
-    // fetches + dynamically links that module on demand, keyed by the body
-    // hash. Dropping `input` is the whole point: the body must not land in
-    // main. The flag is set by build-web's dynamic-split cargo invocation;
-    // every other build (the default `#[wasm_split]` path below, all native
-    // targets) is unaffected.
-    if std::env::var("IDEALYST_DYNAMIC_SPLIT").is_ok() {
-        let hash_lit = proc_macro2::Literal::string(&hash);
-        return quote! {
-            ::runtime_core::primitives::lazy::lazy_split(|| {
-                ::runtime_core::primitives::lazy::__dynlink_load(#hash_lit)
-            })
-        }
-        .into();
-    }
-
-    // INLINE (default): the body compiles into the SAME binary as a plain
-    // async fn and `lazy_split` awaits it — it resolves on first poll, so the
-    // subtree mounts after one async tick (brief placeholder, no fetch). This
-    // is the behavior on native AND on web builds that don't split (the dev
-    // loop, `idealyst build --web --no-split`, or a project with no `lazy!`).
-    //
-    // The dioxus `#[wasm_split]` reloc path is retired — wasm dynamic linking
-    // (the `IDEALYST_DYNAMIC_SPLIT` branch above) is the sole web splitter, so
-    // this macro no longer references the `wasm-split` runtime at all.
     let body_tokens: proc_macro2::TokenStream = input.into();
     let body_ident = syn::Ident::new(&format!("__idealyst_lazy_body_{hash}"), Span::call_site());
+    let split_name = syn::Ident::new(&format!("__idealyst_lazy_{hash}"), Span::call_site());
 
+    // Wrap the body in a `#[wasm_split]`-annotated async fn. On web the
+    // build's wasm-split post-process (dioxus reloc splitter, run after
+    // wasm-bindgen) hoists this function — and everything only it reaches —
+    // into a separate chunk wasm loaded on demand. The split is a post-link
+    // rewrite of the SINGLE already-bindgen'd module, so it handles ARBITRARY
+    // body code uniformly, bindgen/web-sys/wgpu included (no per-module
+    // bindgen, no PIC). On native targets the attribute lowers to a plain
+    // inline async fn that resolves synchronously.
+    //
     // `IntoElement::into_element` coerces whatever the block returns
     // (`Bound<H>`, `Element`, `LazyBuilder`, …) into a bare `Element` — the
-    // async fn's return type pins it concretely.
+    // wasm-split function signature pins the return type concretely.
     let expanded = quote! {
         {
+            // The `#[wasm_split]` attribute expands to code referencing the
+            // wasm-split runtime via bare `wasm_split::…` paths. Alias
+            // runtime-core's re-export into scope so author crates don't need
+            // their own `wasm-split` dependency. The `use` reaches the nested
+            // fn defined later in the block. `#[allow(unused_imports)]` covers
+            // the native expansion, where the attribute names no `wasm_split`.
+            #[allow(unused_imports)]
+            use ::runtime_core::__wasm_split as wasm_split;
+            #[::runtime_core::__wasm_split::wasm_split(#split_name)]
             async fn #body_ident(_: ()) -> ::runtime_core::Element {
                 use ::runtime_core::IntoElement as _;
                 { #body_tokens }.into_element()

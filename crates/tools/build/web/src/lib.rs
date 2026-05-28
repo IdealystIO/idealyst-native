@@ -3,7 +3,7 @@
 //!
 //! Mirror of `crates/build/ios/` and `crates/build/android/`: the
 //! user's app crate is intentionally platform-agnostic — it exposes
-//! `pub fn app() -> Element` and nothing else. The web target has
+//! `pub fn app() -> Primitive` and nothing else. The web target has
 //! historically required the user to also write a `web.rs` with a
 //! `#[wasm_bindgen(start)]` function plus a `[lib] crate-type =
 //! ["cdylib", "rlib"]` and a handful of wasm-only deps
@@ -64,28 +64,6 @@ pub struct BuildOptions {
     /// host must send `Content-Encoding: gzip` on these responses for
     /// the browser to inflate them transparently.
     pub gzip: bool,
-    /// How `lazy! { … }` bodies are handled for this build. See [`SplitMode`].
-    pub split: SplitMode,
-}
-
-/// Code-splitting policy for `lazy! { … }` bodies on web.
-///
-/// Wasm **dynamic linking** is the sole web splitter (the dioxus reloc-based
-/// `wasm-split` path is retired): when splitting, each `lazy!` body is
-/// compiled into its own PIC `--shared` side module (carrying its own data,
-/// so heavy data leaves the initial download) and dynamically linked on
-/// demand against the PIC main.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SplitMode {
-    /// Split **iff** the project uses `lazy!`. This is `idealyst build`'s
-    /// default — a project with no `lazy!` builds plainly (stable toolchain,
-    /// no `build-std`); one that uses `lazy!` gets dynamic-link splitting
-    /// (which needs a nightly toolchain with `rust-src`).
-    Auto,
-    /// Never split — every `lazy!` body compiles inline into the main bundle
-    /// (one binary, stable toolchain, no loader). Used by the dev loop
-    /// (`idealyst dev`) for fast iteration and by `idealyst build --no-split`.
-    Off,
 }
 
 #[derive(Debug)]
@@ -110,14 +88,6 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
     let manifest = parse_manifest(&project_dir)?;
 
-    // Decide whether to code-split. Wasm dynamic linking is the sole web
-    // splitter; we split only in `SplitMode::Auto` AND only when the project
-    // actually uses `lazy!` (otherwise there's nothing to split and we avoid
-    // imposing the nightly/`build-std` cost). `SplitMode::Off` (dev loop /
-    // `--no-split`) always inlines.
-    let lazy_bodies = harvest_lazy_bodies(&project_dir)?;
-    let do_split = opts.split == SplitMode::Auto && !lazy_bodies.is_empty();
-
     let wrapper_dir = opts
         .source
         .wrapper_root(&project_dir)
@@ -129,20 +99,24 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         &opts.source,
         &manifest,
         &opts.user_features,
-        do_split,
     )?;
 
-    // Splitting: PIC `build-std` main + per-`lazy!` PIC `--shared` side
-    // modules + a JS dynamic linker. Otherwise fall through to the plain,
-    // single-binary path below (every `lazy!` body inlined into main).
-    if do_split {
-        return run_dynamic_split(&project_dir, &wrapper_dir, &manifest, &opts, lazy_bodies);
-    }
-
-    // Plain single-binary path (no splitting). The `lazy!` macro inlines its
-    // bodies into the main module, so there's nothing to extract — just
-    // `cargo build` → `wasm-bindgen` → (`wasm-opt` on release). The retired
-    // dioxus `wasm-split-cli` step is gone.
+    // Direct pipeline (no wasm-pack), so we can hit the flag matrix
+    // wasm-split-cli needs to actually extract chunks:
+    //
+    //   1. `cargo build` with `RUSTFLAGS="-C link-args=--emit-relocs"`
+    //      so the rustc-emitted wasm has the relocation info wasm-split
+    //      needs to rewrite indirect calls.
+    //   2. `wasm-bindgen --keep-lld-exports` so wasm-bindgen preserves
+    //      the LLD-emitted exports wasm-split's reachability walker
+    //      uses to identify chunk-only code.
+    //   3. `wasm-split-cli split` rewrites the bindgened wasm into a
+    //      lean base + per-chunk wasms + a `__wasm_split.js` loader.
+    //   4. `wasm-opt -Oz` runs LAST, per-file, on the base + every
+    //      chunk. wasm-pack ran it BEFORE wasm-bindgen which mangled
+    //      symbols wasm-split needed — that's why my earlier
+    //      website measurements showed 0 KB chunks even when the
+    //      lazy! body was clearly extractable.
     let wrapper_pkg = wrapper_dir.join("pkg");
     let original_wasm = wrapper_dir
         .join("target/wasm32-unknown-unknown")
@@ -151,34 +125,19 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     cargo_build_wasm(&wrapper_dir, opts.release, &opts.user_features)?;
     wasm_bindgen_build(&original_wasm, &wrapper_pkg, &manifest.lib_name)
         .with_context(|| "wasm-bindgen")?;
+    run_wasm_split(&original_wasm, &wrapper_pkg, &manifest.lib_name)
+        .with_context(|| "wasm-split-cli post-build")?;
     if opts.release {
         wasm_opt_pkg(&wrapper_pkg)
-            .with_context(|| "wasm-opt")?;
+            .with_context(|| "wasm-opt post-split")?;
     }
 
-    let (pkg_dir, bundle_dir) = finalize_pkg(&project_dir, &wrapper_pkg, &opts)?;
-
-    Ok(BuildArtifact {
-        pkg_dir,
-        wrapper_dir,
-        bundle_dir,
-    })
-}
-
-/// Sync the freshly-built `wrapper_pkg/` into the user project (or stage a
-/// self-contained bundle when `bundle_out_dir` is set). Shared tail of both
-/// the default and `--dynamic-split` pipelines. Returns `(pkg_dir, bundle_dir)`.
-fn finalize_pkg(
-    project_dir: &Path,
-    wrapper_pkg: &Path,
-    opts: &BuildOptions,
-) -> Result<(PathBuf, Option<PathBuf>)> {
-    if let Some(out) = opts.bundle_out_dir.as_ref() {
-        let staged = stage_bundle(project_dir, out).with_context(|| {
+    let (pkg_dir, bundle_dir) = if let Some(out) = opts.bundle_out_dir.as_ref() {
+        let staged = stage_bundle(&project_dir, out).with_context(|| {
             format!("stage static bundle at {}", out.display())
         })?;
         let staged_pkg = staged.join("pkg");
-        sync_pkg_dir(wrapper_pkg, &staged_pkg).with_context(|| {
+        sync_pkg_dir(&wrapper_pkg, &staged_pkg).with_context(|| {
             format!("sync {} → {}", wrapper_pkg.display(), staged_pkg.display())
         })?;
         strip_wasm_pack_metadata(&staged_pkg);
@@ -186,14 +145,20 @@ fn finalize_pkg(
             gzip_bundle(&staged)
                 .with_context(|| format!("gzip bundle at {}", staged.display()))?;
         }
-        Ok((staged_pkg, Some(staged)))
+        (staged_pkg, Some(staged))
     } else {
         let project_pkg = project_dir.join("pkg");
-        sync_pkg_dir(wrapper_pkg, &project_pkg).with_context(|| {
+        sync_pkg_dir(&wrapper_pkg, &project_pkg).with_context(|| {
             format!("sync {} → {}", wrapper_pkg.display(), project_pkg.display())
         })?;
-        Ok((project_pkg, None))
-    }
+        (project_pkg, None)
+    };
+
+    Ok(BuildArtifact {
+        pkg_dir,
+        wrapper_dir,
+        bundle_dir,
+    })
 }
 
 /// Stage a deployable static-site bundle at `out_dir`. Copies
@@ -386,7 +351,6 @@ pub fn generate_wrapper(
     source: &FrameworkSource,
     manifest: &Manifest,
     user_features: &[String],
-    dynamic_split: bool,
 ) -> Result<()> {
     fs::create_dir_all(wrapper_dir.join("src"))
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
@@ -599,7 +563,6 @@ pub fn main() {{
     // reactive viewport signal on initial install + every `resize`
     // event. Author code reads via `runtime_core::viewport_size()`.
     backend_web::install_viewport_observer();
-    {dynlink_install}
 
     #[cfg(feature = "runtime-server")]
     {{
@@ -709,14 +672,6 @@ fn read_aas_url() -> Option<String> {{
 }}
 "##,
         lib = manifest.lib_name,
-        // In `--dynamic-split` builds, wire `lazy!`'s `__dynlink_load`
-        // seam to the JS dynamic linker. No-op string otherwise so the
-        // default pipeline's wrapper is byte-for-byte unchanged.
-        dynlink_install = if dynamic_split {
-            "backend_web::install_dynlink_loader();"
-        } else {
-            ""
-        },
     );
 
     fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
@@ -859,6 +814,139 @@ fn wasm_opt_pkg(pkg_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Run `wasm-split-cli split` against the wasm-pack output to extract
+/// `#[wasm_split]`-annotated functions into separate chunk wasms.
+///
+/// Inputs:
+/// - `original_wasm`: the rustc-emitted wasm (in the wrapper's
+///   `target/wasm32-unknown-unknown/<profile>/<lib>.wasm`). Carries
+///   the `linking` / `reloc.*` sections wasm-split-cli needs.
+/// - `pkg_dir`: the wasm-bindgen output directory. Contains
+///   `<lib>_bg.wasm` (the bindgened binary) and `<lib>.js` (the JS
+///   shim). After this fn returns, `<lib>_bg.wasm` is REPLACED by
+///   wasm-split's `main.wasm` and chunk wasms + a `__wasm_split.js`
+///   shim are added alongside.
+///
+/// The emitted `__wasm_split.js` uses some default placeholder URLs
+/// for the chunk wasm files (`/harness/split/...`); we rewrite those
+/// to relative paths that resolve against wherever the bundle is
+/// served. Same for its `import { initSync } from "./main.js"` —
+/// rewritten to `./<lib>.js` so it lands on the wasm-bindgen shim.
+///
+/// Skips silently when the wasm has no `#[wasm_split]` annotations
+/// (wasm-split-cli will emit just `main.wasm` with no chunks; we
+/// detect that and leave the pkg dir alone).
+fn run_wasm_split(
+    original_wasm: &Path,
+    pkg_dir: &Path,
+    lib_name: &str,
+) -> Result<()> {
+    let bindgened_wasm = pkg_dir.join(format!("{lib_name}_bg.wasm"));
+    if !bindgened_wasm.is_file() {
+        anyhow::bail!(
+            "wasm-split: wasm-bindgen output not found at {}",
+            bindgened_wasm.display(),
+        );
+    }
+    if !original_wasm.is_file() {
+        anyhow::bail!(
+            "wasm-split: rustc-emitted wasm not found at {} \
+             (--emit-relocs may not have been applied — RUSTFLAGS issue?)",
+            original_wasm.display(),
+        );
+    }
+
+    let original = fs::read(original_wasm)
+        .with_context(|| format!("read {}", original_wasm.display()))?;
+    let bindgened = fs::read(&bindgened_wasm)
+        .with_context(|| format!("read {}", bindgened_wasm.display()))?;
+
+    // Library API — calls into our vendored wasm-split-cli, so
+    // patches we apply land automatically without users needing a
+    // separate `cargo install`.
+    let splitter = wasm_split_cli::Splitter::new(&original, &bindgened)
+        .context("wasm-split: parse module")?;
+    let output = splitter.emit().context("wasm-split: emit chunks")?;
+
+    // Replace the bindgened wasm with the split-extracted main.
+    fs::write(&bindgened_wasm, &output.main.bytes).with_context(|| {
+        format!("write split main to {}", bindgened_wasm.display())
+    })?;
+
+    // Drop each chunk + module wasm into pkg_dir alongside the main.
+    // Naming mirrors what the CLI binary used to emit, so the
+    // generated JS shim's URLs still match.
+    let mut chunk_count = 0;
+    for (idx, chunk) in output.chunks.iter().enumerate() {
+        let name = format!("chunk_{idx}_{}.wasm", chunk.module_name);
+        fs::write(pkg_dir.join(&name), &chunk.bytes)
+            .with_context(|| format!("write chunk {name}"))?;
+        chunk_count += 1;
+    }
+    for (idx, module) in output.modules.iter().enumerate() {
+        let cname = module
+            .component_name
+            .as_deref()
+            .unwrap_or(module.module_name.as_str());
+        let name = format!("module_{idx}_{cname}.wasm");
+        fs::write(pkg_dir.join(&name), &module.bytes)
+            .with_context(|| format!("write module {name}"))?;
+        chunk_count += 1;
+    }
+
+    // JS loader shim. wasm-split-cli's MAKE_LOAD_JS is just the
+    // `makeLoad` factory; the per-chunk `export const
+    // __wasm_split_load_…` declarations are appended at runtime by
+    // the CLI binary. We replicate that here (build-web equivalent
+    // of wasm-split-cli's `emit_js`).
+    use std::fmt::Write as _;
+    let mut shim = format!(
+        "import {{ initSync }} from \"./{lib_name}.js\";\n{}",
+        wasm_split_cli::MAKE_LOAD_JS,
+    );
+    for (idx, chunk) in output.chunks.iter().enumerate() {
+        writeln!(
+            shim,
+            "export const __wasm_split_load_chunk_{idx} = \
+             makeLoad(\"./chunk_{idx}_{name}.wasm\", [], fusedImports, initSync);",
+            name = chunk.module_name,
+        )?;
+    }
+    for (idx, module) in output.modules.iter().enumerate() {
+        let cname = module
+            .component_name
+            .as_deref()
+            .unwrap_or(module.module_name.as_str());
+        let hash_id = module.hash_id.as_deref().unwrap_or("");
+        let deps = module
+            .relies_on_chunks
+            .iter()
+            .map(|i| format!("__wasm_split_load_chunk_{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            shim,
+            "export const __wasm_split_load_{mname}_{hash_id}_{cname} = \
+             makeLoad(\"./module_{idx}_{cname}.wasm\", [{deps}], fusedImports, initSync);",
+            mname = module.module_name,
+        )?;
+    }
+    // Wrap `fetch(url)` to resolve module-relative — without this
+    // the chunk URLs (rewritten to `./`) resolve against the page
+    // URL, not against __wasm_split.js's own location.
+    let shim = shim.replace(
+        "const response = await fetch(url);",
+        "const response = await fetch(new URL(url, import.meta.url));",
+    );
+    fs::write(pkg_dir.join("__wasm_split.js"), shim)?;
+
+    eprintln!(
+        "[build-web] wasm-split: {} chunk wasm(s) emitted alongside {}_bg.wasm",
+        chunk_count,
+        lib_name,
+    );
+    Ok(())
+}
 
 /// Render the wrapper's `[features]` block. Each *wrapper-local*
 /// feature entry becomes `<feat> = ["<user>/<feat>"]` so a
@@ -940,509 +1028,6 @@ fn sync_pkg_dir(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-// ===========================================================================
-// Dynamic-linking code-splitting pipeline (`--dynamic-split`)
-// ===========================================================================
-//
-// A wholly separate pipeline from the dioxus reloc-based `wasm-split` above.
-// Instead of post-link rewriting a single bundle, it compiles a PIC main
-// module + one PIC `--shared` side module per `lazy!` body, all sharing ONE
-// `build-std` std artifact so their symbol hashes line up, and ships a JS
-// dynamic linker that resolves each side's GOT against the live main instance
-// on demand. Proven end-to-end in `crates/tools/dynlink/` (see the
-// project_web_dynamic_linking notes). The main upside over the dioxus
-// splitter: a side module carries its OWN data segments, so heavy data
-// genuinely leaves the initial download.
-
-/// Nightly toolchain used for `-Z build-std` (precompiled std isn't PIC).
-/// Overridable via `IDEALYST_DYNLINK_TOOLCHAIN`. Must have `rust-src`.
-const DYNLINK_TOOLCHAIN_DEFAULT: &str = "nightly-2025-09-01";
-
-/// The JS dynamic linker, vendored verbatim from the proven spike
-/// (`crates/tools/dynlink/loader.mjs`). Resolves a PIC `--shared` side
-/// module's imports against an already-instantiated main: env.memory /
-/// table → main's; GOT.mem.<sym> → main's exported address-global;
-/// GOT.func.<sym> → a fresh table slot holding main's function; the side's
-/// own functions land at `__table_base` after the GOT.func slots.
-const LOADER_MJS: &str = r##"// Minimal wasm dynamic linker (Emscripten dylink.0 subset). Vendored by
-// build-web from crates/tools/dynlink/loader.mjs (proven end-to-end).
-export async function loadSide(main, sideMod, { regionBytes = 8 * 1024 * 1024, sideTableReserve = 2048 } = {}) {
-  const ex = main.exports;
-  const mem = ex.memory;
-  const table = ex.__indirect_function_table;
-  const g = (v, mut) => new WebAssembly.Global({ value: "i32", mutable: mut }, v);
-
-  const memoryBase = ex.host_reserve(regionBytes);
-  const stackTop = memoryBase + regionBytes - 16;
-
-  const imports = {};
-  const unresolved = [];
-  for (const imp of WebAssembly.Module.imports(sideMod)) {
-    const ns = (imports[imp.module] ??= {});
-    const { name } = imp;
-    if (imp.module === "env" && name === "memory") { ns.memory = mem; continue; }
-    if (name === "__indirect_function_table") { ns[name] = table; continue; }
-    if (name === "__memory_base") { ns[name] = g(memoryBase, false); continue; }
-    if (name === "__table_base")  { continue; }
-    if (name === "__stack_pointer") {
-      ns[name] = ex.__stack_pointer instanceof WebAssembly.Global ? ex.__stack_pointer : g(stackTop, true);
-      continue;
-    }
-    if (imp.module === "GOT.mem") {
-      const a = ex[name];
-      if (a instanceof WebAssembly.Global) ns[name] = g(a.value, true);
-      else { ns[name] = g(0, true); unresolved.push("GOT.mem." + name); }
-      continue;
-    }
-    if (imp.module === "GOT.func") {
-      const fn = ex[name];
-      if (typeof fn === "function") {
-        const idx = table.length; table.grow(1); table.set(idx, fn);
-        ns[name] = g(idx, true);
-      } else { ns[name] = g(0, true); unresolved.push("GOT.func." + name); }
-      continue;
-    }
-    if (imp.kind === "function") {
-      const fn = ex[name];
-      ns[name] = typeof fn === "function" ? fn : () => { throw new Error("unresolved fn " + name); };
-      if (typeof fn !== "function") unresolved.push("env." + name);
-      continue;
-    }
-    ns[name] = g(0, true);
-  }
-
-  const tableBase = table.length;
-  table.grow(sideTableReserve);
-  (imports.env ??= {}).__table_base = g(tableBase, false);
-
-  const inst = await WebAssembly.instantiate(sideMod, imports);
-  inst.exports.__wasm_apply_data_relocs?.();
-  inst.exports.__wasm_call_ctors?.();
-  return { side: inst, memoryBase, tableBase, unresolved };
-}
-"##;
-
-/// Run the dynamic-linking code-splitting build. Produces a PIC main +
-/// per-`lazy!` PIC `--shared` side modules + the JS loader/glue, then syncs
-/// the result the same way the default path does.
-fn run_dynamic_split(
-    project_dir: &Path,
-    wrapper_dir: &Path,
-    manifest: &Manifest,
-    opts: &BuildOptions,
-    bodies: Vec<(String, String)>,
-) -> Result<BuildArtifact> {
-    let toolchain = std::env::var("IDEALYST_DYNLINK_TOOLCHAIN")
-        .unwrap_or_else(|_| DYNLINK_TOOLCHAIN_DEFAULT.to_string());
-    let profile_dir = if opts.release { "release" } else { "debug" };
-    let target_dir = wrapper_dir.join("target");
-    let wrapper_pkg = wrapper_dir.join("pkg");
-
-    // 1. `lazy! { … }` bodies harvested by the caller from the user's source.
-    eprintln!(
-        "[build-web] dynamic-split: {} lazy! body(ies) harvested",
-        bodies.len()
-    );
-
-    // 2. Build the PIC main. `IDEALYST_DYNAMIC_SPLIT=1` makes the `lazy!`
-    //    macro emit stubs, so the bodies stay OUT of the main module.
-    cargo_build_pic(
-        wrapper_dir,
-        &toolchain,
-        opts.release,
-        &opts.user_features,
-        &["--export-all", "--growable-table", "--export-table"],
-        &target_dir,
-    )
-    .with_context(|| "dynamic-split: build PIC main")?;
-    let main_wasm = target_dir
-        .join("wasm32-unknown-unknown")
-        .join(profile_dir)
-        .join(format!("{}.wasm", manifest.lib_name));
-
-    // 3. wasm-bindgen the main (reuses the default path's invocation).
-    wasm_bindgen_build(&main_wasm, &wrapper_pkg, &manifest.lib_name)
-        .with_context(|| "dynamic-split: wasm-bindgen main")?;
-
-    // 4. Patch the main glue: no-op describe stubs (so `init()` can
-    //    instantiate a `--export-all` module), expose main's exports for the
-    //    linker, and auto-load the dynlink glue.
-    patch_main_glue(&wrapper_pkg, &manifest.lib_name)
-        .with_context(|| "dynamic-split: patch main glue")?;
-
-    // 5. Generate + build one PIC `--shared` side module per body, sharing
-    //    the main's target dir so std + the user crate are reused and GOT
-    //    symbol hashes line up.
-    let lazy_root = wrapper_dir.join("lazy");
-    let _ = fs::remove_dir_all(&lazy_root);
-    let mut hashes = Vec::new();
-    for (hash, body) in &bodies {
-        let side_dir = lazy_root.join(hash);
-        generate_side_crate(&side_dir, hash, body, project_dir, manifest, &opts.source)
-            .with_context(|| format!("dynamic-split: generate side crate {hash}"))?;
-        cargo_build_pic(&side_dir, &toolchain, opts.release, &[], &["--shared"], &target_dir)
-            .with_context(|| format!("dynamic-split: build side module {hash}"))?;
-        let side_wasm = target_dir
-            .join("wasm32-unknown-unknown")
-            .join(profile_dir)
-            .join(format!("idealyst_lazy_{hash}.wasm"));
-        fs::copy(&side_wasm, wrapper_pkg.join(format!("module_{hash}.wasm")))
-            .with_context(|| format!("copy side module {hash}"))?;
-        hashes.push(hash.clone());
-    }
-
-    // 6. Ship the loader + dynlink glue.
-    fs::write(wrapper_pkg.join("loader.mjs"), LOADER_MJS)?;
-    write_dynlink_glue(&wrapper_pkg, &manifest.lib_name)?;
-
-    // 7. Release: wasm-opt the main + every side module. Verified safe on
-    //    both the `--export-all` PIC main AND the `--shared`/`dylink.0` side
-    //    (GOT resolution survives) — a huge win: a debug-std demo main of
-    //    35 MB → 10.6 MB (release) → 2.2 MB (wasm-opt); side 20 → 1.6 → 1.0.
-    if opts.release {
-        wasm_opt_dynsplit(&wrapper_pkg).with_context(|| "dynamic-split: wasm-opt")?;
-    }
-
-    eprintln!(
-        "[build-web] dynamic-split: main + {} side module(s) emitted",
-        hashes.len()
-    );
-
-    let (pkg_dir, bundle_dir) = finalize_pkg(project_dir, &wrapper_pkg, opts)?;
-    Ok(BuildArtifact {
-        pkg_dir,
-        wrapper_dir: wrapper_dir.to_path_buf(),
-        bundle_dir,
-    })
-}
-
-/// `cargo +<nightly> rustc -Z build-std=std,panic_abort --target
-/// wasm32-unknown-unknown` with PIC RUSTFLAGS, `IDEALYST_DYNAMIC_SPLIT=1`,
-/// and a shared `CARGO_TARGET_DIR` (so main + every side reuse one std and
-/// the user crate). `final_link_args` are passed to the FINAL crate only via
-/// `cargo rustc -- …` so std/deps build once.
-fn cargo_build_pic(
-    crate_dir: &Path,
-    toolchain: &str,
-    release: bool,
-    user_features: &[String],
-    final_link_args: &[&str],
-    target_dir: &Path,
-) -> Result<()> {
-    let mut cmd = Command::new("cargo");
-    cmd.current_dir(crate_dir)
-        .arg(format!("+{toolchain}"))
-        .arg("rustc")
-        .arg("-Z")
-        .arg("build-std=std,panic_abort")
-        .args(["--target", "wasm32-unknown-unknown"]);
-    if release {
-        cmd.arg("--release");
-    }
-    if !user_features.is_empty() {
-        cmd.arg("--features").arg(user_features.join(","));
-    }
-    cmd.arg("--");
-    for a in final_link_args {
-        cmd.arg("-C").arg(format!("link-arg={a}"));
-    }
-
-    let existing = std::env::var("RUSTFLAGS").unwrap_or_default();
-    let pic = "-C relocation-model=pic -C link-arg=--experimental-pic";
-    let combined = if existing.is_empty() {
-        pic.to_string()
-    } else {
-        format!("{existing} {pic}")
-    };
-    cmd.env("RUSTFLAGS", combined)
-        .env("IDEALYST_DYNAMIC_SPLIT", "1")
-        .env("CARGO_TARGET_DIR", target_dir);
-
-    eprintln!(
-        "[build-web] dynamic-split: cargo +{toolchain} rustc -Z build-std … -- {} (in {})",
-        final_link_args.join(" "),
-        crate_dir.display(),
-    );
-    let status = cmd.status().with_context(|| {
-        format!(
-            "exec cargo +{toolchain} — is the nightly toolchain installed with rust-src? \
-             (rustup toolchain install {toolchain} && rustup component add rust-src --toolchain {toolchain})"
-        )
-    })?;
-    if !status.success() {
-        anyhow::bail!("cargo (dynamic-split) exited with {status}");
-    }
-    Ok(())
-}
-
-/// Walk every `.rs` under `<project>/src`, find each `lazy! { … }` (anywhere
-/// in the token tree — including nested inside `ui!`/`jsx!`, which an AST walk
-/// can't see), and return `(hash, body_source)` per unique body. The hash
-/// matches the `lazy!` macro's (sha256 of the whitespace-stripped body).
-fn harvest_lazy_bodies(project_dir: &Path) -> Result<Vec<(String, String)>> {
-    let src = project_dir.join("src");
-    let mut bodies = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    if src.is_dir() {
-        harvest_dir(&src, &mut bodies, &mut seen)?;
-    }
-    Ok(bodies)
-}
-
-fn harvest_dir(
-    dir: &Path,
-    bodies: &mut Vec<(String, String)>,
-    seen: &mut std::collections::HashSet<String>,
-) -> Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            harvest_dir(&path, bodies, seen)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            let text = fs::read_to_string(&path)
-                .with_context(|| format!("read {}", path.display()))?;
-            if let Ok(ts) = std::str::FromStr::from_str(&text) {
-                find_lazy_in_tokens(ts, bodies, seen);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn find_lazy_in_tokens(
-    ts: proc_macro2::TokenStream,
-    bodies: &mut Vec<(String, String)>,
-    seen: &mut std::collections::HashSet<String>,
-) {
-    use proc_macro2::{Delimiter, TokenTree};
-    let toks: Vec<TokenTree> = ts.into_iter().collect();
-    let mut i = 0;
-    while i < toks.len() {
-        if let TokenTree::Ident(id) = &toks[i] {
-            if id.to_string() == "lazy" {
-                if let (Some(TokenTree::Punct(p)), Some(TokenTree::Group(grp))) =
-                    (toks.get(i + 1), toks.get(i + 2))
-                {
-                    if p.as_char() == '!' && grp.delimiter() == Delimiter::Brace {
-                        let body = grp.stream().to_string();
-                        let hash = body_hash(&body);
-                        if seen.insert(hash.clone()) {
-                            bodies.push((hash, body));
-                        }
-                        // Recurse into the body too (a lazy! can nest a lazy!).
-                        find_lazy_in_tokens(grp.stream(), bodies, seen);
-                        i += 3;
-                        continue;
-                    }
-                }
-            }
-        }
-        if let TokenTree::Group(grp) = &toks[i] {
-            find_lazy_in_tokens(grp.stream(), bodies, seen);
-        }
-        i += 1;
-    }
-}
-
-/// Hash a `lazy!` body the SAME way the macro does: sha256 of the
-/// whitespace-stripped token text, first 6 bytes as hex. Whitespace is
-/// stripped because `proc_macro2`'s fallback `to_string` here spaces tokens
-/// differently than `proc_macro`'s inside the macro; token *content* matches.
-fn body_hash(body: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let normalized: String = body.chars().filter(|c| !c.is_whitespace()).collect();
-    let mut h = Sha256::new();
-    h.update(normalized.as_bytes());
-    let bytes = h.finalize();
-    bytes[..6].iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Generate a side-module crate that exports `__idealyst_lazy_body_<hash>`,
-/// returning a heap `Box<Element>` built from the harvested body. Depends
-/// on the user crate (for its components) + runtime-core; a glob `use` of
-/// both brings the body's identifiers into scope.
-fn generate_side_crate(
-    side_dir: &Path,
-    hash: &str,
-    body: &str,
-    project_dir: &Path,
-    manifest: &Manifest,
-    source: &FrameworkSource,
-) -> Result<()> {
-    fs::create_dir_all(side_dir.join("src"))
-        .with_context(|| format!("create {}", side_dir.display()))?;
-    let rc_dep = source.dep("crates/runtime/core", &[]);
-    let cargo_toml = format!(
-        r#"# GENERATED by `idealyst build --web --dynamic-split`. One side
-# module per `lazy!` body; rewritten every build.
-[workspace]
-
-[package]
-name = "idealyst-lazy-{hash}"
-version = "0.0.1"
-edition = "2021"
-
-[lib]
-name = "idealyst_lazy_{hash}"
-crate-type = ["cdylib"]
-
-[dependencies]
-runtime-core = {rc_dep}
-{user_name} = {{ path = "{user_path}" }}
-{patch_block}
-[profile.release]
-opt-level = "z"
-panic = "abort"
-"#,
-        hash = hash,
-        rc_dep = rc_dep,
-        user_name = manifest.name,
-        user_path = project_dir.display(),
-        patch_block = source.patch_block(),
-    );
-
-    let lib_rs = format!(
-        r##"//! GENERATED side module for a `lazy!` body — do not edit.
-#![allow(unused_imports, clippy::all)]
-use runtime_core::*;
-use {user_lib}::*;
-
-/// Build the body's `Element` and hand main a raw pointer to it (on the
-/// SHARED heap; main reconstitutes + mounts via the walker).
-#[no_mangle]
-pub extern "C" fn __idealyst_lazy_body_{hash}() -> *mut runtime_core::Element {{
-    use runtime_core::IntoElement as _;
-    let __p: runtime_core::Element = {{ {body} }}.into_element();
-    ::std::boxed::Box::into_raw(::std::boxed::Box::new(__p))
-}}
-"##,
-        user_lib = manifest.lib_name,
-        hash = hash,
-        body = body,
-    );
-
-    fs::write(side_dir.join("Cargo.toml"), cargo_toml)?;
-    fs::write(side_dir.join("src/lib.rs"), lib_rs)?;
-    Ok(())
-}
-
-/// Patch the wasm-bindgen main glue for dynamic linking:
-///  1. inject no-op `__wbindgen_describe` stubs into `__wbg_get_imports` —
-///     `--export-all` keeps the describe machinery alive, so the wasm still
-///     imports them; they're never called at runtime.
-///  2. export `__idealyst_main_exports()` so the dynlink glue can resolve
-///     side modules against the live main instance.
-///  3. auto-load the dynlink glue (sets `globalThis.__IDEALYST_DYNLINK`).
-fn patch_main_glue(pkg: &Path, lib_name: &str) -> Result<()> {
-    let glue_path = pkg.join(format!("{lib_name}.js"));
-    let mut glue = fs::read_to_string(&glue_path)
-        .with_context(|| format!("read main glue {}", glue_path.display()))?;
-
-    // wasm-bindgen 0.2.x's `__wbg_get_imports` ends with
-    //   return {
-    //       __proto__: null,
-    //       "./<lib>_bg.js": import0,
-    //   };
-    // Inject the `__wbindgen_placeholder__` namespace as the first key so the
-    // dangling describe imports resolve to no-ops. Anchoring on the
-    // `return {` + `__proto__: null,` pair is lib-name-agnostic and unique to
-    // this function (the loader's own `return { instance, module }` has no
-    // `__proto__` line).
-    let anchor = "    return {\n        __proto__: null,";
-    let injected = "    return {\n        __proto__: null,\n        \
-        \"__wbindgen_placeholder__\": { __wbindgen_describe: () => {}, __wbindgen_describe_cast: () => {} },";
-    if glue.contains(anchor) {
-        glue = glue.replacen(anchor, injected, 1);
-    } else {
-        anyhow::bail!(
-            "dynamic-split: could not find `__wbg_get_imports`'s return object in {} to inject \
-             describe stubs (wasm-bindgen glue shape changed?)",
-            glue_path.display()
-        );
-    }
-
-    glue.push_str("\nexport function __idealyst_main_exports() { return wasm; }\n");
-    let glue = format!("import \"./__idealyst_dynlink.js\";\n{glue}");
-    fs::write(&glue_path, glue)?;
-    Ok(())
-}
-
-/// Emit `__idealyst_dynlink.js`: installs `globalThis.__IDEALYST_DYNLINK.load`,
-/// which `backend_web::dynlink` calls. It fetches `module_<hash>.wasm`, links
-/// it against the live main instance via the vendored `loadSide`, and invokes
-/// the side's `__idealyst_lazy_body_<hash>` export, returning the raw pointer.
-fn write_dynlink_glue(pkg: &Path, lib_name: &str) -> Result<()> {
-    let glue = format!(
-        r#"// GENERATED by `idealyst build --web --dynamic-split`.
-import {{ __idealyst_main_exports }} from "./{lib_name}.js";
-import {{ loadSide }} from "./loader.mjs";
-
-const cache = new Map();
-globalThis.__IDEALYST_DYNLINK = {{
-  load: async (hash) => {{
-    const main = {{ exports: __idealyst_main_exports() }};
-    let side = cache.get(hash);
-    if (!side) {{
-      const url = new URL("./module_" + hash + ".wasm", import.meta.url);
-      const mod = await WebAssembly.compileStreaming(fetch(url));
-      ({{ side }} = await loadSide(main, mod));
-      cache.set(hash, side);
-    }}
-    const fn = side.exports["__idealyst_lazy_body_" + hash];
-    if (typeof fn !== "function") {{
-      console.error("[idealyst dynlink] missing body export for", hash);
-      return 0;
-    }}
-    return fn();
-  }},
-}};
-"#,
-        lib_name = lib_name,
-    );
-    fs::write(pkg.join("__idealyst_dynlink.js"), glue)?;
-    Ok(())
-}
-
-/// Run `wasm-opt -Oz` on the main + every side module in `pkg_dir`. Uses a
-/// broader feature set than the dioxus path's [`wasm_opt_pkg`] because the PIC
-/// dynamic-link modules need mutable-globals (the GOT address-globals),
-/// reference-types (wasm-bindgen's externref table), bulk-memory, sign-ext,
-/// and nontrapping-float-to-int. Verified end-to-end: the optimized main +
-/// `--shared` side still dynamically link (GOT resolution survives) and render
-/// in a browser with 0 console errors.
-fn wasm_opt_dynsplit(pkg_dir: &Path) -> Result<()> {
-    for entry in fs::read_dir(pkg_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("wasm") {
-            continue;
-        }
-        let tmp = path.with_extension("wasm.opt");
-        let status = Command::new("wasm-opt")
-            .arg("-Oz")
-            .arg("--strip-debug")
-            .arg("--strip-producers")
-            .arg("--enable-reference-types")
-            .arg("--enable-bulk-memory")
-            .arg("--enable-mutable-globals")
-            .arg("--enable-nontrapping-float-to-int")
-            .arg("--enable-sign-ext")
-            .arg("-o")
-            .arg(&tmp)
-            .arg(&path)
-            .status()
-            .with_context(|| {
-                "exec wasm-opt — is binaryen installed? (`brew install binaryen` / apt etc.)"
-            })?;
-        if !status.success() {
-            anyhow::bail!("wasm-opt failed on {}: {status}", path.display());
-        }
-        fs::rename(&tmp, &path)?;
-        eprintln!("[build-web] dynamic-split: wasm-opt → {}", path.display());
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod regression_tests {
     //! Wrapper-shape regression for `build-web`.
@@ -1491,7 +1076,7 @@ mod regression_tests {
         std::fs::create_dir_all(&workspace_root).unwrap();
         let manifest = fake_manifest();
         let source = FrameworkSource::Workspace { root: workspace_root };
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[], false)
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[])
             .expect("generate wrapper");
         (wrapper_dir, tmp)
     }

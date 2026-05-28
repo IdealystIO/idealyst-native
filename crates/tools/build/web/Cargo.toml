@@ -19,12 +19,6 @@ serde_json = "1"
 # subprocess) so our patches apply automatically without users
 # needing to install a separate binary on PATH.
 wasm-split-cli = { workspace = true }
-# `--dynamic-split` mode: harvest `lazy! { … }` bodies from the user's
-# source by walking the token tree (finds `lazy!` even nested inside
-# `ui!`/`jsx!`, which a `syn` AST walk can't see), and hash each body the
-# SAME way the `lazy!` macro does so the generated side-crate names match.
-proc-macro2 = "1"
-sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
