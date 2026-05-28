@@ -100,6 +100,7 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
             active_changed,
             control,
             build_node,
+            build_node_into: _,
             build_in_screen: _,
         } = host;
 

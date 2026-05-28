@@ -87,3 +87,22 @@ impl<B: Backend + 'static> Default for NavigatorRegistry<B> {
         Self::new()
     }
 }
+
+/// Implemented by backends that hold a [`NavigatorRegistry`], so an SDK
+/// can register a **backend-neutral** navigator handler
+/// (`impl<B: Backend> NavigatorHandler<B>`) without depending on the
+/// concrete backend type. SDK code writes
+/// `fn register<B: RegisterNavigator>(b: &mut B)`; the backend forwards
+/// to its registry.
+///
+/// Platform backends whose handlers are platform-specific (web DOM,
+/// UIKit, …) don't need this — their per-platform `register` fns call an
+/// inherent `register_navigator` directly. This trait exists for the
+/// generic-handler path: chrome rendered as primitives, usable by any
+/// backend (the SSR backend today).
+pub trait RegisterNavigator: Backend + Sized + 'static {
+    fn register_navigator<P, F>(&mut self, factory: F)
+    where
+        P: 'static,
+        F: Fn() -> Box<dyn NavigatorHandler<Self>> + 'static;
+}

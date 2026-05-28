@@ -102,6 +102,15 @@ pub struct NavigatorHost<N: Clone + 'static> {
     /// equivalent.
     pub build_node: Rc<dyn Fn(crate::Element) -> N>,
 
+    /// [`build_node`](Self::build_node) plus insert-into-parent, so a
+    /// closure with no backend reference can attach chrome into an
+    /// existing slot. Lets a handler defer building an author `Element`
+    /// (e.g. a drawer sidebar) to a microtask that runs *after* the
+    /// `create_navigator` borrow releases, then splice it in — without
+    /// reaching into a backend's node internals. Same
+    /// must-run-outside-the-outer-borrow rule as `build_node`.
+    pub build_node_into: Rc<dyn Fn(N /* parent */, crate::Element)>,
+
     /// Materialize a Element into a Node, scoped to a specific
     /// screen's lifetime. Pass the `scope_id` from a `MountResult`.
     /// Used for per-screen SDK chrome (custom title view, custom

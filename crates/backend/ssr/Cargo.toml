@@ -1,0 +1,13 @@
+[package]
+name = "backend-ssr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+runtime-core = { workspace = true }
+css = { workspace = true }
+# NOTE: backend-ssr stays SDK-free. Navigator SDKs depend on backend-ssr
+# (for their SSR handlers), so a dev-dep back on a nav SDK would create a
+# crate cycle + duplicate `backend-ssr`. Navigator render-at-path + chrome
+# tests/examples live in the SDK crates (e.g. stack-navigator/tests/ssr.rs).

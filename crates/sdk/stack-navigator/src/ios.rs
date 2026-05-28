@@ -73,6 +73,7 @@ impl NavigatorHandler<IosBackend> for IosStackHandler {
             active_changed: _,
             control,
             build_node: _,
+            build_node_into: _,
             build_in_screen: _,
         } = host;
 

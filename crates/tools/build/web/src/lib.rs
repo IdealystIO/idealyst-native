@@ -64,6 +64,13 @@ pub struct BuildOptions {
     /// host must send `Content-Encoding: gzip` on these responses for
     /// the browser to inflate them transparently.
     pub gzip: bool,
+    /// Strip panic machinery (`-Z build-std-features=panic_immediate_abort`).
+    /// Every panic becomes a bare `unreachable` trap with no message.
+    /// Requires a nightly toolchain + the `rust-src` component and
+    /// recompiles std from source. Only honored alongside `release`
+    /// (the CLI flips `release` on when this is set). The dev loop
+    /// always leaves this `false`.
+    pub strip_panics: bool,
 }
 
 #[derive(Debug)]
@@ -122,28 +129,30 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .join("target/wasm32-unknown-unknown")
         .join(if opts.release { "release" } else { "debug" })
         .join(format!("{}.wasm", manifest.lib_name));
-    cargo_build_wasm(&wrapper_dir, opts.release, &opts.user_features)?;
+    cargo_build_wasm(
+        &wrapper_dir,
+        opts.release,
+        opts.strip_panics,
+        &opts.user_features,
+    )?;
     wasm_bindgen_build(&original_wasm, &wrapper_pkg, &manifest.lib_name)
         .with_context(|| "wasm-bindgen")?;
     run_wasm_split(&original_wasm, &wrapper_pkg, &manifest.lib_name)
         .with_context(|| "wasm-split-cli post-build")?;
     if opts.release {
-        wasm_opt_pkg(&wrapper_pkg)
-            .with_context(|| "wasm-opt post-split")?;
+        wasm_opt_pkg(&wrapper_pkg).with_context(|| "wasm-opt post-split")?;
     }
 
     let (pkg_dir, bundle_dir) = if let Some(out) = opts.bundle_out_dir.as_ref() {
-        let staged = stage_bundle(&project_dir, out).with_context(|| {
-            format!("stage static bundle at {}", out.display())
-        })?;
+        let staged = stage_bundle(&project_dir, out)
+            .with_context(|| format!("stage static bundle at {}", out.display()))?;
         let staged_pkg = staged.join("pkg");
         sync_pkg_dir(&wrapper_pkg, &staged_pkg).with_context(|| {
             format!("sync {} → {}", wrapper_pkg.display(), staged_pkg.display())
         })?;
         strip_wasm_pack_metadata(&staged_pkg);
         if opts.gzip {
-            gzip_bundle(&staged)
-                .with_context(|| format!("gzip bundle at {}", staged.display()))?;
+            gzip_bundle(&staged).with_context(|| format!("gzip bundle at {}", staged.display()))?;
         }
         (staged_pkg, Some(staged))
     } else {
@@ -293,16 +302,14 @@ fn gzip_bundle(bundle_dir: &Path) -> Result<()> {
         if is_already_compressed(path) {
             return Ok(());
         }
-        let bytes = fs::read(path)
-            .with_context(|| format!("read {} for gzip", path.display()))?;
+        let bytes = fs::read(path).with_context(|| format!("read {} for gzip", path.display()))?;
         let mut enc = GzEncoder::new(Vec::with_capacity(bytes.len()), Compression::best());
         enc.write_all(&bytes)
             .with_context(|| format!("gzip {}", path.display()))?;
         let gz = enc
             .finish()
             .with_context(|| format!("finalize gzip {}", path.display()))?;
-        fs::write(path, gz)
-            .with_context(|| format!("write gzipped {}", path.display()))?;
+        fs::write(path, gz).with_context(|| format!("write gzipped {}", path.display()))?;
         Ok(())
     })
 }
@@ -313,7 +320,8 @@ fn is_already_compressed(path: &Path) -> bool {
     };
     matches!(
         ext.to_ascii_lowercase().as_str(),
-        "png" | "jpg"
+        "png"
+            | "jpg"
             | "jpeg"
             | "gif"
             | "webp"
@@ -679,6 +687,33 @@ fn read_aas_url() -> Option<String> {{
     Ok(())
 }
 
+/// Pick the nightly toolchain name to use for the `--strip-panics`
+/// (`-Z build-std`) build.
+///
+/// We derive `nightly-<host-triple>` from the **active** rustc rather
+/// than passing a bare `+nightly`: rustup expands `+nightly` against
+/// its *default host triple*, which can differ from the active
+/// toolchain's arch (e.g. an x86_64 rustup install driving an
+/// Apple-Silicon default toolchain). That mismatch resolves to a
+/// wrong-arch nightly that usually lacks the `rust-src` component, so
+/// the build fails confusingly. Matching the active host triple avoids
+/// that. Falls back to a bare `nightly` if `rustc -vV` can't be parsed.
+fn default_nightly_toolchain() -> String {
+    let host = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("host: ").map(str::to_string))
+        });
+    match host {
+        Some(triple) => format!("nightly-{triple}"),
+        None => "nightly".to_string(),
+    }
+}
 
 /// Run `cargo build --target wasm32-unknown-unknown` against the
 /// wrapper crate. `RUSTFLAGS="-C link-args=--emit-relocs"` is set
@@ -689,14 +724,37 @@ fn read_aas_url() -> Option<String> {{
 fn cargo_build_wasm(
     wrapper_dir: &Path,
     release: bool,
+    strip_panics: bool,
     user_features: &[String],
 ) -> Result<()> {
     let mut cmd = Command::new("cargo");
+    // `panic_immediate_abort` lives in std/core, so stripping panics
+    // means recompiling std from source with `-Z build-std` — both of
+    // which are nightly-only. We select nightly via the rustup `+`
+    // shim rather than touching the user's default toolchain. Override
+    // the toolchain name with `IDEALYST_NIGHTLY` if the default isn't
+    // right on a given machine (e.g. to pin a nightly date).
+    if strip_panics {
+        let toolchain =
+            std::env::var("IDEALYST_NIGHTLY").unwrap_or_else(|_| default_nightly_toolchain());
+        cmd.arg(format!("+{toolchain}"));
+    }
     cmd.current_dir(wrapper_dir)
         .arg("build")
         .args(["--target", "wasm32-unknown-unknown"]);
     if release {
         cmd.arg("--release");
+    }
+    if strip_panics {
+        // Rebuild std so the panic-strip feature actually applies to it
+        // (not just the user crates). `panic_abort` must be listed
+        // explicitly alongside `std` for `panic = "abort"` builds.
+        cmd.args([
+            "-Z",
+            "build-std=std,panic_abort",
+            "-Z",
+            "build-std-features=panic_immediate_abort",
+        ]);
     }
     if !user_features.is_empty() {
         cmd.arg("--features").arg(user_features.join(","));
@@ -710,14 +768,27 @@ fn cargo_build_wasm(
     cmd.env("RUSTFLAGS", combined);
 
     eprintln!(
-        "[build-web] cargo build --target wasm32-unknown-unknown{} (in {})",
+        "[build-web] cargo build --target wasm32-unknown-unknown{}{} (in {})",
         if release { " --release" } else { "" },
+        if strip_panics {
+            " -Z build-std (panic_immediate_abort)"
+        } else {
+            ""
+        },
         wrapper_dir.display(),
     );
-    let status = cmd
-        .status()
-        .with_context(|| "exec cargo")?;
+    let status = cmd.status().with_context(|| "exec cargo")?;
     if !status.success() {
+        if strip_panics {
+            anyhow::bail!(
+                "cargo exited with {status}\n\n\
+                 `--strip-panics` recompiles std on nightly via `-Z build-std`, which needs:\n  \
+                 * a *recent* nightly (an old rolling `nightly` may fail to parse the workspace manifest — `rustup update nightly`)\n  \
+                 * the `rust-src` component for that nightly (`rustup component add rust-src --toolchain <nightly>`)\n\
+                 Pin a specific known-good nightly with `IDEALYST_NIGHTLY=nightly-YYYY-MM-DD`.\n\
+                 Or drop `--strip-panics` to build on the default stable toolchain."
+            );
+        }
         anyhow::bail!("cargo exited with {status}");
     }
     Ok(())
@@ -737,17 +808,11 @@ fn cargo_build_wasm(
 /// needs to match function references across the relocations. The
 /// final wasm-opt pass strips debug info, so this doesn't bloat the
 /// shipped bundle.
-fn wasm_bindgen_build(
-    original_wasm: &Path,
-    out_dir: &Path,
-    lib_name: &str,
-) -> Result<()> {
+fn wasm_bindgen_build(original_wasm: &Path, out_dir: &Path, lib_name: &str) -> Result<()> {
     if out_dir.exists() {
-        fs::remove_dir_all(out_dir)
-            .with_context(|| format!("clear {}", out_dir.display()))?;
+        fs::remove_dir_all(out_dir).with_context(|| format!("clear {}", out_dir.display()))?;
     }
-    fs::create_dir_all(out_dir)
-        .with_context(|| format!("create {}", out_dir.display()))?;
+    fs::create_dir_all(out_dir).with_context(|| format!("create {}", out_dir.display()))?;
     eprintln!(
         "[build-web] wasm-bindgen --target web --keep-lld-exports --keep-debug → {}",
         out_dir.display(),
@@ -836,11 +901,7 @@ fn wasm_opt_pkg(pkg_dir: &Path) -> Result<()> {
 /// Skips silently when the wasm has no `#[wasm_split]` annotations
 /// (wasm-split-cli will emit just `main.wasm` with no chunks; we
 /// detect that and leave the pkg dir alone).
-fn run_wasm_split(
-    original_wasm: &Path,
-    pkg_dir: &Path,
-    lib_name: &str,
-) -> Result<()> {
+fn run_wasm_split(original_wasm: &Path, pkg_dir: &Path, lib_name: &str) -> Result<()> {
     let bindgened_wasm = pkg_dir.join(format!("{lib_name}_bg.wasm"));
     if !bindgened_wasm.is_file() {
         anyhow::bail!(
@@ -856,22 +917,21 @@ fn run_wasm_split(
         );
     }
 
-    let original = fs::read(original_wasm)
-        .with_context(|| format!("read {}", original_wasm.display()))?;
-    let bindgened = fs::read(&bindgened_wasm)
-        .with_context(|| format!("read {}", bindgened_wasm.display()))?;
+    let original =
+        fs::read(original_wasm).with_context(|| format!("read {}", original_wasm.display()))?;
+    let bindgened =
+        fs::read(&bindgened_wasm).with_context(|| format!("read {}", bindgened_wasm.display()))?;
 
     // Library API — calls into our vendored wasm-split-cli, so
     // patches we apply land automatically without users needing a
     // separate `cargo install`.
-    let splitter = wasm_split_cli::Splitter::new(&original, &bindgened)
-        .context("wasm-split: parse module")?;
+    let splitter =
+        wasm_split_cli::Splitter::new(&original, &bindgened).context("wasm-split: parse module")?;
     let output = splitter.emit().context("wasm-split: emit chunks")?;
 
     // Replace the bindgened wasm with the split-extracted main.
-    fs::write(&bindgened_wasm, &output.main.bytes).with_context(|| {
-        format!("write split main to {}", bindgened_wasm.display())
-    })?;
+    fs::write(&bindgened_wasm, &output.main.bytes)
+        .with_context(|| format!("write split main to {}", bindgened_wasm.display()))?;
 
     // Drop each chunk + module wasm into pkg_dir alongside the main.
     // Naming mirrors what the CLI binary used to emit, so the
@@ -942,8 +1002,7 @@ fn run_wasm_split(
 
     eprintln!(
         "[build-web] wasm-split: {} chunk wasm(s) emitted alongside {}_bg.wasm",
-        chunk_count,
-        lib_name,
+        chunk_count, lib_name,
     );
     Ok(())
 }
@@ -1013,11 +1072,9 @@ fn sync_pkg_dir(src: &Path, dst: &Path) -> Result<()> {
     // Clean slate — wasm-pack sometimes leaves stale files behind
     // (e.g. renaming the lib renames the .js but leaves the old one).
     if dst.exists() {
-        fs::remove_dir_all(dst)
-            .with_context(|| format!("remove stale {}", dst.display()))?;
+        fs::remove_dir_all(dst).with_context(|| format!("remove stale {}", dst.display()))?;
     }
-    fs::create_dir_all(dst)
-        .with_context(|| format!("create {}", dst.display()))?;
+    fs::create_dir_all(dst).with_context(|| format!("create {}", dst.display()))?;
     // Recurse so wasm-pack subdirs (notably `snippets/<crate>-<hash>/`
     // for `#[wasm_bindgen(inline_js = ...)]` blocks) come along.
     // Missing snippets/ shows up at runtime as a 404 for
@@ -1075,7 +1132,9 @@ mod regression_tests {
         std::fs::create_dir_all(&project_dir).unwrap();
         std::fs::create_dir_all(&workspace_root).unwrap();
         let manifest = fake_manifest();
-        let source = FrameworkSource::Workspace { root: workspace_root };
+        let source = FrameworkSource::Workspace {
+            root: workspace_root,
+        };
         generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[])
             .expect("generate wrapper");
         (wrapper_dir, tmp)
@@ -1165,7 +1224,10 @@ mod bundle_tests {
 
         stage_bundle(&project, &out).expect("stage");
 
-        assert!(out.join("index.html").is_file(), "index.html must be copied");
+        assert!(
+            out.join("index.html").is_file(),
+            "index.html must be copied"
+        );
         assert!(
             out.join("fonts/Inter.ttf").is_file(),
             "top-level asset dir (fonts/) must auto-ship",
@@ -1177,7 +1239,10 @@ mod bundle_tests {
         assert!(!out.join("src").exists(), "src/ must be skipped");
         assert!(!out.join("target").exists(), "target/ must be skipped");
         assert!(!out.join(".git").exists(), "dotdirs must be skipped");
-        assert!(!out.join("Cargo.toml").exists(), "Cargo.toml must be skipped");
+        assert!(
+            !out.join("Cargo.toml").exists(),
+            "Cargo.toml must be skipped"
+        );
         // Bundling owns pkg/ — it gets populated from wasm-pack output
         // by the caller, NOT scraped out of the project root. A stale
         // project-root pkg/ from a previous build must not leak in,
@@ -1234,9 +1299,18 @@ mod bundle_tests {
         assert!(pkg.join("demo_bg.wasm").is_file(), ".wasm must stay");
         assert!(pkg.join("demo.js").is_file(), ".js must stay");
         assert!(!pkg.join("demo.d.ts").exists(), ".d.ts must be stripped");
-        assert!(!pkg.join("demo_bg.wasm.d.ts").exists(), ".d.ts must be stripped");
-        assert!(!pkg.join("package.json").exists(), "package.json must be stripped");
-        assert!(!pkg.join("README.md").exists(), "README.md must be stripped");
+        assert!(
+            !pkg.join("demo_bg.wasm.d.ts").exists(),
+            ".d.ts must be stripped"
+        );
+        assert!(
+            !pkg.join("package.json").exists(),
+            "package.json must be stripped"
+        );
+        assert!(
+            !pkg.join("README.md").exists(),
+            "README.md must be stripped"
+        );
     }
 
     #[test]

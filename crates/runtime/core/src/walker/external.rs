@@ -8,8 +8,10 @@
 use super::cleanup::ExternalHandleCleanup;
 use super::debug::time_backend_create;
 use super::style::attach_style;
+use super::view::insert_children;
 use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
+use crate::element::Element;
 use crate::handles::RefFill;
 use crate::reactive::Effect;
 use crate::sources::StyleSource;
@@ -22,15 +24,21 @@ pub(super) fn build<B: Backend + 'static>(
     type_id: TypeId,
     type_name: &'static str,
     payload: Rc<dyn Any>,
+    children: Vec<Element>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     a11y: AccessibilityProps,
 ) -> B::Node {
-    let n = time_backend_create(pkind!(External), || {
+    let mut n = time_backend_create(pkind!(External), || {
         backend
             .borrow_mut()
             .create_external(type_id, type_name, &payload, &a11y)
     });
+
+    // The handler's returned node is the parent: a leaf widget supplies
+    // no children, a container kind (web `<form>`) supplies inputs that
+    // must be real backend descendants. Mirrors the `Portal` build path.
+    insert_children(backend, &mut n, children);
 
     if let Some(s) = style {
         attach_style(backend, &n, s);

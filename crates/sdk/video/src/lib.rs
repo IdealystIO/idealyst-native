@@ -211,6 +211,7 @@ pub fn Video(props: VideoProps) -> Bound<VideoHandle> {
         type_id: TypeId::of::<VideoProps>(),
         type_name: std::any::type_name::<VideoProps>(),
         payload: Rc::new(props) as Rc<dyn Any>,
+        children: Vec::new(),
         style: None,
         ref_fill: None,
         accessibility: runtime_core::accessibility::AccessibilityProps::default(),

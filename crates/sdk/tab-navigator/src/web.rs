@@ -92,6 +92,7 @@ impl NavigatorHandler<WebBackend> for WebTabHandler {
             active_changed,
             control,
             build_node: _,
+            build_node_into: _,
             build_in_screen: _,
         } = host;
 

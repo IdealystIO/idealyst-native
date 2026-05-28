@@ -228,6 +228,7 @@ pub fn WebView(props: WebViewProps) -> Bound<WebViewHandle> {
         type_id: TypeId::of::<WebViewProps>(),
         type_name: std::any::type_name::<WebViewProps>(),
         payload: Rc::new(props) as Rc<dyn Any>,
+        children: Vec::new(),
         style: None,
         ref_fill: None,
         accessibility: runtime_core::accessibility::AccessibilityProps::default(),

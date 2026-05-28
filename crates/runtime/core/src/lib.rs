@@ -16,6 +16,7 @@ mod element;
 mod reactive;
 mod reactive_value;
 mod safe_area;
+pub mod page_meta;
 mod viewport;
 pub mod scheduling;
 pub mod session;
@@ -79,6 +80,7 @@ pub use assets::{
     TypefaceId,
 };
 pub use backend::{open_url, platform, Backend, ColorScheme, Platform, VirtualizerCallbacks};
+pub use page_meta::{set_page_metadata, take_page_metadata, PageMetadata};
 pub use batch::{BackendBatch, BatchOp};
 pub use handles::{
     ButtonHandle, ButtonOps, PressableHandle, PressableOps, RefFill, RefOps, StateBits, TextHandle,

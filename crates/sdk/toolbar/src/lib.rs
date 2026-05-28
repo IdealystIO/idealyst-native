@@ -263,6 +263,7 @@ pub fn Toolbar(props: ToolbarProps) -> Bound<ToolbarHandle> {
         type_id: TypeId::of::<ToolbarProps>(),
         type_name: std::any::type_name::<ToolbarProps>(),
         payload: Rc::new(props) as Rc<dyn Any>,
+        children: Vec::new(),
         style: None,
         ref_fill: None,
         accessibility: runtime_core::accessibility::AccessibilityProps::default(),

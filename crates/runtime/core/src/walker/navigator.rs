@@ -126,6 +126,10 @@ pub(super) fn build<B: Backend + 'static>(
         })
     };
 
+    // Retained clone for the SSR initial-path consult below — the
+    // original `match_path` is moved into the host.
+    let match_path_for_ssr = match_path.clone();
+
     // Reactive nav-state mirror.
     let nav_state = NavState {
         active_route: Signal::new(initial),
@@ -182,6 +186,20 @@ pub(super) fn build<B: Backend + 'static>(
         })
     };
 
+    // `build_node` + insert-into-parent, deferred-safe. A handler can
+    // hand this to a microtask (which has no backend reference) so it
+    // can attach chrome built post-borrow into an existing slot —
+    // without reaching into a backend's node internals. Same
+    // must-run-outside-the-outer-borrow rule as `build_node`.
+    let build_node_into: Rc<dyn Fn(B::Node, Element)> = {
+        let backend = backend.clone();
+        let build_node = build_node.clone();
+        Rc::new(move |mut parent, prim| {
+            let node = build_node(prim);
+            backend.borrow_mut().insert(&mut parent, node);
+        })
+    };
+
     let build_in_screen: Rc<dyn Fn(u64, Element) -> B::Node> = {
         let backend = backend.clone();
         let scopes_map = scopes.clone();
@@ -218,6 +236,7 @@ pub(super) fn build<B: Backend + 'static>(
         active_changed,
         control: control.clone(),
         build_node,
+        build_node_into,
         build_in_screen,
     };
 
@@ -228,7 +247,22 @@ pub(super) fn build<B: Backend + 'static>(
     });
 
     if !defer_initial_mount {
-        let initial_result = mount_screen(initial, Box::new(()), None);
+        // Headless render-at-path (SSR): if a server-requested path was
+        // set and resolves to a registered route, mount THAT screen with
+        // its parsed params instead of the hardcoded `initial`, and sync
+        // nav-state so chrome reads the right route. Backend-agnostic —
+        // live backends never set this (they read the path from their
+        // own platform in the SDK handler layer).
+        let (route, params) = primitives::navigator::take_initial_path()
+            .and_then(|path| {
+                match_path_for_ssr(&path).map(|(name, params)| {
+                    nav_state.active_route.set(name);
+                    nav_state.active_path.set(path);
+                    (name, params)
+                })
+            })
+            .unwrap_or((initial, Box::new(())));
+        let initial_result = mount_screen(route, params, None);
         backend.borrow_mut().navigator_attach_initial(
             &node,
             initial_result.node,

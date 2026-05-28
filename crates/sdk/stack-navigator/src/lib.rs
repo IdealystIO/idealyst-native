@@ -429,6 +429,12 @@ mod web;
 #[cfg(target_arch = "wasm32")]
 pub use web::register;
 
+// Backend-neutral "primitive chrome" handler (generic over `Backend`).
+// No platform cfg and no backend dependency — it builds chrome from
+// primitives, so it compiles everywhere and is registered only where
+// wanted (the SSR backend today) via `stack_navigator::chrome::register`.
+pub mod chrome;
+
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 mod android;
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]

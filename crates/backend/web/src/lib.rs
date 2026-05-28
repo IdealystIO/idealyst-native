@@ -2453,6 +2453,14 @@ impl Backend for WebBackend {
     }
 
     fn finish(&mut self, root: Self::Node) {
+        // Replace any prior contents of the mount point before attaching
+        // the live tree. On a normal boot `#app` is empty and this is a
+        // no-op; with SSR it holds the server-rendered first-paint markup,
+        // which the booting bundle owns and replaces (the v1 "hydrate by
+        // replacing the generated DOM" path).
+        while let Some(child) = self.mount.first_child() {
+            let _ = self.mount.remove_child(&child);
+        }
         self.mount
             .append_child(&root)
             .expect("mount append failed");

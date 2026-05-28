@@ -201,6 +201,11 @@ where
         build(&backend, 0, tree)
     });
     backend.borrow_mut().finish(root);
+    // Forward any page metadata an author screen declared during the
+    // build to the backend (SSR emits <head>; most backends no-op).
+    if let Some(meta) = crate::page_meta::take_page_metadata() {
+        backend.borrow_mut().set_page_metadata(&meta);
+    }
     Owner { scope }
 }
 
@@ -366,11 +371,11 @@ pub(super) fn build_inner<B: Backend + 'static>(
             type_id,
             type_name,
             payload,
+            children,
             style,
             ref_fill,
             accessibility,
-            ..
-        } => external::build(backend, type_id, type_name, payload, style, ref_fill, accessibility),
+        } => external::build(backend, type_id, type_name, payload, children, style, ref_fill, accessibility),
         Element::Navigator {
             type_id,
             type_name,

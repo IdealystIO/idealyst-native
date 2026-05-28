@@ -160,6 +160,38 @@ impl<'a> Splitter<'a> {
         // Perform some analysis of the module before we start messing with it
         let unused_symbols = self.unused_main_symbols();
 
+        // Diagnostic (opt-in): report how much of main's data section is
+        // chunk-only — i.e. data that some split module also carries and
+        // re-initialises, so it's the theoretical ceiling for a future
+        // "carve main's .rodata" size fix. Gated so it's silent normally.
+        if std::env::var("IDEALYST_WASM_SPLIT_STATS").is_ok() {
+            let mut chunk_only_data_bytes = 0usize;
+            let mut chunk_only_data_syms = 0usize;
+            let mut chunk_only_funcs = 0usize;
+            for sym in &unused_symbols {
+                match sym {
+                    Node::DataSymbol(id) => {
+                        if let Some(ds) = self.data_symbols.get(id) {
+                            chunk_only_data_bytes += ds.symbol_size;
+                            chunk_only_data_syms += 1;
+                        }
+                    }
+                    Node::Function(_) => chunk_only_funcs += 1,
+                }
+            }
+            let total_data: usize = self.data_symbols.values().map(|d| d.symbol_size).sum();
+            eprintln!(
+                "[wasm-split stats] chunk-only (removable-from-main ceiling): \
+                 {chunk_only_data_bytes} data bytes across {chunk_only_data_syms} symbols \
+                 ({} of {total_data} total data-symbol bytes); {chunk_only_funcs} chunk-only funcs",
+                if total_data > 0 {
+                    format!("{:.1}%", 100.0 * chunk_only_data_bytes as f64 / total_data as f64)
+                } else {
+                    "0%".to_string()
+                },
+            );
+        }
+
         // Use the original module that contains all the right ids
         let mut out = std::mem::take(&mut self.source_module);
 
@@ -443,6 +475,10 @@ impl<'a> Splitter<'a> {
         // exports added below stay unique (see the dedup note there).
         let mut used_export_names: HashSet<String> =
             out.exports.iter().map(|e| e.name.clone()).collect();
+        // Monotonic counter for the synthetic short names given to the
+        // DCE-root exports below. See the note there for why these don't
+        // need to carry the function's real (mangled) name.
+        let mut shared_export_idx: usize = 0;
         for func in self.shared_symbols.iter() {
             if let Node::Function(id) = func {
                 ifuncs.push(*id);
@@ -464,8 +500,7 @@ impl<'a> Splitter<'a> {
                 //
                 // Exporting makes the function externally
                 // observable, which binaryen's DCE treats as a
-                // root. Export names are tiny relative to function
-                // bodies, so the size cost is negligible.
+                // root.
                 //
                 // Symptom this fixes: a chunk's call into main
                 // (e.g. a stdlib generic like `Zip::new` shared
@@ -473,29 +508,23 @@ impl<'a> Splitter<'a> {
                 // `RuntimeError: unreachable` because main's body
                 // was stripped to a single `unreachable`
                 // instruction by wasm-opt.
-                let func_obj = out.funcs.get(*id);
-                let base_name = func_obj
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("__wasm_split_shared_{}", id.index()));
                 if out.exports.get_exported_func(*id).is_none() {
-                    // Wasm requires export names be unique within a
-                    // module. Release builds (opt-level=z) let LLVM emit
-                    // several DISTINCT functions that share one mangled
-                    // name (e.g. three copies of `alloc::fmt::format`).
-                    // The by-id guard above lets each distinct id
-                    // through, so without a name check every clash would
-                    // add a second export under the same name and the
-                    // module would fail `WebAssembly.instantiateStreaming`
-                    // with "Duplicate export name ...". These exports are
-                    // only DCE roots (chunks reach the function through
-                    // the shared call_indirect table, not by name), so on
-                    // a clash we uniquify with the function index.
-                    let mut export_name = base_name;
-                    if !used_export_names.insert(export_name.clone()) {
-                        export_name = format!("{export_name}__dup_{}", id.index());
-                        used_export_names.insert(export_name.clone());
-                    }
+                    // These exports are ONLY DCE roots — chunks reach the
+                    // function through the shared call_indirect table, not
+                    // by name, and wasm-opt keeps an exported function
+                    // regardless of its export name. So we emit a short
+                    // synthetic name (`s{n}`) rather than the function's
+                    // full mangled symbol.
+                    //
+                    // This matters at scale: idealyst-sized bundles produce
+                    // ~2800 such exports, and mangled names made main's
+                    // Export section ~300 KB (e.g. a 1 KB `lol_alloc` fn
+                    // carried a ~150-byte export name). Short names cut that
+                    // to a few KB. Functions that ALREADY have a real export
+                    // are skipped by the guard above, so wasm-bindgen's JS
+                    // shim still resolves them by their original name.
+                    let export_name =
+                        next_synthetic_export_name(&mut shared_export_idx, &mut used_export_names);
                     out.exports.add(&export_name, *id);
                 }
             }
@@ -1242,6 +1271,27 @@ impl<'a> Splitter<'a> {
     }
 }
 
+/// Pick the next unused short synthetic export name (`s0`, `s1`, …) for a
+/// shared-function DCE-root export, advancing `next_idx` past any name
+/// already in `used` and recording the choice in `used`.
+///
+/// These exports exist only to keep main's copy of a function alive for
+/// wasm-opt (chunks call it through the shared call_indirect table, not by
+/// name), so the name is arbitrary — short names keep main's Export section
+/// from ballooning. Wasm requires export names be unique within a module;
+/// `s{n}` could collide with a pre-existing export (or, under opt-level=z,
+/// LLVM emits distinct functions sharing one mangled name), so we bump until
+/// free.
+fn next_synthetic_export_name(next_idx: &mut usize, used: &mut HashSet<String>) -> String {
+    loop {
+        let name = format!("s{}", *next_idx);
+        *next_idx += 1;
+        if used.insert(name.clone()) {
+            return name;
+        }
+    }
+}
+
 /// Parse a module and return the mapping of index to FunctionID.
 /// We'll use this mapping to remap ModuleIDs
 fn parse_module_with_ids(
@@ -1635,4 +1685,63 @@ fn parse_bytes_to_data_segment(bytes: &[u8]) -> Result<RawDataSection<'_>> {
         symbols,
         data_symbols,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression: the shared-function DCE-root exports must use short
+    // synthetic `s{n}` names, NOT the function's full mangled symbol.
+    // Mangled names ballooned main's Export section to ~300 KB on the
+    // website (~2800 exports). The names are arbitrary (chunks reach
+    // these funcs via the shared call_indirect table, not by name), so
+    // the only requirements are: short, and unique within the module
+    // (must not collide with a pre-existing real export, and distinct
+    // funcs sharing one mangled name must still each get a unique name).
+    #[test]
+    fn synthetic_export_names_are_short_and_dodge_collisions() {
+        // Pre-existing real exports the wasm-bindgen shim depends on,
+        // plus an adversarial "s1" that our scheme would otherwise reuse.
+        let mut used: HashSet<String> = ["main", "memory", "__wbindgen_malloc", "s1"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mut idx = 0usize;
+
+        let a = next_synthetic_export_name(&mut idx, &mut used);
+        let b = next_synthetic_export_name(&mut idx, &mut used);
+        let c = next_synthetic_export_name(&mut idx, &mut used);
+
+        // Sequential, but skips the pre-existing "s1".
+        assert_eq!(a, "s0");
+        assert_eq!(b, "s2");
+        assert_eq!(c, "s3");
+
+        // All names are short (the whole point of the change).
+        for n in [&a, &b, &c] {
+            assert!(n.len() <= 4, "synthetic export name {n:?} is not short");
+        }
+
+        // Pre-existing real exports are left intact for the JS shim.
+        for real in ["main", "memory", "__wbindgen_malloc"] {
+            assert!(used.contains(real), "clobbered real export {real:?}");
+        }
+    }
+
+    // A clash-heavy run (every synthetic slot pre-taken up to a point)
+    // must still terminate with a unique name and never reuse one.
+    #[test]
+    fn synthetic_export_names_never_duplicate() {
+        let mut used: HashSet<String> = (0..50).map(|i| format!("s{i}")).collect::<HashSet<_>>();
+        let mut idx = 0usize;
+        let mut produced = Vec::new();
+        for _ in 0..10 {
+            let n = next_synthetic_export_name(&mut idx, &mut used);
+            assert!(!produced.contains(&n), "duplicate synthetic export {n:?}");
+            produced.push(n);
+        }
+        // First free slot after s0..s49 is s50.
+        assert_eq!(produced[0], "s50");
+    }
 }

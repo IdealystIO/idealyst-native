@@ -52,7 +52,7 @@ fn hero() -> Element {
         ui! { Text(style = headline_style) { "One codebase, native everywhere." } },
         ui! {
             Text(style = subhead_style) {
-                "Idealyst is a reactive UI framework that runs as native code on every \
+                "Idealyst is a reactive UI framework that runs natively on every \
                  target. The platform implementations are extensible by design: use the \
                  ones we ship, or write your own to target anything else."
             }

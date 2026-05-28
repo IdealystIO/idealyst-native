@@ -8,6 +8,9 @@ members = [
     "crates/runtime/reactive/refs",
     "crates/runtime/layout",
 
+    # Shared StyleRules → CSS conversion (used by web + ssr backends).
+    "crates/css",
+
     # Native backends — implement Backend on top of a platform's UI toolkit.
     "crates/backend/apple/core",
     "crates/backend/macos",
@@ -24,6 +27,7 @@ members = [
     "crates/backend/terminal",
     "crates/backend/cpu",
     "crates/backend/web",
+    "crates/backend/ssr",
     "crates/backend/windows",
     "crates/backend/linux",
     "crates/backend/posix-log-capture",
@@ -73,6 +77,7 @@ members = [
     "crates/sdk/video",
     "crates/sdk/svg",
     "crates/sdk/toolbar",
+    "crates/sdk/form",
     "crates/sdk/menu",
 
     # SDK — utility (non-primitive) crates.
@@ -159,6 +164,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 runtime-core = { path = "crates/runtime/core" }
+css = { path = "crates/css" }
 dev-hot = { path = "crates/dev/hot" }
 runtime-macros = { path = "crates/runtime/macros" }
 mcp-catalog = { path = "crates/mcp/catalog" }
@@ -200,6 +206,7 @@ backend-roku-transpile = { path = "crates/backend/roku/transpile" }
 backend-terminal = { path = "crates/backend/terminal" }
 backend-cpu = { path = "crates/backend/cpu" }
 backend-web = { path = "crates/backend/web" }
+backend-ssr = { path = "crates/backend/ssr" }
 backend-windows = { path = "crates/backend/windows" }
 backend-linux = { path = "crates/backend/linux" }
 welcome = { path = "examples/welcome" }
@@ -230,6 +237,7 @@ webview = { path = "crates/sdk/webview" }
 video = { path = "crates/sdk/video" }
 svg = { path = "crates/sdk/svg" }
 toolbar = { path = "crates/sdk/toolbar" }
+form = { path = "crates/sdk/form" }
 menu = { path = "crates/sdk/menu" }
 net = { path = "crates/sdk/net" }
 server = { path = "crates/sdk/server" }

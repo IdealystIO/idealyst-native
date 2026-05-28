@@ -177,6 +177,7 @@ pub fn external<T: 'static>(props: T) -> Bound<ExternalHandle<T>> {
         type_id: TypeId::of::<T>(),
         type_name: std::any::type_name::<T>(),
         payload: Rc::new(props) as Rc<dyn Any>,
+        children: Vec::new(),
         style: None,
         ref_fill: None,
         accessibility: crate::accessibility::AccessibilityProps::default(),
@@ -191,6 +192,19 @@ impl<T: 'static> Bound<ExternalHandle<T>> {
             *ref_fill = Some(RefFill::External(Box::new(move |node_any| {
                 r.fill(ExternalHandle::<T>::new(node_any));
             })));
+        }
+        self
+    }
+
+    /// Supply framework children to be parented into the backend node
+    /// this external's handler returns. Leaf widgets (maps, webview)
+    /// never call this; container kinds (a web `<form>`) pass the
+    /// inputs/buttons that must be real descendants of the returned
+    /// node. The handler's returned node is the parent — see
+    /// [`crate::walker`]'s external build path.
+    pub fn children(mut self, children: Vec<Element>) -> Self {
+        if let Element::External { children: slot, .. } = self.primitive_mut() {
+            *slot = children;
         }
         self
     }

@@ -15,7 +15,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use build_ios::{parse_manifest, Target};
+use build_ios::{Target, parse_manifest};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -80,6 +80,17 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub out_dir: Option<PathBuf>,
 
+    /// Web + release only: strip panic machinery from the wasm bundle
+    /// via `-Z build-std-features=panic_immediate_abort`. Every panic
+    /// (incl. `unwrap`/`expect`) becomes a bare `unreachable` trap with
+    /// NO message — only enable this for production builds where you've
+    /// accepted losing crash diagnostics. REQUIRES a nightly toolchain
+    /// with the `rust-src` component (`rustup component add rust-src
+    /// --toolchain nightly`) and recompiles std from source, so the
+    /// first build is slow. Implies `--release`. Modest size win
+    /// (~30 KB gzip on a large app); has no effect on non-web targets.
+    #[arg(long)]
+    pub strip_panics: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -110,7 +121,11 @@ pub fn run(args: Args) -> Result<()> {
             .map(|t| t.as_str())
             .collect::<Vec<_>>()
             .join(", "),
-        if args.runtime_server { " (+ aas host)" } else { "" },
+        if args.runtime_server {
+            " (+ aas host)"
+        } else {
+            ""
+        },
     );
 
     for target in &targets {
@@ -210,11 +225,15 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
     let artifact = build_web::build(
         dir,
         build_web::BuildOptions {
-            release: args.release,
+            // `--strip-panics` is a release-only transform, so it implies
+            // `--release` (panic_immediate_abort in a debug build would
+            // just slow the build for no benefit).
+            release: args.release || args.strip_panics,
             source: source.clone(),
             user_features: Vec::new(),
             bundle_out_dir: bundle_out_dir.clone(),
             gzip: args.gzip,
+            strip_panics: args.strip_panics,
         },
     )?;
     let bundle = artifact
@@ -319,10 +338,7 @@ fn build_macos_target(dir: &std::path::Path, args: &Args) -> Result<()> {
             user_features: Vec::new(),
         },
     )?;
-    eprintln!(
-        "[build macos] success → {}",
-        artifact.binary.display(),
-    );
+    eprintln!("[build macos] success → {}", artifact.binary.display(),);
     Ok(())
 }
 

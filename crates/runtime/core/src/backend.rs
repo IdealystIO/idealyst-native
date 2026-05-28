@@ -2048,6 +2048,20 @@ pub trait Backend {
         primitives::link::LinkHandle::new(Rc::new(()), &NoopLinkOps)
     }
 
+    /// Declare page-level metadata (document title, description, Open
+    /// Graph) for the screen just built. Called by [`mount`](crate::mount)
+    /// after the build, draining what author code set via
+    /// [`set_page_metadata`](crate::set_page_metadata).
+    ///
+    /// SSR emits `<head>` tags; the web backend sets `document.title` +
+    /// meta on the client; platforms with no document concept no-op
+    /// (default). `title` maps to the nav-bar title and the SEO fields to
+    /// `NSUserActivity` / App Indexing where that representation is added.
+    #[allow(unused_variables)]
+    fn set_page_metadata(&mut self, meta: &crate::PageMetadata) {
+        // default: no-op
+    }
+
     fn finish(&mut self, root: Self::Node);
 
     /// Drive a fresh layout pass over the backend's registered view

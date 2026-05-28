@@ -1,0 +1,59 @@
+[package]
+name = "form"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Third-party `Form` SDK — one crate, cfg-gated per-backend impl
+# modules (same single-crate shape as the `webview` SDK).
+#
+# # Why this is an SDK and not a core primitive
+#
+# A form has no convergent cross-platform behavior to put behind the
+# Backend trait: on web `<form>` is a real element (submit-on-enter,
+# autofill grouping, FormData), while iOS/Android have NO form
+# construct at all — their form affordances (autofill, return-key
+# submit) live per-field on the inputs, not on a container. A core
+# primitive that's inert on every backend except web would be a
+# web-only capability wearing a primitive's clothes. So `Form` is an
+# opinionated SDK built on `Element::External` (with children):
+#   * web    → a real `<form>` wrapping the inputs as DOM descendants,
+#              with the native `submit` event wired to `on_submit`
+#              after `preventDefault()`.
+#   * native → a plain passthrough container; submission is triggered
+#              by the author's submit Button calling `on_submit`.
+#
+# Field VALUES are collected via the framework's reactive signals, not
+# the web form's FormData — `on_submit` reads your field signals. The
+# `<form>` element only contributes web UX/integration (Enter-to-submit,
+# autofill, preventDefault), never the source of truth for data.
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Element",
+    "Node",
+    "Window",
+    "Event",
+    "EventTarget",
+    "HtmlFormElement",
+] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+
+[target.'cfg(target_os = "android")'.dependencies]
+backend-android-mobile = { workspace = true }
+backend-android-core = { workspace = true }
+jni = "0.21"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+backend-ios-mobile = { workspace = true }
+objc2 = "0.5"
+objc2-ui-kit = { version = "0.2", features = [
+    "UIView",
+    "UIResponder",
+] }

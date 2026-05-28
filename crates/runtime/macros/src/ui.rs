@@ -46,7 +46,7 @@
 //! pass through verbatim — we don't apply generalized `.into()` because
 //! of Rust inference fragility on non-literal types.
 
-use proc_macro2::{Span, TokenStream as TokenStream2};
+use proc_macro2::{Span, Spacing, TokenStream as TokenStream2, TokenTree};
 use quote::{quote, ToTokens};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
@@ -471,6 +471,121 @@ pub fn emit(ui: Ui) -> TokenStream2 {
         }
     };
     quote! { ::runtime_core::IntoElement::into_element(#body) }
+}
+
+/// Emit a *recovery* expansion for a `ui!`/`jsx!` body that failed to
+/// parse. Two jobs:
+///
+/// 1. Re-emit the real `compile_error!` (with the parser's span) so the
+///    build still fails with the correct diagnostic at the correct place.
+/// 2. Re-surface every complete sub-expression from the raw input in a
+///    dead-but-type-checked position, so rust-analyzer keeps full type
+///    info (completion, hover, go-to-def) for the parts of the block that
+///    *are* well-formed — i.e. everything except the token you're mid-way
+///    through typing. Without this, a single in-progress expression turns
+///    the entire `ui! { … }` into an opaque `compile_error!` and the IDE
+///    goes dark for the whole block.
+///
+/// The salvaged expressions live inside a never-called closure: they're
+/// borrow-checked but never executed, and `&(expr)` avoids moving out of
+/// the user's bindings. The whole thing still evaluates to an `Element`
+/// so the surrounding code type-checks as far as it can.
+///
+/// Everything emitted here is guaranteed-valid Rust syntax: `salvage`
+/// only keeps token runs that successfully parse as a `syn::Expr`. If it
+/// emitted unparseable tokens, rust-analyzer's own expansion of `ui!`
+/// would fail and we'd be worse off than the `compile_error!` baseline.
+pub(crate) fn emit_recovery(input: TokenStream2, err: &syn::Error) -> TokenStream2 {
+    let diag = err.to_compile_error();
+    let salvaged = salvage_exprs(input);
+    quote! {
+        ::runtime_core::IntoElement::into_element({
+            #diag
+            #[allow(unused, unreachable_code, clippy::all)]
+            let __ui_recover = || {
+                #( let _ = &(#salvaged); )*
+            };
+            ::runtime_core::view(::std::vec::Vec::new())
+        })
+    }
+}
+
+/// Walk a raw token stream and collect every complete prop-value /
+/// argument expression we can find, preserving spans. Used only by
+/// [`emit_recovery`].
+///
+/// Strategy: within each token group, split on top-level commas. A
+/// segment shaped `ident = <tokens>` (a prop assignment — the lone `=`
+/// is `Spacing::Alone`, which rules out `==`/`=>`/`<=`) yields its RHS as
+/// a candidate expression. We also recurse into every nested group so
+/// children blocks and call arguments get salvaged too. We deliberately
+/// do NOT try to parse whole segments as expressions: `Card { … }` is a
+/// syntactically valid struct literal but semantically bogus (Card isn't
+/// a struct), and emitting it would inject spurious type errors that
+/// drown out the real completions.
+fn salvage_exprs(stream: TokenStream2) -> Vec<TokenStream2> {
+    let mut out = Vec::new();
+    salvage_from_stream(stream, &mut out);
+    out
+}
+
+fn salvage_from_stream(stream: TokenStream2, out: &mut Vec<TokenStream2>) {
+    let mut segment: Vec<TokenTree> = Vec::new();
+    let mut segments: Vec<Vec<TokenTree>> = Vec::new();
+    for tt in stream {
+        match &tt {
+            TokenTree::Punct(p) if p.as_char() == ',' && p.spacing() == Spacing::Alone => {
+                segments.push(std::mem::take(&mut segment));
+            }
+            _ => segment.push(tt),
+        }
+    }
+    if !segment.is_empty() {
+        segments.push(segment);
+    }
+
+    for seg in segments {
+        // Recurse into nested groups regardless — children blocks, call
+        // args, and reactive bodies all live one delimiter deeper.
+        for tt in &seg {
+            if let TokenTree::Group(g) = tt {
+                salvage_from_stream(g.stream(), out);
+            }
+        }
+        // A prop assignment: `ident = <rhs>`. Salvage the RHS.
+        if let Some(rhs) = prop_value_tokens(&seg) {
+            if let Some(expr_ts) = parse_expr_prefix(rhs) {
+                out.push(expr_ts);
+            }
+        }
+    }
+}
+
+/// If `seg` begins with `ident =` (a lone `=`, not `==`/`=>`/…), return
+/// the right-hand-side tokens. Otherwise `None`.
+fn prop_value_tokens(seg: &[TokenTree]) -> Option<Vec<TokenTree>> {
+    match (seg.first(), seg.get(1)) {
+        (Some(TokenTree::Ident(_)), Some(TokenTree::Punct(p)))
+            if p.as_char() == '=' && p.spacing() == Spacing::Alone =>
+        {
+            Some(seg[2..].to_vec())
+        }
+        _ => None,
+    }
+}
+
+/// Parse the longest prefix of `toks` that forms a valid `syn::Expr`,
+/// returning it re-tokenized (spans preserved). Trimming the tail lets us
+/// recover `foo` from a half-typed `foo.` and `foo.bar` from `foo.bar(`.
+fn parse_expr_prefix(mut toks: Vec<TokenTree>) -> Option<TokenStream2> {
+    while !toks.is_empty() {
+        let ts: TokenStream2 = toks.iter().cloned().collect();
+        if let Ok(expr) = syn::parse2::<Expr>(ts) {
+            return Some(expr.to_token_stream());
+        }
+        toks.pop();
+    }
+    None
 }
 
 fn emit_node(node: &UiNode, ctx: Ctx) -> TokenStream2 {
@@ -2622,5 +2737,70 @@ mod tests {
         // ensures they flatten into Vec<Element>.
         let count = out.matches("Counter !").count();
         assert_eq!(count, 2);
+    }
+
+    // ---- error-recovery expansion ----
+
+    /// `Ui` has no `Debug`, so `unwrap_err` won't compile. This grabs the
+    /// parse error (panicking if the body unexpectedly parses).
+    fn parse_err(input: TokenStream2) -> syn::Error {
+        match syn::parse2::<Ui>(input) {
+            Ok(_) => panic!("expected the body to fail to parse"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn recovery_keeps_diagnostic_and_salvages_complete_props() {
+        // `label = broken .` is a half-typed expression, so the whole
+        // body fails to parse. Recovery must (a) keep the real
+        // compile_error, and (b) re-surface the *complete* prop values so
+        // rust-analyzer keeps type info for everything but the token being
+        // typed.
+        let input = quote! { Button(tone = good_tone, label = broken .) };
+        let err = parse_err(input.clone());
+        let ts = emit_recovery(input, &err);
+        let s = ts.to_string();
+        assert!(s.contains("compile_error"), "must keep the real diagnostic: {s}");
+        assert!(s.contains("good_tone"), "should salvage the complete prop value: {s}");
+        // Prefix recovery pulls `broken` out of the half-typed `broken .`.
+        assert!(s.contains("broken"), "should salvage the parseable prefix: {s}");
+    }
+
+    #[test]
+    fn recovery_output_is_valid_rust_expression() {
+        // The recovery expansion must itself parse as an expression — if it
+        // didn't, rust-analyzer couldn't expand `ui!` at all and we'd lose
+        // more than the bare-`compile_error!` baseline.
+        let input = quote! { Button(tone = good_tone, label = broken .) };
+        let err = parse_err(input.clone());
+        let ts = emit_recovery(input, &err);
+        syn::parse2::<Expr>(ts).expect("recovery output must be a valid expression");
+    }
+
+    #[test]
+    fn recovery_with_nothing_salvageable_is_still_valid() {
+        // A broken child with no salvageable prop value: recovery still
+        // produces a valid, compile_error-bearing expression (empty salvage
+        // closure), never unparseable tokens.
+        let input = quote! { Text { foo. } };
+        let err = parse_err(input.clone());
+        let ts = emit_recovery(input, &err);
+        assert!(ts.to_string().contains("compile_error"));
+        syn::parse2::<Expr>(ts).expect("recovery output must be a valid expression");
+    }
+
+    #[test]
+    fn recovery_salvages_across_nested_groups() {
+        // The complete sibling prop deep inside a children block must be
+        // salvaged even when a sibling is mid-typed.
+        let input = quote! {
+            Card(title = "t") {
+                Counter(value = signal.get(), label = oops .)
+            }
+        };
+        let err = parse_err(input.clone());
+        let s = emit_recovery(input, &err).to_string();
+        assert!(s.contains("signal . get ()"), "nested complete prop should be salvaged: {s}");
     }
 }

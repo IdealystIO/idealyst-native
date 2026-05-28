@@ -589,6 +589,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-ssr"
+version = "0.0.1"
+dependencies = [
+ "css",
+ "runtime-core",
+]
+
+[[package]]
 name = "backend-terminal"
 version = "0.0.1"
 dependencies = [
@@ -600,6 +608,7 @@ dependencies = [
 name = "backend-web"
 version = "0.0.1"
 dependencies = [
+ "css",
  "dev-client",
  "js-sys",
  "raw-window-handle",
@@ -1244,6 +1253,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "css"
+version = "0.0.1"
+dependencies = [
+ "runtime-core",
+]
+
+[[package]]
 name = "ctor"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1504,6 +1520,7 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-macos",
+ "backend-ssr",
  "backend-terminal",
  "backend-web",
  "ios-navigator-helpers",
@@ -1789,6 +1806,23 @@ name = "foreign-types-shared"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
+
+[[package]]
+name = "form"
+version = "0.0.1"
+dependencies = [
+ "backend-android-core",
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-web",
+ "jni 0.21.1",
+ "js-sys",
+ "objc2 0.5.2",
+ "objc2-ui-kit",
+ "runtime-core",
+ "wasm-bindgen",
+ "web-sys",
+]
 
 [[package]]
 name = "form_urlencoded"
@@ -5515,6 +5549,7 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-macos",
+ "backend-ssr",
  "backend-terminal",
  "backend-web",
  "ios-navigator-helpers",

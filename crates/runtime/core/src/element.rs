@@ -566,6 +566,15 @@ pub enum Element {
         type_id: std::any::TypeId,
         type_name: &'static str,
         payload: Rc<dyn Any>,
+        /// Framework children parented INTO the backend node the
+        /// external handler returns (same lifecycle as `Portal`'s
+        /// children). The framework does not assume an external is a
+        /// leaf: a map widget supplies none, a web `<form>` wrapper
+        /// supplies the inputs/buttons that must be real DOM
+        /// descendants for autofill + submit-on-enter to work. The
+        /// SDK's `create_external` handler decides whether children
+        /// make sense for its kind.
+        children: Vec<Element>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,

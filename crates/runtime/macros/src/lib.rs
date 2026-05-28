@@ -89,8 +89,18 @@ pub fn idealyst_tool(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// See the [`ui`] module for the grammar.
 #[proc_macro]
 pub fn ui(input: TokenStream) -> TokenStream {
-    let parsed = parse_macro_input!(input as ui::Ui);
-    ui::emit(parsed).into()
+    // Parse-or-recover rather than `parse_macro_input!`. The latter
+    // replaces the whole invocation with a bare `compile_error!` on any
+    // parse failure — which is *most* keystrokes mid-edit — leaving
+    // rust-analyzer with no typed tokens inside the block, so completion
+    // / hover / go-to-def die for the entire `ui! { … }`. `emit_recovery`
+    // keeps the diagnostic but also re-surfaces every complete sub-expr
+    // in a dead-but-typed position so the IDE stays useful while typing.
+    let input: proc_macro2::TokenStream = input.into();
+    match syn::parse2::<ui::Ui>(input.clone()) {
+        Ok(parsed) => ui::emit(parsed).into(),
+        Err(err) => ui::emit_recovery(input, &err).into(),
+    }
 }
 
 /// `lazy! { … }` — inline code-splitting boundary. The block's UI
@@ -110,8 +120,14 @@ pub fn lazy(input: TokenStream) -> TokenStream {
 /// `<Foo />`. See the [`jsx`] module for the full grammar.
 #[proc_macro]
 pub fn jsx(input: TokenStream) -> TokenStream {
-    let parsed = parse_macro_input!(input as jsx::Jsx);
-    jsx::emit(parsed).into()
+    // See `ui` above for why this is parse-or-recover, not
+    // `parse_macro_input!`. The recovery emitter is grammar-agnostic
+    // (it walks raw tokens), so `jsx!` reuses `ui::emit_recovery`.
+    let input: proc_macro2::TokenStream = input.into();
+    match syn::parse2::<jsx::Jsx>(input.clone()) {
+        Ok(parsed) => jsx::emit(parsed).into(),
+        Err(err) => ui::emit_recovery(input, &err).into(),
+    }
 }
 
 /// `stylesheet! { ... }` — declaration macro for a typed stylesheet

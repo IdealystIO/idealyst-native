@@ -239,6 +239,9 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
             // `idealyst build --web --gzip` / `--out-dir`.
             bundle_out_dir: None,
             gzip: false,
+            // Dev keeps panic messages — stripping them is a
+            // production-only `idealyst build --web --strip-panics` thing.
+            strip_panics: false,
         },
     )
     .map(|_| ())

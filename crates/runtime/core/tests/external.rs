@@ -153,6 +153,71 @@ mod tests {
         );
     }
 
+    /// Children passed to an `Element::External` are parented INTO the
+    /// node the external handler returns — same lifecycle as `Portal`.
+    /// Before this was wired, External was a leaf: it produced zero
+    /// Insert events regardless of children. The web `<form>` SDK
+    /// depends on its inputs becoming real DOM descendants of the
+    /// returned `<form>` node (autofill / submit-on-enter need it).
+    #[test]
+    fn external_parents_children_into_handler_node() {
+        use crate::common::NodeId;
+        use runtime_core::text;
+
+        let rt = TestRuntime::new();
+        // External is the root → built first → NodeId(0); the two text
+        // children mint afterwards and get inserted into it.
+        let _owner = rt.render(
+            external(MapViewProps { lat: 0.0, lon: 0.0 })
+                .children(vec![text("a").into(), text("b").into()])
+                .into(),
+        );
+
+        let events = rt.events();
+        let inserts: Vec<(NodeId, NodeId)> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Insert { parent, child } => Some((*parent, *child)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(inserts.len(), 2, "both children inserted into the external");
+        let parent = inserts[0].0;
+        assert!(
+            inserts.iter().all(|(p, _)| *p == parent),
+            "all children share one parent (the external's node)"
+        );
+        assert!(
+            inserts.iter().all(|(p, c)| p != c),
+            "the shared parent is the external, not one of the children"
+        );
+
+        let external_creates = events
+            .iter()
+            .filter(|e| matches!(e, Event::CreateExternal { .. }))
+            .count();
+        let text_creates = events
+            .iter()
+            .filter(|e| matches!(e, Event::CreateText { .. }))
+            .count();
+        assert_eq!(external_creates, 1, "exactly one external node created");
+        assert_eq!(text_creates, 2, "exactly two text children created");
+    }
+
+    /// A childless external (the maps/webview leaf case) produces no
+    /// Insert events — the framework doesn't assume children exist.
+    #[test]
+    fn external_without_children_inserts_nothing() {
+        let rt = TestRuntime::new();
+        let _owner = rt.render(external(MapViewProps { lat: 0.0, lon: 0.0 }).into());
+
+        let insert_count = rt
+            .backend()
+            .count_matching(|e| matches!(e, Event::Insert { .. }));
+        assert_eq!(insert_count, 0, "leaf external parents nothing");
+    }
+
     /// Owner drop fires `release_external` for each mounted external.
     #[test]
     fn owner_drop_releases_externals() {

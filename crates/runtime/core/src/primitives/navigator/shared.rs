@@ -527,6 +527,38 @@ pub fn current_screen_state<T: Any>() -> Option<Rc<T>> {
 }
 
 // ---------------------------------------------------------------------------
+// Headless initial-path override (server-side rendering).
+//
+// A backend rendering headlessly at a specific URL (the SSR backend
+// emitting "/about") sets this before `mount`. The navigator walker's
+// initial mount consults it once: if the path resolves to a registered
+// route, that screen is mounted instead of the hardcoded `initial`, and
+// the nav-state is synced so any chrome reads the right route. `take`
+// semantics mean the first (root) navigator consumes it — a nested
+// navigator won't re-apply the same path.
+//
+// Live backends (web/iOS/Android) never set this; they read the current
+// path from their own platform (window.location, deep-link intent) in
+// the SDK handler layer.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static INITIAL_PATH: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Set the path the next headlessly-mounted navigator should open to.
+/// Pass `None` to clear. See module note above.
+pub fn set_initial_path(path: Option<String>) {
+    INITIAL_PATH.with(|p| *p.borrow_mut() = path);
+}
+
+/// Consume the headless initial-path override, if any. Called by the
+/// navigator walker at initial mount.
+pub fn take_initial_path() -> Option<String> {
+    INITIAL_PATH.with(|p| p.borrow_mut().take())
+}
+
+// ---------------------------------------------------------------------------
 // NavState — reactive bundle exposed to layout / chrome
 // ---------------------------------------------------------------------------
 

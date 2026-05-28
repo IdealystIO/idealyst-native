@@ -1,0 +1,9 @@
+{
+  // This workspace has no `postgres` feature. Without this override the
+  // user-global `rust-analyzer.cargo.features: ["postgres"]` makes RA run
+  // `cargo` with `--features postgres`, which errors ("none of the selected
+  // packages contains this feature") and aborts workspace loading — so
+  // nothing resolves (no go-to-def / hover / completion) anywhere in the
+  // repo. Pinning to default features here keeps RA working for everyone.
+  "rust-analyzer.cargo.features": []
+}
