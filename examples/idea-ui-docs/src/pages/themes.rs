@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use runtime_core::{ui, Primitive, Signal};
-use idea_ui::{badge, typography, btn, card, stack, StackAxis, StackGap, ToneRef};
+use idea_ui::{Badge, Typography, Btn, Card, Stack, StackAxis, StackGap, ToneRef};
 
 use crate::shell::page_header;
 

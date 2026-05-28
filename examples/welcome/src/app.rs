@@ -5,11 +5,11 @@
 
 use runtime_core::{ui, Primitive};
 
-use crate::components::content_layer::{content_layer, ContentLayerProps};
+use crate::components::content_layer::{ContentLayer, ContentLayerProps};
 use crate::components::page::page_sheet;
-use crate::components::planet::{planet, PlanetProps};
-use crate::components::sun_glare::{sun_glare, SunGlareProps};
-use crate::components::vignette::{vignette, VignetteProps};
+use crate::components::planet::{Planet, PlanetProps};
+use crate::components::sun_glare::{SunGlare, SunGlareProps};
+use crate::components::vignette::{Vignette, VignetteProps};
 use crate::coordinator::use_welcome;
 
 pub fn app() -> Primitive {

@@ -7,7 +7,7 @@
 //! pub struct CounterProps { pub initial: i32 }
 //!
 //! #[component(default(initial = 0))]
-//! pub fn counter(props: &CounterProps) -> Primitive {
+//! pub fn Counter(props: &CounterProps) -> Primitive {
 //!     let count = signal!(props.initial);
 //!     Effect::new(move || {
 //!         todo!("port handler-body: console.log('count:', count)");
@@ -123,10 +123,12 @@ fn emit_header(out: &mut String, module: &Module) {
 fn emit_component(out: &mut String, c: &Component) {
     emit_props_struct(out, c);
     emit_component_attr(out, c);
-    let fn_name = snake_case(&c.name);
+    // Component fns are PascalCase — fn name == macro name == `jsx!`
+    // call name, matching the framework's transform-free dispatch.
+    // `#[component]` suppresses the `non_snake_case` lint.
     out.push_str(&format!(
         "pub fn {fn_name}(props: &{props_ty}) -> Primitive {{\n",
-        fn_name = fn_name,
+        fn_name = c.name,
         props_ty = props_struct_name(&c.name),
     ));
     for r in &c.body.preamble {
@@ -303,23 +305,6 @@ fn props_struct_name(component_name: &str) -> String {
     format!("{}Props", component_name)
 }
 
-/// PascalCase → snake_case. Component names in TSX are PascalCase
-/// by convention; `#[component] fn` is snake_case.
-fn snake_case(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 4);
-    for (i, ch) in s.chars().enumerate() {
-        if ch.is_ascii_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.push(ch.to_ascii_lowercase());
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
 fn escape_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
@@ -355,12 +340,6 @@ fn collapse_whitespace(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn snake_case_basic() {
-        assert_eq!(snake_case("Counter"), "counter");
-        assert_eq!(snake_case("UserCard"), "user_card");
-    }
 
     #[test]
     fn hole_emits_as_todo_expr() {

@@ -1,7 +1,7 @@
 //! Core concepts — app vs host crates, Primitive, signals, ui!, the Backend trait.
 
 use runtime_core::{ui, Primitive, Ref, ViewHandle};
-use idea_ui::{stack, typography, StackGap};
+use idea_ui::{Stack, Typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::routes::{BACKENDS_ROUTE, WHY_RUST_ROUTE};
@@ -89,7 +89,7 @@ fn primitives() -> Primitive {
         code_panel(snippet),
         ui! {
             Typography(content = "Components are functions that return a `Primitive` \
-                tree. `#[component] fn welcome(props: &Props) -> Primitive` is the \
+                tree. `#[component] fn Welcome(props: &Props) -> Primitive` is the \
                 whole contract. Composition is function composition; there's no class, \
                 no lifecycle, no special framework method to override.".to_string())
         },
@@ -247,10 +247,10 @@ fn building_your_own() -> Primitive {
                              // That's the whole contract \u{2014} no class, no lifecycle\n\
                              // method, no framework-side registration.\n\
                              #[component]\n\
-                             pub fn my_button(props: &MyButtonProps) -> Primitive {\n    \
+                             pub fn MyButton(props: &MyButtonProps) -> Primitive {\n    \
                                  let on_click = props.on_click.clone();\n    \
                                  let label = props.label.clone();\n    \
-                                 let style = MyButton().intent(props.intent);\n    \
+                                 let style = button_style().intent(props.intent);\n    \
                                  ui! {\n        \
                                      Pressable(on_click = move || (on_click)()) {\n            \
                                          Text(style = style) { label }\n        \

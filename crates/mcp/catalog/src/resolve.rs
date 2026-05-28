@@ -1,19 +1,18 @@
 //! Phase 2: runtime name-resolution + adjacency.
 //!
 //! Composes edges emitted by `#[component]` (see `EdgeRef`) carry the
-//! bare ident the author wrote at the `ui!` / `jsx!` call site. Bare
-//! idents are ambiguous in two ways:
+//! bare ident the author wrote at the `ui!` / `jsx!` call site. The
+//! framework's dispatch is transform-free: a call site `Card()` lowers
+//! to `Card!()` → `Card(...)`, so the call-site ident is *exactly* the
+//! component's fn name (and thus its catalog entry name). We match
+//! edges to entries by that exact name — no case folding. Case is
+//! significant: `Card` and `card` are distinct components, and a
+//! reference can only compile against a definition of the same name.
 //!
-//! 1. **Case convention**: `ui!` / `jsx!` lower `PascalCase` call
-//!    sites to `snake_case` to find the per-component `macro_rules!`
-//!    shim (`PrimaryButton()` → `primary_button!()`). A composes edge
-//!    `name = "PrimaryButton"` should therefore resolve to the entry
-//!    whose `name = "primary_button"`. We normalize both sides via
-//!    `pascal_to_snake` for matching — idempotent on already-snake
-//!    input, so snake_case call sites keep working too.
+//! Bare idents are still ambiguous in one way:
 //!
-//! 2. **Same short-name across modules**: two crates / submodules may
-//!    each declare `#[component] fn card`. We disambiguate by
+//! - **Same short-name across modules**: two crates / submodules may
+//!    each declare `#[component] fn Card`. We disambiguate by
 //!    source-module proximity (spec §6): same module first, then the
 //!    deepest ancestor module, then anywhere in the workspace.
 //!    Anything still ambiguous after that is surfaced as
@@ -203,19 +202,15 @@ impl ResolvedCatalog {
     /// Build from an explicit entry list — the path tests use to
     /// exercise resolution without touching the global slice.
     pub fn build_from(entries: Vec<&'static ComponentEntry>) -> Self {
-        // Bucket every entry under its name's snake_case form so the
-        // resolution path is a single hash lookup. Snake-casing here
-        // mirrors `ui!` / `jsx!`'s dispatch convention (see module
-        // doc-comment): the call site's PascalCase is converted to
-        // snake_case to find the per-component macro shim, and we do
-        // the same here to find the entry it points at.
-        let mut by_lower_name: HashMap<String, Vec<&'static ComponentEntry>> =
+        // Bucket every entry under its exact name so the resolution
+        // path is a single hash lookup. The framework's transform-free
+        // dispatch (see module doc-comment) guarantees a call-site
+        // ident equals the component's fn/entry name verbatim, so an
+        // exact-name match is correct — no case folding.
+        let mut by_name: HashMap<&'static str, Vec<&'static ComponentEntry>> =
             HashMap::new();
         for e in &entries {
-            by_lower_name
-                .entry(pascal_to_snake(e.name))
-                .or_default()
-                .push(e);
+            by_name.entry(e.name).or_default().push(e);
         }
 
         let mut forward: HashMap<EntryRef, Vec<ResolvedEdge>> = HashMap::new();
@@ -225,9 +220,8 @@ impl ResolvedCatalog {
             let host_ref = EntryRef::of(host);
             let mut edges = Vec::with_capacity(host.composes.len());
             for edge in host.composes {
-                let key = pascal_to_snake(edge.name);
-                let candidates = by_lower_name
-                    .get(&key)
+                let candidates = by_name
+                    .get(edge.name)
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
                 let status = resolve_one(host.module_path, candidates);
@@ -338,37 +332,6 @@ fn resolve_one(
 
 fn single<'a, T: Copy>(slice: &'a [T]) -> Option<T> {
     if slice.len() == 1 { Some(slice[0]) } else { None }
-}
-
-/// True iff `maybe_ancestor` is a strict ancestor module of
-/// `descendant`. `crate::a` is an ancestor of `crate::a::b`; equal
-/// paths are *not* ancestors (the same-module case is handled
-/// separately in `resolve_one`).
-/// Convert PascalCase to snake_case, mirroring `runtime-macros`'s
-/// `case::pascal_to_snake`. Duplicated here so the resolver can
-/// normalize without taking a dep on `runtime-macros` (a proc-macro
-/// crate). Keep the two implementations in sync — see
-/// `crates/framework/macros/src/case.rs` for the canonical form and
-/// the unit tests covering acronym handling.
-fn pascal_to_snake(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len() + 4);
-    for (i, &c) in chars.iter().enumerate() {
-        if c.is_ascii_uppercase() && i > 0 {
-            let prev = chars[i - 1];
-            let prev_lowerish = prev.is_ascii_lowercase() || prev.is_ascii_digit();
-            let acronym_to_word = prev.is_ascii_uppercase()
-                && chars
-                    .get(i + 1)
-                    .map(|n| n.is_ascii_lowercase())
-                    .unwrap_or(false);
-            if (prev_lowerish || acronym_to_word) && !out.ends_with('_') {
-                out.push('_');
-            }
-        }
-        out.push(c.to_ascii_lowercase());
-    }
-    out
 }
 
 /// Error type for [`ResolvedCatalog::build_from_json`].
@@ -712,12 +675,11 @@ mod tests {
     }
 
     #[test]
-    fn multi_word_pascal_matches_snake_entry() {
-        // The framework convention: fn names are snake_case, call
-        // sites are PascalCase. The resolver normalizes both via
-        // `pascal_to_snake` so a `PrimaryButton` edge resolves to
-        // `primary_button`.
-        let target = leak_entry("crate", "primary_button", &[]);
+    fn pascal_edge_matches_pascal_entry_exactly() {
+        // Transform-free dispatch: a `PrimaryButton` call site needs a
+        // `PrimaryButton` fn, so the entry is `PrimaryButton` too. The
+        // resolver matches by exact name — no case folding.
+        let target = leak_entry("crate", "PrimaryButton", &[]);
         let host = leak_entry(
             "crate",
             "host",
@@ -726,15 +688,17 @@ mod tests {
         let cat = ResolvedCatalog::build_from(vec![target, host]);
         let edges = cat.dependencies(&EntryRef::of(host));
         match &edges[0].status {
-            EdgeStatus::Resolved { target } => assert_eq!(target.name, "primary_button"),
+            EdgeStatus::Resolved { target } => assert_eq!(target.name, "PrimaryButton"),
             other => panic!("expected Resolved, got {:?}", other),
         }
     }
 
     #[test]
-    fn case_insensitive_match_handles_pascal_to_snake() {
-        // Host at root composes `Vignette` → should resolve to
-        // `vignette` (case-folded), simulating `ui!`'s dispatch.
+    fn case_is_significant_mismatched_casing_does_not_resolve() {
+        // A `Vignette` edge against only a `vignette` entry must NOT
+        // resolve — case is significant now. (Such a pairing can't
+        // compile in real code; this guards against silent case-folding
+        // creeping back into the resolver.)
         let target = leak_entry("crate::components::vignette", "vignette", &[]);
         let host = leak_entry(
             "crate",
@@ -744,12 +708,11 @@ mod tests {
         let cat = ResolvedCatalog::build_from(vec![target, host]);
         let edges = cat.dependencies(&EntryRef::of(host));
         assert_eq!(edges.len(), 1);
-        match &edges[0].status {
-            EdgeStatus::Resolved { target: t } => {
-                assert_eq!(t.name, "vignette");
-            }
-            other => panic!("expected Resolved, got {:?}", other),
-        }
+        assert!(
+            matches!(edges[0].status, EdgeStatus::NoMatch),
+            "expected NoMatch for case mismatch, got {:?}",
+            edges[0].status
+        );
     }
 
     #[test]
@@ -841,7 +804,7 @@ mod tests {
         let h2 = leak_entry(
             "crate::b",
             "host_b",
-            leak_edges(vec![EdgeRef { name: "Panel", line: 0 }]),
+            leak_edges(vec![EdgeRef { name: "panel", line: 0 }]),
         );
         let h3 = leak_entry(
             "crate::c",
@@ -859,10 +822,11 @@ mod tests {
 
     #[test]
     fn ambiguous_in_same_module() {
-        // Two entries with the same lowercased name in the same
-        // module — shouldn't happen in well-formed code, but the
-        // resolver must surface it rather than silently picking one.
-        let a = leak_entry("crate", "card", &[]);
+        // Two entries with the same exact name in the same module —
+        // a duplicate registration (possible via the inventory slice
+        // even though it won't compile as two `fn Card`). The resolver
+        // must surface it rather than silently picking one.
+        let a = leak_entry("crate", "Card", &[]);
         let b = leak_entry("crate", "Card", &[]);
         let host = leak_entry(
             "crate",

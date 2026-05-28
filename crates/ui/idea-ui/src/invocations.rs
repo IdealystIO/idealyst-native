@@ -29,7 +29,7 @@
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! stack {
+macro_rules! Stack {
     () => {
         $crate::components::stack::stack(
             <$crate::components::stack::StackProps as ::core::default::Default>::default(),
@@ -56,7 +56,7 @@ macro_rules! stack {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! btn {
+macro_rules! Btn {
     () => {
         $crate::components::button::button(
             &<$crate::components::button::ButtonProps as ::core::default::Default>::default(),
@@ -78,7 +78,7 @@ macro_rules! btn {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! typography {
+macro_rules! Typography {
     () => {
         $crate::components::typography::typography(
             &<$crate::components::typography::TypographyProps as ::core::default::Default>::default(),
@@ -98,7 +98,7 @@ macro_rules! typography {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! card {
+macro_rules! Card {
     () => {
         $crate::components::card::card(
             <$crate::components::card::CardProps as ::core::default::Default>::default(),
@@ -118,7 +118,7 @@ macro_rules! card {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! field {
+macro_rules! Field {
     () => {
         $crate::components::field::field(
             &<$crate::components::field::FieldProps as ::core::default::Default>::default(),
@@ -138,7 +138,7 @@ macro_rules! field {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! switch {
+macro_rules! Switch {
     () => {
         $crate::components::switch::switch(
             &<$crate::components::switch::SwitchProps as ::core::default::Default>::default(),
@@ -158,7 +158,7 @@ macro_rules! switch {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! spinner {
+macro_rules! Spinner {
     () => {
         $crate::components::spinner::spinner(
             &<$crate::components::spinner::SpinnerProps as ::core::default::Default>::default(),
@@ -174,7 +174,7 @@ macro_rules! spinner {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! divider {
+macro_rules! Divider {
     () => {
         $crate::components::divider::divider(
             &<$crate::components::divider::DividerProps as ::core::default::Default>::default(),
@@ -190,7 +190,7 @@ macro_rules! divider {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! badge {
+macro_rules! Badge {
     () => {
         $crate::components::badge::badge(
             &<$crate::components::badge::BadgeProps as ::core::default::Default>::default(),
@@ -210,7 +210,7 @@ macro_rules! badge {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! spacer {
+macro_rules! Spacer {
     () => {
         $crate::components::spacer::spacer(
             &<$crate::components::spacer::SpacerProps as ::core::default::Default>::default(),
@@ -226,7 +226,7 @@ macro_rules! spacer {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! center {
+macro_rules! Center {
     () => {
         $crate::components::center::center(
             <$crate::components::center::CenterProps as ::core::default::Default>::default(),
@@ -241,17 +241,16 @@ macro_rules! center {
 }
 
 // =============================================================================
-// icon_button — by-ref
+// IconButton — by-ref
 //
-// Multi-word PascalCase `IconButton(...)` lowers to `icon_button!(...)`
-// via the framework's `pascal_to_snake` ui!-tag translator. Keep the
-// macro name in sync with that lowering — `iconbutton!` (single-token)
-// wouldn't match what `ui!` produces.
+// `ui!` dispatch is transform-free: a call site `IconButton(...)` lowers
+// to `IconButton!(...)` verbatim, so the macro name must equal the call
+// name exactly. The macro BODY calls the snake_case `icon_button` fn.
 // =============================================================================
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! icon_button {
+macro_rules! IconButton {
     () => {
         $crate::components::icon_button::icon_button(
             &<$crate::components::icon_button::IconButtonProps as ::core::default::Default>::default(),
@@ -273,7 +272,7 @@ macro_rules! icon_button {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! avatar {
+macro_rules! Avatar {
     () => {
         $crate::components::avatar::avatar(
             &<$crate::components::avatar::AvatarProps as ::core::default::Default>::default(),
@@ -293,7 +292,7 @@ macro_rules! avatar {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! tag {
+macro_rules! Tag {
     () => {
         $crate::components::tag::tag(
             &<$crate::components::tag::TagProps as ::core::default::Default>::default(),
@@ -313,7 +312,7 @@ macro_rules! tag {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! alert {
+macro_rules! Alert {
     () => {
         $crate::components::alert::alert(
             &<$crate::components::alert::AlertProps as ::core::default::Default>::default(),
@@ -333,7 +332,7 @@ macro_rules! alert {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! skeleton {
+macro_rules! Skeleton {
     () => {
         $crate::components::skeleton::skeleton(
             &<$crate::components::skeleton::SkeletonProps as ::core::default::Default>::default(),
@@ -353,7 +352,7 @@ macro_rules! skeleton {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! tabs {
+macro_rules! Tabs {
     () => {
         $crate::components::tabs::tabs(
             <$crate::components::tabs::TabsProps as ::core::default::Default>::default(),
@@ -373,7 +372,7 @@ macro_rules! tabs {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! select {
+macro_rules! Select {
     () => {
         $crate::components::select::select(
             <$crate::components::select::SelectProps as ::core::default::Default>::default(),
@@ -393,7 +392,7 @@ macro_rules! select {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! modal {
+macro_rules! Modal {
     () => {
         $crate::components::modal::modal(
             <$crate::components::modal::ModalProps as ::core::default::Default>::default(),
@@ -409,7 +408,7 @@ macro_rules! modal {
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! popover {
+macro_rules! Popover {
     () => {
         $crate::components::popover::popover(
             <$crate::components::popover::PopoverProps as ::core::default::Default>::default(),

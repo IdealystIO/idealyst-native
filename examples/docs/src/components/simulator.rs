@@ -133,7 +133,7 @@ fn default_painter() -> Rc<dyn Painter> {
     skin = None,
     profile = None,
 ))]
-pub fn simulator(props: SimulatorProps) -> Primitive {
+pub fn Simulator(props: SimulatorProps) -> Primitive {
     let SimulatorProps {
         build_ui,
         skin,

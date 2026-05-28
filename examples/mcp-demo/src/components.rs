@@ -35,7 +35,7 @@ use runtime_core::{component, idealyst_tool, ui, IdealystSchema};
 /// A small icon-with-label widget. Leaf component — no `ui!` body,
 /// so it has no composes edges.
 #[component]
-pub fn icon_label() -> Primitive {
+pub fn IconLabel() -> Primitive {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
@@ -45,21 +45,21 @@ pub fn icon_label() -> Primitive {
 /// multi-paragraph doc-comment is here to demonstrate that the
 /// catalog preserves newlines and blank-line paragraph breaks.
 #[component]
-pub fn primary_button() -> Primitive {
+pub fn PrimaryButton() -> Primitive {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
 // Note (`//`, not `///`): `spacer` has no doc comment by design — the
 // catalog should record `docs: ""`. This text doesn't become docs.
 #[component]
-pub fn spacer() -> Primitive {
+pub fn Spacer() -> Primitive {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
 /// A card with an icon-label header and a primary action.
 /// Composes two leaf components — visible in `composes`.
 #[component]
-pub fn card() -> Primitive {
+pub fn Card() -> Primitive {
     ui! {
         View() {
             IconLabel()
@@ -72,7 +72,7 @@ pub fn card() -> Primitive {
 /// `PrimaryButton`. Reverse adjacency: `Card` and `PrimaryButton`
 /// each list `app_shell` among their users.
 #[component]
-pub fn app_shell() -> Primitive {
+pub fn AppShell() -> Primitive {
     ui! {
         View() {
             Card()
@@ -82,7 +82,7 @@ pub fn app_shell() -> Primitive {
     }
 }
 
-/// Props for [`labeled_badge`]. With `#[derive(IdealystSchema)]`
+/// Props for [`LabeledBadge`]. With `#[derive(IdealystSchema)]`
 /// every field shows up in the catalog as a `PropFieldSpec` with
 /// docs + optional `#[schema(constraint = "...")]` hints.
 #[derive(Debug, IdealystSchema)]
@@ -100,7 +100,7 @@ pub struct LabeledBadgeProps {
 /// struct signature in the catalog: the resolved view shows
 /// `params: props: &LabeledBadgeProps`.
 #[component]
-pub fn labeled_badge(_props: &LabeledBadgeProps) -> Primitive {
+pub fn LabeledBadge(_props: &LabeledBadgeProps) -> Primitive {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
@@ -122,13 +122,13 @@ pub mod forms {
 
     /// A submit button. Unique short-name; resolves directly.
     #[component]
-    pub fn submit() -> Primitive {
+    pub fn Submit() -> Primitive {
         ::runtime_core::view(::std::vec::Vec::new())
     }
 
     /// Form-page host. Composes `Submit`.
     #[component]
-    pub fn form_root() -> Primitive {
+    pub fn FormRoot() -> Primitive {
         ui! {
             View() {
                 Submit()

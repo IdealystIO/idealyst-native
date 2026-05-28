@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use runtime_core::{signal, ui, Primitive, Ref, ViewHandle};
 use idea_ui::{
-    alert, badge, btn, card, divider, field, stack, switch, tag, typography, StackAxis, StackGap,
+    Alert, Badge, Btn, Card, Divider, Field, Stack, Switch, Tag, Typography, StackAxis, StackGap,
 };
 
 use crate::pages::common::{page_header, page_section};

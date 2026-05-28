@@ -20,7 +20,7 @@ cannot drift.
 ## How the catalog gets populated
 
 ```
-  #[component] fn my_card(...) { ... }
+  #[component] fn MyCard(...) { ... }
               │
               ▼
    runtime-macros emits a

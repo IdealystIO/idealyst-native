@@ -1,12 +1,10 @@
-//! Web `AsyncExecutor`: routes both `spawn` and `spawn_on_worker` to
-//! `wasm_bindgen_futures::spawn_local`. JS is single-threaded so there
-//! is no real worker option; the trait keeps the call shape uniform
-//! with native targets.
+//! Web `AsyncExecutor`: routes `spawn` to
+//! `wasm_bindgen_futures::spawn_local` (the JS event loop).
 
 use std::future::Future;
 use std::pin::Pin;
 
-use runtime_core::driver::{AsyncExecutor, BoxedWorkerFuture};
+use runtime_core::driver::AsyncExecutor;
 
 /// Register this backend's executor with `runtime-core`. Idempotent —
 /// first install wins.
@@ -18,10 +16,6 @@ struct WasmAsyncExecutor;
 
 impl AsyncExecutor for WasmAsyncExecutor {
     fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + 'static>>) {
-        wasm_bindgen_futures::spawn_local(future);
-    }
-
-    fn spawn_on_worker(&self, future: BoxedWorkerFuture) {
         wasm_bindgen_futures::spawn_local(future);
     }
 }

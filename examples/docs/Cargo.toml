@@ -53,12 +53,18 @@ backend-ios-mobile = { workspace = true }
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 backend-android-mobile = { workspace = true }
 
+# macOS desktop (AppKit) build path. `drawer_navigator::register`
+# resolves to its macOS impl (`&mut MacosBackend`) on this host, so the
+# example's `register_extensions` takes the same type.
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
 # Terminal (TTY) build path. Same `register_extensions(&mut TerminalBackend)`
 # hook as the other targets — the CLI-generated wrapper at
 # `target/idealyst/<app>/terminal/src/main.rs` calls it before mount so
 # the drawer navigator (and any other SDKs) install their handler
 # factories.
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
 backend-terminal = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

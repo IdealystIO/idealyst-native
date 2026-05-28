@@ -9,10 +9,10 @@
 use std::rc::Rc;
 
 use runtime_core::{lazy, signal, switch, ui, IntoPrimitive, Primitive, Route, Signal, StyleApplication};
-use idea_ui::{tabs, typography, Tab};
+use idea_ui::{Tabs, Typography, Tab};
 
 use crate::components::simulator::{
-    simulator, simulator_placeholder, SimulatorProps, SimulatorSkin,
+    Simulator, simulator_placeholder, SimulatorProps, SimulatorSkin,
 };
 use crate::pages::common::code_panel;
 use crate::routes::{

@@ -29,27 +29,28 @@ pub fn democomponent(_props: &DemoProps) -> u32 {
 // in the catalog as legitimate `#[component]` entries with empty
 // composes.
 
-// `ui!` dispatches by lowercasing the call ident, so the function
-// names here are snake_case and the call sites use PascalCase
-// (`ChildA()` → macro `childa!()` → `childa()`).
+// Dispatch is transform-free: a call site `ChildA()` lowers to
+// `ChildA!()` → `ChildA()`, so the fn name equals the call ident
+// verbatim. Components are PascalCase; `#[component]` suppresses the
+// `non_snake_case` lint.
 #[component]
-pub fn child_a() -> Primitive {
+pub fn ChildA() -> Primitive {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
 #[component]
-pub fn child_b() -> Primitive {
+pub fn ChildB() -> Primitive {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
 #[component]
-pub fn child_c() -> Primitive {
+pub fn ChildC() -> Primitive {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
-// JSX dispatches by lowercasing the tag name (see jsx.rs:577). All
-// lowercase ident names sidestep the case issue: `<jsx_outer>` →
-// `jsx_outer!()` → calls `jsx_outer()`.
+// JSX dispatch is transform-free too. These keep snake_case names to
+// prove a lowercase tag still resolves verbatim: `<jsx_outer>` →
+// `jsx_outer!()` → `jsx_outer()`.
 #[component]
 pub fn jsx_outer() -> Primitive {
     ::runtime_core::view(::std::vec::Vec::new())
@@ -192,7 +193,7 @@ mod submodule {
     use runtime_macros::{component, ui};
 
     #[component]
-    pub fn ambiguousname() -> Primitive {
+    pub fn Ambiguousname() -> Primitive {
         ::runtime_core::view(::std::vec::Vec::new())
     }
 
@@ -204,10 +205,10 @@ mod submodule {
     }
 }
 
-/// Root-level duplicate of `submodule::ambiguousname`. Resolver must
+/// Root-level duplicate of `submodule::Ambiguousname`. Resolver must
 /// disambiguate per spec §6.
 #[component]
-pub fn ambiguousname() -> Primitive {
+pub fn Ambiguousname() -> Primitive {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
@@ -425,16 +426,13 @@ fn resolver_links_ui_host_to_actual_child_entries() {
     for edge in edges {
         match &edge.status {
             mcp_catalog::EdgeStatus::Resolved { target } => {
-                // After normalization (PascalCase → snake_case), the
-                // edge's call-site ident and the target entry name
-                // must match. `pascal_to_snake` is idempotent on
-                // already-snake input, so both sides converge.
+                // Transform-free dispatch: the call-site ident equals
+                // the target entry name verbatim. Exact match, no case
+                // folding.
                 assert_eq!(
-                    pascal_to_snake(target.name),
-                    pascal_to_snake(edge.raw_name),
+                    target.name, edge.raw_name,
                     "edge {:?} resolved to wrong target {:?}",
-                    edge.raw_name,
-                    target.name,
+                    edge.raw_name, target.name,
                 );
             }
             other => panic!(
@@ -444,17 +442,17 @@ fn resolver_links_ui_host_to_actual_child_entries() {
         }
     }
 
-    // Reverse: `child_a` should report `ui_host` among its users.
+    // Reverse: `ChildA` should report `ui_host` among its users.
     let child_a = cat
         .entries()
         .iter()
-        .find(|e| e.name == "child_a")
+        .find(|e| e.name == "ChildA")
         .copied()
-        .expect("child_a in catalog");
+        .expect("ChildA in catalog");
     let users = cat.uses(&mcp_catalog::EntryRef::of(child_a));
     assert!(
         users.iter().any(|r| r.name == "ui_host"),
-        "expected ui_host in child_a's reverse adjacency; got {:?}",
+        "expected ui_host in ChildA's reverse adjacency; got {:?}",
         users
     );
 }
@@ -477,7 +475,7 @@ fn single_struct_param_captured() {
 /// panic, not record a sentinel entry.
 #[test]
 fn zero_arg_records_empty_params() {
-    let entry = find_entry("child_a");
+    let entry = find_entry("ChildA");
     assert!(entry.params.is_empty(), "expected empty; got {:?}", entry.params);
 }
 
@@ -757,32 +755,6 @@ fn dependencies_for_unknown_host_is_empty() {
 fn empty_catalog_builds() {
     let cat = mcp_catalog::ResolvedCatalog::build_from(Vec::new());
     assert!(cat.entries().is_empty());
-}
-
-/// Local snake_case conversion mirroring
-/// `crates/framework/macros/src/case.rs`. Used only by the
-/// `resolver_links_ui_host_to_actual_child_entries` assertion to
-/// compare a target entry's name against the edge's call-site ident
-/// after both are normalized.
-fn pascal_to_snake(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len() + 4);
-    for (i, &c) in chars.iter().enumerate() {
-        if c.is_ascii_uppercase() && i > 0 {
-            let prev = chars[i - 1];
-            let lowerish = prev.is_ascii_lowercase() || prev.is_ascii_digit();
-            let acronym = prev.is_ascii_uppercase()
-                && chars
-                    .get(i + 1)
-                    .map(|n| n.is_ascii_lowercase())
-                    .unwrap_or(false);
-            if (lowerish || acronym) && !out.ends_with('_') {
-                out.push('_');
-            }
-        }
-        out.push(c.to_ascii_lowercase());
-    }
-    out
 }
 
 fn find_entry(name: &str) -> &'static mcp_catalog::ComponentEntry {

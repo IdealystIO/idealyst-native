@@ -1,9 +1,9 @@
 //! Platforms — what each backend looks like and where it runs.
 
 use runtime_core::{ui, Primitive};
-use idea_ui::{typography, card};
+use idea_ui::{Typography, Card};
 
-use crate::shell::{page_body, page_header, section, PageTypographyProps, PageHeaderProps, SectionProps};
+use crate::shell::{PageBody, PageHeader, Section, PageTypographyProps, PageHeaderProps, SectionProps};
 
 pub fn page() -> Primitive {
     ui! {

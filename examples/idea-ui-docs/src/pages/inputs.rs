@@ -2,7 +2,7 @@
 
 use runtime_core::{signal, ui, Primitive};
 use idea_ui::doc_controls::DocControls;
-use idea_ui::{typography, card, field, select, stack, switch, FieldProps, SelectOption, StackGap, SwitchProps};
+use idea_ui::{Typography, Card, Field, Select, Stack, Switch, FieldProps, SelectOption, StackGap, SwitchProps};
 
 use crate::shell::{demo_card, page_header};
 

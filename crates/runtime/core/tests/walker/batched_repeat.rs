@@ -78,6 +78,7 @@ fn count_row_create_texts(events: &[Event]) -> usize {
 fn batched_path_fires_when_backend_opts_in_and_shape_is_batchable() {
     let rt = TestRuntime::with_config(MockBackendConfig {
         supports_batched_repeat: true,
+        ..Default::default()
     });
     let _owner = rt.render(batchable_tree(10, make_static_sheet()));
 
@@ -131,6 +132,7 @@ fn per_call_path_when_backend_opts_out() {
 fn non_batchable_shape_falls_back_to_per_call() {
     let rt = TestRuntime::with_config(MockBackendConfig {
         supports_batched_repeat: true,
+        ..Default::default()
     });
     let sheet = make_static_sheet();
     let row_builder: Box<dyn Fn(usize) -> Primitive> = Box::new(move |i| {
@@ -174,6 +176,7 @@ fn non_batchable_shape_falls_back_to_per_call() {
 fn batch_contains_one_op_per_row_in_iteration_order() {
     let rt = TestRuntime::with_config(MockBackendConfig {
         supports_batched_repeat: true,
+        ..Default::default()
     });
     let _owner = rt.render(batchable_tree(5, make_static_sheet()));
 
@@ -241,6 +244,7 @@ fn batch_contains_one_op_per_row_in_iteration_order() {
 fn attach_locals_matches_row_top_create_view_ops() {
     let rt = TestRuntime::with_config(MockBackendConfig {
         supports_batched_repeat: true,
+        ..Default::default()
     });
     let _owner = rt.render(batchable_tree(4, make_static_sheet()));
 
@@ -286,6 +290,7 @@ fn attach_locals_matches_row_top_create_view_ops() {
 fn attach_parent_is_the_containing_view() {
     let rt = TestRuntime::with_config(MockBackendConfig {
         supports_batched_repeat: true,
+        ..Default::default()
     });
     let _owner = rt.render(batchable_tree(2, make_static_sheet()));
 
@@ -338,6 +343,7 @@ fn batched_path_is_taken_on_each_rebuild_via_switch() {
 
     let rt = TestRuntime::with_config(MockBackendConfig {
         supports_batched_repeat: true,
+        ..Default::default()
     });
     let mode: Signal<u32> = signal!(0u32);
     let count: Signal<usize> = signal!(2usize);
@@ -414,6 +420,7 @@ fn batched_path_is_taken_on_each_rebuild_via_switch() {
 fn batched_path_still_registers_stylesheet() {
     let rt = TestRuntime::with_config(MockBackendConfig {
         supports_batched_repeat: true,
+        ..Default::default()
     });
     let _owner = rt.render(batchable_tree(3, make_static_sheet()));
 

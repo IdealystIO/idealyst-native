@@ -21,7 +21,7 @@
 //! is a server function call.
 
 use idea_ui::{
-    install_idea_theme, light_theme, stack, typography, StackGap, StackPadding,
+    install_idea_theme, light_theme, Stack, StackGap, StackPadding, Typography,
 };
 use runtime_core::{
     async_reducer, component, fixed_size, flat_list, signal, ui, AsyncReducer, AsyncStatus,
@@ -184,10 +184,11 @@ fn configure_server() {
 }
 
 // ============================================================================
-// Per-target SDK-handler registration hook the CLI-generated
-// wrappers invoke before mount. No third-party SDKs in this demo —
-// the function exists per-target with an empty body so the
-// wrapper-side `register_extensions(&mut Backend)` call compiles.
+// Per-target SDK-handler registration hook the CLI-generated wrappers
+// invoke before mount. The wrappers pass `&mut backend.borrow_mut()` (a
+// `RefMut`), which deref-coerces to the concrete `&mut <Backend>` here; a
+// generic `<B: Backend>` can't accept that, so the signature is per-backend.
+// No third-party SDKs in this demo, so each body is empty.
 // ============================================================================
 
 #[cfg(target_arch = "wasm32")]

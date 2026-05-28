@@ -75,6 +75,12 @@ pub(super) fn insert_children<B: Backend + 'static>(
     parent: &mut B::Node,
     children: Vec<Primitive>,
 ) {
+    // Running count of backend nodes inserted into `parent` so far. A
+    // normal child contributes 1, a `Repeat` contributes `count`, a
+    // spliced `Each` contributes its current row count. Anchorless
+    // regions capture this as their `base_index` so they splice at the
+    // right position relative to preceding (static) siblings.
+    let mut inserted: usize = 0;
     for (slot_idx, child) in children.into_iter().enumerate() {
         let slot = slot_idx as u32;
         match child {
@@ -120,10 +126,23 @@ pub(super) fn insert_children<B: Backend + 'static>(
                     rows.push(row_node);
                 }
                 backend.borrow_mut().insert_many(parent, rows);
+                inserted += count;
+            }
+            // Anchorless reactive region: when the backend supports child
+            // splicing, a (style-less) `Each` in a children list splices
+            // its rows DIRECTLY into `parent` — flat siblings, no wrapper
+            // `create_reactive_anchor` node. Styled `Each` (or backends
+            // without splice support) fall through to `other`, taking the
+            // anchored path that can host the style on the anchor node.
+            Primitive::Each { build, style }
+                if style.is_none() && backend.borrow().supports_child_splice() =>
+            {
+                inserted += super::each::build_spliced(backend, parent, inserted, build);
             }
             other => {
                 let child_node = super::build(backend, slot, other);
                 backend.borrow_mut().insert(parent, child_node);
+                inserted += 1;
             }
         }
     }

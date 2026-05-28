@@ -3,7 +3,7 @@
 //! sidebar to each category.
 
 use runtime_core::{ui, Primitive};
-use idea_ui::{typography, card, stack, StackGap};
+use idea_ui::{Typography, Card, Stack, StackGap};
 
 use crate::shell::page_header;
 

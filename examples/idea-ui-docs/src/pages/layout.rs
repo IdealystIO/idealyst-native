@@ -3,7 +3,7 @@
 use runtime_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
-    badge, btn, card, center, divider, spacer, stack, typography,
+    Badge, Btn, Card, Center, Divider, Spacer, Stack, Typography,
     CardProps, DividerProps, StackAxis, StackGap, StackProps,
 };
 

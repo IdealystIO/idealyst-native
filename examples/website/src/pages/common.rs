@@ -3,7 +3,7 @@
 //! stubbed-out screens.
 
 use runtime_core::{switch, ui, Color, IntoPrimitive, Primitive, Ref, StyleApplication, Tokenized, ViewHandle};
-use idea_ui::{stack, typography, StackGap};
+use idea_ui::{Stack, Typography, StackGap};
 
 use crate::styles::{CodePanel, CodeText, PlaceholderBox, SectionWrap};
 

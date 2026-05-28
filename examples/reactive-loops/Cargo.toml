@@ -1,0 +1,37 @@
+[package]
+name = "reactive-loops"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Demo of the framework's reactive iteration — `for … in …` written directly in `ui!`, where the iterable's TYPE decides reactivity. A `Signal<Vec<_>>` list rebuilds on add/remove, a `0..count.get()` grid grows/shrinks reactively, and a plain array stays static. No `.get()` heuristic, no wrapper views."
+
+# Pure `rlib` — same scaffold shape as `welcome`/`stack-demo`. The CLI
+# generates the per-platform wrapper crates with the cdylib/staticlib
+# crate-type + entry points; this crate is platform-agnostic.
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+
+# Per-target backend deps — `register_extensions` is per-backend concrete
+# (the CLI wrappers pass a `RefMut` that deref-coerces to `&mut <Backend>`).
+# This demo uses no third-party SDKs, so the bodies are empty.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
+backend-terminal = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Reactive Loops"
+bundle_id = "ai.truday.idealyst.reactiveloops"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]

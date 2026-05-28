@@ -72,11 +72,20 @@ pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
     drawer_navigator::register(backend);
 }
 
+// macOS desktop (AppKit) equivalent — invoked from the macOS host
+// wrapper before mount. `drawer_navigator::register` resolves to its
+// macOS impl (`&mut MacosBackend`) on this host, so the signature must
+// match or the drawer factory never lands in the backend's handlers.
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
+    drawer_navigator::register(backend);
+}
+
 // Terminal (TTY) equivalent — invoked from the CLI-generated terminal
 // wrapper before mount. Without it the first `create_navigator` call
 // panics because the drawer factory isn't in
 // `TerminalBackend::navigator_handlers`.
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))]
 pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
     drawer_navigator::register(backend);
 }

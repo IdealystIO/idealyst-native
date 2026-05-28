@@ -103,88 +103,6 @@ where
     }
 }
 
-/// Drive a future to completion *off* the current thread on native;
-/// same as [`spawn_async`] on web (single-threaded by definition).
-///
-/// Use this when the future does work that mustn't block the calling
-/// thread — typically wgpu's `request_adapter` / `request_device` /
-/// shader compilation, which the [`Graphics`] primitive fires from
-/// `on_ready` on the platform's UI thread. Blocking that thread for
-/// seconds (which the wgpu init dance can do on real devices) freezes
-/// the app's input handling and triggers Android's "Skipped N frames"
-/// warning.
-///
-/// On **web**: identical to `spawn_async` — the future runs on the
-/// single JS event loop. There's no worker option without
-/// `web_workers` plumbing the framework doesn't have.
-///
-/// On **native** (Android / iOS / desktop): spawns a dedicated
-/// `std::thread`, runs `pollster::block_on(future)` on it, and
-/// returns immediately. The future must be `Send + 'static` — it's
-/// moved across the thread boundary. The spawned thread is detached
-/// (no join handle returned); typical use is "build a renderer, hand
-/// it off via a shared `Arc<Mutex<…>>`, return."
-///
-/// # Send bound
-///
-/// On native this takes a `Send` future because it moves to a worker
-/// thread. On web the `Send` bound is irrelevant (JS is
-/// single-threaded) but uniform call shape across targets means web
-/// authors writing `spawn_async_on_worker(async move { ... })` get
-/// the same code that compiles on Android — so we keep the bound
-/// uniform via a per-target marker trait.
-pub fn spawn_async_on_worker<F>(future: F)
-where
-    F: Future<Output = ()> + WorkerFutureBounds + 'static,
-{
-    if let Some(exec) = ASYNC_EXECUTOR.get() {
-        exec.spawn_on_worker(Box::pin(future));
-        return;
-    }
-    // Fallback: dedicated `std::thread` running `pollster::block_on`.
-    // No join handle — typical use is "the future stashes its result
-    // in an Arc<Mutex<…>> slot and returns."
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::thread::Builder::new()
-            .name("framework-async-worker".into())
-            .spawn(move || pollster::block_on(future))
-            .expect("framework: failed to spawn async worker thread");
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = future;
-        panic!(
-            "runtime_core::driver::spawn_async_on_worker: no AsyncExecutor installed. \
-             On wasm32 a backend must register one before this is called \
-             — typically `backend_web::install_async_executor()` during host init."
-        );
-    }
-}
-
-/// Per-target `Send` bound on the future passed to
-/// [`spawn_async_on_worker`]. `Send` on native (the future moves to a
-/// worker thread), trivial on wasm (single-threaded). Same trick as
-/// `RenderLoopClosureBounds` — author code uses one signature that
-/// compiles uniformly.
-#[cfg(not(target_arch = "wasm32"))]
-pub trait WorkerFutureBounds: Send {}
-#[cfg(not(target_arch = "wasm32"))]
-impl<T: Send> WorkerFutureBounds for T {}
-
-#[cfg(target_arch = "wasm32")]
-pub trait WorkerFutureBounds {}
-#[cfg(target_arch = "wasm32")]
-impl<T> WorkerFutureBounds for T {}
-
-/// Type-erased worker future. Carries the `Send` bound on native (the
-/// future moves to a worker thread) and drops it on wasm32 (single-
-/// threaded). Mirrors the per-target asymmetry of [`WorkerFutureBounds`].
-#[cfg(not(target_arch = "wasm32"))]
-pub type BoxedWorkerFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
-#[cfg(target_arch = "wasm32")]
-pub type BoxedWorkerFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
-
 /// Backend-supplied async runtime. Backends register an instance via
 /// [`install_async_executor`] at init; without one, `spawn_async`
 /// falls back to `pollster` on native and panics on wasm32.
@@ -192,10 +110,6 @@ pub trait AsyncExecutor: Send + Sync {
     /// Drive a future on the calling thread / event loop. Returns
     /// immediately on web (microtask queue), blocks on native.
     fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + 'static>>);
-
-    /// Drive a future off the calling thread on native; same as
-    /// `spawn` on web.
-    fn spawn_on_worker(&self, future: BoxedWorkerFuture);
 }
 
 static ASYNC_EXECUTOR: OnceLock<Box<dyn AsyncExecutor>> = OnceLock::new();
@@ -213,10 +127,9 @@ pub fn install_async_executor(executor: Box<dyn AsyncExecutor>) {
 /// A live frame-driver handle. Dropping it stops the loop and cancels
 /// any pending frame — no further callbacks fire.
 ///
-/// On native (Android), the closure runs on a dedicated render
-/// thread; `Drop` joins it. On web (rAF) and iOS (NSTimer), the
-/// closure runs on the same thread as the caller; `Drop` cancels the
-/// next scheduled frame.
+/// The closure runs on the host's UI thread on every backend — rAF on
+/// web, `NSTimer` on iOS, the main looper on Android. `Drop` cancels
+/// the next scheduled frame.
 pub struct RenderLoop {
     inner: Box<dyn RenderLoopHandle>,
 }
@@ -234,28 +147,22 @@ impl RenderLoop {
 ///
 /// The active backend's [`RenderLoopDriver`] (installed via
 /// [`install_render_loop_driver`]) decides the per-frame source:
-/// `requestAnimationFrame` on web, `NSTimer` on iOS, a dedicated
-/// render thread on Android. If no driver is installed, the returned
-/// handle is inert and the closure never fires.
+/// `requestAnimationFrame` on web, `NSTimer` on iOS, the main looper
+/// on Android. If no driver is installed, the returned handle is inert
+/// and the closure never fires.
 ///
-/// # Threading — important
+/// # Threading
 ///
-/// The `Send` bound on the closure is **per-target**:
-/// - On Android the closure runs on a dedicated render thread → it
-///   must be `Send`, and any state it captures must cross the thread
-///   boundary (typically via `Arc<Mutex<…>>` or by moving owned
-///   state into the closure).
-/// - On web (rAF) and iOS (NSTimer) the closure runs on the same
-///   thread as the caller — no `Send` bound, so `Rc<RefCell<…>>`
-///   works.
-///
-/// This is *intentional asymmetry*. Some graphics types (`wgpu` on
-/// wasm uses `WasmNotSendSync`) are `!Send` on web and `Send` on
-/// native; forcing `Send` everywhere would make those types
-/// unusable.
+/// The closure runs on the host's **UI thread** on every backend, so
+/// the bound is a uniform `FnMut(f32) + 'static` with no `Send`
+/// requirement — it can capture `Rc<RefCell<…>>` and `!Send` graphics
+/// types (`wgpu`'s `WasmNotSendSync` on web). A backend that wants to
+/// offload GPU work to a worker thread does so *internally*, marshalling
+/// across the boundary itself; that never leaks a `Send` bound into this
+/// author-facing signature.
 pub fn render_loop<F>(f: F) -> RenderLoop
 where
-    F: FnMut(f32) + RenderLoopClosureBounds + 'static,
+    F: FnMut(f32) + 'static,
 {
     let inner: Box<dyn RenderLoopHandle> = match RENDER_LOOP_DRIVER.get() {
         Some(driver) => driver.start(Box::new(f)),
@@ -264,45 +171,12 @@ where
     RenderLoop { inner }
 }
 
-/// Marker trait that pins the per-target `Send` requirement on the
-/// `render_loop` closure. Resolves to `Send` on Android (where the
-/// driver runs on a worker thread) and to no extra bound on web /
-/// iOS / desktop (where the driver fires on the calling thread).
-///
-/// Known framework-purity gap: the cfg gate below is the only platform-
-/// target switch in runtime-core. The audit-preferred fix is a pair
-/// of free functions — `render_loop` (same-thread, no `Send`) and
-/// `render_loop_on_worker` (`Send` required) — so the choice lives at
-/// the call site rather than the target. Implementing that is a
-/// breaking change for the web/iOS host callers (they use
-/// `Rc<RefCell<…>>` captures that aren't `Send`), so it's tracked
-/// separately rather than landing in the framework-purity sweep.
-#[cfg(target_os = "android")]
-pub trait RenderLoopClosureBounds: Send {}
-#[cfg(target_os = "android")]
-impl<T: Send> RenderLoopClosureBounds for T {}
-
-#[cfg(not(target_os = "android"))]
-pub trait RenderLoopClosureBounds {}
-#[cfg(not(target_os = "android"))]
-impl<T> RenderLoopClosureBounds for T {}
-
 /// Backend-supplied per-frame driver. Backends implement this trait
-/// against their platform's frame source and register an instance via
-/// [`install_render_loop_driver`] during init.
+/// against their platform's UI-thread frame source and register an
+/// instance via [`install_render_loop_driver`] during init.
 ///
-/// The trait method signature differs per target so the closure can
-/// stay `!Send` on web/iOS while being `Send` on Android — driving
-/// the same trade-off as [`RenderLoopClosureBounds`].
-#[cfg(target_os = "android")]
-pub trait RenderLoopDriver: Send + Sync {
-    fn start(
-        &self,
-        closure: Box<dyn FnMut(f32) + Send + 'static>,
-    ) -> Box<dyn RenderLoopHandle>;
-}
-
-#[cfg(not(target_os = "android"))]
+/// The closure runs on the host's UI thread, so the bound is a uniform
+/// `FnMut(f32) + 'static` — no per-target `Send` asymmetry.
 pub trait RenderLoopDriver: Send + Sync {
     fn start(
         &self,

@@ -49,7 +49,7 @@ use runtime_core::{ui, ChildList, Primitive, Signal, VariantEnum};
 // scope.
 #[allow(unused_imports)]
 use crate::{
-    card, field, select, stack, switch, typography, SelectOption as IdeaSelectOption, StackGap,
+    Card, Field, Select, SelectOption as IdeaSelectOption, Stack, StackGap, Switch, Typography,
 };
 
 pub use idea_ui_docs_derive::DocControls;

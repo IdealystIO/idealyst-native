@@ -457,10 +457,10 @@ fn emit_element(
     ref_expr: Option<&Expr>,
     children: Option<&[JsxNode]>,
 ) -> TokenStream2 {
-    let lower = crate::case::pascal_to_snake(&name.to_string());
-    // Primitives here are all single-word, so snake-conversion is a
-    // no-op on them — kept for parity with `ui!`'s expanded set.
-    let is_primitive = matches!(lower.as_str(), "text" | "button" | "view" | "when");
+    // Dispatch on the PascalCase tag directly — no `pascal_to_snake`
+    // (parity with `ui!`). Primitives are a fixed PascalCase set.
+    let name_str = name.to_string();
+    let is_primitive = matches!(name_str.as_str(), "Text" | "Button" | "View" | "When");
 
     // Same trick as `ui!`: pull `style` out of the prop list for primitives
     // and emit `.with_style(...)`. User components pass `style = ...` to
@@ -480,11 +480,11 @@ fn emit_element(
         (None, props.iter().collect())
     };
 
-    let inner = match lower.as_str() {
-        "text" => emit_text(&other_props, children),
-        "button" => emit_button(&other_props, children),
-        "view" => emit_view(&other_props, children),
-        "when" => emit_when(&other_props, children),
+    let inner = match name_str.as_str() {
+        "Text" => emit_text(&other_props, children),
+        "Button" => emit_button(&other_props, children),
+        "View" => emit_view(&other_props, children),
+        "When" => emit_when(&other_props, children),
         _ => emit_user(name, props, children),
     };
 
@@ -576,10 +576,9 @@ fn emit_when(props: &[&Prop], _children: Option<&[JsxNode]>) -> TokenStream2 {
 }
 
 fn emit_user(name: &Ident, props: &[Prop], children: Option<&[JsxNode]>) -> TokenStream2 {
-    let lower = Ident::new(
-        &crate::case::pascal_to_snake(&name.to_string()),
-        name.span(),
-    );
+    // Dispatch to the component's real `Name!` macro by its PascalCase
+    // name directly — no `pascal_to_snake` (parity with `ui!`).
+    let macro_name = name;
     let prop_assignments = props.iter().map(|p| {
         let n = &p.name;
         let v = emit_attr_value(&p.value);
@@ -589,7 +588,7 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[JsxNode]>) -> Toke
     if let Some(kids) = children {
         let parts = kids.iter().map(emit_node);
         quote! {
-            #lower!(
+            #macro_name!(
                 #(#prop_assignments,)*
                 children = {
                     let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
@@ -600,7 +599,7 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[JsxNode]>) -> Toke
             )
         }
     } else {
-        quote! { #lower!( #(#prop_assignments),* ) }
+        quote! { #macro_name!( #(#prop_assignments),* ) }
     }
 }
 
@@ -716,7 +715,7 @@ mod tests {
     #[test]
     fn user_component_self_closing() {
         let out = parse_and_emit(quote! { <Counter label="x" value={score} /> });
-        assert!(out.contains("counter !"));
+        assert!(out.contains("Counter !"));
         // String literal gets .into() coercion.
         assert!(out.contains("\"x\" . into ()"));
         // Braced expr passes through verbatim.
@@ -730,9 +729,9 @@ mod tests {
                 <Counter value={s} />
             </Card>
         });
-        assert!(out.contains("card !"));
+        assert!(out.contains("Card !"));
         assert!(out.contains("children ="));
-        assert!(out.contains("counter !"));
+        assert!(out.contains("Counter !"));
     }
 
     #[test]
@@ -749,7 +748,7 @@ mod tests {
         let out = parse_and_emit(quote! {
             <Counter value={s} ref={r} />
         });
-        assert!(out.contains("counter !"));
+        assert!(out.contains("Counter !"));
         assert!(out.contains(". bind (r)"));
     }
 
@@ -929,8 +928,8 @@ mod tests {
                 </>
             </Card>
         });
-        assert!(out.contains("card !"));
-        let counter_count = out.matches("counter !").count();
+        assert!(out.contains("Card !"));
+        let counter_count = out.matches("Counter !").count();
         assert_eq!(counter_count, 2);
     }
 }

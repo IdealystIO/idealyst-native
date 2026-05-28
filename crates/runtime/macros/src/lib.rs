@@ -19,7 +19,6 @@
 //! - `vec![...]` and `children![...]` are special-cased; other list-shaped
 //!   macros are opaque to the reactivity rewriter.
 
-mod case;
 mod component_attr;
 mod invocation_macro;
 mod jsx;
@@ -159,6 +158,13 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
     let mut item_fn = parse_macro_input!(item as ItemFn);
+    // Components read as PascalCase at the `ui!` call site. Authors who
+    // also name the fn itself PascalCase — the "true `fn` component"
+    // style — would otherwise trip Rust's `non_snake_case` lint. Inject
+    // `#[allow(non_snake_case)]` on the generated fn so a `#[component]`
+    // can be PascalCase without a manual allow. No-op for the
+    // conventional snake_case component fn.
+    item_fn.attrs.push(syn::parse_quote!(#[allow(non_snake_case)]));
     // Look for a `methods!` block inside the body and lift it out into
     // a generated handle struct + Bindable wiring. The fn's body and
     // return type are rewritten in place when methods! is present.

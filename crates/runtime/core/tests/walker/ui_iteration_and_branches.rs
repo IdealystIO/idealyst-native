@@ -33,7 +33,7 @@ use std::rc::Rc;
 
 use runtime_core::{on_cleanup, signal, ui, Primitive, Signal};
 
-use crate::common::{Event, TestRuntime};
+use crate::common::{Event, MockBackendConfig, TestRuntime};
 
 /// Plain (non-`#[method]`) helper used by the structured-count test:
 /// `for i in count(sig)` only requires `count` to be a single-segment
@@ -720,4 +720,137 @@ fn static_match_multi_node_arm_flattens_in_children() {
         1,
         "no wrapper around the match arm: {ev:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Anchorless reactive regions (capability-gated) — foundation for the
+// runtime-decided control-flow lowering. NOT wired into the macro yet;
+// exercised here directly via `for x in signal` (→ Primitive::Each).
+// ---------------------------------------------------------------------------
+
+/// With `supports_child_splice`, a reactive region splices its rows
+/// DIRECTLY into the parent — no `create_reactive_anchor` wrapper — and
+/// rebuilds in place by removing exactly its prior rows via
+/// `remove_child`. This is the anchorless boundary that lets static
+/// control flow stay flat on every backend once the macro flips.
+#[test]
+fn anchorless_region_splices_flat_in_place() {
+    let rt = TestRuntime::with_config(MockBackendConfig {
+        supports_child_splice: true,
+        ..Default::default()
+    });
+    let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
+    let tree: Primitive = ui! {
+        View {
+            for x in data {
+                Text { x.to_string() }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    let ev = rt.events();
+    assert_eq!(
+        ev.iter().filter(|e| matches!(e, Event::CreateReactiveAnchor)).count(),
+        0,
+        "anchorless region creates NO wrapper anchor: {ev:?}"
+    );
+    assert_eq!(texts(&ev), vec!["a", "b"], "rows are direct children");
+
+    // Rebuild: prior rows removed one-by-one via remove_child (not
+    // clear_children), new row built — splice in place.
+    rt.backend_mut().clear_events();
+    data.set(vec!["c"]);
+    let ev2 = rt.events();
+    assert_eq!(
+        ev2.iter().filter(|e| matches!(e, Event::RemoveChild { .. })).count(),
+        2,
+        "both prior rows removed via remove_child: {ev2:?}"
+    );
+    assert_eq!(texts(&ev2), vec!["c"], "rebuilt row content");
+    assert_eq!(
+        ev2.iter().filter(|e| matches!(e, Event::CreateReactiveAnchor)).count(),
+        0,
+        "still no anchor on rebuild"
+    );
+}
+
+/// Capability gate: a backend WITHOUT `supports_child_splice` keeps the
+/// anchored path — the same reactive region nests its rows under one
+/// `create_reactive_anchor`. Proves the anchorless behavior is opt-in
+/// and the default (and unmigrated backends) are unaffected.
+#[test]
+fn default_backend_uses_anchored_region() {
+    let rt = TestRuntime::new(); // no splice support
+    let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
+    let tree: Primitive = ui! {
+        View {
+            for x in data {
+                Text { x.to_string() }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    let ev = rt.events();
+    assert_eq!(
+        ev.iter().filter(|e| matches!(e, Event::CreateReactiveAnchor)).count(),
+        1,
+        "without splice support the region uses an anchor: {ev:?}"
+    );
+    assert_eq!(texts(&ev), vec!["a", "b"]);
+}
+
+/// Mid-list correctness: a region with siblings BEFORE and AFTER it
+/// splices at its stable position (`base_index`) via `insert_at`, not
+/// at the end. On rebuild the new rows land before the trailing sibling
+/// and the sibling is left untouched.
+#[test]
+fn anchorless_region_splices_at_position_among_siblings() {
+    let rt = TestRuntime::with_config(MockBackendConfig {
+        supports_child_splice: true,
+        ..Default::default()
+    });
+    let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
+    let tree: Primitive = ui! {
+        View {
+            Text { "header".to_string() }
+            for x in data {
+                Text { x.to_string() }
+            }
+            Text { "footer".to_string() }
+        }
+    };
+    let _owner = rt.render(tree);
+    let ev = rt.events();
+    // header is child 0 (plain insert); the region splices its rows at
+    // base_index 1 → a@1, b@2; footer appends after.
+    let at: Vec<usize> = ev
+        .iter()
+        .filter_map(|e| match e {
+            Event::InsertAt { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(at, vec![1, 2], "region rows splice right after header: {ev:?}");
+    assert_eq!(texts(&ev), vec!["header", "a", "b", "footer"]);
+
+    // Rebuild (shrink to one): remove a,b; splice the new row back at
+    // the region's position (before footer); footer untouched.
+    rt.backend_mut().clear_events();
+    data.set(vec!["c"]);
+    let ev2 = rt.events();
+    assert_eq!(
+        ev2.iter().filter(|e| matches!(e, Event::RemoveChild { .. })).count(),
+        2,
+        "the two prior rows are removed: {ev2:?}"
+    );
+    let reinsert: Vec<usize> = ev2
+        .iter()
+        .filter_map(|e| match e {
+            Event::InsertAt { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reinsert, vec![1], "new row re-spliced at the region's position: {ev2:?}");
+    assert_eq!(count_text(&ev2, "c"), 1, "new row built");
+    assert_eq!(count_text(&ev2, "footer"), 0, "trailing sibling untouched on rebuild");
 }

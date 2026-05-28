@@ -697,79 +697,35 @@ impl ParticleSim {
     fn publish(&self) {
         for p in &self.particles {
             let _ = p.view_ref.with(|handle| {
-                #[cfg(target_arch = "wasm32")]
-                {
-                    if let Some(node) = handle.as_any().downcast_ref::<web_sys::Node>() {
-                        if !p.active {
-                            // Hide inactive slots: scale to 0 so
-                            // they collapse to a point.
-                            crate::web::set_animated_f32(node, AnimProp::Scale, 0.0);
-                            return;
-                        }
-                        // The base view is 100×100 with `transform-origin`
-                        // at its centre (50, 50). We want the *visual*
-                        // centre at `position` — so translate by
-                        // `position - half` and scale to `radius / 50`
-                        // (since the base half-extent is 50 px).
-                        let scale = p.radius / BASE_HALF;
-                        crate::web::set_animated_f32(
-                            node,
-                            AnimProp::TranslateX,
-                            p.position.0 - BASE_HALF,
-                        );
-                        crate::web::set_animated_f32(
-                            node,
-                            AnimProp::TranslateY,
-                            p.position.1 - BASE_HALF,
-                        );
-                        crate::web::set_animated_f32(node, AnimProp::Scale, scale);
-                    }
+                if !p.active {
+                    // Hide inactive slots: scale to 0 so they collapse
+                    // to a point.
+                    handle.set_animated_f32(AnimProp::Scale, 0.0);
+                    return;
                 }
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let _ = handle;
-                }
+                // The base view is 100×100 with `transform-origin` at its
+                // centre (50, 50). We want the *visual* centre at
+                // `position` — so translate by `position - half` and scale
+                // to `radius / 50` (since the base half-extent is 50 px).
+                let scale = p.radius / BASE_HALF;
+                handle.set_animated_f32(AnimProp::TranslateX, p.position.0 - BASE_HALF);
+                handle.set_animated_f32(AnimProp::TranslateY, p.position.1 - BASE_HALF);
+                handle.set_animated_f32(AnimProp::Scale, scale);
             });
         }
         for w in &self.walls {
             let _ = w.view_ref.with(|handle| {
-                #[cfg(target_arch = "wasm32")]
-                {
-                    if let Some(node) = handle.as_any().downcast_ref::<web_sys::Node>() {
-                        if !w.active {
-                            crate::web::set_animated_f32(node, AnimProp::Scale, 0.0);
-                            return;
-                        }
-                        let (rx, ry, rw, rh) = w.rect;
-                        // Same maths as for particles but with
-                        // independent X/Y scales so the rect's
-                        // aspect ratio is preserved.
-                        crate::web::set_animated_f32(
-                            node,
-                            AnimProp::TranslateX,
-                            rx + rw / 2.0 - BASE_HALF,
-                        );
-                        crate::web::set_animated_f32(
-                            node,
-                            AnimProp::TranslateY,
-                            ry + rh / 2.0 - BASE_HALF,
-                        );
-                        crate::web::set_animated_f32(
-                            node,
-                            AnimProp::ScaleX,
-                            rw / BASE_SIZE_PX,
-                        );
-                        crate::web::set_animated_f32(
-                            node,
-                            AnimProp::ScaleY,
-                            rh / BASE_SIZE_PX,
-                        );
-                    }
+                if !w.active {
+                    handle.set_animated_f32(AnimProp::Scale, 0.0);
+                    return;
                 }
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let _ = handle;
-                }
+                let (rx, ry, rw, rh) = w.rect;
+                // Same maths as for particles but with independent X/Y
+                // scales so the rect's aspect ratio is preserved.
+                handle.set_animated_f32(AnimProp::TranslateX, rx + rw / 2.0 - BASE_HALF);
+                handle.set_animated_f32(AnimProp::TranslateY, ry + rh / 2.0 - BASE_HALF);
+                handle.set_animated_f32(AnimProp::ScaleX, rw / BASE_SIZE_PX);
+                handle.set_animated_f32(AnimProp::ScaleY, rh / BASE_SIZE_PX);
             });
         }
     }
@@ -1438,20 +1394,7 @@ fn drive_via_ref(av: &AnimatedValue<f32>, view_ref: Ref<ViewHandle>, prop: AnimP
     let sub = av.subscribe_and_apply(move |v, _vel| {
         let value = *v;
         view_ref.with(|handle| {
-            // Native targets receive the same listener but lack the
-            // web-side helper; the `cfg` block ensures the example
-            // crate builds for ios / android while only the web
-            // path performs the actual property write.
-            #[cfg(target_arch = "wasm32")]
-            {
-                if let Some(node) = handle.as_any().downcast_ref::<web_sys::Node>() {
-                    crate::web::set_animated_f32(node, prop, value);
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let _ = (handle, value, prop);
-            }
+            handle.set_animated_f32(prop, value);
         });
     });
     Box::leak(Box::new(sub));

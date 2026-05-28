@@ -41,11 +41,18 @@ struct PropsType {
 pub(crate) fn generate_invocation_macro(item_fn: &ItemFn, attr: &ComponentAttr) -> TokenStream2 {
     let fn_name = &item_fn.sig.ident;
 
+    // The invocation macro is named after the fn ident DIRECTLY — no
+    // case transform. `ui!` resolves a `Name(...)` call site by emitting
+    // `Name!(...)` verbatim, so the macro name must equal the fn name.
+    // Components are therefore PascalCase fns (`fn Typography`) whose
+    // macro is `Typography!`; the macro BODY calls the real `fn_name`.
+    let macro_name = fn_name;
+
     // No props: emit a thin invocation macro that just calls the fn.
     // Lets `ui!` write `Summary()` (which lowers to `summary!()`) for
     // components that take no arguments.
     if item_fn.sig.inputs.is_empty() {
-        return emit_no_args_macro(fn_name);
+        return emit_no_args_macro(&macro_name, fn_name);
     }
 
     let Some(props_type) = props_type_from_sig(&item_fn.sig) else {
@@ -56,18 +63,18 @@ pub(crate) fn generate_invocation_macro(item_fn: &ItemFn, attr: &ComponentAttr) 
     let amp = if props_type.by_ref { quote!(&) } else { quote!() };
 
     if defaults.is_empty() {
-        return emit_trivial_macro(fn_name, &amp, path);
+        return emit_trivial_macro(&macro_name, fn_name, &amp, path);
     }
-    emit_tt_munching_macro(fn_name, &amp, path, defaults)
+    emit_tt_munching_macro(&macro_name, fn_name, &amp, path, defaults)
 }
 
 /// Zero-prop invocation macro: `name!()` (or `name!(children = ...)`
 /// if the component accepts children, though no-arg components
 /// can't, by definition — we accept the form for parser uniformity).
-fn emit_no_args_macro(fn_name: &Ident) -> TokenStream2 {
+fn emit_no_args_macro(macro_name: &Ident, fn_name: &Ident) -> TokenStream2 {
     quote! {
         #[allow(unused_macros)]
-        macro_rules! #fn_name {
+        macro_rules! #macro_name {
             () => { #fn_name() };
             // Accept (and ignore) a `children = …` clause so the
             // ui! emitter's user-component path doesn't error on
@@ -80,13 +87,14 @@ fn emit_no_args_macro(fn_name: &Ident) -> TokenStream2 {
 
 /// Fast path: no defaults, straight pass-through macro.
 fn emit_trivial_macro(
+    macro_name: &Ident,
     fn_name: &Ident,
     amp: &TokenStream2,
     path: &TokenStream2,
 ) -> TokenStream2 {
     quote! {
         #[allow(unused_macros)]
-        macro_rules! #fn_name {
+        macro_rules! #macro_name {
             ($($name:ident = $value:expr),* $(,)?) => {
                 #fn_name(#amp #path {
                     $($name: $value),*
@@ -106,6 +114,7 @@ fn emit_trivial_macro(
 ///   match (chop and recurse), remaining empty (insert default into fill).
 /// The chain ends at `@__done`, which emits the struct literal.
 fn emit_tt_munching_macro(
+    macro_name: &Ident,
     fn_name: &Ident,
     amp: &TokenStream2,
     path: &TokenStream2,
@@ -132,7 +141,7 @@ fn emit_tt_munching_macro(
                 user_fields   [ $($uf:tt)* ]
                 fill          [ $($f:tt)* ]
             ) => {
-                #fn_name!(@#find_label
+                #macro_name!(@#find_label
                     remaining     [ $($u)* ]
                     user_idents   [ $($u)* ]
                     user_fields   [ $($uf)* ]
@@ -149,7 +158,7 @@ fn emit_tt_munching_macro(
                 user_fields   [ $($uf:tt)* ]
                 fill          [ $($f:tt)* ]
             ) => {
-                #fn_name!(@#next_step
+                #macro_name!(@#next_step
                     user_idents   [ $($u)* ]
                     user_fields   [ $($uf)* ]
                     fill          [ $($f)* ]
@@ -165,7 +174,7 @@ fn emit_tt_munching_macro(
                 user_fields   [ $($uf:tt)* ]
                 fill          [ $($f:tt)* ]
             ) => {
-                #fn_name!(@#find_label
+                #macro_name!(@#find_label
                     remaining     [ $($rest)* ]
                     user_idents   [ $($u)* ]
                     user_fields   [ $($uf)* ]
@@ -182,7 +191,7 @@ fn emit_tt_munching_macro(
                 user_fields   [ $($uf:tt)* ]
                 fill          [ $($f:tt)* ]
             ) => {
-                #fn_name!(@#next_step
+                #macro_name!(@#next_step
                     user_idents   [ $($u)* ]
                     user_fields   [ $($uf)* ]
                     fill          [ $($f)* #name: #expr, ]
@@ -195,10 +204,10 @@ fn emit_tt_munching_macro(
 
     quote! {
         #[allow(unused_macros)]
-        macro_rules! #fn_name {
+        macro_rules! #macro_name {
             // Public entry.
             ($($name:ident = $value:expr),* $(,)?) => {
-                #fn_name!(@#first_step
+                #macro_name!(@#first_step
                     user_idents   [ $($name)* ]
                     user_fields   [ $($name: $value,)* ]
                     fill          [ ]
@@ -207,7 +216,7 @@ fn emit_tt_munching_macro(
 
             #(#helper_arms)*
 
-            // Terminal: emit the struct literal.
+            // Terminal: emit the struct literal by calling the real fn.
             (@__done
                 user_idents   [ $($_u:ident)* ]
                 user_fields   [ $($uf:tt)* ]

@@ -1,7 +1,7 @@
 //! Robot & MCP — first-class automation and agentic control.
 
 use runtime_core::{ui, Primitive, Ref, ViewHandle};
-use idea_ui::{stack, typography, StackGap};
+use idea_ui::{Stack, Typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
@@ -78,7 +78,7 @@ fn e2e_tests() -> Primitive {
 }
 
 fn methods_macro() -> Primitive {
-    let snippet = "#[component]\npub fn cart(props: &CartProps) -> Primitive {\n    \
+    let snippet = "#[component]\npub fn Cart(props: &CartProps) -> Primitive {\n    \
                        let items = signal!(Vec::<Item>::new());\n    \
                        \n    \
                        methods! {\n        \

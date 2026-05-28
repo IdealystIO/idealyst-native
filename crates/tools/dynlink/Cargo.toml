@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["shared", "main", "side", "mainbg", "mainweb"]
+
+[profile.release]
+panic = "abort"
+opt-level = "z"

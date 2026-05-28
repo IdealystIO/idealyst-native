@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use runtime_core::{signal, ui, Primitive};
 use idea_ui::doc_controls::DocControls;
-use idea_ui::{avatar, typography, card, stack, tabs, AvatarProps, StackGap, Tab};
+use idea_ui::{Avatar, Typography, Card, Stack, Tabs, AvatarProps, StackGap, Tab};
 
 use crate::shell::{demo_card, page_header};
 

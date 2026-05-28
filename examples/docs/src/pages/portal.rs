@@ -5,9 +5,9 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
+use crate::shell::{CodeBlock, PageHeader, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
-use idea_ui::{typography, card, stack};
+use idea_ui::{Typography, Card, Stack};
 
 docs! {
     slug = "portal",

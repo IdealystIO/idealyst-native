@@ -482,29 +482,27 @@ fn emit_component(
     children: Option<&[UiNode]>,
     chain: &[TokenStream2],
 ) -> TokenStream2 {
-    let lower = crate::case::pascal_to_snake(&name.to_string());
-    // For primitives, special-case two props that attach as method
-    // calls rather than constructor arguments:
-    //   - `style = ...` → `.with_style(...)`
-    //   - `disabled = ...` → `.disabled(...)` (Button only)
-    // Other builder methods (`.bind(...)`, etc.) belong in the
-    // trailing chain — parsed separately.
-    // `Pressable` is deliberately omitted: that tag is owned by
-    // idea-ui's styled component (which wraps the framework's
-    // `pressable` primitive internally). User code that wants the
-    // bare primitive calls `runtime_core::pressable(...)`.
+    // Dispatch on the PascalCase tag DIRECTLY — no `pascal_to_snake`
+    // transform. Framework primitives are a fixed, closed set matched by
+    // their PascalCase name; everything else is a user/library
+    // `#[component]`, dispatched to its real `Name!` macro via
+    // `emit_user` (real macro-name resolution → import-renames,
+    // qualified paths, and IDE nav all work).
     //
-    // Primitive names are snake_case to match `pascal_to_snake`'s
-    // output — `TextInput` → `text_input`, `ScrollView` → `scroll_view`,
-    // and so on.
+    // For primitives, two props attach as method calls rather than
+    // constructor args: `style = …` → `.with_style(…)`, and
+    // `disabled = …` → `.disabled(…)` (Button only). `Pressable` is
+    // deliberately omitted: that tag is owned by idea-ui's styled
+    // component; bare-primitive users call `runtime_core::pressable(...)`.
+    let name_str = name.to_string();
     let is_primitive = matches!(
-        lower.as_str(),
-        "text" | "button" | "view" | "when"
-        | "image" | "icon" | "text_input" | "toggle" | "scroll_view"
-        | "slider" | "web_view" | "activity_indicator"
-        | "flat_list" | "link" | "overlay" | "anchored_overlay" | "presence"
+        name_str.as_str(),
+        "Text" | "Button" | "View" | "When"
+        | "Image" | "Icon" | "TextInput" | "Toggle" | "ScrollView"
+        | "Slider" | "WebView" | "ActivityIndicator"
+        | "FlatList" | "Link" | "Overlay" | "AnchoredOverlay" | "Presence"
     );
-    let supports_disabled = lower.as_str() == "button";
+    let supports_disabled = name_str.as_str() == "Button";
 
     let (style_prop, disabled_prop, other_props): (Vec<&Prop>, Vec<&Prop>, Vec<&Prop>) = if is_primitive {
         let mut style = None;
@@ -537,26 +535,26 @@ fn emit_component(
         })
         .collect();
 
-    let inner = match lower.as_str() {
-        "text" => emit_text(&other_props, children),
-        "button" => emit_button(&other_props, children),
-        "view" => emit_view(&other_props, children),
-        "when" => emit_when(&other_props, children),
-        "icon" => emit_icon(&other_props, children),
-        "image" => emit_image(&other_props, children),
-        "text_input" => emit_text_input(&other_props, children),
-        "toggle" => emit_toggle(&other_props, children),
-        "scroll_view" => emit_scroll_view(&other_props, children),
-        "slider" => emit_slider(&other_props, children),
-        "activity_indicator" => emit_activity_indicator(&other_props, children),
-        "flat_list" => emit_flat_list(&other_props, children),
-        "graphics" => emit_graphics(&other_props, children),
-        "link" => emit_link(&other_props, children),
-        "overlay" => emit_overlay(&other_props, children),
-        "anchored_overlay" => emit_anchored_overlay(&other_props, children),
-        "presence" => emit_presence(&other_props, children),
-        "drawer_navigator" => emit_drawer_navigator(&other_props, children),
-        "card_tabs" => emit_card_tabs(&other_props, children),
+    let inner = match name_str.as_str() {
+        "Text" => emit_text(&other_props, children),
+        "Button" => emit_button(&other_props, children),
+        "View" => emit_view(&other_props, children),
+        "When" => emit_when(&other_props, children),
+        "Icon" => emit_icon(&other_props, children),
+        "Image" => emit_image(&other_props, children),
+        "TextInput" => emit_text_input(&other_props, children),
+        "Toggle" => emit_toggle(&other_props, children),
+        "ScrollView" => emit_scroll_view(&other_props, children),
+        "Slider" => emit_slider(&other_props, children),
+        "ActivityIndicator" => emit_activity_indicator(&other_props, children),
+        "FlatList" => emit_flat_list(&other_props, children),
+        "Graphics" => emit_graphics(&other_props, children),
+        "Link" => emit_link(&other_props, children),
+        "Overlay" => emit_overlay(&other_props, children),
+        "AnchoredOverlay" => emit_anchored_overlay(&other_props, children),
+        "Presence" => emit_presence(&other_props, children),
+        "DrawerNavigator" => emit_drawer_navigator(&other_props, children),
+        "CardTabs" => emit_card_tabs(&other_props, children),
         _ => emit_user(name, props, children),
     };
 
@@ -1436,10 +1434,11 @@ fn emit_flat_list(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 
 /// the per-component macro generated by `#[component]`. Children block (if
 /// present) becomes the `children` prop, wrapped in `children![...]`.
 fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
-    let lower = Ident::new(
-        &crate::case::pascal_to_snake(&name.to_string()),
-        name.span(),
-    );
+    // Dispatch to the component's real `Name!` macro by its PascalCase
+    // name directly — no `pascal_to_snake`. This resolves through normal
+    // macro-name resolution, so renamed imports (`use … as Foo`),
+    // qualified paths, and IDE go-to-definition work.
+    let macro_name = name;
     let prop_assignments = props.iter().map(|p| {
         let n = &p.name;
         let v = emit_attr_value(&p.value);
@@ -1453,7 +1452,7 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> Token
         // intentional; we don't try to be polymorphic across children types
         // for user components in this first cut.
         quote! {
-            #lower!(
+            #macro_name!(
                 #(#prop_assignments,)*
                 children = {
                     let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
@@ -1464,7 +1463,7 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> Token
             )
         }
     } else {
-        quote! { #lower!( #(#prop_assignments),* ) }
+        quote! { #macro_name!( #(#prop_assignments),* ) }
     }
 }
 
@@ -2383,9 +2382,12 @@ mod tests {
     }
 
     #[test]
-    fn user_component_dispatches_to_lower_macro() {
+    fn user_component_dispatches_to_same_name_macro() {
+        // Transform-free dispatch: `Counter(...)` lowers to the
+        // verbatim `Counter !(...)` macro — no case transform.
         let out = parse_and_emit(quote! { Counter(label = "x", value = score) });
-        assert!(out.contains("counter !"));
+        assert!(out.contains("Counter !"));
+        assert!(!out.contains("counter !"));
     }
 
     #[test]
@@ -2409,7 +2411,7 @@ mod tests {
                 Counter(value = s)
             }
         });
-        assert!(out.contains("card !"));
+        assert!(out.contains("Card !"));
         assert!(out.contains("children ="));
         assert!(out.contains("ChildList :: append_to"));
     }
@@ -2477,14 +2479,17 @@ mod tests {
     }
 
     #[test]
-    fn for_loop_emits_vec_collection() {
+    fn for_loop_emits_type_driven_dispatch() {
         let out = parse_and_emit(quote! {
             for n in items {
                 Text { "x" }
             }
         });
-        // For loops desugar to a Vec<Primitive>.
-        assert!(out.contains("for n in items"));
+        // For loops lower to the type-driven `__idealyst_for_each`
+        // dispatch (StaticForEach / ReactiveForEach), not a literal
+        // `for`. Each iteration appends flat siblings into a row Vec.
+        assert!(out.contains("__idealyst_for_each"));
+        assert!(out.contains("move | n |"));
         assert!(out.contains("ChildList :: append_to"));
     }
 
@@ -2506,9 +2511,9 @@ mod tests {
                 Counter(value = t)
             }
         });
-        // Both counter calls appear, and the wrapping ChildList::append_to
+        // Both Counter calls appear, and the wrapping ChildList::append_to
         // ensures they flatten into Vec<Primitive>.
-        let count = out.matches("counter !").count();
+        let count = out.matches("Counter !").count();
         assert_eq!(count, 2);
     }
 }

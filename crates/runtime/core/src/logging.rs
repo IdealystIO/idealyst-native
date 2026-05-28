@@ -5,15 +5,16 @@
 //! considers its log channel." Hosts register an impl via
 //! [`install_logger`] at init.
 //!
-//! Without an installed logger:
-//! - On **native** targets, falls back to `eprintln!` with a
-//!   `[LEVEL] msg` prefix so messages still surface in terminal hosts
-//!   and test runs.
-//! - On **wasm32**, drops the message silently. The web backend
-//!   installs a `console.{debug,info,warn,error}`-backed logger early
-//!   during bootstrap, so author code that runs after `mount(...)`
-//!   sees real console output. Before install, dropping is safer than
-//!   panicking — logging must never be the thing that crashes a build.
+//! Without an installed logger, [`log`] falls back to [`StderrLogger`]
+//! — a platform-agnostic default that writes `[LEVEL] msg` to stderr.
+//! There is deliberately **no `#[cfg(target_arch)]` branch** in core:
+//! `eprintln!` is a std API and std maps stderr per target, so the
+//! same call surfaces in terminal hosts / `cargo test` runs on native
+//! and silently discards on `wasm32-unknown-unknown` (whose std stderr
+//! is a no-op sink that returns `Ok` on write — it never panics). The
+//! web backend installs a `console.{debug,info,warn,error}`-backed
+//! logger early during bootstrap, so on web the fallback is never
+//! reached from app code.
 //!
 //! # Pattern parallel
 //!
@@ -57,7 +58,33 @@ pub trait Logger: Send + Sync {
     fn log(&self, level: LogLevel, msg: &str);
 }
 
+/// Default [`Logger`] for hosts that haven't installed one. Emits
+/// `[LEVEL] msg` to stderr via `eprintln!` so terminal hosts and
+/// `cargo test` runs still surface messages with zero config.
+///
+/// Platform-agnostic by construction — this is why core needs no
+/// `#[cfg(target_arch)]` to handle it. `eprintln!` is a std API and
+/// std maps stderr per target: a real terminal on native, a no-op
+/// sink (write returns `Ok`, never panics) on
+/// `wasm32-unknown-unknown`. Backends with a richer native channel
+/// (web `console.*`, Apple `NSLog`, Android `__android_log_print`)
+/// install their own [`Logger`], which wins via the
+/// first-install-wins `OnceLock` in [`install_logger`].
+pub struct StderrLogger;
+
+impl Logger for StderrLogger {
+    fn log(&self, level: LogLevel, msg: &str) {
+        eprintln!("[{}] {}", level.tag(), msg);
+    }
+}
+
 static LOGGER: OnceLock<Box<dyn Logger>> = OnceLock::new();
+
+/// Process-wide fallback used until a backend installs its own
+/// [`Logger`]. Routes through [`StderrLogger`] so the no-logger path
+/// is expressed via the same `Logger` abstraction backends implement
+/// — not an ad-hoc platform branch.
+const DEFAULT_LOGGER: StderrLogger = StderrLogger;
 
 /// Register the active backend's logger. First call wins; subsequent
 /// calls are silently ignored. Backends typically call this from the
@@ -76,23 +103,15 @@ pub fn is_logger_installed() -> bool {
 }
 
 /// Emit `msg` at `level`. Uses the installed [`Logger`] if present;
-/// otherwise falls back to `eprintln!` on native and a silent drop on
-/// wasm32. The per-level macros ([`log_debug!`], [`log_info!`],
-/// [`log_warn!`], [`log_error!`]) are the ergonomic entry points and
-/// support `format!`-style argument lists; call this function
-/// directly when you already have a `&str` in hand.
+/// otherwise routes through the [`DEFAULT_LOGGER`] ([`StderrLogger`]).
+/// The per-level macros ([`log_debug!`], [`log_info!`], [`log_warn!`],
+/// [`log_error!`]) are the ergonomic entry points and support
+/// `format!`-style argument lists; call this function directly when
+/// you already have a `&str` in hand.
 pub fn log(level: LogLevel, msg: &str) {
-    if let Some(l) = LOGGER.get() {
-        l.log(level, msg);
-        return;
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        eprintln!("[{}] {}", level.tag(), msg);
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = (level, msg);
+    match LOGGER.get() {
+        Some(l) => l.log(level, msg),
+        None => DEFAULT_LOGGER.log(level, msg),
     }
 }
 
@@ -136,12 +155,12 @@ mod tests {
     //! filters by a unique marker rather than relying on absolute
     //! indices.
     //!
-    //! The native fallback (`eprintln!`) cannot be exercised here in
-    //! the same binary because installing the capturing logger
-    //! permanently shadows it. That path is covered by hand-running
-    //! `cargo test` without a logger installed — see the
-    //! `level_tag_strings` test which exercises the fallback's
-    //! formatting helper directly.
+    //! The `log()` fallback (`DEFAULT_LOGGER`) cannot be exercised
+    //! through `log()` here in the same binary because installing the
+    //! capturing logger permanently shadows it. Instead,
+    //! `stderr_logger_does_not_panic` drives [`StderrLogger`] directly
+    //! — the type the fallback routes through — which is what proves
+    //! the no-`#[cfg]` default is safe to call on every target.
     use super::*;
     use std::sync::Mutex;
 
@@ -165,6 +184,19 @@ mod tests {
             buf.drain(..).partition(|(_, m)| m.contains(marker));
         *buf = rest;
         matched
+    }
+
+    #[test]
+    fn stderr_logger_does_not_panic() {
+        // The `log()` no-logger fallback routes through this. It must
+        // be callable on every target without a `#[cfg]` guard — on
+        // native it writes to stderr, on wasm32 std's stderr sink
+        // discards the write (returns `Ok`) rather than panicking.
+        // Exercising the type directly sidesteps the OnceLock (which a
+        // prior test may have filled with the capturing logger).
+        let logger = StderrLogger;
+        logger.log(LogLevel::Debug, "logging::tests::stderr_logger_does_not_panic");
+        logger.log(LogLevel::Error, "logging::tests::stderr_logger_does_not_panic");
     }
 
     #[test]

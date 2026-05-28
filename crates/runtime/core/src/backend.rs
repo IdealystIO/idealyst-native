@@ -1179,6 +1179,55 @@ pub trait Backend {
     /// the active branch flips and the old subtree needs to be unmounted.
     fn clear_children(&mut self, node: &Self::Node);
 
+    /// Capability flag for ANCHORLESS reactive regions. When `true`, the
+    /// framework can splice a reactive control-flow region's children
+    /// directly into the parent — adding/removing exactly the region's
+    /// own nodes via [`remove_child`](Self::remove_child) — instead of
+    /// nesting them under a [`create_reactive_anchor`](Self::create_reactive_anchor)
+    /// wrapper. This keeps reactive `for`/`if`/`match` children as FLAT
+    /// siblings on every backend (the web anchor is already
+    /// `display:contents`-transparent; native backends have no such
+    /// thing, so anchorless splicing is how they avoid a wrapper view).
+    ///
+    /// Default `false`: backends keep the anchored region path
+    /// (`create_reactive_anchor` + `clear_children` + re-insert) until
+    /// they implement [`remove_child`](Self::remove_child) and opt in
+    /// here. This is the gate for the runtime-decided / heuristic-free
+    /// control-flow lowering — a backend reporting `false` is unaffected
+    /// by it.
+    fn supports_child_splice(&self) -> bool {
+        false
+    }
+
+    /// Remove a *specific* `child` from `parent` (unlike
+    /// [`clear_children`](Self::clear_children), which removes all).
+    /// Used by anchorless reactive regions to unmount exactly the rows
+    /// they previously inserted before rebuilding, leaving sibling
+    /// content (and other regions' rows) in place.
+    ///
+    /// Default is a no-op — only meaningful for backends that return
+    /// `true` from [`supports_child_splice`](Self::supports_child_splice);
+    /// the framework never calls it otherwise.
+    #[allow(unused_variables)]
+    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
+        // default: no-op
+    }
+
+    /// Insert `child` into `parent` at `index` among its current
+    /// children (clamped to the end if `index` exceeds the child
+    /// count). Companion to [`remove_child`](Self::remove_child): an
+    /// anchorless reactive region uses it to splice its rows at the
+    /// region's stable position, so a region with trailing siblings
+    /// rebuilds in the right place instead of appending to the end.
+    ///
+    /// Default falls back to [`insert`](Self::insert) (append) — only
+    /// meaningful for backends that return `true` from
+    /// [`supports_child_splice`](Self::supports_child_splice).
+    #[allow(unused_variables)]
+    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
+        self.insert(parent, child);
+    }
+
     /// Apply a resolved style to a node. The framework has already run
     /// the stylesheet's closure against the active theme; the backend
     /// receives concrete `StyleRules` with literal values.

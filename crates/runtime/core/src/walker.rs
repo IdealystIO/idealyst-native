@@ -154,7 +154,16 @@ where
     // branch on host via `runtime_core::platform()` without
     // holding a Backend reference. Same one-shot read as above —
     // Backend impls return a constant per instance.
-    crate::backend::install_current_platform(backend.borrow().platform());
+    let platform = backend.borrow().platform();
+    crate::backend::install_current_platform(platform);
+
+    // Install the platform-appropriate default monotonic clock unless
+    // the host already wired one. Native hosts get an
+    // `InstantTimeSource`; `Web` is skipped (its backend installs a
+    // `performance.now()` source during bootstrap, and `Instant::now()`
+    // panics on wasm). Branching on the runtime `Platform` here keeps
+    // the clock free of a `#[cfg(target_arch)]` fallback.
+    crate::time::install_default_time_source(platform);
 
     // Stash the backend's external-URL opener so author code can fire
     // `runtime_core::open_url(...)` from any event handler without a

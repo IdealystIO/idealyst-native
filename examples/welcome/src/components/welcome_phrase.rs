@@ -33,7 +33,7 @@ pub struct WelcomePhraseProps {
 }
 
 #[component]
-pub fn welcome_phrase(props: &WelcomePhraseProps) -> Primitive {
+pub fn WelcomePhrase(props: &WelcomePhraseProps) -> Primitive {
     let refs = props.refs;
     let wrapper = wrapper_sheet();
     let headline = headline_sheet();

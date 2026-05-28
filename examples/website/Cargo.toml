@@ -70,9 +70,15 @@ backend-ios-mobile = { workspace = true }
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 backend-android-mobile = { workspace = true }
 
-# Terminal fallback — all examples in this repo build on the terminal
-# backend by default, so the website does too.
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
+# macOS desktop — AppKit backend. `drawer_navigator::register` resolves
+# to its macOS impl (`&mut MacosBackend`) on this host, so the example's
+# `register_extensions` must take the same type.
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+# Terminal fallback — all non-mobile, non-wasm, non-macOS hosts build on
+# the terminal backend by default, so the website does too.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
 backend-terminal = { workspace = true }
 
 [package.metadata.wasm-pack.profile.release]

@@ -1447,6 +1447,7 @@ version = "0.0.1"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-macos",
  "backend-terminal",
  "backend-web",
  "console_error_panic_hook",
@@ -4571,6 +4572,18 @@ name = "reactive-arena"
 version = "0.0.1"
 
 [[package]]
+name = "reactive-loops"
+version = "0.0.1"
+dependencies = [
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-terminal",
+ "backend-web",
+ "idea-ui",
+ "runtime-core",
+]
+
+[[package]]
 name = "reactive-refs"
 version = "0.0.1"
 
@@ -5490,6 +5503,7 @@ version = "0.0.1"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-macos",
  "backend-terminal",
  "backend-web",
  "idea-ui",
@@ -6933,6 +6947,7 @@ dependencies = [
  "android-sim",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-macos",
  "backend-terminal",
  "backend-web",
  "drawer-navigator",

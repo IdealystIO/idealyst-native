@@ -28,7 +28,7 @@
 use std::rc::Rc;
 
 use runtime_core::{component, signal, switch, ui, view, Primitive, Signal};
-use idea_ui::{card, tabs, Tab, TabPanel, TabsProps};
+use idea_ui::{Card, tabs, Tab, TabPanel, TabsProps};
 
 /// Props delivered by the `cardtabs!` invocation macro. Each entry
 /// is a `(label, render_closure)` pair — the macro wraps each
@@ -46,7 +46,7 @@ impl Default for CardTabsProps {
 }
 
 #[component]
-pub fn cardtabs(props: CardTabsProps) -> Primitive {
+pub fn CardTabs(props: CardTabsProps) -> Primitive {
     // Local Signal owns the active-tab index. Lives in the
     // component's reactive scope, so it survives across re-renders
     // triggered by parent updates but tears down when the

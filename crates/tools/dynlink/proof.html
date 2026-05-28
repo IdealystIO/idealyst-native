@@ -1,0 +1,47 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"/><title>dynlink browser proof</title></head>
+<body>
+<pre id="out">running…
+</pre>
+<script type="module">
+// Non-bindgen dynamic-link proof in a REAL browser: same loader.mjs +
+// artifacts as node's test_primitive.mjs, but exercising browser wasm
+// validation, streaming compile, and shared-table growth. No bindgen on
+// the side → no importmap needed.
+import { loadSide } from "./loader.mjs";
+
+const out = document.getElementById("out");
+const log = (s) => { out.textContent += s + "\n"; };
+
+try {
+  const dir = "target/wasm32-unknown-unknown/release/";
+  const main = await WebAssembly.instantiate(
+    await WebAssembly.compileStreaming(fetch(dir + "dynlink_main.wasm")), {},
+  );
+  main.exports.__wasm_call_ctors?.();
+  main.exports.main_signal(); // init main's reactive statics
+
+  const sideMod = await WebAssembly.compileStreaming(fetch(dir + "dynlink_side.wasm"));
+  const { side, unresolved } = await loadSide(main, sideMod);
+  log("unresolved imports : " + unresolved.length);
+
+  // shared static + reactive-in-side
+  log("main_bump=" + main.exports.main_bump());
+  log("side_bump=" + side.exports.side_bump() + " (shared static +10)");
+  log("side_signal=" + side.exports.side_signal() + " (runtime-core reactive in side)");
+
+  // the lazy-UI mechanic: side builds a Primitive, main's walker mounts it
+  const ptr = side.exports.side_make_view();
+  const result = main.exports.main_render_side(ptr);
+  const texts = Math.trunc(result / 1000), bytes = result % 1000;
+  log("main_render_side => texts=" + texts + " bytes=" + bytes);
+
+  const ok = unresolved.length === 0 && texts === 1 && bytes === 18;
+  log(ok ? "BROWSER PASS ✓ side-built View>Text mounted by main's walker"
+         : "BROWSER FAIL");
+  window.__RESULT__ = { ok, texts, bytes, unresolved: unresolved.length };
+} catch (e) {
+  log("ERROR: " + (e && e.stack ? e.stack : e));
+  window.__RESULT__ = { ok: false, error: String(e) };
+}
+</script>
+</body></html>

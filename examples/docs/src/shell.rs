@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use runtime_core::{component, ui, Primitive, SafeAreaSides, Signal, StyleApplication};
 use drawer_navigator::DrawerSlotProps;
-use idea_ui::{typography, card, dark_theme, divider, light_theme, set_idea_theme, stack, switch, StackGap, StackPadding};
+use idea_ui::{Typography, Card, dark_theme, Divider, light_theme, set_idea_theme, Stack, Switch, StackGap, StackPadding};
 
 use crate::routes::SECTIONS;
 use crate::styles::{
@@ -370,7 +370,7 @@ pub struct PageTypographyProps {
 /// page layout. If you need a one-off override, hand-roll the
 /// `ScrollView { Stack(...) { ... } }` instead.
 #[component]
-pub fn page_body(props: PageTypographyProps) -> Primitive {
+pub fn PageBody(props: PageTypographyProps) -> Primitive {
     let children = props.children;
     ui! {
         ScrollView {
@@ -390,7 +390,7 @@ pub struct PageHeaderProps {
 /// `PageHeader(title = "...", description = "...")` — the H1 + subtitle
 /// every page opens with.
 #[component]
-pub fn page_header(props: PageHeaderProps) -> Primitive {
+pub fn PageHeader(props: PageHeaderProps) -> Primitive {
     let title = props.title;
     let description = props.description;
     let children: Vec<Primitive> = vec![
@@ -413,7 +413,7 @@ pub struct SectionProps {
 /// also has a code sample, or compose a `Card { ... }` by hand for
 /// richer layouts.
 #[component]
-pub fn section(props: SectionProps) -> Primitive {
+pub fn Section(props: SectionProps) -> Primitive {
     let title = props.title;
     let body_text = props.body;
     ui! {
@@ -434,7 +434,7 @@ pub struct SectionWithCodeProps {
 /// `SectionWithCode(title = "...", body = "...", code = "...")` —
 /// section card with a code block under the prose.
 #[component]
-pub fn section_with_code(props: SectionWithCodeProps) -> Primitive {
+pub fn SectionWithCode(props: SectionWithCodeProps) -> Primitive {
     let title = props.title;
     let body_text = props.body;
     let code_text = props.code;
@@ -461,7 +461,7 @@ pub struct CodeBlockProps {
 /// chrome. Use inside a hand-rolled `Card { ... }` when you need
 /// multiple code blocks or interleaved prose.
 #[component]
-pub fn code_block(props: CodeBlockProps) -> Primitive {
+pub fn CodeBlock(props: CodeBlockProps) -> Primitive {
     let code_text = props.code;
     let code_style = CodeBlockSheet();
     let code_text_style = CodeBlockText();

@@ -22,7 +22,7 @@ Mark a function with `#[component]` and you get a reusable unit you can drop int
 
 ```rust
 #[component]
-pub fn greeting(name: &str) -> Primitive {
+pub fn Greeting(name: &str) -> Primitive {
     ui! {
         Text(text_fmt!("Hello, {}!", name))
     }
@@ -36,7 +36,7 @@ ui! {
 
 The `#[component]` macro:
 - Rewrites the body for reactivity (signals capture into closures correctly).
-- Emits a sibling `greeting!` invocation macro for use inside `ui!`.
+- Emits a sibling `Greeting!` invocation macro (same PascalCase name — dispatch is transform-free) for use inside `ui!`.
 - Registers a [[ComponentEntry]] into the MCP catalog so AI/tooling can discover it.
 
 ## 3. Style — orthogonal to structure

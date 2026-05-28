@@ -228,7 +228,7 @@ fn default_profile() -> DeviceProfile {
     profile = None,
     chassis = true,
 ))]
-pub fn simulator(props: SimulatorProps) -> Primitive {
+pub fn Simulator(props: SimulatorProps) -> Primitive {
     let SimulatorProps {
         build_ui,
         skin,

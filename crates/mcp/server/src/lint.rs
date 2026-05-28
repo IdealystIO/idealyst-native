@@ -59,12 +59,9 @@ pub fn run(cat: &ResolvedCatalog) -> Vec<LintFinding> {
                 EdgeStatus::NoMatch => {
                     // Built-in primitives like `View` / `Text` aren't
                     // catalog entries, so they'll always show
-                    // unresolved. Suppress those — they're not a
-                    // user authoring issue. Anything starting with a
-                    // lowercase letter (i.e. NOT framework primitives
-                    // which are exclusively single-word lowercase via
-                    // pascal_to_snake) is a legitimate user reference
-                    // and should be flagged.
+                    // unresolved. Suppress those — they're not a user
+                    // authoring issue. Any other unresolved reference is
+                    // a real typo / dangling edge and should be flagged.
                     if is_framework_primitive(edge.raw_name) {
                         continue;
                     }
@@ -100,47 +97,19 @@ pub fn run(cat: &ResolvedCatalog) -> Vec<LintFinding> {
 
 /// Match the framework's built-in primitives — these have no
 /// `#[component]` entry and *should* show as unresolved in the
-/// catalog without that being flagged as a problem. Keep this list
-/// in sync with `crates/framework/macros/src/ui.rs`'s primitive
-/// match arms.
+/// catalog without that being flagged as a problem. The framework's
+/// dispatch is transform-free, so a primitive call site is its exact
+/// PascalCase name; match those directly. Keep this list in sync with
+/// `crates/runtime/macros/src/ui.rs`'s primitive match arms.
 fn is_framework_primitive(raw_name: &str) -> bool {
-    // Apply the same conversion `ui!` would use at dispatch time so
-    // a `PascalCase` call site is recognised regardless of where
-    // the underscore boundaries fall.
-    let snake = pascal_to_snake(raw_name);
     matches!(
-        snake.as_str(),
-        "text" | "button" | "view" | "when"
-            | "image" | "icon" | "text_input" | "toggle" | "scroll_view"
-            | "slider" | "web_view" | "video" | "activity_indicator"
-            | "flat_list" | "link" | "overlay" | "anchored_overlay" | "presence"
-            | "graphics" | "drawer_navigator" | "card_tabs"
+        raw_name,
+        "Text" | "Button" | "View" | "When"
+            | "Image" | "Icon" | "TextInput" | "Toggle" | "ScrollView"
+            | "Slider" | "WebView" | "Video" | "ActivityIndicator"
+            | "FlatList" | "Link" | "Overlay" | "AnchoredOverlay" | "Presence"
+            | "Graphics" | "DrawerNavigator" | "CardTabs"
     )
-}
-
-/// Local copy of the conversion in `runtime-macros` /
-/// `mcp-catalog`. Kept here to avoid taking a dep on
-/// `runtime-macros` (proc-macro crate, not usable as a regular
-/// dep). See `[[project_ui_naming_convention]]`.
-fn pascal_to_snake(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len() + 4);
-    for (i, &c) in chars.iter().enumerate() {
-        if c.is_ascii_uppercase() && i > 0 {
-            let prev = chars[i - 1];
-            let lowerish = prev.is_ascii_lowercase() || prev.is_ascii_digit();
-            let acronym = prev.is_ascii_uppercase()
-                && chars
-                    .get(i + 1)
-                    .map(|n| n.is_ascii_lowercase())
-                    .unwrap_or(false);
-            if (lowerish || acronym) && !out.ends_with('_') {
-                out.push('_');
-            }
-        }
-        out.push(c.to_ascii_lowercase());
-    }
-    out
 }
 
 #[cfg(test)]

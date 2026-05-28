@@ -23,7 +23,10 @@ use port_project::report::{FilePort, Status};
 pub struct RootMatch {
     /// PascalCase component name as written in source.
     pub component_name: String,
-    /// snake_case Rust function name (`#[component]` lowers it).
+    /// PascalCase Rust function name — equal to `component_name`
+    /// under the framework's transform-free dispatch (fn name ==
+    /// macro name == call name). Retained as a distinct field for
+    /// call sites that read it by role.
     pub fn_name: String,
     /// Output path of the file containing the component (the
     /// generated `.rs` file). Used to compute the `ported::…`
@@ -52,7 +55,7 @@ pub fn find(
             };
             return Some(RootMatch {
                 component_name: found.clone(),
-                fn_name: snake_case(found),
+                fn_name: found.clone(),
                 output_path: output,
             });
         }
@@ -72,24 +75,6 @@ fn path_matches(input: &Path, restrict: &Path) -> bool {
     let input_str = input.to_string_lossy();
     let restrict_str = restrict.to_string_lossy();
     input_str.ends_with(restrict_str.as_ref())
-}
-
-/// PascalCase → snake_case. Matches what `#[component] fn Foo()`
-/// produces: function gets snake-cased, struct keeps PascalCase
-/// (the `FooProps` struct).
-fn snake_case(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 4);
-    for (i, ch) in s.chars().enumerate() {
-        if ch.is_ascii_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.push(ch.to_ascii_lowercase());
-        } else {
-            out.push(ch);
-        }
-    }
-    out
 }
 
 /// Convert a file's output path (under `<scratch>/src/ported/`)
@@ -153,11 +138,5 @@ mod tests {
             Path::new("/tmp/out"),
         );
         assert_eq!(p.as_deref(), Some("ported::src::components::widget"));
-    }
-
-    #[test]
-    fn snake_case_basics() {
-        assert_eq!(snake_case("App"), "app");
-        assert_eq!(snake_case("MyComponent"), "my_component");
     }
 }

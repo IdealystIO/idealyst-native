@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo, TweenTo};
 use runtime_core::{node_ref, ui, Primitive, Ref, ViewHandle};
-use idea_ui::{btn, card, stack, typography, StackAxis, StackGap};
+use idea_ui::{Btn, Card, Stack, Typography, StackAxis, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};

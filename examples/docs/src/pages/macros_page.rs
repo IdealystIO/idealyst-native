@@ -2,10 +2,10 @@
 //! `signal!`, `stylesheet!`, `jsx!`.
 
 use runtime_core::{ui, Primitive};
-use idea_ui::{typography, card};
+use idea_ui::{Typography, Card};
 
 use crate::shell::{
-    code_block, page_body, page_header, section, CodeBlockProps, PageTypographyProps, PageHeaderProps,
+    CodeBlock, PageBody, PageHeader, Section, CodeBlockProps, PageTypographyProps, PageHeaderProps,
     SectionProps,
 };
 

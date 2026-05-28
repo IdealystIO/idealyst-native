@@ -14,6 +14,7 @@ mod identity;
 pub mod logging;
 mod primitive;
 mod reactive;
+mod reactive_value;
 mod safe_area;
 mod viewport;
 pub mod scheduling;
@@ -93,6 +94,7 @@ pub use identity::{
     Identity,
 };
 pub use primitive::Primitive;
+pub use reactive_value::{IntoProp, Reactive};
 pub use sources::{
     signal_class, IntoStyleSource, IntoTextSource, JsBindingSpec, SignalClassSpec, StyleSource,
     TextSource,
@@ -146,7 +148,7 @@ pub use scheduling::{
     after_animation_frame, after_ms, after_ms_scoped, raf_loop, raf_loop_scoped,
     schedule_microtask, RafLoop, ScheduledTask,
 };
-pub use logging::{install_logger, is_logger_installed, log, LogLevel, Logger};
+pub use logging::{install_logger, is_logger_installed, log, LogLevel, Logger, StderrLogger};
 
 pub use style::{
     derived, install_tokens, pregenerate, resolve as resolve_style,
@@ -184,6 +186,29 @@ macro_rules! bind {
     ($e:expr) => {
         ::std::compile_error!("`bind!` is a sentinel for `text_fmt!` args only — \
                                using it outside `text_fmt!(...)` has no effect")
+    };
+}
+
+/// Wraps an expression as a reactive prop value
+/// ([`Reactive::Dynamic`](crate::Reactive)). Use it to pass an inline
+/// computed value to a component's `Reactive<T>` prop so it stays
+/// live: signals the expression reads become dependencies and the
+/// component re-renders that prop when they change.
+///
+/// It's the reactive-prop analog of [`bind!`] for `text_fmt!` — an
+/// explicit, type-driven opt-in (no `.get()` substring scanning).
+/// Bare signals don't need it (`content = my_signal` is already
+/// reactive via `IntoProp`); reach for `rx!` when the value is a
+/// computed expression over one or more signals.
+///
+/// ```ignore
+/// // computed text that re-renders when `count` changes:
+/// Typography(content = rx!(format!("clicked {}×", count.get())))
+/// ```
+#[macro_export]
+macro_rules! rx {
+    ($e:expr) => {
+        $crate::Reactive::derive(move || $e)
     };
 }
 

@@ -75,7 +75,7 @@ pub struct PlanetProps {
 }
 
 #[component]
-pub fn planet(props: &PlanetProps) -> Primitive {
+pub fn Planet(props: &PlanetProps) -> Primitive {
     let cfg = &PLANETS[props.idx];
     let sheet = sheet(cfg.size_dp, cfg.color);
     let target = props.refs.planets[props.idx];

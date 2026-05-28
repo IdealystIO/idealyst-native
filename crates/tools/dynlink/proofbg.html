@@ -1,0 +1,59 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"/><title>dynlink bindgen-main proof</title></head>
+<body>
+<pre id="out">running…
+</pre>
+<script type="module">
+// The REALISTIC web config: a wasm-bindgen-processed PIC MAIN (like a real
+// WebBackend app) hosts a NON-bindgen side (a lazy UI body). Proves the
+// bindgen main still exports the symbols the side links against, the side
+// links 0-unresolved, and main's walker mounts a side-built Primitive.
+//
+// Booting the bindgen main is the STANDARD wasm-bindgen flow — its only
+// imports are its own glue namespaces (no env/GOT.*), so no importmap.
+import { loadSide } from "./loader.mjs";
+import { __wbg_get_imports, __wbg_finalize_init } from "./mainbg_out/dynlink_mainbg.js";
+
+const out = document.getElementById("out");
+const log = (s) => { out.textContent += s + "\n"; };
+
+try {
+  // `--export-all` keeps wasm-bindgen's describe machinery alive, so the
+  // final wasm still imports `__wbindgen_placeholder__.__wbindgen_describe*`.
+  // These are never called at runtime → no-op stubs satisfy the import.
+  const imports = __wbg_get_imports();
+  imports.__wbindgen_placeholder__ = {
+    __wbindgen_describe: () => {},
+    __wbindgen_describe_cast: () => {},
+  };
+  const mainMod = await WebAssembly.compileStreaming(
+    fetch("./mainbg_out/dynlink_mainbg_bg.wasm"),
+  );
+  const inst = await WebAssembly.instantiate(mainMod, imports);
+  const mainExports = __wbg_finalize_init(inst, mainMod); // sets wasm + runs __wbindgen_start
+  mainExports.__wasm_call_ctors?.();           // idempotent for a base-0 main
+  log("bindgen main booted; main_signal=" + mainExports.main_signal());
+
+  const sideMod = await WebAssembly.compileStreaming(
+    fetch("target/wasm32-unknown-unknown/release/dynlink_side.wasm"),
+  );
+  // loader.mjs only reads `main.exports`, so wrap the bindgen exports.
+  const { side, unresolved } = await loadSide({ exports: mainExports }, sideMod);
+  log("unresolved imports : " + unresolved.length +
+      (unresolved.length ? " " + JSON.stringify(unresolved.slice(0, 8)) : ""));
+
+  // lazy-UI mechanic against the bindgen main
+  const ptr = side.exports.side_make_view();
+  const result = mainExports.main_render_side(ptr);
+  const texts = Math.trunc(result / 1000), bytes = result % 1000;
+  log("main_render_side => texts=" + texts + " bytes=" + bytes);
+
+  const ok = unresolved.length === 0 && texts === 1 && bytes === 18;
+  log(ok ? "BINDGEN-MAIN PASS ✓ bindgen PIC main hosts a non-bindgen side; lazy-UI mechanic works"
+         : "BINDGEN-MAIN FAIL");
+  window.__RESULT__ = { ok, texts, bytes, unresolved: unresolved.length };
+} catch (e) {
+  log("ERROR: " + (e && e.stack ? e.stack : e));
+  window.__RESULT__ = { ok: false, error: String(e) };
+}
+</script>
+</body></html>

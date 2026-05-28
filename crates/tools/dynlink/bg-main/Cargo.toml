@@ -1,0 +1,11 @@
+[package]
+name = "bgmain"
+version = "0.0.0"
+edition = "2021"
+[lib]
+name = "bgmain"
+crate-type = ["cdylib"]
+[profile.release]
+panic = "abort"
+opt-level = "z"
+[workspace]

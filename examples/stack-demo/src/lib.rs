@@ -14,7 +14,7 @@
 use runtime_core::{
     component, signal, text, ui, IntoPrimitive, Primitive, Ref, Route, Screen, Signal,
 };
-use idea_ui::{typography, card, install_idea_theme, light_theme, stack, StackGap, StackPadding};
+use idea_ui::{Typography, Card, install_idea_theme, light_theme, Stack, StackGap, StackPadding};
 use stack_navigator::{Navigator, StackBuilder, StackHandle, StackScreenExt};
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,12 @@ pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
     stack_navigator::register(backend);
 }
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
+    stack_navigator::register(backend);
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))]
 pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
     stack_navigator::register(backend);
 }

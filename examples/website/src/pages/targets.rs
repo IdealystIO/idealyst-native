@@ -1,7 +1,7 @@
 //! Every target — user-facing list of platforms idealyst runs on.
 
 use runtime_core::{ui, Primitive, Ref, ViewHandle};
-use idea_ui::{stack, typography, StackGap};
+use idea_ui::{Stack, Typography, StackGap};
 
 use crate::pages::common::{page_header, page_section};
 use crate::routes::BACKENDS_ROUTE;

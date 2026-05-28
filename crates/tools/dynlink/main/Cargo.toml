@@ -1,0 +1,10 @@
+[package]
+name = "dynlink-main"
+version = "0.0.0"
+edition = "2021"
+[lib]
+name = "dynlink_main"
+crate-type = ["cdylib"]
+[dependencies]
+runtime-core = { path = "../../../runtime/core" }
+dynlink-shared = { path = "../shared" }

@@ -87,6 +87,13 @@ pub enum Event {
     Insert { parent: NodeId, child: NodeId },
     InsertMany { parent: NodeId, children: Vec<NodeId> },
     ClearChildren { node: NodeId },
+    /// `remove_child(parent, child)` — anchorless reactive regions
+    /// unmount exactly their own rows with this (not `ClearChildren`).
+    RemoveChild { parent: NodeId, child: NodeId },
+    /// `insert_at(parent, child, index)` — anchorless regions splice
+    /// rows at their stable position via this (carries the index so
+    /// tests can assert mid-list placement).
+    InsertAt { parent: NodeId, child: NodeId, index: usize },
 
     // --- Update ---
     UpdateText { node: NodeId, content: String },
@@ -220,12 +227,18 @@ pub struct MockBackendConfig {
     /// `execute_batch_with_attach` instead of the per-row
     /// `create_*` + `apply_style` + `insert` sequence.
     pub supports_batched_repeat: bool,
+    /// When `true`, the mock reports `supports_child_splice()` = `true`,
+    /// so anchorless reactive regions splice rows directly into the
+    /// parent (via `remove_child`) instead of nesting them under a
+    /// `create_reactive_anchor`. Lets tests verify the anchorless path.
+    pub supports_child_splice: bool,
 }
 
 impl Default for MockBackendConfig {
     fn default() -> Self {
         Self {
             supports_batched_repeat: false,
+            supports_child_splice: false,
         }
     }
 }
@@ -478,6 +491,18 @@ impl Backend for MockBackend {
 
     fn clear_children(&mut self, node: &Self::Node) {
         self.core.record(Event::ClearChildren { node: *node });
+    }
+
+    fn supports_child_splice(&self) -> bool {
+        self.config.supports_child_splice
+    }
+
+    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
+        self.core.record(Event::RemoveChild { parent: *parent, child: *child });
+    }
+
+    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
+        self.core.record(Event::InsertAt { parent: *parent, child, index });
     }
 
     fn apply_style(&mut self, node: &Self::Node, _style: &Rc<StyleRules>) {

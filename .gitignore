@@ -15,3 +15,4 @@ pkg-*/
 .claude/scheduled_tasks.lock
 /benchmark/runner/node_modules
 .idealyst/
+/crates/tools/dynlink/bgtarget

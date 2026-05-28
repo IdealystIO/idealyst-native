@@ -10,7 +10,7 @@ pub struct CounterProps {
 }
 
 #[component(default(initial = 0))]
-pub fn counter(props: &CounterProps) -> Primitive {
+pub fn Counter(props: &CounterProps) -> Primitive {
     let count = signal!(props.initial);
     effect!({
         todo!("port handler-body: watchEffect body — JS imperative code, AI pass needed — console.log('count:', count.value);");

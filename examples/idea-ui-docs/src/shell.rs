@@ -15,7 +15,7 @@ use runtime_core::{ui, ChildList, Primitive, Signal, StyleApplication, VariantEn
 // has been deleted alongside; the helper components below
 // (`sidebar`, `nav_link`) remain in case they're useful for a
 // drawer-navigator-based rewrite of this example.
-use idea_ui::{typography, card, dark_theme, divider, light_theme, set_idea_theme, stack, switch, IdeaThemeRef, StackGap};
+use idea_ui::{Typography, Card, dark_theme, Divider, light_theme, set_idea_theme, Stack, Switch, IdeaThemeRef, StackGap};
 
 use crate::routes::INDEX;
 use crate::styles::{Content, NavLink, PageRoot, Sidebar, SidebarHeader};

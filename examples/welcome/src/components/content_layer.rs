@@ -8,8 +8,8 @@ use runtime_core::{
     StyleSheet,
 };
 
-use crate::components::subtitle::{subtitle, SubtitleProps};
-use crate::components::welcome_phrase::{welcome_phrase, WelcomePhraseProps};
+use crate::components::subtitle::{Subtitle, SubtitleProps};
+use crate::components::welcome_phrase::{WelcomePhrase, WelcomePhraseProps};
 use crate::coordinator::WelcomeRefs;
 use crate::style_helpers::{px, static_sheet};
 
@@ -18,7 +18,7 @@ pub struct ContentLayerProps {
 }
 
 #[component]
-pub fn content_layer(props: &ContentLayerProps) -> Primitive {
+pub fn ContentLayer(props: &ContentLayerProps) -> Primitive {
     let refs = props.refs;
     let sheet = sheet();
     ui! {

@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use runtime_core::{bind, signal, text_fmt, ui, Primitive, Ref, ViewHandle};
-use idea_ui::{btn, card, stack, typography, StackGap};
+use idea_ui::{Btn, Card, Stack, Typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};

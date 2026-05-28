@@ -143,9 +143,9 @@ inventory::collect!(TypeEntry);
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct PrimitiveEntry {
-    /// snake_case identifier — what `pascal_to_snake` produces for
-    /// the PascalCase tag authors write in `ui!`. Stable across
-    /// versions; serves as the catalog key.
+    /// snake_case identifier — the stable catalog key for this
+    /// primitive (the snake_case form of the `pascal_name` tag).
+    /// Stable across versions.
     pub name: &'static str,
     /// PascalCase tag — what authors actually type inside `ui!` /
     /// `jsx!`. Mirrors the variant ident on `Primitive`.

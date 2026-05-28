@@ -21,7 +21,7 @@ use runtime_core::{
 };
 use drawer_navigator::SlotProps;
 use idea_ui::{
-    current_breakpoint, dark_theme, light_theme, set_idea_theme, spacer, switch, typography,
+    current_breakpoint, dark_theme, light_theme, set_idea_theme, Spacer, Switch, Typography,
     Breakpoint,
 };
 

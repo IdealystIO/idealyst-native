@@ -46,7 +46,7 @@ pub struct SunGlareProps {
 }
 
 #[component]
-pub fn sun_glare(props: &SunGlareProps) -> Primitive {
+pub fn SunGlare(props: &SunGlareProps) -> Primitive {
     let refs = props.refs;
     let wrapper = wrapper_sheet();
     let anchor = anchor_sheet();

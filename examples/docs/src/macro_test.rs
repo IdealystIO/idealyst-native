@@ -32,9 +32,9 @@ mod reactivity {
     //   function calls + struct literals, so both the function and
     //   the props struct need to be in scope.
     #[allow(unused_imports)]
-    use idea_ui::{typography, card, stack};
+    use idea_ui::{Typography, Card, Stack};
     #[allow(unused_imports)]
-    use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
+    use crate::shell::{CodeBlock, PageHeader, CodeBlockProps, PageHeaderProps};
 
     docs! {
         slug = "reactivity",

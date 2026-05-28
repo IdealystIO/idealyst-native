@@ -17,11 +17,15 @@
 //!
 //! The web platform implementation lives in `backend-web`. Hosts
 //! register it via `backend_web::install_scheduler()` during init.
-//! Without an installed [`Scheduler`]:
-//! - On native targets, the helpers run their bodies synchronously
-//!   (the wasm re-entry hazard is wasm-specific; on native there's
-//!   no equivalent trap).
-//! - On wasm32, the helpers panic with a configuration error.
+//! Without an installed [`Scheduler`], behaviour is keyed on the
+//! runtime [`Platform`](crate::Platform) — **not** `#[cfg(target_arch)]`,
+//! so this module carries no compile-target switch:
+//! - On `Web`, the helpers panic with a configuration error. The
+//!   deferral is mandatory there; a synchronous fallback would trip
+//!   the wasm-bindgen re-entry hazard described above.
+//! - On every other platform, the helpers run their bodies
+//!   synchronously (or inert, for [`raf_loop`]) — there's no
+//!   equivalent trap off the web.
 //!
 //! # Quick reference
 //!
@@ -90,6 +94,30 @@ pub fn is_scheduler_installed() -> bool {
     SCHEDULER.get().is_some()
 }
 
+/// Panic when no [`Scheduler`] is installed *and* we're rendering to
+/// `Web`. On Web the deferral these helpers provide is mandatory — a
+/// synchronous fallback would re-enter wasm-bindgen `FnMut` closures
+/// and trip "closure invoked recursively or after being dropped" — so
+/// a missing install is a configuration error surfaced loudly. Off the
+/// web there's no such trap, so callers fall through to their
+/// synchronous (or inert) fallback.
+///
+/// Keyed on the runtime [`Platform`](crate::Platform), not
+/// `#[cfg(target_arch = "wasm32")]`, so core stays free of a
+/// compile-target switch. `platform()` is `Web` only once `mount`
+/// installs it from the backend; the web bootstrap registers the real
+/// scheduler before `mount`, so by the time a helper runs, `Web` with
+/// no scheduler means the host genuinely forgot to register one.
+fn panic_if_web_without_scheduler(api: &str) {
+    if crate::platform() == crate::Platform::Web {
+        panic!(
+            "runtime_core::scheduling::{api}: no Scheduler installed. \
+             On Web a backend must register one before this is called \
+             — typically `backend_web::install_scheduler()` during host init."
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -101,28 +129,16 @@ pub fn is_scheduler_installed() -> bool {
 /// swap which drops the click's own button tree, then continues to
 /// execute inside the now-destroyed closure).
 ///
-/// Without an installed scheduler: synchronous on native, panic on
-/// wasm32 (the re-entry hazard is wasm-specific; running
-/// synchronously there would risk the very bug this exists to
-/// avoid).
+/// Without an installed scheduler: panic on `Web`, synchronous on
+/// every other platform (the re-entry hazard is web-specific; running
+/// synchronously there would risk the very bug this exists to avoid).
 pub fn schedule_microtask<F: FnOnce() + 'static>(f: F) {
     if let Some(s) = SCHEDULER.get() {
         s.schedule_microtask(Box::new(f));
         return;
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        f();
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = f;
-        panic!(
-            "runtime_core::scheduling::schedule_microtask: no Scheduler installed. \
-             On wasm32 a backend must register one before this is called \
-             — typically `backend_web::install_scheduler()` during host init."
-        );
-    }
+    panic_if_web_without_scheduler("schedule_microtask");
+    f();
 }
 
 /// A scheduled one-shot callback. Cancels the pending dispatch on
@@ -149,54 +165,34 @@ impl ScheduledTask {
 /// handle whose `Drop` cancels the pending callback if it hasn't
 /// fired yet.
 ///
-/// Without an installed scheduler: synchronous on native, panic on
-/// wasm32.
+/// Without an installed scheduler: panic on `Web`, synchronous on
+/// every other platform.
 pub fn after_animation_frame<F: FnOnce() + 'static>(f: F) -> ScheduledTask {
     if let Some(s) = SCHEDULER.get() {
         return ScheduledTask {
             inner: Some(s.after_animation_frame(Box::new(f))),
         };
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        f();
-        ScheduledTask { inner: None }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = f;
-        panic!(
-            "runtime_core::scheduling::after_animation_frame: no Scheduler installed. \
-             Call `backend_web::install_scheduler()` during host init."
-        );
-    }
+    panic_if_web_without_scheduler("after_animation_frame");
+    f();
+    ScheduledTask { inner: None }
 }
 
 /// Schedule `f` to run after `delay_ms` milliseconds. Returns a
 /// handle whose `Drop` cancels the pending callback.
 ///
-/// Without an installed scheduler: synchronous on native (delay
-/// ignored), panic on wasm32.
+/// Without an installed scheduler: panic on `Web`, synchronous on
+/// every other platform (delay ignored).
 pub fn after_ms<F: FnOnce() + 'static>(delay_ms: i32, f: F) -> ScheduledTask {
     if let Some(s) = SCHEDULER.get() {
         return ScheduledTask {
             inner: Some(s.after_ms(delay_ms, Box::new(f))),
         };
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = delay_ms;
-        f();
-        ScheduledTask { inner: None }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = (delay_ms, f);
-        panic!(
-            "runtime_core::scheduling::after_ms: no Scheduler installed. \
-             Call `backend_web::install_scheduler()` during host init."
-        );
-    }
+    panic_if_web_without_scheduler("after_ms");
+    let _ = delay_ms; // synchronous fallback ignores the delay
+    f();
+    ScheduledTask { inner: None }
 }
 
 /// A live animation-frame loop. Each frame the user's closure runs;
@@ -231,19 +227,9 @@ pub fn raf_loop<F: FnMut() + 'static>(f: F) -> RafLoop {
             inner: Some(s.raf_loop(Box::new(f))),
         };
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = f;
-        RafLoop { inner: None }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = f;
-        panic!(
-            "runtime_core::scheduling::raf_loop: no Scheduler installed. \
-             Call `backend_web::install_scheduler()` during host init."
-        );
-    }
+    panic_if_web_without_scheduler("raf_loop");
+    let _ = f; // inert off the web: no frame source without a scheduler
+    RafLoop { inner: None }
 }
 
 // ---------------------------------------------------------------------------
@@ -318,29 +304,62 @@ pub fn raf_loop_scoped<F: FnMut() + 'static>(mut f: F) {
     crate::reactive::on_cleanup(move || drop(loop_handle));
 }
 
+// Gated to non-wasm: these tests use `std::thread`/`std::panic`, and
+// the no-scheduler fallback they exercise is now keyed on the runtime
+// `Platform` (not the compile target), so they run fully on the host.
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests {
-    //! Native-fallback path tests for the scheduling helpers.
+    //! No-scheduler fallback tests for the scheduling helpers.
     //!
-    //! These tests exercise the path the framework takes on
-    //! non-wasm targets when no platform [`Scheduler`] has been
-    //! installed (which is the test-binary configuration —
-    //! `install_scheduler` is a `OnceLock` and we deliberately
-    //! never call it here so the unit tests see a clean state).
-    //!
-    //! The wasm-target panic branches aren't reachable on native
-    //! and aren't covered by these tests; they're verified by
-    //! eyeballing the matching `panic!` messages with the
-    //! installer's call-site docs.
+    //! The fallback behaviour is keyed on the runtime
+    //! [`Platform`](crate::Platform): panic on `Web`, synchronous (or
+    //! inert) elsewhere. These tests pin the platform explicitly via
+    //! [`non_web`] / set `Web` rather than relying on the compile
+    //! target. `install_scheduler` is a process-wide `OnceLock` we
+    //! deliberately never fill here so the unit tests see a clean state
+    //! (the `Web` panic test skips if some other test in the binary
+    //! installed one).
 
     use super::*;
     use std::cell::Cell;
     use std::rc::Rc;
 
+    /// Pin the thread-local platform to a native value. `platform()` is
+    /// a thread-local another test on this worker thread may have left
+    /// as `Web`; pinning it makes the no-scheduler *sync* fallback
+    /// deterministic regardless of test order.
+    fn non_web() {
+        crate::backend::install_current_platform(crate::Platform::Ios);
+    }
+
+    #[test]
+    fn no_scheduler_on_web_panics() {
+        // The deferral is mandatory on Web; a missing install must fail
+        // loudly. Run on a dedicated thread so the `Web` we set can't
+        // leak into other tests' thread-locals.
+        std::thread::spawn(|| {
+            // The panic path needs no installed scheduler; the
+            // process-wide OnceLock may already hold one from another
+            // test, in which case the call routes there — skip.
+            if is_scheduler_installed() {
+                return;
+            }
+            crate::backend::install_current_platform(crate::Platform::Web);
+            let r = std::panic::catch_unwind(|| schedule_microtask(|| {}));
+            assert!(
+                r.is_err(),
+                "Web + no scheduler must panic loudly (deferral is mandatory there)",
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
     #[test]
     fn schedule_microtask_runs_synchronously_without_scheduler() {
-        // No scheduler installed -> synchronous on native. The
+        non_web();
+        // No scheduler installed -> synchronous off the web. The
         // closure must fire by the time `schedule_microtask`
         // returns.
         let fired = Rc::new(Cell::new(false));
@@ -356,6 +375,7 @@ mod tests {
 
     #[test]
     fn after_animation_frame_runs_synchronously_without_scheduler() {
+        non_web();
         let fired = Rc::new(Cell::new(false));
         let fired_for_closure = fired.clone();
         let task = after_animation_frame(move || {
@@ -375,6 +395,7 @@ mod tests {
 
     #[test]
     fn after_ms_runs_synchronously_without_scheduler() {
+        non_web();
         let fired = Rc::new(Cell::new(false));
         let fired_for_closure = fired.clone();
         // Big delay — synchronous fallback should ignore it.
@@ -390,9 +411,9 @@ mod tests {
 
     #[test]
     fn raf_loop_is_inert_on_native_without_scheduler() {
-        // The wasm raf_loop is FnMut+self-rearming; on native
-        // without a scheduler the body must NEVER fire (we have
-        // no frame source).
+        non_web();
+        // `raf_loop` is FnMut + self-rearming; off the web without a
+        // scheduler the body must NEVER fire (we have no frame source).
         let fired = Rc::new(Cell::new(0u32));
         let fired_for_closure = fired.clone();
         let _loop_handle = raf_loop(move || {
@@ -407,8 +428,9 @@ mod tests {
 
     #[test]
     fn scheduled_task_cancel_is_idempotent_on_native_fallback() {
+        non_web();
         let mut task = after_animation_frame(|| {});
-        // First cancel is a no-op (no inner handle on native).
+        // First cancel is a no-op (no inner handle off the web).
         task.cancel();
         // Second cancel must not panic.
         task.cancel();
@@ -418,6 +440,7 @@ mod tests {
 
     #[test]
     fn raf_loop_cancel_is_idempotent_on_native_fallback() {
+        non_web();
         let mut handle = raf_loop(|| {});
         handle.cancel();
         handle.cancel();
@@ -426,6 +449,7 @@ mod tests {
 
     #[test]
     fn schedule_microtask_with_capture_runs_body_with_captured_values() {
+        non_web();
         let cell = Rc::new(Cell::new(0));
         let cell_clone = cell.clone();
         schedule_microtask(move || {
@@ -436,9 +460,9 @@ mod tests {
 
     #[test]
     fn drop_of_scheduled_task_without_inner_does_not_panic() {
-        // ScheduledTask construction on native (no scheduler)
-        // never builds an inner handle; verify the Drop path is
-        // benign.
+        non_web();
+        // ScheduledTask construction without a scheduler never builds
+        // an inner handle; verify the Drop path is benign.
         let task = after_ms(0, || {});
         drop(task); // should not panic
     }

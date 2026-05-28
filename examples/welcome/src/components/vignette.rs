@@ -30,7 +30,7 @@ pub struct VignetteProps {
 }
 
 #[component]
-pub fn vignette(props: &VignetteProps) -> Primitive {
+pub fn Vignette(props: &VignetteProps) -> Primitive {
     let refs = props.refs;
     let wrapper = wrapper_sheet();
     let top = band_sheet(Edge::Top);

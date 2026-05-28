@@ -6,7 +6,7 @@
 
 use runtime_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
-use idea_ui::{typography, card, stack, TypographyKindRef, TypographyProps, StackGap};
+use idea_ui::{Typography, Card, Stack, TypographyKindRef, TypographyProps, StackGap};
 
 use crate::shell::{demo_card, page_header};
 

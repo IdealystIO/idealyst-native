@@ -14,7 +14,7 @@ tags = ["components", "core"]
 use runtime_core::*;
 
 #[component]
-pub fn greeting(name: &str) -> Primitive {
+pub fn Greeting(name: &str) -> Primitive {
     ui! {
         Text(text_fmt!("Hello, {}!", name))
     }
@@ -31,7 +31,7 @@ ui! {
 }
 ```
 
-The macro converts the call-site `Greeting` (PascalCase) to `greeting` (snake_case) to find the per-component invocation macro. Function names are snake_case; call sites are PascalCase ([[ui_naming_convention]]).
+Dispatch is transform-free: the call site `Greeting` resolves to the verbatim `Greeting!` invocation macro — no case conversion. The function name, its invocation macro, and the `ui!`/`jsx!` call site are all the same PascalCase identifier ([[ui_naming_convention]]). `#[component]` suppresses the `non_snake_case` lint so PascalCase fns don't warn.
 
 ## Props structs and `IdealystSchema`
 
@@ -48,7 +48,7 @@ pub struct CardProps<'a> {
 }
 
 #[component]
-pub fn card(props: &CardProps) -> Primitive {
+pub fn Card(props: &CardProps) -> Primitive {
     ui! {
         View {
             Text(props.title)
@@ -66,7 +66,7 @@ When a parent needs to imperatively poke a child (`.focus()`, `.scroll_to_top()`
 
 ```rust
 #[component]
-pub fn counter(props: &CounterProps) -> Bindable<CounterHandle> {
+pub fn Counter(props: &CounterProps) -> Bindable<CounterHandle> {
     let value = props.value;
     methods! {
         /// Reset the counter to zero.
@@ -86,7 +86,7 @@ The macro generates a sibling `CounterHandle` type with the methods as accessors
 
 ```rust
 #[component]
-pub fn fader(props: &FaderProps) -> Primitive {
+pub fn Fader(props: &FaderProps) -> Primitive {
     let opacity = animated!(0.0_f32);
     // ... animate opacity, bind it into a style ...
 }

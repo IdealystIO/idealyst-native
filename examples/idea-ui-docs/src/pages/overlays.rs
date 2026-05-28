@@ -13,7 +13,7 @@ use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{signal, ui, Easing, PressableHandle, Primitive, PresenceAnim, PresenceState, Ref, Signal};
 use idea_ui::{
-    btn, card, popover, stack, typography, StackGap,
+    Btn, Card, Popover, Stack, Typography, StackGap,
 };
 
 use crate::shell::page_header;

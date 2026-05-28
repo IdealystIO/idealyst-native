@@ -171,7 +171,12 @@ pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
     drawer_navigator::register(backend);
 }
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
+    drawer_navigator::register(backend);
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))]
 pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
     drawer_navigator::register(backend);
 }

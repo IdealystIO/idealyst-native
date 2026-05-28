@@ -22,7 +22,7 @@ pub struct SubtitleProps {
 }
 
 #[component]
-pub fn subtitle(props: &SubtitleProps) -> Primitive {
+pub fn Subtitle(props: &SubtitleProps) -> Primitive {
     let refs = props.refs;
     let wrapper = wrapper_sheet();
     let text = text_sheet();
