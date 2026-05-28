@@ -276,7 +276,11 @@ pub fn footer() -> Element {
 /// to dispatch `DrawerCmd::Open`). No more thread-local
 /// `OPEN_FN` round-trip.
 pub fn mobile_header(slot: SlotProps) -> Element {
-    let header_style = crate::responsive::responsive_style(MobileHeader::sheet());
+    // Keyed on the sidebar-collapse breakpoint (not the content-tighten
+    // breakpoint `responsive_style` uses): the hamburger is the only way
+    // to open the drawer once the sidebar overlays itself, so it must
+    // appear at exactly the width where the sidebar collapses.
+    let header_style = crate::responsive::collapse_responsive_style(MobileHeader::sheet());
     let title_wrap_style = MobileHeaderTitleWrap();
     let title_style = move || StyleApplication::new(MobileHeaderTitle::sheet());
     let button_style = move || StyleApplication::new(MobileHeaderButton::sheet());

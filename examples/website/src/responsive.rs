@@ -23,16 +23,21 @@
 //!
 //! Everything except `set_open_drawer` is a no-op outside `wasm32`.
 
+use std::cell::OnceCell;
 use std::rc::Rc;
 
 use drawer_navigator::DrawerHandle;
 use idea_ui::{current_breakpoint, Breakpoint};
-use runtime_core::{Ref, Signal, StyleApplication, StyleSheet};
+use runtime_core::{memo, Ref, Signal, StyleApplication, StyleSheet};
 
-/// Width below which the sidebar collapses into an overlay. The
-/// stylesheet variant choices in [`crate::shell`] and
-/// [`crate::styles`] cross-reference this through
-/// `idea_ui::Breakpoint`; keep both in sync.
+/// Width (dp) below which the sidebar collapses into the drawer
+/// overlay. Single source of truth for the collapse breakpoint:
+/// [`build_css`] generates the `@media (max-width: …)` rule from it,
+/// and the mobile header keys its visibility on the same value via
+/// [`sidebar_collapsed`] / [`collapse_responsive_style`]. The header
+/// MUST collapse at this exact width (not at the lower content-tighten
+/// breakpoint used by [`responsive_variant`]) or the band between the
+/// two becomes an un-navigable dead zone — see the regression test.
 pub const SIDEBAR_COLLAPSE_PX: u32 = 900;
 
 // ---------------------------------------------------------------------------
@@ -74,6 +79,73 @@ pub fn responsive_style(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Collapse-keyed `size` variant — for chrome whose visibility must
+// track the *sidebar-collapse* breakpoint, NOT the content-tighten
+// breakpoint above.
+//
+// The mobile header (hamburger) is the only thing that can open the
+// drawer once the sidebar overlays itself. It MUST therefore appear at
+// exactly the width where the sidebar collapses. Keying it on
+// `responsive_variant`'s Sm/Md cutoff (768 dp) instead left a
+// 768–899 dp dead zone: the sidebar was already overlaid off-screen
+// (CSS `@media (max-width: 899px)`) but the hamburger hadn't appeared
+// yet, so there was no way to navigate. These helpers key on
+// `SIDEBAR_COLLAPSE_PX` so the two flip together.
+// ---------------------------------------------------------------------------
+
+/// Pure classifier: is the sidebar collapsed into the drawer overlay
+/// at `width`? True for widths strictly below [`SIDEBAR_COLLAPSE_PX`],
+/// which is exactly the set the CSS `@media (max-width: {COLLAPSE-1}px)`
+/// rule (built in [`build_css`]) matches.
+pub fn sidebar_collapsed_at(width: f32) -> bool {
+    width < SIDEBAR_COLLAPSE_PX as f32
+}
+
+/// Map collapse-state to the stylesheet `size` variant. `narrow` is
+/// the visible 56-px header; `wide` collapses it to zero height.
+fn collapse_variant(collapsed: bool) -> &'static str {
+    if collapsed {
+        "narrow"
+    } else {
+        "wide"
+    }
+}
+
+thread_local! {
+    /// Memoized `Signal<bool>` — `true` while the sidebar is collapsed.
+    /// Derived from [`runtime_core::viewport_size`] like
+    /// [`idea_ui::current_breakpoint`], so subscribers only re-fire when
+    /// the viewport crosses [`SIDEBAR_COLLAPSE_PX`], not on every pixel
+    /// of a resize drag. Lazily created on first read.
+    static COLLAPSED_MEMO: OnceCell<Signal<bool>> = const { OnceCell::new() };
+}
+
+/// Reactive flag: is the sidebar collapsed into the drawer overlay?
+/// Read inside a style closure / effect to subscribe to crossings of
+/// the collapse breakpoint.
+pub fn sidebar_collapsed() -> Signal<bool> {
+    COLLAPSED_MEMO.with(|cell| {
+        *cell.get_or_init(|| {
+            memo(|| sidebar_collapsed_at(runtime_core::viewport_size().get().width))
+        })
+    })
+}
+
+/// Build a reactive style closure for a `variant size { wide, narrow }`
+/// stylesheet whose visibility tracks the sidebar-collapse breakpoint
+/// (e.g. the mobile header). Reads [`sidebar_collapsed`] on every fire
+/// so a resize across [`SIDEBAR_COLLAPSE_PX`] re-applies the matching
+/// variant.
+pub fn collapse_responsive_style(
+    sheet: Rc<StyleSheet>,
+) -> impl Fn() -> StyleApplication + Clone + 'static {
+    move || {
+        let variant = collapse_variant(sidebar_collapsed().get());
+        StyleApplication::new(sheet.clone()).with("size", variant.to_string())
+    }
+}
+
 // Open-drawer dispatcher + active-route mirror used to live here as
 // thread-locals while the website built its chrome inside per-screen
 // `layout()` calls and had no direct access to the navigator's slot
@@ -104,21 +176,37 @@ pub fn install_responsive_css() {
         let Some(doc) = win.document() else { return };
         let Some(head) = doc.head() else { return };
         let Ok(style) = doc.create_element("style") else { return };
-        style.set_text_content(Some(CSS));
+        let css = build_css();
+        style.set_text_content(Some(css.as_str()));
         let _ = head.append_child(&style);
     }
 }
 
-/// Static stylesheet text. Sidebar-collapse breakpoint kept in sync
-/// with [`SIDEBAR_COLLAPSE_PX`] via the literal `899px` below — the
-/// const is intentional documentation; if you change one, change
-/// the other.
-const CSS: &str = "\
+/// Assemble the responsive stylesheet text. The sidebar-collapse media
+/// query is generated from [`SIDEBAR_COLLAPSE_PX`] — `max-width` is one
+/// below the threshold so the rule matches exactly the widths
+/// [`sidebar_collapsed_at`] reports as collapsed. The const is the
+/// single source of truth; the mobile header
+/// ([`collapse_responsive_style`]) keys off the same value, so they
+/// can never drift apart.
+fn build_css() -> String {
+    format!(
+        "{BACKDROP_CSS}@media (max-width: {}px){{{COLLAPSE_RULES}}}",
+        SIDEBAR_COLLAPSE_PX - 1,
+    )
+}
+
+/// Backdrop overlay rules — outside the media query (the backdrop is
+/// inert until `.is-on` is toggled, regardless of viewport width).
+/// Trailing `\n` separates it from the generated media block.
+const BACKDROP_CSS: &str = "\
 .web-site-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0);\
 transition:background 220ms ease;pointer-events:none;z-index:998;}\
 .web-site-backdrop.is-on{background:rgba(0,0,0,0.42);pointer-events:auto;}\
-\n\
-@media (max-width: 899px){\
+\n";
+
+/// Rules that live *inside* the sidebar-collapse media query.
+const COLLAPSE_RULES: &str = "\
   .ui-nav-drawer-sidebar{position:fixed!important;top:0;left:0;height:100%;\
     width:min(82vw,300px);transform:translateX(-100%);\
     transition:transform 240ms cubic-bezier(0.2,0.0,0.0,1.0);\
@@ -133,9 +221,7 @@ transition:background 220ms ease;pointer-events:none;z-index:998;}\
      `word-break: break-word` lets very long identifiers / URLs \
      break mid-token rather than pushing the line wider than the \
      viewport. */\
-  pre{white-space:pre-wrap!important;word-break:break-word;}\
-}\
-";
+  pre{white-space:pre-wrap!important;word-break:break-word;}";
 
 // ---------------------------------------------------------------------------
 // DOM elements (backdrop) and reactive class mirror
@@ -235,5 +321,61 @@ pub fn install_drawer_open_observer(
             }
         });
         std::mem::forget(effect);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: the 768–899 dp "navigation dead zone".
+    ///
+    /// The mobile header (hamburger) used to key its visible/hidden
+    /// `size` variant on the shared Sm/Md content breakpoint (768 dp),
+    /// while the sidebar collapses into the drawer overlay at
+    /// `SIDEBAR_COLLAPSE_PX` (900). Across 768–899 dp the sidebar was
+    /// translated off-screen *and* the hamburger was gone, so the
+    /// drawer could not be opened at all. Both must flip at the same
+    /// width: whenever the sidebar is collapsed, the header must be in
+    /// the visible (`narrow`) variant.
+    #[test]
+    fn regression_no_navigation_dead_zone() {
+        for w in 0..=2000u32 {
+            let width = w as f32;
+            let collapsed = sidebar_collapsed_at(width);
+            let header_visible = collapse_variant(collapsed) == "narrow";
+            assert_eq!(
+                collapsed, header_visible,
+                "width {width}: sidebar collapsed={collapsed} but header \
+                 visible={header_visible} — navigation dead zone reopened"
+            );
+        }
+
+        // Explicit anchor inside the old dead zone: the sidebar is
+        // overlaid here, so the hamburger MUST be present.
+        let dead_zone_width = 800.0;
+        assert!(sidebar_collapsed_at(dead_zone_width));
+        assert_eq!(collapse_variant(sidebar_collapsed_at(dead_zone_width)), "narrow");
+    }
+
+    /// The collapse threshold is exclusive: `SIDEBAR_COLLAPSE_PX` itself
+    /// is the first width that is NOT collapsed, and one below it is.
+    #[test]
+    fn collapse_boundary_is_exclusive_at_const() {
+        assert!(sidebar_collapsed_at((SIDEBAR_COLLAPSE_PX - 1) as f32));
+        assert!(!sidebar_collapsed_at(SIDEBAR_COLLAPSE_PX as f32));
+    }
+
+    /// The generated CSS media query is derived from the same const the
+    /// header keys on, so the sidebar's collapse and the hamburger's
+    /// appearance can never drift to different pixel values.
+    #[test]
+    fn css_media_query_matches_collapse_const() {
+        let css = build_css();
+        let expected = format!("@media (max-width: {}px)", SIDEBAR_COLLAPSE_PX - 1);
+        assert!(
+            css.contains(&expected),
+            "generated CSS should contain `{expected}`, got:\n{css}"
+        );
     }
 }
