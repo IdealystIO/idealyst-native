@@ -999,42 +999,10 @@ stylesheet! {
     }
 }
 
-/// Bezel that wraps the embedded wgpu canvas. The simulator's
-/// painter draws the *inner* bezel (the strip immediately around
-/// the screen); this stylesheet adds the *outer* chassis around
-/// THAT so the two read as one continuous device.
-///
-/// Chassis color is BLACK regardless of skin. The wgpu engine's
-/// `device_frame_pipeline` paints opaque black on the canvas
-/// outside the screen's rounded rect on every skin (see
-/// `gpu-backend/engine/src/renderer.rs::device_frame`) \u{2014} the
-/// painters' `BEZEL_TITANIUM` / `BEZEL_GRAPHITE` constants are
-/// internal classification only and don't reach the canvas pixels.
-/// Using titanium here would leave a visible color seam between the
-/// chassis and the canvas's black outer band.
-stylesheet! {
-    pub SimulatorBezel<IdeaThemeRef> {
-        base(_t) {
-            background: Color("#000000".to_string()),
-            border_radius: 44.0,
-            padding: 12.0,
-            // `overflow: Hidden` so the canvas + painter chrome
-            // clip to the bezel's rounded corners. Without it the
-            // painter's edge-to-edge fills (sun-glare gradient,
-            // background washes) bleed past the chassis curve and
-            // the device reads as a square canvas under a
-            // rounded-frame overlay.
-            overflow: Overflow::Hidden,
-            shadow: Shadow {
-                x: 0.0,
-                y: 18.0,
-                blur: 48.0,
-                color: Color("rgba(15, 17, 30, 0.28)".to_string()),
-            },
-            flex_shrink: 0.0,
-        }
-    }
-}
+// Outer chassis around the embedded wgpu canvas lives on the
+// `Simulator` component (`examples/website/src/components/simulator.rs`,
+// `chassis_sheet`) so the loaded and placeholder paths render the
+// same bezel without duplicating the style here.
 
 /// Stage for an animation demo: a fixed-size colored box that one
 /// or more `AnimatedValue`s push transform / opacity / color

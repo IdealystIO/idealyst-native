@@ -354,6 +354,70 @@ fn apply_styled_states_snapshots_gradient_shape_for_animation() {
 }
 
 // ---------------------------------------------------------------------------
+// First-class-apply timing — regression for the boot/navigation FOUC
+// ---------------------------------------------------------------------------
+
+/// REGRESSION TEST.
+///
+/// The FIRST `apply_style` for a node must set the `class` attribute
+/// SYNCHRONOUSLY, not defer it to the batched microtask flush.
+///
+/// The bug: the FFI-batching work routed every class apply — including
+/// the first — through `queue_class_apply`'s microtask-deferred queue.
+/// The build walker styles a node before inserting it into its parent,
+/// so deferring the first class meant the node was attached and got its
+/// FIRST style resolution class-less: `border-color` resolved to
+/// `currentColor` (black), `background` to transparent. When the class
+/// finally landed, the class's `transition` animated from that unstyled
+/// state to the themed value on the first painted frame — a visible
+/// border/text/background flicker on every page load and navigation.
+///
+/// CSS only suppresses transitions on an element's first style
+/// computation when that computation already carries the final class.
+/// The fix sets the first class synchronously (the node is still
+/// detached at apply time, so no reflow); later applies still batch.
+///
+/// Before the fix this asserts `None` (class queued, not yet flushed —
+/// the microtask hasn't run because the test never yields). After, the
+/// class is present the instant `apply_style` returns.
+#[wasm_bindgen_test]
+fn regression_first_class_apply_is_synchronous_no_boot_transition() {
+    use runtime_core::{Backend, Color, StyleRules, Tokenized};
+    use std::rc::Rc;
+
+    // `install_for_text_bindings` installs the scheduler + the global
+    // self-handle (via `install_text_batcher`), so `WEB_BACKEND_HANDLE`
+    // is set and `queue_class_apply` takes the BATCHED path — the one
+    // the bug lived in. Without the handle it would hit the direct
+    // `setAttribute` fallback and the regression couldn't reproduce.
+    let backend = install_for_text_bindings();
+
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let element = doc.create_element("div").unwrap();
+    // DETACHED on purpose: mirrors the walker's order (style applied
+    // during `build`, BEFORE the node is `insert`ed into its parent).
+    let node: web_sys::Node = element.clone().unchecked_into();
+
+    let rules = Rc::new(StyleRules {
+        background: Some(Tokenized::Literal(Color("#ff0000".into()))),
+        ..Default::default()
+    });
+
+    backend.borrow_mut().apply_style(&node, &rules);
+
+    // No `await`, no microtask turn: the class must already be on the
+    // element. A deferred (queued) first apply would leave this `None`.
+    let class = element.get_attribute("class");
+    assert!(
+        class.as_deref().map(|c| !c.is_empty()).unwrap_or(false),
+        "first apply_style must set the class synchronously (got {:?}); \
+         deferring it to the batch microtask reintroduces the boot/navigation \
+         style-transition flicker",
+        class,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Microbenchmark: node_id FFI cost
 // ---------------------------------------------------------------------------
 

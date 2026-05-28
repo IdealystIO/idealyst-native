@@ -51,6 +51,19 @@ pub(crate) fn create(b: &mut WebBackend, config: LinkConfig) -> Node {
         "color: inherit; text-decoration: none; display: inline-flex;",
     );
 
+    // External link: open in a new tab via the browser's native
+    // anchor navigation. No JS click interception — a real
+    // `<a target="_blank">` is never popup-blocked (unlike a
+    // programmatic `window.open`), and we explicitly do NOT
+    // `preventDefault`, so the SPA router doesn't swallow it.
+    // `rel="noopener noreferrer"` severs the new tab's `window.opener`
+    // handle (security: stops the opened page from navigating us).
+    if config.external {
+        let _ = anchor.set_attribute("target", "_blank");
+        let _ = anchor.set_attribute("rel", "noopener noreferrer");
+        return anchor.unchecked_into::<Node>();
+    }
+
     let on_activate = config.on_activate.clone();
     let closure = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |evt: web_sys::MouseEvent| {
         // Modified clicks fall through to the browser. Plain

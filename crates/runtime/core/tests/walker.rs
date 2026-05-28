@@ -30,3 +30,7 @@ mod control_flow;
 mod key_events;
 #[path = "walker/scroll_view_on_scroll.rs"]
 mod scroll_view_on_scroll;
+#[path = "walker/ui_for_flattening.rs"]
+mod ui_for_flattening;
+#[path = "walker/ui_iteration_and_branches.rs"]
+mod ui_iteration_and_branches;

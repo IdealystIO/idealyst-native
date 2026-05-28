@@ -24,12 +24,11 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, IntoPrimitive, Primitive, StyleApplication, StyleRules};
+use runtime_core::{ui, IntoPrimitive, Primitive, StyleApplication};
 
-use idea_theme::extensible::{tone, variant, ResolutionCtx, ToneRef, VariantRef};
-use idea_theme::theme::IdeaThemeRef;
+use idea_theme::extensible::{installed_tag_sheet, tone, variant, ToneRef, VariantRef};
 
-use crate::stylesheets::{Tag as TagSheet, TagClose, TagLabel};
+use crate::stylesheets::{TagClose, TagLabel};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TagProps {
@@ -56,32 +55,11 @@ pub fn tag(props: &TagProps) -> Primitive {
     let tone = props.tone.clone();
     let variant = props.variant.clone();
 
-    let cache_key = format!("tag+{}+{}", variant.key(), tone.key());
+    let appearance_key = format!("{}_{}", tone.key(), variant.key());
 
-    let container_style = {
-        let tone = tone.clone();
-        let variant = variant.clone();
-        let cache_key = cache_key.clone();
-        move || {
-            let _ = idea_theme::active_theme()
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-            let var = variant.clone();
-            let tn = tone.clone();
-            let compute = move || -> StyleRules {
-                let theme = idea_theme::active_theme();
-                let theme_ref = theme
-                    .downcast_ref::<IdeaThemeRef>()
-                    .expect("idea-ui: no IdeaTheme installed");
-                let ctx = ResolutionCtx {
-                    theme: theme_ref,
-                    tone: &*tn,
-                };
-                var.render(&ctx)
-            };
-            StyleApplication::new(TagSheet::sheet()).with_computed(cache_key.clone(), compute)
-        }
-    };
+    // Static style — build-time apply, no flicker (see Button).
+    let container_style =
+        StyleApplication::new(installed_tag_sheet()).with("appearance", appearance_key);
 
     let label_style = TagLabel();
     let close_style = TagClose();

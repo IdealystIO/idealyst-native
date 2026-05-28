@@ -1101,33 +1101,46 @@ fn emit_activity_indicator(
 /// `runtime_core::primitives::flat_list::fixed_size(48.0)` for the
 /// fixed-height common case.
 fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
-    // `Link(route = ..., params = ...) { children }`. Mirrors the
-    // `link<P>(route, params, children)` constructor's three
-    // positional arguments. Both `route` and `params` are
-    // required at the type level (compile error if omitted —
-    // unwrap defaults to a unit fallback so the error message
-    // points at the unit type, not at a confusing missing-arg
-    // expansion).
+    // Two shapes:
+    //   - `Link(external = "https://…") { children }` — an off-app
+    //     link. Lowers to `external_link(url, children)`: on web a real
+    //     `<a target="_blank">`, on native a platform `open_url`. No
+    //     `route` / `params`.
+    //   - `Link(route = ..., params = ...) { children }` — in-app
+    //     navigation. Mirrors the `link<P>(route, params, children)`
+    //     constructor's three positional args. `route` is required at
+    //     the type level; `params` defaults to `()`.
+    let kids = children.unwrap_or(&[]);
+    let parts = kids.iter().map(emit_node);
+    let children_vec = quote! {
+        {
+            let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                = ::std::vec::Vec::new();
+            #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
+            __c
+        }
+    };
+
+    if let Some(external) = props.iter().find(|p| p.name == "external") {
+        let url = external.value.to_token_stream();
+        return quote! {
+            ::runtime_core::primitives::link::external_link(#url, #children_vec)
+        };
+    }
+
     let route = props
         .iter()
         .find(|p| p.name == "route")
         .map(|p| p.value.to_token_stream())
-        .unwrap_or_else(|| quote! { compile_error!("Link: missing required `route` prop") });
+        .unwrap_or_else(|| quote! { compile_error!("Link: missing required `route` prop (or use `external = \"https://…\"` for an off-app link)") });
     let params = props
         .iter()
         .find(|p| p.name == "params")
         .map(|p| p.value.to_token_stream())
         .unwrap_or_else(|| quote! { () });
 
-    let kids = children.unwrap_or(&[]);
-    let parts = kids.iter().map(emit_node);
     quote! {
-        ::runtime_core::primitives::link::link(#route, #params, {
-            let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
-                = ::std::vec::Vec::new();
-            #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
-            __c
-        })
+        ::runtime_core::primitives::link::link(#route, #params, #children_vec)
     }
 }
 
@@ -1715,30 +1728,78 @@ fn emit_for(
         return virt;
     }
 
-    let body_expr = emit_block_as_primitive(body);
+    // Reactive list: the iterator reads a signal — `for x in items.get()`
+    // (signal of an iterable), or a reactive count `for i in 0..n.get()`.
+    // Lower to `each(...)`: a full-rebuild reactive list, the dual of
+    // `when`/`switch` for a *vector* of children. The whole loop re-runs
+    // inside the Each's Effect whenever a signal it reads changes; the
+    // prior rows' scope is dropped first (see `Primitive::Each`). Same
+    // `.get()` heuristic as reactive `if`/`match`.
+    //
+    // Checked BEFORE the static range path so a reactive count
+    // (`0..n.get()`) rebuilds on change instead of being snapshot once
+    // into a `Repeat`. The body parts are appended as flat siblings,
+    // identical to the static accumulator below.
+    if condition_is_reactive(iter) {
+        let parts: Vec<TokenStream2> = body.iter().map(emit_node).collect();
+        let each = quote! {
+            ::runtime_core::each(move || {
+                let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                    = ::std::vec::Vec::new();
+                for #pat in #iter {
+                    #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
+                }
+                __c
+            })
+        };
+        return if chain.is_empty() {
+            each
+        } else {
+            quote! { (#each) #(#chain)* }
+        };
+    }
 
-    // Fast path: `for IDENT in RANGE_EXPR { body }` where the iterator
-    // is a syntactic `0..n` (any bounded range) — lower to
+    // Fast path: `for IDENT in RANGE_EXPR { single_node }` where the
+    // iterator is a syntactic `0..n` (any bounded range) — lower to
     // `Primitive::Repeat`, which the build walker expands into the
     // parent's children list via the backend's `insert_many`
     // (DocumentFragment batching on web). Collapses N individual
     // `appendChild` FFI calls into one and lets the backend amortize
     // any other per-batch setup.
     //
-    // We don't try to handle non-range iterators here — the macro
-    // can't generally prove the iterator length up-front without
-    // evaluating it. For those, fall back to the original
-    // accumulate-into-Vec shape so behavior is preserved.
-    if let Some(repeat) = try_emit_for_repeat(pat, iter, &body_expr) {
-        return repeat;
+    // Gated to single-node bodies: `Primitive::Repeat` is
+    // one-node-per-index (`row_builder: Fn(usize) -> Primitive`), so a
+    // multi-node iteration could only batch by wrapping each row in a
+    // synthetic View — which is exactly the behavior this lowering must
+    // NOT have (children are inherently a flat vector). Multi-node
+    // ranged loops fall through to the flattening accumulator below.
+    //
+    // We don't try to handle non-range iterators on the fast path —
+    // the macro can't prove the iterator length up-front without
+    // evaluating it.
+    if body.len() == 1 {
+        let body_expr = emit_block_as_primitive(body);
+        if let Some(repeat) = try_emit_for_repeat(pat, iter, &body_expr) {
+            return repeat;
+        }
     }
 
+    // General fallback: accumulate FLAT siblings. Each body node is
+    // appended to the per-iteration vec individually, so an iteration
+    // with N sibling nodes contributes N siblings to the parent's
+    // children list — NOT one wrapper View around them. A nested
+    // Vec-producing node (e.g. another `for`) flattens inline through
+    // `ChildList`. Single-node bodies behave exactly as before (one
+    // sibling per iteration). This matches the truth that a parent's
+    // `children` is a vector: a loop emits siblings into it, the same
+    // as hand-written `vec.push(...)` would.
+    let parts: Vec<TokenStream2> = body.iter().map(emit_node).collect();
     quote! {
         {
             let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
                 = ::std::vec::Vec::new();
             for #pat in #iter {
-                ::runtime_core::ChildList::append_to(#body_expr, &mut __c);
+                #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
             }
             __c
         }

@@ -95,7 +95,7 @@ stylesheet! {
             padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
             border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             font_weight: FontWeight::SemiBold,
-            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             text_align: TextAlign::Center,
             letter_spacing: 0.2,
         }
@@ -103,18 +103,18 @@ stylesheet! {
             sm(t) {
                 padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
                 padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
-                font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
+                font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
             }
             #[default]
             md(t) {
                 padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
                 padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
-                font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
+                font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             }
             lg(t) {
                 padding_vertical: Tokenized::token("spacing-md", Length::Px(12.0)),
                 padding_horizontal: Tokenized::token("spacing-xl", Length::Px(24.0)),
-                font_size: Tokenized::token("typography-size-lg", Length::Px(16.0)),
+                font_size: Tokenized::token("typography-body-lg-size", Length::Px(18.0)),
             }
         }
         variant appearance {
@@ -452,24 +452,24 @@ stylesheet! {
             border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             border_width: 1.0,
             border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
-            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
         }
         variant size {
             sm(t) {
                 padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
                 padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
-                font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
+                font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
             }
             #[default]
             md(t) {
                 padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
                 padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
-                font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
+                font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             }
             lg(t) {
                 padding_vertical: Tokenized::token("spacing-md", Length::Px(12.0)),
                 padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
-                font_size: Tokenized::token("typography-size-lg", Length::Px(16.0)),
+                font_size: Tokenized::token("typography-body-lg-size", Length::Px(18.0)),
             }
         }
         variant tone {
@@ -506,7 +506,7 @@ stylesheet! {
     pub FieldLabel<IdeaThemeRef> {
         base(t) {
             color: Tokenized::token("color-text", Color("#1a1a1f".into())),
-            font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
+            font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
             font_weight: FontWeight::Medium,
         }
     }
@@ -516,7 +516,7 @@ stylesheet! {
     pub FieldHelp<IdeaThemeRef> {
         base(t) {
             color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
-            font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
+            font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
         }
         variant tone {
             #[default]
@@ -742,7 +742,7 @@ stylesheet! {
             border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             border_width: 1.0,
             border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
-            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             text_align: TextAlign::Left,
             min_width: 160.0,
         }
@@ -750,18 +750,18 @@ stylesheet! {
             sm(t) {
                 padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
                 padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
-                font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
+                font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
             }
             #[default]
             md(t) {
                 padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
                 padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
-                font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
+                font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             }
             lg(t) {
                 padding_vertical: Tokenized::token("spacing-md", Length::Px(12.0)),
                 padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
-                font_size: Tokenized::token("typography-size-lg", Length::Px(16.0)),
+                font_size: Tokenized::token("typography-body-lg-size", Length::Px(18.0)),
             }
         }
         state hovered(t) {
@@ -811,7 +811,7 @@ stylesheet! {
             padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
             padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
             border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
-            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             text_align: TextAlign::Left,
         }
         variant active {
@@ -867,7 +867,7 @@ stylesheet! {
         base(t) {
             padding: Tokenized::token("spacing-sm", Length::Px(8.0)),
             border_radius: Tokenized::token("radius-pill", Length::Px(999.0)),
-            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             font_weight: FontWeight::SemiBold,
             text_align: TextAlign::Center,
             align_items: AlignItems::Center,
@@ -876,20 +876,20 @@ stylesheet! {
         variant size {
             sm(t) {
                 padding: Tokenized::token("spacing-xs", Length::Px(4.0)),
-                font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
+                font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
                 width: 24.0,
                 height: 24.0,
             }
             #[default]
             md(t) {
                 padding: Tokenized::token("spacing-sm", Length::Px(8.0)),
-                font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
+                font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
                 width: 32.0,
                 height: 32.0,
             }
             lg(t) {
                 padding: Tokenized::token("spacing-md", Length::Px(12.0)),
-                font_size: Tokenized::token("typography-size-lg", Length::Px(16.0)),
+                font_size: Tokenized::token("typography-body-lg-size", Length::Px(18.0)),
                 width: 48.0,
                 height: 48.0,
             }
@@ -1139,9 +1139,9 @@ stylesheet! {
         }
         variant size {
             xs(_t) { font_size: 10.0, line_height: 24.0 }
-            sm(_t) { font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)), line_height: 32.0 }
+            sm(_t) { font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)), line_height: 32.0 }
             #[default]
-            md(_t) { font_size: Tokenized::token("typography-size-md", Length::Px(14.0)), line_height: 40.0 }
+            md(_t) { font_size: Tokenized::token("typography-body-size", Length::Px(14.0)), line_height: 40.0 }
             lg(_t) { font_size: Tokenized::token("typography-size-xl", Length::Px(20.0)), line_height: 56.0 }
             xl(_t) { font_size: Tokenized::token("typography-size-xxl", Length::Px(28.0)), line_height: 80.0 }
         }
@@ -1288,7 +1288,7 @@ stylesheet! {
 stylesheet! {
     pub TagLabel<IdeaThemeRef> {
         base(t) {
-            font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
+            font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
             font_weight: FontWeight::SemiBold,
             letter_spacing: 0.3,
         }
@@ -1301,7 +1301,7 @@ stylesheet! {
             // Inherit the parent's foreground; no fill of its own.
             background: Color("transparent".into()),
             padding: 0.0,
-            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             font_weight: FontWeight::Bold,
             text_align: TextAlign::Center,
             line_height: 14.0,
@@ -1455,7 +1455,7 @@ stylesheet! {
 stylesheet! {
     pub AlertTitle<IdeaThemeRef> {
         base(t) {
-            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             font_weight: FontWeight::SemiBold,
             line_height: 20.0,
         }
@@ -1465,7 +1465,7 @@ stylesheet! {
 stylesheet! {
     pub AlertBody<IdeaThemeRef> {
         base(t) {
-            font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
+            font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
             line_height: 18.0,
         }
     }
@@ -1518,7 +1518,7 @@ stylesheet! {
             padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
             padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
             font_weight: FontWeight::Medium,
-            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             border_radius: 0.0,
             // Bottom border draws under the active tab to mark
             // selection; off-state is transparent so the bar's

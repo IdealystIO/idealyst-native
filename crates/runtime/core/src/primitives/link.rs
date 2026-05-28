@@ -118,16 +118,28 @@ pub trait LinkOps {
 pub struct LinkConfig {
     /// Route name (matches `Route::name()`). Stable; passed through
     /// to backends that want to expose it in accessibility metadata
-    /// (e.g. "Link to home").
+    /// (e.g. "Link to home"). Empty (`""`) for external links — they
+    /// have no in-app route; use [`url`](Self::url) for the label.
     pub route: &'static str,
-    /// Concrete URL produced by `params.to_path(route.path)` at
-    /// link construction time. Useful on web for the `<a href>`
-    /// attribute and right-click affordances; ignored on native.
+    /// Concrete URL. For in-app links: `params.to_path(route.path)`,
+    /// used on web for the `<a href>` and right-click affordances,
+    /// ignored on native. For external links: the off-app destination
+    /// (`https://…`, `mailto:`, `tel:`) the backend opens directly.
     pub url: String,
-    /// Fire when the user activates the link. The framework wraps
-    /// push/replace/reset dispatch in here, so the backend doesn't
-    /// need to know which one this link is — just "the user
-    /// activated it."
+    /// `true` ⇒ this link points *outside* the app. Backends route it
+    /// to the platform's external handler rather than the in-app
+    /// navigator: web emits `<a target="_blank" rel="noopener">` and
+    /// lets the browser navigate (no SPA `preventDefault`); native
+    /// fires `on_activate`, which calls
+    /// [`open_url`](crate::open_url). `false` ⇒ in-app navigation
+    /// (the historical behavior).
+    pub external: bool,
+    /// Fire when the user activates the link. For in-app links the
+    /// framework wraps push/replace/reset dispatch in here; for
+    /// external links it wraps [`open_url`](crate::open_url). Either
+    /// way the backend just fires it on activation. (Web skips this
+    /// for external links — the native `<a target="_blank">` already
+    /// navigates.)
     pub on_activate: Rc<dyn Fn()>,
 }
 
@@ -180,6 +192,42 @@ pub fn link<P: RouteParams + Clone>(
         make_params,
         kind,
         target: ambient,
+        external: false,
+        style: None,
+        ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
+    })
+}
+
+/// Build an **external** Link — one that leaves the app for an
+/// off-app destination (`https://…`, `mailto:`, `tel:`).
+///
+/// Unlike [`link`], an external link has no `Route` and captures no
+/// ambient navigator: on web the backend renders a real
+/// `<a href target="_blank" rel="noopener">` and lets the browser
+/// navigate (so it's never popup-blocked, unlike a programmatic
+/// `window.open`); on native, activation calls
+/// [`open_url`](crate::open_url), which hands the URL to the
+/// platform's external handler (`UIApplication.open`, an
+/// `ACTION_VIEW` intent, `NSWorkspace`).
+///
+/// Use this for GitHub links, docs, `mailto:` etc. For in-app
+/// navigation between routes, use [`link`] so web stays single-page.
+pub fn external_link(url: impl Into<String>, children: Vec<Primitive>) -> Bound<LinkHandle> {
+    // External links carry no params; the dispatcher never reads this
+    // (the walker builds an `open_url` closure instead of a
+    // NavCommand), but the field is non-optional so supply a noop.
+    let make_params: Rc<dyn Fn() -> Box<dyn Any>> =
+        Rc::new(|| Box::new(()) as Box<dyn Any>);
+
+    Bound::new(Primitive::Link {
+        children,
+        route: "",
+        url: url.into(),
+        make_params,
+        kind: NavKind::Default,
+        target: None,
+        external: true,
         style: None,
         ref_fill: None,
         accessibility: crate::accessibility::AccessibilityProps::default(),
@@ -238,4 +286,27 @@ pub(crate) fn make_on_activate(
         };
         control.dispatch(cmd);
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `external_link` must build a `Primitive::Link` flagged
+    /// external, carrying the raw URL, with no route and no captured
+    /// navigator — the walker keys off `external` to route activation
+    /// to `open_url` and the web backend to emit `<a target="_blank">`.
+    #[test]
+    fn external_link_builds_external_primitive() {
+        let bound = external_link("https://example.com/docs", Vec::new());
+        match &bound.primitive {
+            Primitive::Link { external, url, route, target, .. } => {
+                assert!(*external, "external_link must set external = true");
+                assert_eq!(url, "https://example.com/docs");
+                assert_eq!(*route, "", "external links carry no in-app route");
+                assert!(target.is_none(), "external links capture no navigator");
+            }
+            _ => panic!("external_link must build a Primitive::Link"),
+        }
+    }
 }

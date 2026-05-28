@@ -59,6 +59,7 @@ pub enum PrimitiveKind {
     DrawerNavigator,
     When,
     Switch,
+    Each,
     Link,
     Portal,
     External,

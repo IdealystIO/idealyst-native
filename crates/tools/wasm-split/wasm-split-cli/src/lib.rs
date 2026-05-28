@@ -439,6 +439,10 @@ impl<'a> Splitter<'a> {
         // Add the stub functions to the ifunc table
         // The callers of these functions will call the stub instead of the import
         let mut _idx = 0;
+        // Track every export name already in use so the shared-function
+        // exports added below stay unique (see the dedup note there).
+        let mut used_export_names: HashSet<String> =
+            out.exports.iter().map(|e| e.name.clone()).collect();
         for func in self.shared_symbols.iter() {
             if let Node::Function(id) = func {
                 ifuncs.push(*id);
@@ -470,11 +474,28 @@ impl<'a> Splitter<'a> {
                 // was stripped to a single `unreachable`
                 // instruction by wasm-opt.
                 let func_obj = out.funcs.get(*id);
-                let export_name = func_obj
+                let base_name = func_obj
                     .name
                     .clone()
                     .unwrap_or_else(|| format!("__wasm_split_shared_{}", id.index()));
                 if out.exports.get_exported_func(*id).is_none() {
+                    // Wasm requires export names be unique within a
+                    // module. Release builds (opt-level=z) let LLVM emit
+                    // several DISTINCT functions that share one mangled
+                    // name (e.g. three copies of `alloc::fmt::format`).
+                    // The by-id guard above lets each distinct id
+                    // through, so without a name check every clash would
+                    // add a second export under the same name and the
+                    // module would fail `WebAssembly.instantiateStreaming`
+                    // with "Duplicate export name ...". These exports are
+                    // only DCE roots (chunks reach the function through
+                    // the shared call_indirect table, not by name), so on
+                    // a clash we uniquify with the function index.
+                    let mut export_name = base_name;
+                    if !used_export_names.insert(export_name.clone()) {
+                        export_name = format!("{export_name}__dup_{}", id.index());
+                        used_export_names.insert(export_name.clone());
+                    }
                     out.exports.add(&export_name, *id);
                 }
             }

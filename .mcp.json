@@ -6,8 +6,12 @@
       "args": [
         "-y",
         "@playwright/mcp",
-        "--cdp-endpoint",
-        "ws://chrome:3000"
+        "--browser",
+        "chrome",
+        "--headless",
+        "--isolated",
+        "--viewport-size",
+        "1280x900"
       ],
       "env": {}
     },

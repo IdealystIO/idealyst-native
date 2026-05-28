@@ -11,7 +11,9 @@ use std::rc::Rc;
 use runtime_core::{lazy, signal, switch, ui, IntoPrimitive, Primitive, Route, Signal, StyleApplication};
 use idea_ui::{tabs, typography, Tab};
 
-use crate::components::simulator::{simulator, SimulatorProps};
+use crate::components::simulator::{
+    simulator, simulator_placeholder, SimulatorProps, SimulatorSkin,
+};
 use crate::pages::common::code_panel;
 use crate::routes::{
     AGENTIC_ROUTE, BACKENDS_ROUTE, CONCEPTS_ROUTE, INSTALL_ROUTE, QUICKSTART_ROUTE, TARGETS_ROUTE,
@@ -135,20 +137,17 @@ fn hero_simulator() -> Primitive {
         // rebuilding the Simulator with the matching painter. The
         // outgoing Simulator's `on_lost` fires as its Graphics surface
         // tears down so the wgpu host drops cleanly before the new one
-        // mounts.
+        // mounts. The Simulator owns its own outer chassis (default
+        // `chassis = true`) so the bezel rendering matches the
+        // `simulator_placeholder` below — no concentric curve drift.
         let dynamic_sim = switch(
             move || active.get(),
             |&idx| {
                 let build_ui: Rc<dyn Fn() -> Primitive> = Rc::new(welcome::app);
-                #[cfg(target_arch = "wasm32")]
-                let skin: Option<Rc<dyn host_web::Painter>> = match idx {
-                    1 => Some(Rc::new(android_sim::AndroidSim::new())),
-                    _ => Some(Rc::new(ios_sim::IosSim::new())),
-                };
-                #[cfg(not(target_arch = "wasm32"))]
-                let skin = {
-                    let _ = idx;
-                    None
+                let skin = if idx == 1 {
+                    SimulatorSkin::Android
+                } else {
+                    SimulatorSkin::Ios
                 };
                 ui! {
                     Simulator(
@@ -159,22 +158,38 @@ fn hero_simulator() -> Primitive {
             },
         );
 
-        // Outer chassis: black so it blends with the wgpu engine's
-        // device_frame_pipeline (which paints opaque black on the canvas
-        // outside the screen). See `SimulatorBezel`'s doc.
-        let bezel_style = crate::styles::SimulatorBezel();
-        let bezel = ui! { View(style = bezel_style) { dynamic_sim } };
-
-        let stage_children: Vec<Primitive> = vec![tab_strip, bezel];
+        let stage_children: Vec<Primitive> = vec![tab_strip, dynamic_sim];
         ui! { View(style = stage_style) { stage_children } }
     }
-    // While the chunk loads, render an empty View styled to the
-    // stage so the surrounding layout doesn't reflow when the
-    // simulator pops in. Recomputing the style fn (it's a cheap
-    // const-ish lookup) since the `lazy!` body is a fn item and
-    // can't capture from the outer scope.
+    // While the chunk loads, render the device chassis with an "off"
+    // screen inside (from `simulator_placeholder`), plus an empty
+    // band the height of the tab strip above it. Reserving the full
+    // footprint means the surrounding hero layout doesn't reflow
+    // when the simulator pops in — the only on-load delta is the
+    // wgpu canvas painting INSIDE the chassis and the tab labels
+    // appearing in the band above.
+    //
+    // Tab band reserves the height TabBar + TabButton produce
+    // (~36 px from `idea-ui::stylesheets::TabBar` / `TabButton`:
+    // 8 px vertical padding + 14 px font + 2 px active-border +
+    // 1 px bar border).
     .placeholder(|| {
-        ui! { View(style = crate::styles::SimulatorStage()) }.into_primitive()
+        use runtime_core::{view, Length, StyleRules, StyleSheet};
+        const TAB_BAND_H: f32 = 36.0;
+        const TAB_BAND_W: f32 = 300.0;
+
+        let tab_band_style = Rc::new(StyleSheet::r#static(StyleRules {
+            width: Some(Length::Px(TAB_BAND_W).into()),
+            height: Some(Length::Px(TAB_BAND_H).into()),
+            ..Default::default()
+        }));
+        let tab_band = view(Vec::new())
+            .with_style(tab_band_style)
+            .into_primitive();
+        let device = simulator_placeholder(None);
+        let stage_children: Vec<Primitive> = vec![tab_band, device];
+        ui! { View(style = crate::styles::SimulatorStage()) { stage_children } }
+            .into_primitive()
     })
     .into_primitive()
 }

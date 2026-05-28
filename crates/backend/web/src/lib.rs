@@ -1158,8 +1158,43 @@ impl WebBackend {
 
         let id = self.node_id(node);
         if !self.class_nodes_registered.contains(&id) {
+            // FIRST apply for this node: register it with the JS-side
+            // styled-node map (so later batched updates address it by
+            // id) AND set the class SYNCHRONOUSLY rather than queuing
+            // it for the microtask flush.
+            //
+            // The build walker styles a node BEFORE inserting it into
+            // its parent (`walker/view.rs`: `build(...)` then
+            // `insert(...)`), so the node is still DETACHED here — a
+            // synchronous `setAttribute` can't trigger a visible reflow,
+            // and it guarantees the node carries its themed class on its
+            // FIRST style resolution once it's attached.
+            //
+            // Deferring this first class to the batch microtask was the
+            // boot/navigation FOUC: the node attached and got its first
+            // style resolution class-less (border-color resolves to
+            // `currentColor`/black, background to transparent), so the
+            // class's `transition` then animated from that unstyled
+            // state to the themed value on the first painted frame. CSS
+            // suppresses transitions on an element's first style
+            // computation — but only when that first computation already
+            // carries the final class. Setting it synchronously restores
+            // that invariant. The value written is byte-identical to what
+            // the batch flush would set (same `class_name`, same full
+            // `setAttribute('class', …)` replace the JS shim does), so
+            // this is purely a timing change.
+            //
+            // Subsequent applies (theme re-style, reactive/signal
+            // fan-out) still ride the batched queue below — that's where
+            // the FFI-coalescing win matters (one signal → N nodes),
+            // and those nodes are already painted, so a value change
+            // there SHOULD transition (e.g. the dark-mode swap).
             self.register_styled_node(node, id);
             self.class_nodes_registered.insert(id);
+            if let Some(element) = node.dyn_ref::<web_sys::Element>() {
+                let _ = element.set_attribute("class", class_name);
+            }
+            return;
         }
 
         self.class_queue.queue(id, class_name);
@@ -1473,6 +1508,19 @@ impl Backend for WebBackend {
 
     fn platform(&self) -> runtime_core::Platform {
         runtime_core::Platform::Web
+    }
+
+    fn url_opener(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
+        // `_blank` opens a new tab. Without a target the navigation
+        // replaces the current document, which unmounts the framework
+        // — `open_url` is for *leaving* to an external page, so a new
+        // tab is the right default (in-app navigation goes through the
+        // `Link` primitive, which stays single-page).
+        Some(std::rc::Rc::new(|url: &str| {
+            if let Some(win) = web_sys::window() {
+                let _ = win.open_with_url_and_target(url, "_blank");
+            }
+        }))
     }
 
     fn color_scheme(&self) -> runtime_core::ColorScheme {

@@ -467,7 +467,10 @@ pub fn primitive_kind(p: &crate::Primitive) -> Option<PrimitiveKind> {
         Primitive::Navigator { .. } => Some(PrimitiveKind::Navigator),
         Primitive::Lazy { .. } => Some(PrimitiveKind::Lazy),
         // Control flow — transparent.
-        Primitive::When { .. } | Primitive::Switch { .. } | Primitive::Repeat { .. } => None,
+        Primitive::When { .. }
+        | Primitive::Switch { .. }
+        | Primitive::Each { .. }
+        | Primitive::Repeat { .. } => None,
     }
 }
 

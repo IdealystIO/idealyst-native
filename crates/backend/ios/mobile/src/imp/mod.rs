@@ -696,6 +696,32 @@ impl Backend for IosBackend {
         }
     }
 
+    fn url_opener(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
+        Some(std::rc::Rc::new(|url: &str| {
+            // [[UIApplication sharedApplication] openURL:] hands the URL
+            // to the system (Safari, Mail, the app registered for the
+            // scheme). Raw msg_send + class!() — same style as
+            // `color_scheme` below — so no extra objc2-ui-kit typed
+            // feature is needed. We use the single-arg form rather than
+            // openURL:options:completionHandler: to keep the call ABI
+            // trivially correct (one object arg in, BOOL out, no block
+            // to marshal). Must run on the main thread; `open_url` is
+            // only invoked from main-thread event handlers.
+            let ns_url_str = NSString::from_str(url);
+            let url_obj: *mut NSObject =
+                unsafe { msg_send![objc2::class!(NSURL), URLWithString: &*ns_url_str] };
+            if url_obj.is_null() {
+                return;
+            }
+            let app: *mut NSObject =
+                unsafe { msg_send![objc2::class!(UIApplication), sharedApplication] };
+            if app.is_null() {
+                return;
+            }
+            let _: bool = unsafe { msg_send![app, openURL: url_obj] };
+        }))
+    }
+
     fn color_scheme(&self) -> runtime_core::ColorScheme {
         // UITraitCollection.currentTraitCollection.userInterfaceStyle
         // 0 = Unspecified, 1 = Light, 2 = Dark (UIUserInterfaceStyle).
@@ -1409,13 +1435,19 @@ impl Backend for IosBackend {
 
         let _ = self.layout_for_view(&view);
         let node = IosNode::View(view);
-        // Default Link label = the route, if no author label was given.
-        // `a11y::apply` clears the label when `props.label.is_none()`;
-        // we re-set the route afterwards so reactive prop changes that
-        // explicitly clear the label fall back to the route rather
-        // than leaving the link unlabelled. Author overrides still win.
-        let resolved_label = a11y.label.clone()
-            .unwrap_or_else(|| config.route.to_string());
+        // Default Link label = the route (in-app) or the URL
+        // (external), if no author label was given. `a11y::apply`
+        // clears the label when `props.label.is_none()`; we re-set it
+        // afterwards so reactive prop changes that explicitly clear
+        // the label fall back rather than leaving the link unlabelled.
+        // Author overrides still win.
+        let resolved_label = a11y.label.clone().unwrap_or_else(|| {
+            if config.external {
+                config.url.clone()
+            } else {
+                config.route.to_string()
+            }
+        });
         let effective_a11y = runtime_core::accessibility::AccessibilityProps {
             label: Some(resolved_label),
             ..a11y.clone()

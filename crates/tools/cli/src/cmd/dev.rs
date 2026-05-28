@@ -708,7 +708,7 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
         Ok(())
     } else {
         // ── Local-render mode: livereload-driven hot-reload. ───────
-        let gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let signal = dev_reload::ReloadSignal::new();
         if !args.no_build {
             // `dev_reload::start_with` does the first build
             // synchronously and then keeps a watcher thread alive in
@@ -721,7 +721,7 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
             // the MCP server can attach without any user action.
             let handle = dev_reload::start_with(
                 dir,
-                gen.clone(),
+                signal.clone(),
                 dev_reload::BuildOptions {
                     source: source.clone(),
                     features: vec!["runtime-core/dev".to_string()],
@@ -734,7 +734,7 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
             // output into base + chunks, emits chunks into
             // <project>/pkg/. Mirrors the build path; coming up next.
         }
-        let ctx = ReloadContext { gen };
+        let ctx = ReloadContext { signal };
         crate::dlog!(
             "dev web",
             "livereload HTTP at http://{}:{}",
@@ -769,7 +769,6 @@ fn launch_web_with_server_bin(
     source: &build_ios::FrameworkSource,
     server_bin: &str,
 ) -> Result<()> {
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
     let package = parse_manifest(dir)?.name;
@@ -777,7 +776,7 @@ fn launch_web_with_server_bin(
     // Phase 1: initial wasm build + spawn the watcher. `start_with`
     // also runs the build before returning, so by the time we move
     // on, `pkg/` is populated and the watcher thread is live.
-    let gen = Arc::new(AtomicU64::new(0));
+    let signal = dev_reload::ReloadSignal::new();
     if !args.no_build {
         crate::dlog!(
             "dev web",
@@ -787,7 +786,7 @@ fn launch_web_with_server_bin(
         );
         let handle = dev_reload::start_with(
             dir,
-            gen.clone(),
+            signal.clone(),
             dev_reload::BuildOptions {
                 source: source.clone(),
                 features: Vec::new(),
@@ -811,21 +810,17 @@ fn launch_web_with_server_bin(
         server_bin,
         child.id(),
     );
-    let mut last_gen = gen.load(Ordering::Relaxed);
+    let mut last_gen = signal.current();
 
-    // Phase 3: poll the watcher's generation counter. dev_reload bumps
-    // it to 1 after the initial build and increments on every successful
-    // subsequent rebuild. Each bump = restart the server.
+    // Phase 3: wait on the watcher's generation signal. dev_reload bumps
+    // the counter (and notifies the condvar) after each successful build;
+    // we block here until that happens or until the keepalive interval
+    // elapses, at which point we re-check whether the server child died.
     //
-    // 200ms poll is human-imperceptible and keeps CPU at the noise
-    // floor. A condvar-driven notification would be cleaner but
-    // requires modifying dev_reload's public surface; the polling
-    // approach lives entirely in the CLI.
+    // 500ms keepalive == upper bound on how long it takes us to notice a
+    // server-bin crash. Bumps wake us immediately.
     loop {
-        std::thread::sleep(Duration::from_millis(200));
-
-        // Has the wasm rebuild bumped the generation?
-        let cur = gen.load(Ordering::Relaxed);
+        let cur = signal.wait_past(last_gen, Duration::from_millis(500));
         if cur != last_gen {
             last_gen = cur;
             eprintln!(

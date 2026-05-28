@@ -24,20 +24,32 @@ pub(super) fn build<B: Backend + 'static>(
     make_params: Rc<dyn Fn() -> Box<dyn Any>>,
     kind: primitives::link::NavKind,
     target: Option<Rc<primitives::navigator::NavigatorControl>>,
+    external: bool,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     a11y: AccessibilityProps,
 ) -> B::Node {
-    let on_activate = primitives::link::make_on_activate(
-        target,
-        route,
-        url.clone(),
-        kind,
-        make_params,
-    );
+    // External links bypass the navigator entirely: activation hands
+    // the URL to the platform's external handler. In-app links build
+    // the navigator-dispatch closure as before. (On web, external
+    // links navigate via the native `<a target="_blank">`, so the web
+    // backend ignores this closure — it only fires on native.)
+    let on_activate: Rc<dyn Fn()> = if external {
+        let url = url.clone();
+        Rc::new(move || crate::backend::open_url(&url))
+    } else {
+        primitives::link::make_on_activate(
+            target,
+            route,
+            url.clone(),
+            kind,
+            make_params,
+        )
+    };
     let config = primitives::link::LinkConfig {
         route,
         url,
+        external,
         on_activate,
     };
     let mut n = time_backend_create(pkind!(Link), || {

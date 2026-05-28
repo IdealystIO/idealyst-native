@@ -42,10 +42,21 @@
 
 mod macros;
 pub mod shape;
+mod sheets;
 pub mod size;
 pub mod tone;
 pub mod typography;
 pub mod variant;
+
+pub use sheets::{
+    install_alert_sheet, install_badge_sheet, install_button_sheet, install_default_alert_sheet,
+    install_default_badge_sheet, install_default_button_sheet, install_default_icon_button_sheet,
+    install_default_tag_sheet, install_default_typography_sheet, install_icon_button_sheet,
+    install_tag_sheet, install_typography_sheet, installed_alert_sheet, installed_badge_sheet,
+    installed_button_sheet, installed_icon_button_sheet, installed_tag_sheet,
+    installed_typography_sheet, AlertSheetBuilder, BadgeSheetBuilder, ButtonSheetBuilder,
+    IconButtonSheetBuilder, TagSheetBuilder, TypographySheetBuilder,
+};
 
 use std::rc::Rc;
 

@@ -1738,6 +1738,7 @@ impl Backend for WireRecordingBackend {
             url: config.url,
             kind: wire::WireNavKind::Push,
             on_activate: handler,
+            external: config.external,
             a11y: wire_a11y,
         });
         id

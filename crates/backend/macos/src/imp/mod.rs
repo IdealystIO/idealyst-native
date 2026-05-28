@@ -575,6 +575,29 @@ impl Backend for MacosBackend {
         runtime_core::Platform::MacOs
     }
 
+    fn url_opener(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
+        Some(std::rc::Rc::new(|url: &str| {
+            // NSWorkspace.sharedWorkspace.openURL: hands the URL to the
+            // user's default handler (browser, mail client, …). Raw
+            // msg_send + class!() to avoid pulling NSWorkspace/NSURL
+            // typed bindings — same style as `color_scheme` below. The
+            // autoreleased NSURL is consumed by `openURL:` immediately,
+            // within the same autorelease scope.
+            let ns_url_str = NSString::from_str(url);
+            let url_obj: *mut NSObject =
+                unsafe { msg_send![objc2::class!(NSURL), URLWithString: &*ns_url_str] };
+            if url_obj.is_null() {
+                return;
+            }
+            let workspace: *mut NSObject =
+                unsafe { msg_send![objc2::class!(NSWorkspace), sharedWorkspace] };
+            if workspace.is_null() {
+                return;
+            }
+            let _: bool = unsafe { msg_send![workspace, openURL: url_obj] };
+        }))
+    }
+
     fn color_scheme(&self) -> runtime_core::ColorScheme {
         // NSAppearance.currentAppearance.name → light/dark.
         // For now treat anything that isn't aqua as dark; refine

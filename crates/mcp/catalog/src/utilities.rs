@@ -23,6 +23,25 @@ inventory::submit! {
 
 inventory::submit! {
     UtilityEntry {
+        name: "open_url",
+        module_path: "runtime_core",
+        docs: "Open an external URL in the host's default handler — a new browser tab on web, Safari/Mail via `UIApplication.open` on iOS, an `ACTION_VIEW` intent on Android, the default browser via `NSWorkspace` on macOS. For *leaving* the app (external pages, `mailto:`, `tel:`); in-app navigation must use the `Link` primitive so web stays single-page. Fire-and-forget — a logged no-op on backends with no opener (terminal, CPU, runtime-server).",
+        params: &[
+            ParamSpec {
+                name: "url",
+                type_str: "& str",
+                type_short_name: "str",
+            },
+        ],
+        return_type: "()",
+        return_type_short: "()",
+        category: UtilityCategory::Platform,
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
         name: "parse_color",
         module_path: "runtime_core::color",
         docs: "Parse a CSS-ish color string (`#abc`, `#aabbcc`, `#aabbccdd`, `rgb(r,g,b)`, `rgba(r,g,b,a)`, named colors) into the canonical `Rgba` byte intermediate. Centralized in runtime-core; backends use 1-line shims.",

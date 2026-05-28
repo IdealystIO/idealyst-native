@@ -22,7 +22,11 @@
 //! ui! {
 //!     Text { "always loaded" }
 //!     { {
-//!         #[::wasm_splitter::wasm_split(__idealyst_lazy_<hash>)]
+//!         // Alias runtime-core's re-export so the attribute's
+//!         // `wasm_split::…` expansion resolves without the author
+//!         // crate depending on `wasm-split` directly.
+//!         use ::runtime_core::__wasm_split as wasm_split;
+//!         #[::runtime_core::__wasm_split::wasm_split(__idealyst_lazy_<hash>)]
 //!         async fn __idealyst_lazy_body_<hash>(
 //!             _: (),
 //!         ) -> ::runtime_core::Primitive {
@@ -88,6 +92,20 @@ pub fn emit(input: TokenStream) -> TokenStream {
     // signature pins the return type concretely.
     let expanded = quote! {
         {
+            // The `#[wasm_split]` attribute expands to code that
+            // references the wasm-split runtime via bare
+            // `wasm_split::…` paths (LazySplitLoader, etc.). Rather
+            // than force every author crate to declare its own
+            // `wasm-split` dependency just to satisfy those paths,
+            // alias runtime-core's re-export into scope here. The
+            // alias is visible to the nested `#body_ident` fn (a
+            // `use` in a block reaches items defined later in the
+            // same block), so the attribute's expansion resolves
+            // against it. `#[allow(unused_imports)]` covers the
+            // non-wasm32 expansion, where the attribute lowers to a
+            // plain async fn that never names `wasm_split`.
+            #[allow(unused_imports)]
+            use ::runtime_core::__wasm_split as wasm_split;
             #[::runtime_core::__wasm_split::wasm_split(#split_name)]
             async fn #body_ident(_: ()) -> ::runtime_core::Primitive {
                 use ::runtime_core::IntoPrimitive as _;

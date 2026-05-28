@@ -77,15 +77,15 @@ pub use assets::{
     Asset, AssetId, AssetKind, AssetSource, AssetTag, SystemFallback, Typeface, TypefaceFace,
     TypefaceId,
 };
-pub use backend::{platform, Backend, ColorScheme, Platform, VirtualizerCallbacks};
+pub use backend::{open_url, platform, Backend, ColorScheme, Platform, VirtualizerCallbacks};
 pub use batch::{BackendBatch, BatchOp};
 pub use handles::{
     ButtonHandle, ButtonOps, PressableHandle, PressableOps, RefFill, RefOps, StateBits, TextHandle,
     TextOps, ViewHandle, ViewOps,
 };
 pub use builder::{
-    button, pressable, switch, text, view, when, Bindable, Bound, ChildList, IntoDisabledSource,
-    IntoPrimitive,
+    button, each, pressable, switch, text, view, when, Bindable, Bound, ChildList,
+    IntoDisabledSource, IntoPrimitive,
 };
 pub use derive::{Action, Derived, IntoAction, IntoDerived};
 pub use identity::{
@@ -117,7 +117,7 @@ pub use primitives::overlay::{
     anchored_overlay, overlay, AnchoredOverlayBuilder, BackdropMode, OverlayBuilder,
 };
 pub use primitives::flat_list::{flat_list, fixed_size, FlatListItemSize};
-pub use primitives::link::NavKind;
+pub use primitives::link::{external_link, NavKind};
 pub use primitives::portal::{
     portal, AnchorTarget, AnchorableHandle, ElementAlign, ElementSide, PortalHandle,
     PortalOps, PortalTarget, ViewportPlacement, ViewportRect,

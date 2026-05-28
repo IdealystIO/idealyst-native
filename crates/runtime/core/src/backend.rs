@@ -211,6 +211,69 @@ pub fn install_current_platform(platform: Platform) {
 }
 
 // ---------------------------------------------------------------------------
+// External URL opener
+// ---------------------------------------------------------------------------
+//
+// `mount(...)` reads the backend's `url_opener()` once at startup and
+// stashes the returned closure here so author code can fire an
+// external navigation (`open_url("https://…")`) from anywhere —
+// component bodies, event handlers, effects — without threading a
+// `Backend` reference. The opener is a self-contained closure because
+// opening a URL is a stateless platform call on every backend
+// (`window.open`, `UIApplication.open`, an `ACTION_VIEW` intent,
+// `NSWorkspace.open`); it captures only the platform handles the
+// backend needs, never the view tree.
+
+thread_local! {
+    static URL_OPENER: std::cell::RefCell<Option<Rc<dyn Fn(&str)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Open `url` in the host platform's external handler — a new browser
+/// tab on web, Safari/Chrome via `UIApplication.open` on iOS, an
+/// `ACTION_VIEW` intent on Android, the default browser via
+/// `NSWorkspace` on macOS.
+///
+/// This is for *leaving* the app: external web pages, `mailto:`,
+/// `tel:`, etc. It is deliberately distinct from the [`Link`]
+/// primitive, which navigates *within* the app's navigator and (on
+/// web) must stay single-page. A `Link` requires a `Route` and an
+/// ambient navigator; an external URL has neither, so it gets its own
+/// imperative entry point rather than overloading `Link`.
+///
+/// Routes to the opener the active backend installed during
+/// [`mount`](crate::mount). Before any mount — or on a backend that
+/// reports no external-open capability ([`Backend::url_opener`]
+/// returned `None`: terminal, CPU, runtime-server) — this is a no-op
+/// that logs once at debug level. Fire-and-forget: there is no
+/// success signal, matching the lowest common denominator across
+/// `window.open` / `openURL` / `startActivity`.
+///
+/// [`Link`]: crate::primitives::link
+pub fn open_url(url: &str) {
+    // Clone the Rc out before invoking so the opener can re-enter
+    // framework code (e.g. trigger a re-mount) without tripping a
+    // RefCell double-borrow on this thread-local.
+    let opener = URL_OPENER.with(|cell| cell.borrow().clone());
+    match opener {
+        Some(open) => open(url),
+        None => crate::logging::log(
+            crate::logging::LogLevel::Debug,
+            "open_url: no URL opener installed for the active backend; \
+             ignoring external navigation",
+        ),
+    }
+}
+
+/// Internal: invoked by `mount(...)` to stash the active backend's
+/// external-URL opener (from [`Backend::url_opener`]). Not part of the
+/// public API surface; backends override `url_opener` instead.
+#[doc(hidden)]
+pub fn install_url_opener(opener: Option<Rc<dyn Fn(&str)>>) {
+    URL_OPENER.with(|cell| *cell.borrow_mut() = opener);
+}
+
+// ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
 
@@ -240,6 +303,28 @@ pub trait Backend {
     /// `Custom("Sim")`). Author code reads one thing.
     fn platform(&self) -> Platform {
         Platform::Custom("")
+    }
+
+    /// Hand the framework a self-contained closure that opens an
+    /// external URL in the host platform's default handler. Read once
+    /// by [`mount`](crate::mount) and stashed in a thread-local so
+    /// author code can call [`open_url`](crate::open_url) without a
+    /// `Backend` reference.
+    ///
+    /// The closure must not borrow the backend's view tree — opening a
+    /// URL is a stateless platform call (`window.open`,
+    /// `UIApplication.open`, an `ACTION_VIEW` intent,
+    /// `NSWorkspace.open`). It may capture cheap platform handles the
+    /// call needs (e.g. Android's `Activity` global ref).
+    ///
+    /// Default `None`: the backend has no external-open capability
+    /// (terminal, CPU, runtime-server). `open_url` calls become a
+    /// logged no-op on those backends. This is distinct from the
+    /// [`Link`](crate::primitives::link) primitive's in-app
+    /// navigation — see [`open_url`](crate::open_url) for why the two
+    /// are separate.
+    fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
+        None
     }
 
     fn create_view(&mut self, a11y: &crate::accessibility::AccessibilityProps) -> Self::Node;
@@ -2311,6 +2396,56 @@ mod tests {
         // Restore default so other tests on the same thread aren't
         // surprised by leftover state.
         install_current_platform(Platform::Custom(""));
+    }
+
+    /// `Backend::url_opener` defaults to `None` so backends without
+    /// an external-open capability (terminal, CPU, runtime-server)
+    /// compile without scaffolding and `open_url` no-ops on them.
+    #[test]
+    fn default_url_opener_is_none() {
+        let backend = StubBackend::new();
+        assert!(
+            backend.url_opener().is_none(),
+            "default url_opener must be None so non-browser backends opt out",
+        );
+    }
+
+    /// `open_url` must route through whatever opener was installed for
+    /// the active backend, passing the URL through verbatim.
+    #[test]
+    fn open_url_dispatches_to_installed_opener() {
+        let seen = Rc::new(RefCell::new(Vec::<String>::new()));
+        let seen_for_opener = seen.clone();
+        install_url_opener(Some(Rc::new(move |url: &str| {
+            seen_for_opener.borrow_mut().push(url.to_string());
+        })));
+
+        open_url("https://example.com/docs");
+        open_url("mailto:hi@example.com");
+
+        assert_eq!(
+            *seen.borrow(),
+            vec![
+                "https://example.com/docs".to_string(),
+                "mailto:hi@example.com".to_string(),
+            ],
+            "open_url must forward each URL to the installed opener in order",
+        );
+
+        // Restore default so other tests on this thread aren't
+        // surprised by a leftover opener.
+        install_url_opener(None);
+    }
+
+    /// With no opener installed, `open_url` must be a silent no-op
+    /// (logged at debug) rather than panicking — author code can call
+    /// it before mount or on a backend that doesn't support it.
+    #[test]
+    fn open_url_without_opener_is_noop() {
+        // Ensure a clean slate on this thread.
+        install_url_opener(None);
+        // Must not panic.
+        open_url("https://example.com");
     }
 
     /// `attach_locals` ordering must be preserved into `insert_many`

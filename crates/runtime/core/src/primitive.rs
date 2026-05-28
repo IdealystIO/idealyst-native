@@ -383,6 +383,37 @@ pub enum Primitive {
         default: Box<dyn Fn() -> Primitive>,
         style: Option<StyleSource>,
     },
+    /// Reactive list — the full-rebuild dual of [`When`](Primitive::When)
+    /// / [`Switch`](Primitive::Switch) for a *vector* of children
+    /// rather than a single node. Lowered from `ui!`'s
+    /// `for PAT in ITER { … }` when `ITER` reads a signal
+    /// (e.g. `for x in items.get() { … }`).
+    ///
+    /// `build` is re-run inside a fresh nested `Scope` whenever any
+    /// signal it reads changes. On each change the walker drops the
+    /// previous scope first — freeing every signal/effect in the old
+    /// rows atomically — clears the anchor's children, then builds the
+    /// new list. Rows are flat siblings of the anchor; there is no
+    /// per-row wrapper (the anchor is a layout-transparent
+    /// `create_reactive_anchor`, same as `When`/`Switch`).
+    ///
+    /// This is the **unwindowed, unkeyed** reactive list: every change
+    /// rebuilds all rows. It's the ergonomic, Rust-native path for
+    /// bounded lists (nav menus, tabs, chips). For large or scrolling
+    /// lists that need keyed diffing + windowing + cell recycling, use
+    /// `flat_list` / [`Virtualizer`](Primitive::Virtualizer) instead.
+    ///
+    /// **Tracking contract:** `build` runs fully tracked, so any signal
+    /// read while *constructing* the list (the iterable, plus any eager
+    /// reads in row construction) becomes a rebuild dependency. Reactive
+    /// constructs *inside* rows (a reactive `text(move || …)`, a nested
+    /// `when`) subscribe to their own deps via their own effects — they
+    /// are built in the untracked/scoped phase and do NOT pin the whole
+    /// list to a rebuild.
+    Each {
+        build: Box<dyn Fn() -> Vec<Primitive>>,
+        style: Option<StyleSource>,
+    },
     /// Bulk children: build `count` rows from `row_builder(i)` and
     /// insert them in one batch. The build walker uses this to
     /// collapse `for i in 0..n { ... }` lowerings — instead of
@@ -420,8 +451,15 @@ pub enum Primitive {
         kind: primitives::link::NavKind,
         /// Captured ambient `NavigatorControl` at construction.
         /// `None` ⇒ no navigator was active and activation silently
-        /// no-ops (matches handle-before-build posture).
+        /// no-ops (matches handle-before-build posture). Always `None`
+        /// for external links.
         target: Option<Rc<primitives::navigator::NavigatorControl>>,
+        /// `true` ⇒ external link (off-app URL). The walker routes
+        /// activation to [`crate::open_url`] instead of the ambient
+        /// navigator, and the web backend renders
+        /// `<a target="_blank" rel="noopener">`. See
+        /// [`primitives::link::external_link`].
+        external: bool,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,
@@ -615,6 +653,7 @@ impl Primitive {
             | Primitive::Graphics { style, .. }
             | Primitive::When { style, .. }
             | Primitive::Switch { style, .. }
+            | Primitive::Each { style, .. }
             | Primitive::Link { style, .. }
             | Primitive::Portal { style, .. }
             | Primitive::External { style, .. }

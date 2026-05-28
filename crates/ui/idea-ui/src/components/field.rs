@@ -1,9 +1,6 @@
-//! `Field` — labeled text input with optional helper/error text,
-//! built on the extensible Tone trait surface.
+//! `Field` — labeled text input with optional helper/error text.
 //!
 //! ```ignore
-//! use idea_theme::extensible::tone;
-//!
 //! ui! {
 //!     Field(
 //!         label = "Email",
@@ -15,22 +12,28 @@
 //! }
 //! ```
 //!
-//! `tone` (optional) drives the input border and help-text color.
-//! Default is no tone — the field uses the theme's neutral border.
-//! When `error` is `Some(...)`, the field auto-applies `tone::Danger`
-//! if no explicit tone is given; otherwise the explicit tone wins.
+//! `tone` (optional) drives the input border + help-text color. When
+//! `error` is `Some(...)`, `tone::Danger` is applied automatically if
+//! no explicit tone is given. `size` is a closed enum (`FieldSize`).
 //!
-//! `size` stays a closed enum (`FieldSize`) — it controls intrinsic
-//! input height which doesn't fit the `ButtonSize` slot vocabulary.
+//! Styles are STATIC `StyleApplication`s resolved from a programmatic
+//! sheet (size × tone axes + focused/disabled states), installed
+//! lazily. Static = applied at build time, theme-swapped in bulk by
+//! the cohort — no per-node Effect, no first-paint transition flicker.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::{ui, Primitive, Signal, StyleApplication, StyleRules, Tokenized, VariantEnum};
+use runtime_core::{
+    ui, Easing, Length, Primitive, Signal, StyleApplication, StyleRules, StyleSheet, Tokenized,
+    Transition, VariantEnum, VariantSet,
+};
 
-use idea_theme::extensible::{tone as tones, ResolutionCtx, ToneRef};
-use idea_theme::theme::IdeaThemeRef;
+use idea_theme::active_theme;
+use idea_theme::extensible::{tone as tones, RefBuiltins, ResolutionCtx, ToneRef};
+use idea_theme::theme::{IdeaTheme, IdeaThemeRef};
 
-use crate::stylesheets::{Field as FieldSheet, FieldGroup, FieldHelp, FieldLabel};
+use crate::stylesheets::{FieldGroup, FieldLabel};
 pub use crate::stylesheets::FieldSize;
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
@@ -41,13 +44,9 @@ pub struct FieldProps {
     pub placeholder: Option<String>,
     pub help: Option<String>,
     pub error: Option<String>,
-    /// Optional tone overlay. When `Some`, the field's border + help
-    /// text use this tone's `stroke_color` / `soft_fg`. When `None`
-    /// and `error` is set, `tone::Danger` is applied automatically.
-    ///
-    /// Note: call sites must write `tone: Some(tone::Warning.into())`
-    /// — the explicit `Some(...)` wrap is needed because the orphan
-    /// rule blocks a blanket `From<T: Tone> for Option<ToneRef>`.
+    /// Optional tone overlay (border + help-text color). Write
+    /// `Some(tone::Warning.into())`; orphan rule blocks a bare-tone
+    /// `Into<Option<ToneRef>>`.
     pub tone: Option<ToneRef>,
     pub size: FieldSize,
 }
@@ -67,6 +66,185 @@ impl Default for FieldProps {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Programmatic Field input + help stylesheets (lazily installed)
+// -----------------------------------------------------------------------------
+
+thread_local! {
+    static FIELD_INPUT_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
+    static FIELD_HELP_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
+}
+
+/// Install a custom Field input stylesheet (e.g. with app tones).
+pub fn install_field_input_sheet(sheet: Rc<StyleSheet>) {
+    FIELD_INPUT_SHEET.with(|s| *s.borrow_mut() = Some(sheet));
+}
+
+fn field_input_sheet() -> Rc<StyleSheet> {
+    FIELD_INPUT_SHEET.with(|s| {
+        if s.borrow().is_none() {
+            let tones: Vec<ToneRef> = ToneRef::builtins().into_iter().map(|(_, t)| t).collect();
+            *s.borrow_mut() = Some(build_field_input_sheet(tones));
+        }
+        s.borrow().as_ref().cloned().unwrap()
+    })
+}
+
+fn field_help_sheet() -> Rc<StyleSheet> {
+    FIELD_HELP_SHEET.with(|s| {
+        if s.borrow().is_none() {
+            let tones: Vec<ToneRef> = ToneRef::builtins().into_iter().map(|(_, t)| t).collect();
+            *s.borrow_mut() = Some(build_field_help_sheet(tones));
+        }
+        s.borrow().as_ref().cloned().unwrap()
+    })
+}
+
+/// Build the Field input sheet — size axis, tone axis (default +
+/// per-tone border color), and focused/disabled state overlays.
+pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
+    let surface = || Tokenized::token("color-surface", runtime_core::Color("#ffffff".into()));
+    let text = || Tokenized::token("color-text", runtime_core::Color("#1a1a1f".into()));
+    let border = || Tokenized::token("color-border", runtime_core::Color("#e4e6ef".into()));
+    let radius = || Tokenized::token("radius-md", Length::Px(8.0));
+
+    let mut sheet = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+        background: Some(surface()),
+        color: Some(text()),
+        border_top_left_radius: Some(radius()),
+        border_top_right_radius: Some(radius()),
+        border_bottom_left_radius: Some(radius()),
+        border_bottom_right_radius: Some(radius()),
+        border_top_width: Some(Tokenized::Literal(1.0)),
+        border_right_width: Some(Tokenized::Literal(1.0)),
+        border_bottom_width: Some(Tokenized::Literal(1.0)),
+        border_left_width: Some(Tokenized::Literal(1.0)),
+        border_top_color: Some(border()),
+        border_right_color: Some(border()),
+        border_bottom_color: Some(border()),
+        border_left_color: Some(border()),
+        background_transition: Some(Transition::new(250, Easing::EaseInOut)),
+        color_transition: Some(Transition::new(250, Easing::EaseInOut)),
+        border_top_color_transition: Some(Transition::new(150, Easing::EaseOut)),
+        border_right_color_transition: Some(Transition::new(150, Easing::EaseOut)),
+        border_bottom_color_transition: Some(Transition::new(150, Easing::EaseOut)),
+        border_left_color_transition: Some(Transition::new(150, Easing::EaseOut)),
+        ..Default::default()
+    });
+
+    // Size arms.
+    let pad = |t: &'static str, px: f32| Tokenized::token(t, Length::Px(px));
+    sheet = sheet
+        .variant("size", "sm", move |_vs| StyleRules {
+            padding_top: Some(pad("spacing-xs", 4.0)),
+            padding_bottom: Some(pad("spacing-xs", 4.0)),
+            padding_left: Some(pad("spacing-sm", 8.0)),
+            padding_right: Some(pad("spacing-sm", 8.0)),
+            font_size: Some(pad("typography-body-sm-size", 13.0)),
+            ..Default::default()
+        })
+        .variant("size", "md", move |_vs| StyleRules {
+            padding_top: Some(pad("spacing-sm", 8.0)),
+            padding_bottom: Some(pad("spacing-sm", 8.0)),
+            padding_left: Some(pad("spacing-md", 12.0)),
+            padding_right: Some(pad("spacing-md", 12.0)),
+            font_size: Some(pad("typography-body-size", 14.0)),
+            ..Default::default()
+        })
+        .variant("size", "lg", move |_vs| StyleRules {
+            padding_top: Some(pad("spacing-md", 12.0)),
+            padding_bottom: Some(pad("spacing-md", 12.0)),
+            padding_left: Some(pad("spacing-lg", 16.0)),
+            padding_right: Some(pad("spacing-lg", 16.0)),
+            font_size: Some(pad("typography-body-lg-size", 18.0)),
+            ..Default::default()
+        });
+
+    // Tone arms — "default" = neutral base border; each tone overrides
+    // the border color with its stroke color.
+    sheet = sheet.variant("tone", "default", |_vs| StyleRules::default());
+    for tone in &tones {
+        let tone_c = tone.clone();
+        sheet = sheet.variant("tone", tone.current_key(), move |_vs| {
+            let theme_rc = active_theme();
+            let theme_ref = theme_rc.downcast_ref::<IdeaThemeRef>().expect("theme");
+            let neutral = tones::Neutral;
+            let ctx = ResolutionCtx {
+                theme: theme_ref,
+                tone: &neutral,
+            };
+            let _ = ctx;
+            let stroke = tone_c.0.stroke_color(theme_ref);
+            StyleRules {
+                border_top_color: Some(stroke.clone()),
+                border_right_color: Some(stroke.clone()),
+                border_bottom_color: Some(stroke.clone()),
+                border_left_color: Some(stroke),
+                ..Default::default()
+            }
+        });
+    }
+
+    // State overlays (web handles natively via pseudo-classes).
+    sheet = sheet
+        .variant("__state_focused", "on", |_vs| {
+            let theme_rc = active_theme();
+            let theme_ref = theme_rc.downcast_ref::<IdeaThemeRef>().expect("theme");
+            let ring = theme_ref.colors().focus_ring.clone();
+            StyleRules {
+                border_top_color: Some(ring.clone()),
+                border_right_color: Some(ring.clone()),
+                border_bottom_color: Some(ring.clone()),
+                border_left_color: Some(ring),
+                ..Default::default()
+            }
+        })
+        .variant("__state_disabled", "on", |_vs| StyleRules {
+            opacity: Some(Tokenized::Literal(0.55)),
+            ..Default::default()
+        });
+
+    sheet = sheet
+        .variant_default("size", "md")
+        .variant_default("tone", "default");
+
+    Rc::new(sheet)
+}
+
+/// Build the Field help-text sheet — a tone axis driving the text
+/// color (default = muted, each tone = its soft foreground).
+pub fn build_field_help_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
+    let mut sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules {
+        font_size: Some(Tokenized::token(
+            "typography-caption-size",
+            Length::Px(12.0),
+        )),
+        color_transition: Some(Transition::new(250, Easing::EaseInOut)),
+        ..Default::default()
+    });
+    sheet = sheet.variant("tone", "default", |_vs| {
+        let theme_rc = active_theme();
+        let theme_ref = theme_rc.downcast_ref::<IdeaThemeRef>().expect("theme");
+        StyleRules {
+            color: Some(theme_ref.colors().text_muted.clone()),
+            ..Default::default()
+        }
+    });
+    for tone in &tones {
+        let tone_c = tone.clone();
+        sheet = sheet.variant("tone", tone.current_key(), move |_vs| {
+            let theme_rc = active_theme();
+            let theme_ref = theme_rc.downcast_ref::<IdeaThemeRef>().expect("theme");
+            StyleRules {
+                color: Some(tone_c.0.soft_fg(theme_ref)),
+                ..Default::default()
+            }
+        });
+    }
+    sheet = sheet.variant_default("tone", "default");
+    Rc::new(sheet)
+}
+
 fn size_key(size: FieldSize) -> &'static str {
     size.as_variant_str()
 }
@@ -78,8 +256,7 @@ pub fn field(props: &FieldProps) -> Primitive {
     let size = props.size;
     let has_error = props.error.is_some();
 
-    // Tone resolution: explicit `tone` prop wins; falls back to
-    // tone::Danger when error is present; otherwise None.
+    // Tone resolution: explicit `tone` wins; Danger on error; else none.
     let tone: Option<ToneRef> = props.tone.clone().or_else(|| {
         if has_error {
             Some(tones::Danger.into())
@@ -87,84 +264,13 @@ pub fn field(props: &FieldProps) -> Primitive {
             None
         }
     });
+    let tone_key = tone.as_ref().map(|t| t.key()).unwrap_or("default").to_string();
 
-    let tone_key_for_cache = tone.as_ref().map(|t| t.key()).unwrap_or("_");
-    let input_cache_key = format!("field+{}+{}", tone_key_for_cache, size_key(size));
-    let help_cache_key = format!("field-help+{}", tone_key_for_cache);
-
-    // The compute closure either returns tone-driven border styles
-    // (when a tone is present) or an empty StyleRules (when None — the
-    // base sheet's neutral border is used as-is). Same code path
-    // either way.
-    let input_style = {
-        let tone = tone.clone();
-        let cache_key = input_cache_key;
-        let size_str = size_key(size);
-        move || {
-            let _ = idea_theme::active_theme()
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-            let tn = tone.clone();
-            let compute = move || -> StyleRules {
-                let Some(t) = tn.as_ref() else {
-                    return StyleRules::default();
-                };
-                let theme = idea_theme::active_theme();
-                let theme_ref = theme
-                    .downcast_ref::<IdeaThemeRef>()
-                    .expect("idea-ui: no IdeaTheme installed");
-                let ctx = ResolutionCtx {
-                    theme: theme_ref,
-                    tone: &**t,
-                };
-                let stroke = ctx.tone.stroke_color(ctx.theme);
-                let one_px: Tokenized<f32> = Tokenized::Literal(1.0);
-                StyleRules {
-                    border_top_width: Some(one_px.clone()),
-                    border_right_width: Some(one_px.clone()),
-                    border_bottom_width: Some(one_px.clone()),
-                    border_left_width: Some(one_px),
-                    border_top_color: Some(stroke.clone()),
-                    border_right_color: Some(stroke.clone()),
-                    border_bottom_color: Some(stroke.clone()),
-                    border_left_color: Some(stroke),
-                    ..Default::default()
-                }
-            };
-            StyleApplication::new(FieldSheet::sheet())
-                .with("size", size_str.to_string())
-                .with_computed(cache_key.clone(), compute)
-        }
-    };
-
-    let help_style = {
-        let tone = tone.clone();
-        let cache_key = help_cache_key;
-        move || {
-            let _ = idea_theme::active_theme()
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("idea-ui: no IdeaTheme installed");
-            let tn = tone.clone();
-            let compute = move || -> StyleRules {
-                let Some(t) = tn.as_ref() else {
-                    return StyleRules::default();
-                };
-                let theme = idea_theme::active_theme();
-                let theme_ref = theme
-                    .downcast_ref::<IdeaThemeRef>()
-                    .expect("idea-ui: no IdeaTheme installed");
-                let ctx = ResolutionCtx {
-                    theme: theme_ref,
-                    tone: &**t,
-                };
-                StyleRules {
-                    color: Some(ctx.tone.soft_fg(ctx.theme)),
-                    ..Default::default()
-                }
-            };
-            StyleApplication::new(FieldHelp::sheet()).with_computed(cache_key.clone(), compute)
-        }
-    };
+    // STATIC styles — no per-node Effect, no first-paint flicker.
+    let input_style = StyleApplication::new(field_input_sheet())
+        .with("size", size_key(size).to_string())
+        .with("tone", tone_key.clone());
+    let help_style = StyleApplication::new(field_help_sheet()).with("tone", tone_key);
 
     let label_text = props.label.clone();
     let help_text = props.error.clone().or_else(|| props.help.clone());

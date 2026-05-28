@@ -550,6 +550,34 @@ where
     }
 }
 
+/// Reactive list constructor — the full-rebuild dual of [`when`] /
+/// [`switch`] for a *vector* of children. `build` reads one or more
+/// signals and returns the current children; the framework rebuilds
+/// the whole list (dropping the prior rows' scope first) whenever a
+/// signal `build` reads changes. See [`Primitive::Each`] for the
+/// lifecycle and tracking contract.
+///
+/// Emitted by `ui!`'s `for PAT in ITER { … }` when `ITER` reads a
+/// signal (e.g. `for x in items.get() { … }`); can also be called
+/// directly:
+///
+/// ```ignore
+/// let items: Signal<Vec<String>> = signal!(vec![]);
+/// each(move || {
+///     let mut c = Vec::new();
+///     for label in items.get() {
+///         ChildList::append_to(text(label), &mut c);
+///     }
+///     c
+/// })
+/// ```
+pub fn each(build: impl Fn() -> Vec<Primitive> + 'static) -> Primitive {
+    Primitive::Each {
+        build: Box::new(build),
+        style: None,
+    }
+}
+
 // =============================================================================
 // IntoPrimitive — coercion helper used by the `ui!` macro and direct
 // when/switch callers.

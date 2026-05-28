@@ -80,7 +80,11 @@ fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Primitive 
     });
     for p in paragraphs {
         let body = p.to_string();
-        children.push(ui! { Typography(content = body, kind = idea_ui::typography_kind::BodyLg.into()) });
+        // Default kind = `Body` (14 px) — the site-wide paragraph size
+        // (concepts, backends, install, server-functions, …). The page
+        // lead blurb gets `BodyLg` via `page_header`; section prose
+        // does not, or body copy reads inconsistently large.
+        children.push(ui! { Typography(content = body) });
     }
     if let Some(src) = code {
         children.push(code_panel(src));

@@ -54,7 +54,10 @@ fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Primitive 
     });
     for p in paragraphs {
         let body = p.to_string();
-        children.push(ui! { Typography(content = body, kind = idea_ui::typography_kind::BodyLg.into()) });
+        // Default kind = `Body` (14 px) — the site-wide paragraph size.
+        // The page lead blurb gets `BodyLg` via `page_header`; section
+        // prose does not, or body copy reads inconsistently large.
+        children.push(ui! { Typography(content = body) });
     }
     if let Some(src) = code {
         children.push(code_panel(src));
@@ -112,7 +115,11 @@ fn expansion() -> Primitive {
                    \n\
                    // What the macro expands to (roughly):\n\
                    {\n    \
-                       #[::wasm_splitter::wasm_split(__idealyst_lazy_<hash>)]\n    \
+                       // Alias runtime-core's re-export so the attribute's\n    \
+                       // wasm_split::... expansion resolves \u{2014} no direct\n    \
+                       // wasm-split dependency needed in your crate.\n    \
+                       use ::runtime_core::__wasm_split as wasm_split;\n    \
+                       #[::runtime_core::__wasm_split::wasm_split(__idealyst_lazy_<hash>)]\n    \
                        async fn __idealyst_lazy_body_<hash>(_: ()) -> Primitive {\n        \
                            use ::runtime_core::IntoPrimitive as _;\n        \
                            { ui! { Text { \"loaded on demand\" } } }.into_primitive()\n    \

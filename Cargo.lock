@@ -1350,6 +1350,7 @@ name = "dev-http"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "dev-reload",
  "tiny_http",
 ]
 
@@ -3159,25 +3160,6 @@ dependencies = [
  "arrayvec",
  "euclid",
  "smallvec",
-]
-
-[[package]]
-name = "lazy-demo"
-version = "0.0.1"
-dependencies = [
- "android-sim",
- "backend-android-mobile",
- "backend-ios-mobile",
- "backend-terminal",
- "backend-web",
- "host-web",
- "ios-sim",
- "render-api",
- "runtime-core",
- "wasm-bindgen",
- "wasm-splitter",
- "web-sys",
- "welcome",
 ]
 
 [[package]]
@@ -6962,7 +6944,6 @@ dependencies = [
  "render-api",
  "runtime-core",
  "wasm-bindgen",
- "wasm-splitter",
  "web-sys",
  "welcome",
 ]

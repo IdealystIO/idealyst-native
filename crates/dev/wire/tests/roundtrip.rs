@@ -459,6 +459,7 @@ fn link_round_trip() {
     let config = LinkConfig {
         route: "profile",
         url: "/profile/123".to_string(),
+        external: false,
         on_activate: on_activate.clone(),
     };
     let _link = recorder.create_link(config, &Default::default());

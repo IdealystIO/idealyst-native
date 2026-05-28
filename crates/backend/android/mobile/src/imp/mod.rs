@@ -372,6 +372,55 @@ fn apply_frame_to_layout_params(
     );
 }
 
+/// Build `Intent(ACTION_VIEW, Uri.parse(url))` and hand it to
+/// `context.startActivity(...)`, opening `url` in the system handler
+/// (browser, mail app, dialer). Split out so the `url_opener` closure
+/// can use `?` and report a single Result.
+fn start_view_intent(
+    env: &mut JNIEnv,
+    context: &GlobalRef,
+    url: &str,
+) -> jni::errors::Result<()> {
+    // Uri.parse(url)
+    let j_url = env.new_string(url)?;
+    let uri = env
+        .call_static_method(
+            "android/net/Uri",
+            "parse",
+            "(Ljava/lang/String;)Landroid/net/Uri;",
+            &[JValue::Object(&j_url)],
+        )?
+        .l()?;
+
+    // new Intent(Intent.ACTION_VIEW, uri)
+    let action = env.new_string("android.intent.action.VIEW")?;
+    let intent_class = env.find_class("android/content/Intent")?;
+    let intent = env.new_object(
+        &intent_class,
+        "(Ljava/lang/String;Landroid/net/Uri;)V",
+        &[JValue::Object(&action), JValue::Object(&uri)],
+    )?;
+
+    // FLAG_ACTIVITY_NEW_TASK — required when `context` isn't an
+    // Activity (e.g. the Application context), or startActivity throws.
+    const FLAG_ACTIVITY_NEW_TASK: jint = 0x1000_0000;
+    env.call_method(
+        &intent,
+        "addFlags",
+        "(I)Landroid/content/Intent;",
+        &[JValue::Int(FLAG_ACTIVITY_NEW_TASK)],
+    )?;
+
+    // context.startActivity(intent)
+    env.call_method(
+        context,
+        "startActivity",
+        "(Landroid/content/Intent;)V",
+        &[JValue::Object(&intent)],
+    )?;
+    Ok(())
+}
+
 impl AndroidBackend {
     /// Construct a backend rooted at the provided Android `Context`
     /// and a parent `ViewGroup` to mount under.
@@ -1154,6 +1203,27 @@ impl Backend for AndroidBackend {
         runtime_core::Platform::Android
     }
 
+    fn url_opener(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
+        // Clone the Context's GlobalRef into the closure — the JVM
+        // keeps the object alive as long as the ref lives, and the
+        // closure outlives this borrow of `self`.
+        let context = self.context.clone();
+        Some(std::rc::Rc::new(move |url: &str| {
+            with_env(|env| {
+                if let Err(e) = start_view_intent(env, &context, url) {
+                    // A thrown Java exception (e.g. ActivityNotFound)
+                    // stays pending and would poison the next JNI call
+                    // — clear it before returning.
+                    let _ = env.exception_clear();
+                    runtime_core::log(
+                        runtime_core::LogLevel::Warn,
+                        &format!("open_url: ACTION_VIEW intent failed: {e:?}"),
+                    );
+                }
+            });
+        }))
+    }
+
     fn color_scheme(&self) -> runtime_core::ColorScheme {
         // context.getResources().getConfiguration().uiMode & UI_MODE_NIGHT_MASK
         // UI_MODE_NIGHT_UNDEFINED = 0x00, UI_MODE_NIGHT_NO = 0x10,
@@ -1192,17 +1262,22 @@ impl Backend for AndroidBackend {
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let route = config.route;
+        let url = config.url.clone();
+        let external = config.external;
         let node = primitives::link::create(self, config.on_activate);
-        // Mirror iOS: default Link label = the route, if no author
-        // label was given. `a11y::apply` clears the label when
-        // `props.label.is_none()`; we re-set the route afterwards so
-        // reactive prop changes that explicitly clear the label fall
-        // back to the route rather than leaving the link unlabelled.
+        // Mirror iOS: default Link label = the route (in-app) or the
+        // URL (external), if no author label was given. `a11y::apply`
+        // clears the label when `props.label.is_none()`; we re-set it
+        // afterwards so reactive prop changes that explicitly clear
+        // the label fall back rather than leaving the link unlabelled.
         // Author overrides still win.
-        let resolved_label = a11y
-            .label
-            .clone()
-            .unwrap_or_else(|| route.to_string());
+        let resolved_label = a11y.label.clone().unwrap_or_else(|| {
+            if external {
+                url.clone()
+            } else {
+                route.to_string()
+            }
+        });
         let effective_a11y = runtime_core::accessibility::AccessibilityProps {
             label: Some(resolved_label),
             ..a11y.clone()

@@ -48,10 +48,9 @@ android-sim = { workspace = true }
 # canvas mounts but never paints (the `on_ready` async task is
 # queued onto an executor that was never installed).
 backend-web = { workspace = true, features = ["async-driver"] }
-# `lazy! { ... }` expands to `#[wasm_split]`-annotated functions on
-# wasm32. The runtime is needed only here — the macro is transparent
-# on native targets.
-wasm-split = { workspace = true }
+# NOTE: `lazy! { ... }` no longer requires a direct `wasm-split`
+# dependency — the macro aliases runtime-core's re-export into scope
+# itself. Author crates only need `runtime-core`.
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [

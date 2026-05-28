@@ -1,40 +1,43 @@
 //! `Card` — surface container, built on the extensible Variant trait.
 //!
 //! ```ignore
-//! use idea_ui::extensible::card::{card, CardProps, variant};
-//!
 //! ui! {
-//!     Card(variant = variant::Elevated, padding = CardPadding::Md) {
-//!         Typography(content = "Stats", kind = typography::H2)
-//!         Typography(content = "Today's activity")
+//!     Card(variant = card::variant::Elevated, padding = CardPadding::Md) {
+//!         Typography(content = "Stats", kind = typography_kind::H2)
 //!     }
 //! }
 //! ```
 //!
-//! Two built-in variants: [`variant::Flat`] (surface bg, no shadow) and
-//! [`variant::Elevated`] (surface-alt bg, drop shadow). Both use
-//! [`IdeaTheme::colors`](idea_theme::theme::IdeaTheme::colors) directly
-//! for the background — no intent palette is involved, so Card's
-//! variants ignore the `tone` field of `ResolutionCtx`.
+//! Two built-in variants: [`variant::Flat`] (surface bg) and
+//! [`variant::Elevated`] (surface-alt bg + drop shadow). They read the
+//! theme's surface colors directly — no intent palette — so they ignore
+//! the `tone` field of `ResolutionCtx`.
 //!
-//! Padding stays a closed enum (`CardPadding`) — it directly indexes
-//! the theme's spacing scale.
+//! The Card stylesheet is built programmatically (variant × padding
+//! axes) and installed lazily on first use. Apps with custom Card
+//! variants install an extended sheet via [`install_card_sheet`]
+//! before mounting.
 
-use runtime_core::{ui, ChildList, Primitive, StyleApplication, StyleRules};
+use std::cell::RefCell;
+use std::rc::Rc;
 
+use runtime_core::{
+    ui, ChildList, Easing, Length, Primitive, StyleApplication, StyleRules, StyleSheet, Tokenized,
+    Transition, VariantEnum, VariantSet,
+};
+
+use idea_theme::active_theme;
 use idea_theme::extensible::{tone as tones, ResolutionCtx, VariantRef};
 use idea_theme::theme::IdeaThemeRef;
 
-use crate::stylesheets::Card as CardSheet;
 pub use crate::stylesheets::CardPadding;
 
 /// Built-in Card variants. Card's variants don't consume a Tone (a
 /// surface container isn't intent-colored) — they read the theme's
 /// surface colors directly via `ctx.theme.colors()`.
 pub mod variant {
-    use runtime_core::{Color, StyleRules, Tokenized};
-
     use idea_theme::extensible::{ResolutionCtx, Variant};
+    use runtime_core::{Color, StyleRules};
 
     /// Flat — page-surface background, no shadow.
     #[derive(Copy, Clone, Default)]
@@ -54,8 +57,7 @@ pub mod variant {
 
     /// Elevated — raised surface with a soft drop shadow. Uses
     /// `surface_alt` so the card reads as a layer above the page's
-    /// `surface`, distinct even without the shadow on platforms that
-    /// don't render shadows (terminal, paper).
+    /// `surface`, distinct even on platforms that don't render shadows.
     #[derive(Copy, Clone, Default)]
     pub struct Elevated;
 
@@ -68,24 +70,126 @@ pub mod variant {
                 background: Some(ctx.theme.colors().surface_alt.clone()),
                 shadow: Some(runtime_core::Shadow {
                     x: 0.0,
-                    y: 2.0,
-                    blur: 8.0,
-                    color: Color("rgba(0,0,0,0.10)".into()),
+                    y: 4.0,
+                    blur: 16.0,
+                    color: Color("rgba(15, 17, 21, 0.10)".into()),
                 }),
-                // Tokenized literal-passthrough — the shadow's
-                // displacement isn't tokenized today.
                 ..Default::default()
             }
         }
     }
+}
 
-    // Suppress unused-import warning when this module compiles in
-    // isolation (the macros aren't currently used here but the import
-    // shape keeps with the other components' patterns).
-    #[allow(dead_code)]
-    fn _unused() {
-        let _ = Tokenized::<f32>::Literal(0.0);
+thread_local! {
+    static CARD_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
+}
+
+/// Install a custom Card stylesheet (e.g. with app-defined variants).
+/// Call before the first Card mounts. If never called, the default
+/// sheet (Flat + Elevated variants) is installed lazily on first use.
+pub fn install_card_sheet(sheet: Rc<StyleSheet>) {
+    CARD_SHEET.with(|s| *s.borrow_mut() = Some(sheet));
+}
+
+fn card_sheet() -> Rc<StyleSheet> {
+    CARD_SHEET.with(|s| {
+        if s.borrow().is_none() {
+            let built = build_card_sheet(vec![variant::Flat.into(), variant::Elevated.into()]);
+            *s.borrow_mut() = Some(built);
+        }
+        s.borrow().as_ref().cloned().unwrap()
+    })
+}
+
+/// Build a Card stylesheet from a list of variants. The padding axis
+/// is fixed (none/sm/md/lg → theme spacing tokens). Each variant arm
+/// pulls its background/shadow from `variant.render(ctx)` (Card
+/// variants ignore the tone, so a placeholder Neutral is passed).
+pub fn build_card_sheet(variants: Vec<VariantRef>) -> Rc<StyleSheet> {
+    let radius = || Tokenized::token("radius-lg", Length::Px(12.0));
+
+    let mut sheet = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+        gap: Some(Tokenized::token("spacing-sm", Length::Px(8.0))),
+        border_top_left_radius: Some(radius()),
+        border_top_right_radius: Some(radius()),
+        border_bottom_left_radius: Some(radius()),
+        border_bottom_right_radius: Some(radius()),
+        border_top_width: Some(Tokenized::Literal(1.0)),
+        border_right_width: Some(Tokenized::Literal(1.0)),
+        border_bottom_width: Some(Tokenized::Literal(1.0)),
+        border_left_width: Some(Tokenized::Literal(1.0)),
+        border_top_color: Some(Tokenized::token(
+            "color-border",
+            runtime_core::Color("#e4e6ef".into()),
+        )),
+        border_right_color: Some(Tokenized::token(
+            "color-border",
+            runtime_core::Color("#e4e6ef".into()),
+        )),
+        border_bottom_color: Some(Tokenized::token(
+            "color-border",
+            runtime_core::Color("#e4e6ef".into()),
+        )),
+        border_left_color: Some(Tokenized::token(
+            "color-border",
+            runtime_core::Color("#e4e6ef".into()),
+        )),
+        background_transition: Some(Transition::new(250, Easing::EaseInOut)),
+        color_transition: Some(Transition::new(250, Easing::EaseInOut)),
+        border_top_color_transition: Some(Transition::new(250, Easing::EaseInOut)),
+        ..Default::default()
+    });
+
+    for v in &variants {
+        let v_c = v.clone();
+        sheet = sheet.variant("variant", v.key(), move |_vs| {
+            let theme_rc = active_theme();
+            let theme_ref = theme_rc
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("idea-ui: no IdeaTheme installed");
+            let neutral = tones::Neutral;
+            let ctx = ResolutionCtx {
+                theme: theme_ref,
+                tone: &neutral,
+            };
+            v_c.0.render(&ctx)
+        });
     }
+
+    let pad = |tok: &'static str, px: f32| Tokenized::token(tok, Length::Px(px));
+    sheet = sheet
+        .variant("padding", "none", |_vs| StyleRules {
+            padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
+            padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
+            padding_left: Some(Tokenized::Literal(Length::Px(0.0))),
+            padding_right: Some(Tokenized::Literal(Length::Px(0.0))),
+            ..Default::default()
+        })
+        .variant("padding", "sm", move |_vs| StyleRules {
+            padding_top: Some(pad("spacing-sm", 8.0)),
+            padding_bottom: Some(pad("spacing-sm", 8.0)),
+            padding_left: Some(pad("spacing-sm", 8.0)),
+            padding_right: Some(pad("spacing-sm", 8.0)),
+            ..Default::default()
+        })
+        .variant("padding", "md", move |_vs| StyleRules {
+            padding_top: Some(pad("spacing-lg", 16.0)),
+            padding_bottom: Some(pad("spacing-lg", 16.0)),
+            padding_left: Some(pad("spacing-lg", 16.0)),
+            padding_right: Some(pad("spacing-lg", 16.0)),
+            ..Default::default()
+        })
+        .variant("padding", "lg", move |_vs| StyleRules {
+            padding_top: Some(pad("spacing-xl", 24.0)),
+            padding_bottom: Some(pad("spacing-xl", 24.0)),
+            padding_left: Some(pad("spacing-xl", 24.0)),
+            padding_right: Some(pad("spacing-xl", 24.0)),
+            ..Default::default()
+        })
+        .variant_default("variant", "flat")
+        .variant_default("padding", "md");
+
+    Rc::new(sheet)
 }
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
@@ -105,42 +209,14 @@ impl Default for CardProps {
     }
 }
 
-fn padding_key(p: CardPadding) -> &'static str {
-    use runtime_core::VariantEnum;
-    p.as_variant_str()
-}
-
 pub fn card(props: CardProps) -> Primitive {
-    let variant = props.variant.clone();
-    let padding = props.padding;
+    let variant_key = props.variant.key().to_string();
+    let padding_key = props.padding.as_variant_str().to_string();
 
-    let cache_key = format!("card+{}+{}", variant.key(), padding_key(padding));
-
-    let style = move || {
-        let _ = idea_theme::active_theme()
-            .downcast_ref::<IdeaThemeRef>()
-            .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-        let var = variant.clone();
-        let compute = move || -> StyleRules {
-            let theme = idea_theme::active_theme();
-            let theme_ref = theme
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("idea-ui: no IdeaTheme installed");
-            // Card's variants don't use tone — but ResolutionCtx
-            // requires one. Pass Neutral as an unused placeholder.
-            let neutral = tones::Neutral;
-            let ctx = ResolutionCtx {
-                theme: theme_ref,
-                tone: &neutral,
-            };
-            var.render(&ctx)
-        };
-        // Re-use the existing Card stylesheet for its padding axis.
-        // The computed layer overlays the variant's bg + shadow.
-        StyleApplication::new(CardSheet::sheet())
-            .with("padding", padding_key(padding).to_string())
-            .with_computed(cache_key.clone(), compute)
-    };
+    // Static style — build-time apply, no flicker (see Button).
+    let style = StyleApplication::new(card_sheet())
+        .with("variant", variant_key)
+        .with("padding", padding_key);
 
     let mut children: Vec<Primitive> = Vec::with_capacity(props.children.len());
     for c in props.children {

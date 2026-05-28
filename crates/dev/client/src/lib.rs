@@ -490,6 +490,7 @@ where
                 url,
                 kind: _,
                 on_activate,
+                external,
                 a11y,
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
@@ -498,6 +499,7 @@ where
                 let config = runtime_core::primitives::link::LinkConfig {
                     route: route_static,
                     url,
+                    external,
                     on_activate: cb,
                 };
                 let a11y = self.a11y_props(a11y);

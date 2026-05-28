@@ -495,6 +495,12 @@ pub enum Command {
         url: String,
         kind: WireNavKind,
         on_activate: HandlerId,
+        /// `true` ⇒ external (off-app) link. The replay client
+        /// reconstructs it via `LinkConfig { external: true, .. }` so
+        /// the web backend emits `<a target="_blank">`. `#[serde(default)]`
+        /// keeps older payloads (no field) deserializing as in-app.
+        #[serde(default)]
+        external: bool,
         #[serde(default)]
         a11y: WireAccessibilityProps,
     },

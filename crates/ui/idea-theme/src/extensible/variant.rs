@@ -1,17 +1,35 @@
-//! Built-in variants — pure skeletons for tone-aware surfaces. Each
-//! sets ONLY tone-driven properties (background, text color, optional
-//! border). Padding/font/border-radius are the component's job.
+//! Built-in variants — pure skeletons for tone-aware surfaces.
+//!
+//! Variants set ONLY the properties they're responsible for — the
+//! background/text/border slots. Padding, font-size, and border-radius
+//! come from the Size/Shape modifiers. Variants also set border-widths
+//! explicitly (to 0 for non-bordered variants) so the resolved
+//! `StyleRules` content is fully specified — without this, the
+//! framework's content-key hashing would differ between variant arms
+//! that "have border" vs "don't mention border", breaking pregen
+//! cache equality.
 //!
 //! | Variant | Background | Border | Text |
 //! |---|---|---|---|
-//! | [`Filled`]  | tone's `fill_bg` | none | tone's `fill_fg` |
-//! | [`Soft`]    | tone's `soft_bg` (tinted) | none | tone's `soft_fg` |
+//! | [`Filled`]  | tone's `fill_bg` | none (width=0) | tone's `fill_fg` |
+//! | [`Soft`]    | tone's `soft_bg` | none (width=0) | tone's `soft_fg` |
 //! | [`Outlined`]| transparent | tone's `stroke_color` (1px) | tone's `stroke_fg` |
-//! | [`Ghost`]   | transparent | none | tone's `ghost_fg` |
+//! | [`Ghost`]   | transparent | none (width=0) | tone's `ghost_fg` |
 
 use runtime_core::{Color, StyleRules, Tokenized};
 
 use super::{ResolutionCtx, Variant};
+
+fn no_border() -> StyleRules {
+    let zero = Tokenized::Literal(0.0);
+    StyleRules {
+        border_top_width: Some(zero.clone()),
+        border_right_width: Some(zero.clone()),
+        border_bottom_width: Some(zero.clone()),
+        border_left_width: Some(zero),
+        ..Default::default()
+    }
+}
 
 /// Filled — solid background, contrasting text.
 #[derive(Copy, Clone, Default)]
@@ -22,17 +40,14 @@ impl Variant for Filled {
         "filled"
     }
     fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
-        StyleRules {
-            background: Some(ctx.tone.fill_bg(ctx.theme)),
-            color: Some(ctx.tone.fill_fg(ctx.theme)),
-            ..Default::default()
-        }
+        let mut s = no_border();
+        s.background = Some(ctx.tone.fill_bg(ctx.theme));
+        s.color = Some(ctx.tone.fill_fg(ctx.theme));
+        s
     }
 }
 
-/// Soft — tinted background, intent-colored text. Pulls from the
-/// tone's `soft_bg`/`soft_fg` slots, which built-in tones map onto
-/// the theme's soft palette (alpha-blended intent colors).
+/// Soft — tinted background, intent-colored text.
 #[derive(Copy, Clone, Default)]
 pub struct Soft;
 
@@ -41,11 +56,10 @@ impl Variant for Soft {
         "soft"
     }
     fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
-        StyleRules {
-            background: Some(ctx.tone.soft_bg(ctx.theme)),
-            color: Some(ctx.tone.soft_fg(ctx.theme)),
-            ..Default::default()
-        }
+        let mut s = no_border();
+        s.background = Some(ctx.tone.soft_bg(ctx.theme));
+        s.color = Some(ctx.tone.soft_fg(ctx.theme));
+        s
     }
 }
 
@@ -85,10 +99,9 @@ impl Variant for Ghost {
         "ghost"
     }
     fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
-        StyleRules {
-            background: Some(Tokenized::Literal(Color("transparent".into()))),
-            color: Some(ctx.tone.ghost_fg(ctx.theme)),
-            ..Default::default()
-        }
+        let mut s = no_border();
+        s.background = Some(Tokenized::Literal(Color("transparent".into())));
+        s.color = Some(ctx.tone.ghost_fg(ctx.theme));
+        s
     }
 }

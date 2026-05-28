@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use runtime_core::primitives::scroll_view::{scroll_view, ScrollViewHandle};
 use runtime_core::{
-    effect, pressable, signal, text, ui, view, when, IntoPrimitive, Primitive, Ref, Signal,
+    derived, effect, pressable, signal, text, ui, view, when, IntoPrimitive, Primitive, Ref, Signal,
     StyleApplication, ViewHandle,
 };
 use drawer_navigator::SlotProps;
@@ -26,14 +26,12 @@ use idea_ui::{
 };
 
 use crate::routes::{
-    label_for_route, AGENTIC_ROUTE, BACKENDS_ROUTE, CONCEPTS_ROUTE, DEMO_ANIMATIONS_ROUTE,
-    DEMO_COMPONENTS_ROUTE, DEMO_COUNTER_ROUTE, DEMO_NAVIGATION_ROUTE, FURTHER_READING_ROUTE,
-    HOME_ROUTE, INSTALL_ROUTE, QUICKSTART_ROUTE, SECTIONS, SERVER_FUNCTIONS_ROUTE, WHY_RUST_ROUTE,
+    label_for_route, BACKENDS_ROUTE, CONCEPTS_ROUTE, QUICKSTART_ROUTE, SECTIONS, WHY_RUST_ROUTE,
 };
 use crate::styles::{
     Footer, FooterBottom, FooterBrand, FooterColumn, FooterCopy, FooterGrid, FooterLink,
     FooterTagline, FooterTitle, FooterWordmark, MobileHeader, MobileHeaderButton,
-    MobileHeaderTitle, MobileHeaderTitleWrap, NavLink, PageColumn, PageRow, ScreenScroll,
+    MobileHeaderTitle, MobileHeaderTitleWrap, NavLink, NavLinkActive, PageColumn, PageRow, ScreenScroll,
     SidebarBody, SidebarFooter, SidebarHeader, SidebarSection, TocHeader, TocLink, TocPanel,
 };
 
@@ -163,28 +161,19 @@ const GITHUB_ISSUES_URL: &str = "https://github.com/IdealystIO/idealyst-native/i
 const GITHUB_DISCUSSIONS_URL: &str =
     "https://github.com/IdealystIO/idealyst-native/discussions";
 
-/// Pressable that opens `url` in a new tab on web; no-op elsewhere.
-/// Lives here (not in `routes.rs`) because it needs `web_sys`, which
-/// the website only depends on under `cfg(target_arch = "wasm32")`.
+/// External link to an off-app URL (GitHub, etc.). Uses the `Link`
+/// primitive's `external` form: on web a real `<a target="_blank">`
+/// (browser-native, never popup-blocked), on native a platform
+/// `open_url`. Same styling as `internal_link` so the footer reads
+/// uniformly.
 fn external_link(label: &'static str, url: &'static str) -> Primitive {
     let label_text = label.to_string();
     let style = move || StyleApplication::new(FooterLink::sheet());
-    let text_node: Primitive = ui! { Text(style = style) { label_text } };
-    pressable(vec![text_node], move || {
-        #[cfg(target_arch = "wasm32")]
-        {
-            if let Some(win) = web_sys::window() {
-                // `_blank` opens a new tab; without a target arg the
-                // navigation replaces the current page, which would
-                // unmount the framework and waste the visitor's
-                // place in the docs.
-                let _ = win.open_with_url_and_target(url, "_blank");
-            }
+    ui! {
+        Link(external = url) {
+            Text(style = style) { label_text }
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let _ = url; // suppress unused warning
-    })
-    .into_primitive()
+    }
 }
 
 /// Internal link to a framework route — same styling as
@@ -254,7 +243,7 @@ pub fn footer() -> Primitive {
 
     let bottom = ui! {
         View(style = bottom_style) {
-            Text(style = copy_style) { "© Idealyst contributors" }
+            Text(style = copy_style) { "© Idealyst 2026" }
         }
     };
 
@@ -534,7 +523,7 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Primitive {
             children.push(ui! { Text(style = section_style) { title } });
         }
         for entry in section.entries {
-            children.push(nav_link(entry.name, entry.label, active_route));
+            children.push(nav_link(entry.route, entry.label, active_route));
         }
     }
 
@@ -582,87 +571,27 @@ fn theme_toggle(footer_style: SidebarFooter, is_dark: Signal<bool>) -> Primitive
 /// reads `active_route` so the active variant flips reactively
 /// without rebuilding the link.
 fn nav_link(
-    name: &'static str,
+    route: &'static runtime_core::Route<()>,
     label: &'static str,
     active_route: runtime_core::Signal<&'static str>,
 ) -> Primitive {
-    let route_for_match: &'static str = name;
-    let style = move || {
-        let variant = if active_route.get() == route_for_match {
-            "on"
+    let route_for_match: &'static str = route.name();
+    // The `active` axis is derived reactively from `active_route`: the
+    // `derived(...)` closure reads the signal, so the style effect
+    // re-resolves (flipping On/Off) whenever the route changes — no
+    // manual `StyleApplication::with("active", …)` string plumbing.
+    let style = NavLink().active(derived(move || {
+        if active_route.get() == route_for_match {
+            NavLinkActive::On
         } else {
-            "off"
-        };
-        StyleApplication::new(NavLink::sheet()).with("active", variant.to_string())
-    };
+            NavLinkActive::Off
+        }
+    }));
     let label_text = label.to_string();
 
-    match name {
-        "home" => ui! {
-            Link(route = &HOME_ROUTE, params = ()) {
-                Text(style = style) { label_text }
-            }
-        },
-        "install" => ui! {
-            Link(route = &INSTALL_ROUTE, params = ()) {
-                Text(style = style) { label_text }
-            }
-        },
-        "quickstart" => ui! {
-            Link(route = &QUICKSTART_ROUTE, params = ()) {
-                Text(style = style) { label_text }
-            }
-        },
-        "concepts" => ui! {
-            Link(route = &CONCEPTS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
-            }
-        },
-        "why-rust" => ui! {
-            Link(route = &WHY_RUST_ROUTE, params = ()) {
-                Text(style = style) { label_text }
-            }
-        },
-        "demo-counter" => ui! {
-            Link(route = &DEMO_COUNTER_ROUTE, params = ()) {
-                Text(style = style) { label_text }
-            }
-        },
-        "demo-components" => ui! {
-            Link(route = &DEMO_COMPONENTS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
-            }
-        },
-        "demo-animations" => ui! {
-            Link(route = &DEMO_ANIMATIONS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
-            }
-        },
-        "demo-navigation" => ui! {
-            Link(route = &DEMO_NAVIGATION_ROUTE, params = ()) {
-                Text(style = style) { label_text }
-            }
-        },
-        "backends" => ui! {
-            Link(route = &BACKENDS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
-            }
-        },
-        "server-functions" => ui! {
-            Link(route = &SERVER_FUNCTIONS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
-            }
-        },
-        "agentic" => ui! {
-            Link(route = &AGENTIC_ROUTE, params = ()) {
-                Text(style = style) { label_text }
-            }
-        },
-        "further-reading" => ui! {
-            Link(route = &FURTHER_READING_ROUTE, params = ()) {
-                Text(style = style) { label_text }
-            }
-        },
-        _ => ui! { Text { label_text } },
+    ui! {
+        Link(route = route, params = ()) {
+            Text(style = style) { label_text }
+        }
     }
 }

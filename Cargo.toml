@@ -132,7 +132,6 @@ members = [
     "examples/website",
     "examples/toolbar-demo",
     "examples/menu-demo",
-    "examples/lazy-demo",
     "benchmark",
     "benchmark/idealyst-native/wasm",
     "benchmark/idealyst-native-anim/wasm",

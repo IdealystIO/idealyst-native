@@ -54,6 +54,7 @@ pub(super) fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
         Primitive::Navigator { .. } => PrimitiveKind::Navigator,
         Primitive::When { .. } => PrimitiveKind::When,
         Primitive::Switch { .. } => PrimitiveKind::Switch,
+        Primitive::Each { .. } => PrimitiveKind::Each,
         Primitive::Link { .. } => PrimitiveKind::Link,
         Primitive::Portal { .. } => PrimitiveKind::Portal,
         Primitive::External { .. } => PrimitiveKind::External,

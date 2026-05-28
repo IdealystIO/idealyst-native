@@ -385,8 +385,7 @@ fn where_next() -> Primitive {
         },
         ui! {
             Link(route = &CONCEPTS_ROUTE, params = ()) {
-                Typography(content = "Read \u{2192} Core concepts".to_string(),
-                           kind = idea_ui::typography_kind::BodyLg.into())
+                Typography(content = "Read \u{2192} Core concepts".to_string())
             }
         },
         ui! {

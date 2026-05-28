@@ -522,10 +522,29 @@ pub fn dark_theme() -> IdeaThemeDefaults {
 
 pub fn install_idea_theme<T: IdeaTheme>(theme: T) {
     install_theme(IdeaThemeRef::new(theme));
+    install_default_idea_sheets();
 }
 
 pub fn set_idea_theme<T: IdeaTheme>(theme: T) {
     set_theme(IdeaThemeRef::new(theme));
+}
+
+/// Install the default stylesheets for every idea-ui component that
+/// uses the extensible modifier system. Called from
+/// [`install_idea_theme`] so apps that don't need custom modifiers
+/// get a working setup with no extra calls.
+///
+/// Apps with custom modifiers (`Hype` tone, `Elevated` variant, etc.)
+/// can override individual sheets by calling
+/// `install_button_sheet(ButtonSheetBuilder::new().add_tone(Hype.into()).build())`
+/// AFTER `install_idea_theme` returns.
+pub fn install_default_idea_sheets() {
+    crate::extensible::install_default_button_sheet();
+    crate::extensible::install_default_badge_sheet();
+    crate::extensible::install_default_tag_sheet();
+    crate::extensible::install_default_alert_sheet();
+    crate::extensible::install_default_typography_sheet();
+    crate::extensible::install_default_icon_button_sheet();
 }
 
 /// Build a reactive color closure for a navigator's `header_*` /

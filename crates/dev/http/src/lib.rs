@@ -1,8 +1,8 @@
 //! Static-file HTTP server used by `idealyst dev`.
 //!
-//! Sync, single-threaded, intentionally minimal. Dev mode binds to
-//! loopback or LAN so there's no TLS, no auth, no compression — those
-//! belong in a CDN. What this serves:
+//! Sync, single-threaded for the accept loop, intentionally minimal.
+//! Dev mode binds to loopback or LAN so there's no TLS, no auth, no
+//! compression — those belong in a CDN. What this serves:
 //!
 //! - Files under a configured root directory.
 //! - `index.html` when the URL resolves to a directory.
@@ -11,41 +11,55 @@
 //!   keep working. Asset requests for missing files get a real 404.
 //! - Correct `Content-Type` for the handful of extensions a typical
 //!   idealyst app emits (HTML, JS, WASM, CSS, fonts, images).
-//! - Optional livereload polling endpoint + HTML script injection
-//!   when a [`ReloadContext`] is supplied. The contract: callers (the
-//!   `dev-reload` crate, typically) hand us a shared generation
-//!   counter and we expose it at [`RELOAD_GEN_URL`] for browsers to
-//!   poll.
+//! - Optional livereload SSE stream + HTML script injection when a
+//!   [`ReloadContext`] is supplied. The contract: callers (the
+//!   `dev-reload` crate, typically) hand us a shared [`ReloadSignal`]
+//!   and we stream `data: <gen>\n\n` events at [`RELOAD_SSE_URL`].
+//!   Each SSE connection lives in its own thread so the main accept
+//!   loop is never blocked.
 //!
 //! Path-traversal safety: every resolved file path is canonicalized
 //! and verified to live under the canonicalized root before being
 //! served. Symlinks pointing outside the root are rejected.
 
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use dev_reload::ReloadSignal;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 /// Wires the static server to a rebuild loop. When this is `Some`,
-/// the server (a) answers the [`RELOAD_GEN_URL`] polling endpoint
-/// with the current generation counter, and (b) injects a short
-/// polling script into served HTML responses.
+/// the server (a) streams generation events over SSE at
+/// [`RELOAD_SSE_URL`], and (b) injects a short `EventSource` script
+/// into served HTML responses.
 ///
-/// Producers (e.g. `dev-reload`) bump `gen` after every successful
-/// rebuild; consumers (browsers) poll the endpoint and reload when
-/// the value advances.
+/// Producers (e.g. `dev-reload`) bump the signal after every
+/// successful rebuild; consumers (browsers) hold one SSE connection
+/// and reload when an event arrives whose value differs from the
+/// one they were initialized with.
 #[derive(Clone)]
 pub struct ReloadContext {
-    pub gen: Arc<AtomicU64>,
+    pub signal: Arc<ReloadSignal>,
 }
 
-/// Polling endpoint advertised in [`ReloadContext`]. Plaintext body:
-/// the current generation counter as a decimal integer.
-pub const RELOAD_GEN_URL: &str = "/__idealyst/gen";
+/// SSE endpoint advertised in [`ReloadContext`]. Each event is
+/// `data: <decimal generation>\n\n`. Comment-only pings (`:\n\n`)
+/// every [`SSE_KEEPALIVE`] keep proxies from idling the connection
+/// out and surface dead-client TCP errors so the per-connection
+/// thread can exit promptly.
+pub const RELOAD_SSE_URL: &str = "/__idealyst/reload";
+
+/// Idle interval between SSE keepalive comments. The browser's
+/// `EventSource` will reconnect on its own if the TCP connection
+/// dies, so this only needs to be short enough to detect dead clients
+/// before they accumulate, not short enough to keep them alive
+/// through every possible middlebox.
+const SSE_KEEPALIVE: Duration = Duration::from_secs(30);
 
 /// JSON endpoint published when an [`AasContext`] is supplied. Body
 /// is `{"url": "<ws://...>"}` for a discovered server, or `{"url":
@@ -69,23 +83,22 @@ pub struct AasContext {
 }
 
 /// Inlined into the `<body>` of every served HTML response when
-/// reload is active. Polls every 400ms; reloads when the generation
-/// counter advances. Tiny on purpose — the page reloads on every
-/// rebuild anyway, so there's no state to preserve here.
+/// reload is active. Holds an `EventSource` open against
+/// [`RELOAD_SSE_URL`]; reloads the page when the generation in the
+/// stream differs from the one received on connect. `EventSource`
+/// auto-reconnects on its own (default ~3s backoff), so a server
+/// restart or transient network blip recovers without any glue here.
 const RELOAD_SCRIPT: &str = r#"<script>
 (function () {
-  var last = null;
-  setInterval(function () {
-    fetch("/__idealyst/gen", { cache: "no-store" })
-      .then(function (r) { return r.text(); })
-      .then(function (text) {
-        if (last !== null && text !== last) {
-          location.reload();
-        }
-        last = text;
-      })
-      .catch(function () { /* server is rebuilding; try again next tick */ });
-  }, 400);
+  var baseline = null;
+  var es = new EventSource("/__idealyst/reload");
+  es.onmessage = function (e) {
+    if (baseline === null) {
+      baseline = e.data;
+    } else if (e.data !== baseline) {
+      location.reload();
+    }
+  };
 })();
 </script>"#;
 
@@ -146,21 +159,20 @@ fn handle(
 
     let url_path = request.url().split('?').next().unwrap_or("/");
 
-    // Livereload generation endpoint. Always answers — even when
-    // reload is off it returns 0, which means clients that polled
-    // once and got a non-zero value won't reload on accident if the
-    // server is restarted in static mode.
-    if url_path == RELOAD_GEN_URL {
-        let gen = reload
-            .map(|r| r.gen.load(Ordering::Relaxed))
-            .unwrap_or(0);
-        return request
-            .respond(
-                Response::from_string(gen.to_string())
-                    .with_header(header("Content-Type", "text/plain"))
-                    .with_header(header("Cache-Control", "no-store")),
-            )
-            .map_err(Into::into);
+    // Livereload SSE stream. Detaches to its own thread so the accept
+    // loop isn't blocked — `respond` writes chunks for the lifetime
+    // of the connection. When reload is off we serve a one-shot
+    // event-stream that emits `data: 0\n\n` and ends; the client's
+    // `EventSource` will sit on it without ever firing a reload, and
+    // the connection costs nothing.
+    if url_path == RELOAD_SSE_URL {
+        let signal = reload.map(|r| r.signal.clone());
+        thread::Builder::new()
+            .name("idealyst-sse".into())
+            .spawn(move || serve_sse(request, signal))
+            .map(|_| ())
+            .context("spawn SSE thread")?;
+        return Ok(());
     }
 
     // runtime-server-URL endpoint. JSON body `{"url": "<ws://...>"}` or
@@ -216,6 +228,86 @@ fn handle(
         }
         _ => not_found(request),
     }
+}
+
+/// Hold an SSE connection open and push one event per generation
+/// bump. Runs on its own thread so it doesn't block the accept loop.
+///
+/// Implementation note: tiny_http wraps every response writer in a
+/// 1 KiB `BufWriter` and only flushes when the response ends. The
+/// public `Request::respond` API doesn't expose mid-stream flushes,
+/// so SSE events would sit in the buffer until either the buffer
+/// fills (long after they're useful) or the connection closes
+/// (defeating the point). We take ownership of the raw writer via
+/// `Request::into_writer`, write a `Connection: close` HTTP head by
+/// hand, then push raw `data: <gen>\n\n` frames and flush after
+/// each. No chunked encoding needed because `Connection: close`
+/// uses end-of-stream to terminate the body.
+///
+/// When `signal` is `None` (reload disabled) the stream emits one
+/// `data: 0` and then sits idle on keepalive pings forever — the
+/// inline `EventSource` reconnects on any TCP close, so this stays
+/// cheap.
+fn serve_sse(request: Request, signal: Option<Arc<ReloadSignal>>) {
+    let mut writer = request.into_writer();
+
+    // HTTP/1.1 head. `Connection: close` keeps us out of tiny_http's
+    // keep-alive accounting (we're holding the writer for the
+    // lifetime of the stream anyway), and lets the browser detect
+    // disconnects via TCP close.
+    let head = b"HTTP/1.1 200 OK\r\n\
+                 Content-Type: text/event-stream\r\n\
+                 Cache-Control: no-store\r\n\
+                 Connection: close\r\n\
+                 X-Accel-Buffering: no\r\n\
+                 \r\n";
+    if writer.write_all(head).is_err() || writer.flush().is_err() {
+        return;
+    }
+
+    // Seed with the current generation so the inline script gets a
+    // baseline event immediately on connect. Without this the page
+    // would sit on an empty stream until the next rebuild.
+    let mut last_seen = signal.as_ref().map(|s| s.current()).unwrap_or(0);
+    if write_event(&mut writer, last_seen).is_err() {
+        return;
+    }
+
+    loop {
+        match &signal {
+            Some(sig) => {
+                let new = sig.wait_past(last_seen, SSE_KEEPALIVE);
+                if new > last_seen {
+                    last_seen = new;
+                    if write_event(&mut writer, new).is_err() {
+                        return;
+                    }
+                } else if write_ping(&mut writer).is_err() {
+                    return;
+                }
+            }
+            None => {
+                thread::sleep(SSE_KEEPALIVE);
+                if write_ping(&mut writer).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn write_event(w: &mut Box<dyn Write + Send + 'static>, gen: u64) -> std::io::Result<()> {
+    let line = format!("data: {gen}\n\n");
+    w.write_all(line.as_bytes())?;
+    w.flush()
+}
+
+fn write_ping(w: &mut Box<dyn Write + Send + 'static>) -> std::io::Result<()> {
+    // SSE comment line: starts with `:` and is discarded by the
+    // browser's `EventSource`. Forces a write so dead clients
+    // surface as a write error and the thread exits.
+    w.write_all(b":\n\n")?;
+    w.flush()
 }
 
 /// Resolve a URL path to an on-disk path under `root`. Returns `None`

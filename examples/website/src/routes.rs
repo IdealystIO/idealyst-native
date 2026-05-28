@@ -36,8 +36,21 @@ pub const FURTHER_READING_ROUTE: Route<()> = Route::<()>::new("further-reading",
 pub const TARGETS_ROUTE: Route<()> = Route::<()>::new("targets", "/targets");
 
 pub struct IndexEntry {
-    pub name: &'static str,
+    /// The route this entry links to. Carrying the `Route` on the entry
+    /// (instead of a bare name the sidebar re-matches against a `match`)
+    /// means adding a sidebar item is a single edit here — there's no
+    /// parallel arm to keep in sync, and a forgotten one can't silently
+    /// degrade to unstyled, non-clickable text.
+    pub route: &'static Route<()>,
     pub label: &'static str,
+}
+
+impl IndexEntry {
+    /// The route's in-stack key — used for active-route highlighting and
+    /// the mobile header's label lookup.
+    pub fn name(&self) -> &'static str {
+        self.route.name()
+    }
 }
 
 pub struct IndexSection {
@@ -53,7 +66,7 @@ pub struct IndexSection {
 pub fn label_for_route(name: &str) -> &'static str {
     for section in SECTIONS {
         for entry in section.entries {
-            if entry.name == name {
+            if entry.name() == name {
                 return entry.label;
             }
         }
@@ -69,34 +82,34 @@ pub fn label_for_route(name: &str) -> &'static str {
 pub const SECTIONS: &[IndexSection] = &[
     IndexSection {
         title: "",
-        entries: &[IndexEntry { name: "home", label: "Home" }],
+        entries: &[IndexEntry { route: &HOME_ROUTE, label: "Home" }],
     },
     IndexSection {
         title: "Instructions",
         entries: &[
-            IndexEntry { name: "install", label: "Install the CLI" },
-            IndexEntry { name: "quickstart", label: "Quickstart" },
-            IndexEntry { name: "concepts", label: "Core concepts" },
-            IndexEntry { name: "why-rust", label: "Why Rust" },
+            IndexEntry { route: &INSTALL_ROUTE, label: "Install the CLI" },
+            IndexEntry { route: &QUICKSTART_ROUTE, label: "Quickstart" },
+            IndexEntry { route: &CONCEPTS_ROUTE, label: "Core concepts" },
+            IndexEntry { route: &WHY_RUST_ROUTE, label: "Why Rust" },
         ],
     },
     IndexSection {
         title: "Demos",
         entries: &[
-            IndexEntry { name: "demo-counter", label: "Counter" },
-            IndexEntry { name: "demo-components", label: "Components" },
-            IndexEntry { name: "demo-animations", label: "Animations" },
-            IndexEntry { name: "demo-navigation", label: "Navigation" },
+            IndexEntry { route: &DEMO_COUNTER_ROUTE, label: "Counter" },
+            IndexEntry { route: &DEMO_COMPONENTS_ROUTE, label: "Components" },
+            IndexEntry { route: &DEMO_ANIMATIONS_ROUTE, label: "Animations" },
+            IndexEntry { route: &DEMO_NAVIGATION_ROUTE, label: "Navigation" },
         ],
     },
     IndexSection {
         title: "Reference",
         entries: &[
-            IndexEntry { name: "backends", label: "Backends" },
-            IndexEntry { name: "server-functions", label: "Server functions" },
-            IndexEntry { name: "code-splitting", label: "Code splitting" },
-            IndexEntry { name: "agentic", label: "Robot & MCP" },
-            IndexEntry { name: "further-reading", label: "Further reading" },
+            IndexEntry { route: &BACKENDS_ROUTE, label: "Backends" },
+            IndexEntry { route: &SERVER_FUNCTIONS_ROUTE, label: "Server functions" },
+            IndexEntry { route: &CODE_SPLITTING_ROUTE, label: "Code splitting" },
+            IndexEntry { route: &AGENTIC_ROUTE, label: "Robot & MCP" },
+            IndexEntry { route: &FURTHER_READING_ROUTE, label: "Further reading" },
         ],
     },
 ];

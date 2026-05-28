@@ -2,10 +2,8 @@
 //! Variant/Tone/Size/Shape trait surface.
 //!
 //! ```ignore
-//! use idea_ui::extensible::{button, tone, variant, size, shape, ButtonProps};
-//!
 //! ui! {
-//!     Button(
+//!     Btn(
 //!         label = "Save",
 //!         on_click = on_save,
 //!         tone = tone::Primary,
@@ -16,22 +14,21 @@
 //! }
 //! ```
 //!
-//! The props store each axis as `Rc<dyn Trait>`. The blanket
-//! `From<T> for Rc<dyn Trait>` conversions in
-//! [`super`](crate::extensible) let call sites pass the ZST directly.
+//! Styling routes through the [installed Button
+//! stylesheet][installed_button_sheet]. `install_idea_theme` installs
+//! the default sheet at startup; apps with custom modifiers
+//! (`Hype` tone, `Elevated` variant) override via
+//! `install_button_sheet(ButtonSheetBuilder::new().add_tone(Hype.into()).build())`.
+//!
+//! Every supported `(tone, variant, size, shape)` combination is
+//! pre-generated as a CSS rule at sheet registration time, so
+//! apply-style is a className lookup — no FOUC, no dynamic CSS mint.
 
 use std::rc::Rc;
 
-use runtime_core::{
-    text, FontWeight, IntoPrimitive, PressableHandle, Primitive, Ref, StyleApplication, StyleRules,
-    Tokenized,
-};
+use runtime_core::{text, IntoPrimitive, PressableHandle, Primitive, Ref, StyleApplication};
 
-use idea_theme::extensible::{
-    modifier_defaults, ButtonSizeRef, ResolutionCtx, ShapeRef, ToneRef, VariantRef,
-};
-use idea_theme::theme::IdeaThemeRef;
-use crate::stylesheets::Button as ButtonSheet;
+use idea_theme::extensible::{installed_button_sheet, ButtonSizeRef, ShapeRef, ToneRef, VariantRef};
 
 /// Props for the extensible Button. Each modifier axis is a typed
 /// handle (`*Ref` newtype) so call sites can write
@@ -66,11 +63,6 @@ impl Default for ButtonProps {
     }
 }
 
-/// Render the Button. Builds a `StyleApplication` whose computed
-/// layer invokes the active variant against the current modifier set
-/// (tone, size, shape) and the active theme. The cache key is the
-/// concatenation of the four modifier `key()`s, so identical modifier
-/// combinations across many instances share one resolved class.
 pub fn button(props: &ButtonProps) -> Primitive {
     let label = props.label.clone();
     let on_click = props.on_click.clone();
@@ -81,64 +73,27 @@ pub fn button(props: &ButtonProps) -> Primitive {
     let disabled = props.disabled.clone();
     let bind_to = props.bind_to;
 
-    // Cache key for the computed layer — same modifier set produces
-    // the same StyleRules, so the framework reuses one Rc per unique
-    // (variant, tone, size, shape) combination per theme.
-    let cache_key = format!(
-        "{}+{}+{}+{}",
-        variant.key(),
-        tone.key(),
-        size.key(),
-        shape.key(),
-    );
+    // Variant-axis keys map directly to the installed stylesheet's
+    // pre-generated arms. For a built-in modifier set the arms exist;
+    // for an app-extended set, apps must have installed an extended
+    // sheet that includes those arms (else the framework falls back
+    // to the default arms).
+    let appearance_key = format!("{}_{}", tone.key(), variant.key());
+    let size_key = size.key().to_string();
+    let shape_key = shape.key().to_string();
 
-    let style = move || {
-        // Touch the active theme so the apply-style Effect subscribes
-        // to theme swaps. The downcast also gives us a typed
-        // IdeaThemeRef for the inner `compute` closure to walk through.
-        let _ = idea_theme::active_theme()
-            .downcast_ref::<IdeaThemeRef>()
-            .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-
-        // Modifier handles cloned into the inner closure. The closure
-        // is invoked by the framework on cache miss; on cache hit the
-        // closure never runs.
-        let var = variant.clone();
-        let tn = tone.clone();
-        let sz = size.clone();
-        let sh = shape.clone();
-        let compute = move || -> StyleRules {
-            let theme = idea_theme::active_theme();
-            let theme_ref = theme
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("idea-ui: no IdeaTheme installed");
-            // Button composes both axes: Size + Shape contribute
-            // padding/font-size/border-radius via `modifier_defaults`;
-            // Variant contributes the tone-driven skeleton (bg, color,
-            // border) on top. Merge order = variant wins where they
-            // overlap.
-            let ctx = ResolutionCtx {
-                theme: theme_ref,
-                tone: &*tn,
-            };
-            modifier_defaults(&*sz, &*sh).merge(&var.render(&ctx))
-        };
-
-        // Base sheet carries the uniform Button properties (text
-        // alignment, weight, letter spacing). The computed layer
-        // provides the variant-driven properties on top.
-        StyleApplication::new(ButtonSheet::sheet())
-            .with_computed(cache_key.clone(), compute)
-            // Font weight on Button is always SemiBold — uniform
-            // across all variants. Set via override since the base
-            // sheet already has it but we want to ensure it survives
-            // the computed-layer merge (which doesn't touch weight).
-            // No-op when the base already matches.
-            .override_font_size(Tokenized::Literal(runtime_core::Length::Px(14.0)))
-    };
-    // Suppress unused-import warning for FontWeight — kept for future
-    // when override_font_weight lands.
-    let _ = FontWeight::SemiBold;
+    // STATIC style — applied at build time (before first paint) and
+    // re-applied in bulk by the theme cohort on `set_theme`. A
+    // reactive closure here would defer the apply to a per-node
+    // Effect, letting the element paint once with browser-default
+    // styles before the themed class lands — which the CSS transition
+    // then animates (the on-load / on-navigation flicker). The
+    // variant-axis keys are fixed per instance, so nothing here needs
+    // to be reactive; theme swaps flow through the CSS-variable tokens.
+    let style = StyleApplication::new(installed_button_sheet())
+        .with("appearance", appearance_key)
+        .with("size", size_key)
+        .with("shape", shape_key);
 
     let children: Vec<Primitive> = vec![text(label).into_primitive()];
     let on_click_for_p = on_click.clone();

@@ -53,6 +53,7 @@ mod activity_indicator;
 mod button;
 mod cleanup;
 mod debug;
+mod each;
 mod external;
 mod graphics;
 mod icon;
@@ -154,6 +155,13 @@ where
     // holding a Backend reference. Same one-shot read as above —
     // Backend impls return a constant per instance.
     crate::backend::install_current_platform(backend.borrow().platform());
+
+    // Stash the backend's external-URL opener so author code can fire
+    // `runtime_core::open_url(...)` from any event handler without a
+    // Backend reference. Same one-shot read as the platform identity —
+    // the opener is a self-contained closure that calls a platform
+    // singleton, so it survives past this borrow.
+    crate::backend::install_url_opener(backend.borrow().url_opener());
 
     // Auto-start the Robot bridge when the `dev` feature is on so
     // the MCP server's runtime tools can attach without the user
@@ -330,6 +338,9 @@ pub(super) fn build_inner<B: Backend + 'static>(
         Primitive::Switch { discriminant, arms, default, style } => {
             when_switch::build_switch(backend, discriminant, arms, default, style)
         }
+        Primitive::Each { build: build_children, style } => {
+            each::build(backend, build_children, style)
+        }
         Primitive::Link {
             children,
             route,
@@ -337,11 +348,11 @@ pub(super) fn build_inner<B: Backend + 'static>(
             make_params,
             kind,
             target,
+            external,
             style,
             ref_fill,
             accessibility,
-            ..
-        } => link::build(backend, children, route, url, make_params, kind, target, style, ref_fill, accessibility),
+        } => link::build(backend, children, route, url, make_params, kind, target, external, style, ref_fill, accessibility),
         Primitive::External {
             type_id,
             type_name,

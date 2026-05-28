@@ -10,3 +10,6 @@ anyhow = "1"
 # Sync HTTP server. Tiny, no async runtime, no TLS — appropriate for
 # a dev-mode static-file server bound to loopback or LAN.
 tiny_http = "0.12"
+# Source of the `ReloadSignal` (generation counter + condvar) we
+# stream over SSE. `dev-reload` is the producer; we're the transport.
+dev-reload = { workspace = true }
