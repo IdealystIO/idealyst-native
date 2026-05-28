@@ -74,6 +74,12 @@ enum UiNode {
     For {
         pat: syn::Pat,
         iter: Expr,
+        /// Optional `, key = EXPR` clause between the iterable and the
+        /// body. Required when `iter` is a reactive collection (a
+        /// `Signal<Vec<_>>`) — the type system rejects a keyless reactive
+        /// loop; harmless on a static loop. The expression is evaluated
+        /// per item with the loop pattern in scope (e.g. `key = item.id`).
+        key: Option<Expr>,
         body: Vec<UiNode>,
         /// Trailing `.method(args)` chain after the for-block's
         /// closing brace. Author syntax:
@@ -279,6 +285,26 @@ fn parse_for(input: ParseStream) -> syn::Result<UiNode> {
     let pat = syn::Pat::parse_single(input)?;
     let _in_token: Token![in] = input.parse()?;
     let iter: Expr = Expr::parse_without_eager_brace(input)?;
+    // Optional `, key = EXPR` clause: the reconciliation key for a
+    // reactive list. `parse_without_eager_brace` stopped at the comma
+    // (a comma can't continue an expression), so peek for it here. The
+    // key expression itself is parsed brace-agnostically so it stops at
+    // the body's opening `{`.
+    let key = if input.peek(Token![,]) {
+        let _comma: Token![,] = input.parse()?;
+        let kw: Ident = input.parse()?;
+        if kw != "key" {
+            return Err(syn::Error::new(
+                kw.span(),
+                "expected `key` after `,` in a `for` loop (the reactive-list \
+                 reconciliation key), e.g. `for item in items, key = item.id { … }`",
+            ));
+        }
+        let _eq: Token![=] = input.parse()?;
+        Some(Expr::parse_without_eager_brace(input)?)
+    } else {
+        None
+    };
     let body_content;
     braced!(body_content in input);
     let body = parse_ui_nodes(&body_content)?;
@@ -288,7 +314,7 @@ fn parse_for(input: ParseStream) -> syn::Result<UiNode> {
     // the row container's style / flex direction / overscan / etc.
     // Example: `for i in count(sig) { ... }.style(row_style())`.
     let chain = parse_method_chain(input)?;
-    Ok(UiNode::For { pat, iter, body, chain })
+    Ok(UiNode::For { pat, iter, key, body, chain })
 }
 
 /// Parse `match scrutinee { pat => { ui_nodes }, pat if guard => { ui_nodes }, ... }`.
@@ -455,7 +481,9 @@ fn emit_node(node: &UiNode, ctx: Ctx) -> TokenStream2 {
         UiNode::If { cond, then_body, else_body } => {
             emit_if(cond, then_body, else_body.as_deref(), ctx)
         }
-        UiNode::For { pat, iter, body, chain } => emit_for(pat, iter, body, chain, ctx),
+        UiNode::For { pat, iter, key, body, chain } => {
+            emit_for(pat, iter, key.as_ref(), body, chain, ctx)
+        }
         UiNode::Match { scrutinee, arms } => emit_match(scrutinee, arms, ctx),
         UiNode::Expr(e) => e.to_token_stream(),
     }
@@ -1816,6 +1844,7 @@ fn lit_to_value_tokens(lit: &syn::Lit) -> Option<TokenStream2> {
 fn emit_for(
     pat: &syn::Pat,
     iter: &Expr,
+    key: Option<&Expr>,
     body: &[UiNode],
     chain: &[TokenStream2],
     ctx: Ctx,
@@ -1827,7 +1856,7 @@ fn emit_for(
     // `Element`: the Virtualizer / reactive-range `each` forms already
     // ARE one primitive (`is_single`), so they pass through; the `Vec`
     // forms (Repeat, type-driven dispatch) are wrapped in a `View`.
-    let (child_form, is_single) = emit_for_children(pat, iter, body, chain);
+    let (child_form, is_single) = emit_for_children(pat, iter, key, body, chain);
     match ctx {
         Ctx::Child => child_form,
         Ctx::Single if is_single => child_form,
@@ -1849,6 +1878,7 @@ fn emit_for(
 fn emit_for_children(
     pat: &syn::Pat,
     iter: &Expr,
+    key: Option<&Expr>,
     body: &[UiNode],
     chain: &[TokenStream2],
 ) -> (TokenStream2, bool) {
@@ -1876,12 +1906,33 @@ fn emit_for_children(
     // loop accidentally reactive.
     if matches!(iter, Expr::Range(_)) && condition_is_reactive(iter) {
         let parts: Vec<TokenStream2> = body.iter().map(|n| emit_node(n, Ctx::Child)).collect();
+        // A reactive range is keyed-by-position: the row's identity IS
+        // its index, so the enumeration counter is the natural key (or
+        // the author's `key` expr if they wrote one). Keying — rather
+        // than a full rebuild — means growing/shrinking the count keeps
+        // the surviving rows' component-local state, just like a keyed
+        // `Signal<Vec<_>>` loop.
+        let key_expr = match key {
+            Some(k) => quote! { #k },
+            None => quote! { __idx },
+        };
         let each = quote! {
-            ::runtime_core::each(move || {
-                let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                    = ::std::vec::Vec::new();
+            ::runtime_core::each_keyed(move || {
+                let mut __c: ::std::vec::Vec<(
+                    ::runtime_core::EachKey,
+                    ::runtime_core::EachRowBuild,
+                )> = ::std::vec::Vec::new();
+                let mut __idx: usize = 0;
                 for #pat in #iter {
-                    #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
+                    let __key = ::runtime_core::EachKey::new(#key_expr);
+                    __idx += 1;
+                    let __build: ::runtime_core::EachRowBuild = ::std::boxed::Box::new(move || {
+                        let mut __row: ::std::vec::Vec<::runtime_core::Element>
+                            = ::std::vec::Vec::new();
+                        #( ::runtime_core::ChildList::append_to(#parts, &mut __row); )*
+                        __row
+                    });
+                    __c.push((__key, __build));
                 }
                 __c
             })
@@ -1909,31 +1960,56 @@ fn emit_for_children(
     }
 
     // Type-driven dispatch — the heuristic-free path for every other
-    // iterable. We emit `ITER.__idealyst_for_each(|PAT| row_children)`
-    // with BOTH `StaticForEach` and `ReactiveForEach` in scope; Rust
-    // method resolution picks the impl from ITER's *type*:
-    //   - `Signal<C>` (a signal of a cloneable iterable) → a reactive
-    //     `Element::Each` that rebuilds when the signal changes,
+    // iterable. We emit a `__idealyst_for_each*` call with BOTH
+    // `StaticForEach` and `ReactiveForEach` in scope; Rust method
+    // resolution picks the impl from ITER's *type*:
+    //   - `Signal<C>` (a signal of a cloneable iterable) → a keyed
+    //     reactive `Element::Each`,
     //   - any other `IntoIterator` (Vec, &Vec, array, HashMap, …) → a
     //     flat, built-once `Vec<Element>`.
     //
     // No `.get()` substring is inspected — the type decides — so a
     // `HashMap::get()` (or any incidental `.get()`) can never make a
     // loop accidentally reactive, and a real signal iterable is never
-    // silently missed. The per-item builder returns a `Vec<Element>`
-    // (flat siblings; multi-node bodies contribute multiple siblings)
-    // and the impl concatenates them.
+    // silently missed.
+    //
+    // Key handling: with a `, key = …` clause we emit the *keyed* method
+    // (`__idealyst_for_each_keyed`), which both the static and reactive
+    // impls provide. WITHOUT a key we emit the keyless method — defined
+    // only on `StaticForEach` (and on `ReactiveForEach` behind a
+    // never-satisfied bound). So a keyless `for x in vec { … }` compiles
+    // (static) while a keyless `for x in signal { … }` is a COMPILE
+    // ERROR carrying the `ReactiveListKeyed` diagnostic: a reactive list
+    // must be keyed so per-row state survives rebuilds.
     let parts: Vec<TokenStream2> = body.iter().map(|n| emit_node(n, Ctx::Child)).collect();
-    let dispatch = quote! {
-        {
-            #[allow(unused_imports)]
-            use ::runtime_core::{StaticForEach as _, ReactiveForEach as _};
-            (#iter).__idealyst_for_each(move |#pat| {
-                let mut __row: ::std::vec::Vec<::runtime_core::Element>
-                    = ::std::vec::Vec::new();
-                #( ::runtime_core::ChildList::append_to(#parts, &mut __row); )*
-                __row
-            })
+    let dispatch = if let Some(k) = key {
+        quote! {
+            {
+                #[allow(unused_imports)]
+                use ::runtime_core::{StaticForEach as _, ReactiveForEach as _};
+                (#iter).__idealyst_for_each_keyed(
+                    move |#pat| #k,
+                    move |#pat| {
+                        let mut __row: ::std::vec::Vec<::runtime_core::Element>
+                            = ::std::vec::Vec::new();
+                        #( ::runtime_core::ChildList::append_to(#parts, &mut __row); )*
+                        __row
+                    },
+                )
+            }
+        }
+    } else {
+        quote! {
+            {
+                #[allow(unused_imports)]
+                use ::runtime_core::{StaticForEach as _, ReactiveForEach as _};
+                (#iter).__idealyst_for_each(move |#pat| {
+                    let mut __row: ::std::vec::Vec<::runtime_core::Element>
+                        = ::std::vec::Vec::new();
+                    #( ::runtime_core::ChildList::append_to(#parts, &mut __row); )*
+                    __row
+                })
+            }
         }
     };
     let form = if chain.is_empty() {
@@ -2498,11 +2574,29 @@ mod tests {
                 Text { "x" }
             }
         });
-        // For loops lower to the type-driven `__idealyst_for_each`
-        // dispatch (StaticForEach / ReactiveForEach), not a literal
-        // `for`. Each iteration appends flat siblings into a row Vec.
+        // A keyless `for` lowers to the type-driven `__idealyst_for_each`
+        // dispatch (StaticForEach / ReactiveForEach), not a literal `for`.
+        // Each iteration appends flat siblings into a row Vec.
         assert!(out.contains("__idealyst_for_each"));
+        // …and NOT the keyed variant — keyless stays keyless (the type
+        // system, not the macro, rejects a keyless reactive loop).
+        assert!(!out.contains("__idealyst_for_each_keyed"));
         assert!(out.contains("move | n |"));
+        assert!(out.contains("ChildList :: append_to"));
+    }
+
+    #[test]
+    fn for_loop_with_key_emits_keyed_dispatch() {
+        let out = parse_and_emit(quote! {
+            for n in items, key = n.id {
+                Text { "x" }
+            }
+        });
+        // A `, key = …` clause lowers to the KEYED dispatch, passing a
+        // key closure (the key expr) alongside the row builder.
+        assert!(out.contains("__idealyst_for_each_keyed"));
+        // The key closure carries the author's key expression.
+        assert!(out.contains("n . id"));
         assert!(out.contains("ChildList :: append_to"));
     }
 

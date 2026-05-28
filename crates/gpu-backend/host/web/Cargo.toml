@@ -36,6 +36,13 @@ runtime-core = { workspace = true, features = ["async-driver"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { version = "29", default-features = false, features = ["webgl", "wgsl"] }
 wasm-bindgen = "0.2"
+# `embed-font-bytes` is off for web, so `face!` fonts are served files,
+# not baked bytes. After mount we fetch each registered font URL and
+# feed the bytes to the wgpu text shaper — needs the fetch API
+# (web-sys Response + Window.fetch), promise await (futures), and the
+# ArrayBuffer → bytes hop (js-sys).
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
 raw-window-handle = "0.6"
 log = "0.4"
 web-sys = { version = "0.3", features = [
@@ -51,6 +58,7 @@ web-sys = { version = "0.3", features = [
     "MouseEvent",
     "Node",
     "PointerEvent",
+    "Response",
     "WheelEvent",
     "Window",
 ] }

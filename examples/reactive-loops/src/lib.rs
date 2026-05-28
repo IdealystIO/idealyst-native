@@ -187,7 +187,7 @@ fn DynamicList(props: &DynamicListProps) -> Element {
             // reactive by type — each row is an `ItemRow` component, and
             // add/remove rebuilds the list while per-row counts persist.
             Stack(gap = StackGap::Sm) {
-                for row in items {
+                for row in items, key = row.id {
                     ItemRow(row = row, items = items)
                 }
             }
@@ -226,36 +226,49 @@ fn CountGrid(props: &CountGridProps) -> Element {
 }
 
 // ---------------------------------------------------------------------------
-// Counter-example — state in the RENDER SCOPE instead of the data.
+// Component-local state — preserved across list mutations by KEYED
+// reconciliation.
 //
 // `EphemeralRow` allocates its `count` with `signal!` INSIDE the
-// component. Because `for label in labels` is a `Primitive::Each` that
-// fully rebuilds the list on any change, every add re-mounts each row
-// and re-allocates a FRESH signal — so the count RESETS to 0×. This is
-// the opposite of `ItemRow` (count in the `Row` DATA, survives rebuild).
+// component (render scope), NOT in the data. Before keyed reconciliation
+// this was a trap: any list change fully rebuilt every row, re-allocating
+// each signal, so the counts snapped back to 0×. Now `for label in
+// labels, key = label` gives each row a stable identity — on Add, the
+// reconciler keeps the unchanged rows' scopes (and their `count`
+// signals) alive and only builds the new row. So the counts SURVIVE,
+// even though they live in the component rather than the data.
 //
-// It's not a framework bug — it's the consequence of putting per-item
-// state in the ephemeral render scope under a rebuilding list. The fix
-// is "state lives in the data" (what `ItemRow` does), or keyed
-// reconciliation that preserves unchanged scopes (a future option).
+// This is the whole point of requiring a `key`: component-level state is
+// respected across list updates (the React/Solid/Leptos contract). Keys
+// must be unique + stable per row — here the labels are distinct, so the
+// label itself is the key.
 // ---------------------------------------------------------------------------
 
 struct EphemeralRowProps {
     label: String,
+    /// The backing list, so the row can remove ITSELF (by label) — used
+    /// to demonstrate that removing a key then re-adding it RESETS the
+    /// row (its scope was dropped, so the re-added row is brand new).
+    labels: Signal<Vec<String>>,
 }
 
 #[component]
 fn EphemeralRow(props: &EphemeralRowProps) -> Element {
     let label = props.label.clone();
-    // Allocated in the render scope — re-created on every list rebuild,
-    // so this count does NOT survive an add. (Compare `ItemRow`.)
+    let labels = props.labels;
+    // Allocated in the render scope. With keyed reconciliation this row's
+    // scope is kept across an Add (its key is unchanged), so `count`
+    // survives — no need to hoist it into the data like `ItemRow` does.
     let count = signal!(0);
     let inc = move || count.update(|n| *n += 1);
+    let remove_label = label.clone();
+    let remove = move || labels.update(|l| l.retain(|x| x != &remove_label));
     ui! {
         Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
             Typography(content = label)
             Typography(content = rx!(format!("clicked {}×", count.get())), muted = true)
             Button(label = "+".to_string(), on_click = inc)
+            Button(label = "Remove".to_string(), on_click = remove)
         }
     }
 }
@@ -267,18 +280,21 @@ struct EphemeralListProps {
 #[component]
 fn EphemeralList(props: &EphemeralListProps) -> Element {
     let labels = props.labels;
+    // Append `Row {len+1}`. Labels are deterministic, so removing the
+    // last row then adding re-creates the SAME key — handy for showing
+    // the remove-then-re-add reset.
     let add = move || labels.update(|l| {
         let n = l.len() + 1;
         l.push(format!("Row {}", n));
     });
     ui! {
         Card(padding = CardPadding::Md) {
-            Typography(content = "Render-scope state — RESETS on rebuild (anti-pattern)".to_string(), kind = typography_kind::H3)
-            Typography(content = "Each row's count lives in the COMPONENT, not the data. Click a few +, then Add row — every count snaps back to 0×, because the list rebuild re-allocates each signal. The Dynamic list above keeps its counts because that state lives in the data.".to_string(), muted = true)
+            Typography(content = "Render-scope state — PRESERVED by keyed reconciliation".to_string(), kind = typography_kind::H3)
+            Typography(content = "Each row's count lives in the COMPONENT, not the data. Click +, then Add row — the existing counts STAY, because a stable `key` lets the reconciler keep each unchanged row's scope (and its signal). Only the new row starts at 0×. Conversely, Remove a row then Add it back: the key left and returned, so it's a NEW row and resets to 0×.".to_string(), muted = true)
             Button(label = "Add row".to_string(), on_click = add)
             Stack(gap = StackGap::Sm) {
-                for label in labels {
-                    EphemeralRow(label = label)
+                for label in labels, key = label.clone() {
+                    EphemeralRow(label = label, labels = labels)
                 }
             }
         }

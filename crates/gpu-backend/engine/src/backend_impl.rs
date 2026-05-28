@@ -127,6 +127,15 @@ pub struct WgpuBackend {
     /// by `AssetId` in their per-backend `ImageCache`.
     pub(crate) image_asset_bytes:
         std::collections::HashMap<runtime_core::AssetId, Vec<u8>>,
+    /// Served-file URLs of `Bundled` fonts the app registered but
+    /// whose bytes aren't in the binary (i.e. `embed-font-bytes` is
+    /// off — the web host path). `register_asset` pushes `/{path}`
+    /// here; the async host (`host-web`) drains this via
+    /// [`WgpuBackend::drain_pending_font_urls`] after mount, fetches
+    /// each file, and feeds the bytes to cosmic-text. Stays empty on
+    /// native, where `face!` carries the bytes inline (`BundledEmbedded`)
+    /// and they're loaded synchronously below.
+    pub(crate) pending_font_urls: Vec<String>,
     /// Third-party `Element::External` registry. Populated by
     /// per-platform leaf crates at app bootstrap. wgpu apps wire
     /// WebView / Maps / etc. by calling
@@ -221,6 +230,7 @@ impl WgpuBackend {
             presence_tweens: std::collections::HashMap::new(),
             sticky_registry: crate::sticky::StickyRegistry::new(),
             image_asset_bytes: std::collections::HashMap::new(),
+            pending_font_urls: Vec::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
             nav_handler_instances: std::collections::HashMap::new(),
@@ -287,6 +297,14 @@ impl WgpuBackend {
     /// can re-query at any time.
     pub fn drain_pending_announcements(&mut self) -> Vec<(String, LiveRegionPriority)> {
         std::mem::take(&mut self.pending_announcements)
+    }
+
+    /// Take the served-file URLs of `Bundled`/`Remote` fonts the app
+    /// registered without inline bytes (the web path; see
+    /// [`WgpuBackend::pending_font_urls`]). The host shell fetches each
+    /// and feeds the bytes back via the font system. Empty on native.
+    pub fn drain_pending_font_urls(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_font_urls)
     }
 
     /// Snapshot of the active root, or `None` if nothing has been
@@ -1249,29 +1267,36 @@ impl Backend for WgpuBackend {
         // aren't supported yet — silently ignored.
         match kind {
             runtime_core::AssetTag::Font => {
-                // `face!` emits `BundledEmbedded` (path + bytes) here
-                // because this backend enables `embed-font-bytes`;
-                // `Embedded` covers a hand-rolled `embed_asset!` font.
-                // Either way we consume the bytes.
-                if let runtime_core::AssetSource::Embedded { bytes, .. }
-                | runtime_core::AssetSource::BundledEmbedded { bytes, .. } = source
-                {
-                    // `to_vec()` because `load_font_data` takes
-                    // ownership; the underlying bytes are
-                    // `'static` so the clone is cheap to amortize
-                    // (one-time per app font, not per shape).
-                    self.font_system
-                        .borrow_mut()
-                        .db_mut()
-                        .load_font_data(bytes.to_vec());
+                match source {
+                    // Bytes-in-binary path (native, `embed-font-bytes`
+                    // on): `face!` emits `BundledEmbedded` (path +
+                    // bytes); `Embedded` covers a hand-rolled
+                    // `embed_asset!` font. Load synchronously — the
+                    // bytes are `'static`, so `to_vec()` is a cheap
+                    // one-time-per-font clone.
+                    runtime_core::AssetSource::Embedded { bytes, .. }
+                    | runtime_core::AssetSource::BundledEmbedded { bytes, .. } => {
+                        self.font_system
+                            .borrow_mut()
+                            .db_mut()
+                            .load_font_data(bytes.to_vec());
+                    }
+                    // Bytes-free path (web, `embed-font-bytes` off):
+                    // the font lives as a served file at the same
+                    // root-absolute `/{path}` the DOM backend links via
+                    // `@font-face`. The renderer can't issue an async
+                    // fetch, so queue the URL for the host shell
+                    // (`host-web`) to fetch + `load_font_data` after
+                    // mount, before the first frame. See
+                    // `drain_pending_font_urls`.
+                    runtime_core::AssetSource::Bundled { path } => {
+                        self.pending_font_urls.push(format!("/{path}"));
+                    }
+                    // Arbitrary remote URL — same deferred-fetch hook.
+                    runtime_core::AssetSource::Remote { url } => {
+                        self.pending_font_urls.push((*url).to_string());
+                    }
                 }
-                // Bytes-free `Bundled` / `Remote` font sources aren't
-                // supported here — the wgpu sim has no asset loader for
-                // a URL path and Remote would require an async fetch
-                // the renderer can't issue. (A `Bundled`-only font only
-                // arises when `embed-font-bytes` is off, i.e. no
-                // byte-consuming backend in the build — so the sim
-                // isn't present anyway.)
             }
             runtime_core::AssetTag::Image => {
                 if let runtime_core::AssetSource::Embedded { bytes, .. }
@@ -2689,6 +2714,62 @@ mod a11y_tests {
         assert!(
             b.image_asset_bytes(id).is_none(),
             "unregister_asset(Image) must clear the byte cache so hot-reload re-decodes"
+        );
+    }
+
+    /// Regression: with `embed-font-bytes` off (the web host path),
+    /// `face!` emits a bytes-free `Bundled { path }` font. The old
+    /// `register_asset` dropped those on the floor — the wgpu
+    /// simulator then shaped every glyph against its single embedded
+    /// default face, so the website's Bold/Medium/etc. weights never
+    /// rendered. Now the backend queues each font's served-file URL
+    /// (`/{path}`, matching the DOM backend's `@font-face` URL) for the
+    /// async host shell to fetch + load. This test pins the URL
+    /// collection + drain contract; the fetch itself lives in
+    /// `host-web` and is exercised on-device.
+    #[test]
+    fn regression_wgpu_bundled_font_queues_served_url() {
+        use runtime_core::{AssetId, AssetSource, AssetTag};
+        let mut b = make_backend();
+
+        // A bytes-free Bundled font (embed-font-bytes off) must be
+        // queued as a root-absolute served URL, not dropped.
+        b.register_asset(
+            AssetId(1),
+            AssetTag::Font,
+            &AssetSource::Bundled { path: "fonts/Inter-Bold.ttf" },
+        );
+        // A Remote font is queued by its absolute URL verbatim.
+        b.register_asset(
+            AssetId(2),
+            AssetTag::Font,
+            &AssetSource::Remote { url: "https://cdn.example/Roboto.ttf" },
+        );
+        // A BundledEmbedded font (native, bytes inline) is loaded
+        // synchronously and must NOT add to the fetch queue.
+        b.register_asset(
+            AssetId(3),
+            AssetTag::Font,
+            &AssetSource::BundledEmbedded {
+                path: "fonts/Inter-Regular.ttf",
+                bytes: b"not-a-real-font-but-load_font_data-tolerates-it",
+                extension: "ttf",
+            },
+        );
+
+        let urls = b.drain_pending_font_urls();
+        assert_eq!(
+            urls,
+            vec![
+                "/fonts/Inter-Bold.ttf".to_string(),
+                "https://cdn.example/Roboto.ttf".to_string(),
+            ],
+            "Bundled fonts must queue `/{{path}}` and Remote its URL; \
+             BundledEmbedded carries bytes and must not enqueue a fetch"
+        );
+        assert!(
+            b.drain_pending_font_urls().is_empty(),
+            "drain must empty the queue so a second host pass doesn't refetch"
         );
     }
 

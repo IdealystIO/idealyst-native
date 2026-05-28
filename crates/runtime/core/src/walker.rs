@@ -347,8 +347,8 @@ pub(super) fn build_inner<B: Backend + 'static>(
         Element::Switch { discriminant, arms, default, style } => {
             when_switch::build_switch(backend, discriminant, arms, default, style)
         }
-        Element::Each { build: build_children, style } => {
-            each::build(backend, build_children, style)
+        Element::Each { snapshot, style } => {
+            each::build(backend, snapshot, style)
         }
         Element::Link {
             children,

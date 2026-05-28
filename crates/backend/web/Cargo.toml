@@ -93,6 +93,9 @@ features = [
     "MessageEvent",
     "MouseEvent",
     "Node",
+    # `NodeList` + `Node::child_nodes` resolve the reference node for
+    # `insert_at` (keyed `Each` reconciliation splicing).
+    "NodeList",
     "Performance",
     "PointerEvent",
     "Text",

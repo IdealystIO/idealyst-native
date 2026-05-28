@@ -76,6 +76,9 @@ enum JsxNode {
     For {
         pat: syn::Pat,
         iter: Expr,
+        /// Optional `, key = EXPR` clause — required when `iter` is a
+        /// reactive collection (a `Signal<Vec<_>>`); see [`emit_for`].
+        key: Option<Expr>,
         body: Vec<JsxNode>,
     },
     /// An `if` / `if else` chain at the statement level. Recursively jsx'd.
@@ -310,10 +313,26 @@ fn parse_for(input: ParseStream) -> syn::Result<JsxNode> {
     let pat = syn::Pat::parse_single(input)?;
     let _in: Token![in] = input.parse()?;
     let iter: Expr = Expr::parse_without_eager_brace(input)?;
+    // Optional `, key = EXPR` reconciliation key (see `ui::parse_for`).
+    let key = if input.peek(Token![,]) {
+        let _comma: Token![,] = input.parse()?;
+        let kw: Ident = input.parse()?;
+        if kw != "key" {
+            return Err(syn::Error::new(
+                kw.span(),
+                "expected `key` after `,` in a `for` loop (the reactive-list \
+                 reconciliation key), e.g. `for item in items, key = item.id { … }`",
+            ));
+        }
+        let _eq: Token![=] = input.parse()?;
+        Some(Expr::parse_without_eager_brace(input)?)
+    } else {
+        None
+    };
     let body_content;
     braced!(body_content in input);
     let body = parse_nodes(&body_content)?;
-    Ok(JsxNode::For { pat, iter, body })
+    Ok(JsxNode::For { pat, iter, key, body })
 }
 
 // =============================================================================
@@ -411,7 +430,7 @@ fn emit_node(node: &JsxNode) -> TokenStream2 {
         JsxNode::If { cond, then_body, else_body } => {
             emit_if(cond, then_body, else_body.as_deref())
         }
-        JsxNode::For { pat, iter, body } => emit_for(pat, iter, body),
+        JsxNode::For { pat, iter, key, body } => emit_for(pat, iter, key.as_ref(), body),
         JsxNode::Expr(e) => e.to_token_stream(),
     }
 }
@@ -624,16 +643,52 @@ fn condition_is_reactive(cond: &Expr) -> bool {
     tokens.contains(".get()") || tokens.contains(". get ()")
 }
 
-fn emit_for(pat: &syn::Pat, iter: &Expr, body: &[JsxNode]) -> TokenStream2 {
+/// Lower a `jsx!` `for` to the same type-driven dispatch `ui!` uses, so
+/// reactivity is decided by the iterable's *type* (a `Signal<C>` →
+/// keyed reactive `Element::Each`; any other `IntoIterator` → a flat,
+/// built-once `Vec<Element>`). Each iteration contributes ONE element
+/// (the body, view-wrapped if multi-node — `jsx!`'s existing per-row
+/// semantics, unlike `ui!`'s sibling flattening).
+///
+/// Key handling matches `ui!`: with `, key = …` we emit the KEYED method
+/// (both impls provide it); without one we emit the keyless method —
+/// which only `StaticForEach` really has, so a keyless `for x in vec`
+/// compiles while a keyless `for x in signal` is a COMPILE ERROR carrying
+/// the `ReactiveListKeyed` diagnostic.
+///
+/// (Reactive *count ranges* — `for i in 0..n.get()` — are a `ui!`-only
+/// nicety; in `jsx!` a range is `IntoIterator`, so it stays static, same
+/// as before.)
+fn emit_for(pat: &syn::Pat, iter: &Expr, key: Option<&Expr>, body: &[JsxNode]) -> TokenStream2 {
     let body_expr = emit_block_as_primitive(body);
-    quote! {
-        {
-            let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                = ::std::vec::Vec::new();
-            for #pat in #iter {
-                ::runtime_core::ChildList::append_to(#body_expr, &mut __c);
+    if let Some(k) = key {
+        quote! {
+            {
+                #[allow(unused_imports)]
+                use ::runtime_core::{StaticForEach as _, ReactiveForEach as _};
+                (#iter).__idealyst_for_each_keyed(
+                    move |#pat| #k,
+                    move |#pat| {
+                        let mut __row: ::std::vec::Vec<::runtime_core::Element>
+                            = ::std::vec::Vec::new();
+                        ::runtime_core::ChildList::append_to(#body_expr, &mut __row);
+                        __row
+                    },
+                )
             }
-            __c
+        }
+    } else {
+        quote! {
+            {
+                #[allow(unused_imports)]
+                use ::runtime_core::{StaticForEach as _, ReactiveForEach as _};
+                (#iter).__idealyst_for_each(move |#pat| {
+                    let mut __row: ::std::vec::Vec<::runtime_core::Element>
+                        = ::std::vec::Vec::new();
+                    ::runtime_core::ChildList::append_to(#body_expr, &mut __row);
+                    __row
+                })
+            }
         }
     }
 }
@@ -781,14 +836,28 @@ mod tests {
     }
 
     #[test]
-    fn for_loop_emits_vec_collection() {
+    fn for_loop_emits_type_driven_dispatch() {
         let out = parse_and_emit(quote! {
             for n in items {
                 <Text content="x" />
             }
         });
-        assert!(out.contains("for n in items"));
+        // Keyless `for` lowers to the type-driven `__idealyst_for_each`
+        // dispatch (StaticForEach / ReactiveForEach), not a literal `for`.
+        assert!(out.contains("__idealyst_for_each"));
+        assert!(!out.contains("__idealyst_for_each_keyed"));
         assert!(out.contains("ChildList :: append_to"));
+    }
+
+    #[test]
+    fn for_loop_with_key_emits_keyed_dispatch() {
+        let out = parse_and_emit(quote! {
+            for n in items, key = n.id {
+                <Text content="x" />
+            }
+        });
+        assert!(out.contains("__idealyst_for_each_keyed"));
+        assert!(out.contains("n . id"));
     }
 
     #[test]

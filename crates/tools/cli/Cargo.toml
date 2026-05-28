@@ -74,3 +74,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # named explicitly because the CLI itself calls into it.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

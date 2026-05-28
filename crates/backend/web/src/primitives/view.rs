@@ -113,6 +113,37 @@ pub(crate) fn insert_many(b: &mut crate::WebBackend, parent: &mut Node, children
     parent.append_child(&frag).expect("append fragment to parent failed");
 }
 
+/// Splice one node into `parent` at child index `index` — the
+/// `insert_at` half of child-splicing, used by keyed `Each`
+/// reconciliation. `insertBefore` handles BOTH cases the reconciler
+/// needs: a node not yet in the DOM is inserted, and a node already
+/// elsewhere in `parent` is MOVED to the new position. A reference of
+/// `None` (index past the end) appends.
+pub(crate) fn insert_at(parent: &mut Node, child: Node, index: usize) {
+    // Same overlay guard as `insert`: portaled overlay content lives
+    // under `<body>` and must not be yanked into the layout tree.
+    if let Some(el) = child.dyn_ref::<web_sys::Element>() {
+        if el.has_attribute("data-overlay-skip-insert") {
+            return;
+        }
+    }
+    // `child_nodes()` counts 1:1 with the framework's inserted nodes
+    // (the backend never injects stray text nodes), so `index` lines up
+    // with the reconciler's running child index. `item(index)` past the
+    // end returns `None` → `insert_before(child, None)` appends.
+    let reference = parent.child_nodes().item(index as u32);
+    parent
+        .insert_before(&child, reference.as_ref())
+        .expect("insert_before failed");
+}
+
+/// Detach exactly one child — the `remove_child` half of child-splicing.
+/// Tolerant of a node that isn't currently a child (a no-op then) so a
+/// reconciler that races an ancestor teardown can't panic.
+pub(crate) fn remove_child(parent: &Node, child: &Node) {
+    let _ = parent.remove_child(child);
+}
+
 pub(crate) fn clear_children(node: &Node) {
     // Single-FFI bulk detach. The previous per-child
     // `first_child` + `remove_child` loop was 2×N boundary crossings

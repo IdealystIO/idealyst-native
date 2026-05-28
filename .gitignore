@@ -4,7 +4,7 @@ target/
 /examples/hello-ios/ios/build
 dist/
 # wasm-pack output. Dev mode writes here so the dev HTTP server can
-# serve it directly; `idealyst build --web` stages into `dist/`
+# serve it directly; `idealyst build --web` stages into `dist/web/`
 # instead. Either way the contents are 100% generated — never
 # commit them.
 pkg/

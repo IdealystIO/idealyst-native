@@ -17,15 +17,20 @@ build = "build.rs"
 [features]
 default = []
 async-driver = ["runtime-core/async-driver"]
+# `embed-font-bytes`: the wgpu Simulator shapes text with cosmic-text,
+# which needs the raw font bytes. NATIVE hosts (`host-winit`, the
+# mobile sims) enable this so `face!` fonts are `include_bytes!`-baked
+# and `register_asset` loads them synchronously — those backends have
+# no async loader. The WEB host (`host-web`) leaves it OFF: there
+# `face!` emits a bundle *path*, the same `/fonts/*.ttf` the DOM
+# backend serves, and host-web fetches it at runtime (see its `mount`).
+# Keeping it off-by-default stops the feature from unifying ON across
+# the whole wasm graph and double-paying for fonts (embedded + served).
+embed-font-bytes = ["runtime-core/embed-font-bytes"]
 
 [dependencies]
 render-api = { workspace = true }
-# `embed-font-bytes`: the wgpu Simulator shapes text with cosmic-text,
-# which needs the raw font bytes. Turning it on here means any build
-# that links this backend (e.g. the website's embedded Simulator)
-# embeds the fonts; the web DOM backend in the same build still links
-# them as files. See `runtime_core::assets`.
-runtime-core = { workspace = true, features = ["embed-font-bytes"] }
+runtime-core = { workspace = true }
 runtime-layout = { workspace = true }
 
 # Wgpu pipelines + glyph atlas. No platform deps come along.

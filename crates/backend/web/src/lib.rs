@@ -1644,6 +1644,23 @@ impl Backend for WebBackend {
         primitives::view::insert_many(self, parent, children)
     }
 
+    // Child-splicing: the DOM does `insertBefore` / `removeChild`
+    // directly, so keyed `Each` reconciliation runs in place — unchanged
+    // rows keep their nodes (and their render scope), removed rows are
+    // detached one-by-one, and reorders move existing nodes rather than
+    // rebuilding. Without this the framework falls back to full rebuild.
+    fn supports_child_splice(&self) -> bool {
+        true
+    }
+
+    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
+        primitives::view::insert_at(parent, child, index)
+    }
+
+    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
+        primitives::view::remove_child(parent, child)
+    }
+
     fn update_text(&mut self, node: &Self::Node, content: &str) {
         primitives::text::update_text(node, content)
     }

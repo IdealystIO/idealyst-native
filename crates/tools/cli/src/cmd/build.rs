@@ -76,7 +76,7 @@ pub struct Args {
     pub gzip: bool,
 
     /// Web only: override where the bundle is written. Default is
-    /// `<project>/dist`. Has no effect on non-web targets.
+    /// `<project>/dist/web`. Has no effect on non-web targets.
     #[arg(long, value_name = "PATH")]
     pub out_dir: Option<PathBuf>,
 
@@ -192,13 +192,20 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
     let source = crate::framework_source::resolve(dir)?;
 
     // `idealyst build --web` always stages a self-contained bundle at
-    // `<project>/dist` (override with `--out-dir`). The bundle is what
-    // gets deployed; nothing lands in the project root anymore. The
-    // older "pkg/ in project dir" path is still used by the dev loop
+    // `<project>/dist/web` (override with `--out-dir`). Each target gets
+    // its own `dist/<target>` subdir so building several platforms into
+    // the same project root doesn't clobber siblings, and `idealyst
+    // serve` can default to `dist/web`. The bundle is what gets
+    // deployed; nothing lands in the project root anymore. The older
+    // "pkg/ in project dir" path is still used by the dev loop
     // (`idealyst dev --web`, which calls `build_web::build` with
     // `bundle_out_dir: None`) so the dev HTTP server can serve from
     // the project tree.
-    let bundle_out_dir = Some(args.out_dir.clone().unwrap_or_else(|| dir.join("dist")));
+    let bundle_out_dir = Some(
+        args.out_dir
+            .clone()
+            .unwrap_or_else(|| dir.join("dist").join(Target::Web.as_str())),
+    );
 
     let artifact = build_web::build(
         dir,

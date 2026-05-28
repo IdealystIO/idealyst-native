@@ -27,7 +27,7 @@
 //! sync_virtualizers`, so reactive-list ROW CONTENT, incremental mount,
 //! and per-row scope teardown ARE observable here.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -163,7 +163,7 @@ fn signal_iteration_rebuilds_on_change() {
     let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
     let tree: Element = ui! {
         View {
-            for s in data {
+            for s in data, key = *s {
                 Text { s.to_string() }
             }
         }
@@ -187,10 +187,13 @@ fn signal_iteration_rebuilds_on_change() {
     assert_eq!(texts(&rt.events()), Vec::<String>::new(), "rebuilt empty");
 }
 
-/// On rebuild, `Element::Each` drops the PREVIOUS list's scope before
-/// building the new one — freeing every row's signals/effects. Each row
-/// registers an `on_cleanup`; growing the list must fire exactly the old
-/// rows' cleanups (no leak, atomic teardown).
+/// Non-splice fallback: a backend WITHOUT `supports_child_splice` can't
+/// reconcile by key, so `Element::Each` full-rebuilds — dropping the
+/// PREVIOUS list's scope before building the new one (freeing every
+/// row's signals/effects). Each row registers an `on_cleanup`; growing
+/// the list fires exactly the old rows' cleanups (no leak, atomic
+/// teardown). The keyed scope-preservation tests below cover the
+/// splice-capable path where this does NOT happen.
 #[test]
 fn each_releases_old_row_scopes_on_rebuild() {
     let rt = TestRuntime::new();
@@ -199,7 +202,7 @@ fn each_releases_old_row_scopes_on_rebuild() {
     let c = cleaned.clone();
     let tree: Element = ui! {
         View {
-            for n in data {
+            for n in data, key = *n {
                 {
                     let c2 = c.clone();
                     on_cleanup(move || c2.set(c2.get() + 1));
@@ -276,7 +279,7 @@ fn reactive_for_multi_node_body_flattens_on_rebuild() {
     let data: Signal<Vec<i32>> = signal!(vec![1]);
     let tree: Element = ui! {
         View {
-            for n in data {
+            for n in data, key = *n {
                 Text { format!("h{}", n) }
                 Text { format!("b{}", n) }
             }
@@ -742,7 +745,7 @@ fn anchorless_region_splices_flat_in_place() {
     let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
     let tree: Element = ui! {
         View {
-            for x in data {
+            for x in data, key = *x {
                 Text { x.to_string() }
             }
         }
@@ -784,7 +787,7 @@ fn default_backend_uses_anchored_region() {
     let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
     let tree: Element = ui! {
         View {
-            for x in data {
+            for x in data, key = *x {
                 Text { x.to_string() }
             }
         }
@@ -813,7 +816,7 @@ fn anchorless_region_splices_at_position_among_siblings() {
     let tree: Element = ui! {
         View {
             Text { "header".to_string() }
-            for x in data {
+            for x in data, key = *x {
                 Text { x.to_string() }
             }
             Text { "footer".to_string() }
@@ -853,4 +856,173 @@ fn anchorless_region_splices_at_position_among_siblings() {
     assert_eq!(reinsert, vec![1], "new row re-spliced at the region's position: {ev2:?}");
     assert_eq!(count_text(&ev2, "c"), 1, "new row built");
     assert_eq!(count_text(&ev2, "footer"), 0, "trailing sibling untouched on rebuild");
+}
+
+// ---------------------------------------------------------------------------
+// Keyed reconciliation — the reason a reactive `for` requires a `key`.
+//
+// On a splice-capable backend, a keyed list matches rows across a
+// rebuild by key: unchanged keys keep their backend nodes AND their
+// render scope (so component-local signals/effects inside a row survive
+// the list mutation), removed keys are dropped, new keys are built,
+// surviving rows are moved into the new order. These tests pin the
+// scope-lifecycle contract that makes that true: they would FAIL under
+// the old full-rebuild model (which tore down and rebuilt every row).
+// ---------------------------------------------------------------------------
+
+/// Adding a row keeps the existing rows' scopes intact: no `on_cleanup`
+/// fires and only the NEW row is built. (Full rebuild would have fired
+/// both existing cleanups and re-created every row.)
+#[test]
+fn keyed_add_preserves_existing_row_scopes() {
+    let rt = TestRuntime::with_config(MockBackendConfig {
+        supports_child_splice: true,
+        ..Default::default()
+    });
+    let cleaned = Rc::new(Cell::new(0usize));
+    let data: Signal<Vec<i32>> = signal!(vec![1, 2]);
+    let c = cleaned.clone();
+    let tree: Element = ui! {
+        View {
+            for n in data, key = *n {
+                {
+                    let c2 = c.clone();
+                    on_cleanup(move || c2.set(c2.get() + 1));
+                    ui! { Text { n.to_string() } }
+                }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    assert_eq!(cleaned.get(), 0, "nothing torn down on first build");
+    assert_eq!(texts(&rt.events()), vec!["1", "2"], "both rows built initially");
+
+    // keys [1,2] → [1,2,3]: 1 and 2 are unchanged → preserved.
+    rt.backend_mut().clear_events();
+    data.set(vec![1, 2, 3]);
+    assert_eq!(cleaned.get(), 0, "unchanged rows' scopes preserved on add");
+    assert_eq!(texts(&rt.events()), vec!["3"], "only the new row is built");
+}
+
+/// Removing a middle row drops EXACTLY that row's scope (its `on_cleanup`
+/// fires, its node is removed) and leaves every other row's scope and
+/// nodes untouched — no surviving row is rebuilt.
+#[test]
+fn keyed_remove_drops_only_removed_row_scope() {
+    let rt = TestRuntime::with_config(MockBackendConfig {
+        supports_child_splice: true,
+        ..Default::default()
+    });
+    let removed = Rc::new(RefCell::new(Vec::<i32>::new()));
+    let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
+    let r = removed.clone();
+    let tree: Element = ui! {
+        View {
+            for n in data, key = *n {
+                {
+                    let r2 = r.clone();
+                    on_cleanup(move || r2.borrow_mut().push(n));
+                    ui! { Text { n.to_string() } }
+                }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    assert!(removed.borrow().is_empty(), "nothing dropped on first build");
+
+    // Remove the middle key (2); 1 and 3 survive.
+    rt.backend_mut().clear_events();
+    data.set(vec![1, 3]);
+    assert_eq!(*removed.borrow(), vec![2], "only the removed row's scope is dropped");
+    assert_eq!(texts(&rt.events()), Vec::<String>::new(), "surviving rows are NOT rebuilt");
+    assert_eq!(
+        rt.events().iter().filter(|e| matches!(e, Event::RemoveChild { .. })).count(),
+        1,
+        "exactly one node removed (the dropped row's): {:?}",
+        rt.events()
+    );
+}
+
+/// Removing a key then re-adding the SAME key gives the re-added row a
+/// FRESH scope — its prior scope was dropped on removal, so any
+/// component-local state resets. (Identity is the key's *presence*, not
+/// its value-ever-having-existed: a key that left and came back is a new
+/// row.) Proven by the cleanup ledger: the row is torn down on removal,
+/// rebuilt on re-add, and torn down AGAIN when removed a second time —
+/// which can only happen if the re-add installed a fresh scope + cleanup.
+#[test]
+fn keyed_readd_same_key_gets_fresh_scope() {
+    let rt = TestRuntime::with_config(MockBackendConfig {
+        supports_child_splice: true,
+        ..Default::default()
+    });
+    let removed = Rc::new(RefCell::new(Vec::<i32>::new()));
+    let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
+    let r = removed.clone();
+    let tree: Element = ui! {
+        View {
+            for n in data, key = *n {
+                {
+                    let r2 = r.clone();
+                    on_cleanup(move || r2.borrow_mut().push(n));
+                    ui! { Text { n.to_string() } }
+                }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+
+    // Remove key 2 → its scope is dropped (cleanup fires once).
+    data.set(vec![1, 3]);
+    assert_eq!(*removed.borrow(), vec![2], "removed row 2's scope dropped");
+
+    // Re-add key 2 → it was NOT mounted, so it's built fresh (a new
+    // `CreateText "2"`), not resurrected.
+    rt.backend_mut().clear_events();
+    data.set(vec![1, 3, 2]);
+    assert_eq!(texts(&rt.events()), vec!["2"], "re-added key is built fresh");
+    assert_eq!(*removed.borrow(), vec![2], "no extra cleanup yet (fresh row still mounted)");
+
+    // Remove it again → the FRESH scope's cleanup fires, proving the
+    // re-add installed a brand-new scope (state would have reset).
+    data.set(vec![1, 3]);
+    assert_eq!(*removed.borrow(), vec![2, 2], "the re-added row had its own fresh scope");
+}
+
+/// Reordering keeps every row's scope (no cleanup fires) and rebuilds
+/// nothing (no new `CreateText`); the existing nodes are repositioned via
+/// `insert_at` into the new order.
+#[test]
+fn keyed_reorder_preserves_scopes_without_rebuild() {
+    let rt = TestRuntime::with_config(MockBackendConfig {
+        supports_child_splice: true,
+        ..Default::default()
+    });
+    let cleaned = Rc::new(Cell::new(0usize));
+    let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
+    let c = cleaned.clone();
+    let tree: Element = ui! {
+        View {
+            for n in data, key = *n {
+                {
+                    let c2 = c.clone();
+                    on_cleanup(move || c2.set(c2.get() + 1));
+                    ui! { Text { n.to_string() } }
+                }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+
+    // Rotate [1,2,3] → [3,1,2]: same keys, new order.
+    rt.backend_mut().clear_events();
+    data.set(vec![3, 1, 2]);
+    assert_eq!(cleaned.get(), 0, "no row dropped on reorder");
+    assert_eq!(texts(&rt.events()), Vec::<String>::new(), "no row rebuilt on reorder");
+    assert_eq!(
+        rt.events().iter().filter(|e| matches!(e, Event::InsertAt { .. })).count(),
+        3,
+        "all three nodes repositioned into the new order: {:?}",
+        rt.events()
+    );
 }

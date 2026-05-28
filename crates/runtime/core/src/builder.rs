@@ -14,10 +14,11 @@
 //! type-checked against the call-site `Ref<HandleType>`.
 
 use crate::handles::{ButtonHandle, PressableHandle, RefFill, TextHandle, ViewHandle};
-use crate::element::Element;
+use crate::element::{EachKey, EachRowBuild, Element};
 use crate::reactive::Ref;
 use crate::sources::{IntoStyleSource, IntoTextSource};
 use std::cell::RefCell;
+use std::hash::Hash;
 use std::rc::Rc;
 
 // =============================================================================
@@ -552,28 +553,60 @@ where
 
 /// Reactive list constructor — the full-rebuild dual of [`when`] /
 /// [`switch`] for a *vector* of children. `build` reads one or more
-/// signals and returns the current children; the framework rebuilds
-/// the whole list (dropping the prior rows' scope first) whenever a
-/// signal `build` reads changes. See [`Element::Each`] for the
-/// lifecycle and tracking contract.
+/// Construct a keyed reactive list. `snapshot` reads the backing
+/// signal(s) and returns the current ordered `(key, row-builder)` pairs;
+/// the framework reconciles by key on every change — building only new
+/// rows, dropping removed ones, and preserving the scope (and any
+/// component-local signals) of rows whose key is unchanged. See
+/// [`Element::Each`] for the full lifecycle and tracking contract.
 ///
-/// Emitted by `ui!`'s `for PAT in ITER { … }` when `ITER` reads a
-/// signal (e.g. `for x in items.get() { … }`); can also be called
-/// directly:
+/// Emitted by `ui!`'s `for PAT in ITER, key = K { … }` when `ITER` is a
+/// signal; can also be called directly:
 ///
 /// ```ignore
-/// let items: Signal<Vec<String>> = signal!(vec![]);
-/// each(move || {
-///     let mut c = Vec::new();
-///     for label in items.get() {
-///         ChildList::append_to(text(label), &mut c);
-///     }
-///     c
+/// let items: Signal<Vec<Row>> = signal!(vec![]);
+/// each_keyed(move || {
+///     items.get().into_iter().map(|row| {
+///         let id = row.id;
+///         let build: EachRowBuild = Box::new(move || vec![text(row.label)]);
+///         (EachKey::new(id), build)
+///     }).collect()
 /// })
 /// ```
-pub fn each(build: impl Fn() -> Vec<Element> + 'static) -> Element {
+///
+/// A keyed reactive `for` compiles:
+///
+/// ```no_run
+/// use runtime_core::{signal, ui, Element, Signal};
+/// let items: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
+/// let _tree: Element = ui! {
+///     View {
+///         for n in items, key = *n {
+///             Text { n.to_string() }
+///         }
+///     }
+/// };
+/// ```
+///
+/// A keyless reactive `for` does NOT (the missing key is a compile
+/// error — reactive lists must be keyed so per-row state survives):
+///
+/// ```compile_fail
+/// use runtime_core::{signal, ui, Element, Signal};
+/// let items: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
+/// let _tree: Element = ui! {
+///     View {
+///         for n in items {
+///             Text { n.to_string() }
+///         }
+///     }
+/// };
+/// ```
+pub fn each_keyed(
+    snapshot: impl Fn() -> Vec<(EachKey, EachRowBuild)> + 'static,
+) -> Element {
     Element::Each {
-        build: Box::new(build),
+        snapshot: Box::new(snapshot),
         style: None,
     }
 }
@@ -583,12 +616,14 @@ pub fn each(build: impl Fn() -> Vec<Element> + 'static) -> Element {
 // =============================================================================
 //
 // `ui!`'s `for PAT in ITER { … }` lowers to
-// `ITER.__idealyst_for_each(|item| row_children)` inside a block that
-// brings BOTH traits below into scope. Rust method resolution then
-// picks the impl from ITER's *type*:
+// `ITER.__idealyst_for_each(|item| row_children)` (keyless) or
+// `ITER.__idealyst_for_each_keyed(|item| KEY, |item| row_children)`
+// (when `, key = KEY` is present) inside a block that brings BOTH
+// traits below into scope. Rust method resolution then picks the impl
+// from ITER's *type*:
 //
 //   - `Signal<C>` (a signal of any cloneable iterable) → `ReactiveForEach`
-//     → a reactive `Element::Each` that rebuilds on change.
+//     → a keyed `Element::Each` that reconciles on change.
 //   - any other `IntoIterator` (Vec, &Vec, array, range, HashMap, …) →
 //     `StaticForEach` → a flat `Vec<Element>` built once.
 //
@@ -599,8 +634,14 @@ pub fn each(build: impl Fn() -> Vec<Element> + 'static) -> Element {
 // overlap because `Signal<C>` does not implement `IntoIterator`, so no
 // type satisfies both and method resolution is unambiguous.
 //
-// Both methods share the same signature so the macro emits one closure
-// regardless of which impl wins.
+// **Compile-time key requirement.** A reactive list MUST have a key so
+// the reconciler can preserve per-row state across mutations. We enforce
+// that in the type system rather than at runtime: `ReactiveForEach`'s
+// keyless `__idealyst_for_each` is gated behind `Self: ReactiveListKeyed`
+// — a bound that's never satisfied — so a keyless `for x in signal { … }`
+// fails to compile with the `ReactiveListKeyed` diagnostic. The static
+// path keeps its keyless method (static lists never reconcile, so a key
+// would be meaningless), and also accepts a key for call-site symmetry.
 
 /// Static (built-once) `for`-loop lowering for any `IntoIterator`. See
 /// the module-level note above; the `ui!` macro selects this vs
@@ -609,15 +650,47 @@ pub fn each(build: impl Fn() -> Vec<Element> + 'static) -> Element {
 pub trait StaticForEach<Item> {
     fn __idealyst_for_each<F: Fn(Item) -> Vec<Element> + 'static>(self, f: F)
         -> Vec<Element>;
+
+    fn __idealyst_for_each_keyed<K, KF, F>(self, key_fn: KF, build_fn: F) -> Vec<Element>
+    where
+        K: Eq + Hash + 'static,
+        KF: Fn(&Item) -> K + 'static,
+        F: Fn(Item) -> Vec<Element> + 'static;
 }
 
+/// Marker that gates the keyless reactive `for` lowering so that a
+/// missing `key` is a **compile error** rather than a silent per-row
+/// state reset. It is intentionally implemented for nothing: iterating a
+/// reactive collection without a key can never type-check.
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "this reactive `for` loop needs a `key`",
+    label = "iterates a reactive collection — add `, key = <unique expr>` before the `{{`",
+    note = "A `Signal<Vec<_>>` rebuilds its rows when it changes. Without a key the framework \
+can't tell which rows are the same across updates, so each row's own state (component-local \
+signals, text-input focus, scroll position) would be reset on every change.",
+    note = "Give each row a stable, unique key derived from the item, e.g.:\n    \
+for item in items, key = item.id {{ /* … */ }}"
+)]
+pub trait ReactiveListKeyed {}
+
 /// Reactive `for`-loop lowering for a `Signal` of a cloneable iterable.
-/// Produces a single [`Element::Each`] (wrapped in a one-element vec
-/// so the call site flattens it uniformly with the static path).
+/// The keyed method produces a single keyed [`Element::Each`] (wrapped
+/// in a one-element vec so the call site flattens it uniformly with the
+/// static path); the keyless method is uncallable (see
+/// [`ReactiveListKeyed`]).
 #[doc(hidden)]
 pub trait ReactiveForEach<Item> {
-    fn __idealyst_for_each<F: Fn(Item) -> Vec<Element> + 'static>(self, f: F)
-        -> Vec<Element>;
+    fn __idealyst_for_each<F>(self, f: F) -> Vec<Element>
+    where
+        Self: ReactiveListKeyed,
+        F: Fn(Item) -> Vec<Element> + 'static;
+
+    fn __idealyst_for_each_keyed<K, KF, F>(self, key_fn: KF, build_fn: F) -> Vec<Element>
+    where
+        K: Eq + Hash + 'static,
+        KF: Fn(&Item) -> K + 'static,
+        F: Fn(Item) -> Vec<Element> + 'static;
 }
 
 impl<I, Item> StaticForEach<Item> for I
@@ -634,24 +707,65 @@ where
         }
         out
     }
+
+    fn __idealyst_for_each_keyed<K, KF, F>(self, _key_fn: KF, build_fn: F) -> Vec<Element>
+    where
+        K: Eq + Hash + 'static,
+        KF: Fn(&Item) -> K + 'static,
+        F: Fn(Item) -> Vec<Element> + 'static,
+    {
+        // A static list is built exactly once and never reconciled, so
+        // the key is irrelevant — it exists only so a `key = …` clause is
+        // *accepted* on a static `for` (e.g. while a list is being made
+        // reactive). Build every row eagerly, same as the keyless path.
+        let mut out = Vec::new();
+        for item in self {
+            out.extend(build_fn(item));
+        }
+        out
+    }
 }
 
 impl<C, Item> ReactiveForEach<Item> for crate::Signal<C>
 where
     C: Clone + IntoIterator<Item = Item> + 'static,
+    Item: 'static,
 {
-    fn __idealyst_for_each<F: Fn(Item) -> Vec<Element> + 'static>(
-        self,
-        f: F,
-    ) -> Vec<Element> {
+    fn __idealyst_for_each<F>(self, _f: F) -> Vec<Element>
+    where
+        Self: ReactiveListKeyed,
+        F: Fn(Item) -> Vec<Element> + 'static,
+    {
+        // Unreachable: `Signal<C>: ReactiveListKeyed` is never satisfied,
+        // so this method cannot be called. Its `Self: ReactiveListKeyed`
+        // bound is what turns a keyless reactive `for` into a compile
+        // error (carrying the `ReactiveListKeyed` diagnostic).
+        unreachable!("keyless reactive for-each is gated by ReactiveListKeyed")
+    }
+
+    fn __idealyst_for_each_keyed<K, KF, F>(self, key_fn: KF, build_fn: F) -> Vec<Element>
+    where
+        K: Eq + Hash + 'static,
+        KF: Fn(&Item) -> K + 'static,
+        F: Fn(Item) -> Vec<Element> + 'static,
+    {
         let sig = self;
-        // One reactive region. On each rebuild we clone the signal's
-        // current value and rebuild every row. The `each` Effect tracks
-        // the `sig.get()` read, so any write to `sig` re-runs this.
-        vec![each(move || {
-            let mut out = Vec::new();
+        let key_fn = Rc::new(key_fn);
+        let build_fn = Rc::new(build_fn);
+        // One reactive region. On each rebuild `snapshot` clones the
+        // signal's current value and emits a (key, deferred-builder) pair
+        // per item — cheap, no rows are built here. The reconciler then
+        // calls a builder only for keys it hasn't already mounted, so an
+        // unchanged row keeps its scope (and component-local signals).
+        // The `each_keyed` Effect tracks the `sig.get()` read, so any
+        // write to `sig` re-runs this.
+        vec![each_keyed(move || {
+            let mut out: Vec<(EachKey, EachRowBuild)> = Vec::new();
             for item in sig.get() {
-                out.extend(f(item));
+                let key = EachKey::new(key_fn(&item));
+                let build_fn = build_fn.clone();
+                let build: EachRowBuild = Box::new(move || build_fn(item));
+                out.push((key, build));
             }
             out
         })]

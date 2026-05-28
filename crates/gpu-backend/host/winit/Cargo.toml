@@ -31,7 +31,11 @@ a11y = ["dep:host-wgpu-accesskit"]
 
 [dependencies]
 render-api = { workspace = true }
-render-wgpu = { workspace = true }
+# Native shell: enable `embed-font-bytes` so `face!` fonts are baked in
+# and loaded synchronously at `register_asset`. Native has no async
+# font fetcher (unlike host-web, which leaves the feature off and
+# fetches the served `/fonts/*.ttf` at mount).
+render-wgpu = { workspace = true, features = ["embed-font-bytes"] }
 runtime-core = { workspace = true }
 
 # Only used when `runtime-server` is on. Pulls tungstenite + mdns-sd

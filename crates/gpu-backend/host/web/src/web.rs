@@ -184,6 +184,39 @@ where
     host.set_viewport(logical.0, logical.1);
     host.mount(build_ui);
 
+    // 3a. Fonts. With `embed-font-bytes` off for web, `face!` fonts
+    //     aren't baked into the wasm — they're served files at the
+    //     same `/fonts/*.ttf` URLs the DOM backend links via
+    //     `@font-face`. Mounting registered each font's URL; fetch
+    //     them now and feed the wgpu text shaper *before* the first
+    //     frame, so text shapes against its real face with no
+    //     fallback-font flash. The engine's embedded default
+    //     (Inter-Regular, baked unconditionally) covers any fetch
+    //     that fails. Awaited here because `mount` is already async;
+    //     the per-frame loop (step 4) starts only after fonts land.
+    let font_urls = host.take_pending_font_urls();
+    let mut loaded_any = false;
+    for url in &font_urls {
+        match fetch_font_bytes(url).await {
+            Some(bytes) => {
+                host.load_font_bytes(bytes);
+                loaded_any = true;
+            }
+            None => web_sys::console::warn_1(
+                &format!(
+                    "host-web: font fetch failed for {url}; \
+                     text falls back to the embedded default face"
+                )
+                .into(),
+            ),
+        }
+    }
+    if loaded_any {
+        // Text shaped during mount used only the embedded default;
+        // re-measure so the now-loaded faces take effect on frame 1.
+        host.invalidate_text_layout();
+    }
+
     let inner = Rc::new(RefCell::new(HostInner {
         surface,
         device,
@@ -220,6 +253,25 @@ where
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
+
+/// Fetch a served font file and return its raw bytes. Returns `None`
+/// on any failure (no window, network error, non-2xx, decode error) —
+/// the caller logs and falls back to the embedded default face, so a
+/// missing font degrades gracefully rather than panicking the mount.
+async fn fetch_font_bytes(url: &str) -> Option<Vec<u8>> {
+    let window = web_sys::window()?;
+    let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(url))
+        .await
+        .ok()?;
+    let resp: web_sys::Response = resp_value.dyn_into().ok()?;
+    if !resp.ok() {
+        return None;
+    }
+    let buf = wasm_bindgen_futures::JsFuture::from(resp.array_buffer().ok()?)
+        .await
+        .ok()?;
+    Some(js_sys::Uint8Array::new(&buf).to_vec())
+}
 
 /// Maximum physical-pixel extent the surface is allowed to take in
 /// either dimension. WebGL2 caps `MAX_TEXTURE_SIZE` at 2048 on a

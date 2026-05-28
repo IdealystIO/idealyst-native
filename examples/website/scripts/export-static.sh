@@ -9,7 +9,7 @@
 #
 # Usage:
 #   ./scripts/export-static.sh
-#       # build + stage to target/idealyst/website/web/dist/
+#       # build + stage to <project>/dist/web/
 #
 #   S3_BUCKET=my-bucket ./scripts/export-static.sh
 #       # ...also upload
@@ -39,8 +39,8 @@ log "release build + gzip (delegated to idealyst CLI)"
 ( cd "$HERE" && idealyst build --web --release --gzip )
 
 # Default bundle location for `idealyst build --web --gzip` is
-# `<project>/dist`.
-DIST="$HERE/dist"
+# `<project>/dist/web`.
+DIST="$HERE/dist/web"
 
 if [[ ! -d "$DIST" ]]; then
   echo "[export] expected bundle at $DIST but it does not exist" >&2

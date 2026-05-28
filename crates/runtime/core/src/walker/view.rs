@@ -107,13 +107,13 @@ pub(super) fn insert_children<B: Backend + 'static>(
                 for i in 0..count {
                     let row_prim = row_builder(i);
                     // Each row gets a distinct identity within the
-                    // Repeat's slot. Without keys, the row's slot is
-                    // its iteration index — documented to lose
-                    // identity on reorder, same as React index-keyed
-                    // lists. A keyed `for` macro will eventually
-                    // synthesize `Element::Keyed` siblings, at
-                    // which point the row index becomes the fallback
-                    // for missing keys.
+                    // Repeat's slot: its iteration index. `Repeat` is the
+                    // STATIC range lowering (`for i in 0..n`) — built once,
+                    // never reconciled, so positional identity is correct
+                    // here. Reactive keyed reconciliation is a separate
+                    // path: a reactive `for` lowers to a keyed
+                    // `Element::Each` (key required at compile time), not
+                    // to `Repeat`.
                     let row_id = crate::Identity::node(
                         crate::Identity::node(crate::current_identity(), slot, None, None),
                         i as u32,
@@ -134,10 +134,10 @@ pub(super) fn insert_children<B: Backend + 'static>(
             // `create_reactive_anchor` node. Styled `Each` (or backends
             // without splice support) fall through to `other`, taking the
             // anchored path that can host the style on the anchor node.
-            Element::Each { build, style }
+            Element::Each { snapshot, style }
                 if style.is_none() && backend.borrow().supports_child_splice() =>
             {
-                inserted += super::each::build_spliced(backend, parent, inserted, build);
+                inserted += super::each::build_spliced(backend, parent, inserted, snapshot);
             }
             other => {
                 let child_node = super::build(backend, slot, other);

@@ -85,15 +85,15 @@ pub use handles::{
     TextOps, ViewHandle, ViewOps,
 };
 pub use builder::{
-    button, each, pressable, switch, text, view, when, Bindable, Bound, ChildList,
-    IntoDisabledSource, IntoElement, ReactiveForEach, StaticForEach,
+    button, each_keyed, pressable, switch, text, view, when, Bindable, Bound, ChildList,
+    IntoDisabledSource, IntoElement, ReactiveForEach, ReactiveListKeyed, StaticForEach,
 };
 pub use derive::{Action, Derived, IntoAction, IntoDerived};
 pub use identity::{
     current_identity, hash_key, style_path_hash, use_id, use_id_keyed, with_current_identity,
     Identity,
 };
-pub use element::Element;
+pub use element::{EachKey, EachRowBuild, EachSnapshot, Element};
 pub use reactive_value::Reactive;
 pub use sources::{
     signal_class, IntoStyleSource, IntoTextSource, JsBindingSpec, SignalClassSpec, StyleSource,

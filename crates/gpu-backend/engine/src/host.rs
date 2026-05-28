@@ -545,6 +545,48 @@ impl Host {
     pub fn text_store(&self) -> &Rc<RefCell<TextStore>> { &self.text }
     pub fn font_system(&self) -> &Rc<RefCell<FontSystem>> { &self.font_system }
 
+    // ---------------- Async font loading (web host) -------------
+    //
+    // On native, `face!` fonts are baked into the binary and loaded
+    // synchronously at `register_asset`. On web, `embed-font-bytes`
+    // is off, so fonts are served files; the host shell fetches them
+    // and feeds the bytes back through these three calls (drain URLs
+    // → load each fetched buffer → invalidate so text re-shapes).
+
+    /// Take the served-font URLs the app registered without inline
+    /// bytes (web path). Empty on native. The host shell fetches each
+    /// and calls [`Host::load_font_bytes`].
+    pub fn take_pending_font_urls(&self) -> Vec<String> {
+        self.backend.borrow_mut().drain_pending_font_urls()
+    }
+
+    /// Feed fetched font bytes into the text shaper's font database.
+    /// cosmic-text's db is append-only, so this is safe any time; pair
+    /// with [`Host::invalidate_text_layout`] when fonts arrive after
+    /// text was already shaped.
+    pub fn load_font_bytes(&self, bytes: Vec<u8>) {
+        self.font_system.borrow_mut().db_mut().load_font_data(bytes);
+    }
+
+    /// Mark every shaped text node dirty so the next layout pass
+    /// re-measures (and thus re-shapes) it against the current font
+    /// database. Called once after late-arriving fonts load so text
+    /// that fell back to the embedded default re-shapes to its real
+    /// face. No-op visually if nothing was shaped yet.
+    pub fn invalidate_text_layout(&self) {
+        let nodes: Vec<LayoutNode> =
+            self.text.borrow().buffers.keys().copied().collect();
+        if nodes.is_empty() {
+            return;
+        }
+        let mut backend = self.backend.borrow_mut();
+        for node in nodes {
+            backend.layout.mark_dirty(node);
+        }
+        drop(backend);
+        crate::scheduler::request_redraw();
+    }
+
     /// The active skin. Renderer borrows this every frame to
     /// paint widget chrome + the on-screen keyboard.
     pub fn skin(&self) -> &Rc<dyn Painter> { &self.skin }

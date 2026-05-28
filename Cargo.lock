@@ -2476,12 +2476,14 @@ dependencies = [
 name = "host-web"
 version = "0.0.1"
 dependencies = [
+ "js-sys",
  "log",
  "raw-window-handle",
  "render-api",
  "render-wgpu",
  "runtime-core",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
  "wgpu",
 ]
@@ -2844,6 +2846,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syn",
+ "tempfile",
  "tokio",
  "toml 0.8.23",
 ]

@@ -14,7 +14,79 @@ use crate::sources::{IntoStyleSource, StyleSource, TextSource};
 use crate::style::Color;
 use crate::Signal;
 use std::any::Any;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+
+/// Deferred builder for a single reactive-list row: produces the row's
+/// flat sibling [`Element`]s. It is `FnOnce` and only invoked for a key
+/// the reconciler hasn't already mounted — a row whose key is unchanged
+/// across a rebuild is never rebuilt, so its render scope (and any
+/// component-local signals/effects inside it) survives untouched.
+pub type EachRowBuild = Box<dyn FnOnce() -> Vec<Element>>;
+
+/// A reactive list's current contents: the ordered `(key, row-builder)`
+/// pairs. Called inside the list's tracked `Effect` (so reads of the
+/// backing signal become rebuild dependencies); produced fresh on every
+/// rebuild. The reconciler diffs the keys against the previously mounted
+/// set to decide what to build, drop, or move.
+pub type EachSnapshot = Box<dyn Fn() -> Vec<(EachKey, EachRowBuild)>>;
+
+/// A type-erased, owned key identifying one row of a reactive list.
+///
+/// `for item in items, key = K { … }` produces one `EachKey` per row
+/// from the author's `key` expression. Across a rebuild the reconciler
+/// matches rows by key equality, so an unchanged row keeps both its
+/// backend nodes and its render scope rather than being torn down and
+/// rebuilt from scratch — that is what lets component-local signals
+/// survive list mutations (the React/Solid/Leptos contract).
+///
+/// Erasure goes through the author key type's own `Eq`/`Hash` (it does
+/// **not** hash down to a fixed-width integer), so two distinct keys can
+/// never be merged by a hash collision.
+pub struct EachKey(Box<dyn DynKey>);
+
+impl EachKey {
+    pub fn new<K: Eq + Hash + 'static>(key: K) -> Self {
+        EachKey(Box::new(key))
+    }
+}
+
+impl PartialEq for EachKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.dyn_eq(other.0.as_any())
+    }
+}
+impl Eq for EachKey {}
+impl Hash for EachKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.dyn_hash(state);
+    }
+}
+
+/// Object-safe shim that lets [`EachKey`] hold any `Eq + Hash` value
+/// while comparing/hashing through the concrete type's own impls.
+trait DynKey {
+    fn dyn_eq(&self, other: &dyn Any) -> bool;
+    fn dyn_hash(&self, state: &mut dyn Hasher);
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<K: Eq + Hash + 'static> DynKey for K {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        // Different concrete key types are never equal (downcast fails);
+        // same type defers to `K: Eq`.
+        other.downcast_ref::<K>().is_some_and(|o| self == o)
+    }
+    fn dyn_hash(&self, state: &mut dyn Hasher) {
+        // `&mut dyn Hasher: Hasher` via std's blanket impl, so it can
+        // stand in as the `H: Hasher` that `Hash::hash` expects.
+        let mut state = state;
+        self.hash(&mut state);
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
 
 /// Primitives are the structural skeleton of the UI. Every primitive
 /// optionally carries a `style` slot — styling is orthogonal to
@@ -397,21 +469,33 @@ pub enum Element {
     /// per-row wrapper (the anchor is a layout-transparent
     /// `create_reactive_anchor`, same as `When`/`Switch`).
     ///
-    /// This is the **unwindowed, unkeyed** reactive list: every change
-    /// rebuilds all rows. It's the ergonomic, Rust-native path for
-    /// bounded lists (nav menus, tabs, chips). For large or scrolling
-    /// lists that need keyed diffing + windowing + cell recycling, use
-    /// `flat_list` / [`Virtualizer`](Element::Virtualizer) instead.
+    /// This is the **unwindowed, keyed** reactive list: the ergonomic,
+    /// Rust-native path for bounded lists (nav menus, tabs, chips). For
+    /// large or scrolling lists that need windowing + cell recycling,
+    /// use `flat_list` / [`Virtualizer`](Element::Virtualizer) instead.
     ///
-    /// **Tracking contract:** `build` runs fully tracked, so any signal
-    /// read while *constructing* the list (the iterable, plus any eager
-    /// reads in row construction) becomes a rebuild dependency. Reactive
-    /// constructs *inside* rows (a reactive `text(move || …)`, a nested
-    /// `when`) subscribe to their own deps via their own effects — they
-    /// are built in the untracked/scoped phase and do NOT pin the whole
-    /// list to a rebuild.
+    /// **Keyed reconciliation:** every row carries a stable key (from the
+    /// `for … , key = …` clause). When the backing signal changes, the
+    /// reconciler diffs the new keys against the mounted set: unchanged
+    /// keys keep their existing backend nodes AND their render scope
+    /// (so component-local signals/effects inside a row survive the
+    /// mutation), removed keys are dropped, new keys are built, and the
+    /// surviving rows are moved into the new order. This requires the
+    /// backend to support child splicing
+    /// ([`supports_child_splice`](crate::Backend::supports_child_splice));
+    /// on a backend that doesn't (native, for now) it degrades to a full
+    /// rebuild — correct output, but per-row state resets until that
+    /// backend implements splicing.
+    ///
+    /// **Tracking contract:** `snapshot` runs fully tracked, so any
+    /// signal read while *enumerating* the rows (the iterable + each
+    /// row's `key` expression) becomes a rebuild dependency. The per-row
+    /// builder thunks run in the untracked/scoped phase, so reactive
+    /// constructs *inside* a row (a reactive `text(move || …)`, a nested
+    /// `when`) subscribe to their own deps via their own effects and do
+    /// NOT pin the whole list to a rebuild.
     Each {
-        build: Box<dyn Fn() -> Vec<Element>>,
+        snapshot: EachSnapshot,
         style: Option<StyleSource>,
     },
     /// Bulk children: build `count` rows from `row_builder(i)` and
