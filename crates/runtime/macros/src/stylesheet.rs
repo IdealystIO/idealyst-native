@@ -799,9 +799,11 @@ fn pascal(ident: &Ident) -> Ident {
 ///
 /// The builder stores `Option<Box<dyn Fn() -> X>>` per field. Static
 /// callers wrap their value in a constant closure; reactive callers
-/// pass a closure that reads a `Signal<T>`. The `IntoStyleSource` impl
-/// always emits a closure form so reactivity Just Works whenever any
-/// setter received a Signal.
+/// pass a `Signal<T>` or `derived(...)`. A `__reactive` flag records
+/// whether any setter received a reactive source. `into_style_source`
+/// then emits `StyleSource::Reactive` (signal changes re-apply the
+/// style) when the flag is set, and the cheaper `StyleSource::Static`
+/// (no per-node Effect) when every input was constant.
 fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
     let name = &decl.name;
     let vis = &decl.vis;
@@ -819,6 +821,12 @@ fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
         let enum_name = format_ident!("{}{}", decl.name, pascal(&axis.axis));
         quote! {
             pub fn #setter<V: ::runtime_core::IntoVariantSource<#enum_name>>(mut self, value: V) -> Self {
+                // A reactive source (Signal / `derived`) forces the whole
+                // builder onto `StyleSource::Reactive` so the style
+                // re-applies when the signal changes. Read reactivity
+                // BEFORE `into_variant_source` consumes `value`.
+                self.__reactive = self.__reactive
+                    || <V as ::runtime_core::IntoVariantSource<#enum_name>>::is_reactive(&value);
                 self.#f = ::std::option::Option::Some(value.into_variant_source());
                 self
             }
@@ -837,6 +845,8 @@ fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
         let ty = &o.ty;
         quote! {
             pub fn #setter<V: ::runtime_core::IntoOverrideSource<#ty>>(mut self, value: V) -> Self {
+                self.__reactive = self.__reactive
+                    || <V as ::runtime_core::IntoOverrideSource<#ty>>::is_reactive(&value);
                 self.#f = ::std::option::Option::Some(value.into_override_source());
                 self
             }
@@ -878,6 +888,10 @@ fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
         #vis struct #name {
             #(#axis_fields,)*
             #(#override_fields,)*
+            /// `true` once any setter received a reactive source
+            /// (`Signal` / `derived`). Gates the `Static` vs `Reactive`
+            /// emission in `into_style_source`.
+            __reactive: ::std::primitive::bool,
         }
 
         impl #name {
@@ -885,6 +899,7 @@ fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
                 Self {
                     #(#default_axis_fields,)*
                     #(#default_override_fields,)*
+                    __reactive: false,
                 }
             }
 
@@ -905,24 +920,35 @@ fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
 
         impl ::runtime_core::IntoStyleSource for #name {
             fn into_style_source(self) -> ::runtime_core::StyleSource {
-                // Evaluate the builder eagerly into a `StyleApplication`
-                // so the framework can route us through the static-style
-                // fast path (no per-node Effect, cohort theme reactivity).
+                // The builder routes to one of two style sources:
                 //
-                // Trade-off: if any axis setter was given a closure that
-                // reads a signal (e.g. `.tone(move || current.get())`),
-                // the closure runs ONCE here at construction time and
-                // the resulting value is frozen. To get a reactive
-                // variant, the caller should pass an explicit
-                // `move || PerfRow().parity(...)` closure to
-                // `with_style` — that routes through `StyleSource::Reactive`.
+                // - All-constant inputs (variant values are plain enums,
+                //   overrides are plain values) → `StyleSource::Static`:
+                //   resolved once here, no per-node `Effect`, cohort theme
+                //   reactivity only. For the common case this is a strict
+                //   win — 10k static rows allocate zero per-node effects.
                 //
-                // For the common case (variant values are plain enums),
-                // this is a strict win: no Effect allocation per node.
-                let mut __app = ::runtime_core::StyleApplication::new(#stylesheet_fn());
-                #(#axis_applies)*
-                #(#override_applies)*
-                ::runtime_core::StyleSource::Static(__app)
+                // - Any setter received a reactive source (`Signal` /
+                //   `derived(...)`) → `StyleSource::Reactive`: the build
+                //   closure is handed to the framework's apply-style
+                //   `Effect`, which re-runs it on every signal change so
+                //   the variant / override re-resolves and the style
+                //   re-applies. `__reactive` (set by the setters) selects
+                //   the path. The boxed closure re-invokes each stored
+                //   per-axis closure on every run, so signals read inside
+                //   a `derived` become live dependencies.
+                let __reactive = self.__reactive;
+                let __build = move || {
+                    let mut __app = ::runtime_core::StyleApplication::new(#stylesheet_fn());
+                    #(#axis_applies)*
+                    #(#override_applies)*
+                    __app
+                };
+                if __reactive {
+                    ::runtime_core::StyleSource::Reactive(::std::boxed::Box::new(__build))
+                } else {
+                    ::runtime_core::StyleSource::Static(__build())
+                }
             }
         }
 

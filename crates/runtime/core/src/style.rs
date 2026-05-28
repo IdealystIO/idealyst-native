@@ -2519,10 +2519,23 @@ pub fn resolve(app: &StyleApplication) -> Rc<StyleRules> {
 
 pub trait IntoVariantSource<E: Copy + 'static> {
     fn into_variant_source(self) -> Box<dyn Fn() -> &'static str>;
+    /// Whether this source reads reactive state — a [`Signal`] or a
+    /// [`derived`] closure. A `stylesheet!` builder that receives a
+    /// reactive source must emit [`crate::StyleSource::Reactive`] so
+    /// signal changes re-apply the style; constant sources (plain enum
+    /// values) stay on the cheaper `Static` fast path. Defaults to
+    /// `false` (constant).
+    fn is_reactive(&self) -> bool {
+        false
+    }
 }
 
 pub trait IntoOverrideSource<T: Clone + 'static> {
     fn into_override_source(self) -> Box<dyn Fn() -> T>;
+    /// See [`IntoVariantSource::is_reactive`]. Defaults to `false`.
+    fn is_reactive(&self) -> bool {
+        false
+    }
 }
 
 // A bit of plumbing: variant enums have `as_variant_str`. We can't
@@ -2556,6 +2569,9 @@ impl<E: VariantEnum> IntoVariantSource<E> for E {
 impl<E: VariantEnum> IntoVariantSource<E> for crate::Signal<E> {
     fn into_variant_source(self) -> Box<dyn Fn() -> &'static str> {
         Box::new(move || self.get().as_variant_str())
+    }
+    fn is_reactive(&self) -> bool {
+        true
     }
 }
 
@@ -2592,6 +2608,9 @@ where
         let f = self.0;
         Box::new(move || f().as_variant_str())
     }
+    fn is_reactive(&self) -> bool {
+        true
+    }
 }
 
 impl<T: Clone + 'static> IntoOverrideSource<T> for T {
@@ -2603,6 +2622,9 @@ impl<T: Clone + 'static> IntoOverrideSource<T> for T {
 impl<T: Clone + 'static> IntoOverrideSource<T> for crate::Signal<T> {
     fn into_override_source(self) -> Box<dyn Fn() -> T> {
         Box::new(move || self.get())
+    }
+    fn is_reactive(&self) -> bool {
+        true
     }
 }
 

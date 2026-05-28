@@ -12,10 +12,29 @@
 #[path = "common/mod.rs"]
 mod common;
 
+use runtime_core::stylesheet;
 use runtime_core::{
     install_tokens, signal, update_tokens, Color, Effect, Length, Signal, StyleRules, TokenEntry,
     TokenValue, Tokenized,
 };
+
+// A minimal `stylesheet!` builder with one variant axis, used by the
+// builder-reactivity tests below. The `<()>` theme param is parsed for
+// backward-compat and ignored at emission, so any type works here.
+stylesheet! {
+    NavStyle<()> {
+        base(_t) {
+            color: Color("#6b7280".into()),
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                color: Color("#3947d6".into()),
+            }
+        }
+    }
+}
 
 /// `Tokenized::Literal` returns the literal value from `.value()`.
 #[test]
@@ -755,5 +774,121 @@ fn typeface_emits_register_asset_with_real_bytes_then_register_typeface() {
         "register_asset (idx {}) must fire before register_typeface (idx {}) — \
          backends rely on this ordering to materialize face handles. Events: {:#?}",
         asset_idx, typeface_idx, events,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `stylesheet!` builder reactivity
+//
+// A builder (`NavStyle().active(...)`) implements `IntoStyleSource`.
+// Whether it produces a `Static` (frozen, no per-node Effect) or a
+// `Reactive` (re-applies on signal change) source depends on whether
+// any setter received a reactive input (`Signal` / `derived`). These
+// tests pin that contract.
+// ---------------------------------------------------------------------------
+
+/// A plain enum variant value is constant → `StyleSource::Static`. This
+/// is the fast path: no per-node Effect for styles that can't change.
+#[test]
+fn builder_constant_variant_is_static() {
+    use runtime_core::{IntoStyleSource, StyleSource};
+
+    let src = NavStyle().active(NavStyleActive::On).into_style_source();
+    assert!(
+        matches!(src, StyleSource::Static(_)),
+        "a constant variant value must stay on the Static fast path",
+    );
+}
+
+/// REGRESSION.
+///
+/// `Builder().axis(derived(|| <reads a signal>))` must produce a
+/// `StyleSource::Reactive`, not a frozen `Static`. The builder's
+/// `into_style_source` used to eagerly evaluate every axis closure once
+/// at construction and bake the result into a `Static` — so a
+/// `derived` variant captured only the value at build time and never
+/// updated. User-visible symptom (website sidebar): clicking a nav
+/// `Link` updated `active_route`, but the active-link highlight never
+/// moved because the `NavLink().active(derived(...))` style was frozen
+/// — it only resolved correctly on a fresh page load.
+#[test]
+fn builder_derived_variant_is_reactive() {
+    use runtime_core::{derived, IntoStyleSource, Signal, StyleSource};
+
+    let sig: Signal<bool> = signal!(false);
+    let src = NavStyle()
+        .active(derived(move || {
+            if sig.get() {
+                NavStyleActive::On
+            } else {
+                NavStyleActive::Off
+            }
+        }))
+        .into_style_source();
+    assert!(
+        matches!(src, StyleSource::Reactive(_)),
+        "a derived(...) variant source must produce StyleSource::Reactive so the \
+         variant re-resolves on signal change",
+    );
+}
+
+/// A `Signal<E>` passed directly to a variant setter is reactive too.
+#[test]
+fn builder_signal_variant_is_reactive() {
+    use runtime_core::{IntoStyleSource, Signal, StyleSource};
+
+    let sig: Signal<NavStyleActive> = signal!(NavStyleActive::Off);
+    let src = NavStyle().active(sig).into_style_source();
+    assert!(
+        matches!(src, StyleSource::Reactive(_)),
+        "a Signal<E> variant source must produce StyleSource::Reactive",
+    );
+}
+
+/// REGRESSION (functional, end-to-end through the walker).
+///
+/// Mounts a view with the exact shape the website sidebar uses —
+/// `NavStyle().active(derived(move || signal-driven))` — then flips the
+/// signal and asserts the style re-applies. Pre-fix the builder froze
+/// to `Static`, so no apply-style Effect was installed and the signal
+/// write produced ZERO re-applies (the stuck-highlight bug). Post-fix
+/// it routes through `Reactive` and re-applies.
+#[test]
+fn derived_builder_variant_reapplies_style_on_signal_change() {
+    use runtime_core::{derived, view, IntoElement, Signal};
+
+    use common::{Event, TestRuntime};
+
+    let rt = TestRuntime::new();
+    let active: Signal<bool> = signal!(false);
+
+    let tree = view(vec![])
+        .with_style(NavStyle().active(derived(move || {
+            if active.get() {
+                NavStyleActive::On
+            } else {
+                NavStyleActive::Off
+            }
+        })))
+        .into_element();
+    let _owner = rt.render(tree);
+
+    // Mount applied the initial `Off` variant. Clear, then flip the
+    // signal the `derived` closure reads.
+    rt.backend_mut().clear_events();
+    active.set(true);
+
+    let after = rt.events();
+    let applies = after
+        .iter()
+        .filter(|e| matches!(e, Event::ApplyStyle { .. } | Event::ApplyStyledStates { .. }))
+        .count();
+    assert!(
+        applies >= 1,
+        "flipping the derived signal must re-apply the style at least once; got {} \
+         apply events (pre-fix this was 0 — the variant was frozen at build). \
+         Events: {:?}",
+        applies,
+        after,
     );
 }
