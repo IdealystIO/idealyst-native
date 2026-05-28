@@ -400,12 +400,40 @@ fn collect_from_nodes(nodes: &[UiNode], out: &mut Vec<(String, u32)>) {
 /// inner expression is a `Bound<H>` (from a primitive constructor like
 /// `view(...)`) or a plain `Primitive` (from a user component's macro
 /// expansion).
+/// Where a node is being emitted, which decides how control-flow
+/// lowers:
+///
+/// - [`Ctx::Child`] — the node sits in a children list (`View { … }`,
+///   a component's children, a `for`/`if`/`match` body, the top-level
+///   when there's more than one element). Here a control-flow node may
+///   produce a flat `Vec<Primitive>` (0 / 1 / N siblings); the
+///   surrounding `ChildList::append_to` flattens it. Static `if`/`match`
+///   branches therefore emit **flat siblings** — no wrapper `View`, and
+///   a missing `else` contributes nothing (not an empty `View`).
+///
+/// - [`Ctx::Single`] — the node must be exactly one `Primitive`: the
+///   sole top-level element (coerced via `IntoPrimitive`), or a
+///   `when`/`switch` branch / virtualizer row built by
+///   [`emit_block_as_primitive`]. Control-flow that would otherwise be a
+///   `Vec` (a `for`, a flattened `if`) is wrapped in a single `View`
+///   here.
+///
+/// Primitives and bare expressions are a single value either way, so
+/// they ignore the context.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ctx {
+    Child,
+    Single,
+}
+
 pub fn emit(ui: Ui) -> TokenStream2 {
     let body = match ui.elements.len() {
         0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
-        1 => emit_node(&ui.elements[0]),
+        // Sole element: it is coerced to one `Primitive` below, so emit
+        // it in single-slot context.
+        1 => emit_node(&ui.elements[0], Ctx::Single),
         _ => {
-            let kids = ui.elements.iter().map(emit_node);
+            let kids = ui.elements.iter().map(|n| emit_node(n, Ctx::Child));
             quote! {
                 ::runtime_core::view({
                     let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
@@ -419,14 +447,16 @@ pub fn emit(ui: Ui) -> TokenStream2 {
     quote! { ::runtime_core::IntoPrimitive::into_primitive(#body) }
 }
 
-fn emit_node(node: &UiNode) -> TokenStream2 {
+fn emit_node(node: &UiNode, ctx: Ctx) -> TokenStream2 {
     match node {
         UiNode::Component { name, props, children, chain } => {
             emit_component(name, props, children.as_deref(), chain)
         }
-        UiNode::If { cond, then_body, else_body } => emit_if(cond, then_body, else_body.as_deref()),
-        UiNode::For { pat, iter, body, chain } => emit_for(pat, iter, body, chain),
-        UiNode::Match { scrutinee, arms } => emit_match(scrutinee, arms),
+        UiNode::If { cond, then_body, else_body } => {
+            emit_if(cond, then_body, else_body.as_deref(), ctx)
+        }
+        UiNode::For { pat, iter, body, chain } => emit_for(pat, iter, body, chain, ctx),
+        UiNode::Match { scrutinee, arms } => emit_match(scrutinee, arms, ctx),
         UiNode::Expr(e) => e.to_token_stream(),
     }
 }
@@ -597,9 +627,9 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let content: TokenStream2 = if let Some(kids) = children {
         match kids.len() {
             0 => quote! { "" },
-            1 => emit_node(&kids[0]),
+            1 => emit_node(&kids[0], Ctx::Single),
             _ => {
-                let parts = kids.iter().map(emit_node);
+                let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
                 quote! {
                     {
                         let mut __s = ::std::string::String::new();
@@ -851,7 +881,7 @@ fn emit_button(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
 
 fn emit_view(_props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let kids = children.unwrap_or(&[]);
-    let parts = kids.iter().map(emit_node);
+    let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
     quote! {
         ::runtime_core::view({
             let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
@@ -984,7 +1014,7 @@ fn emit_toggle(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
 /// just like `View`.
 fn emit_scroll_view(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let kids = children.unwrap_or(&[]);
-    let parts = kids.iter().map(emit_node);
+    let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
     let horizontal_call = if let Some(p) = props.iter().find(|p| p.name == "horizontal") {
         let v = &p.value;
         quote! { .horizontal(#v) }
@@ -1111,7 +1141,7 @@ fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     //     constructor's three positional args. `route` is required at
     //     the type level; `params` defaults to `()`.
     let kids = children.unwrap_or(&[]);
-    let parts = kids.iter().map(emit_node);
+    let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
     let children_vec = quote! {
         {
             let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
@@ -1151,7 +1181,7 @@ fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
 /// `AnchoredOverlay` (handled by `emit_anchored_overlay`).
 fn emit_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let kids = children.unwrap_or(&[]);
-    let parts = kids.iter().map(emit_node);
+    let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
 
     let placement_call = props
         .iter()
@@ -1217,7 +1247,7 @@ fn emit_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
 /// Element-anchored only; for viewport-anchored cases use `Overlay`.
 fn emit_anchored_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let kids = children.unwrap_or(&[]);
-    let parts = kids.iter().map(emit_node);
+    let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
 
     // `target` is required to build the primitive — pass it
     // positionally rather than as a `.target(...)` chain call so the
@@ -1417,7 +1447,7 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> Token
     });
 
     if let Some(kids) = children {
-        let parts = kids.iter().map(emit_node);
+        let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
         // Always emit children as a Vec<Primitive>. If the component expects
         // a different type, the user gets a type error at the call site —
         // intentional; we don't try to be polymorphic across children types
@@ -1438,59 +1468,84 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> Token
     }
 }
 
-fn emit_if(cond: &Expr, then_body: &[UiNode], else_body: Option<&[UiNode]>) -> TokenStream2 {
-    let then_expr = emit_block_as_primitive(then_body);
-    let else_expr = match else_body {
-        Some(body) => emit_block_as_primitive(body),
-        // No `else` clause — emit an empty View as a Primitive so
-        // both branches of the surrounding `if` have the same type.
-        // Without `into_primitive`, `view(vec![])` returns
-        // `Bound<ViewHandle>` while the `then` branch returns
-        // `Primitive`, and rustc rejects the mismatched arms.
-        None => quote! {
-            ::runtime_core::IntoPrimitive::into_primitive(
-                ::runtime_core::view(::std::vec::Vec::new())
-            )
-        },
-    };
+/// An empty `View`, coerced to `Primitive` — used as the `else`
+/// branch of a single-slot `if`/`when` that has no author `else`, so
+/// both arms have the same `Primitive` type.
+fn empty_view_primitive() -> TokenStream2 {
+    quote! {
+        ::runtime_core::IntoPrimitive::into_primitive(
+            ::runtime_core::view(::std::vec::Vec::new())
+        )
+    }
+}
 
-    // Three lowerings, in priority order:
+fn emit_if(
+    cond: &Expr,
+    then_body: &[UiNode],
+    else_body: Option<&[UiNode]>,
+    ctx: Ctx,
+) -> TokenStream2 {
+    // Reactive lowerings return ONE `when(...)` Primitive — a reactive
+    // branch is a single subtree, so multi-node branches wrap by
+    // necessity (that's correct; the reactive anchor needs one root per
+    // branch). `then`/`else` are single Primitives via
+    // `emit_block_as_primitive`.
     //
-    // 1. Structured call shape (e.g. `if is_even(count) { ... }`):
-    //    build a fully-populated `Derived<bool>` so generator
-    //    backends (Roku) can ship the binding declaratively. `else
-    //    if` chains nest naturally because the parser folded the
-    //    rest into the else_body as a nested If, which recurses
-    //    through this same emitter.
-    //
-    // 2. Closure-reactive (`.get()` appears in the condition):
-    //    dispatch to `when()` with the closure form; the builder
-    //    coerces it through `IntoDerived` into an opaque
-    //    `Derived<bool>` and the framework's Effect path handles
-    //    rebuilds on signal change.
-    //
-    // 3. Otherwise (`if cfg!(...) { ... }`, plain Rust booleans):
-    //    plain Rust `if` — no reactivity, no Primitive wrapping.
+    // 1. Structured call shape (`if is_even(count) { … }`): a
+    //    fully-populated `Derived<bool>` so generator backends (Roku)
+    //    can ship the binding declaratively.
+    // 2. Closure-reactive (`.get()` in the condition): `when()` with the
+    //    closure form; the framework's Effect path rebuilds on change.
     if let Some(structured_cond) = try_emit_derived_call::<bool>(cond) {
+        let then_expr = emit_block_as_primitive(then_body);
+        let else_expr = else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
         return quote! {
-            ::runtime_core::when(
-                #structured_cond,
-                move || #then_expr,
-                move || #else_expr,
-            )
+            ::runtime_core::when(#structured_cond, move || #then_expr, move || #else_expr)
         };
     }
     if condition_is_reactive(cond) {
-        quote! {
-            ::runtime_core::when(
-                move || #cond,
-                move || #then_expr,
-                move || #else_expr,
-            )
+        let then_expr = emit_block_as_primitive(then_body);
+        let else_expr = else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
+        return quote! {
+            ::runtime_core::when(move || #cond, move || #then_expr, move || #else_expr)
+        };
+    }
+
+    // 3. Static `if` — no reactivity. How it lowers depends on context.
+    match ctx {
+        // Single-slot: must be one Primitive. Plain Rust `if`, both arms
+        // coerced to Primitive (missing `else` → empty View).
+        Ctx::Single => {
+            let then_expr = emit_block_as_primitive(then_body);
+            let else_expr =
+                else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
+            quote! { if #cond { #then_expr } else { #else_expr } }
         }
-    } else {
-        quote! {
-            if #cond { #then_expr } else { #else_expr }
+        // Children-slot: flatten to a `Vec<Primitive>`. The taken branch
+        // appends its nodes as FLAT siblings (no wrapper View); a missing
+        // `else` contributes nothing (no empty-View placeholder). The
+        // surrounding `ChildList::append_to` flattens the vec.
+        Ctx::Child => {
+            let then_parts = then_body.iter().map(|n| emit_node(n, Ctx::Child));
+            let else_block = match else_body {
+                Some(eb) => {
+                    let else_parts = eb.iter().map(|n| emit_node(n, Ctx::Child));
+                    quote! { #( ::runtime_core::ChildList::append_to(#else_parts, &mut __c); )* }
+                }
+                None => quote! {},
+            };
+            quote! {
+                {
+                    let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                        = ::std::vec::Vec::new();
+                    if #cond {
+                        #( ::runtime_core::ChildList::append_to(#then_parts, &mut __c); )*
+                    } else {
+                        #else_block
+                    }
+                    __c
+                }
+            }
         }
     }
 }
@@ -1522,7 +1577,7 @@ fn condition_is_reactive(cond: &Expr) -> bool {
 /// dispatches via a regular `match`, so Rust's match ergonomics
 /// handle the implicit `&` coercion on patterns. The user writes
 /// `Screen::Summary => ui!{...}` and it matches the borrowed value.
-fn emit_match(scrutinee: &Expr, arms: &[MatchArm]) -> TokenStream2 {
+fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
     // Priority order, same as emit_if:
     //   1. Structured match — scrutinee is a `method(sig, ...)` call
     //      and every arm is `LITERAL => body` (or `_ => body` for
@@ -1530,47 +1585,88 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm]) -> TokenStream2 {
     //      so generator backends (Roku) can ship the binding
     //      declaratively.
     //   2. Reactive closure — scrutinee reads a signal via `.get()`.
-    //      Lower to `runtime_core::switch(..)` (opaque path).
-    //   3. Plain Rust `match` — no reactivity.
+    //      Lower to `runtime_core::switch(..)` — one Primitive per arm.
+    //   3. Plain Rust `match` — no reactivity. Flattens in children-slot.
     if let Some(structured) = try_emit_structured_match(scrutinee, arms) {
         return structured;
     }
 
-    let reactive = condition_is_reactive(scrutinee);
-
-    // Each arm becomes `pat [if guard] => <ui_body_as_primitive>`.
-    let arm_tokens: Vec<TokenStream2> = arms
-        .iter()
-        .map(|arm| {
-            let pat = &arm.pat;
-            let body = emit_block_as_primitive(&arm.body);
-            let body_coerced = quote! {
-                ::runtime_core::IntoPrimitive::into_primitive(#body)
-            };
-            match &arm.guard {
-                Some(g) => quote! { #pat if #g => #body_coerced },
-                None => quote! { #pat => #body_coerced },
-            }
-        })
-        .collect();
-
-    if reactive {
-        quote! {
+    if condition_is_reactive(scrutinee) {
+        // Reactive: each arm is a single subtree (`switch` rebuilds the
+        // active arm). Multi-node arms wrap by necessity.
+        let arm_tokens: Vec<TokenStream2> = arms
+            .iter()
+            .map(|arm| {
+                let pat = &arm.pat;
+                let body = emit_block_as_primitive(&arm.body);
+                let body_coerced =
+                    quote! { ::runtime_core::IntoPrimitive::into_primitive(#body) };
+                match &arm.guard {
+                    Some(g) => quote! { #pat if #g => #body_coerced },
+                    None => quote! { #pat => #body_coerced },
+                }
+            })
+            .collect();
+        return quote! {
             ::runtime_core::switch(
                 move || #scrutinee,
                 move |__v| match __v {
                     #( #arm_tokens, )*
                 },
             )
+        };
+    }
+
+    // Static `match` — no reactivity.
+    match ctx {
+        // Single-slot: one Primitive. Each arm coerced via IntoPrimitive.
+        Ctx::Single => {
+            let arm_tokens: Vec<TokenStream2> = arms
+                .iter()
+                .map(|arm| {
+                    let pat = &arm.pat;
+                    let body = emit_block_as_primitive(&arm.body);
+                    let body_coerced =
+                        quote! { ::runtime_core::IntoPrimitive::into_primitive(#body) };
+                    match &arm.guard {
+                        Some(g) => quote! { #pat if #g => #body_coerced },
+                        None => quote! { #pat => #body_coerced },
+                    }
+                })
+                .collect();
+            quote! {
+                match #scrutinee {
+                    #( #arm_tokens, )*
+                }
+            }
         }
-    } else {
-        // Non-reactive match: emit verbatim, coercing each arm's
-        // body to `Primitive` so the whole expression has a uniform
-        // type. No `switch` wrapping — the value never changes after
-        // construction.
-        quote! {
-            match #scrutinee {
-                #( #arm_tokens, )*
+        // Children-slot: each arm appends its nodes as FLAT siblings into
+        // a shared vec (no per-arm wrapper View). The whole `match`
+        // evaluates to that `Vec<Primitive>`.
+        Ctx::Child => {
+            let arm_tokens: Vec<TokenStream2> = arms
+                .iter()
+                .map(|arm| {
+                    let pat = &arm.pat;
+                    let parts = arm.body.iter().map(|n| emit_node(n, Ctx::Child));
+                    let appends = quote! {
+                        #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
+                    };
+                    match &arm.guard {
+                        Some(g) => quote! { #pat if #g => { #appends } },
+                        None => quote! { #pat => { #appends } },
+                    }
+                })
+                .collect();
+            quote! {
+                {
+                    let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                        = ::std::vec::Vec::new();
+                    match #scrutinee {
+                        #( #arm_tokens )*
+                    }
+                    __c
+                }
             }
         }
     }
@@ -1717,7 +1813,40 @@ fn emit_for(
     iter: &Expr,
     body: &[UiNode],
     chain: &[TokenStream2],
+    ctx: Ctx,
 ) -> TokenStream2 {
+    // The natural form of a `for` is a flat children list — all
+    // `ChildList`-appendable, so it drops straight into a children slot.
+    // In single-slot position (sole top-level element, or a `when` /
+    // `switch` branch that is just a loop) the result must be ONE
+    // `Primitive`: the Virtualizer / reactive-range `each` forms already
+    // ARE one primitive (`is_single`), so they pass through; the `Vec`
+    // forms (Repeat, type-driven dispatch) are wrapped in a `View`.
+    let (child_form, is_single) = emit_for_children(pat, iter, body, chain);
+    match ctx {
+        Ctx::Child => child_form,
+        Ctx::Single if is_single => child_form,
+        Ctx::Single => quote! {
+            ::runtime_core::view({
+                let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                    = ::std::vec::Vec::new();
+                ::runtime_core::ChildList::append_to(#child_form, &mut __c);
+                __c
+            })
+        },
+    }
+}
+
+/// Returns `(tokens, is_single)` where `is_single` is true when the
+/// emitted form is already exactly one `Primitive` (Virtualizer /
+/// reactive-range `each`) and false when it's a `Vec<Primitive>`
+/// (Repeat / type-driven dispatch) that a single-slot caller must wrap.
+fn emit_for_children(
+    pat: &syn::Pat,
+    iter: &Expr,
+    body: &[UiNode],
+    chain: &[TokenStream2],
+) -> (TokenStream2, bool) {
     // Reactive-list path: `for IDENT in count_method(sig) { body }` —
     // lower to a `Primitive::Virtualizer` carrying a structured
     // `Derived<usize>` for the count plus a row template. This is
@@ -1725,7 +1854,7 @@ fn emit_for(
     // the static range path so a method-call iterator wins over
     // any static-range matching.
     if let Some(virt) = try_emit_for_virtualizer(pat, iter, body, chain) {
-        return virt;
+        return (virt, true);
     }
 
     // Reactive COUNT range — `for i in A..B` where a bound reads a
@@ -1741,7 +1870,7 @@ fn emit_for(
     // A `.get()` somewhere in a non-range iterable can no longer make a
     // loop accidentally reactive.
     if matches!(iter, Expr::Range(_)) && condition_is_reactive(iter) {
-        let parts: Vec<TokenStream2> = body.iter().map(emit_node).collect();
+        let parts: Vec<TokenStream2> = body.iter().map(|n| emit_node(n, Ctx::Child)).collect();
         let each = quote! {
             ::runtime_core::each(move || {
                 let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
@@ -1752,11 +1881,12 @@ fn emit_for(
                 __c
             })
         };
-        return if chain.is_empty() {
+        let form = if chain.is_empty() {
             each
         } else {
             quote! { (#each) #(#chain)* }
         };
+        return (form, true);
     }
 
     // Static range fast path: `for i in 0..n { single_node }` → batched
@@ -1769,7 +1899,7 @@ fn emit_for(
     if body.len() == 1 {
         let body_expr = emit_block_as_primitive(body);
         if let Some(repeat) = try_emit_for_repeat(pat, iter, &body_expr) {
-            return repeat;
+            return (repeat, false);
         }
     }
 
@@ -1788,7 +1918,7 @@ fn emit_for(
     // silently missed. The per-item builder returns a `Vec<Primitive>`
     // (flat siblings; multi-node bodies contribute multiple siblings)
     // and the impl concatenates them.
-    let parts: Vec<TokenStream2> = body.iter().map(emit_node).collect();
+    let parts: Vec<TokenStream2> = body.iter().map(|n| emit_node(n, Ctx::Child)).collect();
     let dispatch = quote! {
         {
             #[allow(unused_imports)]
@@ -1801,11 +1931,12 @@ fn emit_for(
             })
         }
     };
-    if chain.is_empty() {
+    let form = if chain.is_empty() {
         dispatch
     } else {
         quote! { (#dispatch) #(#chain)* }
-    }
+    };
+    (form, false)
 }
 
 /// Try to lower `for IDENT in count_method(sig, ...) { body }` to a
@@ -2011,9 +2142,12 @@ fn try_emit_for_repeat(
 fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
     let body = match nodes.len() {
         0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
-        1 => emit_node(&nodes[0]),
+        // Sole node must itself be one Primitive: single-slot context.
+        1 => emit_node(&nodes[0], Ctx::Single),
+        // Multiple nodes genuinely need a wrapper to collapse to one
+        // value; the wrapper's children are a list, so each is Child.
         _ => {
-            let parts = nodes.iter().map(emit_node);
+            let parts = nodes.iter().map(|n| emit_node(n, Ctx::Child));
             quote! {
                 ::runtime_core::view({
                     let mut __c: ::std::vec::Vec<::runtime_core::Primitive>

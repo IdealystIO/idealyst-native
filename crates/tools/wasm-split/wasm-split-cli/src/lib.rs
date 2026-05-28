@@ -589,27 +589,24 @@ impl<'a> Splitter<'a> {
 
                 // PATCHED for idealyst: leave "unused" data intact — do
                 // NOT zero it. Same reasoning as the function arm above.
-                // Main's static call graph can't reliably tell which data
-                // is reachable from main: data is reached through pointers
-                // embedded in the data section (trait-object vtables,
-                // &'static tables), and the original→bindgened remapping
-                // in `build_call_graph` collapses duplicate mangled names
-                // (release codegen emits several functions per name once
-                // `--emit-relocs` disables ICF). Either way, live data can
-                // be misclassified as chunk-only; zeroing it then corrupts
-                // main (the release crash: a zeroed CSS string made
-                // `WebBackend::insert_rule` feed the browser bad CSS, its
-                // `.expect()` panicked while a `backend.borrow_mut()` was
-                // held, and with `panic = "abort"` every later microtask
-                // hit "RefCell already borrowed").
+                // Main's static call graph over-approximates and can't
+                // reliably tell which data is reachable from main (data is
+                // reached through pointers embedded in the data section —
+                // vtables, &'static tables — and the original→bindgened
+                // remap collapses duplicate mangled names that release
+                // codegen emits once `--emit-relocs` disables ICF). Zeroing
+                // misclassified-live data corrupted main: the release crash
+                // was a zeroed CSS string → `WebBackend::insert_rule` fed
+                // the browser bad CSS → its `.expect()` panicked while a
+                // `backend.borrow_mut()` was held, and with `panic="abort"`
+                // every later microtask hit "RefCell already borrowed".
                 //
                 // Trade-off: chunk-only data stays in main, so the main
-                // bundle is larger than it could be. Correct beats small.
-                // wasm-opt's DCE removes data that is genuinely
-                // unreferenced. A real size fix needs a reliable
-                // main-reachability analysis (see notes in the data
-                // call-graph remapping) so we can zero ONLY provably
-                // chunk-only data.
+                // bundle is larger than it could be. Shrinking it safely
+                // needs the POST-`gc` surviving-function set as the seed
+                // for an address-based reachability closure (see notes in
+                // the size investigation) — the pre-`gc` `main_graph` here
+                // is far too broad to drive zeroing.
                 Node::DataSymbol(_id) => {
                     // intentionally do nothing — see comment above.
                 }

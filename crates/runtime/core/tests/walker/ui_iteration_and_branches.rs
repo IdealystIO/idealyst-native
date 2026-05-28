@@ -531,6 +531,37 @@ fn reactive_if_without_else_toggles_presence() {
     assert_eq!(count_text(&rt.events(), "visible"), 1, "shown after toggle");
 }
 
+/// Flipping a reactive `if` drops the OLD branch's scope before
+/// building the new one — freeing its signals/effects. The then-branch
+/// registers an `on_cleanup`; flipping to else must fire it exactly
+/// once (no leak, atomic teardown — the conditional analog of
+/// `each_releases_old_row_scopes_on_rebuild`).
+#[test]
+fn reactive_if_flip_releases_old_branch_scope() {
+    let rt = TestRuntime::new();
+    let cleaned = Rc::new(Cell::new(0usize));
+    let flag: Signal<bool> = signal!(true);
+    let c = cleaned.clone();
+    let tree: Primitive = ui! {
+        View {
+            if flag.get() {
+                {
+                    let c2 = c.clone();
+                    on_cleanup(move || c2.set(c2.get() + 1));
+                    ui! { Text { "on".to_string() } }
+                }
+            } else {
+                Text { "off".to_string() }
+            }
+        }
+    };
+    let _owner = rt.render(tree); // then-branch built, 1 on_cleanup registered
+    assert_eq!(cleaned.get(), 0, "nothing torn down on first build");
+
+    flag.set(false); // flip → drop then-scope → cleanup fires
+    assert_eq!(cleaned.get(), 1, "old branch scope freed on flip");
+}
+
 // ---------------------------------------------------------------------------
 // Match — static and reactive
 // ---------------------------------------------------------------------------
@@ -579,4 +610,114 @@ fn reactive_match_switches_on_signal_with_default() {
     rt.backend_mut().clear_events();
     mode.set(99);
     assert_eq!(count_text(&rt.events(), "fallback"), 1, "default arm for unmatched");
+}
+
+/// Changing a reactive `match`'s arm drops the OLD arm's scope before
+/// building the new one. The matched arm registers an `on_cleanup`;
+/// switching to a different arm must fire it (no leak — the `switch`
+/// analog of the `if`-flip teardown).
+#[test]
+fn reactive_match_arm_change_releases_old_arm_scope() {
+    let rt = TestRuntime::new();
+    let cleaned = Rc::new(Cell::new(0usize));
+    let mode: Signal<u32> = signal!(0u32);
+    let c = cleaned.clone();
+    let tree: Primitive = ui! {
+        View {
+            match mode.get() {
+                0 => {
+                    {
+                        let c2 = c.clone();
+                        on_cleanup(move || c2.set(c2.get() + 1));
+                        ui! { Text { "zero".to_string() } }
+                    }
+                }
+                _ => { Text { "other".to_string() } }
+            }
+        }
+    };
+    let _owner = rt.render(tree); // arm 0 built, 1 on_cleanup registered
+    assert_eq!(cleaned.get(), 0, "nothing torn down on first build");
+
+    mode.set(1); // switch to the default arm → drop arm-0 scope → cleanup
+    assert_eq!(cleaned.get(), 1, "old arm scope freed on arm change");
+}
+
+// ---------------------------------------------------------------------------
+// Static if/match in children position — FLAT siblings, no wrapper View
+// ---------------------------------------------------------------------------
+
+/// A static `if` with a multi-node branch in children position emits its
+/// branch nodes as FLAT siblings — no wrapper `View`. Lever: a wrapper
+/// would show up as an extra `CreateView` (before the context-aware fix
+/// this was 2: outer + wrapper).
+#[test]
+fn static_if_multi_node_branch_flattens_in_children() {
+    let rt = TestRuntime::new();
+    let tree: Primitive = ui! {
+        View {
+            if 1 < 2 {
+                Text { "a".to_string() }
+                Text { "b".to_string() }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    let ev = rt.events();
+    assert_eq!(texts(&ev), vec!["a", "b"], "branch nodes are flat siblings");
+    assert_eq!(
+        ev.iter().filter(|e| matches!(e, Event::CreateView)).count(),
+        1,
+        "only the outer View — no wrapper around the if branch: {ev:?}"
+    );
+}
+
+/// A static `if` with no `else`, condition false, contributes NOTHING —
+/// not an empty-`View` placeholder. Before the fix the absent `else`
+/// emitted `into_primitive(view(vec![]))`, creating a stray View.
+#[test]
+fn static_if_no_else_false_adds_no_empty_view() {
+    let rt = TestRuntime::new();
+    let tree: Primitive = ui! {
+        View {
+            if 1 > 2 {
+                Text { "never".to_string() }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    let ev = rt.events();
+    assert_eq!(count_text(&ev, "never"), 0, "false branch renders nothing");
+    assert_eq!(
+        ev.iter().filter(|e| matches!(e, Event::CreateView)).count(),
+        1,
+        "no empty-View placeholder for the absent else: {ev:?}"
+    );
+}
+
+/// A static `match` with a multi-node arm in children position flattens
+/// the arm's nodes as siblings — no per-arm wrapper View.
+#[test]
+fn static_match_multi_node_arm_flattens_in_children() {
+    let rt = TestRuntime::new();
+    let mode = 1;
+    let tree: Primitive = ui! {
+        View {
+            match mode {
+                1 => {
+                    Text { "x".to_string() }
+                    Text { "y".to_string() }
+                }
+                _ => { Text { "z".to_string() } }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    let ev = rt.events();
+    assert_eq!(texts(&ev), vec!["x", "y"], "multi-node arm flattens");
+    assert_eq!(
+        ev.iter().filter(|e| matches!(e, Event::CreateView)).count(),
+        1,
+        "no wrapper around the match arm: {ev:?}"
+    );
 }
