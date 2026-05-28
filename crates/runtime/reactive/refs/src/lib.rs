@@ -29,7 +29,7 @@
 //! - Macros. The `methods!` block expansion is left for runtime-macros.
 //!   Custom handles in this prototype are hand-written to prove the
 //!   underlying API supports them.
-//! - Backend integration. Primitive handles here use a trivial dispatch
+//! - Backend integration. Element handles here use a trivial dispatch
 //!   trait; the real backend wiring lives in runtime-core.
 
 use std::any::Any;

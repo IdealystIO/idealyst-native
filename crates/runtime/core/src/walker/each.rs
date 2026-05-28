@@ -1,4 +1,4 @@
-//! `Primitive::Each` build path — the reactive, full-rebuild list.
+//! `Element::Each` build path — the reactive, full-rebuild list.
 //!
 //! Mirrors [`super::when_switch::build_when`]'s closure form: a stable
 //! `create_reactive_anchor` whose children are swapped wholesale every
@@ -17,7 +17,7 @@
 use super::debug::time_backend_create;
 use super::style::attach_style;
 use crate::backend::Backend;
-use crate::primitive::Primitive;
+use crate::element::Element;
 use crate::reactive::{self, untrack, Effect};
 use crate::sources::StyleSource;
 use std::cell::RefCell;
@@ -25,7 +25,7 @@ use std::rc::Rc;
 
 pub(super) fn build<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
-    build_children: Box<dyn Fn() -> Vec<Primitive>>,
+    build_children: Box<dyn Fn() -> Vec<Element>>,
     style: Option<StyleSource>,
 ) -> B::Node {
     let anchor = time_backend_create(pkind!(View), || {
@@ -50,7 +50,7 @@ pub(super) fn build<B: Backend + 'static>(
     let _e = Effect::new(move || {
         // TRACKED: construct the children list. Reads the iterable's
         // signal(s) — that's the dependency set we want. Only data is
-        // produced here (Primitive values); no backend nodes yet.
+        // produced here (Element values); no backend nodes yet.
         let children = (build_children)();
 
         // Drop the previous list's scope, then clear the anchor — the
@@ -80,7 +80,7 @@ pub(super) fn build<B: Backend + 'static>(
 
 /// Anchorless reactive region — splices the region's rows DIRECTLY into
 /// `parent` (flat siblings, NO wrapper node) instead of nesting them
-/// under a `create_reactive_anchor`. Used for `Primitive::Each` in a
+/// under a `create_reactive_anchor`. Used for `Element::Each` in a
 /// children list when the backend reports
 /// [`supports_child_splice`](crate::Backend::supports_child_splice).
 ///
@@ -107,7 +107,7 @@ pub(super) fn build_spliced<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     parent: &B::Node,
     base_index: usize,
-    build_children: Box<dyn Fn() -> Vec<Primitive>>,
+    build_children: Box<dyn Fn() -> Vec<Element>>,
 ) -> usize {
     let parent = parent.clone();
     let backend_for_effect = backend.clone();

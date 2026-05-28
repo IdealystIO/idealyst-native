@@ -1,4 +1,4 @@
-//! `Primitive::ScrollView` — a `ScrollView` (or `HorizontalScrollView`)
+//! `Element::ScrollView` — a `ScrollView` (or `HorizontalScrollView`)
 //! wrapping a `LinearLayout`.
 //!
 //! We return the *outer* ScrollView as the framework's node so the

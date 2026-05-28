@@ -13,7 +13,7 @@
 //! exactly ONE `CreateView` (the surrounding `View`) and four
 //! `CreateText`s; the buggy lowering emitted three `CreateView`s.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Element};
 
 use crate::common::{Event, TestRuntime};
 
@@ -32,7 +32,7 @@ fn count_create_text(events: &[Event]) -> usize {
 fn multi_node_for_body_emits_flat_siblings_no_wrapper_view() {
     let rt = TestRuntime::new();
 
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             for s in ["a", "b"] {
                 Text { s.to_string() }
@@ -60,7 +60,7 @@ fn multi_node_for_body_emits_flat_siblings_no_wrapper_view() {
 fn nested_for_in_multi_node_body_flattens() {
     let rt = TestRuntime::new();
 
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             for group in [2usize, 1usize] {
                 Text { format!("header {}", group) }
@@ -90,7 +90,7 @@ fn nested_for_in_multi_node_body_flattens() {
 fn single_node_for_body_unchanged() {
     let rt = TestRuntime::new();
 
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             for s in ["x", "y", "z"] {
                 Text { s.to_string() }

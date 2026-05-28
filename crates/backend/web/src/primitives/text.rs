@@ -1,4 +1,4 @@
-//! `Primitive::Text` — a `<span>` so style application via `class`
+//! `Element::Text` — a `<span>` so style application via `class`
 //! works uniformly. A raw DOM text node has no `class`/`style`
 //! attributes, so styling would be silently dropped.
 

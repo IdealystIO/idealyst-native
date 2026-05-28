@@ -13,13 +13,18 @@
 //! Color precedence: `tone: Some(...)` wins, then `muted: true`, then
 //! the theme's default text color.
 
-use runtime_core::{text, IntoPrimitive, Primitive, StyleApplication, TextAlign};
+use runtime_core::{text, IntoElement, Element, Reactive, StyleApplication, TextAlign};
 
 use idea_theme::extensible::{installed_typography_sheet, ToneRef, TypographyKindRef};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TypographyProps {
-    pub content: String,
+    /// Text content. `Reactive<String>` so it can carry live text: a
+    /// string literal / `String` is static, a `Signal<String>` or
+    /// `rx!(…)` re-renders the text in place when its signals change —
+    /// no parent rebuild. The invocation macro coerces all of these via
+    /// `.into()`, so call sites are unchanged for the static case.
+    pub content: Reactive<String>,
     pub kind: TypographyKindRef,
     /// Optional intent-colored text. When `Some`, overrides `muted`.
     pub tone: Option<ToneRef>,
@@ -35,7 +40,7 @@ pub struct TypographyProps {
 impl Default for TypographyProps {
     fn default() -> Self {
         Self {
-            content: String::new(),
+            content: Reactive::Static(String::new()),
             kind: TypographyKindRef::default(),
             tone: None,
             muted: false,
@@ -44,7 +49,7 @@ impl Default for TypographyProps {
     }
 }
 
-pub fn typography(props: &TypographyProps) -> Primitive {
+pub fn typography(props: &TypographyProps) -> Element {
     let content = props.content.clone();
     let kind_key = props.kind.key().to_string();
     let color_key = match (&props.tone, props.muted) {
@@ -72,5 +77,5 @@ pub fn typography(props: &TypographyProps) -> Primitive {
         .with("color", color_key)
         .with("align", align_key);
 
-    text(content).with_style(style).into_primitive()
+    text(content).with_style(style).into_element()
 }

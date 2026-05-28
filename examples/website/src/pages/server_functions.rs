@@ -2,14 +2,14 @@
 //! on the server; the client call site compiles into a typed HTTP
 //! stub. Companion to the `#[server]` macro + `crates/sdk/server`.
 
-use runtime_core::{ui, Primitive, Ref, ViewHandle};
+use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::routes::CONCEPTS_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     let pitch_ref: Ref<ViewHandle> = Ref::new();
     let how_it_works_ref: Ref<ViewHandle> = Ref::new();
     let wire_ref: Ref<ViewHandle> = Ref::new();
@@ -63,7 +63,7 @@ pub fn page() -> Primitive {
 // Sections
 // ============================================================================
 
-fn pitch() -> Primitive {
+fn pitch() -> Element {
     let snippet = "// In your app crate, alongside your UI code:\n\
                    \n\
                    use server::{server, ServerError};\n\
@@ -77,8 +77,8 @@ fn pitch() -> Primitive {
                    \n\
                    // In the very same crate, in your UI component:\n\
                    let todos = list_todos(current_user.id).await?;";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "What server functions are".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "What server functions are".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "You write the function once. The body runs database \
                 queries, reads request headers, touches whatever server-side state your \
@@ -107,7 +107,7 @@ fn pitch() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn how_macro_splits() -> Primitive {
+fn how_macro_splits() -> Element {
     let server_snippet = "// Server build: --features server\n\
                           async fn add(a: i32, b: i32) -> Result<i32, ServerError> {\n    \
                               Ok(a + b)                                  // original body\n\
@@ -119,8 +119,8 @@ fn how_macro_splits() -> Primitive {
                           async fn add(a: i32, b: i32) -> Result<i32, ServerError> {\n    \
                               server::__private::call::<(i32, i32), _>(\"add\", &(a, b)).await\n\
                           }";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "How the macro splits".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "How the macro splits".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "`#[server]` is an attribute macro. It expands the \
                 async fn into two cfg-gated halves and keys off the `server` cargo \
@@ -138,7 +138,7 @@ fn how_macro_splits() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn wire_protocol() -> Primitive {
+fn wire_protocol() -> Element {
     let snippet = "# single call\n\
                    POST /_srv/<path>\n\
                    Content-Type: application/json\n\
@@ -149,8 +149,8 @@ fn wire_protocol() -> Primitive {
                    POST /_srv/_batch\n\
                    [{\"path\": \"add\",     \"args\": [2, 3]},\n \
                     {\"path\": \"v1/ping\", \"args\": null}]   →  [{\"Ok\": 5}, {\"Ok\": \"pong\"}]";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "The wire".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "The wire".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "JSON over HTTP. Two routes: single and batched. The \
                 framework picks single vs batch automatically based on how many calls \
@@ -168,7 +168,7 @@ fn wire_protocol() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn project_layout() -> Primitive {
+fn project_layout() -> Element {
     let snippet = "my-app/\n\
                    \u{251c}\u{2500}\u{2500} shared/   # types + #[server] fns + cfg-gated server state\n\
                    \u{251c}\u{2500}\u{2500} server/   # bin, depends on shared with features=[\"server\"]\n\
@@ -183,8 +183,8 @@ fn project_layout() -> Primitive {
                        // \u{2705} clean: cfg-gated import, only compiled with the server half\n\
                        #[cfg(feature = \"server\")]\n\
                        use diesel::prelude::*;";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Project layout".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Project layout".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "The recommended layout is three crates. The `shared/` \
                 crate is the dual-feature one \u{2014} it compiles twice, once with \
@@ -205,7 +205,7 @@ fn project_layout() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn extractors() -> Primitive {
+fn extractors() -> Element {
     let state_snippet = "// At server startup:\n\
                          server::install_state(Arc::new(Db::connect().await));\n\
                          \n\
@@ -222,8 +222,8 @@ fn extractors() -> Primitive {
                                   .ok_or_else(|| ServerError::failed(\"missing Authorization\"))?;\n    \
                               Ok(format!(\"authenticated as: {auth}\"))\n\
                           }";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "App state and per-request data".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "App state and per-request data".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Server-side code gets two flavors of context. \
                 App-level state (DB pool, config, S3 client) is registered once at \
@@ -246,7 +246,7 @@ fn extractors() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn batching() -> Primitive {
+fn batching() -> Element {
     let snippet = "// Three calls in the same tick:\n\
                    let (user, todos, projects) = tokio::join!(\n    \
                        get_user(uid),\n    \
@@ -255,8 +255,8 @@ fn batching() -> Primitive {
                    );\n\
                    \n\
                    // → one POST /_srv/_batch on the wire, not three.";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Batching, for free".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Batching, for free".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Multiple server-fn calls fired in the same tick \
                 coalesce into a single HTTP request. The mechanism is inline microtask \
@@ -277,7 +277,7 @@ fn batching() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn cancellation() -> Primitive {
+fn cancellation() -> Element {
     let snippet = "let user_id = signal(1u64);\n\
                    \n\
                    let user = resource(user_id, |id, resource_cancel| async move {\n    \
@@ -289,8 +289,8 @@ fn cancellation() -> Primitive {
                    //   2. the in-flight HTTP request (net::CancelToken)\n\
                    //   3. the actual network read (reqwest drops / browser aborts / iOS \n\
                    //      task.cancel / Android conn.disconnect)";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Cancellation, end-to-end".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Cancellation, end-to-end".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "When a `resource` fetcher's deps change, the \
                 in-flight server-fn call should actually abort \u{2014} not just have \
@@ -310,7 +310,7 @@ fn cancellation() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn reactive_integration() -> Primitive {
+fn reactive_integration() -> Element {
     let snippet = "let todos: Signal<Vec<Todo>> = signal!(Vec::new());\n\
                    \n\
                    // load on mount, refresh on dep change\n\
@@ -326,8 +326,8 @@ fn reactive_integration() -> Primitive {
                        |input| async move { create_todo(input).await },\n    \
                        |list, new_todo| list.push(new_todo),\n\
                    );";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Wiring into the UI".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Wiring into the UI".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Server functions are async fns. They compose with \
                 every reactive async primitive: `resource()` for dep-driven reads, \
@@ -346,7 +346,7 @@ fn reactive_integration() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn cli_flow() -> Primitive {
+fn cli_flow() -> Element {
     let snippet = "# Cargo.toml\n\
                    [package.metadata.idealyst.app]\n\
                    targets    = [\"web\"]\n\
@@ -354,8 +354,8 @@ fn cli_flow() -> Primitive {
                    \n\
                    # one command — builds wasm, runs the server bin, watches src/ for changes:\n\
                    idealyst dev --web --local my-app";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Running it".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Running it".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Declare `server_bin = \"<name>\"` in your manifest \
                 and the CLI runs the full stack with one command \u{2014} builds the \
@@ -374,9 +374,9 @@ fn cli_flow() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn where_next() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Where to go from here".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+fn where_next() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Where to go from here".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Server functions plug into the rest of the framework \
                 through the same reactive primitives you'd use for any async work. If \

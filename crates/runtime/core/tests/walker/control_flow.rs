@@ -17,7 +17,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    signal, switch, text, view, when, IntoPrimitive, Primitive, Signal, StyleApplication,
+    signal, switch, text, view, when, IntoElement, Element, Signal, StyleApplication,
     StyleRules, StyleSheet, VariantSet,
 };
 
@@ -56,10 +56,10 @@ fn switch_with_three_arms_mounts_the_matching_branch() {
     let tree = switch(
         move || mode.get(),
         move |m| match m {
-            0 => text("alpha").into_primitive(),
-            1 => text("beta").into_primitive(),
-            2 => text("gamma").into_primitive(),
-            _ => text("default").into_primitive(),
+            0 => text("alpha").into_element(),
+            1 => text("beta").into_element(),
+            2 => text("gamma").into_element(),
+            _ => text("default").into_element(),
         },
     );
     let _owner = rt.render(tree);
@@ -95,9 +95,9 @@ fn switch_default_arm_fires_for_unmatched_discriminant() {
     let tree = switch(
         move || mode.get(),
         move |m| match m {
-            0 => text("zero").into_primitive(),
-            1 => text("one").into_primitive(),
-            _ => text("fallback").into_primitive(),
+            0 => text("zero").into_element(),
+            1 => text("one").into_element(),
+            _ => text("fallback").into_element(),
         },
     );
     let _owner = rt.render(tree);
@@ -118,9 +118,9 @@ fn switch_with_string_discriminant_routes_correctly() {
     let tree = switch(
         move || label.get(),
         |s: &&'static str| match *s {
-            "home" => text("home-page").into_primitive(),
-            "about" => text("about-page").into_primitive(),
-            _ => text("404").into_primitive(),
+            "home" => text("home-page").into_element(),
+            "about" => text("about-page").into_element(),
+            _ => text("404").into_element(),
         },
     );
     let _owner = rt.render(tree);
@@ -149,14 +149,14 @@ fn switch_with_string_discriminant_routes_correctly() {
 #[test]
 fn repeat_non_batched_path_emits_per_row_events_and_insert_many() {
     let rt = TestRuntime::new();
-    let row_builder: Box<dyn Fn(usize) -> Primitive> = Box::new(|i| {
-        view(vec![text(format!("Row #{}", i)).into_primitive()]).into_primitive()
+    let row_builder: Box<dyn Fn(usize) -> Element> = Box::new(|i| {
+        view(vec![text(format!("Row #{}", i)).into_element()]).into_element()
     });
-    let tree = view(vec![Primitive::Repeat {
+    let tree = view(vec![Element::Repeat {
         count: 4,
         row_builder,
     }])
-    .into_primitive();
+    .into_element();
     let _owner = rt.render(tree);
 
     let events = rt.events();
@@ -207,14 +207,14 @@ fn repeat_non_batched_path_emits_per_row_events_and_insert_many() {
 #[test]
 fn repeat_with_zero_count_produces_no_row_events() {
     let rt = TestRuntime::new();
-    let row_builder: Box<dyn Fn(usize) -> Primitive> = Box::new(|i| {
-        text(format!("Row #{}", i)).into_primitive()
+    let row_builder: Box<dyn Fn(usize) -> Element> = Box::new(|i| {
+        text(format!("Row #{}", i)).into_element()
     });
-    let tree = view(vec![Primitive::Repeat {
+    let tree = view(vec![Element::Repeat {
         count: 0,
         row_builder,
     }])
-    .into_primitive();
+    .into_element();
     let _owner = rt.render(tree);
 
     let events = rt.events();
@@ -243,16 +243,16 @@ fn static_styled_row_in_non_batched_repeat_fires_apply_style() {
     let rt = TestRuntime::new();
     let sheet = make_static_sheet();
     let sheet_for_rows = sheet;
-    let row_builder: Box<dyn Fn(usize) -> Primitive> = Box::new(move |i| {
-        view(vec![text(format!("Row #{}", i)).into_primitive()])
+    let row_builder: Box<dyn Fn(usize) -> Element> = Box::new(move |i| {
+        view(vec![text(format!("Row #{}", i)).into_element()])
             .with_style(sheet_for_rows.clone())
-            .into_primitive()
+            .into_element()
     });
-    let tree = view(vec![Primitive::Repeat {
+    let tree = view(vec![Element::Repeat {
         count: 3,
         row_builder,
     }])
-    .into_primitive();
+    .into_element();
     let _owner = rt.render(tree);
 
     let events = rt.events();
@@ -283,15 +283,15 @@ fn static_styled_row_in_non_batched_repeat_fires_apply_style() {
 // ---------------------------------------------------------------------------
 
 /// The `Bound<H>` wrapper that `view()` / `text()` etc. return must
-/// participate in the same mount path as a bare Primitive. This
+/// participate in the same mount path as a bare Element. This
 /// catches a regression where a builder method silently dropped the
 /// underlying primitive.
 #[test]
 fn bound_view_with_style_mounts_and_fires_apply_style() {
     let rt = TestRuntime::new();
     let sheet = make_static_sheet();
-    let bound = view(vec![text("inside").into_primitive()]).with_style(sheet);
-    let _owner = rt.render(bound.into_primitive());
+    let bound = view(vec![text("inside").into_element()]).with_style(sheet);
+    let _owner = rt.render(bound.into_element());
 
     let events = rt.events();
     assert!(events.iter().any(|e| matches!(e, Event::CreateView)));
@@ -313,9 +313,9 @@ fn bound_view_with_reactive_style_still_mounts_and_applies() {
     let rt = TestRuntime::new();
     let sheet = make_static_sheet();
     let sheet_for_closure = sheet;
-    let bound = view(vec![text("reactive").into_primitive()])
+    let bound = view(vec![text("reactive").into_element()])
         .with_style(move || StyleApplication::new(sheet_for_closure.clone()));
-    let _owner = rt.render(bound.into_primitive());
+    let _owner = rt.render(bound.into_element());
 
     let events = rt.events();
     assert!(events.iter().any(|e| matches!(e, Event::CreateView)));
@@ -343,10 +343,10 @@ fn nested_when_inside_switch_arm_rebuilds_cleanly_on_arm_swap() {
         move |m| match m {
             0 => when(
                 move || inner.get(),
-                || text("a-then").into_primitive(),
-                || text("a-else").into_primitive(),
+                || text("a-then").into_element(),
+                || text("a-else").into_element(),
             ),
-            _ => text("b").into_primitive(),
+            _ => text("b").into_element(),
         },
     );
     let _owner = rt.render(tree);
@@ -392,10 +392,10 @@ fn switching_back_to_arm_with_nested_when_rebuilds_inner() {
         move |m| match m {
             0 => when(
                 move || inner.get(),
-                || text("a-then").into_primitive(),
-                || text("a-else").into_primitive(),
+                || text("a-then").into_element(),
+                || text("a-else").into_element(),
             ),
-            _ => text("b").into_primitive(),
+            _ => text("b").into_element(),
         },
     );
     let _owner = rt.render(tree);

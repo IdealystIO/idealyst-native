@@ -2,7 +2,7 @@
 
 The Runtime ships a fixed list of primitives — View, Text, Button,
 ScrollView, Pressable, TextInput, … — that every Backend has to
-know. But runtime-core also ships **`Primitive::External`**, an
+know. But runtime-core also ships **`Element::External`**, an
 escape hatch: a tagged primitive variant + per-Backend registry
 that lets a third party define their own primitive plus the
 Backend impls that render it.

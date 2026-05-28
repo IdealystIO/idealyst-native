@@ -1565,7 +1565,7 @@ mod tests {
     //! component through.
 
     use super::*;
-    use runtime_core::Primitive;
+    use runtime_core::Element;
     use runtime_macros::component;
 
     /// A component whose name we look for in the tool's JSON
@@ -1574,7 +1574,7 @@ mod tests {
     /// expansion time and registered at link.
     #[allow(dead_code)]
     #[component]
-    pub fn list_components_regression_canary() -> Primitive {
+    pub fn list_components_regression_canary() -> Element {
         ::runtime_core::view(::std::vec::Vec::new())
     }
 

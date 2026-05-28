@@ -5,7 +5,7 @@
 //! privacy boundary. That's the lock — third-party crates can read every
 //! `pub` field but cannot submit their own entries.
 //!
-//! Drift between this table and the `Primitive` enum in
+//! Drift between this table and the `Element` enum in
 //! `runtime-core::primitive` is caught by:
 //! - `tests/primitive_coverage.rs` — asserts every enum variant has a
 //!   matching entry name here (compile-time exhaustive match).
@@ -43,7 +43,7 @@ inventory::submit! {
         props: &[
             PropFieldSpec {
                 name: "children",
-                type_str: "Vec<Primitive>",
+                type_str: "Vec<Element>",
                 doc: "Child primitives. Pass via the `children![...]` macro or inline `{ ... }` block inside `ui!`.",
                 constraint: "",
             },
@@ -145,7 +145,7 @@ inventory::submit! {
         props: &[
             PropFieldSpec {
                 name: "children",
-                type_str: "Vec<Primitive>",
+                type_str: "Vec<Element>",
                 doc: "Content rendered inside the pressable region.",
                 constraint: "",
             },
@@ -289,7 +289,7 @@ inventory::submit! {
         props: &[
             PropFieldSpec {
                 name: "children",
-                type_str: "Vec<Primitive>",
+                type_str: "Vec<Element>",
                 doc: "Scrolled content.",
                 constraint: "",
             },
@@ -405,7 +405,7 @@ inventory::submit! {
             },
             PropFieldSpec {
                 name: "children",
-                type_str: "Vec<Primitive>",
+                type_str: "Vec<Element>",
                 doc: "Gated subtree.",
                 constraint: "",
             },
@@ -424,7 +424,7 @@ inventory::submit! {
         props: &[
             PropFieldSpec {
                 name: "arms",
-                type_str: "Vec<(impl Fn() -> bool, Primitive)>",
+                type_str: "Vec<(impl Fn() -> bool, Element)>",
                 doc: "Predicate + subtree pairs. First matching arm wins.",
                 constraint: "",
             },
@@ -449,7 +449,7 @@ inventory::submit! {
             },
             PropFieldSpec {
                 name: "render",
-                type_str: "impl Fn(&T) -> Primitive",
+                type_str: "impl Fn(&T) -> Element",
                 doc: "Per-item subtree builder.",
                 constraint: "",
             },
@@ -474,7 +474,7 @@ inventory::submit! {
             },
             PropFieldSpec {
                 name: "children",
-                type_str: "Vec<Primitive>",
+                type_str: "Vec<Element>",
                 doc: "Link content (text, icon, etc.).",
                 constraint: "",
             },
@@ -521,7 +521,7 @@ inventory::submit! {
         props: &[
             PropFieldSpec {
                 name: "children",
-                type_str: "Vec<Primitive>",
+                type_str: "Vec<Element>",
                 doc: "Subtree to teleport to the root.",
                 constraint: "",
             },
@@ -546,7 +546,7 @@ inventory::submit! {
             },
             PropFieldSpec {
                 name: "children",
-                type_str: "Vec<Primitive>",
+                type_str: "Vec<Element>",
                 doc: "Animated subtree.",
                 constraint: "",
             },

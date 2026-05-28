@@ -1,4 +1,4 @@
-//! `Primitive::Slider` — an `<input type="range">`. We map our f32
+//! `Element::Slider` — an `<input type="range">`. We map our f32
 //! value range to the browser's via `min`/`max`/`step` attributes;
 //! `step="any"` for continuous values.
 

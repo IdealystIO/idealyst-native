@@ -2,7 +2,7 @@
 // Review every `todo!("port …")` before shipping — the
 // porter refused to translate those spots mechanically.
 
-use runtime_core::{component, jsx, signal, effect, on_cleanup, provide, inject, Primitive, Signal};
+use runtime_core::{component, jsx, signal, effect, on_cleanup, provide, inject, Element, Signal};
 
 #[derive(Default)]
 pub struct CounterProps {
@@ -10,7 +10,7 @@ pub struct CounterProps {
 }
 
 #[component(default(initial = 0))]
-pub fn Counter(props: &CounterProps) -> Primitive {
+pub fn Counter(props: &CounterProps) -> Element {
     let count = signal!(props.initial);
     effect!({
         todo!("port handler-body: watchEffect body — JS imperative code, AI pass needed — console.log('count:', count.value);");

@@ -105,8 +105,10 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
                 init_field_inits.push(quote! {
                     #f_ident: ::runtime_core::Signal::new(::std::string::String::default())
                 });
+                // `.into()` so this arm serves both `String` (reflexive)
+                // and `Reactive<String>` (`From<String>`) props.
                 from_state_overrides.push(quote! {
-                    props.#f_ident = state.#f_ident.get();
+                    props.#f_ident = state.#f_ident.get().into();
                 });
                 control_rows.push(quote! {
                     ::idea_ui::doc_controls::control_row(
@@ -148,11 +150,14 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
                 init_field_inits.push(quote! {
                     #f_ident: ::runtime_core::Signal::new(::std::string::String::default())
                 });
+                // `.into()` so this arm serves both `Option<String>`
+                // (reflexive) and `Reactive<Option<String>>`
+                // (`From<Option<String>>`) props.
                 from_state_overrides.push(quote! {
                     props.#f_ident = ::idea_ui::doc_controls::optional_string_value(
                         state.#enabled_field,
                         state.#f_ident,
-                    );
+                    ).into();
                 });
                 control_rows.push(quote! {
                     ::idea_ui::doc_controls::control_row(
@@ -264,17 +269,17 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
                 props
             }
 
-            fn render_controls(state: &Self::State) -> ::runtime_core::Primitive {
-                let rows: ::std::vec::Vec<::runtime_core::Primitive> = vec![
+            fn render_controls(state: &Self::State) -> ::runtime_core::Element {
+                let rows: ::std::vec::Vec<::runtime_core::Element> = vec![
                     #( #control_rows, )*
                 ];
                 ::idea_ui::doc_controls::controls_panel(rows)
             }
 
-            fn reactive_preview<F: ::std::ops::Fn(Self) -> ::runtime_core::Primitive + 'static>(
+            fn reactive_preview<F: ::std::ops::Fn(Self) -> ::runtime_core::Element + 'static>(
                 state: &Self::State,
                 build: F,
-            ) -> ::runtime_core::Primitive {
+            ) -> ::runtime_core::Element {
                 // Copy the state out (it's just Signal handles).
                 // The scrutinee + branch both close over `state` —
                 // copying lets each have its own owned snapshot.
@@ -320,6 +325,20 @@ enum FieldKind {
 fn classify_field_type(ty: &Type) -> FieldKind {
     if is_type_path(ty, &["String", "string::String", "std::string::String"]) {
         return FieldKind::String;
+    }
+    // `Reactive<String>` is controlled like a `String`, and
+    // `Reactive<Option<String>>` like an `Option<String>` — the docs
+    // app drives the static value; live bindings are exercised by the
+    // demos, not the control panel.
+    if let Some(inner) = extract_path_generic_single(ty, "Reactive") {
+        if is_type_path(&inner, &["String", "string::String", "std::string::String"]) {
+            return FieldKind::String;
+        }
+        if let Some(inner2) = extract_path_generic_single(&inner, "Option") {
+            if is_type_path(&inner2, &["String", "string::String", "std::string::String"]) {
+                return FieldKind::OptionString;
+            }
+        }
     }
     if is_type_path(ty, &["bool"]) {
         return FieldKind::Bool;

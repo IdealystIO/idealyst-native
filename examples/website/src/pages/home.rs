@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{lazy, signal, switch, ui, IntoPrimitive, Primitive, Route, Signal, StyleApplication};
+use runtime_core::{lazy, signal, switch, ui, IntoElement, Element, Route, Signal, StyleApplication};
 use idea_ui::{Tabs, Typography, Tab};
 
 use crate::components::simulator::{
@@ -25,7 +25,7 @@ use crate::styles::{
     PillarCard, PillarCta, PillarGrid,
 };
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     let content = ui! {
         View {
             { hero() }
@@ -40,7 +40,7 @@ pub fn page() -> Primitive {
 // Hero
 // =============================================================================
 
-fn hero() -> Primitive {
+fn hero() -> Element {
     let hero_style = crate::responsive::responsive_style(Hero::sheet());
     let glare_style = hero_glare_sheet();
     let text_style = HeroText();
@@ -48,7 +48,7 @@ fn hero() -> Primitive {
     let subhead_style = crate::responsive::responsive_style(HeroSubhead::sheet());
     let cta_style = HeroCtaRow();
 
-    let text_children: Vec<Primitive> = vec![
+    let text_children: Vec<Element> = vec![
         ui! { Text(style = headline_style) { "One codebase, native everywhere." } },
         ui! {
             Text(style = subhead_style) {
@@ -101,7 +101,7 @@ fn hero() -> Primitive {
 // visual unit.
 // =============================================================================
 
-fn hero_simulator() -> Primitive {
+fn hero_simulator() -> Element {
     // Wrap the entire simulator subtree in `lazy! { … }` — on web,
     // wasm-split-cli post-build hoists the body (and its transitive
     // wgpu / welcome / ios_sim / android_sim deps) into a separate
@@ -143,7 +143,7 @@ fn hero_simulator() -> Primitive {
         let dynamic_sim = switch(
             move || active.get(),
             |&idx| {
-                let build_ui: Rc<dyn Fn() -> Primitive> = Rc::new(welcome::app);
+                let build_ui: Rc<dyn Fn() -> Element> = Rc::new(welcome::app);
                 let skin = if idx == 1 {
                     SimulatorSkin::Android
                 } else {
@@ -158,7 +158,7 @@ fn hero_simulator() -> Primitive {
             },
         );
 
-        let stage_children: Vec<Primitive> = vec![tab_strip, dynamic_sim];
+        let stage_children: Vec<Element> = vec![tab_strip, dynamic_sim];
         ui! { View(style = stage_style) { stage_children } }
     }
     // While the chunk loads, render the device chassis with an "off"
@@ -185,20 +185,20 @@ fn hero_simulator() -> Primitive {
         }));
         let tab_band = view(Vec::new())
             .with_style(tab_band_style)
-            .into_primitive();
+            .into_element();
         let device = simulator_placeholder(None);
-        let stage_children: Vec<Primitive> = vec![tab_band, device];
+        let stage_children: Vec<Element> = vec![tab_band, device];
         ui! { View(style = crate::styles::SimulatorStage()) { stage_children } }
-            .into_primitive()
+            .into_element()
     })
-    .into_primitive()
+    .into_element()
 }
 
 // =============================================================================
 // Quickstart code panel
 // =============================================================================
 
-fn quickstart_section() -> Primitive {
+fn quickstart_section() -> Element {
     let section_style = crate::responsive::responsive_style(HomeSection::sheet());
 
     let install_snippet =
@@ -211,11 +211,11 @@ fn quickstart_section() -> Primitive {
          idealyst run ios      # build + boot in the iOS simulator\n\
          idealyst run android  # build + install on emulator or device";
 
-    // Vec<Primitive> children — Typography(...) followed by a brace-block
+    // Vec<Element> children — Typography(...) followed by a brace-block
     // sibling in the same `ui!` scope would otherwise be parsed as
     // children of Body, which doesn't have a `children` field.
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Build an iOS, Web, and Android app in five commands.".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Build an iOS, Web, and Android app in five commands.".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(
                 content = "The same `app()` function runs unchanged on web, iOS, and \
@@ -237,7 +237,7 @@ fn quickstart_section() -> Primitive {
 // makes the rest of the site discoverable from a glance.
 // =============================================================================
 
-fn pillars_section() -> Primitive {
+fn pillars_section() -> Element {
     let section_style = crate::responsive::responsive_style(HomeSection::sheet());
     let grid_style = PillarGrid();
 
@@ -275,26 +275,26 @@ fn pillars_section() -> Primitive {
         ),
     ];
 
-    let mut cards: Vec<Primitive> = Vec::with_capacity(pillars.len());
+    let mut cards: Vec<Element> = Vec::with_capacity(pillars.len());
     for (title, blurb, route) in pillars {
         cards.push(pillar_card(title, blurb, route));
     }
 
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "What makes it different".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "What makes it different".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! { View(style = grid_style) { cards } },
     ];
 
     ui! { View(style = section_style) { children } }
 }
 
-fn pillar_card(title: &str, blurb: &str, route: &'static Route<()>) -> Primitive {
+fn pillar_card(title: &str, blurb: &str, route: &'static Route<()>) -> Element {
     let card_style = PillarCard();
     let cta_style = move || StyleApplication::new(PillarCta::sheet());
     let title_text = title.to_string();
     let blurb_text = blurb.to_string();
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H3.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H3) },
         ui! { Typography(content = blurb_text, muted = true) },
         ui! {
             Link(route = route, params = ()) {

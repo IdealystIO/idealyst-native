@@ -2,7 +2,7 @@
 
 A backend is the piece of code that knows how to put an Idealyst
 app on a specific platform's screen. The framework hands it a tree
-of `Primitive`s and a stream of updates; the backend translates
+of `Element`s and a stream of updates; the backend translates
 those into native widgets, layout, and input events.
 
 The `Backend` trait is the seam. Anything that implements it can

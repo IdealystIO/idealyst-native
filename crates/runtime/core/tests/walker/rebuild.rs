@@ -2,7 +2,7 @@
 //!
 //! Reproduces the variant pattern the bench's "rebuild" suite drives:
 //! a reactive `match` on a mode signal, with the active arm reading
-//! a row-count signal and emitting a `Primitive::Repeat { count, ... }`.
+//! a row-count signal and emitting a `Element::Repeat { count, ... }`.
 //! Set the count signal to a new value, drain microtasks, assert
 //! the backend actually saw the new row count.
 //!
@@ -13,7 +13,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{signal, switch, text, view, IntoPrimitive, Primitive, Signal};
+use runtime_core::{signal, switch, text, view, IntoElement, Element, Signal};
 
 use crate::common::{Event, TestRuntime};
 
@@ -35,25 +35,25 @@ fn count_create_view(events: &[Event]) -> usize {
 
 /// Build the same tree shape the bench variant uses for its row-list:
 /// a switch over a mode signal whose active arm reads a count signal
-/// and emits a `Primitive::Repeat` of view+text rows.
-fn rebuild_tree(mode: Signal<u32>, count: Signal<usize>) -> Primitive {
+/// and emits a `Element::Repeat` of view+text rows.
+fn rebuild_tree(mode: Signal<u32>, count: Signal<usize>) -> Element {
     switch(
         move || mode.get(),
         move |m| match m {
             0 => {
                 let n = count.get();
-                let row_builder: Box<dyn Fn(usize) -> Primitive> =
+                let row_builder: Box<dyn Fn(usize) -> Element> =
                     Box::new(|i| {
-                        view(vec![text(format!("Row #{}", i)).into_primitive()])
-                            .into_primitive()
+                        view(vec![text(format!("Row #{}", i)).into_element()])
+                            .into_element()
                     });
-                view(vec![Primitive::Repeat {
+                view(vec![Element::Repeat {
                     count: n,
                     row_builder,
                 }])
-                .into_primitive()
+                .into_element()
             }
-            _ => view(Vec::new()).into_primitive(),
+            _ => view(Vec::new()).into_element(),
         },
     )
 }

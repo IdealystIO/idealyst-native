@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use runtime_core::{
     component, ui, Color, Gradient, GradientKind, GradientStop, Length, Overflow, Position,
-    Primitive, RadialExtent, StyleRules, StyleSheet, Tokenized, Transform,
+    Element, RadialExtent, StyleRules, StyleSheet, Tokenized, Transform,
 };
 
 use crate::coordinator::WelcomeRefs;
@@ -46,7 +46,7 @@ pub struct SunGlareProps {
 }
 
 #[component]
-pub fn SunGlare(props: &SunGlareProps) -> Primitive {
+pub fn SunGlare(props: &SunGlareProps) -> Element {
     let refs = props.refs;
     let wrapper = wrapper_sheet();
     let anchor = anchor_sheet();

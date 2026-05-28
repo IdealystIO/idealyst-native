@@ -7,7 +7,7 @@
 //! 2. `mount(recorder, app_fn)` — the closure runs *inside* the root
 //!    reactive scope so `after_ms_scoped` / `raf_loop_scoped` survive.
 //!    (This is the [`sidecar_mount_regression`] fix.)
-//! 3. The app builds a `Primitive::View` with a `Ref<ViewHandle>`, an
+//! 3. The app builds a `Element::View` with a `Ref<ViewHandle>`, an
 //!    `AnimatedValue<f32>` bound to its opacity, and an
 //!    `after_ms_scoped(0, || raf_loop_scoped(|| av.set(...)))` chain
 //!    that drives the animation.
@@ -40,7 +40,7 @@ use std::rc::Rc;
 use dev_server::{scheduler, WireRecordingBackend};
 use runtime_core::animation::{AnimProp, AnimatedValue};
 use runtime_core::{
-    after_ms_scoped, mount, node_ref, raf_loop_scoped, Primitive, Ref,
+    after_ms_scoped, mount, node_ref, raf_loop_scoped, Element, Ref,
     RefFill, SafeAreaSides, ViewHandle,
 };
 use wire::Command;
@@ -50,7 +50,7 @@ use wire::Command;
 /// `coordinator.rs` without the visual richness — same primitive
 /// types, same scheduling primitives, same `AnimatedValue::bind`
 /// routing.
-fn make_app() -> impl FnOnce() -> Primitive + 'static {
+fn make_app() -> impl FnOnce() -> Element + 'static {
     move || {
         let opacity = AnimatedValue::new(0.0_f32);
         let view: Ref<ViewHandle> = node_ref!(ViewHandle);
@@ -72,7 +72,7 @@ fn make_app() -> impl FnOnce() -> Primitive + 'static {
             });
         });
 
-        Primitive::View {
+        Element::View {
             children: vec![],
             style: None,
             ref_fill: Some(RefFill::View(Box::new(move |h| view_for_fill.fill(h)))),
@@ -175,7 +175,7 @@ fn end_to_end_raf_dropping_own_handle_inside_mount_does_not_panic() {
         });
         *handle_slot.borrow_mut() = Some(raf);
 
-        Primitive::View {
+        Element::View {
             children: vec![],
             style: None,
             ref_fill: None,

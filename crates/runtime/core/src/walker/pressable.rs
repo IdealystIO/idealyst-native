@@ -1,4 +1,4 @@
-//! `Primitive::Pressable` build path.
+//! `Element::Pressable` build path.
 //!
 //! Backend creates a bare tappable container with the click handler
 //! bound. Children are inserted just like View — the visual is
@@ -13,14 +13,14 @@ use super::view::insert_children;
 use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
-use crate::primitive::Primitive;
+use crate::element::Element;
 use crate::sources::StyleSource;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 pub(super) fn build<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
-    children: Vec<Primitive>,
+    children: Vec<Element>,
     on_click: Rc<dyn Fn()>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,

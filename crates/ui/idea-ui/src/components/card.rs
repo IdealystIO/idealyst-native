@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    ui, ChildList, Easing, Length, Primitive, StyleApplication, StyleRules, StyleSheet, Tokenized,
+    ui, ChildList, Easing, Length, Element, StyleApplication, StyleRules, StyleSheet, Tokenized,
     Transition, VariantEnum, VariantSet,
 };
 
@@ -196,7 +196,7 @@ pub fn build_card_sheet(variants: Vec<VariantRef>) -> Rc<StyleSheet> {
 pub struct CardProps {
     pub variant: VariantRef,
     pub padding: CardPadding,
-    pub children: Vec<Primitive>,
+    pub children: Vec<Element>,
 }
 
 impl Default for CardProps {
@@ -209,7 +209,7 @@ impl Default for CardProps {
     }
 }
 
-pub fn card(props: CardProps) -> Primitive {
+pub fn card(props: CardProps) -> Element {
     let variant_key = props.variant.key().to_string();
     let padding_key = props.padding.as_variant_str().to_string();
 
@@ -218,7 +218,7 @@ pub fn card(props: CardProps) -> Primitive {
         .with("variant", variant_key)
         .with("padding", padding_key);
 
-    let mut children: Vec<Primitive> = Vec::with_capacity(props.children.len());
+    let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut children);
     }

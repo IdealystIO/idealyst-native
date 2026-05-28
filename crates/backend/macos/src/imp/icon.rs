@@ -1,4 +1,4 @@
-//! `Primitive::Icon` — vector icon rendering on macOS via
+//! `Element::Icon` — vector icon rendering on macOS via
 //! `CAShapeLayer` driven by a `CGPath` built from the framework's
 //! `IconData.paths`.
 //!

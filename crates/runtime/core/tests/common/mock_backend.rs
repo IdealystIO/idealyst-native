@@ -243,7 +243,7 @@ impl Default for MockBackendConfig {
     }
 }
 
-/// Captured `Primitive::Virtualizer` callbacks + the rows currently
+/// Captured `Element::Virtualizer` callbacks + the rows currently
 /// mounted. The framework hands these callbacks to `create_virtualizer`;
 /// a real backend invokes `mount_item` / `release_item` from scroll /
 /// rAF events — i.e. OUTSIDE the framework's `backend.borrow_mut()`.
@@ -389,7 +389,7 @@ impl MockBackend {
     /// Synthesize a scroll event on the registered `on_scroll`
     /// handler for `node`. Returns `false` if no handler is
     /// registered (i.e. the author didn't pass `on_scroll`). Used
-    /// by the regression test that proves `Primitive::ScrollView`'s
+    /// by the regression test that proves `Element::ScrollView`'s
     /// `on_scroll` callback fires through the Backend trait without
     /// any backend-specific code in author land.
     pub fn fire_scroll_event(&self, node: NodeId, x: f32, y: f32) -> bool {

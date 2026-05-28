@@ -7,7 +7,7 @@ machine-readable metadata blob.
 ## Goals (recap)
 
 1. **One Rust source per page.** No markdown parser, no JSON authoring.
-2. **The macro emits the screen** (a `pub fn page() -> Primitive` that
+2. **The macro emits the screen** (a `pub fn page() -> Element` that
    composes the shell's existing `PageHeader` / `Section` / `CodeBlock`
    components).
 3. **The macro also emits structured metadata** (a `pub static
@@ -173,7 +173,7 @@ pub enum DocConcept {
     InlineSpans,         // the docs! macro's span vocabulary (meta)
 
     // Primitives
-    Primitive,
+    Element,
     Container,           // View, ScrollView, Pressable
     Content,             // Text, Image, Icon, Video, WebView
     Input,               // Button, TextInput, Toggle, Slider
@@ -420,7 +420,7 @@ records each comparison's framework and content.
 
 `demo(fn_name)` or `demo(fn_name, description = "...")` — the
 identifier is a path to a `#[component] fn fn_name(props: &Props) ->
-Primitive` (or a no-arg `() -> Primitive`). The macro emits both:
+Element` (or a no-arg `() -> Element`). The macro emits both:
 
 - **UI side**: `Demo { fn_name() }` — the component is invoked
   inline.
@@ -439,7 +439,7 @@ For a page declared as above, the macro produces two items:
 
 ```rust
 // 1. The UI function — called by the routes registry to render the screen.
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     ui! {
         ScrollView {
             Stack(gap = StackGap::Xl) {

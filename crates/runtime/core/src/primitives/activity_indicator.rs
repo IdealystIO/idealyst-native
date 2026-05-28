@@ -8,7 +8,7 @@
 //!   - iOS: `UIActivityIndicatorView` (`startAnimating()` on mount).
 //!   - Android: indeterminate `ProgressBar`.
 
-use crate::{Bound, Color, Primitive, Ref, RefFill};
+use crate::{Bound, Color, Element, Ref, RefFill};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -47,7 +47,7 @@ pub trait ActivityIndicatorOps {
 /// Construct an indicator with default size (`Small`) and no color
 /// override (uses native default tint or theme on web).
 pub fn activity_indicator() -> Bound<ActivityIndicatorHandle> {
-    Bound::new(Primitive::ActivityIndicator {
+    Bound::new(Element::ActivityIndicator {
         size: ActivityIndicatorSize::default(),
         color: None,
         style: None,
@@ -58,21 +58,21 @@ pub fn activity_indicator() -> Bound<ActivityIndicatorHandle> {
 
 impl Bound<ActivityIndicatorHandle> {
     pub fn size(mut self, s: ActivityIndicatorSize) -> Self {
-        if let Primitive::ActivityIndicator { size, .. } = &mut self.primitive {
+        if let Element::ActivityIndicator { size, .. } = &mut self.primitive {
             *size = s;
         }
         self
     }
 
     pub fn color(mut self, c: Color) -> Self {
-        if let Primitive::ActivityIndicator { color, .. } = &mut self.primitive {
+        if let Element::ActivityIndicator { color, .. } = &mut self.primitive {
             *color = Some(c);
         }
         self
     }
 
     pub fn bind(mut self, r: Ref<ActivityIndicatorHandle>) -> Self {
-        if let Primitive::ActivityIndicator { ref_fill, .. } = &mut self.primitive {
+        if let Element::ActivityIndicator { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::ActivityIndicator(Box::new(move |h| r.fill(h))));
         }
         self

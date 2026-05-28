@@ -1,4 +1,4 @@
-//! `Primitive::ScrollView::on_scroll` plumbing — assert that the
+//! `Element::ScrollView::on_scroll` plumbing — assert that the
 //! callback attached via `Bound::<ScrollViewHandle>::on_scroll` survives
 //! mount, gets registered through the backend's `create_scroll_view`
 //! method, and fires with the offset args the backend dispatches.
@@ -6,7 +6,7 @@
 //! Author surface is uniform across backends \u{2014} per the framework
 //! rule that backends diverge in mechanism but converge in observable
 //! behaviour (CLAUDE.md #7). The regression that this test guards
-//! against is the previous shape where `Primitive::ScrollView` had no
+//! against is the previous shape where `Element::ScrollView` had no
 //! `on_scroll` field at all and author code had to reach into
 //! `web_sys` / `UIScrollViewDelegate` / `setOnScrollChangeListener`
 //! directly to observe scroll position. That \u{2014} a

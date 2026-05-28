@@ -2,7 +2,7 @@
 //! (the generated wrapper binary) compile on any host even though
 //! the run loop is macOS-only.
 
-use runtime_core::Primitive;
+use runtime_core::Element;
 
 #[derive(Clone, Debug, Default)]
 pub struct RunOptions {
@@ -37,7 +37,7 @@ impl std::fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
-pub fn run<F: FnOnce() -> Primitive>(_app: F, _opts: RunOptions) -> Result<(), RunError> {
+pub fn run<F: FnOnce() -> Element>(_app: F, _opts: RunOptions) -> Result<(), RunError> {
     Err(RunError::NotMacos)
 }
 
@@ -49,7 +49,7 @@ pub fn run<F: FnOnce() -> Primitive>(_app: F, _opts: RunOptions) -> Result<(), R
 /// isn't even compiled here.
 pub fn run_with<F, R>(_app: F, _opts: RunOptions, _register_extensions: R) -> Result<(), RunError>
 where
-    F: FnOnce() -> Primitive,
+    F: FnOnce() -> Element,
 {
     Err(RunError::NotMacos)
 }

@@ -37,7 +37,7 @@
 use std::rc::Rc;
 
 use runtime_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
-use runtime_core::{component, ui, view, IntoPrimitive, Length, Primitive, StyleRules, StyleSheet};
+use runtime_core::{component, ui, view, IntoElement, Length, Element, StyleRules, StyleSheet};
 // `host_web` re-exports `DeviceProfile` and `Painter` so the Simulator
 // only needs one preview-stack dep.
 use host_web::{DeviceProfile, Painter};
@@ -85,14 +85,14 @@ const PREVIEW_WIDTH_PX: f32 = 320.0;
 
 /// Props delivered by the `simulator!` invocation macro.
 ///
-/// `build_ui` is `Rc<dyn Fn() -> Primitive>` so callers can build the
+/// `build_ui` is `Rc<dyn Fn() -> Element>` so callers can build the
 /// closure once (e.g. `Rc::new(|| pages::overview::page())`) and the
 /// Simulator can clone it into the Graphics on_ready closure. The
 /// closure runs exactly once, when the host mounts the preview.
 pub struct SimulatorProps {
     /// The app to mount inside the simulator. Invoked once after the
     /// wgpu surface is up and the host is built.
-    pub build_ui: Rc<dyn Fn() -> Primitive>,
+    pub build_ui: Rc<dyn Fn() -> Element>,
     /// Pluggable simulator skin. `None` resolves to `IosSim`; pass
     /// `Some(Rc::new(AndroidSim::new()))` for the Material 3 look,
     /// or any other `render_wgpu::Painter` implementor.
@@ -133,7 +133,7 @@ fn default_painter() -> Rc<dyn Painter> {
     skin = None,
     profile = None,
 ))]
-pub fn Simulator(props: SimulatorProps) -> Primitive {
+pub fn Simulator(props: SimulatorProps) -> Element {
     let SimulatorProps {
         build_ui,
         skin,
@@ -233,7 +233,7 @@ pub fn Simulator(props: SimulatorProps) -> Primitive {
         height: Some(Length::Px(preview_height_px).into()),
         ..Default::default()
     }));
-    let wrapper = view(vec![graphics.into_primitive()]).with_style(wrapper_sheet);
+    let wrapper = view(vec![graphics.into_element()]).with_style(wrapper_sheet);
 
     ui! {
         wrapper

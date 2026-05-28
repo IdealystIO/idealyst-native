@@ -58,9 +58,9 @@ its own `TouchId → state` map. UIKit's `Set<UITouch>` and Android's
 `getPointerCount()` get normalized into one call per touch per phase
 change in the backend layer.
 
-## Primitive surface
+## Element surface
 
-Add an `on_touch` slot to `Primitive::View` (and other primitives that
+Add an `on_touch` slot to `Element::View` (and other primitives that
 can carry interactivity — `Pressable`, `ScrollView`, etc.):
 
 ```rust

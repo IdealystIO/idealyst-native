@@ -69,7 +69,7 @@ use std::rc::Rc;
 use crate::reactive::{Signal, Ref};
 
 // =============================================================================
-// Element kinds (mirrors Primitive variants at a coarser level)
+// Element kinds (mirrors Element variants at a coarser level)
 // =============================================================================
 
 /// Identifies what kind of primitive an element was built from.
@@ -767,7 +767,7 @@ pub(crate) fn register(entry: RegistryEntry) -> ElementId {
 }
 
 /// Attach frame-reading closures to an already-registered element.
-/// The walker registers the element from the `Primitive` (which
+/// The walker registers the element from the `Element` (which
 /// happens *before* the backend has produced a node), then calls
 /// this with closures that capture the built node so positions can
 /// be read on demand.

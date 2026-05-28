@@ -1,4 +1,4 @@
-//! `Primitive::Portal` — Android `Dialog` (viewport-anchored) or
+//! `Element::Portal` — Android `Dialog` (viewport-anchored) or
 //! `PopupWindow` (element-anchored).
 //!
 //! # Two flavors, one Node shape

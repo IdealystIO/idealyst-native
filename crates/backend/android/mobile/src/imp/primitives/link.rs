@@ -1,4 +1,4 @@
-//! `Primitive::Link` — clickable container that fires `on_activate`
+//! `Element::Link` — clickable container that fires `on_activate`
 //! when tapped (the framework wraps push/replace/reset dispatch in
 //! there, so the backend doesn't have to care about the nav shape).
 //!

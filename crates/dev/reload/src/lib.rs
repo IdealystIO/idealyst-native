@@ -239,6 +239,10 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
             // `idealyst build --web --gzip` / `--out-dir`.
             bundle_out_dir: None,
             gzip: false,
+            // Dev loop always inlines `lazy!` bodies (one binary, stable
+            // toolchain, fast iteration). Splitting is a production-build
+            // concern (`idealyst build --web`).
+            split: build_web::SplitMode::Off,
         },
     )
     .map(|_| ())

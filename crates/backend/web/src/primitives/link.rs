@@ -1,4 +1,4 @@
-//! `Primitive::Link` — a real `<a href>` element.
+//! `Element::Link` — a real `<a href>` element.
 //!
 //! The `<a>` is what makes web link semantics work without
 //! re-implementation: hover URL preview in the status bar,

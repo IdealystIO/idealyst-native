@@ -351,9 +351,9 @@ docs! {
             use std::time::Instant;
             use render_api::DeviceProfile;
             use render_wgpu::{install_redraw_hook, Host, Renderer};
-            use runtime_core::Primitive;
+            use runtime_core::Element;
 
-            pub fn run<F: FnOnce() -> Primitive + 'static>(
+            pub fn run<F: FnOnce() -> Element + 'static>(
                 profile: DeviceProfile,
                 build_ui: F,
             ) {

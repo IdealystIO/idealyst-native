@@ -8,7 +8,7 @@
 //!   live next to the data they mutate.
 //! - `defaults.rs` — global baselines: `.ui-default` class, spinner
 //!   keyframes, virtualizer JS shim, dynamic-slot teardown.
-//! - `primitives/` — one module per `Primitive` kind. Each owns its
+//! - `primitives/` — one module per `Element` kind. Each owns its
 //!   create/update functions, any `Ops` impl, and the `make_*_handle`
 //!   builder where applicable. The `impl Backend for WebBackend`
 //!   block at the bottom of this file is a thin delegation layer.
@@ -43,6 +43,8 @@ mod batch_queue;
 mod tests;
 #[cfg(feature = "async-driver")]
 pub mod async_executor;
+#[cfg(feature = "async-driver")]
+pub mod dynlink;
 mod assets;
 mod defaults;
 #[cfg(feature = "runtime-server")]
@@ -60,6 +62,8 @@ mod viewport_observer;
 
 #[cfg(feature = "async-driver")]
 pub use async_executor::install_async_executor;
+#[cfg(feature = "async-driver")]
+pub use dynlink::{host_reserve, install_dynlink_loader};
 #[cfg(feature = "runtime-server")]
 pub use dev_transport::{connect_web, WebClientHandle};
 pub use drop_deferral::install_drop_deferral;
@@ -217,12 +221,12 @@ pub struct WebBackend {
     pub(crate) doc: Document,
     pub(crate) mount: web_sys::Element,
     pub(crate) _click_closures: Vec<Closure<dyn FnMut()>>,
-    /// Keyboard handlers for `Primitive::Pressable` (Enter/Space →
+    /// Keyboard handlers for `Element::Pressable` (Enter/Space →
     /// click). Held so JS doesn't drop them while the element is in
     /// the layout tree. The click handler itself lives in
     /// `_click_closures` (shared shape: `FnMut()` no-arg).
     pub(crate) _pressable_key_closures: Vec<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
-    /// Closures attached to `<a>` elements for `Primitive::Link`.
+    /// Closures attached to `<a>` elements for `Element::Link`.
     /// Held so JS doesn't drop them while the anchor is still in
     /// the layout tree. Same posture as `_click_closures`.
     pub(crate) _link_click_closures: Vec<Closure<dyn FnMut(web_sys::MouseEvent)>>,
@@ -249,7 +253,7 @@ pub struct WebBackend {
     /// `<script>` tag in the document head.
     pub(crate) virtualizer_shim_injected: bool,
     /// Has the local-render batch executor (`runtime/js/batch.js`)
-    /// been injected? First batched `Primitive::Repeat` triggers
+    /// been injected? First batched `Element::Repeat` triggers
     /// injection, subsequent calls reuse the cached
     /// `window.__idealystExecuteBatch` function.
     pub(crate) batch_shim_injected: bool,
@@ -480,14 +484,14 @@ pub struct WebBackend {
     /// `unregister_typeface` reclaim the slots through the regular
     /// `delete_rule` recycle path.
     pub(crate) font_face_rule_indices: HashMap<TypefaceId, Vec<u32>>,
-    /// Registry of third-party `Primitive::External` handlers,
+    /// Registry of third-party `Element::External` handlers,
     /// populated by `register_external::<T>(...)` calls from
     /// per-platform leaf crates (e.g. `idealyst-maps-web::register`).
     /// `create_external` looks the handler up by payload TypeId;
     /// unregistered kinds fall through to a "not supported" placeholder.
     pub(crate) external_handlers:
         runtime_core::ExternalRegistry<WebBackend>,
-    /// Registry of `Primitive::Navigator` handler factories,
+    /// Registry of `Element::Navigator` handler factories,
     /// populated by `register_navigator::<P, _>(...)` calls from
     /// SDK leaf crates (e.g. `stack_navigator::register`).
     /// `create_navigator` looks the factory up by presentation
@@ -685,7 +689,7 @@ impl WebBackend {
     /// `tab_navigator::register`, etc.) call this once per app
     /// bootstrap. `P` is the SDK's presentation payload type; the
     /// factory produces a fresh handler per
-    /// `Primitive::Navigator { type_id: TypeId::of::<P>(), .. }`
+    /// `Element::Navigator { type_id: TypeId::of::<P>(), .. }`
     /// mounted in the tree.
     pub fn register_navigator<P, F>(&mut self, factory: F)
     where
@@ -1559,7 +1563,7 @@ impl Backend for WebBackend {
     }
 
     /// Set the HTML `id` attribute on the underlying element. Used
-    /// by `Primitive::Lazy`'s web handler to give the placeholder
+    /// by `Element::Lazy`'s web handler to give the placeholder
     /// container a stable id the chunk's `mount_chunk` can root its
     /// own `WebBackend` against.
     fn attach_html_id(&self, node: &Self::Node, id: &str) {
@@ -2234,7 +2238,7 @@ impl Backend for WebBackend {
     }
 
     /// Opt into the walker's batched-Repeat path. When the walker sees
-    /// a `Primitive::Repeat` whose rows are pure View+Text+static-style,
+    /// a `Element::Repeat` whose rows are pure View+Text+static-style,
     /// it builds a [`BackendBatch`] and ships it through
     /// [`execute_batch`] instead of issuing per-row backend calls.
     fn supports_batched_repeat(&self) -> bool {

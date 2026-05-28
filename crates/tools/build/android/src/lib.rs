@@ -1,7 +1,7 @@
 //! Android build orchestration for `idealyst build android`.
 //!
 //! Same shape as [`build-ios`](../build_ios/index.html): the user's
-//! app crate is platform-agnostic (just `pub fn app() -> Primitive`),
+//! app crate is platform-agnostic (just `pub fn app() -> Element`),
 //! and we generate an ephemeral wrapper crate that adds the
 //! Android-specific bits — `cdylib` crate-type, `jni` glue,
 //! `backend-android` dep, and JNI entry points the Kotlin side
@@ -460,11 +460,15 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
         backend_android::install_scheduler();
         // Register third-party extensions (navigator SDKs, custom
         // primitives) into the backend before any `app()` code runs.
-        // The user crate must expose `pub fn register_extensions(&mut AndroidBackend)`
-        // — even if empty, so the wrapper template can call it unconditionally.
+        // The user crate exposes `register_extensions` either generic
+        // (`<B: Backend>(&mut B)`, the SDK-less scaffold default) or
+        // concrete (`&mut AndroidBackend`, for crates that call a
+        // per-backend SDK `register`). `&mut *b` derefs the `RefMut` to
+        // `&mut AndroidBackend` so BOTH forms resolve — a plain `&mut b`
+        // would infer `B = RefMut<…>` for the generic and fail to compile.
         {{
             let mut b = backend.borrow_mut();
-            {lib}::register_extensions(&mut b);
+            {lib}::register_extensions(&mut *b);
         }}
         // `mount` runs `app()` inside the root reactive scope so
         // top-level `effect!` / `signal!` / `Ref::new` calls in
@@ -792,7 +796,7 @@ mod regression_tests {
     //!    that ownership belongs to the sidecar; if the wrapper
     //!    accidentally re-acquired the dep, the Android binary
     //!    would link two copies of the user code with diverging
-    //!    runtime-core instances and `Primitive` type mismatches
+    //!    runtime-core instances and `Element` type mismatches
     //!    would surface at the cdylib's boundary.
     //!
     //! These tests run only the generation step (sub-ms) — no

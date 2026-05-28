@@ -1,4 +1,4 @@
-//! `Primitive::Icon` build path. Reactive `color` and `stroke`
+//! `Element::Icon` build path. Reactive `color` and `stroke`
 //! progress install per-axis Effects; an optional `draw_in`
 //! mount animation snaps to `from` and schedules an
 //! `animate_icon_stroke` on the next microtask.

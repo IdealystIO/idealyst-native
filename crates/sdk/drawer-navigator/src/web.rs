@@ -10,7 +10,7 @@
 //!
 //! Sidebar materialization: the SDK's `DrawerPresentation.sidebar`
 //! slot holds a `SidebarBuilder` (closure that takes
-//! `DrawerSlotProps` and returns a `Primitive`). The web handler
+//! `DrawerSlotProps` and returns a `Element`). The web handler
 //! wraps it in a `Fn() -> Node` closure that defers to a microtask,
 //! invokes `host.build_node` against the synthesized props, and
 //! returns the materialized Node. The closure is handed to the
@@ -265,14 +265,14 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
 
         // ---- Slot builder factory ----
         //
-        // Each slot's `Fn(SlotProps) -> Primitive` closure is
+        // Each slot's `Fn(SlotProps) -> Element` closure is
         // curried into the helper's expected `Fn() -> Node` shape:
         // capture the props + build_node + control, push the
         // navigator onto the ambient stack so Links inside the
         // slot's primitive tree resolve to this navigator, then
         // invoke the user's builder and materialize the result.
         let mk_slot_cb = |
-            builder: Box<dyn Fn(SlotProps) -> runtime_core::Primitive>,
+            builder: Box<dyn Fn(SlotProps) -> runtime_core::Element>,
         | -> Rc<dyn Fn() -> Node> {
             let build_node = build_node.clone();
             let control = control.clone();

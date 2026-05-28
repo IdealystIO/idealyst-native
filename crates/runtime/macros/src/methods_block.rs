@@ -410,7 +410,7 @@ fn rewrite_body(
         };
     };
     // The Effect's closure captures the registration guard by move.
-    // While a `Scope` is active (the build walker runs each Primitive
+    // While a `Scope` is active (the build walker runs each Element
     // inside one), the returned `Effect` handle is a no-op on drop —
     // the scope owns the slot and frees it (and the captured guard)
     // on scope drop. That ties the component's registration lifetime
@@ -439,7 +439,7 @@ fn rewrite_body(
             let inner = std::mem::replace(expr, syn::parse_quote!(()));
             *expr = syn::parse_quote! {
                 ::runtime_core::Bindable::new(
-                    ::runtime_core::IntoPrimitive::into_primitive(#inner),
+                    ::runtime_core::IntoElement::into_element(#inner),
                     __component_handle,
                 )
             };
@@ -453,7 +453,7 @@ fn rewrite_body(
             *last = Stmt::Expr(
                 syn::parse_quote! {
                     ::runtime_core::Bindable::new(
-                        ::runtime_core::IntoPrimitive::into_primitive(#inner),
+                        ::runtime_core::IntoElement::into_element(#inner),
                         __component_handle,
                     )
                 },

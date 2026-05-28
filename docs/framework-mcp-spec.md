@@ -21,7 +21,7 @@ The MCP server is **derived from the components themselves**, not from a paralle
 - Zero-maintenance catalog: a `#[component]` is automatically discoverable. No registration list to keep updated.
 - Compile-time-extracted metadata: the MCP runtime does **not** parse Rust source.
 - Per-platform safety: extracting MCP data is host-only and doesn't bloat iOS / Android / wasm binaries.
-- Mirrors the project's existing distributed-registration pattern (`Primitive::External` / `ExternalRegistry`).
+- Mirrors the project's existing distributed-registration pattern (`Element::External` / `ExternalRegistry`).
 
 **Non-goals**
 
@@ -71,7 +71,7 @@ The [`inventory`](https://crates.io/crates/inventory) crate provides distributed
 
 The MCP runtime iterates the slice once at startup; cost on non-MCP builds is zero when feature-gated (see §9.2).
 
-This mirrors the `Primitive::External` design already in the framework: typed, distributed, no central registry to keep in sync. See [[project_third_party_extension]] for the prior art the team is already comfortable with.
+This mirrors the `Element::External` design already in the framework: typed, distributed, no central registry to keep in sync. See [[project_third_party_extension]] for the prior art the team is already comfortable with.
 
 ### 3.2 How the composition list is built
 
@@ -116,7 +116,7 @@ The current `#[component(default(...), children)]` in [component_attr.rs:30-72](
         unstable,
     ),
 )]
-pub fn planet(idx: usize, refs: &WelcomeRefs) -> Primitive { ... }
+pub fn planet(idx: usize, refs: &WelcomeRefs) -> Element { ... }
 ```
 
 | Sub-arg              | Meaning                                                                       |
@@ -133,8 +133,8 @@ The prop-type story:
 
 Both single-struct and free-form positional signatures are first-class. The macro extracts a structured `ParamSpec { name, type_str, doc }` per parameter in either shape:
 
-- **Single-struct signature** (`fn planet(props: PlanetProps) -> Primitive`): the macro records the struct's `TypeId` + `type_name`. The runtime expands each field via the `IdealystSchema` derive (§4.3) so per-field doc comments and `#[schema(...)]` hints flow through.
-- **Free-form positional signature** (`fn planet(idx: usize, refs: &WelcomeRefs) -> Primitive`): the macro records each parameter's name and a pretty-printed type string. Per-arg docs are pulled from a Rustdoc-style `# Arguments` block in the function-level `///` if present, or from an optional `#[mcp(doc = "...")]` attribute on individual args.
+- **Single-struct signature** (`fn planet(props: PlanetProps) -> Element`): the macro records the struct's `TypeId` + `type_name`. The runtime expands each field via the `IdealystSchema` derive (§4.3) so per-field doc comments and `#[schema(...)]` hints flow through.
+- **Free-form positional signature** (`fn planet(idx: usize, refs: &WelcomeRefs) -> Element`): the macro records each parameter's name and a pretty-printed type string. Per-arg docs are pulled from a Rustdoc-style `# Arguments` block in the function-level `///` if present, or from an optional `#[mcp(doc = "...")]` attribute on individual args.
 
 Both shapes produce the same `ParamSpec` payload in the catalog and the same MCP schema output. The choice between them is purely a style call — exactly as it is in React with destructured props vs. a single `props` object.
 
@@ -203,7 +203,7 @@ The `composes` field holds bare idents (`"dark_layer"`, `"planet"`) because proc
 
 2. **False positives we deliberately avoid.** `ui!` contains many non-component calls (`(0..3).map(|i| planet(i, refs)).collect()`). The `#[component]` macro only captures idents that appear *as the head of a child block in the JSX-ish position* of `ui!`, not arbitrary expression-position calls. That matches author intent: a "component" is something you place in a `ui!` slot.
 
-3. **Indirection through helpers.** Today, [planets()](examples/welcome/src/components/planet.rs#L72-L74) returns `Vec<Primitive>` and is called from `app()` as `planets(&refs)`. So `app.composes` contains `"planets"`, and `planets` itself — if annotated `#[component]` — has `composes: ["planet"]` from its own `ui!`. A pure helper that *never* runs through a `ui!` and isn't itself a `#[component]` is invisible. That's acceptable: the abstraction layer that matters in the catalog is the component layer. The `mcp(uses = [...])` override covers escape cases.
+3. **Indirection through helpers.** Today, [planets()](examples/welcome/src/components/planet.rs#L72-L74) returns `Vec<Element>` and is called from `app()` as `planets(&refs)`. So `app.composes` contains `"planets"`, and `planets` itself — if annotated `#[component]` — has `composes: ["planet"]` from its own `ui!`. A pure helper that *never* runs through a `ui!` and isn't itself a `#[component]` is invisible. That's acceptable: the abstraction layer that matters in the catalog is the component layer. The `mcp(uses = [...])` override covers escape cases.
 
 The runtime distinguishes resolved entries from unresolved ones in MCP output. LLMs see "composes `dark_layer` (resolved to `crate::components::dark_layer::dark_layer`)" vs "composes `unknown_thing` (unresolved)" and can act accordingly.
 

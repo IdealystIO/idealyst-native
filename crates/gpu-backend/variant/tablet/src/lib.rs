@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ColorScheme, Primitive};
+use runtime_core::{ColorScheme, Element};
 use host_winit::{run as run_core, DeviceProfile, RunError};
 use render_wgpu::Painter;
 
@@ -17,7 +17,7 @@ pub const TITLE: &str = "Idealyst Preview — Tablet";
 /// the same shape and a fuller example.
 pub fn run<F>(skin: Rc<dyn Painter>, build_ui: F) -> Result<(), RunError>
 where
-    F: FnOnce() -> Primitive + 'static,
+    F: FnOnce() -> Element + 'static,
 {
     run_at(skin, None, build_ui)
 }
@@ -30,7 +30,7 @@ pub fn run_at<F>(
     build_ui: F,
 ) -> Result<(), RunError>
 where
-    F: FnOnce() -> Primitive + 'static,
+    F: FnOnce() -> Element + 'static,
 {
     run_core(
         DeviceProfile {

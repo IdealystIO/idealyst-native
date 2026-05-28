@@ -52,7 +52,7 @@ use runtime_core::ui;
 
 // `simulator_chunk` is the chunk crate — an idealyst app crate
 // declared in the project manifest under [package.metadata.idealyst.chunks].
-// It exports `pub fn app(props: SimulatorProps) -> Primitive`.
+// It exports `pub fn app(props: SimulatorProps) -> Element`.
 use simulator_chunk::SimulatorProps;
 
 // Auto-generated constants from the manifest — see "ChunkId codegen"
@@ -104,7 +104,7 @@ pub mod chunks {
     pub const ADMIN: ChunkId = ChunkId::new("admin");
 
     /// On non-wasm targets, wires every declared chunk into the
-    /// backend's lazy registry so `Primitive::Lazy` can dispatch
+    /// backend's lazy registry so `Element::Lazy` can dispatch
     /// inline. On wasm this is a no-op — chunks load dynamically.
     pub fn register(backend: &mut impl runtime_core::primitives::lazy::LazyRegistry) {
         #[cfg(not(target_arch = "wasm32"))] {
@@ -191,11 +191,11 @@ pub struct LazyBuilder<T> { /* ... */ }
 
 impl<T> LazyBuilder<T> {
     pub fn on_state(self, f: impl Fn(LazyState) + 'static) -> Self;
-    pub fn placeholder(self, build: impl Fn() -> Primitive + 'static) -> Self;
+    pub fn placeholder(self, build: impl Fn() -> Element + 'static) -> Self;
     pub fn with_style(self, style: impl IntoStyleSource) -> Self;
 }
 
-impl<T> IntoPrimitive for LazyBuilder<T> { /* emits Primitive::Lazy */ }
+impl<T> IntoElement for LazyBuilder<T> { /* emits Element::Lazy */ }
 ```
 
 Props bound: `serde::Serialize` because they cross a wasm boundary.
@@ -243,7 +243,7 @@ app crate:
 simulator-chunk = { path = "../simulator-chunk" }
 ```
 
-The framework's native backend handlers for `Primitive::Lazy` call
+The framework's native backend handlers for `Element::Lazy` call
 `<chunk_crate>::app(props)` directly and render the resulting
 primitive inline. State callback fires `Rendered` immediately. No
 state machine, no loading, no error path (compile-time guarantees
@@ -254,7 +254,7 @@ codegen'd by the `runtime_core::chunks!()` macro described above.
 The author calls `chunks::register(&mut backend)` once in
 `register_extensions`; on non-wasm targets the macro emits a
 registration call per declared chunk, and the framework's native
-`Primitive::Lazy` handler dispatches via that registry.
+`Element::Lazy` handler dispatches via that registry.
 
 ### Roku and other generator backends
 
@@ -363,7 +363,7 @@ admin = { path = "../admin-chunk" }
 ```
 
 Each value is a path to a sibling idealyst app crate. The chunk
-crate exposes the standard `pub fn app(props: T) -> Primitive`
+crate exposes the standard `pub fn app(props: T) -> Element`
 signature; the framework's wrapper template knows how to wrap it.
 
 ### Wrapper template variants
@@ -435,7 +435,7 @@ Hashing pipeline (post-`wasm-pack`, pre-bundle-stage):
    main bundle is referenced from `index.html`).
 7. Emit `dist/chunk_manifest.json` mapping logical chunk name →
    hashed URL. The web backend fetches this lazily on first
-   `Primitive::Lazy` mount (one fetch per page load; the file is
+   `Element::Lazy` mount (one fetch per page load; the file is
    tiny).
 
 `index.html` itself stays at `dist/index.html` (unhashed) with
@@ -455,13 +455,13 @@ without rewrite.
 
 ### Framework core
 
-New variant on `Primitive` (in `crates/runtime/core/src/primitive.rs`):
+New variant on `Element` (in `crates/runtime/core/src/primitive.rs`):
 
 ```rust
 Lazy {
     /// Logical chunk identifier. Maps to a URL via the per-backend
     /// chunk registry on web; on native, maps to a registered
-    /// `Fn(payload) -> Primitive` thunk.
+    /// `Fn(payload) -> Element` thunk.
     chunk: &'static str,
     /// Type-erased props. The web backend serializes via
     /// `serde_json::to_string(payload.downcast_ref::<T>())`; the
@@ -477,7 +477,7 @@ Lazy {
     /// Placeholder primitive shown immediately on mount, before
     /// the chunk has a chance to fire `Rendered`. `None` is fine
     /// — backends render an empty div.
-    placeholder: Option<Box<dyn Fn() -> Primitive>>,
+    placeholder: Option<Box<dyn Fn() -> Element>>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     accessibility: AccessibilityProps,
@@ -500,7 +500,7 @@ registry):
 
 ```rust
 impl WebBackend {
-    fn handle_lazy(&mut self, props: Primitive::Lazy<…>) -> NodeId {
+    fn handle_lazy(&mut self, props: Element::Lazy<…>) -> NodeId {
         // 1. Create placeholder div, mount it
         // 2. Fire on_state(Loading)
         // 3. dynamic import via wasm-bindgen-glue
@@ -556,7 +556,7 @@ v1's design doesn't lock us out.
    chunk crate exposes `pub fn register_extensions(&mut WebBackend)`
    same as a main crate does.
 5. **`Send + Sync` bounds on the chunk thunk.** The native
-   registry holds `Box<dyn Fn(Rc<dyn Any>) -> Primitive>`. The
+   registry holds `Box<dyn Fn(Rc<dyn Any>) -> Element>`. The
    `Rc` makes it `!Send`. That's fine — the registry is
    thread-local. State this explicitly in the API doc.
 
@@ -571,7 +571,7 @@ Concrete plan once the primitive lands:
    `welcome` deps out of `examples/website/Cargo.toml` and into
    `examples/website-simulator/Cargo.toml`.
 3. Move the current `Simulator` component's wgpu plumbing into
-   `website_simulator::app(props: SimulatorProps) -> Primitive`.
+   `website_simulator::app(props: SimulatorProps) -> Element`.
 4. Rewrite `examples/website/src/components/simulator.rs` to
    construct `lazy::<SimulatorProps>("simulator", props)` with a
    placeholder + on_state callback.
@@ -602,7 +602,7 @@ every non-home page drops by ~3x.
   `split-linked-modules` problem we defer to that toolchain
   maturing.
 - **`Lazy` inside a `Lazy`.** Nested chunks (chunk A loads chunk
-  B) should work transparently — chunk B's `Primitive::Lazy` goes
+  B) should work transparently — chunk B's `Element::Lazy` goes
   through chunk A's backend. Not exercised in v1; if it breaks,
   fix when needed.
 - **Server-side rendering.** Different problem; doesn't reduce
@@ -624,14 +624,14 @@ every non-home page drops by ~3x.
 
 ## Implementation order
 
-1. **Primitive scaffolding** — `Primitive::Lazy` variant,
+1. **Element scaffolding** — `Element::Lazy` variant,
    `LazyState`, `ChunkId`, `LazyBridge`, `LazyRegistry` trait,
    `lazy::<T>(id, props)` constructor. Backend handlers stubbed
    ("not implemented" panic). Unit tests for the constructor.
 2. **`chunks!()` proc macro** — reads `[package.metadata.idealyst.chunks]`,
    emits typed constants + `register()`. Tracks Cargo.toml.
 3. **Native handler** — `LazyRegistry` impl on the native backends,
-   `Primitive::Lazy` lowers to a `chunk_app(props)` thunk call and
+   `Element::Lazy` lowers to a `chunk_app(props)` thunk call and
    mounts inline. End-to-end test with a fake chunk crate.
 4. **Build pipeline: chunk discovery + multi-bundle** — CLI walks
    the chunks list, runs `build-web::build` per chunk, writes to
@@ -641,7 +641,7 @@ every non-home page drops by ~3x.
 5. **Content hashing + index.html rewrite** — post-build hash step
    on every bundle file, rewrites JS shim cross-refs and
    `index.html` references, emits `chunk_manifest.json`.
-6. **Web handler** — backend handler for `Primitive::Lazy`: reads
+6. **Web handler** — backend handler for `Element::Lazy`: reads
    manifest, dynamic `import()`, mounts via `mount_chunk`, fires
    state callbacks, cleans up via `unmount_chunk` on detach.
 7. **Migrate the website Simulator** — first real user of the

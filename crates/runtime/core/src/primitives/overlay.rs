@@ -1,6 +1,6 @@
 //! `overlay()` and `anchored_overlay()` — compositions on top of
 //! [`primitives::portal`]. These aren't framework primitives; they're
-//! builders that lower to `Primitive::Portal` at conversion time,
+//! builders that lower to `Element::Portal` at conversion time,
 //! adding the backdrop wiring around the caller's children.
 //!
 //! Defaults baked in here are deliberate UX choices for the common
@@ -13,7 +13,7 @@ use crate::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, PortalHandle, PortalTarget, ViewportPlacement,
 };
 use crate::sources::{IntoStyleSource, StyleSource};
-use crate::{ChildList, IntoPrimitive, Primitive, Ref};
+use crate::{ChildList, IntoElement, Element, Ref};
 use std::rc::Rc;
 
 // =============================================================================
@@ -47,11 +47,11 @@ pub enum BackdropMode {
 /// sheet). Returns a builder; chain `.placement(...)`,
 /// `.backdrop(...)`, `.on_dismiss(...)`, `.trap_focus(...)`,
 /// `.with_style(...)`, `.backdrop_style(...)`, `.bind(...)` and the
-/// composition lowers to a [`Primitive::Portal`] when consumed by a
+/// composition lowers to a [`Element::Portal`] when consumed by a
 /// child list.
 ///
 /// Defaults: `Center` placement, `Dismiss` backdrop, focus-trap on.
-pub fn overlay(children: Vec<Primitive>) -> OverlayBuilder {
+pub fn overlay(children: Vec<Element>) -> OverlayBuilder {
     OverlayBuilder {
         children,
         placement: ViewportPlacement::default(),
@@ -65,9 +65,9 @@ pub fn overlay(children: Vec<Primitive>) -> OverlayBuilder {
 }
 
 /// Builder for the viewport-anchored overlay composition. Lowers to
-/// [`Primitive::Portal`] via `From<OverlayBuilder>`.
+/// [`Element::Portal`] via `From<OverlayBuilder>`.
 pub struct OverlayBuilder {
-    children: Vec<Primitive>,
+    children: Vec<Element>,
     placement: ViewportPlacement,
     backdrop: BackdropMode,
     backdrop_style: Option<StyleSource>,
@@ -114,8 +114,8 @@ impl OverlayBuilder {
     }
 }
 
-impl From<OverlayBuilder> for Primitive {
-    fn from(b: OverlayBuilder) -> Primitive {
+impl From<OverlayBuilder> for Element {
+    fn from(b: OverlayBuilder) -> Element {
         build_overlay_portal(
             PortalTarget::Viewport(b.placement),
             b.children,
@@ -129,20 +129,20 @@ impl From<OverlayBuilder> for Primitive {
     }
 }
 
-impl IntoPrimitive for OverlayBuilder {
-    fn into_primitive(self) -> Primitive {
+impl IntoElement for OverlayBuilder {
+    fn into_element(self) -> Element {
         self.into()
     }
 }
 
 impl ChildList for OverlayBuilder {
-    fn append_to(self, out: &mut Vec<Primitive>) {
+    fn append_to(self, out: &mut Vec<Element>) {
         out.push(self.into());
     }
 }
 
 impl ChildList for Option<OverlayBuilder> {
-    fn append_to(self, out: &mut Vec<Primitive>) {
+    fn append_to(self, out: &mut Vec<Element>) {
         if let Some(b) = self {
             out.push(b.into());
         }
@@ -164,7 +164,7 @@ impl ChildList for Option<OverlayBuilder> {
 /// focus-trap off.
 pub fn anchored_overlay(
     target: AnchorTarget,
-    children: Vec<Primitive>,
+    children: Vec<Element>,
 ) -> AnchoredOverlayBuilder {
     AnchoredOverlayBuilder {
         children,
@@ -182,9 +182,9 @@ pub fn anchored_overlay(
 }
 
 /// Builder for the element-anchored overlay composition. Lowers to
-/// [`Primitive::Portal`] via `From<AnchoredOverlayBuilder>`.
+/// [`Element::Portal`] via `From<AnchoredOverlayBuilder>`.
 pub struct AnchoredOverlayBuilder {
-    children: Vec<Primitive>,
+    children: Vec<Element>,
     target: AnchorTarget,
     side: ElementSide,
     align: ElementAlign,
@@ -249,8 +249,8 @@ impl AnchoredOverlayBuilder {
     }
 }
 
-impl From<AnchoredOverlayBuilder> for Primitive {
-    fn from(b: AnchoredOverlayBuilder) -> Primitive {
+impl From<AnchoredOverlayBuilder> for Element {
+    fn from(b: AnchoredOverlayBuilder) -> Element {
         build_overlay_portal(
             PortalTarget::Anchor {
                 target: b.target,
@@ -269,20 +269,20 @@ impl From<AnchoredOverlayBuilder> for Primitive {
     }
 }
 
-impl IntoPrimitive for AnchoredOverlayBuilder {
-    fn into_primitive(self) -> Primitive {
+impl IntoElement for AnchoredOverlayBuilder {
+    fn into_element(self) -> Element {
         self.into()
     }
 }
 
 impl ChildList for AnchoredOverlayBuilder {
-    fn append_to(self, out: &mut Vec<Primitive>) {
+    fn append_to(self, out: &mut Vec<Element>) {
         out.push(self.into());
     }
 }
 
 impl ChildList for Option<AnchoredOverlayBuilder> {
-    fn append_to(self, out: &mut Vec<Primitive>) {
+    fn append_to(self, out: &mut Vec<Element>) {
         if let Some(b) = self {
             out.push(b.into());
         }
@@ -295,15 +295,15 @@ impl ChildList for Option<AnchoredOverlayBuilder> {
 
 fn build_overlay_portal(
     target: PortalTarget,
-    children: Vec<Primitive>,
+    children: Vec<Element>,
     backdrop: BackdropMode,
     backdrop_style: Option<StyleSource>,
     on_dismiss: Option<Rc<dyn Fn()>>,
     trap_focus: bool,
     content_style: Option<StyleSource>,
     ref_fill: Option<Box<dyn FnOnce(PortalHandle)>>,
-) -> Primitive {
-    let mut portal_children: Vec<Primitive> = Vec::with_capacity(2);
+) -> Element {
+    let mut portal_children: Vec<Element> = Vec::with_capacity(2);
 
     // Backdrop layer (first child = behind content). Skipped when
     // `BackdropMode::None`. `Dismiss` wires the tap to `on_dismiss`;
@@ -320,7 +320,7 @@ fn build_overlay_portal(
         // Construct the backdrop primitive directly so we can install
         // the already-built `Rc<dyn Fn>` and `StyleSource` without
         // going through `pressable()`'s closure-typed builder.
-        let backdrop_primitive = Primitive::Pressable {
+        let backdrop_primitive = Element::Pressable {
             children: Vec::new(),
             on_click,
             style: backdrop_style,
@@ -338,16 +338,16 @@ fn build_overlay_portal(
     // siblings under that view.
     let mut content_view = crate::builder::view(children);
     if let Some(cs) = content_style {
-        if let Primitive::View { style, .. } = content_view.primitive_mut() {
+        if let Element::View { style, .. } = content_view.primitive_mut() {
             *style = Some(cs);
         }
     }
     portal_children.push(content_view.into());
 
-    // Build the portal. `ref_fill` goes straight onto the Primitive
+    // Build the portal. `ref_fill` goes straight onto the Element
     // since `RefFill::Portal` is the right variant for the composed
     // primitive's handle.
-    Primitive::Portal {
+    Element::Portal {
         children: portal_children,
         target,
         on_dismiss,

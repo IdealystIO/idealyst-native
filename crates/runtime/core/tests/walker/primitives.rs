@@ -1,4 +1,4 @@
-//! Primitive dispatch — each `Primitive` variant produces the
+//! Element dispatch — each `Element` variant produces the
 //! expected sequence of backend calls when rendered.
 //!
 //! For each primitive: mount it through `render()`, assert the
@@ -6,7 +6,7 @@
 //! `Insert` / etc. sequence. Catches "I added a primitive variant
 //! and forgot a walker arm" regressions.
 
-use runtime_core::{button, text, view, Primitive};
+use runtime_core::{button, text, view, Element};
 
 use crate::common::{Event, TestRuntime};
 
@@ -30,7 +30,7 @@ fn text_mounts() {
 #[test]
 fn empty_view_mounts() {
     let rt = TestRuntime::new();
-    let _owner = rt.render(view(Vec::<Primitive>::new()).into());
+    let _owner = rt.render(view(Vec::<Element>::new()).into());
 
     let events = rt.events();
     assert!(events.iter().any(|e| matches!(e, Event::CreateView)));

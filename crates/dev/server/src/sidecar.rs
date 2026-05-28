@@ -516,7 +516,7 @@ pub use runtime::run;
 mod runtime {
     use super::{is_eof, read_frame, write_frame, SidecarIn, SidecarOut};
     use crate::WireRecordingBackend;
-    use runtime_core::{mount, Owner, Primitive};
+    use runtime_core::{mount, Owner, Element};
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::io::{stdin, stdout, BufReader, Write};
@@ -558,7 +558,7 @@ mod runtime {
     /// generated wrapper's `use {lib}::app;` referred to before this
     /// refactor. Passed as a function pointer so it's `Send + Sync +
     /// Copy + 'static` without any user-side adaptation.
-    pub fn run(app: fn() -> Primitive) -> std::io::Result<()> {
+    pub fn run(app: fn() -> Element) -> std::io::Result<()> {
         // Install a SIGSEGV/SIGBUS handler so silent dylib-call
         // crashes (from a hot-patched function jumping to a bad
         // address) print the faulting address before the process
@@ -765,7 +765,7 @@ mod runtime {
         session: String,
         rx: mpsc::Receiver<SessionMsg>,
         out: Arc<Mutex<std::io::Stdout>>,
-        app: fn() -> Primitive,
+        app: fn() -> Element,
         initial_viewport: Option<wire::WireViewport>,
     ) {
         let recorder = WireRecordingBackend::new();

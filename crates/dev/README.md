@@ -19,7 +19,7 @@ Two flavors of remote execution use the same machinery:
 | Crate | Path | Role |
 | --- | --- | --- |
 | `wire` | [`wire/`](./wire) | The wire protocol. Pure data — a `Command` enum and three id namespaces (nodes, handlers, styles). No `runtime-core` dep; usable by any consumer of the protocol. |
-| `dev-hot` | [`hot/`](./hot) | Diff-and-patch for hot reload. Compares two `Primitive` trees by identity hash and emits the minimal wire command sequence. |
+| `dev-hot` | [`hot/`](./hot) | Diff-and-patch for hot reload. Compares two `Element` trees by identity hash and emits the minimal wire command sequence. |
 | `dev-client` | [`client/`](./client) | App-side replayer. Receives wire commands and applies them to the local Backend. Bundled into the running app. |
 | `dev-server` | [`server/`](./server) | The dev server itself. Watches sources, drives recompiles, ships diffs over the wire. |
 | `dev-reload` | [`reload/`](./reload) | The reload loop logic — what changes survive a patch, what forces a full rebuild. |

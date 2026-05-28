@@ -107,7 +107,7 @@ impl FrameworkSource {
     ///    Without this, a CLI re-installed against a different commit
     ///    than the project was scaffolded against would generate a
     ///    wrapper pointing at a different rev → cargo treats them as
-    ///    two `runtime-core` instances → `Primitive` type
+    ///    two `runtime-core` instances → `Element` type
     ///    mismatch at link.
     /// 4. Fall back to git, using the supplied defaults (only used
     ///    for fresh `idealyst new` scaffolding where there isn't a
@@ -176,7 +176,7 @@ impl FrameworkSource {
     /// the wrapper itself uses — without it, cargo treats the
     /// wrapper's path-dep and the user's git-dep as two separate
     /// `runtime_core` instances, producing inscrutable "expected
-    /// `Primitive` but found `Primitive`" type errors at the
+    /// `Element` but found `Element`" type errors at the
     /// wrapper-→-user-crate boundary.
     ///
     /// Returns an empty string in `Git` mode (wrapper and user

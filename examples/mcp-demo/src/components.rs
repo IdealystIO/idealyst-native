@@ -29,13 +29,13 @@
 
 #![allow(dead_code)]
 
-use runtime_core::Primitive;
+use runtime_core::Element;
 use runtime_core::{component, idealyst_tool, ui, IdealystSchema};
 
 /// A small icon-with-label widget. Leaf component — no `ui!` body,
 /// so it has no composes edges.
 #[component]
-pub fn IconLabel() -> Primitive {
+pub fn IconLabel() -> Element {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
@@ -45,21 +45,21 @@ pub fn IconLabel() -> Primitive {
 /// multi-paragraph doc-comment is here to demonstrate that the
 /// catalog preserves newlines and blank-line paragraph breaks.
 #[component]
-pub fn PrimaryButton() -> Primitive {
+pub fn PrimaryButton() -> Element {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
 // Note (`//`, not `///`): `spacer` has no doc comment by design — the
 // catalog should record `docs: ""`. This text doesn't become docs.
 #[component]
-pub fn Spacer() -> Primitive {
+pub fn Spacer() -> Element {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
 /// A card with an icon-label header and a primary action.
 /// Composes two leaf components — visible in `composes`.
 #[component]
-pub fn Card() -> Primitive {
+pub fn Card() -> Element {
     ui! {
         View() {
             IconLabel()
@@ -72,7 +72,7 @@ pub fn Card() -> Primitive {
 /// `PrimaryButton`. Reverse adjacency: `Card` and `PrimaryButton`
 /// each list `app_shell` among their users.
 #[component]
-pub fn AppShell() -> Primitive {
+pub fn AppShell() -> Element {
     ui! {
         View() {
             Card()
@@ -100,7 +100,7 @@ pub struct LabeledBadgeProps {
 /// struct signature in the catalog: the resolved view shows
 /// `params: props: &LabeledBadgeProps`.
 #[component]
-pub fn LabeledBadge(_props: &LabeledBadgeProps) -> Primitive {
+pub fn LabeledBadge(_props: &LabeledBadgeProps) -> Element {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
@@ -117,18 +117,18 @@ pub fn darken(_hex: &str, _amount: f32) -> String {
 /// The resolver should resolve `Submit` to `forms::submit` since
 /// only one entry has that short-name.
 pub mod forms {
-    use runtime_core::Primitive;
+    use runtime_core::Element;
     use runtime_core::{component, ui};
 
     /// A submit button. Unique short-name; resolves directly.
     #[component]
-    pub fn Submit() -> Primitive {
+    pub fn Submit() -> Element {
         ::runtime_core::view(::std::vec::Vec::new())
     }
 
     /// Form-page host. Composes `Submit`.
     #[component]
-    pub fn FormRoot() -> Primitive {
+    pub fn FormRoot() -> Element {
         ui! {
             View() {
                 Submit()

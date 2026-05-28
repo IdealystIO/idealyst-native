@@ -79,7 +79,7 @@ pub use watch::{spawn_change_loop, spawn_rebuild_loop, RebuildCommand, RebuildCo
 /// UI tree → AasBackend → Wire (Commands) → RuntimeServerClient → Platform Backend → Native
 /// ```
 ///
-/// The same `Primitive` tree your iOS/web app would render natively
+/// The same `Element` tree your iOS/web app would render natively
 /// is what the server runs against this backend. The wire output is
 /// platform-agnostic; an `RuntimeServerClient` wrapping any platform backend
 /// can replay it.
@@ -1294,7 +1294,7 @@ impl Backend for WireRecordingBackend {
     /// and render with default props, or render a placeholder if no
     /// registration matches. Either way, this override stops the
     /// framework's `unimplemented!()` default from aborting the
-    /// dev-server walker on every `Primitive::External` mount.
+    /// dev-server walker on every `Element::External` mount.
     fn create_external(
         &mut self,
         _type_id: std::any::TypeId,

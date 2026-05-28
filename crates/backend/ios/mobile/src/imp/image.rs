@@ -1,4 +1,4 @@
-//! `Primitive::Image` — `UIImageView` backed by `UIImage(data:)`.
+//! `Element::Image` — `UIImageView` backed by `UIImage(data:)`.
 //!
 //! Two paths land here:
 //!

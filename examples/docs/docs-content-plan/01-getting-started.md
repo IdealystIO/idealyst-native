@@ -62,7 +62,7 @@ You'll get a layout like this:
 my-app/
   Cargo.toml          # crate manifest + Idealyst config under [package.metadata.idealyst]
   src/
-    lib.rs            # exports `pub fn app() -> Primitive` — your whole app
+    lib.rs            # exports `pub fn app() -> Element` — your whole app
 ```
 
 That's it. There is no `ios/` folder, no `android/`, no `web/`. The
@@ -94,14 +94,14 @@ a toggle, an icon, a scrollable container — so you can see what's
 on offer and have something concrete to modify.
 
 Every Idealyst app starts the same way: one function annotated with
-`#[component]` that returns a `Primitive` tree. The minimal shape
+`#[component]` that returns a `Element` tree. The minimal shape
 looks like this:
 
 ```rust
-use runtime_core::{component, signal, ui, Primitive};
+use runtime_core::{component, signal, ui, Element};
 
 #[component]
-pub fn app() -> Primitive {
+pub fn app() -> Element {
     let count = signal!(0);
 
     ui! {

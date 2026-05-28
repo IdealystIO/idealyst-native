@@ -331,14 +331,14 @@ pub trait Backend {
 
     /// Stamp a stable identifier on `node` that JS code can find via
     /// `document.getElementById` (web) or analogous mechanisms
-    /// elsewhere. Used by `Primitive::Lazy`'s web handler: the chunk
+    /// elsewhere. Used by `Element::Lazy`'s web handler: the chunk
     /// loader needs a known DOM id so the chunk's `mount_chunk`
     /// export can root its own `WebBackend` at the placeholder
     /// container.
     ///
     /// Default impl is a no-op — only the web backend has a real
     /// implementation. Other backends (iOS, Android, terminal, …)
-    /// don't need DOM ids; their `Primitive::Lazy` dispatch path
+    /// don't need DOM ids; their `Element::Lazy` dispatch path
     /// runs inline through the thread-local registry and the node
     /// itself is the mount target.
     #[allow(unused_variables)]
@@ -359,7 +359,7 @@ pub trait Backend {
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node);
 
     /// Tappable container node with a click handler attached. Used
-    /// by [`Primitive::Pressable`]. Children are inserted into this
+    /// by [`Element::Pressable`]. Children are inserted into this
     /// node via the regular `insert` path.
     ///
     /// Default impl falls back to `create_view` — appropriate for
@@ -376,7 +376,7 @@ pub trait Backend {
     }
 
     /// Install a raw touch handler on `node`. The framework calls this
-    /// once per `Primitive::View { on_touch: Some(_), .. }` (and any
+    /// once per `Element::View { on_touch: Some(_), .. }` (and any
     /// other primitive that grows a touch slot in the future) after
     /// the node is created.
     ///
@@ -434,7 +434,7 @@ pub trait Backend {
     /// override this to collapse N FFI crossings into one (e.g.
     /// web uses a `DocumentFragment` to push 10 000 children in
     /// a single `appendChild` call). Called by the build walker
-    /// when it expands a `Primitive::Repeat` produced by `ui!`'s
+    /// when it expands a `Element::Repeat` produced by `ui!`'s
     /// `for` lowering.
     fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
         for child in children {
@@ -443,7 +443,7 @@ pub trait Backend {
     }
 
     /// Backend capability flag for the local-render batched-Repeat
-    /// path. When `true`, the walker collapses `Primitive::Repeat`
+    /// path. When `true`, the walker collapses `Element::Repeat`
     /// expansions whose rows match the batchable shape (static
     /// View+Text+style — see [`crate::BackendBatch`]) into one
     /// [`execute_batch`](Self::execute_batch) call. When `false`,
@@ -462,7 +462,7 @@ pub trait Backend {
     /// Execute a queued [`BackendBatch`] in a single round-trip and
     /// return the materialized nodes, indexed by `local_id`.
     ///
-    /// The walker submits this when expanding a `Primitive::Repeat`
+    /// The walker submits this when expanding a `Element::Repeat`
     /// whose rows are all batchable (static View+Text trees with
     /// static styles). On the web backend this turns ~4N FFI calls
     /// (createElement, createTextNode, setAttribute, appendChild ×
@@ -702,7 +702,7 @@ pub trait Backend {
     /// call.
     fn release_reactive_class_binding(&mut self, _binding_id: u32) {}
 
-    /// Optional hook the walker calls when a `Primitive::Text`'s
+    /// Optional hook the walker calls when a `Element::Text`'s
     /// source is `TextSource::Bound`. Backends with declarative wire
     /// formats override this to record `signal_ids` + the
     /// transformer `method` name so they can ship the binding to a
@@ -744,7 +744,7 @@ pub trait Backend {
     }
 
     /// Optional hook the walker calls after building both branches
-    /// of a `Primitive::When` declaratively. Backends record the
+    /// of a `Element::When` declaratively. Backends record the
     /// signal IDs the condition reads, the name of the boolean
     /// transformer (`#[method]`) that decides which branch is
     /// active, and the node ids of the then/otherwise subtrees so
@@ -764,7 +764,7 @@ pub trait Backend {
     }
 
     /// Optional hook the walker calls after building every arm +
-    /// default of a `Primitive::Switch` on the lazy-slot-capture
+    /// default of a `Element::Switch` on the lazy-slot-capture
     /// path. `arms` carries each arm's `(pattern_value, node)` pair
     /// so the remote runtime can compare the discriminant's value
     /// against the pattern and play / tear down the matching arm.
@@ -781,7 +781,7 @@ pub trait Backend {
     }
 
     /// Optional hook the walker calls after building the row
-    /// template of a `Primitive::Virtualizer` on the structured /
+    /// template of a `Element::Virtualizer` on the structured /
     /// generator-backend path. Backends record the count method +
     /// the template node so the remote runtime can clone the
     /// template per row (with id remapping) on every
@@ -798,7 +798,7 @@ pub trait Backend {
         // default: no-op
     }
 
-    /// Hook for `Primitive::Virtualizer` on the structured /
+    /// Hook for `Element::Virtualizer` on the structured /
     /// generator-backend path. Backends opt in to native windowed
     /// list rendering here (Roku → MarkupList). Default delegates
     /// to `note_repeat_binding` so backends that don't yet
@@ -1725,7 +1725,7 @@ pub trait Backend {
     }
 
 
-    /// Create a third-party `Primitive::External` node. Backends that
+    /// Create a third-party `Element::External` node. Backends that
     /// expose an [`ExternalRegistry`](crate::external::ExternalRegistry)
     /// consult it for a registered handler; on miss they should fall
     /// through to a platform-native "not supported" placeholder.
@@ -2023,8 +2023,8 @@ pub trait Backend {
     /// keeps `padding: 0`.
     ///
     /// Distinguished from `apply_safe_area_padding` by the dispatch
-    /// site in the walker: `Primitive::View` with `.safe_area(...)`
-    /// uses padding; `Primitive::ScrollView` with `.safe_area(...)`
+    /// site in the walker: `Element::View` with `.safe_area(...)`
+    /// uses padding; `Element::ScrollView` with `.safe_area(...)`
     /// uses content insets. The user-facing builder is the same
     /// (`.safe_area(...)`); the framework picks the right path
     /// based on which primitive it's on.

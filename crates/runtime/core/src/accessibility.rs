@@ -356,12 +356,12 @@ pub struct AccessibilityRect {
 
 /// The set of primitive kinds the framework ships. Used by
 /// [`default_role`] to map a primitive variant to its default a11y
-/// role without coupling this module to `Primitive` (which lives in
+/// role without coupling this module to `Element` (which lives in
 /// a sibling module and depends on a lot of unrelated machinery).
 ///
-/// Kept in lockstep with `crate::primitive::Primitive`'s variants —
+/// Kept in lockstep with `crate::element::Element`'s variants —
 /// see the `.claude/audits/accessibility-default-role.md` audit (added
-/// in phase 8) which scans for new `Primitive` variants without
+/// in phase 8) which scans for new `Element` variants without
 /// matching entries here. Control-flow variants (`When`, `Switch`,
 /// `Repeat`) are intentionally absent: they're transparent containers
 /// with no a11y identity of their own; the walker reads their inner
@@ -434,7 +434,7 @@ pub fn default_role(kind: PrimitiveKind) -> Option<Role> {
     }
 }
 
-/// Map a `Primitive` reference to its [`PrimitiveKind`]. Used by the
+/// Map a `Element` reference to its [`PrimitiveKind`]. Used by the
 /// walker's a11y plumbing to look up the default role for the
 /// primitive's variant without exposing every primitive's internal
 /// structure to the accessibility module.
@@ -443,34 +443,34 @@ pub fn default_role(kind: PrimitiveKind) -> Option<Role> {
 /// `Repeat`) which are transparent containers with no a11y identity
 /// of their own — the walker reads the actually-mounted subtree's
 /// kind instead.
-pub fn primitive_kind(p: &crate::Primitive) -> Option<PrimitiveKind> {
-    use crate::Primitive;
+pub fn primitive_kind(p: &crate::Element) -> Option<PrimitiveKind> {
+    use crate::Element;
     match p {
-        Primitive::View { .. } => Some(PrimitiveKind::View),
-        Primitive::Text { .. } => Some(PrimitiveKind::Text),
-        Primitive::Button { .. } => Some(PrimitiveKind::Button),
-        Primitive::Pressable { .. } => Some(PrimitiveKind::Pressable),
-        Primitive::Image { .. } => Some(PrimitiveKind::Image),
-        Primitive::Icon { .. } => Some(PrimitiveKind::Icon),
-        Primitive::Link { .. } => Some(PrimitiveKind::Link),
-        Primitive::TextInput { .. } => Some(PrimitiveKind::TextInput),
-        Primitive::TextArea { .. } => Some(PrimitiveKind::TextArea),
-        Primitive::Toggle { .. } => Some(PrimitiveKind::Toggle),
-        Primitive::Slider { .. } => Some(PrimitiveKind::Slider),
-        Primitive::ScrollView { .. } => Some(PrimitiveKind::ScrollView),
-        Primitive::ActivityIndicator { .. } => Some(PrimitiveKind::ActivityIndicator),
-        Primitive::Virtualizer { .. } => Some(PrimitiveKind::Virtualizer),
-        Primitive::Graphics { .. } => Some(PrimitiveKind::Graphics),
-        Primitive::Portal { .. } => Some(PrimitiveKind::Portal),
-        Primitive::Presence { .. } => Some(PrimitiveKind::Presence),
-        Primitive::External { .. } => Some(PrimitiveKind::External),
-        Primitive::Navigator { .. } => Some(PrimitiveKind::Navigator),
-        Primitive::Lazy { .. } => Some(PrimitiveKind::Lazy),
+        Element::View { .. } => Some(PrimitiveKind::View),
+        Element::Text { .. } => Some(PrimitiveKind::Text),
+        Element::Button { .. } => Some(PrimitiveKind::Button),
+        Element::Pressable { .. } => Some(PrimitiveKind::Pressable),
+        Element::Image { .. } => Some(PrimitiveKind::Image),
+        Element::Icon { .. } => Some(PrimitiveKind::Icon),
+        Element::Link { .. } => Some(PrimitiveKind::Link),
+        Element::TextInput { .. } => Some(PrimitiveKind::TextInput),
+        Element::TextArea { .. } => Some(PrimitiveKind::TextArea),
+        Element::Toggle { .. } => Some(PrimitiveKind::Toggle),
+        Element::Slider { .. } => Some(PrimitiveKind::Slider),
+        Element::ScrollView { .. } => Some(PrimitiveKind::ScrollView),
+        Element::ActivityIndicator { .. } => Some(PrimitiveKind::ActivityIndicator),
+        Element::Virtualizer { .. } => Some(PrimitiveKind::Virtualizer),
+        Element::Graphics { .. } => Some(PrimitiveKind::Graphics),
+        Element::Portal { .. } => Some(PrimitiveKind::Portal),
+        Element::Presence { .. } => Some(PrimitiveKind::Presence),
+        Element::External { .. } => Some(PrimitiveKind::External),
+        Element::Navigator { .. } => Some(PrimitiveKind::Navigator),
+        Element::Lazy { .. } => Some(PrimitiveKind::Lazy),
         // Control flow — transparent.
-        Primitive::When { .. }
-        | Primitive::Switch { .. }
-        | Primitive::Each { .. }
-        | Primitive::Repeat { .. } => None,
+        Element::When { .. }
+        | Element::Switch { .. }
+        | Element::Each { .. }
+        | Element::Repeat { .. } => None,
     }
 }
 

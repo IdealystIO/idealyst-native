@@ -447,7 +447,7 @@ pub enum Command {
         #[serde(default)]
         a11y: WireAccessibilityProps,
     },
-    /// Third-party `Primitive::External` node. Only `type_name` crosses
+    /// Third-party `Element::External` node. Only `type_name` crosses
     /// the wire because the underlying `Rc<dyn Any>` props are arbitrary
     /// Rust types with no serialization contract. Clients that have
     /// registered an external factory under `type_name` may consult it

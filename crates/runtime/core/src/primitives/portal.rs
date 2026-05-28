@@ -64,7 +64,7 @@
 //! is the source of truth; flipping it drops the surrounding scope
 //! and triggers [`Backend::release_portal`].
 
-use crate::{Bound, Primitive, Ref, RefFill};
+use crate::{Bound, Element, Ref, RefFill};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -226,13 +226,13 @@ pub trait PortalOps {}
 // Constructor + builder
 // =============================================================================
 
-/// Build a [`Primitive::Portal`] mounting `children` at `target`.
+/// Build a [`Element::Portal`] mounting `children` at `target`.
 ///
 /// No defaults for backdrop — that's a caller concern. For the
 /// common cases (modal, popover, tooltip) reach for the
 /// compositions in [`primitives::overlay`].
-pub fn portal(target: PortalTarget, children: Vec<Primitive>) -> Bound<PortalHandle> {
-    Bound::new(Primitive::Portal {
+pub fn portal(target: PortalTarget, children: Vec<Element>) -> Bound<PortalHandle> {
+    Bound::new(Element::Portal {
         children,
         target,
         on_dismiss: None,
@@ -250,7 +250,7 @@ impl Bound<PortalHandle> {
     /// Backdrop-tap dismissal is composition-level (a backdrop
     /// `pressable()` child with its own `on_click`).
     pub fn on_dismiss<F: Fn() + 'static>(mut self, f: F) -> Self {
-        if let Primitive::Portal { on_dismiss, .. } = &mut self.primitive {
+        if let Element::Portal { on_dismiss, .. } = &mut self.primitive {
             *on_dismiss = Some(Rc::new(f));
         }
         self
@@ -259,14 +259,14 @@ impl Bound<PortalHandle> {
     /// When `true`, keyboard / accessibility focus is confined to
     /// the portal subtree until it closes. Default `false`.
     pub fn trap_focus(mut self, t: bool) -> Self {
-        if let Primitive::Portal { trap_focus, .. } = &mut self.primitive {
+        if let Element::Portal { trap_focus, .. } = &mut self.primitive {
             *trap_focus = t;
         }
         self
     }
 
     pub fn bind(mut self, r: Ref<PortalHandle>) -> Self {
-        if let Primitive::Portal { ref_fill, .. } = &mut self.primitive {
+        if let Element::Portal { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::Portal(Box::new(move |h| r.fill(h))));
         }
         self

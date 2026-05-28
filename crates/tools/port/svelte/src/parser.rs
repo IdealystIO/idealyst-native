@@ -70,7 +70,7 @@ impl Parser for SvelteParser {
                 "on_cleanup".into(),
                 "provide".into(),
                 "inject".into(),
-                "Primitive".into(),
+                "Element".into(),
                 "Signal".into(),
             ],
             components: vec![component],

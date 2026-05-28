@@ -6,12 +6,12 @@
 //! on GTK. On platforms with no menu-bar concept (iOS, Android, web,
 //! terminal, wgpu, ESP, CPU), [`install`] is a silent no-op.
 //!
-//! # Why not a `Primitive::External`?
+//! # Why not a `Element::External`?
 //!
 //! The system menu bar is a process-level chrome surface — there is
 //! exactly one, it lives outside every window's view tree, and macOS
 //! and Windows both treat it as application state set once at boot.
-//! `Primitive::External` is the right fit for content that has an
+//! `Element::External` is the right fit for content that has an
 //! in-tree position (size, layout, parent); the menu bar has none of
 //! those. Modeling it as a primitive would force authors to mount it
 //! "somewhere" arbitrary in the tree (where exactly? the navigator?

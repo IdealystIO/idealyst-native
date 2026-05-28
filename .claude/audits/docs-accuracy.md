@@ -57,7 +57,7 @@ Apply each item to **every page** under `examples/docs/src/pages/` and
 at the doc location, not the framework location.
 
 - [ ] **Type / trait / enum-variant names** — for each capitalized
-      identifier the docs claim is real (e.g. `Signal<T>`, `Primitive`,
+      identifier the docs claim is real (e.g. `Signal<T>`, `Element`,
       `Backend`, `BodyTone`, `HeadingKind`, `Effect`, `Scope`), grep
       the framework + UI crates to confirm it exists with the spelling
       the doc uses. Renames count as findings.
@@ -66,7 +66,7 @@ at the doc location, not the framework location.
       `count.get`, `on_cleanup`, etc.), confirm the symbol exists. Macro
       arms used in the docs (e.g. `signal!(value)`) must match a real
       macro arm in `framework/macros`.
-- [ ] **Primitive prop names** — DSL examples like
+- [ ] **Element prop names** — DSL examples like
       `Button(label = ..., on_click = ...)` or
       `Text(style = title_style)` must use the prop names the primitive
       / component actually accepts. Cross-reference against the
@@ -130,7 +130,7 @@ For each finding include:
   string from the doc as a short quote.
 - **Issue**: one-line description of the inaccuracy.
 - **Why**: cite the framework source of truth — the file/symbol that
-  contradicts the doc (e.g. "no such variant in `runtime_core::Primitive`
+  contradicts the doc (e.g. "no such variant in `runtime_core::Element`
   at `crates/runtime/core/src/lib.rs:NN`").
 - **Suggested fix**: the corrected wording, symbol, or path — or
   "needs design discussion" if the doc reflects an intent that the

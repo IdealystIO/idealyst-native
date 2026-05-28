@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use runtime_core::primitives::scroll_view::{scroll_view, ScrollViewHandle};
 use runtime_core::{
-    derived, effect, pressable, signal, text, ui, view, when, IntoPrimitive, Primitive, Ref, Signal,
+    derived, effect, pressable, signal, text, ui, view, when, IntoElement, Element, Ref, Signal,
     StyleApplication, ViewHandle,
 };
 use drawer_navigator::SlotProps;
@@ -62,7 +62,7 @@ pub struct TocEntry {
 /// `top` and `bottom` slots — see `lib.rs`'s `.top_with(...)` /
 /// `.bottom_with(...)`. This function just returns the page
 /// content wrapped in a styled `View` (background, font).
-pub fn layout(content: Primitive) -> Primitive {
+pub fn layout(content: Element) -> Element {
     let style = ScreenScroll();
     ui! {
         View(style = style) { content }
@@ -108,7 +108,7 @@ const BAND_COMPARE_TOLERANCE: f32 = 8.0;
 /// tick). The author-side code is target-agnostic: write to a
 /// `Signal<f32>`, read each section's `ViewHandle::absolute_frame()`
 /// inside an `effect!`, set the active index.
-pub fn layout_with_toc(content: Primitive, entries: Vec<TocEntry>) -> Primitive {
+pub fn layout_with_toc(content: Element, entries: Vec<TocEntry>) -> Element {
     let row_style = crate::responsive::responsive_style(PageRow::sheet());
     let column_style = PageColumn();
 
@@ -136,7 +136,7 @@ pub fn layout_with_toc(content: Primitive, entries: Vec<TocEntry>) -> Primitive 
             matches!(current_breakpoint().get(), Breakpoint::Lg | Breakpoint::Xl)
         },
         move || render_toc(toc_entries.clone(), active_idx, scroll_y),
-        || view(Vec::<Primitive>::new()).into_primitive(),
+        || view(Vec::<Element>::new()).into_element(),
     );
 
     let body_style = ScreenScroll();
@@ -166,7 +166,7 @@ const GITHUB_DISCUSSIONS_URL: &str =
 /// (browser-native, never popup-blocked), on native a platform
 /// `open_url`. Same styling as `internal_link` so the footer reads
 /// uniformly.
-fn external_link(label: &'static str, url: &'static str) -> Primitive {
+fn external_link(label: &'static str, url: &'static str) -> Element {
     let label_text = label.to_string();
     let style = move || StyleApplication::new(FooterLink::sheet());
     ui! {
@@ -180,7 +180,7 @@ fn external_link(label: &'static str, url: &'static str) -> Primitive {
 /// `external_link` so the footer reads uniformly. Uses `Link` (not
 /// `pressable + nav.push`) so the SDK's link-activator dispatches
 /// the right command for the active navigator (drawer = Select).
-fn internal_link(label: &'static str, route: &'static runtime_core::Route<()>) -> Primitive {
+fn internal_link(label: &'static str, route: &'static runtime_core::Route<()>) -> Element {
     let label_text = label.to_string();
     let style = move || StyleApplication::new(FooterLink::sheet());
     ui! {
@@ -195,7 +195,7 @@ fn internal_link(label: &'static str, route: &'static runtime_core::Route<()>) -
 /// so it scrolls with content. Mounted unconditionally; CSS variant
 /// switching handles narrow-viewport stacking via the `size`
 /// variant on the footer stylesheets.
-pub fn footer() -> Primitive {
+pub fn footer() -> Element {
     let footer_style = crate::responsive::responsive_style(Footer::sheet());
     let grid_style = crate::responsive::responsive_style(FooterGrid::sheet());
     let bottom_style = FooterBottom();
@@ -275,22 +275,22 @@ pub fn footer() -> Primitive {
 /// Menu dispatch: reads `slot.open_drawer` (pre-bound by the SDK
 /// to dispatch `DrawerCmd::Open`). No more thread-local
 /// `OPEN_FN` round-trip.
-pub fn mobile_header(slot: SlotProps) -> Primitive {
+pub fn mobile_header(slot: SlotProps) -> Element {
     let header_style = crate::responsive::responsive_style(MobileHeader::sheet());
     let title_wrap_style = MobileHeaderTitleWrap();
     let title_style = move || StyleApplication::new(MobileHeaderTitle::sheet());
     let button_style = move || StyleApplication::new(MobileHeaderButton::sheet());
 
     // --- menu button (leading) ---
-    let menu_icon: Primitive = ui! { Text(style = button_style) { "\u{2630}" } };
+    let menu_icon: Element = ui! { Text(style = button_style) { "\u{2630}" } };
     let open_drawer = slot.open_drawer.clone();
     let menu_button = pressable(vec![menu_icon], move || open_drawer())
-        .into_primitive();
+        .into_element();
 
     // --- title (center) — reactive on the navigator's active_route ---
     let active_route = slot.active_route;
     let title_source = move || label_for_route(active_route.get()).to_string();
-    let title_view: Primitive = text(title_source).with_style(title_style).into_primitive();
+    let title_view: Element = text(title_source).with_style(title_style).into_element();
     let title_node = ui! {
         View(style = title_wrap_style) { title_view }
     };
@@ -311,11 +311,11 @@ fn render_toc(
     entries: Vec<TocEntry>,
     active_idx: Signal<Option<usize>>,
     scroll_y: Signal<f32>,
-) -> Primitive {
+) -> Element {
     let panel_style = TocPanel();
     let header_style = TocHeader();
 
-    let mut children: Vec<Primitive> = Vec::with_capacity(entries.len() + 1);
+    let mut children: Vec<Element> = Vec::with_capacity(entries.len() + 1);
     children.push(ui! {
         Text(style = header_style) { "On this page" }
     });
@@ -335,13 +335,13 @@ fn toc_link(
     entry: TocEntry,
     active_idx: Signal<Option<usize>>,
     scroll_y: Signal<f32>,
-) -> Primitive {
+) -> Element {
     let label_text = entry.label.to_string();
     let style = move || {
         let variant = if active_idx.get() == Some(index) { "on" } else { "off" };
         StyleApplication::new(TocLink::sheet()).with("active", variant.to_string())
     };
-    let children: Vec<Primitive> = vec![ui! { Text(style = style) { label_text } }];
+    let children: Vec<Element> = vec![ui! { Text(style = style) { label_text } }];
 
     let bound = runtime_core::pressable(children, move || {
         // Pin the clicked entry as active right away — the spy
@@ -373,7 +373,7 @@ fn toc_link(
             (ctx.scroll_to)(0.0, target);
         }
     });
-    runtime_core::IntoPrimitive::into_primitive(bound)
+    runtime_core::IntoElement::into_element(bound)
 }
 
 /// Reactively pick the active TocEntry index whenever the scroll
@@ -488,7 +488,7 @@ fn install_scroll_spy(
 }
 
 /// Build the persistent sidebar. Called once by drawer-navigator
-/// during `init`; the returned Primitive's reactive scope survives
+/// during `init`; the returned Element's reactive scope survives
 /// for the navigator's entire lifetime.
 ///
 /// `is_dark` is an app-level signal lifted out of `app()` so the
@@ -496,13 +496,13 @@ fn install_scroll_spy(
 /// screen would reset on every push). Toggling it both flips the
 /// signal AND swaps the installed idea-ui theme via
 /// `set_idea_theme(...)`.
-pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Primitive {
+pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Element {
     let body_style = SidebarBody();
     let header_style = SidebarHeader();
     let footer_style = SidebarFooter();
 
-    let header_children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Idealyst".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+    let header_children: Vec<Element> = vec![
+        ui! { Typography(content = "Idealyst".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(
                 content = "One codebase, native everywhere.".to_string(),
@@ -541,7 +541,7 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Primitive {
 /// Dark/light theme switch pinned to the bottom of the sidebar.
 /// Flips `is_dark` AND swaps the installed `IdeaTheme` so every
 /// component re-renders against the new token set.
-fn theme_toggle(footer_style: SidebarFooter, is_dark: Signal<bool>) -> Primitive {
+fn theme_toggle(footer_style: SidebarFooter, is_dark: Signal<bool>) -> Element {
     let on_change: Rc<dyn Fn(bool)> = Rc::new(move |dark| {
         is_dark.set(dark);
         if dark {
@@ -551,7 +551,7 @@ fn theme_toggle(footer_style: SidebarFooter, is_dark: Signal<bool>) -> Primitive
         }
     });
 
-    let row_children: Vec<Primitive> = vec![
+    let row_children: Vec<Element> = vec![
         ui! {
             Switch(
                 label = Some("Dark mode".to_string()),
@@ -573,7 +573,7 @@ fn nav_link(
     route: &'static runtime_core::Route<()>,
     label: &'static str,
     active_route: runtime_core::Signal<&'static str>,
-) -> Primitive {
+) -> Element {
     let route_for_match: &'static str = route.name();
     // The `active` axis is derived reactively from `active_route`: the
     // `derived(...)` closure reads the signal, so the style effect

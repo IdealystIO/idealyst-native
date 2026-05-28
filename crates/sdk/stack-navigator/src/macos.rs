@@ -4,7 +4,7 @@
 //! animated iOS-style push/pop stack. The outlet swaps its single
 //! child on Push/Pop/Replace/Reset — same minimalism the terminal
 //! handler ships with. Author code that wants per-screen header
-//! chrome builds it inside the screen Primitive itself.
+//! chrome builds it inside the screen Element itself.
 //!
 //! No `macos-navigator-helpers` crate — this handler stays small
 //! and uses only the public `Backend` trait surface plus

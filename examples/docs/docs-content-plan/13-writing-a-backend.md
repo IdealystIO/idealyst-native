@@ -1,7 +1,7 @@
 # Writing your own backend
 
 A backend is the piece of code that translates the framework's
-`Primitive` tree into something a particular platform can put on
+`Element` tree into something a particular platform can put on
 screen — DOM elements, UIViews, Android Views, BrightScript
 SceneGraph nodes, or anything else you can drive from Rust.
 

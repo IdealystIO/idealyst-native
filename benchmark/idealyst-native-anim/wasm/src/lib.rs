@@ -24,7 +24,7 @@ use std::rc::Rc;
 use backend_web::WebBackend;
 use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo};
 use runtime_core::{
-    node_ref, render, signal, ui, Color, Length, Owner, Position, Primitive, RafLoop, Ref, Signal,
+    node_ref, render, signal, ui, Color, Length, Owner, Position, Element, RafLoop, Ref, Signal,
     StyleRules, StyleSheet, TokenEntry, Tokenized, ViewHandle,
 };
 use idea_ui::{install_theme, ThemeTokens};
@@ -405,7 +405,7 @@ fn ball_sheet() -> Rc<StyleSheet> {
 // App tree
 // =============================================================================
 
-fn app(count_sig: Signal<u64>) -> Primitive {
+fn app(count_sig: Signal<u64>) -> Element {
     install_theme(EmptyTheme);
     let ss = stage_sheet();
     let bs = ball_sheet();
@@ -421,7 +421,7 @@ fn app(count_sig: Signal<u64>) -> Primitive {
                         let refs: Vec<Ref<ViewHandle>> =
                             STORE.with(|s| s.borrow().refs.clone());
                         let bs = bs.clone();
-                        let children: Vec<Primitive> = refs
+                        let children: Vec<Element> = refs
                             .iter()
                             .map(|r| ui! { View(style = bs.clone()) {}.bind(*r) })
                             .collect();

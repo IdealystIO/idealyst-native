@@ -37,7 +37,7 @@ it's what every mobile developer already maps onto:
   Navigation composes these by nesting. We should too.
 
 The screens themselves are the same in all three cases — a render
-closure that takes typed params and produces a `Primitive` subtree.
+closure that takes typed params and produces a `Element` subtree.
 What differs is **how the navigator decides which screen is active and
 how the user moves between them**.
 
@@ -166,12 +166,12 @@ within that stack, exactly like today.
 
 ## How the framework changes
 
-### One `Primitive` variant — or three?
+### One `Element` variant — or three?
 
 The cleanest answer is **three**, mirroring the runtime shapes:
 
 ```rust
-pub enum Primitive {
+pub enum Element {
     // existing
     Navigator(Box<navigator::Navigator>),
 
@@ -446,7 +446,7 @@ Roughly the order I'd land this:
 
 1. **Refactor.** Pull the kind-shared bits of `primitives::navigator`
    into a `navigator::shared` submodule. Rename the file-level
-   `Navigator` to `StackNavigator` *internally* (the `Primitive`
+   `Navigator` to `StackNavigator` *internally* (the `Element`
    variant stays `Navigator` for API stability), and move
    stack-specific code under `navigator::stack`. No new features, just
    set the room up. (Small PR, mostly mechanical.)
@@ -457,7 +457,7 @@ Roughly the order I'd land this:
    navigators yet — this just unblocks (3) and (4).
 
 3. **`TabNavigator`.** Smallest of the new kinds — no overlay
-   geometry, no breakpoint logic. Lands as its own `Primitive`
+   geometry, no breakpoint logic. Lands as its own `Element`
    variant, its own backend hook, its own handle type. Validate the
    shared substrate is actually shared.
 

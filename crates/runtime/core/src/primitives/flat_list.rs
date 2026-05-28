@@ -1,7 +1,7 @@
 //! `flat_list<T>` — typed wrapper around `Virtualizer`.
 //!
 //! Author-facing API. Captures their `Signal<Vec<T>>` + closures and
-//! produces a `Primitive::Virtualizer` whose callbacks read the
+//! produces a `Element::Virtualizer` whose callbacks read the
 //! current `Vec<T>` snapshot at call time. Reactive: if `data`
 //! changes (insertions, deletions, reorders), the framework's
 //! backend re-runs its diff and updates the mounted set.
@@ -13,7 +13,7 @@
 use crate::primitives::virtualizer::{
     virtualizer, ItemKey, ItemSize, VirtualizerHandle,
 };
-use crate::{Bound, Primitive, Signal};
+use crate::{Bound, Element, Signal};
 use std::rc::Rc;
 
 /// Typed size strategy. `Known` is fastest; use it whenever you can
@@ -47,7 +47,7 @@ where
     T: Clone + 'static,
     K: Fn(usize, &T) -> ItemKey + 'static,
     S: 'static,
-    R: Fn(usize, &T) -> Primitive + 'static,
+    R: Fn(usize, &T) -> Element + 'static,
     FlatListItemSize<T>: 'static,
 {
     let _ = std::marker::PhantomData::<S>;
@@ -101,7 +101,7 @@ where
     };
 
     // render_item: read data[idx], build the user's primitive.
-    let render_item_erased: Rc<dyn Fn(usize) -> Primitive> = {
+    let render_item_erased: Rc<dyn Fn(usize) -> Element> = {
         let data = data;
         let render_item = render_item.clone();
         Rc::new(move |idx| {

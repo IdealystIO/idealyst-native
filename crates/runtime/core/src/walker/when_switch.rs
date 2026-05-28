@@ -1,10 +1,10 @@
-//! `Primitive::When` and `Primitive::Switch` build paths, both the
+//! `Element::When` and `Element::Switch` build paths, both the
 //! closure-driven Effect form and the lazy-slot-capture declarative
 //! form generator backends consume.
 //!
 //! [`build_when`] is the dispatcher invoked by the walker dispatcher
-//! for `Primitive::When`; [`build_switch`] is the same role for
-//! `Primitive::Switch`. They pick between the closure path and the
+//! for `Element::When`; [`build_switch`] is the same role for
+//! `Element::Switch`. They pick between the closure path and the
 //! declarative path based on the backend's
 //! `supports_lazy_slot_capture` capability plus whether the input
 //! `Derived` carries structured metadata.
@@ -12,7 +12,7 @@
 use super::debug::time_backend_create;
 use super::style::attach_style;
 use crate::backend::Backend;
-use crate::primitive::Primitive;
+use crate::element::Element;
 use crate::reactive::{self, untrack, Effect};
 use crate::scheduling::schedule_microtask;
 use crate::sources::StyleSource;
@@ -22,8 +22,8 @@ use std::rc::Rc;
 pub(super) fn build_when<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     cond: crate::derive::Derived<bool>,
-    then: Box<dyn Fn() -> Primitive>,
-    otherwise: Box<dyn Fn() -> Primitive>,
+    then: Box<dyn Fn() -> Element>,
+    otherwise: Box<dyn Fn() -> Element>,
     style: Option<StyleSource>,
 ) -> B::Node {
     // Two paths: declarative (the backend wants structured
@@ -48,8 +48,8 @@ pub(super) fn build_when<B: Backend + 'static>(
 pub(super) fn build_switch<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     discriminant: crate::derive::Derived<crate::__serde_json::Value>,
-    arms: Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Primitive>)>,
-    default: Box<dyn Fn() -> Primitive>,
+    arms: Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Element>)>,
+    default: Box<dyn Fn() -> Element>,
     style: Option<StyleSource>,
 ) -> B::Node {
     let lazy = backend.borrow().supports_lazy_slot_capture();
@@ -75,8 +75,8 @@ pub(super) fn build_switch<B: Backend + 'static>(
 fn build_when_closure<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     cond: crate::derive::Derived<bool>,
-    then: Box<dyn Fn() -> Primitive>,
-    otherwise: Box<dyn Fn() -> Primitive>,
+    then: Box<dyn Fn() -> Element>,
+    otherwise: Box<dyn Fn() -> Element>,
 ) -> B::Node {
     let placeholder = time_backend_create(pkind!(View), || {
         backend.borrow_mut().create_reactive_anchor()
@@ -120,7 +120,7 @@ fn build_when_closure<B: Backend + 'static>(
     placeholder
 }
 
-/// Build a `Primitive::When` for backends that opt into
+/// Build a `Element::When` for backends that opt into
 /// declarative conditional rendering via
 /// `handles_when_natively()`. Both branches are constructed
 /// eagerly, both attached to the same anchor, and the binding
@@ -135,8 +135,8 @@ fn build_when_closure<B: Backend + 'static>(
 fn build_when_declarative<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     cond: crate::derive::Derived<bool>,
-    then: Box<dyn Fn() -> Primitive>,
-    otherwise: Box<dyn Fn() -> Primitive>,
+    then: Box<dyn Fn() -> Element>,
+    otherwise: Box<dyn Fn() -> Element>,
 ) -> B::Node {
     let anchor = time_backend_create(pkind!(View), || {
         backend.borrow_mut().create_reactive_anchor()
@@ -172,7 +172,7 @@ fn build_when_declarative<B: Backend + 'static>(
     anchor
 }
 
-/// Build a `Primitive::Switch` for backends that opted into lazy
+/// Build a `Element::Switch` for backends that opted into lazy
 /// slot capture (Roku). Each arm's subtree is captured as a slot
 /// (a self-contained command list); the backend stashes those
 /// keyed by their root node id and the runtime plays / tears them
@@ -180,8 +180,8 @@ fn build_when_declarative<B: Backend + 'static>(
 fn build_switch_declarative<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     discriminant: crate::derive::Derived<crate::__serde_json::Value>,
-    arms: Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Primitive>)>,
-    default: Box<dyn Fn() -> Primitive>,
+    arms: Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Element>)>,
+    default: Box<dyn Fn() -> Element>,
 ) -> B::Node {
     let anchor = time_backend_create(pkind!(View), || {
         backend.borrow_mut().create_reactive_anchor()
@@ -217,7 +217,7 @@ fn build_switch_declarative<B: Backend + 'static>(
     anchor
 }
 
-/// Build a `Primitive::Switch` via the closure-driven Effect path.
+/// Build a `Element::Switch` via the closure-driven Effect path.
 /// On each signal change inside `discriminant.compute`, the Effect
 /// re-evaluates the discriminant, dedupes against the previously
 /// seen JSON value, and (if changed) tears down the prior branch
@@ -229,8 +229,8 @@ fn build_switch_declarative<B: Backend + 'static>(
 fn build_switch_closure<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     discriminant: crate::derive::Derived<crate::__serde_json::Value>,
-    arms: Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Primitive>)>,
-    default: Box<dyn Fn() -> Primitive>,
+    arms: Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Element>)>,
+    default: Box<dyn Fn() -> Element>,
 ) -> B::Node {
     let placeholder = time_backend_create(pkind!(View), || {
         backend.borrow_mut().create_reactive_anchor()
@@ -250,8 +250,8 @@ fn build_switch_closure<B: Backend + 'static>(
     // every signal change.
     let opaque = discriminant.is_opaque();
     let compute = discriminant.compute.clone();
-    let arms: Rc<Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Primitive>)>> = Rc::new(arms);
-    let default: Rc<dyn Fn() -> Primitive> = default.into();
+    let arms: Rc<Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Element>)>> = Rc::new(arms);
+    let default: Rc<dyn Fn() -> Element> = default.into();
 
     let _e = Effect::new(move || {
         let new_key = (compute)();

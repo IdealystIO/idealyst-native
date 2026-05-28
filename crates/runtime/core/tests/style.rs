@@ -368,7 +368,7 @@ fn tokenized_value_alone_does_not_subscribe() {
 /// mount's sweep would have unregistered the first sheet.
 #[test]
 fn reactive_style_sheet_not_swept_while_node_alive() {
-    use runtime_core::{view, IntoPrimitive, StyleApplication, StyleSheet, VariantSet};
+    use runtime_core::{view, IntoElement, StyleApplication, StyleSheet, VariantSet};
     use std::rc::Rc;
 
     use common::{Event, TestRuntime};
@@ -390,7 +390,7 @@ fn reactive_style_sheet_not_swept_while_node_alive() {
                 }));
                 StyleApplication::new(sheet)
             })
-            .into_primitive(),
+            .into_element(),
         view(vec![])
             .with_style(|| {
                 let sheet = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
@@ -399,9 +399,9 @@ fn reactive_style_sheet_not_swept_while_node_alive() {
                 }));
                 StyleApplication::new(sheet)
             })
-            .into_primitive(),
+            .into_element(),
     ])
-    .into_primitive();
+    .into_element();
 
     let _owner = rt.render(tree);
 
@@ -439,7 +439,7 @@ fn reactive_style_sheet_not_swept_while_node_alive() {
 /// the sheet alive past the node's lifetime.
 #[test]
 fn reactive_style_sheet_unregisters_on_scope_drop() {
-    use runtime_core::{view, IntoPrimitive, StyleApplication, StyleSheet, VariantSet};
+    use runtime_core::{view, IntoElement, StyleApplication, StyleSheet, VariantSet};
     use std::rc::Rc;
 
     use common::{Event, TestRuntime};
@@ -456,7 +456,7 @@ fn reactive_style_sheet_unregisters_on_scope_drop() {
                     }));
                     StyleApplication::new(sheet)
                 })
-                .into_primitive(),
+                .into_element(),
         );
         // Owner alive: registered, not unregistered.
         let events = rt.events();
@@ -531,7 +531,7 @@ fn signal_reactivity_alongside_tokens() {
 #[test]
 fn signal_class_falls_back_to_reactive_effect_on_unsupporting_backend() {
     use runtime_core::{
-        signal, signal_class, view, IntoPrimitive, Signal, StyleApplication, StyleSheet,
+        signal, signal_class, view, IntoElement, Signal, StyleApplication, StyleSheet,
         VariantSet,
     };
     use std::rc::Rc;
@@ -561,7 +561,7 @@ fn signal_class_falls_back_to_reactive_effect_on_unsupporting_backend() {
         _ => unreachable!(),
     });
 
-    let _owner = rt.render(view(vec![]).with_style(spec).into_primitive());
+    let _owner = rt.render(view(vec![]).with_style(spec).into_element());
 
     // Initial mount: signal is 0 → sheet_a registered + applied.
     let initial_events = rt.events();
@@ -616,7 +616,7 @@ fn signal_class_falls_back_to_reactive_effect_on_unsupporting_backend() {
 fn typeface_emits_register_asset_with_real_bytes_then_register_typeface() {
     use runtime_core::assets::{SystemFallback, Typeface};
     use runtime_core::{
-        face, typeface, view, FontFamily, FontStyle, FontWeight, IntoPrimitive,
+        face, typeface, view, FontFamily, FontStyle, FontWeight, IntoElement,
         StyleApplication, StyleSheet, VariantSet,
     };
     use std::rc::Rc;
@@ -645,7 +645,7 @@ fn typeface_emits_register_asset_with_real_bytes_then_register_typeface() {
             }));
             StyleApplication::new(sheet)
         })
-        .into_primitive();
+        .into_element();
     let _owner = rt.render(tree);
 
     let events = rt.events();

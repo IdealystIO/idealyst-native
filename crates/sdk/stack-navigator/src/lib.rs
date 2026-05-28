@@ -1,6 +1,6 @@
 //! First-party Stack navigator SDK.
 //!
-//! Routes through `Primitive::Navigator`; the SDK registers a
+//! Routes through `Element::Navigator`; the SDK registers a
 //! per-backend `NavigatorHandler` that drives a native push/pop stack
 //! (UINavigationController on iOS, FragmentManager on Android, DOM
 //! subtree swap on web).
@@ -27,7 +27,7 @@ use runtime_core::primitives::navigator::{
     Screen, ScreenBuilder,
 };
 use runtime_core::{
-    Bound, Color, IntoStyleSource, Primitive, Ref, RefFill, StyleApplication, StyleRules,
+    Bound, Color, IntoStyleSource, Element, Ref, RefFill, StyleApplication, StyleRules,
     StyleSheet, StyleSource, VariantSet,
 };
 use std::any::{Any, TypeId};
@@ -235,12 +235,12 @@ impl Navigator {
             style: None,
             ref_fill: None,
         };
-        Bound::new(nav.into_primitive())
+        Bound::new(nav.into_element())
     }
 
-    fn into_primitive(self) -> Primitive {
+    fn into_element(self) -> Element {
         let Navigator { config, presentation, slot_styles, style, ref_fill } = self;
-        Primitive::Navigator {
+        Element::Navigator {
             type_id: TypeId::of::<StackPresentation>(),
             type_name: std::any::type_name::<StackPresentation>(),
             presentation: Rc::new(presentation) as Rc<dyn Any>,
@@ -253,7 +253,7 @@ impl Navigator {
     }
 }
 
-fn with_navigator_prim<F: FnOnce(&mut Primitive)>(b: &mut Bound<StackHandle>, f: F) {
+fn with_navigator_prim<F: FnOnce(&mut Element)>(b: &mut Bound<StackHandle>, f: F) {
     f(b.primitive_mut());
 }
 
@@ -316,7 +316,7 @@ impl StackBuilder for Bound<StackHandle> {
         let route_name = route.name();
         let route_path = route.path();
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { config, .. } = p {
+            if let Element::Navigator { config, .. } = p {
                 let builder: ScreenBuilder = Rc::new(move |any_params: Box<dyn Any>| {
                     let typed: Box<P> = any_params
                         .downcast::<P>()
@@ -339,7 +339,7 @@ impl StackBuilder for Bound<StackHandle> {
 
     fn header_style(mut self, s: impl IntoStyleSource) -> Self {
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { slot_styles, .. } = p {
+            if let Element::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("header", s.into_style_source()));
             }
         });
@@ -348,7 +348,7 @@ impl StackBuilder for Bound<StackHandle> {
 
     fn title_style(mut self, s: impl IntoStyleSource) -> Self {
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { slot_styles, .. } = p {
+            if let Element::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("title", s.into_style_source()));
             }
         });
@@ -357,7 +357,7 @@ impl StackBuilder for Bound<StackHandle> {
 
     fn button_style(mut self, s: impl IntoStyleSource) -> Self {
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { slot_styles, .. } = p {
+            if let Element::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("button", s.into_style_source()));
             }
         });
@@ -401,7 +401,7 @@ impl StackBuilder for Bound<StackHandle> {
             ));
         }
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { slot_styles, .. } = p {
+            if let Element::Navigator { slot_styles, .. } = p {
                 slot_styles.extend(pushes);
             }
         });
@@ -410,7 +410,7 @@ impl StackBuilder for Bound<StackHandle> {
 
     fn bind(mut self, r: Ref<StackHandle>) -> Self {
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { ref_fill, .. } = p {
+            if let Element::Navigator { ref_fill, .. } = p {
                 *ref_fill = Some(RefFill::Navigator(Box::new(move |handle| {
                     r.fill(StackHandle::from_inner(handle));
                 })));

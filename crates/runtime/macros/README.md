@@ -40,7 +40,7 @@ Function-like macro. Parses `Name(prop = value) { children }` and desugars to:
 - Plain `if` for conditions with no `.get()` (chosen once at construction).
 
 Children flow through the `ChildList` trait, which knows how to flatten a
-`Primitive`, an `Option<Primitive>`, a `Vec<Primitive>`, or a `Bound<H>`
+`Element`, an `Option<Element>`, a `Vec<Element>`, or a `Bound<H>`
 into the surrounding slot.
 
 ### `jsx!`
@@ -90,7 +90,7 @@ resolver.
   reactive. False positives (e.g. `HashMap::get`) waste work but don't break
   anything. Renamed imports or paths like `my::signal::get(s)` are not
   detected.
-- **Primitive name dispatch is by literal ident.** `Text`, `Button`, `View`,
+- **Element name dispatch is by literal ident.** `Text`, `Button`, `View`,
   `When` are recognized by name only; renamed imports won't dispatch.
 - **`vec![...]` and `children![...]` are special-cased** in the rewriter;
   other list-shaped macros are opaque.

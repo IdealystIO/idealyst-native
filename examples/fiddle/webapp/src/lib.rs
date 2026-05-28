@@ -33,7 +33,7 @@ use runtime_core::primitives::text_area::{text_area, TextAreaHandle};
 use runtime_core::stylesheet;
 use runtime_core::{
     button, signal, switch, text, text_fmt, ui, AlignItems, Color, FlexDirection,
-    FontWeight, JustifyContent, KeyEvent, KeyOutcome, Length, Overflow, Position, Primitive, Ref,
+    FontWeight, JustifyContent, KeyEvent, KeyOutcome, Length, Overflow, Position, Element, Ref,
     Signal,
 };
 use idea_codeblock::code_block;
@@ -336,7 +336,7 @@ pub fn start() {
     OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
 }
 
-fn app() -> Primitive {
+fn app() -> Element {
     // Root signals — owned at the app level so they survive every
     // re-render the framework triggers on signal updates.
     let files: Signal<BTreeMap<String, String>> = signal!(starter_files());
@@ -380,7 +380,7 @@ fn file_tree_panel(
     active: Signal<String>,
     expanded: Signal<BTreeSet<String>>,
     buffer: Signal<String>,
-) -> Primitive {
+) -> Element {
     // The tree subtree rebuilds when any of three things change:
     // the set of file paths, the expanded folders, or the active
     // path (so the highlight on the active row stays current).
@@ -496,10 +496,10 @@ fn render_tree_node(
     expanded_signal: Signal<BTreeSet<String>>,
     files: Signal<BTreeMap<String, String>>,
     buffer: Signal<String>,
-) -> Primitive {
+) -> Element {
     if node.full_path.is_empty() {
         // Virtual root — render its children flat.
-        let kids: Vec<Primitive> = node
+        let kids: Vec<Element> = node
             .children
             .iter()
             .map(|c| {
@@ -524,7 +524,7 @@ fn render_tree_node(
         let header_style = TreeRow()
             .state(TreeRowState::Idle)
             .padding_left(row_indent(depth));
-        let mut nodes: Vec<Primitive> = vec![ui! {
+        let mut nodes: Vec<Element> = vec![ui! {
             Button(
                 label = text_fmt!("{}{}", chevron, name),
                 on_click = move || {
@@ -597,7 +597,7 @@ fn editor_panel(
     files: Signal<BTreeMap<String, String>>,
     active: Signal<String>,
     buffer: Signal<String>,
-) -> Primitive {
+) -> Element {
     // Textarea -> buffer + files: every keystroke updates BOTH so
     // the highlight overlay refreshes this frame and `/compile`
     // sees the latest contents.
@@ -665,7 +665,7 @@ fn controls_panel(
     is_compiling: Signal<bool>,
     status: Signal<String>,
     iframe_url: Signal<String>,
-) -> Primitive {
+) -> Element {
     let sim_button = button("Simulator", move || mode_sim.set(true))
         .disabled(move || mode_sim.get());
     let web_button = button("Web", move || mode_sim.set(false))
@@ -725,7 +725,7 @@ fn controls_panel(
 // Preview — `WebView` driven by the `iframe_url` signal.
 // =============================================================================
 
-fn preview_panel(iframe_url: Signal<String>) -> Primitive {
+fn preview_panel(iframe_url: Signal<String>) -> Element {
     webview::WebView(webview::WebViewProps {
         url: webview::url(move || iframe_url.get()),
         ..Default::default()

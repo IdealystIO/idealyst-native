@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use backend_macos::MacosBackend;
-use runtime_core::Primitive;
+use runtime_core::Element;
 use objc2::rc::Retained;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSView, NSWindow,
@@ -72,14 +72,14 @@ impl std::error::Error for RunError {}
 /// (`toolbar::register`, `webview::register`, …) should use
 /// [`run_with`] so they get a `&mut MacosBackend` to register against
 /// before the render path starts.
-pub fn run<F: FnOnce() -> Primitive>(app: F, opts: RunOptions) -> Result<(), RunError> {
+pub fn run<F: FnOnce() -> Element>(app: F, opts: RunOptions) -> Result<(), RunError> {
     run_with(app, opts, |_| {})
 }
 
 /// Like [`run`], but invokes `register_extensions` with a mutable
 /// reference to the freshly constructed `MacosBackend` before the
 /// render pass starts. Third-party SDKs whose `register(&mut B)` adds
-/// `Primitive::External` handlers (`toolbar`, `webview`, future
+/// `Element::External` handlers (`toolbar`, `webview`, future
 /// `maps-macos`) must run before render so the framework sees the
 /// handler when it first walks the tree.
 ///
@@ -95,7 +95,7 @@ pub fn run<F: FnOnce() -> Primitive>(app: F, opts: RunOptions) -> Result<(), Run
 /// ```
 pub fn run_with<F, R>(app: F, opts: RunOptions, register_extensions: R) -> Result<(), RunError>
 where
-    F: FnOnce() -> Primitive,
+    F: FnOnce() -> Element,
     R: FnOnce(&mut MacosBackend),
 {
     let Some(mtm) = MainThreadMarker::new() else {

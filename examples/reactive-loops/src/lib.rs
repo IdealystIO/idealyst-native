@@ -22,28 +22,17 @@ use idea_ui::{
     install_idea_theme, light_theme, typography_kind, Card, CardPadding, Stack, StackAxis,
     StackGap, StackPadding, Typography,
 };
-use runtime_core::{component, memo, signal, ui, Primitive, Signal};
+use runtime_core::{component, memo, rx, signal, ui, Element, Signal};
 
 // ---------------------------------------------------------------------------
-// Per-target SDK-registration hook the CLI-generated wrappers call before
-// mount. The wrappers pass `&mut backend.borrow_mut()` (a `RefMut`), which
-// deref-coerces to the concrete `&mut <Backend>` here — a generic
-// `<B: Backend>` can't accept that (it'd infer `B = RefMut<…>`), so the
-// signature must be per-backend concrete. No third-party SDKs here, so each
-// body is empty.
+// SDK-registration hook the CLI-generated wrappers call before mount. No
+// third-party SDKs here, so it's an empty generic over `Backend` —
+// backend-agnostic, no per-target `#[cfg]` and no `backend-*` dep. The
+// wrappers pass the concrete backend per platform (web/iOS by value,
+// android via `&mut *b`), so `B` resolves to that backend.
 // ---------------------------------------------------------------------------
 
-#[cfg(target_arch = "wasm32")]
-pub fn register_extensions(_backend: &mut backend_web::WebBackend) {}
-
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {}
-
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register_extensions(_backend: &mut backend_android::AndroidBackend) {}
-
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
-pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
+pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 
 /// Static data — a plain array. `for label in LEGEND` lowers to a
 /// built-once list (the type isn't a signal): the SAME `for` syntax is
@@ -68,10 +57,10 @@ struct Row {
 // ---------------------------------------------------------------------------
 
 #[component]
-fn Header() -> Primitive {
+fn Header() -> Element {
     ui! {
         Stack(gap = StackGap::Sm) {
-            Typography(content = "Reactive loops".to_string(), kind = typography_kind::H1.into())
+            Typography(content = "Reactive loops".to_string(), kind = typography_kind::H1)
             Typography(
                 content = "Each list is a `for … in …` in `ui!`, and the loop body is a real component. The iterable's TYPE decides reactivity — a Signal rebuilds, a plain value is static.".to_string(),
                 muted = true,
@@ -88,7 +77,7 @@ struct ItemRowProps {
 /// One reactive row: label · its own click count · `+` (increments only
 /// THIS row — fine-grained) · `Remove` (drops the row by id).
 #[component]
-fn ItemRow(props: &ItemRowProps) -> Primitive {
+fn ItemRow(props: &ItemRowProps) -> Element {
     let id = props.row.id;
     let count = props.row.count;
     let items = props.items;
@@ -97,15 +86,16 @@ fn ItemRow(props: &ItemRowProps) -> Primitive {
     let inc = move || count.update(|n| *n += 1);
     let remove = move || items.update(|l| l.retain(|r| r.id != id));
 
-    // The count is an inline primitive `Text`, NOT `Typography`: `ui!`
-    // wraps a `.get()`-bearing `Text(content = …)` in a reactive
-    // `Derived<String>` so only THIS row's count re-renders. User
-    // components like `Typography` take their props as a one-time
-    // snapshot, so they wouldn't update.
+    // The count is reactive STYLED text. `Typography.content` is a
+    // `Reactive<String>`, and `rx!(expr)` wraps the `.get()`-bearing
+    // expression as a live `Reactive::Dynamic` — so only THIS row's
+    // count re-renders, with full Typography styling. A bare value
+    // (`content = label`) is a static snapshot; a signal or `rx!(…)`
+    // is live. Type-driven, no `.get()` heuristic.
     ui! {
         Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
             Typography(content = label)
-            Text(content = format!("clicked {}×", count.get()))
+            Typography(content = rx!(format!("clicked {}×", count.get())), muted = true)
             Button(label = "+".to_string(), on_click = inc)
             Button(label = "Remove".to_string(), on_click = remove)
         }
@@ -117,7 +107,7 @@ struct GridCellProps {
 }
 
 #[component]
-fn GridCell(props: &GridCellProps) -> Primitive {
+fn GridCell(props: &GridCellProps) -> Element {
     let i = props.index;
     ui! {
         Card(padding = CardPadding::Md) {
@@ -127,10 +117,10 @@ fn GridCell(props: &GridCellProps) -> Primitive {
 }
 
 #[component]
-fn Legend() -> Primitive {
+fn Legend() -> Element {
     ui! {
         Card(padding = CardPadding::Md) {
-            Typography(content = "Static — for label in LEGEND (a plain array, built once)".to_string(), kind = typography_kind::H3.into())
+            Typography(content = "Static — for label in LEGEND (a plain array, built once)".to_string(), kind = typography_kind::H3)
             Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
                 for label in LEGEND {
                     Typography(content = label.to_string())
@@ -151,7 +141,7 @@ struct DynamicListProps {
 
 /// Section 1 — the reactive list: `for row in items { ItemRow(...) }`.
 #[component]
-fn DynamicList(props: &DynamicListProps) -> Primitive {
+fn DynamicList(props: &DynamicListProps) -> Element {
     let items = props.items;
     let next_id = props.next_id;
 
@@ -173,7 +163,7 @@ fn DynamicList(props: &DynamicListProps) -> Primitive {
 
     ui! {
         Card(padding = CardPadding::Md) {
-            Typography(content = "Dynamic list — for row in items → ItemRow(...)".to_string(), kind = typography_kind::H3.into())
+            Typography(content = "Dynamic list — for row in items → ItemRow(...)".to_string(), kind = typography_kind::H3)
             // Inline reactive `Text` — reads `items` + the `total` memo,
             // so it re-renders on add/remove/per-row clicks.
             Text(content = format!("{} row(s), {} total clicks", items.get().len(), total.get()))
@@ -199,7 +189,7 @@ struct CountGridProps {
 
 /// Section 2 — the reactive count grid: `for i in 0..count.get()`.
 #[component]
-fn CountGrid(props: &CountGridProps) -> Primitive {
+fn CountGrid(props: &CountGridProps) -> Element {
     let count = props.count;
 
     let inc = move || count.update(|n| *n += 1);
@@ -212,7 +202,7 @@ fn CountGrid(props: &CountGridProps) -> Primitive {
     };
     ui! {
         Card(padding = CardPadding::Md) {
-            Typography(content = "Reactive count — for i in 0..count.get() → GridCell(...)".to_string(), kind = typography_kind::H3.into())
+            Typography(content = "Reactive count — for i in 0..count.get() → GridCell(...)".to_string(), kind = typography_kind::H3)
             Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
                 Button(label = "−".to_string(), on_click = dec)
                 Text(content = format!("count = {}", count.get()))
@@ -234,7 +224,7 @@ fn CountGrid(props: &CountGridProps) -> Primitive {
 // ---------------------------------------------------------------------------
 
 #[component]
-pub fn app() -> Primitive {
+pub fn app() -> Element {
     install_idea_theme(light_theme());
 
     let next_id: Signal<u32> = signal!(3);

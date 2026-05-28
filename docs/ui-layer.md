@@ -3,7 +3,7 @@
 The UI layer is everything the application author touches:
 `#[component]` functions, the `ui!` / `jsx!` macros, the typed handle
 system (`Ref<H>`), the `stylesheet!` macro. It produces a tree of
-`Primitive` values — the framework's structural IR — which the render
+`Element` values — the framework's structural IR — which the render
 walker hands to a `Backend`.
 
 The big idea: **the surface DSL is a frontend, not a structural
@@ -13,17 +13,17 @@ reactivity work identically across them.
 
 ---
 
-## The structural IR: `Primitive`
+## The structural IR: `Element`
 
-`runtime_core::Primitive` is an enum — one variant per "kind of thing
+`runtime_core::Element` is an enum — one variant per "kind of thing
 the renderer knows about." A small sample:
 
 ```rust
-pub enum Primitive {
-    View    { children: Vec<Primitive>, style: Option<StyleSource>, ref_fill: Option<RefFill> },
+pub enum Element {
+    View    { children: Vec<Element>, style: Option<StyleSource>, ref_fill: Option<RefFill> },
     Text    { source: TextSource, style: Option<StyleSource>, ref_fill: Option<RefFill> },
     Button  { label: TextSource, on_click: Rc<dyn Fn()>, style: …, ref_fill: …, disabled: … },
-    ScrollView { children: Vec<Primitive>, horizontal: bool, style: …, ref_fill: … },
+    ScrollView { children: Vec<Element>, horizontal: bool, style: …, ref_fill: … },
     Virtualizer { item_count, item_key, item_size, render_item, … },
     Graphics { on_ready, on_resize, on_lost, … },
     Navigator(Box<primitives::navigator::Navigator>),
@@ -58,9 +58,9 @@ its siblings.
 ### Reactive conditionals
 
 ```rust
-pub fn when<C, T, O>(cond: C, then: T, otherwise: O) -> Primitive
-pub fn switch<S: PartialEq, F: Fn() -> S, B: Fn(&S) -> Primitive>(scrutinee: F, branches: B)
-   -> Primitive
+pub fn when<C, T, O>(cond: C, then: T, otherwise: O) -> Element
+pub fn switch<S: PartialEq, F: Fn() -> S, B: Fn(&S) -> Element>(scrutinee: F, branches: B)
+   -> Element
 ```
 
 `when` is a two-way conditional, `switch` is a multi-way conditional
@@ -91,7 +91,7 @@ those events before the closures vanish.
 
 ```rust
 #[component]
-pub fn counter(props: &CounterProps) -> Primitive {
+pub fn counter(props: &CounterProps) -> Element {
     let count = signal!(0);
     ui! {
         Button(label = "Inc", on_click = move || count.update(|n| *n += 1))
@@ -129,10 +129,10 @@ write the body.
 
 Built-in primitive constructors return `Bound<H>` (the typed-handle
 wrapper that supports `.with_style(...)`, `.bind(...)`, `.disabled(...)`).
-A `#[component]` returns `Primitive` directly — components are leaf
-units of composition; the DSL coerces both via `IntoPrimitive`. The
+A `#[component]` returns `Element` directly — components are leaf
+units of composition; the DSL coerces both via `IntoElement`. The
 result is that user components participate in the same composition
-slots (`children: Vec<Primitive>`) as the built-ins.
+slots (`children: Vec<Element>`) as the built-ins.
 
 ---
 
@@ -200,7 +200,7 @@ counter! { label = "Score", value = score }      // generated invocation macro
 
 counter(&CounterProps { label: "Score".into(), value: score })
 
-  ↓ runs the (rewritten) fn body, returns a Primitive
+  ↓ runs the (rewritten) fn body, returns a Element
 ```
 
 ### Reactive `if`
@@ -231,7 +231,7 @@ The contract a UI macro needs to satisfy is small:
    `#[component]`) for user components.
 3. For reactive conditionals, wrap dependency closures with
    `runtime_core::when` / `switch`.
-4. Coerce the final expression via `IntoPrimitive::into_primitive(...)`.
+4. Coerce the final expression via `IntoElement::into_element(...)`.
 
 Anything that satisfies those four can serve as a front-end. The
 shipped `jsx!` is the proof-of-concept: identical primitive output,
@@ -241,9 +241,9 @@ different surface grammar, fully interoperable in the same component.
 
 ## `Bound<H>` and the builder chain
 
-Most primitive constructors don't return `Primitive` directly. They
+Most primitive constructors don't return `Element` directly. They
 return `Bound<H>` — a small wrapper holding the in-progress
-`Primitive` and exposing a fluent builder:
+`Element` and exposing a fluent builder:
 
 ```rust
 pub fn button<L, F>(label: L, on_click: F) -> Bound<ButtonHandle> { … }
@@ -254,14 +254,14 @@ button("Click", || …)
     .disabled(move || disabled.get())
 ```
 
-Each builder method mutates the inner `Primitive`'s optional slot
+Each builder method mutates the inner `Element`'s optional slot
 (`style`, `ref_fill`, `disabled`) and returns `Self`. When the
-chain ends inside `ui!` children, the `IntoPrimitive` impl unwraps
-the `Bound<H>` back to a bare `Primitive`.
+chain ends inside `ui!` children, the `IntoElement` impl unwraps
+the `Bound<H>` back to a bare `Element`.
 
 This is what makes `style = ...` work uniformly on every primitive:
 the DSL emits `.with_style(expr)` on the constructed `Bound<H>`,
-the builder method stuffs it into the `Primitive`'s `style` slot,
+the builder method stuffs it into the `Element`'s `style` slot,
 and the walker picks it up at build time.
 
 ---
@@ -306,11 +306,11 @@ for the full story.
 ## Children, lists, optionals
 
 `ChildList::append_to` is the trait the DSL uses to flatten anything
-into the surrounding `Vec<Primitive>`:
+into the surrounding `Vec<Element>`:
 
-- `Primitive` → push as-is.
-- `Option<Primitive>` → push if `Some`.
-- `Vec<Primitive>` → extend.
+- `Element` → push as-is.
+- `Option<Element>` → push if `Some`.
+- `Vec<Element>` → extend.
 - `Bound<H>` → unwrap and push.
 - Iterators in `for` blocks → push each.
 
@@ -337,7 +337,7 @@ ui! {
 }
 ```
 
-Architecturally, `Navigator` is "a `Primitive` that holds a route
+Architecturally, `Navigator` is "a `Element` that holds a route
 table plus the framework-side `NavigatorControl` that handles
 dispatch." The backend creates the native stack container
 (UINavigationController / FragmentManager / inline subtree on web),
@@ -367,8 +367,8 @@ If you want to:
 
 | Goal | Where it lives |
 | --- | --- |
-| Add a new built-in primitive | New `Primitive` variant + walker arm in `runtime_core::lib`, plus a `create_*` / `update_*` method on `Backend` |
-| Add a new user-facing component | A `#[component] fn name(...) -> Primitive` in app code |
+| Add a new built-in primitive | New `Element` variant + walker arm in `runtime_core::lib`, plus a `create_*` / `update_*` method on `Backend` |
+| Add a new user-facing component | A `#[component] fn name(...) -> Element` in app code |
 | Add imperative methods on a component | A `methods! { fn foo(&self) { … } }` block inside the `#[component]` |
 | Make a prop reactive | Wrap with a closure containing `.get()`; the constructor accepts `IntoTextSource` etc. or `Box<dyn Fn() -> T>` |
 | Add a new DSL | A new proc-macro that emits primitive / `name!` calls (see [`ui-layer.md` § DSLs](#dsls)) |

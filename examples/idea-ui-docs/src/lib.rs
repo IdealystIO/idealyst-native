@@ -13,7 +13,7 @@
 //! - `styles.rs` — Local stylesheets for chrome only (not idea-ui).
 //! - `pages/*.rs` — One file per category page.
 
-use runtime_core::{component, signal, ui, Primitive, Ref, Signal};
+use runtime_core::{component, signal, ui, Element, Ref, Signal};
 use idea_ui::{install_idea_theme, light_theme};
 use stack_navigator::{Navigator, StackBuilder, StackHandle};
 
@@ -38,7 +38,7 @@ use routes::{
     STATEFUL_ROUTE, THEMES_ROUTE, TYPOGRAPHY_ROUTE,
 };
 #[component]
-pub fn app() -> Primitive {
+pub fn app() -> Element {
     install_idea_theme(light_theme());
 
     // App-level state survives navigation: theme flag for the

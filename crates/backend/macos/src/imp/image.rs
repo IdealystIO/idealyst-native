@@ -1,4 +1,4 @@
-//! `Primitive::Image` — `NSImageView` backed by `NSImage(data:)`.
+//! `Element::Image` — `NSImageView` backed by `NSImage(data:)`.
 //!
 //! Mirrors the iOS image module shape. Two paths:
 //!

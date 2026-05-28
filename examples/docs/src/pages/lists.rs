@@ -39,7 +39,7 @@ docs! {
             }
 
             #[component]
-            pub fn inbox() -> Primitive {
+            pub fn inbox() -> Element {
                 let messages: Signal<Vec<Message>> = signal!(load_messages());
 
                 ui! {
@@ -52,7 +52,7 @@ docs! {
                 }
             }
 
-            fn message_row(msg: &Message) -> Primitive {
+            fn message_row(msg: &Message) -> Element {
                 ui! {
                     View {
                         Text { msg.author.clone() }

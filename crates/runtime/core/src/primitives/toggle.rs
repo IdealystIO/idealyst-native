@@ -8,7 +8,7 @@
 //! Same controlled rationale as `TextInput`: single source of truth
 //! lives in the parent's signal.
 
-use crate::{Bound, Primitive, Ref, RefFill, Signal};
+use crate::{Bound, Element, Ref, RefFill, Signal};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -37,7 +37,7 @@ pub fn toggle<F: Fn(bool) + 'static>(
     value: Signal<bool>,
     on_change: F,
 ) -> Bound<ToggleHandle> {
-    Bound::new(Primitive::Toggle {
+    Bound::new(Element::Toggle {
         value,
         on_change: Rc::new(on_change),
         style: None,
@@ -50,7 +50,7 @@ pub fn toggle<F: Fn(bool) + 'static>(
 
 impl Bound<ToggleHandle> {
     pub fn bind(mut self, r: Ref<ToggleHandle>) -> Self {
-        if let Primitive::Toggle { ref_fill, .. } = &mut self.primitive {
+        if let Element::Toggle { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::Toggle(Box::new(move |h| r.fill(h))));
         }
         self

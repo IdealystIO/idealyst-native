@@ -1,4 +1,4 @@
-//! The `Primitive` enum — the structural skeleton of the UI.
+//! The `Element` enum — the structural skeleton of the UI.
 //!
 //! Every primitive optionally carries a `style` slot — styling is
 //! orthogonal to structure, so authors can style any primitive
@@ -22,9 +22,9 @@ use std::rc::Rc;
 /// having to know about styling. The renderer applies the style via an
 /// independent `Effect` per primitive, so a content signal change
 /// doesn't re-fire the style effect and vice versa.
-pub enum Primitive {
+pub enum Element {
     View {
-        children: Vec<Primitive>,
+        children: Vec<Element>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         /// Per-side opt-in for safe-area padding. `NONE` means the
@@ -89,7 +89,7 @@ pub enum Primitive {
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },
-    /// Clickable container — like [`Primitive::View`] but with a
+    /// Clickable container — like [`Element::View`] but with a
     /// press callback. Renders to a tappable native control whose
     /// visual is entirely supplied by `children` and `style`. No
     /// UA chrome (no `<button>` border on web, no
@@ -100,17 +100,17 @@ pub enum Primitive {
     /// custom-styled buttons whose look is owned by the stylesheet,
     /// option rows in a menu, tappable card surfaces. For a plain
     /// label-only button with native semantics (form submission,
-    /// default focus ring, etc.) use [`Primitive::Button`].
+    /// default focus ring, etc.) use [`Element::Button`].
     ///
     /// The state machinery (`state hovered`, `state pressed`,
     /// `state focused`, `state disabled`) works just like on any
     /// other styled primitive.
     Pressable {
-        children: Vec<Primitive>,
+        children: Vec<Element>,
         on_click: Rc<dyn Fn()>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
-        /// Same semantics as [`Primitive::Button::disabled`].
+        /// Same semantics as [`Element::Button::disabled`].
         disabled: Option<Box<dyn Fn() -> bool>>,
         accessibility: AccessibilityProps,
         #[cfg(feature = "robot")]
@@ -205,7 +205,7 @@ pub enum Primitive {
         value: Signal<String>,
         on_change: Rc<dyn Fn(String)>,
         /// Pre-default-action keyboard hook. See
-        /// [`Primitive::TextInput::on_key_down`] for semantics — the
+        /// [`Element::TextInput::on_key_down`] for semantics — the
         /// surface is identical between the two primitives.
         on_key_down: Option<Rc<dyn Fn(&crate::primitives::key::KeyEvent) -> crate::primitives::key::KeyOutcome>>,
         placeholder: Option<String>,
@@ -232,7 +232,7 @@ pub enum Primitive {
     /// iOS: `UIScrollView`. Android: `ScrollView` or
     /// `HorizontalScrollView`.
     ScrollView {
-        children: Vec<Primitive>,
+        children: Vec<Element>,
         horizontal: bool,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
@@ -298,7 +298,7 @@ pub enum Primitive {
         /// Closure for runtime backends to materialize a row at a
         /// given index. Generator backends ignore this; they use
         /// `row_template` instead.
-        render_item: Rc<dyn Fn(usize) -> Primitive>,
+        render_item: Rc<dyn Fn(usize) -> Element>,
         /// Pre-built row produced by calling `render_item` once at
         /// snapshot time. Generator backends serialize this and
         /// remap node ids per row instance on the device.
@@ -306,7 +306,7 @@ pub enum Primitive {
         /// closure-only path — generator backends report a
         /// build-time error if they encounter a Virtualizer
         /// without one.
-        row_template: Option<Box<Primitive>>,
+        row_template: Option<Box<Element>>,
         /// Snapshot-time signal id that `render_item`'s closure
         /// captured as its row-index signal. Generator backends
         /// use this to mint a fresh synthetic per-row signal and
@@ -346,8 +346,8 @@ pub enum Primitive {
     /// `cond.inputs`; the prior subtree's effects drop on each flip.
     When {
         cond: crate::derive::Derived<bool>,
-        then: Box<dyn Fn() -> Primitive>,
-        otherwise: Box<dyn Fn() -> Primitive>,
+        then: Box<dyn Fn() -> Element>,
+        otherwise: Box<dyn Fn() -> Element>,
         style: Option<StyleSource>,
     },
     /// Reactive multi-way conditional, the type-erased shape behind
@@ -378,13 +378,13 @@ pub enum Primitive {
         /// called once at snapshot for generator backends (so all
         /// arms ship to the device pre-built); on runtime backends
         /// it's called when the arm becomes active.
-        arms: Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Primitive>)>,
+        arms: Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Element>)>,
         /// Fallback subtree when no arm matches. Always present.
-        default: Box<dyn Fn() -> Primitive>,
+        default: Box<dyn Fn() -> Element>,
         style: Option<StyleSource>,
     },
-    /// Reactive list — the full-rebuild dual of [`When`](Primitive::When)
-    /// / [`Switch`](Primitive::Switch) for a *vector* of children
+    /// Reactive list — the full-rebuild dual of [`When`](Element::When)
+    /// / [`Switch`](Element::Switch) for a *vector* of children
     /// rather than a single node. Lowered from `ui!`'s
     /// `for PAT in ITER { … }` when `ITER` reads a signal
     /// (e.g. `for x in items.get() { … }`).
@@ -401,7 +401,7 @@ pub enum Primitive {
     /// rebuilds all rows. It's the ergonomic, Rust-native path for
     /// bounded lists (nav menus, tabs, chips). For large or scrolling
     /// lists that need keyed diffing + windowing + cell recycling, use
-    /// `flat_list` / [`Virtualizer`](Primitive::Virtualizer) instead.
+    /// `flat_list` / [`Virtualizer`](Element::Virtualizer) instead.
     ///
     /// **Tracking contract:** `build` runs fully tracked, so any signal
     /// read while *constructing* the list (the iterable, plus any eager
@@ -411,7 +411,7 @@ pub enum Primitive {
     /// are built in the untracked/scoped phase and do NOT pin the whole
     /// list to a rebuild.
     Each {
-        build: Box<dyn Fn() -> Vec<Primitive>>,
+        build: Box<dyn Fn() -> Vec<Element>>,
         style: Option<StyleSource>,
     },
     /// Bulk children: build `count` rows from `row_builder(i)` and
@@ -429,14 +429,14 @@ pub enum Primitive {
     /// into one `cloneNode` each.
     Repeat {
         count: usize,
-        row_builder: Box<dyn Fn(usize) -> Primitive>,
+        row_builder: Box<dyn Fn(usize) -> Element>,
     },
     /// Declarative navigation. Wraps content; activation dispatches
     /// a `NavCommand` against an ambient navigator captured at
     /// construction time. See [`primitives::link`] for the surface
     /// and rationale.
     Link {
-        children: Vec<Primitive>,
+        children: Vec<Element>,
         /// Route name (stable; matches `Route::name()`).
         route: &'static str,
         /// Concrete URL produced by `params.to_path(route.path)`
@@ -535,7 +535,7 @@ pub enum Primitive {
     /// See [`primitives::portal`] for the target model, dismissal
     /// contract, and platform mapping.
     Portal {
-        children: Vec<Primitive>,
+        children: Vec<Element>,
         target: primitives::portal::PortalTarget,
         /// Fired when the platform requests dismissal (Escape on
         /// web, back gesture on Android, swipe-down on iOS modal
@@ -557,7 +557,7 @@ pub enum Primitive {
     /// walker defers unmount by `exit.duration_ms` so the exit
     /// animation can play before the scope drops.
     Presence {
-        child: Box<dyn Fn() -> Primitive>,
+        child: Box<dyn Fn() -> Element>,
         present: Box<dyn Fn() -> bool>,
         enter: Option<primitives::presence::PresenceAnim>,
         exit: Option<primitives::presence::PresenceAnim>,
@@ -570,10 +570,10 @@ pub enum Primitive {
     /// [`primitives::lazy`](crate::primitives::lazy) and the design
     /// proposal at `docs/proposals/lazy-primitive.md`.
     ///
-    /// `loader` is a closure that returns a `Future<Output = Primitive>`.
+    /// `loader` is a closure that returns a `Future<Output = Element>`.
     /// On native this resolves synchronously; on wasm it awaits the
     /// `wasm-split` runtime's chunk fetch + async function call
-    /// before yielding the chunk's `Primitive`. The walker mounts
+    /// before yielding the chunk's `Element`. The walker mounts
     /// `placeholder` immediately, drives the loader inside an
     /// `Effect`, then mounts the resolved primitive when it arrives.
     Lazy {
@@ -583,28 +583,28 @@ pub enum Primitive {
         on_state: Option<Rc<dyn Fn(primitives::lazy::LazyState)>>,
         /// Subtree mounted immediately as a fallback while the
         /// chunk loads. `None` renders an empty view.
-        placeholder: Option<Box<dyn Fn() -> Primitive>>,
+        placeholder: Option<Box<dyn Fn() -> Element>>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,
     },
 }
 
-impl Primitive {
+impl Element {
     /// Attaches a test ID to this primitive for robot/automation queries.
     /// Only available when the `robot` feature is enabled.
     #[cfg(feature = "robot")]
     pub fn with_test_id(mut self, id: &'static str) -> Self {
         match &mut self {
-            Primitive::View { test_id, .. }
-            | Primitive::Text { test_id, .. }
-            | Primitive::Button { test_id, .. }
-            | Primitive::Pressable { test_id, .. }
-            | Primitive::Image { test_id, .. }
-            | Primitive::TextInput { test_id, .. }
-            | Primitive::TextArea { test_id, .. }
-            | Primitive::Toggle { test_id, .. }
-            | Primitive::Slider { test_id, .. } => {
+            Element::View { test_id, .. }
+            | Element::Text { test_id, .. }
+            | Element::Button { test_id, .. }
+            | Element::Pressable { test_id, .. }
+            | Element::Image { test_id, .. }
+            | Element::TextInput { test_id, .. }
+            | Element::TextArea { test_id, .. }
+            | Element::Toggle { test_id, .. }
+            | Element::Slider { test_id, .. } => {
                 *test_id = Some(id);
             }
             _ => {
@@ -618,15 +618,15 @@ impl Primitive {
     #[cfg(feature = "robot")]
     pub fn test_id(&self) -> Option<&'static str> {
         match self {
-            Primitive::View { test_id, .. }
-            | Primitive::Text { test_id, .. }
-            | Primitive::Button { test_id, .. }
-            | Primitive::Pressable { test_id, .. }
-            | Primitive::Image { test_id, .. }
-            | Primitive::TextInput { test_id, .. }
-            | Primitive::TextArea { test_id, .. }
-            | Primitive::Toggle { test_id, .. }
-            | Primitive::Slider { test_id, .. } => *test_id,
+            Element::View { test_id, .. }
+            | Element::Text { test_id, .. }
+            | Element::Button { test_id, .. }
+            | Element::Pressable { test_id, .. }
+            | Element::Image { test_id, .. }
+            | Element::TextInput { test_id, .. }
+            | Element::TextArea { test_id, .. }
+            | Element::Toggle { test_id, .. }
+            | Element::Slider { test_id, .. } => *test_id,
             _ => None,
         }
     }
@@ -637,31 +637,31 @@ impl Primitive {
     pub fn with_style<S: IntoStyleSource>(mut self, style: S) -> Self {
         let src = style.into_style_source();
         match &mut self {
-            Primitive::View { style, .. }
-            | Primitive::Text { style, .. }
-            | Primitive::Button { style, .. }
-            | Primitive::Pressable { style, .. }
-            | Primitive::Image { style, .. }
-            | Primitive::Icon { style, .. }
-            | Primitive::TextInput { style, .. }
-            | Primitive::TextArea { style, .. }
-            | Primitive::Toggle { style, .. }
-            | Primitive::ScrollView { style, .. }
-            | Primitive::Slider { style, .. }
-            | Primitive::ActivityIndicator { style, .. }
-            | Primitive::Virtualizer { style, .. }
-            | Primitive::Graphics { style, .. }
-            | Primitive::When { style, .. }
-            | Primitive::Switch { style, .. }
-            | Primitive::Each { style, .. }
-            | Primitive::Link { style, .. }
-            | Primitive::Portal { style, .. }
-            | Primitive::External { style, .. }
-            | Primitive::Lazy { style, .. }
-            | Primitive::Navigator { style, .. } => {
+            Element::View { style, .. }
+            | Element::Text { style, .. }
+            | Element::Button { style, .. }
+            | Element::Pressable { style, .. }
+            | Element::Image { style, .. }
+            | Element::Icon { style, .. }
+            | Element::TextInput { style, .. }
+            | Element::TextArea { style, .. }
+            | Element::Toggle { style, .. }
+            | Element::ScrollView { style, .. }
+            | Element::Slider { style, .. }
+            | Element::ActivityIndicator { style, .. }
+            | Element::Virtualizer { style, .. }
+            | Element::Graphics { style, .. }
+            | Element::When { style, .. }
+            | Element::Switch { style, .. }
+            | Element::Each { style, .. }
+            | Element::Link { style, .. }
+            | Element::Portal { style, .. }
+            | Element::External { style, .. }
+            | Element::Lazy { style, .. }
+            | Element::Navigator { style, .. } => {
                 *style = Some(src);
             }
-            Primitive::Repeat { .. } => {
+            Element::Repeat { .. } => {
                 // Repeat is a children-list primitive; styling
                 // doesn't apply at this level. The caller should
                 // style the surrounding View/ScrollView instead.
@@ -669,7 +669,7 @@ impl Primitive {
                 // `.with_style(...)` builder pattern doesn't panic
                 // when a macro emits it unconditionally.
             }
-            Primitive::Presence { .. } => {
+            Element::Presence { .. } => {
                 // Presence is a wrapper that handles mount/unmount
                 // animations on its child; styling belongs on the
                 // child View, not on the Presence node. No-op.

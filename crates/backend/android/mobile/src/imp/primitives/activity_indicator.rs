@@ -1,4 +1,4 @@
-//! `Primitive::ActivityIndicator` — indeterminate
+//! `Element::ActivityIndicator` — indeterminate
 //! `android.widget.ProgressBar`. Size is approximate; ProgressBar's
 //! default is ~36dp which is closer to RN's "Large". Custom sizing
 //! requires LayoutParams which is beyond v1 scope.

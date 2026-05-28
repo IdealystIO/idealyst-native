@@ -3,7 +3,7 @@
 //! creates every ref + wires the animations; this function just
 //! lays out the tree.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Element};
 
 use crate::components::content_layer::{ContentLayer, ContentLayerProps};
 use crate::components::page::page_sheet;
@@ -12,7 +12,7 @@ use crate::components::sun_glare::{SunGlare, SunGlareProps};
 use crate::components::vignette::{Vignette, VignetteProps};
 use crate::coordinator::use_welcome;
 
-pub fn app() -> Primitive {
+pub fn app() -> Element {
     let refs = use_welcome();
     let page = page_sheet();
     ui! {

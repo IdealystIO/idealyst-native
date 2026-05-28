@@ -8,8 +8,8 @@
 //!
 //! Sidebar materialization: the SDK's `DrawerPresentation.sidebar` slot
 //! holds a `SidebarBuilder` (closure taking `DrawerSlotProps`,
-//! returning a `Primitive`). The Android handler defers the build to a
-//! microtask, invokes `host.build_node` to materialize the Primitive
+//! returning a `Element`). The Android handler defers the build to a
+//! microtask, invokes `host.build_node` to materialize the Element
 //! into a `GlobalRef`, then calls
 //! `android_navigator_helpers::drawer_attach_sidebar`.
 
@@ -164,7 +164,7 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
         self.container = Some(node.clone());
         self.control = Some(control.clone());
 
-        // Materialize the SDK's sidebar Primitive, deferred to a
+        // Materialize the SDK's sidebar Element, deferred to a
         // microtask so the outer `backend.borrow_mut()` (held across
         // `init`) has released by the time `build_node` re-enters the
         // walker. Once built, hand the `GlobalRef` to the helpers crate's

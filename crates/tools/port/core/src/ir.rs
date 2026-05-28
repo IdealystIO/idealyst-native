@@ -99,7 +99,7 @@ pub struct Module {
     pub source_tool: String,
     /// Bare-name idealyst items the emitter should `use` from
     /// `runtime_core` (always at least `signal`, `jsx`, `component`,
-    /// `Primitive`). The lowering pass appends as it discovers usage.
+    /// `Element`). The lowering pass appends as it discovers usage.
     pub imports: Vec<String>,
     /// Every `#[component] fn …` in the file.
     pub components: Vec<Component>,

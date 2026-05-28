@@ -1,4 +1,4 @@
-//! `Primitive::View` — a plain `<div>`. The framework used to stamp
+//! `Element::View` — a plain `<div>`. The framework used to stamp
 //! every View with a `.ui-default { display: flex; flex-direction:
 //! column }` class so authors got React-Native-style flex
 //! semantics for free. That class is gone: at 10k+ rows the

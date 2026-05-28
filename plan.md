@@ -117,7 +117,7 @@ trait Backend {
     type Node;
     type Event;
 
-    fn create(&mut self, primitive: &Primitive) -> Self::Node;
+    fn create(&mut self, primitive: &Element) -> Self::Node;
     fn update(&mut self, node: &Self::Node, diff: &PropDiff);
     fn insert(&mut self, parent: &Self::Node, child: Self::Node, before: Option<&Self::Node>);
     fn remove(&mut self, node: Self::Node);
@@ -208,7 +208,7 @@ The server runs app code and produces a serialized view tree + action vocabulary
 - `Action::Network(ServerFnId, Args)`
 - Extensible via a registered handler table per app
 
-**Primitive whitelist:** The server may only emit primitives the client recognizes. App-author components run server-side and expand into primitive trees. Versioning the protocol means versioning the primitives.
+**Element whitelist:** The server may only emit primitives the client recognizes. App-author components run server-side and expand into primitive trees. Versioning the protocol means versioning the primitives.
 
 **State synchronization:** Local signals on client are mapped to server-known IDs. Server templates reference signals by ID; client wires them up locally. Optimistic local updates with eventual server reconciliation.
 
@@ -289,7 +289,7 @@ Same app source, multiple targets via Cargo features and target tuples:
 - `Owner` / `Scope` lifetime tracking
 - `Component` trait (object-safe) + `view!` macro skeleton
 - `Backend` trait + `mock-backend` for testing
-- Primitive vocabulary (initial set) with serde derives
+- Element vocabulary (initial set) with serde derives
 - Op stream / reconciler emitter
 
 ### Phase 2 — First platform

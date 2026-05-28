@@ -1,4 +1,4 @@
-//! `Primitive::TextInput` — an `<input type="text">` with a controlled
+//! `Element::TextInput` — an `<input type="text">` with a controlled
 //! value signal and a per-keystroke `on_change` callback.
 
 use crate::WebBackend;

@@ -14,7 +14,7 @@
 //! can be added later if a real need arises.
 
 use crate::primitives::key::{KeyEvent, KeyOutcome};
-use crate::{Bound, Primitive, Ref, RefFill, Signal};
+use crate::{Bound, Element, Ref, RefFill, Signal};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -85,7 +85,7 @@ pub fn text_input<F: Fn(String) + 'static>(
     value: Signal<String>,
     on_change: F,
 ) -> Bound<TextInputHandle> {
-    Bound::new(Primitive::TextInput {
+    Bound::new(Element::TextInput {
         value,
         on_change: Rc::new(on_change),
         on_key_down: None,
@@ -101,7 +101,7 @@ pub fn text_input<F: Fn(String) + 'static>(
 impl Bound<TextInputHandle> {
     /// Placeholder text shown when the input is empty.
     pub fn placeholder(mut self, text: String) -> Self {
-        if let Primitive::TextInput { placeholder, .. } = &mut self.primitive {
+        if let Element::TextInput { placeholder, .. } = &mut self.primitive {
             *placeholder = Some(text);
         }
         self
@@ -110,7 +110,7 @@ impl Bound<TextInputHandle> {
     /// Bind to a `Ref<TextInputHandle>` for imperative
     /// `focus()`/`blur()`/`select_all()`/`insert_text()` from the parent.
     pub fn bind(mut self, r: Ref<TextInputHandle>) -> Self {
-        if let Primitive::TextInput { ref_fill, .. } = &mut self.primitive {
+        if let Element::TextInput { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::TextInput(Box::new(move |h| r.fill(h))));
         }
         self
@@ -125,7 +125,7 @@ impl Bound<TextInputHandle> {
     where
         F: Fn(&KeyEvent) -> KeyOutcome + 'static,
     {
-        if let Primitive::TextInput { on_key_down, .. } = &mut self.primitive {
+        if let Element::TextInput { on_key_down, .. } = &mut self.primitive {
             *on_key_down = Some(Rc::new(handler));
         }
         self

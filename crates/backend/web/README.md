@@ -36,7 +36,7 @@ is non-obvious.
   the data they mutate.
 - **`defaults.rs`**: global baselines, including the `.ui-default` class,
   spinner keyframes, virtualizer JS shim, and dynamic-slot teardown.
-- **`primitives/`**: one module per `Primitive` kind. Each owns its
+- **`primitives/`**: one module per `Element` kind. Each owns its
   create/update functions, any `Ops` impl, and the `make_*_handle` builder.
   The `impl Backend for WebBackend` block at the bottom of `lib.rs` is a
   thin delegation layer.

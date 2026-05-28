@@ -1,4 +1,4 @@
-//! Backend batching for `Primitive::Repeat`.
+//! Backend batching for `Element::Repeat`.
 //!
 //! The walker accumulates a small command queue when expanding a
 //! Repeat whose rows match a "batchable" shape (View + Text + static
@@ -62,7 +62,7 @@ pub enum BatchOp {
 
 /// A batch of structural commands to execute in one FFI round-trip.
 ///
-/// Built by the walker as it expands a `Primitive::Repeat` whose
+/// Built by the walker as it expands a `Element::Repeat` whose
 /// rows match the batchable shape (View + Text + static style, no
 /// other primitives). Backends that opt in via
 /// [`Backend::supports_batched_repeat`] receive this batch and

@@ -11,7 +11,7 @@
 //! drawer). Terminal: drawer SDK no-ops the sidebar (per the
 //! repo's terminal-minimalism convention).
 
-use runtime_core::{component, effect, signal, ui, Color, Primitive, Ref, Signal, Tokenized};
+use runtime_core::{component, effect, signal, ui, Color, Element, Ref, Signal, Tokenized};
 use drawer_navigator::{DrawerBuilder, DrawerHandle, DrawerNavigator, TopSlot};
 use idea_ui::{install_idea_theme, light_theme};
 
@@ -37,7 +37,7 @@ use routes::{
 };
 
 #[component]
-pub fn app() -> Primitive {
+pub fn app() -> Element {
     // Override idea-ui's default type scale for the website. The
     // marketing pages want bigger section headings than idea-ui's
     // defaults (which are tuned for the dense docs app). Same

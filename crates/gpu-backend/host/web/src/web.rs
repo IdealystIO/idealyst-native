@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use runtime_core::driver::{render_loop, RenderLoop};
 use runtime_core::primitives::graphics::GraphicsSurface;
-use runtime_core::Primitive;
+use runtime_core::Element;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use render_api::{DeviceProfile, PointerButton, PointerEvent, PointerId, ScrollEvent};
 use render_wgpu::{Host, Renderer, Painter};
@@ -98,7 +98,7 @@ pub async fn mount<F>(
     build_ui: F,
 ) -> Result<WebHostHandle, MountError>
 where
-    F: FnOnce() -> Primitive + 'static,
+    F: FnOnce() -> Element + 'static,
 {
     // 1. Extract the canvas. Keep a clone — the surface gets
     //    consumed by `create_surface` below; we need the canvas

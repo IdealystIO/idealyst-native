@@ -1,12 +1,12 @@
 ---
 name: mcp-catalog-drift
-description: Check the locked MCP catalog tables (`PrimitiveEntry`, `UtilityEntry`, `StateEntry`, `GuideEntry`) against their underlying truth — the `Primitive` enum, the framework's utility surface, the `stylesheet!` parser's state whitelist, and the guides directory.
+description: Check the locked MCP catalog tables (`PrimitiveEntry`, `UtilityEntry`, `StateEntry`, `GuideEntry`) against their underlying truth — the `Element` enum, the framework's utility surface, the `stylesheet!` parser's state whitelist, and the guides directory.
 targets:
   - crates/mcp/catalog/src/primitives.rs
   - crates/mcp/catalog/src/utilities.rs
   - crates/mcp/catalog/src/states.rs
   - crates/mcp/catalog/guides
-  - crates/runtime/core/src/primitive.rs
+  - crates/runtime/core/src/element.rs
   - crates/runtime/macros/src/stylesheet.rs
 severity: medium
 ---
@@ -19,7 +19,7 @@ The framework's MCP catalog ships four **locked** slices — only `mcp-catalog` 
 
 Three drift surfaces matter:
 
-1. **Primitive tables vs. the `Primitive` enum.** Adding a variant to `crates/runtime/core/src/primitive.rs` without a corresponding `inventory::submit!` in `crates/mcp/catalog/src/primitives.rs` means the new primitive is invisible to AI/idea-ui/the doc-site. The `tests/registers_component.rs::primitives_table_includes_core_set` test catches missing core entries but isn't exhaustive over every variant.
+1. **Primitive tables vs. the `Element` enum.** Adding a variant to `crates/runtime/core/src/element.rs` without a corresponding `inventory::submit!` in `crates/mcp/catalog/src/primitives.rs` means the new primitive is invisible to AI/idea-ui/the doc-site. The `tests/registers_component.rs::primitives_table_includes_core_set` test catches missing core entries but isn't exhaustive over every variant.
 
 2. **State table vs. the `stylesheet!` parser whitelist.** `crates/runtime/macros/src/stylesheet.rs` hard-codes the four valid state names (`hovered`, `pressed`, `focused`, `disabled`). Changing either side without the other is a silent drift — the parser would accept a state the catalog doesn't document, or vice versa.
 
@@ -29,8 +29,8 @@ Three drift surfaces matter:
 
 ### Primitive coverage
 
-- [ ] Open `crates/runtime/core/src/primitive.rs`. List every `pub enum Primitive { … }` variant.
-- [ ] For each variant, search `crates/mcp/catalog/src/primitives.rs` for an `inventory::submit!` whose `pascal_name` matches the variant ident, or `name` matches `pascal_to_snake(variant)`.
+- [ ] Open `crates/runtime/core/src/element.rs`. List every `pub enum Element { … }` variant.
+- [ ] For each variant, search `crates/mcp/catalog/src/primitives.rs` for an `inventory::submit!` whose `pascal_name` matches the variant ident, or `name` matches the snake_case form of the variant.
 - [ ] Flag any variant with no matching entry. Suggest the matching `PrimitiveEntry { name, pascal_name, docs, props, category, backends, _seal: () }` block.
 
 ### Utility coverage
@@ -71,7 +71,7 @@ Report findings as a Markdown list. For each finding include:
 
 - **Severity**: low / medium / high (state-parity mismatches are always high)
 - **Location**: `crate/src/file.rs:line` (or `crates/mcp/catalog/guides/<slug>.md:line` for guide links)
-- **Issue**: one-line description (e.g. `Primitive variant Splat has no PrimitiveEntry`)
+- **Issue**: one-line description (e.g. `Element variant Splat has no PrimitiveEntry`)
 - **Why**: brief reasoning (1–3 sentences) — what feature regresses if this isn't fixed
 - **Suggested fix**: actionable recommendation, or "needs design discussion"
 

@@ -77,7 +77,7 @@ docs! {
             my-app/
               Cargo.toml          # crate manifest + Idealyst config under [package.metadata.idealyst]
               src/
-                lib.rs            # exports `pub fn app() -> Primitive` — your whole app
+                lib.rs            # exports `pub fn app() -> Element` — your whole app
         "##),
 
         p("That's it. There is no ", code("ios/"), " folder, no ", code("android/"),
@@ -110,14 +110,14 @@ docs! {
            what's on offer and have something concrete to modify."),
 
         p("Every Idealyst app starts the same way: one function annotated with ",
-          code("#[component]"), " that returns a ", code("Primitive"),
+          code("#[component]"), " that returns a ", code("Element"),
           " tree. The minimal shape looks like this:"),
 
         code(rust, r##"
-            use runtime_core::{component, signal, ui, Primitive};
+            use runtime_core::{component, signal, ui, Element};
 
             #[component]
-            pub fn app() -> Primitive {
+            pub fn app() -> Element {
                 let count = signal!(0);
 
                 ui! {

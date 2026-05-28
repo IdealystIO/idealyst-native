@@ -1,4 +1,4 @@
-//! `Primitive::Icon` — inline `<svg>` with `<path>` children.
+//! `Element::Icon` — inline `<svg>` with `<path>` children.
 //!
 //! Each icon renders as a self-contained SVG element sized via CSS
 //! (defaults to `1em` so it scales with surrounding text). Color is

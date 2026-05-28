@@ -15,7 +15,7 @@ the others.
 If you're new to the codebase, read the docs in this order:
 
 1. [`ui-layer.md`](./ui-layer.md). The author-facing surface. Components,
-   `ui!` / `jsx!`, `Primitive`, `Bound<H>`, refs, `stylesheet!`. Read this
+   `ui!` / `jsx!`, `Element`, `Bound<H>`, refs, `stylesheet!`. Read this
    first to see what application code looks like.
 
 2. [`primitives.md`](./primitives.md). The framework's structural
@@ -57,7 +57,7 @@ The repo is grouped by concern (`crates/framework/`, `crates/backend/`,
 
 | Crate | Path | Role |
 | --- | --- | --- |
-| `runtime-core` | `crates/framework/core` | `Primitive`, `Backend` trait, render walker, reactivity, styles |
+| `runtime-core` | `crates/framework/core` | `Element`, `Backend` trait, render walker, reactivity, styles |
 | `runtime-macros` | `crates/framework/macros` | `#[component]`, `ui!`, `jsx!`, `stylesheet!` proc-macros |
 | `reactive-arena` | `crates/framework/reactive/arena` | Arena allocator used by the reactivity system |
 | `reactive-refs` | `crates/framework/reactive/refs` | `Ref<H>` machinery |
@@ -81,12 +81,12 @@ place that names a concrete backend.
 
 ```
 Application code
-   │  declares a tree of `Primitive` values via `ui!` / `jsx!`
+   │  declares a tree of `Element` values via `ui!` / `jsx!`
    │  + `Signal<T>` for reactive state
    │  + `StyleSheet` for styling
    ▼
 Render walker  (runtime-core)
-   │  recurses Primitive → calls Backend trait methods
+   │  recurses Element → calls Backend trait methods
    │  + wires Effects so signal changes drive backend updates
    │  + resolves StyleSheets against active theme into StyleRules
    ▼

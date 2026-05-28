@@ -127,63 +127,48 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Reactive<T> {
 }
 
 // =============================================================================
-// IntoProp<T> — the coercion shim
+// Coercions into Reactive<T> — used at call sites via `.into()`
 // =============================================================================
+//
+// A component declares a dynamic prop as `Reactive<T>`. Call sites
+// produce one by:
+//   - a bare value          → `Reactive::Static`  (via `From<T>`),
+//   - a string literal       → `Reactive::Static`  (via `From<&str>`;
+//     `ui!`/`jsx!` already append `.into()` to literals),
+//   - a `Signal<T>`/`memo`   → `Reactive::Dynamic` (via `From<Signal>`),
+//   - an `rx!(expr)`         → `Reactive::Dynamic` (already a `Reactive`).
+//
+// Non-string-literal dynamic values opt in explicitly at the call site
+// (`sig.into()` / `rx!(...)`), keeping reactivity visible — the
+// type-driven counterpart to `bind!` for `text_fmt!`.
 
-/// Coerces a prop value into its field type. Invocation macros wrap
-/// every field value in `IntoProp::into_prop(value)`.
+/// Bare value → `Reactive::Static`. The blanket covers `String`,
+/// `bool`, `i32`, theme refs, … — anything used as a static prop.
 ///
-/// The reflexive blanket impl makes this transparent for every
-/// existing prop type; the reactive impls below let a `Reactive<T>`
-/// field accept a bare value, a `Signal<T>`, or an `rx!(...)`.
-pub trait IntoProp<T> {
-    fn into_prop(self) -> T;
-}
-
-/// Reflexive: every value coerces to its own type unchanged. This is
-/// what keeps existing call sites working untouched — including ones
-/// that already wrote `X.into()` (the field type pins the target, so
-/// there's no ambiguous middle type).
-///
-/// Coherence: this `impl<T> .. for T` and `impl<T> .. for Reactive<T>`
-/// (below) don't overlap — unifying them needs `T = Reactive<T>`,
-/// which fails the occurs-check, so rustc accepts both.
-impl<T> IntoProp<T> for T {
-    fn into_prop(self) -> T {
-        self
+/// Coherence: this `From<T> for Reactive<T>` and
+/// `From<Signal<T>> for Reactive<T>` (below) don't overlap — unifying
+/// them needs `T = Signal<T>`, which fails the occurs-check.
+impl<T> From<T> for Reactive<T> {
+    fn from(v: T) -> Self {
+        Reactive::Static(v)
     }
 }
 
-/// `&str` literal → `String` field. Replaces the `ui!`/`jsx!`
-/// literal-only `.into()` special-case so string literals still land
-/// in plain `String` props.
-impl IntoProp<String> for &str {
-    fn into_prop(self) -> String {
-        self.to_string()
-    }
-}
-
-/// Bare value → `Reactive<T>` field: a static snapshot.
-impl<T> IntoProp<Reactive<T>> for T {
-    fn into_prop(self) -> Reactive<T> {
-        Reactive::Static(self)
-    }
-}
-
-/// `&str` literal → `Reactive<String>` field: a static snapshot
-/// (the bare-value impl above only covers `String`, not `&str`).
-impl IntoProp<Reactive<String>> for &str {
-    fn into_prop(self) -> Reactive<String> {
-        Reactive::Static(self.to_string())
+/// `&str` → `Reactive<String>` (the blanket above only covers an owned
+/// `String`). `ui!`/`jsx!` append `.into()` to string literals, so
+/// `content = "hi"` lands here as a static snapshot.
+impl From<&str> for Reactive<String> {
+    fn from(s: &str) -> Self {
+        Reactive::Static(s.to_string())
     }
 }
 
 /// `Signal<T>` (or a `memo`, which is also a `Signal`) → reactive
-/// `Reactive<T>` field. Reading it subscribes, so the component
-/// updates when the signal changes.
-impl<T: Clone + 'static> IntoProp<Reactive<T>> for Signal<T> {
-    fn into_prop(self) -> Reactive<T> {
-        Reactive::Dynamic(Rc::new(move || self.get()))
+/// `Reactive<T>`. Reading it subscribes, so the component updates when
+/// the signal changes: `content = my_signal.into()`.
+impl<T: Clone + 'static> From<Signal<T>> for Reactive<T> {
+    fn from(sig: Signal<T>) -> Self {
+        Reactive::Dynamic(Rc::new(move || sig.get()))
     }
 }
 
@@ -214,44 +199,49 @@ mod tests {
     use super::*;
     use crate::Signal;
 
-    // Helper mirroring what an invocation macro emits: `into_prop` with
-    // the target type pinned by the (here explicit) annotation.
-    fn coerce<S: IntoProp<T>, T>(v: S) -> T {
-        v.into_prop()
-    }
-
-    #[test]
-    fn reflexive_into_prop_is_identity() {
-        // The blanket `impl<T> IntoProp<T> for T` — a value coerces to
-        // its own type unchanged. This is what keeps every existing
-        // non-reactive prop working untouched.
-        let s: String = coerce(String::from("hi"));
-        assert_eq!(s, "hi");
-        let n: i32 = coerce(7);
-        assert_eq!(n, 7);
-    }
-
-    #[test]
-    fn str_literal_coerces_to_string() {
-        let s: String = coerce("hi");
-        assert_eq!(s, "hi");
-    }
-
     #[test]
     fn bare_value_into_reactive_is_static() {
-        let r: Reactive<String> = coerce(String::from("hi"));
+        // `From<T>` blanket — an owned value becomes a static snapshot.
+        let r: Reactive<String> = String::from("hi").into();
         assert!(r.is_static());
         assert_eq!(r.get(), "hi");
 
-        let r2: Reactive<String> = coerce("yo");
+        // `&str` → `Reactive<String>` (the literal path `ui!` produces).
+        let r2: Reactive<String> = "yo".into();
         assert!(r2.is_static());
         assert_eq!(r2.get(), "yo");
     }
 
     #[test]
+    fn option_string_coerces_into_reactive_option_string() {
+        // `Reactive<Option<String>>` is how optional text props (Switch
+        // /Field `label`, Alert `body`) are typed. The call-site idioms
+        // `label = Some("x".to_string())` and `label = None` must coerce
+        // via the blanket `From<Option<String>>` — this is what lets the
+        // migration land with zero call-site churn (the orphan rule
+        // blocks the `Option<Reactive<String>>` alternative).
+        let some: Reactive<Option<String>> = Some("hi".to_string()).into();
+        assert!(some.is_static());
+        assert_eq!(some.get(), Some("hi".to_string()));
+
+        let none: Reactive<Option<String>> = Option::<String>::None.into();
+        assert!(none.is_static());
+        assert_eq!(none.get(), None);
+
+        // A `Signal<Option<String>>` arrives `Dynamic` (live presence
+        // AND content).
+        let sig: Signal<Option<String>> = Signal::new(Some("a".to_string()));
+        let live: Reactive<Option<String>> = sig.into();
+        assert!(!live.is_static());
+        assert_eq!(live.get(), Some("a".to_string()));
+        sig.set(None);
+        assert_eq!(live.get(), None);
+    }
+
+    #[test]
     fn signal_into_reactive_is_dynamic_and_live() {
         let sig: Signal<i32> = Signal::new(1);
-        let r: Reactive<i32> = coerce(sig);
+        let r: Reactive<i32> = sig.into();
         assert!(!r.is_static());
         assert_eq!(r.get(), 1);
         // The binding is live: a later signal write is reflected on the

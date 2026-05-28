@@ -111,7 +111,7 @@ docs! {
             use idea_ui::{install_theme, set_theme};
 
             #[component]
-            fn app() -> Primitive {
+            fn app() -> Element {
                 install_theme(MyTheme::light());
                 ui! {
                     // ...

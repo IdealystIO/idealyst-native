@@ -257,7 +257,7 @@ fine** — `run_effect`'s restore-closure step checks the slot first.
 
 The framework uses reactivity at three layers:
 
-1. **Primitive props.** When a primitive carries a closure for
+1. **Element props.** When a primitive carries a closure for
    reactive content (`label: TextSource::Reactive(Fn -> String)`,
    `src: Box<dyn Fn() -> String>`, `disabled: Option<Box<dyn Fn() ->
    bool>>`), the walker wraps it in an `Effect` that calls the

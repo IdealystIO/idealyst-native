@@ -1,7 +1,7 @@
 //! iOS build orchestration for `idealyst build ios`.
 //!
 //! The user's app crate is intentionally platform-agnostic — it just
-//! exposes `pub fn app() -> Primitive`. iOS needs (a) a `staticlib`
+//! exposes `pub fn app() -> Element`. iOS needs (a) a `staticlib`
 //! crate-type producing a `.a`, (b) a C-callable `ios_main` entry
 //! point, and (c) the chain of iOS deps (`backend-ios-mobile`, `objc2*`).
 //! Putting all of that in the user's crate would defeat the

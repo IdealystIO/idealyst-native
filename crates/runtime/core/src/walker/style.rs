@@ -74,7 +74,7 @@ impl<B: Backend + 'static> Drop for StyleHandle<B> {
 }
 
 /// Registers a **single** theme-cohort entry that owns every member
-/// of a batched `Primitive::Repeat`, plus a **single** RAII guard
+/// of a batched `Element::Repeat`, plus a **single** RAII guard
 /// adopted into the active scope. On theme/token change the cohort
 /// entry's re-apply closure iterates the member Vec and calls
 /// [`apply_one`] for each — semantically identical to per-row
@@ -197,7 +197,7 @@ pub(super) fn attach_safe_area<B: Backend + 'static>(
     });
 }
 
-/// Sibling of `attach_safe_area` for `Primitive::ScrollView`. Routes
+/// Sibling of `attach_safe_area` for `Element::ScrollView`. Routes
 /// the safe-area opt-in through `apply_scroll_view_safe_area_inset`
 /// so backends apply *contentInset* semantics (background bleeds
 /// edge-to-edge, content origin insets) rather than the outer

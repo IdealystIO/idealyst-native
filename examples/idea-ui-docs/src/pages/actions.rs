@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Element};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{Badge, Btn, Stack, BadgeProps, ButtonProps, IconButtonProps, StackGap, TagProps};
 // idea-ui's own component invocation macros must be in scope.
@@ -13,7 +13,7 @@ use idea_ui::{IconButton, Tag};
 
 use crate::shell::{demo_card, page_header};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     ui! {
         Stack(gap = StackGap::Xl) {
             { page_header(
@@ -31,7 +31,7 @@ pub fn page() -> Primitive {
     }
 }
 
-fn button_demo() -> Primitive {
+fn button_demo() -> Element {
     let state = ButtonProps::init_state();
     state.label.set("Click me".to_string());
 
@@ -61,7 +61,7 @@ fn button_demo() -> Primitive {
     )
 }
 
-fn icon_button_demo() -> Primitive {
+fn icon_button_demo() -> Element {
     let state = IconButtonProps::init_state();
     state.glyph.set("+".to_string());
 
@@ -91,7 +91,7 @@ fn icon_button_demo() -> Primitive {
     )
 }
 
-fn badge_demo() -> Primitive {
+fn badge_demo() -> Element {
     let state = BadgeProps::init_state();
     state.label.set("New".to_string());
 
@@ -111,7 +111,7 @@ fn badge_demo() -> Primitive {
     )
 }
 
-fn tag_demo() -> Primitive {
+fn tag_demo() -> Element {
     let state = TagProps::init_state();
     state.label.set("Rust".to_string());
 

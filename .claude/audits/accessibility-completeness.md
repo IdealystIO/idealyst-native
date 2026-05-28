@@ -4,7 +4,7 @@ description: The a11y surface (Role, PrimitiveKind, AccessibilityProps, WireAcce
 targets:
   - crates/runtime/core/src/accessibility.rs
   - crates/runtime/core/src/backend.rs
-  - crates/runtime/core/src/primitive.rs
+  - crates/runtime/core/src/element.rs
   - crates/dev/wire/src/lib.rs
   - crates/backend/web
   - crates/backend/ios/mobile
@@ -22,7 +22,7 @@ severity: high
 
 The a11y surface lives in `framework_core::accessibility` and threads
 through every primitive, every backend, and the dev/app wire protocol.
-A new `Role` variant, a new `Primitive` variant, a new `create_*`
+A new `Role` variant, a new `Element` variant, a new `create_*`
 method, or a new backend impl all have to update several files at
 once or assistive technology silently breaks for the affected
 primitive. This audit catches drift.
@@ -51,13 +51,13 @@ does NOT flag Roku's `_a11y` discipline.
       explicit `=>` arm (no wildcard `_ =>` swallowing new variants).
       A missing arm means the primitive ships with no inferred role on
       any backend.
-- [ ] **`PrimitiveKind` covers every `Primitive` variant** that
+- [ ] **`PrimitiveKind` covers every `Element` variant** that
       represents a node (skip `When` / `Switch` / `Repeat` — they're
-      control-flow only). Grep `enum Primitive` and `enum PrimitiveKind`;
+      control-flow only). Grep `enum Element` and `enum PrimitiveKind`;
       anything in the former whose `accessibility:` field exists must
       have a matching `PrimitiveKind` variant.
-- [ ] **Every `Primitive` node variant carries `accessibility: AccessibilityProps`.**
-      Grep `enum Primitive { ... }` for variants without an
+- [ ] **Every `Element` node variant carries `accessibility: AccessibilityProps`.**
+      Grep `enum Element { ... }` for variants without an
       `accessibility:` field. The constructors / `ui!` macros must also
       default-initialize the field.
 

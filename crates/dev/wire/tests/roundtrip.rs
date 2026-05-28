@@ -174,7 +174,7 @@ impl Backend for TraceBackend {
 
 fn build_demo_tree(backend: &mut WireRecordingBackend) {
     // Hand-rolled walker calls. In real use the framework's walker
-    // emits these as it processes a `Primitive` tree; here we
+    // emits these as it processes a `Element` tree; here we
     // synthesize them directly so the test stays self-contained.
 
     let mut root = backend.create_view(&Default::default());
@@ -378,13 +378,13 @@ fn unknown_node_is_a_protocol_error() {
 /// faithful wire output.
 #[test]
 fn real_walker_drives_recorder() {
-    use runtime_core::{render, Primitive};
+    use runtime_core::{render, Element};
     use std::cell::RefCell;
 
-    // A minimal Primitive tree: a View with a Text child. Built by
+    // A minimal Element tree: a View with a Text child. Built by
     // hand to avoid pulling in the `ui!` macro for the test.
-    let tree = Primitive::View {
-        children: vec![Primitive::Text {
+    let tree = Element::View {
+        children: vec![Element::Text {
             source: runtime_core::TextSource::Static("hello, wire".into()),
             style: None,
             ref_fill: None,
@@ -446,7 +446,7 @@ fn real_walker_drives_recorder() {
     );
 }
 
-/// Drive a Primitive::Link through the recording backend. Verifies
+/// Drive a Element::Link through the recording backend. Verifies
 /// that `create_link` emits a `CreateLink` command with the route /
 /// url / handler id intact, and that the app-side replay round-trips
 /// to a `create_link` call on the real backend.
@@ -485,7 +485,7 @@ fn link_round_trip() {
     wire_app.apply_batch(commands).expect("link replay must succeed");
 }
 
-/// Drive a Primitive::Portal through the recording backend. The
+/// Drive a Element::Portal through the recording backend. The
 /// portal command captures the target (viewport placement, anchor,
 /// or named), on_dismiss handler id, and focus-trap flag.
 #[test]
@@ -529,7 +529,7 @@ fn portal_round_trip() {
     wire_app.apply_batch(commands).expect("portal replay must succeed");
 }
 
-/// Drive a Primitive::Graphics through the recording backend. With
+/// Drive a Element::Graphics through the recording backend. With
 /// no named-renderer registration, the wire command falls through to
 /// no-op handlers on the app side; the surface still mounts.
 #[test]
@@ -630,20 +630,20 @@ fn screen_released_reverse_channel() {
     assert_eq!(mount_called.get(), 0);
 }
 
-/// Drive a Primitive::Navigator through the framework's real walker
+/// Drive a Element::Navigator through the framework's real walker
 /// against the WireRecordingBackend. Verifies that CreateNavigator
 /// and the navigator's child screen are emitted, plus the
 /// NavigatorAttachInitial command.
 #[test]
 fn stack_navigator_initial_mount_round_trip() {
     use runtime_core::primitives::navigator::{Navigator, Route};
-    use runtime_core::{render, Primitive, TextSource};
+    use runtime_core::{render, Element, TextSource};
     use std::cell::RefCell;
 
     // Build a navigator with one route "home" → Text("Home").
     let home_route: Route<()> = Route::new("home", "/");
     let nav: runtime_core::Bound<runtime_core::NavigatorHandle> =
-        Navigator::new(&home_route).screen(home_route, |_params: ()| Primitive::Text {
+        Navigator::new(&home_route).screen(home_route, |_params: ()| Element::Text {
             source: TextSource::Static("Home".into()),
             style: None,
             ref_fill: None,
@@ -651,7 +651,7 @@ fn stack_navigator_initial_mount_round_trip() {
             test_id: None,
         });
 
-    let tree: Primitive = <runtime_core::Bound<runtime_core::NavigatorHandle> as runtime_core::IntoPrimitive>::into_primitive(nav);
+    let tree: Element = <runtime_core::Bound<runtime_core::NavigatorHandle> as runtime_core::IntoElement>::into_element(nav);
     let recorder = WireRecordingBackend::new();
     let backend_rc = Rc::new(RefCell::new(recorder.clone()));
     let _owner = render(backend_rc, tree);

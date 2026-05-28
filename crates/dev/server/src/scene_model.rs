@@ -794,7 +794,7 @@ impl SceneModel {
             stack.push(*sidebar);
         }
         // Navigator layouts: the layout's root + its subtree (which
-        // typically embeds the drawer's sidebar Primitive) only
+        // typically embeds the drawer's sidebar Element) only
         // reach the snapshot via this stash. Without it the layout
         // is pruned and `AttachNavigatorLayout` ships with NodeIds
         // the client has never seen → `UnknownNode` on replay.

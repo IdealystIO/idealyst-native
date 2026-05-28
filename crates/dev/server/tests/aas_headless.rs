@@ -30,7 +30,7 @@ use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
 use runtime_core::robot::{Query, Robot};
 use runtime_core::{
     render, signal, Color, DrawerNavigator, IntoAction,
-    Primitive, Route, SafeAreaSides, TextSource, TokenEntry,
+    Element, Route, SafeAreaSides, TextSource, TokenEntry,
 };
 use idea_ui::{active_theme, install_theme, set_theme, ThemeTokens};
 use wire::Command;
@@ -39,9 +39,9 @@ use wire::Command;
 /// test self-contained and explicit about every field). Returns a
 /// `(tree, click_count_signal)` pair so the caller can both render
 /// the tree and observe state mutated by the button's `on_click`.
-fn sample_tree() -> (Primitive, runtime_core::Signal<i32>) {
+fn sample_tree() -> (Element, runtime_core::Signal<i32>) {
     let click_count = signal!(0_i32);
-    // `Primitive::Button.on_click` is `derive::Action` since the
+    // `Element::Button.on_click` is `derive::Action` since the
     // generator migration — bare `Fn()` closures lift via the
     // blanket `IntoAction for F: Fn()` impl (which wraps the
     // closure into `Action.fire`).
@@ -50,16 +50,16 @@ fn sample_tree() -> (Primitive, runtime_core::Signal<i32>) {
     })
     .into_action();
 
-    let tree = Primitive::View {
+    let tree = Element::View {
         children: vec![
-            Primitive::Text {
+            Element::Text {
                 source: TextSource::Static("Hello, runtime-server".into()),
                 style: None,
                 ref_fill: None,
                 accessibility: Default::default(),
                 test_id: Some("greeting"),
             },
-            Primitive::Button {
+            Element::Button {
                 label: TextSource::Static("Tap me".into()),
                 on_click,
                 leading_icon: None,
@@ -190,8 +190,8 @@ fn robot_finds_and_clicks_button_via_server_registry() {
 /// hot-reload cycle.
 #[test]
 fn release_node_emitted_for_portal_when_owner_drops() {
-    let portal = Primitive::Portal {
-        children: vec![Primitive::Text {
+    let portal = Element::Portal {
+        children: vec![Element::Text {
             source: TextSource::Static("hello inside portal".into()),
             style: None,
             ref_fill: None,
@@ -265,7 +265,7 @@ fn reset_log_and_scene_does_not_collide_minted_ids_with_cached_identities() {
         }
     }
 
-    fn tree_with_n_text(n: usize) -> Primitive {
+    fn tree_with_n_text(n: usize) -> Element {
         let mut children = Vec::with_capacity(n);
         for i in 0..n {
             let id_str: &'static str = match i {
@@ -274,7 +274,7 @@ fn reset_log_and_scene_does_not_collide_minted_ids_with_cached_identities() {
                 2 => "c",
                 _ => panic!("extend test_ids array"),
             };
-            children.push(Primitive::Text {
+            children.push(Element::Text {
                 source: TextSource::Static(format!("row-{}", id_str).into()),
                 style: None,
                 ref_fill: None,
@@ -282,7 +282,7 @@ fn reset_log_and_scene_does_not_collide_minted_ids_with_cached_identities() {
                 test_id: Some(id_str),
             });
         }
-        Primitive::View {
+        Element::View {
             children,
             style: None,
             ref_fill: None,
@@ -401,10 +401,10 @@ fn aas_theme_toggle_re_emits_navigator_style_commands() {
     // signals here means a `.set(...)` on any of them mimics the
     // "theme cohort fires" event without requiring a full theme
     // registration in the test.
-    let tree = Primitive::from(
+    let tree = Element::from(
         DrawerNavigator::new(&ROUTE)
             .screen(ROUTE, |_| {
-                Primitive::View {
+                Element::View {
                     children: vec![],
                     style: None,
                     ref_fill: None,
@@ -511,10 +511,10 @@ fn aas_set_theme_re_emits_navigator_style_commands() {
     // `idea_header(|t| HeaderStyle { ... })` does. When wrapped in
     // an Effect by the walker, the Effect's tracked deps include
     // the `ACTIVE_THEME` signal so `set_theme(...)` re-fires it.
-    let tree = Primitive::from(
+    let tree = Element::from(
         DrawerNavigator::new(&ROUTE)
             .screen(ROUTE, |_| {
-                Primitive::View {
+                Element::View {
                     children: vec![],
                     style: None,
                     ref_fill: None,
@@ -624,9 +624,9 @@ fn aas_hot_patch_preserves_header_handler_id() {
     // hamburger too — same identity-keyed path — but explicit is
     // easier to observe.)
     let build = || {
-        Primitive::from(
+        Element::from(
             DrawerNavigator::new(&ROUTE).screen(ROUTE, |_| {
-                runtime_core::primitives::navigator::Screen::new(Primitive::View {
+                runtime_core::primitives::navigator::Screen::new(Element::View {
                     children: vec![],
                     style: None,
                     ref_fill: None,
@@ -688,7 +688,7 @@ fn aas_hot_patch_preserves_header_handler_id() {
 /// **Test 7: hot-patch keeps primitive HandlerIds stable.**
 ///
 /// Covers the same identity-keyed `HandlerId` dedup as test 6, but
-/// for `Primitive::Button`'s `on_click` — the broader migration
+/// for `Element::Button`'s `on_click` — the broader migration
 /// after the header_left fix. The same property must hold for any
 /// primitive whose backend `create_*` registers an event handler
 /// (Toggle, Slider, TextInput, Link, overlay `on_dismiss`); the
@@ -712,7 +712,7 @@ fn aas_hot_patch_preserves_button_handler_id() {
     // the reset — the walker's identity-per-emission-site machinery
     // is what gives the Button a stable Identity across rebuilds,
     // which the recorder then uses to recycle the HandlerId.
-    let build = || Primitive::Button {
+    let build = || Element::Button {
         label: TextSource::Static("Tap".into()),
         on_click: on_click.clone(),
         leading_icon: None,

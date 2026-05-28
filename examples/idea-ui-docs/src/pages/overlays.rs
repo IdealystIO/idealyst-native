@@ -11,14 +11,14 @@ use std::rc::Rc;
 
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
-use runtime_core::{signal, ui, Easing, PressableHandle, Primitive, PresenceAnim, PresenceState, Ref, Signal};
+use runtime_core::{signal, ui, Easing, PressableHandle, Element, PresenceAnim, PresenceState, Ref, Signal};
 use idea_ui::{
     Btn, Card, Popover, Stack, Typography, StackGap,
 };
 
 use crate::shell::page_header;
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     ui! {
         Stack(gap = StackGap::Xl) {
             { page_header(
@@ -35,22 +35,22 @@ pub fn page() -> Primitive {
     }
 }
 
-fn modal_demo() -> Primitive {
+fn modal_demo() -> Element {
     let open = signal!(false);
     let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
     let on_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
 
     ui! {
         Card {
-            Typography(content = "Modal".to_string(), kind = idea_ui::typography_kind::H2.into())
+            Typography(content = "Modal".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "Viewport-centered overlay with a dismiss-on-click scrim. \
                               Press Escape or click outside to dismiss.".to_string(),
                  muted = true)
             Btn(
                 label = "Open modal".to_string(),
                 on_click = on_open,
-                tone = idea_ui::tone::Primary.into(),
-                variant = idea_ui::variant::Filled.into(),
+                tone = idea_ui::tone::Primary,
+                variant = idea_ui::variant::Filled,
             )
             Presence(
                 present = move || open.get(),
@@ -74,13 +74,13 @@ fn modal_demo() -> Primitive {
                     }
                 ) {
                     Card {
-                        Typography(content = "Confirm".to_string(), kind = idea_ui::typography_kind::H3.into())
+                        Typography(content = "Confirm".to_string(), kind = idea_ui::typography_kind::H3)
                         Typography(content = "Click outside or press Escape to dismiss.".to_string())
                         Btn(
                             label = "OK".to_string(),
                             on_click = on_close.clone(),
-                            tone = idea_ui::tone::Primary.into(),
-                            variant = idea_ui::variant::Filled.into(),
+                            tone = idea_ui::tone::Primary,
+                            variant = idea_ui::variant::Filled,
                         )
                     }
                 }
@@ -89,7 +89,7 @@ fn modal_demo() -> Primitive {
     }
 }
 
-fn popover_demo() -> Primitive {
+fn popover_demo() -> Element {
     let open = signal!(false);
     let trigger: Ref<PressableHandle> = Ref::new();
     let on_toggle: Rc<dyn Fn()> = Rc::new(move || open.update(|v| *v = !*v));
@@ -97,7 +97,7 @@ fn popover_demo() -> Primitive {
 
     ui! {
         Card {
-            Typography(content = "Popover".to_string(), kind = idea_ui::typography_kind::H2.into())
+            Typography(content = "Popover".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "Element-anchored overlay with no scrim. The trigger element \
                               binds a `Ref<PressableHandle>`; the popover targets that ref \
                               and follows it through scrolls / resizes.".to_string(),
@@ -105,8 +105,8 @@ fn popover_demo() -> Primitive {
             Btn(
                 label = "Open menu".to_string(),
                 on_click = on_toggle,
-                tone = idea_ui::tone::Neutral.into(),
-                variant = idea_ui::variant::Soft.into(),
+                tone = idea_ui::tone::Neutral,
+                variant = idea_ui::variant::Soft,
                 bind_to = Some(trigger),
             )
             Presence(
@@ -143,22 +143,22 @@ fn popover_demo() -> Primitive {
     }
 }
 
-fn drawer_demo() -> Primitive {
+fn drawer_demo() -> Element {
     let open = signal!(false);
     let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
     let on_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
 
     ui! {
         Card {
-            Typography(content = "Drawer".to_string(), kind = idea_ui::typography_kind::H2.into())
+            Typography(content = "Drawer".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "Same Overlay primitive, pinned to the right edge with a slide-in \
                               transition.".to_string(),
                  muted = true)
             Btn(
                 label = "Open drawer".to_string(),
                 on_click = on_open,
-                tone = idea_ui::tone::Neutral.into(),
-                variant = idea_ui::variant::Soft.into(),
+                tone = idea_ui::tone::Neutral,
+                variant = idea_ui::variant::Soft,
             )
             Presence(
                 present = move || open.get(),
@@ -182,13 +182,13 @@ fn drawer_demo() -> Primitive {
                     }
                 ) {
                     Card {
-                        Typography(content = "Drawer".to_string(), kind = idea_ui::typography_kind::H3.into())
+                        Typography(content = "Drawer".to_string(), kind = idea_ui::typography_kind::H3)
                         Typography(content = "Right-edge drawer content.".to_string())
                         Btn(
                             label = "Close".to_string(),
                             on_click = on_close.clone(),
-                            tone = idea_ui::tone::Neutral.into(),
-                            variant = idea_ui::variant::Soft.into(),
+                            tone = idea_ui::tone::Neutral,
+                            variant = idea_ui::variant::Soft,
                         )
                     }
                 }

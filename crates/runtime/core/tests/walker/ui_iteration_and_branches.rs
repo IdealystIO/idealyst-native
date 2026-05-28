@@ -7,15 +7,15 @@
 //!
 //! Coverage map (and the lowering each exercises):
 //!   - static array / Vec / HashMap / `.map().collect()` → plain Rust
-//!     `for` accumulating a flat `Vec<Primitive>` (the React
+//!     `for` accumulating a flat `Vec<Element>` (the React
 //!     `arr.map(e => <C/>)` equivalent).
-//!   - static `0..n` range → `Primitive::Repeat`.
+//!   - static `0..n` range → `Element::Repeat`.
 //!   - REACTIVE iteration is TYPE-DRIVEN, not heuristic: `for x in sig`
-//!     (sig: `Signal<Vec<_>>`) → reactive `Primitive::Each` because the
+//!     (sig: `Signal<Vec<_>>`) → reactive `Element::Each` because the
 //!     *type* is a signal; `for x in sig.get()` iterates a `Vec`
 //!     snapshot → STATIC. A reactive count `for i in 0..n.get()` is the
 //!     one narrow range-bound special case that still rebuilds.
-//!   - `FlatList(data = sig, ...)` → reactive `Primitive::Virtualizer`
+//!   - `FlatList(data = sig, ...)` → reactive `Element::Virtualizer`
 //!     (the keyed/windowed reactive-list path for large/scrolling lists).
 //!   - static / reactive `if`/`else` → plain Rust `if` / `when(...)`.
 //!   - static / reactive `match` → plain Rust `match` / `switch(...)`.
@@ -31,7 +31,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::{on_cleanup, signal, ui, Primitive, Signal};
+use runtime_core::{on_cleanup, signal, ui, Element, Signal};
 
 use crate::common::{Event, MockBackendConfig, TestRuntime};
 
@@ -67,7 +67,7 @@ fn count_text(events: &[Event], needle: &str) -> usize {
 #[test]
 fn static_array_maps_to_components() {
     let rt = TestRuntime::new();
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             for label in ["one", "two", "three"] {
                 Text { label.to_string() }
@@ -84,7 +84,7 @@ fn static_array_maps_to_components() {
 fn static_vec_ref_maps_to_components() {
     let rt = TestRuntime::new();
     let items = vec![10, 20, 30];
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             for n in &items {
                 Text { format!("n={}", n) }
@@ -102,7 +102,7 @@ fn static_hashmap_maps_to_components() {
     let mut map: HashMap<&str, i32> = HashMap::new();
     map.insert("a", 1);
     map.insert("b", 2);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             for (k, v) in &map {
                 Text { format!("{}={}", k, v) }
@@ -122,7 +122,7 @@ fn iterator_map_collect_passthrough() {
     // The literal React `arr.map(e => <Comp/>)` shape: a `.map().collect()`
     // expression in child position, flattened by `ChildList`.
     let rt = TestRuntime::new();
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             ["x", "y"].iter().map(|s| ui! { Text { s.to_string() } }).collect::<Vec<_>>()
         }
@@ -135,7 +135,7 @@ fn iterator_map_collect_passthrough() {
 #[test]
 fn static_range_maps_to_components() {
     let rt = TestRuntime::new();
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             for i in 0..3 {
                 Text { format!("r{}", i) }
@@ -150,18 +150,18 @@ fn static_range_maps_to_components() {
 }
 
 // ---------------------------------------------------------------------------
-// Type-driven reactive iteration — Signal<Vec<_>> via Primitive::Each
+// Type-driven reactive iteration — Signal<Vec<_>> via Element::Each
 // ---------------------------------------------------------------------------
 
 /// `for x in sig { ... }` (where `sig: Signal<Vec<_>>`) is reactive
-/// because the *type* is a signal — it lowers to a `Primitive::Each`
+/// because the *type* is a signal — it lowers to a `Element::Each`
 /// that rebuilds the whole list whenever the signal changes. No
 /// `.get()` needed; push / shrink / replace / empty all re-render.
 #[test]
 fn signal_iteration_rebuilds_on_change() {
     let rt = TestRuntime::new();
     let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             for s in data {
                 Text { s.to_string() }
@@ -187,7 +187,7 @@ fn signal_iteration_rebuilds_on_change() {
     assert_eq!(texts(&rt.events()), Vec::<String>::new(), "rebuilt empty");
 }
 
-/// On rebuild, `Primitive::Each` drops the PREVIOUS list's scope before
+/// On rebuild, `Element::Each` drops the PREVIOUS list's scope before
 /// building the new one — freeing every row's signals/effects. Each row
 /// registers an `on_cleanup`; growing the list must fire exactly the old
 /// rows' cleanups (no leak, atomic teardown).
@@ -197,7 +197,7 @@ fn each_releases_old_row_scopes_on_rebuild() {
     let cleaned = Rc::new(Cell::new(0usize));
     let data: Signal<Vec<i32>> = signal!(vec![1, 2]);
     let c = cleaned.clone();
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             for n in data {
                 {
@@ -225,7 +225,7 @@ fn each_releases_old_row_scopes_on_rebuild() {
 fn snapshot_get_iteration_is_static() {
     let rt = TestRuntime::new();
     let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             for s in data.get() {
                 Text { s.to_string() }
@@ -252,7 +252,7 @@ fn snapshot_get_iteration_is_static() {
 fn reactive_range_count_rebuilds() {
     let rt = TestRuntime::new();
     let n: Signal<usize> = signal!(2usize);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             for i in 0..n.get() {
                 Text { format!("#{}", i) }
@@ -274,7 +274,7 @@ fn reactive_range_count_rebuilds() {
 fn reactive_for_multi_node_body_flattens_on_rebuild() {
     let rt = TestRuntime::new();
     let data: Signal<Vec<i32>> = signal!(vec![1]);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             for n in data {
                 Text { format!("h{}", n) }
@@ -308,7 +308,7 @@ fn reactive_for_multi_node_body_flattens_on_rebuild() {
 fn reactive_flat_list_creates_virtualizer_and_reacts_to_data() {
     let rt = TestRuntime::new();
     let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             FlatList(
                 data = data,
@@ -342,7 +342,7 @@ fn reactive_flat_list_creates_virtualizer_and_reacts_to_data() {
 fn flat_list_mounts_rows_with_real_content() {
     let rt = TestRuntime::new();
     let data: Signal<Vec<i32>> = signal!(vec![10, 20, 30]);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         FlatList(
             data = data,
             render = |_idx, item: &i32| ui! { Text { format!("item {}", item) } },
@@ -362,7 +362,7 @@ fn flat_list_mounts_rows_with_real_content() {
 fn flat_list_mounts_only_new_row_on_growth() {
     let rt = TestRuntime::new();
     let data: Signal<Vec<i32>> = signal!(vec![1, 2]);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         FlatList(
             data = data,
             render = |_idx, item: &i32| ui! { Text { format!("v{}", item) } },
@@ -387,7 +387,7 @@ fn flat_list_releases_row_scopes_on_shrink() {
     let cleaned = Rc::new(Cell::new(0usize));
     let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
     let c = cleaned.clone();
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         FlatList(
             data = data,
             render = move |_idx, item: &i32| {
@@ -411,7 +411,7 @@ fn flat_list_releases_row_scopes_on_shrink() {
 // ---------------------------------------------------------------------------
 
 /// `for i in count(sig) { body }` lowers to a structured
-/// `Primitive::Virtualizer` (count `Derived` + `row_template` for
+/// `Element::Virtualizer` (count `Derived` + `row_template` for
 /// generator backends). Regression: its runtime `render_item` must
 /// build the REAL row body — previously it was a hardcoded empty-View
 /// placeholder, so this construct rendered blank rows on every runtime
@@ -419,24 +419,24 @@ fn flat_list_releases_row_scopes_on_shrink() {
 #[test]
 fn for_count_signal_renders_real_rows_not_placeholder() {
     let count_sig: Signal<usize> = signal!(3);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         for _i in structured_count(count_sig) {
             Text { "row".to_string() }
         }
     };
     match tree {
-        Primitive::Virtualizer { render_item, item_count, row_template, .. } => {
+        Element::Virtualizer { render_item, item_count, row_template, .. } => {
             // Count derives from the signal-reading call.
             assert_eq!((item_count.compute)(), 3, "item_count derives from count(sig)");
             // Structured form preserved for generator backends (Roku).
             assert!(row_template.is_some(), "row_template kept for generator backends");
             // THE FIX: runtime render builds the real row, not a placeholder View.
             assert!(
-                matches!(render_item(0), Primitive::Text { .. }),
+                matches!(render_item(0), Element::Text { .. }),
                 "render_item must build the real row body (Text), not an empty placeholder View",
             );
         }
-        _ => panic!("`for i in count(sig)` must lower to Primitive::Virtualizer"),
+        _ => panic!("`for i in count(sig)` must lower to Element::Virtualizer"),
     }
 }
 
@@ -448,7 +448,7 @@ fn for_count_signal_renders_real_rows_not_placeholder() {
 fn for_count_signal_mounts_real_rows_end_to_end() {
     let rt = TestRuntime::new();
     let n: Signal<usize> = signal!(2usize);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         for _i in structured_count(n) {
             Text { "cell".to_string() }
         }
@@ -472,7 +472,7 @@ fn for_count_signal_mounts_real_rows_end_to_end() {
 #[test]
 fn static_if_else_mounts_single_branch() {
     let rt = TestRuntime::new();
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             if 3 < 4 {
                 Text { "yes".to_string() }
@@ -492,7 +492,7 @@ fn static_if_else_mounts_single_branch() {
 fn reactive_if_else_flips_on_signal() {
     let rt = TestRuntime::new();
     let flag: Signal<bool> = signal!(true);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             if flag.get() {
                 Text { "on".to_string() }
@@ -516,7 +516,7 @@ fn reactive_if_else_flips_on_signal() {
 fn reactive_if_without_else_toggles_presence() {
     let rt = TestRuntime::new();
     let show: Signal<bool> = signal!(false);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             if show.get() {
                 Text { "visible".to_string() }
@@ -542,7 +542,7 @@ fn reactive_if_flip_releases_old_branch_scope() {
     let cleaned = Rc::new(Cell::new(0usize));
     let flag: Signal<bool> = signal!(true);
     let c = cleaned.clone();
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             if flag.get() {
                 {
@@ -570,7 +570,7 @@ fn reactive_if_flip_releases_old_branch_scope() {
 fn static_match_mounts_single_arm() {
     let rt = TestRuntime::new();
     let mode = 2;
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             match mode {
                 1 => { Text { "one".to_string() } }
@@ -591,7 +591,7 @@ fn static_match_mounts_single_arm() {
 fn reactive_match_switches_on_signal_with_default() {
     let rt = TestRuntime::new();
     let mode: Signal<u32> = signal!(0u32);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             match mode.get() {
                 0 => { Text { "zero".to_string() } }
@@ -622,7 +622,7 @@ fn reactive_match_arm_change_releases_old_arm_scope() {
     let cleaned = Rc::new(Cell::new(0usize));
     let mode: Signal<u32> = signal!(0u32);
     let c = cleaned.clone();
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             match mode.get() {
                 0 => {
@@ -654,7 +654,7 @@ fn reactive_match_arm_change_releases_old_arm_scope() {
 #[test]
 fn static_if_multi_node_branch_flattens_in_children() {
     let rt = TestRuntime::new();
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             if 1 < 2 {
                 Text { "a".to_string() }
@@ -674,11 +674,11 @@ fn static_if_multi_node_branch_flattens_in_children() {
 
 /// A static `if` with no `else`, condition false, contributes NOTHING —
 /// not an empty-`View` placeholder. Before the fix the absent `else`
-/// emitted `into_primitive(view(vec![]))`, creating a stray View.
+/// emitted `into_element(view(vec![]))`, creating a stray View.
 #[test]
 fn static_if_no_else_false_adds_no_empty_view() {
     let rt = TestRuntime::new();
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             if 1 > 2 {
                 Text { "never".to_string() }
@@ -701,7 +701,7 @@ fn static_if_no_else_false_adds_no_empty_view() {
 fn static_match_multi_node_arm_flattens_in_children() {
     let rt = TestRuntime::new();
     let mode = 1;
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             match mode {
                 1 => {
@@ -725,7 +725,7 @@ fn static_match_multi_node_arm_flattens_in_children() {
 // ---------------------------------------------------------------------------
 // Anchorless reactive regions (capability-gated) — foundation for the
 // runtime-decided control-flow lowering. NOT wired into the macro yet;
-// exercised here directly via `for x in signal` (→ Primitive::Each).
+// exercised here directly via `for x in signal` (→ Element::Each).
 // ---------------------------------------------------------------------------
 
 /// With `supports_child_splice`, a reactive region splices its rows
@@ -740,7 +740,7 @@ fn anchorless_region_splices_flat_in_place() {
         ..Default::default()
     });
     let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             for x in data {
                 Text { x.to_string() }
@@ -782,7 +782,7 @@ fn anchorless_region_splices_flat_in_place() {
 fn default_backend_uses_anchored_region() {
     let rt = TestRuntime::new(); // no splice support
     let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             for x in data {
                 Text { x.to_string() }
@@ -810,7 +810,7 @@ fn anchorless_region_splices_at_position_among_siblings() {
         ..Default::default()
     });
     let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
-    let tree: Primitive = ui! {
+    let tree: Element = ui! {
         View {
             Text { "header".to_string() }
             for x in data {

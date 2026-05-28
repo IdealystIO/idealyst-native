@@ -1,4 +1,4 @@
-//! One module per screen. Each module exports a `page() -> Primitive`
+//! One module per screen. Each module exports a `page() -> Element`
 //! that the Navigator mounts for the matching route.
 
 pub mod agentic;

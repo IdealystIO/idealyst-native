@@ -121,7 +121,7 @@ pub struct IosBackend {
     /// UIKit setters and the rationale for caching the transform
     /// components.
     pub(crate) animated_states: animated::AnimatedStateMap,
-    /// Registry of third-party `Primitive::External` handlers,
+    /// Registry of third-party `Element::External` handlers,
     /// populated by `register_external::<T>(...)` calls from
     /// per-platform leaf crates (e.g. `webview-ios::register`).
     /// `create_external` looks the handler up by payload TypeId;
@@ -129,7 +129,7 @@ pub struct IosBackend {
     /// UILabel.
     pub(crate) external_handlers:
         runtime_core::ExternalRegistry<IosBackend>,
-    /// Registry of `Primitive::Navigator` handler factories.
+    /// Registry of `Element::Navigator` handler factories.
     /// SDK leaf crates (`stack_navigator::register`, etc.) install
     /// factories keyed by their presentation TypeId.
     pub(crate) navigator_handlers:
@@ -400,7 +400,7 @@ pub fn schedule_layout_pass() {
 /// drop them after the walk (avoids borrowing `pending_sticky`
 /// mutably across the recursion).
 ///
-/// Subtree walk (not just the root view): a `Primitive::View`
+/// Subtree walk (not just the root view): a `Element::View`
 /// containing a `View { position: Sticky }` child will see the
 /// outer View as `child_view` in `insert`, with the sticky child
 /// nested inside. Both flagged in `pending_sticky` until this walk
@@ -477,7 +477,7 @@ impl IosBackend {
 
     /// Register a navigator-kind handler factory for the per-backend
     /// `NavigatorRegistry`. Mirrors `register_external` but for
-    /// `Primitive::Navigator`. SDK leaf crates
+    /// `Element::Navigator`. SDK leaf crates
     /// (`stack_navigator::register`, `tab_navigator::register`,
     /// `drawer_navigator::register`) call this once during app
     /// bootstrap.
@@ -999,7 +999,7 @@ impl Backend for IosBackend {
         // matching the framework primitive shape requires a manual
         // overlay-label hack; for v1 we accept the `placeholder` arg
         // but ignore it (callers shouldn't depend on placeholder
-        // text rendering on iOS yet — flagged on Primitive::TextArea).
+        // text rendering on iOS yet — flagged on Element::TextArea).
         let view: Retained<UITextView> = unsafe { UITextView::new(self.mtm) };
         let ns_val = NSString::from_str(initial_value);
         unsafe { view.setText(Some(&ns_val)) };

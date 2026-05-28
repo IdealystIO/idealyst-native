@@ -346,7 +346,7 @@ pub enum NodeKind {
         horizontal: bool,
         offset_x: f32,
         offset_y: f32,
-        /// Optional user-supplied `Primitive::ScrollView::on_scroll`
+        /// Optional user-supplied `Element::ScrollView::on_scroll`
         /// callback. The renderer / host's scroll-event dispatch
         /// invokes this whenever `offset_x` or `offset_y` is mutated
         /// \u{2014} pan, fling, springback, programmatic `scroll_to`

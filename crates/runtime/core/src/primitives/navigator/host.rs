@@ -26,7 +26,7 @@ static NOOP_HANDLER_OPS: NoopHandlerOps = NoopHandlerOps;
 /// Affordances the framework hands to a registered SDK handler at
 /// `init` time. Carries everything the handler needs from the
 /// substrate — mount/release callbacks, the control plane, reactive
-/// nav state, plus two scope-aware Primitive→Node builders for SDK
+/// nav state, plus two scope-aware Element→Node builders for SDK
 /// chrome.
 ///
 /// The handler stores whatever it needs from this bundle for the
@@ -90,7 +90,7 @@ pub struct NavigatorHost<N: Clone + 'static> {
     /// button, edge swipe, browser back) back through the substrate.
     pub control: Rc<NavigatorControl>,
 
-    /// Materialize a Primitive into a backend Node. Used for SDK
+    /// Materialize a Element into a backend Node. Used for SDK
     /// chrome that lives the navigator's full lifetime (sidebar,
     /// custom bars). The framework wraps the call in a fresh reactive
     /// scope retained on the navigator — effects inside the built
@@ -100,9 +100,9 @@ pub struct NavigatorHost<N: Clone + 'static> {
     /// (i.e. not synchronously from `init`). Defer via
     /// `runtime_core::schedule_microtask` or your platform's
     /// equivalent.
-    pub build_node: Rc<dyn Fn(crate::Primitive) -> N>,
+    pub build_node: Rc<dyn Fn(crate::Element) -> N>,
 
-    /// Materialize a Primitive into a Node, scoped to a specific
+    /// Materialize a Element into a Node, scoped to a specific
     /// screen's lifetime. Pass the `scope_id` from a `MountResult`.
     /// Used for per-screen SDK chrome (custom title view, custom
     /// button content) — when the SDK calls `release_screen(scope_id)`,
@@ -110,7 +110,7 @@ pub struct NavigatorHost<N: Clone + 'static> {
     ///
     /// Same defer-via-microtask rule as `build_node` — must be called
     /// outside the outer borrow window.
-    pub build_in_screen: Rc<dyn Fn(u64, crate::Primitive) -> N>,
+    pub build_in_screen: Rc<dyn Fn(u64, crate::Element) -> N>,
 }
 
 /// Implementation contract for a registered navigator kind. SDK
@@ -131,7 +131,7 @@ pub struct NavigatorHost<N: Clone + 'static> {
 ///    [`Self::release`].
 pub trait NavigatorHandler<B: crate::Backend + 'static>: 'static {
     /// Construct the navigator's root native view. `presentation` is
-    /// the typed payload the SDK chose for its `Primitive::Navigator`;
+    /// the typed payload the SDK chose for its `Element::Navigator`;
     /// downcast to the expected type (registration uses TypeId so the
     /// type matches by construction).
     fn init(

@@ -1,12 +1,12 @@
 //! Inputs — Field, Switch, Select.
 
-use runtime_core::{signal, ui, Primitive};
+use runtime_core::{signal, ui, Element};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{Typography, Card, Field, Select, Stack, Switch, FieldProps, SelectOption, StackGap, SwitchProps};
 
 use crate::shell::{demo_card, page_header};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     ui! {
         Stack(gap = StackGap::Xl) {
             { page_header(
@@ -21,7 +21,7 @@ pub fn page() -> Primitive {
     }
 }
 
-fn field_demo() -> Primitive {
+fn field_demo() -> Element {
     // Field's controlled signal lives outside the docs-state — it's
     // the host's source of truth for the input value. Captured by
     // the build closure so each rebuild reuses the same signal.
@@ -58,7 +58,7 @@ fn field_demo() -> Primitive {
     )
 }
 
-fn switch_demo() -> Primitive {
+fn switch_demo() -> Element {
     let value = signal!(false);
     let on_change: std::rc::Rc<dyn Fn(bool)> = std::rc::Rc::new(move |b| value.set(b));
 
@@ -83,7 +83,7 @@ fn switch_demo() -> Primitive {
     )
 }
 
-fn select_demo() -> Primitive {
+fn select_demo() -> Element {
     // Controlled signal — host owns the chosen option's id.
     let value = signal!("pear".to_string());
     let on_change: std::rc::Rc<dyn Fn(String)> = std::rc::Rc::new(move |v| value.set(v));
@@ -124,7 +124,7 @@ fn select_demo() -> Primitive {
     };
     let controls = ui! {
         Card {
-            Typography(content = "Notes".to_string(), kind = idea_ui::typography_kind::H3.into())
+            Typography(content = "Notes".to_string(), kind = idea_ui::typography_kind::H3)
             notes
             current
         }

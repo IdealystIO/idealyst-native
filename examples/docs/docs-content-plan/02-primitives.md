@@ -430,7 +430,7 @@ modals, popovers, drawers, sheets, tooltips.
 
 ### `Portal`
 
-The one render-elsewhere primitive. `Primitive::Portal` renders
+The one render-elsewhere primitive. `Element::Portal` renders
 its children at a different location in the host tree, escaping
 the parent's layout and clipping. On each backend it mounts at
 the platform's window-level surface — body portal on web,
@@ -451,7 +451,7 @@ directly against the primitive.
 ### `Overlay` (composition)
 
 `overlay()` is not a primitive — it's a composition that lowers
-to `Primitive::Portal` with a viewport target plus a backdrop
+to `Element::Portal` with a viewport target plus a backdrop
 child. Defaults: `Center` placement, `Dismiss` backdrop,
 focus-trap on. Use for modals, drawers, sheets.
 
@@ -463,7 +463,7 @@ gesture, backdrop tap).
 ### `AnchoredOverlay` (composition)
 
 `anchored_overlay()` is also a composition, lowering to
-`Primitive::Portal` with `PortalTarget::Anchor`. Use for
+`Element::Portal` with `PortalTarget::Anchor`. Use for
 popovers, tooltips, dropdowns, context menus — anything that
 follows a trigger element.
 

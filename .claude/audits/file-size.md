@@ -67,7 +67,7 @@ For each file in the target crate exceeding the threshold above:
       FooSlider`, `impl FooSwitch` all in one `primitives.rs` is the
       canonical example.
 - [ ] **Per-primitive / per-variant sections** — does the file have a
-      large `match` over a `Primitive` / wire / scene enum where each arm
+      large `match` over a `Element` / wire / scene enum where each arm
       is a sizable block of logic? Each arm is usually a candidate for its
       own submodule, with `mod.rs` left as a thin dispatcher.
 - [ ] **Stratified concerns inside one file** — does the file mix layers

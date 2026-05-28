@@ -1,6 +1,6 @@
 //! UI DSL — the `ui!` macro: syntax, control flow, reactive forms.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Element};
 use idea_ui::{Typography, Card};
 
 use crate::shell::{
@@ -8,7 +8,7 @@ use crate::shell::{
     SectionProps,
 };
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     ui! {
         PageBody {
             PageHeader(
@@ -24,7 +24,7 @@ pub fn page() -> Primitive {
             )
 
             Card {
-                Typography(content = "Component invocation".to_string(), kind = idea_ui::typography_kind::H2.into())
+                Typography(content = "Component invocation".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
                     content = "Components are called as `Name(prop = expr, ...) { children }`. \
                                Identifiers starting with an uppercase ASCII letter are treated \
@@ -44,7 +44,7 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Typography(content = "Reactive `if`".to_string(), kind = idea_ui::typography_kind::H2.into())
+                Typography(content = "Reactive `if`".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
                     content = "An `if` whose condition reads a signal (contains `.get()`) is \
                                lowered to a reactive `when(...)` call — the branch \
@@ -66,7 +66,7 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Typography(content = "Reactive `match`".to_string(), kind = idea_ui::typography_kind::H2.into())
+                Typography(content = "Reactive `match`".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
                     content = "Same rule as `if`: a `match` whose scrutinee reads a signal \
                                lowers to a `switch(...)` call. Each arm's body is a UI block \
@@ -83,10 +83,10 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Typography(content = "`for` lists".to_string(), kind = idea_ui::typography_kind::H2.into())
+                Typography(content = "`for` lists".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
                     content = "Iterate over any `IntoIterator`. The macro expands the loop into \
-                               a `Vec<Primitive>` that flows into the surrounding children. A \
+                               a `Vec<Element>` that flows into the surrounding children. A \
                                trailing `.style(...)` chain pins the row container's style for \
                                virtualized lists.".to_string(),
                     muted = true,
@@ -113,8 +113,8 @@ pub fn page() -> Primitive {
                 title = "Pass-through expressions".to_string(),
                 body = "Any plain Rust expression inside `ui!` is dropped into the surrounding \
                         children list via the `ChildList` trait. The trait flattens \
-                        `Primitive`, `Option<Primitive>` (skipping `None`), and \
-                        `Vec<Primitive>` (inlined) — so you can mix precomputed nodes, \
+                        `Element`, `Option<Element>` (skipping `None`), and \
+                        `Vec<Element>` (inlined) — so you can mix precomputed nodes, \
                         conditional `Some` blocks, and helper-built lists in one place.".to_string(),
             )
         }

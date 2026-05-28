@@ -1,4 +1,4 @@
-//! `Primitive::Virtualizer` — `NSCollectionView` with a flow layout
+//! `Element::Virtualizer` — `NSCollectionView` with a flow layout
 //! that drives real cell reuse. Mirrors the iOS UICollectionView
 //! implementation in `crates/backend/ios/mobile/src/imp/virtualizer.rs`
 //! with the AppKit-equivalent selectors.

@@ -52,7 +52,7 @@ impl<B: Backend + 'static> NavigatorRegistry<B> {
 
     /// Register a navigator kind. `P` is the SDK's presentation
     /// payload type; `factory` produces a fresh handler per
-    /// `Primitive::Navigator { type_id: TypeId::of::<P>(), .. }`
+    /// `Element::Navigator { type_id: TypeId::of::<P>(), .. }`
     /// mounted in the tree. Returns the previously-registered factory
     /// if `P` was already registered (typically `None`; non-`None`
     /// means the same SDK registered twice).

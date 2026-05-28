@@ -20,10 +20,10 @@ right one when building.
 
 ## What is a primitive?
 
-Concretely, a primitive is a variant of the `runtime_core::Primitive`
+Concretely, a primitive is a variant of the `runtime_core::Element`
 enum. Three views on what that means:
 
-**Data view.** A `Primitive` is an inert tree node — a description of
+**Data view.** A `Element` is an inert tree node — a description of
 "a `Button` with this label, this click handler, this style," not the
 button itself. The render walker consumes the tree and turns each
 node into a backend call.
@@ -35,34 +35,34 @@ defaults. The framework guarantees backends a stable set of
 construction + update + lifecycle hooks per primitive.
 
 **Composition view.** A primitive is what composes into other
-primitives. Every `Primitive` can sit inside a `View { children:
-Vec<Primitive> }`, can be returned from a `#[component]`, can be
+primitives. Every `Element` can sit inside a `View { children:
+Vec<Element> }`, can be returned from a `#[component]`, can be
 the body of a `when`/`switch` arm. The set of primitives defines
 the set of composable building blocks.
 
 The framework deliberately keeps this set small. Each primitive is
 expensive: every backend pays implementation cost, the trait gets
-wider, the `Primitive` enum grows, the walker grows. So the bar
+wider, the `Element` enum grows, the walker grows. So the bar
 for adding one is high: a primitive earns its place only when it
 **can't reasonably be composed** from existing ones — i.e., it
 needs platform behavior that doesn't decompose into smaller
 primitives.
 
-## Primitive vs. component
+## Element vs. component
 
 This is the most important distinction in the framework.
 
-| | **Primitive** | **Component** |
+| | **Element** | **Component** |
 | --- | --- | --- |
 | Defined in | `runtime-core` | Your code |
 | Backend impl required | Yes | No |
 | Cross-platform implementation | One per backend | Shared (compiles for every target) |
 | Set is | Small, stable, fixed | Unbounded |
-| Lives in | `Primitive` enum variant | `#[component] fn` |
+| Lives in | `Element` enum variant | `#[component] fn` |
 | Examples | `View`, `Button`, `TextInput`, `Virtualizer` | `Card`, `Modal`, `Tabs`, `LoginForm` |
 
 A **component** is composed Rust — a function that returns a
-`Primitive`, with reactivity and refs wired by `#[component]`. Components
+`Element`, with reactivity and refs wired by `#[component]`. Components
 are how you build a design system. You can have thousands.
 
 A **primitive** is the platform-bound substrate components are built
@@ -88,11 +88,11 @@ The two don't fight.
 
 ## The shape of every primitive
 
-Every primitive variant in the `Primitive` enum has the same
+Every primitive variant in the `Element` enum has the same
 structural pieces:
 
 ```rust
-pub enum Primitive {
+pub enum Element {
     Button {
         label:    TextSource,                       // —┐ primitive-specific data
         on_click: Rc<dyn Fn()>,                     // —┤
@@ -107,7 +107,7 @@ pub enum Primitive {
 
 Three slots are universal:
 
-- **Primitive-specific data**: the props that define what this
+- **Element-specific data**: the props that define what this
   primitive *is*. Static for one-shot values (strings, sizes), boxed
   closures for reactive ones (`Fn() -> String`, `Fn() -> bool`,
   `Signal<T>`).
@@ -129,7 +129,7 @@ re-render. (See [`reactivity.md`](./reactivity.md) for the model.)
 
 ### `Bound<H>` — the builder façade
 
-The author doesn't construct `Primitive` variants directly. Each
+The author doesn't construct `Element` variants directly. Each
 primitive has a constructor that returns `Bound<H>` — a thin
 wrapper that exposes a fluent builder:
 
@@ -142,7 +142,7 @@ button("Save", || save())
     .disabled(move || saving.get())
 ```
 
-Each builder method mutates the inner `Primitive`'s optional slot
+Each builder method mutates the inner `Element`'s optional slot
 (`style`, `ref_fill`, `disabled`) and returns `Self`. The DSLs (`ui!`,
 `jsx!`) emit `.with_style(...)`, `.bind(...)`, `.disabled(...)` on
 the `Bound<H>` returned from the constructor.
@@ -190,7 +190,7 @@ build on each other conceptually.
 ### `View` — the structural container
 
 ```rust
-pub fn view(children: Vec<Primitive>) -> Bound<ViewHandle>
+pub fn view(children: Vec<Element>) -> Bound<ViewHandle>
 ```
 
 The framework's default container. Holds an ordered list of children;
@@ -318,7 +318,7 @@ opinionated input model.
 ### `ScrollView` — single-axis scroll container
 
 ```rust
-pub fn scroll_view(children: Vec<Primitive>) -> Bound<ScrollViewHandle>
+pub fn scroll_view(children: Vec<Element>) -> Bound<ScrollViewHandle>
 ```
 
 A scrolling container. Children scroll along the configured axis
@@ -378,7 +378,7 @@ pub fn flat_list<T>(
     data: Signal<Vec<T>>,
     key: impl Fn(usize, &T) -> u64,
     item_size: FlatListItemSize<T>,
-    render_item: impl Fn(usize, &T) -> Primitive,
+    render_item: impl Fn(usize, &T) -> Element,
 ) -> Bound<VirtualizerHandle>
 ```
 
@@ -476,8 +476,8 @@ get its native feel.
 ### `When` / `Switch` — structural conditionals
 
 ```rust
-pub fn when<C, T, O>(cond: C, then: T, otherwise: O) -> Primitive
-pub fn switch<S: PartialEq, F: Fn() -> S, B: Fn(&S) -> Primitive>(scrutinee: F, branches: B) -> Primitive
+pub fn when<C, T, O>(cond: C, then: T, otherwise: O) -> Element
+pub fn switch<S: PartialEq, F: Fn() -> S, B: Fn(&S) -> Element>(scrutinee: F, branches: B) -> Element
 ```
 
 The framework's two reactive conditional primitives. `when` is a
@@ -520,7 +520,7 @@ backend code — just a `#[component] fn` that arranges primitives:
 
 ```rust
 #[component]
-pub fn card(props: &CardProps, children: Vec<Primitive>) -> Primitive {
+pub fn card(props: &CardProps, children: Vec<Element>) -> Element {
     ui! {
         View(style = card_outer_style()) {
             if let Some(title) = &props.title {
@@ -544,7 +544,7 @@ typed wrapper gives you a clean API:
 
 ```rust
 #[component]
-pub fn icon(props: &IconProps) -> Primitive {
+pub fn icon(props: &IconProps) -> Element {
     ui! {
         Image(src = props.icon.url(), alt = props.icon.label())
             .with_style(icon_style().size(props.size))
@@ -566,14 +566,14 @@ navigation core:
 
 ```rust
 #[component]
-pub fn user_list(users: Signal<Vec<User>>) -> Primitive {
+pub fn user_list(users: Signal<Vec<User>>) -> Element {
     flat_list(
         users,
         |_, u| u.id,
         FlatListItemSize::Known(Rc::new(|_, _| 64.0)),
         |idx, user| ui! { UserRow(user = user.clone(), index = idx) },
     )
-    .into_primitive()
+    .into_element()
 }
 ```
 
@@ -590,8 +590,8 @@ composes the primitive smartly:
 
 ```rust
 #[component]
-pub fn segmented<T: Eq + Clone>(props: &SegmentedProps<T>) -> Primitive {
-    let view: Vec<Primitive> = props.options.iter().enumerate().map(|(i, opt)| {
+pub fn segmented<T: Eq + Clone>(props: &SegmentedProps<T>) -> Element {
+    let view: Vec<Element> = props.options.iter().enumerate().map(|(i, opt)| {
         let selected = props.value.get() == opt.value;
         let value = opt.value.clone();
         let on_pick = props.on_change.clone();
@@ -599,9 +599,9 @@ pub fn segmented<T: Eq + Clone>(props: &SegmentedProps<T>) -> Primitive {
             Button(label = opt.label.clone(), on_click = move || on_pick(value.clone()))
                 .with_style(segment_style().selected(selected).position(position_for(i, ...)))
         }
-        .into_primitive()
+        .into_element()
     }).collect();
-    ui! { View(style = segmented_container_style()) { view } }.into_primitive()
+    ui! { View(style = segmented_container_style()) { view } }.into_element()
 }
 ```
 
@@ -617,7 +617,7 @@ canvas, a chart. `Graphics` is where you go:
 
 ```rust
 #[component]
-pub fn sparkline(data: Signal<Vec<f32>>) -> Primitive {
+pub fn sparkline(data: Signal<Vec<f32>>) -> Element {
     let state: Ref<RendererState> = Ref::new();
     ui! {
         Graphics(
@@ -652,7 +652,7 @@ composition of existing primitives can express?**
   platform date pickers are massive, opinionated, and not
   realistically expressible in primitives.
 
-If you do conclude that you need one: the path is a new `Primitive`
+If you do conclude that you need one: the path is a new `Element`
 enum variant, new `Backend` trait method(s) for `create_*` /
 `update_*` / (maybe) `release_*`, and an impl in every backend
 you care about. See [`backend.md`](./backend.md) for the trait

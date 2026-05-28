@@ -22,7 +22,7 @@ Mark a function with `#[component]` and you get a reusable unit you can drop int
 
 ```rust
 #[component]
-pub fn Greeting(name: &str) -> Primitive {
+pub fn Greeting(name: &str) -> Element {
     ui! {
         Text(text_fmt!("Hello, {}!", name))
     }

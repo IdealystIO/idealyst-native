@@ -88,7 +88,7 @@ pub struct TerminalBackend {
     /// `(8.0, 16.0)` so `width: px(14)` lands at a sane ~2 cells
     /// instead of overflowing the viewport.
     pub(crate) cell_size: (f32, f32),
-    /// Registry of `Primitive::Navigator` handler factories,
+    /// Registry of `Element::Navigator` handler factories,
     /// populated by SDK leaf crates calling `register_navigator::<P, _>(...)`
     /// during app bootstrap. `create_navigator` looks the factory up
     /// by presentation TypeId.
@@ -126,7 +126,7 @@ impl TerminalBackend {
 
     /// Register a `NavigatorHandler` factory for the SDK-defined
     /// presentation type `P`. SDK leaf crates call this once per app
-    /// bootstrap; on subsequent `Primitive::Navigator { type_id =
+    /// bootstrap; on subsequent `Element::Navigator { type_id =
     /// TypeId::of::<P>(), .. }` builds the framework invokes the
     /// factory to produce a fresh handler.
     pub fn register_navigator<P, F>(&mut self, factory: F)

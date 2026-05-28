@@ -38,17 +38,17 @@ upstream API surface.
 Under `hot-reload`, the `#[component]` macro rewrites:
 
 ```rust
-fn Counter(props: &CounterProps) -> Primitive { /* body */ }
+fn Counter(props: &CounterProps) -> Element { /* body */ }
 ```
 
 into:
 
 ```rust
-fn Counter(props: &CounterProps) -> Primitive {
+fn Counter(props: &CounterProps) -> Element {
     ::dev_hot::call(__Counter_hot_impl, (props,))
 }
 #[doc(hidden)]
-fn __Counter_hot_impl(props: &CounterProps) -> Primitive { /* body */ }
+fn __Counter_hot_impl(props: &CounterProps) -> Element { /* body */ }
 ```
 
 Without the feature, no wrapper is generated; `Counter` is emitted unchanged.

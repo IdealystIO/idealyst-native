@@ -3,14 +3,14 @@
 // bindgen). This proves a wasm-bindgen-PROCESSED, PIC main still works as
 // the dynamic-link host: its GOT.mem statics + functions survive bindgen as
 // exports, a non-bindgen side links against it (0 unresolved), and main's
-// walker mounts a side-built Primitive.
+// walker mounts a side-built Element.
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::accessibility::AccessibilityProps;
 use runtime_core::primitives::icon::IconData;
 use runtime_core::signal;
-use runtime_core::{Action, Backend, Platform, Primitive, StyleRules};
+use runtime_core::{Action, Backend, Platform, Element, StyleRules};
 use dynlink_shared::DYNLINK_COUNTER;
 use wasm_bindgen::prelude::*;
 
@@ -94,7 +94,7 @@ impl Backend for CountBackend {
 }
 
 #[no_mangle]
-pub extern "C" fn main_render_side(ptr: *mut Primitive) -> i32 {
+pub extern "C" fn main_render_side(ptr: *mut Element) -> i32 {
     let primitive = unsafe { *Box::from_raw(ptr) };
     let backend = Rc::new(RefCell::new(CountBackend::default()));
     let owner = runtime_core::render(backend.clone(), primitive);

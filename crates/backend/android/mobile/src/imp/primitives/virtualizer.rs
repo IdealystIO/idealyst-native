@@ -1,4 +1,4 @@
-//! `Primitive::Virtualizer` — `androidx.recyclerview.widget.RecyclerView`
+//! `Element::Virtualizer` — `androidx.recyclerview.widget.RecyclerView`
 //! + a Kotlin `RustListAdapter` that trampolines every lifecycle event
 //! back to a leaked `VirtualizerCallbacks` box.
 //!

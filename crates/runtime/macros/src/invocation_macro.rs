@@ -97,7 +97,7 @@ fn emit_trivial_macro(
         macro_rules! #macro_name {
             ($($name:ident = $value:expr),* $(,)?) => {
                 #fn_name(#amp #path {
-                    $($name: $value),*
+                    $($name: ($value).into()),*
                 })
             };
         }
@@ -194,7 +194,7 @@ fn emit_tt_munching_macro(
                 #macro_name!(@#next_step
                     user_idents   [ $($u)* ]
                     user_fields   [ $($uf)* ]
-                    fill          [ $($f)* #name: #expr, ]
+                    fill          [ $($f)* #name: (#expr).into(), ]
                 )
             };
         });
@@ -209,7 +209,7 @@ fn emit_tt_munching_macro(
             ($($name:ident = $value:expr),* $(,)?) => {
                 #macro_name!(@#first_step
                     user_idents   [ $($name)* ]
-                    user_fields   [ $($name: $value,)* ]
+                    user_fields   [ $($name: ($value).into(),)* ]
                     fill          [ ]
                 )
             };

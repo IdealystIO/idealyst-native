@@ -84,7 +84,7 @@ pub struct LinuxBackend {
     /// because containers and leaves share the same positioning
     /// surface in GTK4.
     widgets: HashMap<u64, gtk4::Widget>,
-    /// Third-party `Primitive::External` registry. Populated by
+    /// Third-party `Element::External` registry. Populated by
     /// `register_external::<T>(...)` calls from per-platform leaf
     /// crates. `create_external` looks the handler up by payload
     /// TypeId; unregistered kinds fall through to a "not supported"

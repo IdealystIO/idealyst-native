@@ -3,7 +3,7 @@
 //! Tests cover:
 //! - `ExternalRegistry<B>` registration + dispatch + `has`
 //! - The `external::<T>(props)` constructor
-//! - `Primitive::External` mounting through MockBackend
+//! - `Element::External` mounting through MockBackend
 //! - Type erasure roundtrip (props go in typed, come back via downcast)
 //! - Unregistered kind falls through to `create_external_unsupported`
 
@@ -95,7 +95,7 @@ mod tests {
     // End-to-end through the walker
     // =========================================================================
 
-    /// Mount a `Primitive::External` whose TypeId matches a registered
+    /// Mount a `Element::External` whose TypeId matches a registered
     /// handler — the handler runs.
     #[test]
     fn registered_external_mounts_via_handler() {

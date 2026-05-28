@@ -174,7 +174,7 @@ A blank cell means the trait default panics with `unimplemented!()`. Author
 code that reaches for that primitive on that backend will crash, not
 silently no-op.
 
-| Primitive | web | iOS-mobile | Android-mobile | macOS | Roku | wgpu |
+| Element | web | iOS-mobile | Android-mobile | macOS | Roku | wgpu |
 |---|---|---|---|---|---|---|
 | View / Text / Button (core) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Image | ✓ | ✓ | ✓ |  | ✓ | ✓ |
@@ -188,7 +188,7 @@ silently no-op.
 | Link | ✓ | ✓ | ✓ |  |  | ✓ |
 | Video | ✓ |  | ✓ |  |  | ✓ |
 | Virtualizer / FlatList | ✓ |  | ✓ |  |  | ✓ |
-| `Primitive::External` (third-party SDKs: Maps, WebView) | ✓ | ✓ | ✓ |  |  | partial |
+| `Element::External` (third-party SDKs: Maps, WebView) | ✓ | ✓ | ✓ |  |  | partial |
 
 Web and Android-mobile are the most complete. iOS-mobile is catching up but
 missing `Video` and `Virtualizer`. macOS is a structural skeleton that
@@ -204,10 +204,10 @@ components, styles, and a root tree, and knows nothing about the platform it
 will run on.
 
 ```rust
-use framework_core::{ui, component, signal, Primitive};
+use framework_core::{ui, component, signal, Element};
 
 #[component]
-pub fn app() -> Primitive {
+pub fn app() -> Element {
     let count = signal!(0);
 
     ui! {
@@ -348,7 +348,7 @@ crates/
     icons-lucide/       # Lucide icon pack; tree-shakeable, only referenced icons ship
     idea-ui-docs-derive/# #[derive(DocControls)] proc macro powering the docs site
 
-  sdk/                  # Third-party-style extensions wired through Primitive::External
+  sdk/                  # Third-party-style extensions wired through Element::External
     maps/ maps-core/ maps-web/   # MapView primitive
     webview/            # WebView primitive (cfg-gated single-crate pattern)
     idea-codeblock/     # Read-only colored-text panel primitive

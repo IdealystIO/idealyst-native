@@ -118,13 +118,13 @@ pub fn write_main_rs_rendering(
 
 use std::rc::Rc;
 
-use runtime_core::Primitive;
+use runtime_core::Element;
 
 mod ported;
 
 use {module_path}::{{{fn_name}, {component}Props}};
 
-fn body() -> Primitive {{
+fn body() -> Element {{
     let props = {component}Props::default();
     {fn_name}(&props)
 }}

@@ -97,7 +97,7 @@ fn render_home(_params: ()) -> Screen {
 ```
 
 The `Screen::new(...)` builder takes anything that converts to a
-`Primitive`. Chainable methods set per-screen header options:
+`Element`. Chainable methods set per-screen header options:
 
 - `.title("...")` — the title shown in the header bar.
 - `.header_shown(bool)` — whether the header is visible.
@@ -110,11 +110,11 @@ The `Screen::new(...)` builder takes anything that converts to a
   re-evaluate when the active theme changes, retinting the header
   reactively without a screen rebuild.
 
-If you don't need options, return a bare `Primitive` — the
+If you don't need options, return a bare `Element` — the
 `Into<Screen>` impl wraps it for you:
 
 ```rust
-fn render_home(_: ()) -> Primitive {
+fn render_home(_: ()) -> Element {
     ui! { /* ... */ }
 }
 ```

@@ -1,4 +1,4 @@
-//! `Primitive::Image` — an `<img>` with reactive `src`.
+//! `Element::Image` — an `<img>` with reactive `src`.
 
 use crate::WebBackend;
 use runtime_core::AssetId;

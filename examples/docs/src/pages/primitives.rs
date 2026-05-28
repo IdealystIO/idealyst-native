@@ -1,7 +1,7 @@
 //! Primitives page — built via the `docs!` macro.
 //!
 //! Migrated from `docs-content-plan/02-primitives.md`. The macro emits
-//! `pub fn page() -> Primitive` and `pub static PAGE_META: PageMeta`.
+//! `pub fn page() -> Element` and `pub static PAGE_META: PageMeta`.
 
 use docs_macro::docs;
 #[allow(unused_imports)]
@@ -15,7 +15,7 @@ docs! {
     category = Foundation,
     description = "The fixed set of things the framework knows how to put on screen.",
     related = ["reactivity", "styles", "lists", "navigation", "robot"],
-    concepts = [Primitive, Container, Content, Input, ReactiveControlFlow],
+    concepts = [Element, Container, Content, Input, ReactiveControlFlow],
 
     section(heading = "Overview") {
         p("Primitives are the fixed set of things the framework knows how to put \
@@ -435,7 +435,7 @@ docs! {
 
     section(heading = "Portal") {
         p("The one render-elsewhere primitive. ",
-          code("Primitive::Portal"),
+          code("Element::Portal"),
           " renders its children at a different location in the host tree, \
            escaping the parent's layout and clipping. On each backend it \
            mounts at the platform's window-level surface — body portal on \
@@ -456,7 +456,7 @@ docs! {
 
     section(heading = "Overlay (composition)") {
         p(code("overlay()"), " is not a primitive — it's a composition \
-           that lowers to ", code("Primitive::Portal"),
+           that lowers to ", code("Element::Portal"),
           " with a viewport target plus a backdrop child. Defaults: ",
           code("Center"), " placement, ", code("Dismiss"),
           " backdrop, focus-trap on. Use for modals, drawers, sheets."),
@@ -469,7 +469,7 @@ docs! {
     section(heading = "AnchoredOverlay (composition)") {
         p(code("anchored_overlay()"),
           " is also a composition, lowering to ",
-          code("Primitive::Portal"), " with ",
+          code("Element::Portal"), " with ",
           code("PortalTarget::Anchor"),
           ". Use for popovers, tooltips, dropdowns, context menus — \
            anything that follows a trigger element."),
@@ -532,7 +532,7 @@ docs! {
              " / ", code("anchored_overlay()"), " (compositions), and ",
              code("Presence"), "."],
             [link("Third-party primitives", to = "third-party-primitives"),
-             " — ", code("Primitive::External"),
+             " — ", code("Element::External"),
              " for primitives that need per-platform FFI."],
             ["Graphics — the wgpu canvas primitive."],
             ["Robot — ", code("test_id"), " and the introspection layer."],

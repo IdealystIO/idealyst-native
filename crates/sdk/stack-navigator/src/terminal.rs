@@ -10,7 +10,7 @@
 //! Why no auto-rendered header bar: the terminal renders to a flat
 //! character grid and any auto-injected header would steal rows from
 //! the page content — pages can build their own top bar inside their
-//! screen Primitive if they want one.
+//! screen Element if they want one.
 
 use crate::StackPresentation;
 use backend_terminal::{TermNode, TerminalBackend};

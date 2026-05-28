@@ -665,7 +665,7 @@ fn run_snapshot_wrapper(wrapper_dir: &Path, out_path: &Path) -> Result<()> {
     if !status.success() {
         return Err(anyhow!(
             "snapshot wrapper exited with status {} — check that your crate exports \
-             `pub fn app() -> runtime_core::Primitive`",
+             `pub fn app() -> runtime_core::Element`",
             status
         ));
     }

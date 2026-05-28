@@ -1,7 +1,7 @@
 //! Third-party `Video` SDK for the idealyst framework.
 //!
 //! Provides a `Video` primitive backed by the framework's
-//! `Primitive::External` extension mechanism. Mirrors the framework's
+//! `Element::External` extension mechanism. Mirrors the framework's
 //! other reactive primitives — typed props, `.bind(...)`-able handle,
 //! `.with_style(...)`.
 //!
@@ -32,7 +32,7 @@
 //!
 //! # Architecture
 //!
-//! - The `Primitive::External` payload type is [`VideoProps`] — all
+//! - The `Element::External` payload type is [`VideoProps`] — all
 //!   props (src + autoplay/controls/loop) are owned by the SDK, not the
 //!   framework.
 //! - Per-backend `register(&mut backend)` impls live in cfg-gated
@@ -47,7 +47,7 @@
 //!   when it builds the native view. No framework-level
 //!   `update_video_src` plumbing involved.
 
-use runtime_core::{Bound, Primitive, Ref, RefFill};
+use runtime_core::{Bound, Element, Ref, RefFill};
 use std::any::{Any, TypeId};
 use std::rc::Rc;
 
@@ -57,7 +57,7 @@ use std::rc::Rc;
 
 /// Author-supplied props for a `Video` instance. Owned by the SDK, not
 /// the framework — the framework just type-erases this struct behind
-/// `Primitive::External { payload: Rc<dyn Any>, .. }` and hands it back
+/// `Element::External { payload: Rc<dyn Any>, .. }` and hands it back
 /// to the registered backend handler on mount.
 ///
 /// `src` is reactive: pass a closure that reads from a `Signal`/`Source`
@@ -201,13 +201,13 @@ impl VideoOps for UnsupportedOps {}
 /// primitives (`View`, `Button`, `Image`) inside a `ui!` block.
 /// Interpolate as `{ video::Video(VideoProps { .. }) }`.
 ///
-/// Under the hood this is `Primitive::External` with a `VideoProps`
+/// Under the hood this is `Element::External` with a `VideoProps`
 /// payload — same machinery as any other third-party SDK. The marker
 /// type on `Bound<H>` is `VideoHandle` so the `.bind(...)` from
 /// [`VideoBind`] resolves with type-checked refs.
 #[allow(non_snake_case)]
 pub fn Video(props: VideoProps) -> Bound<VideoHandle> {
-    Bound::new(Primitive::External {
+    Bound::new(Element::External {
         type_id: TypeId::of::<VideoProps>(),
         type_name: std::any::type_name::<VideoProps>(),
         payload: Rc::new(props) as Rc<dyn Any>,
@@ -235,7 +235,7 @@ pub trait VideoBind {
 
 impl VideoBind for Bound<VideoHandle> {
     fn bind(mut self, r: Ref<VideoHandle>) -> Self {
-        if let Primitive::External { ref_fill, .. } = self.primitive_mut() {
+        if let Element::External { ref_fill, .. } = self.primitive_mut() {
             *ref_fill = Some(RefFill::External(Box::new(move |node_any| {
                 r.fill(VideoHandle::new(node_any, OPS));
             })));

@@ -1,4 +1,4 @@
-//! `Primitive::Button` build path.
+//! `Element::Button` build path.
 //!
 //! Bound labels install an Effect that calls `update_button_label`
 //! on every signal change the closure subscribes to. Style + disabled
@@ -41,7 +41,7 @@ pub(super) fn build<B: Backend + 'static>(
         // (Button isn't a hierarchy-scale hot path); fall
         // back to `compute_fallback` as a regular `Bound`-
         // style reactive label. The JS-binding fast path
-        // stays exclusive to `Primitive::Text`.
+        // stays exclusive to `Element::Text`.
         TextSource::JsBinding(spec) => {
             let compute = spec.compute_fallback.clone();
             let initial = (compute)();

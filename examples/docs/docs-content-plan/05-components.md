@@ -1,6 +1,6 @@
 # Components
 
-A component is a Rust function that returns a `Primitive`. The
+A component is a Rust function that returns a `Element`. The
 framework wraps that function in some compile-time machinery so it
 can be called from a DSL, reuse a stable identity for hot reload,
 expose imperative methods, and rewrite reactive call sites for
@@ -9,14 +9,14 @@ ergonomics. This page covers all of that.
 ## The shape
 
 ```rust
-use runtime_core::{component, signal, ui, Primitive};
+use runtime_core::{component, signal, ui, Element};
 
 pub struct CounterProps {
     pub initial: i32,
 }
 
 #[component]
-pub fn counter(props: &CounterProps) -> Primitive {
+pub fn counter(props: &CounterProps) -> Element {
     let count = signal!(props.initial);
 
     ui! {
@@ -40,10 +40,10 @@ Three rules cover the basic shape:
    props struct is a regular Rust struct you declare next to (or
    above) the function. Field names become prop names in the
    invocation macro.
-3. **Return `Primitive`.** The framework wraps the returned value
-   through `IntoPrimitive::into_primitive(...)`, so you can return a
-   bare `Primitive`, a `Bound<H>` from a primitive constructor, or
-   anything else that implements `IntoPrimitive`.
+3. **Return `Element`.** The framework wraps the returned value
+   through `IntoElement::into_element(...)`, so you can return a
+   bare `Element`, a `Bound<H>` from a primitive constructor, or
+   anything else that implements `IntoElement`.
 
 ### Calling a component
 
@@ -56,26 +56,26 @@ ui! {
 }
 
 // Directly, as a plain Rust call:
-let prim: Primitive = counter(&CounterProps { initial: 0 });
+let prim: Element = counter(&CounterProps { initial: 0 });
 ```
 
 Inside a DSL, the call site reads like a constructor. Outside, it's
 a function call with a struct-literal props argument. They produce
-the same `Primitive`.
+the same `Element`.
 
 ### Variants of the signature
 
 The shape above is the common case. Three legitimate variants:
 
-- **No props:** `pub fn header() -> Primitive`. The invocation macro
+- **No props:** `pub fn header() -> Element`. The invocation macro
   accepts `Header()` with no arguments.
-- **By value:** `pub fn list_view(props: MyProps) -> Primitive`.
+- **By value:** `pub fn list_view(props: MyProps) -> Element`.
   Used when the component needs to take ownership of something in
-  `props` — typically a `Vec<Primitive>` of children it consumes.
+  `props` — typically a `Vec<Element>` of children it consumes.
   The macro detects this and emits the right ownership form.
 - **Bindable return:** `pub fn counter(props: &Props) -> Bindable<CounterHandle>`.
   Used when the component exposes a `methods!` block (see below).
-  The DSL coerces it back to a `Primitive` automatically.
+  The DSL coerces it back to a `Element` automatically.
 
 ### Defaults
 
@@ -84,7 +84,7 @@ them, declare them on the attribute:
 
 ```rust
 #[component(default(initial = 0, step = 1))]
-pub fn counter(props: &CounterProps) -> Primitive {
+pub fn counter(props: &CounterProps) -> Element {
     // ...
 }
 ```
@@ -121,7 +121,7 @@ now"; an imperative handle is.
 You declare methods inside the component's body:
 
 ```rust
-use runtime_core::{component, signal, ui, Bindable, Primitive};
+use runtime_core::{component, signal, ui, Bindable, Element};
 
 #[derive(Default)]
 pub struct CounterProps {
@@ -151,7 +151,7 @@ pub fn counter(props: &CounterProps) -> Bindable<CounterHandle> {
 
 The macro generates a `CounterHandle` struct with `reset` and
 `bump_by` methods. The component now returns `Bindable<CounterHandle>`
-instead of `Primitive`.
+instead of `Element`.
 
 The parent captures the handle via a `Ref`:
 
@@ -159,7 +159,7 @@ The parent captures the handle via a `Ref`:
 use runtime_core::Ref;
 
 #[component]
-pub fn parent_app() -> Primitive {
+pub fn parent_app() -> Element {
     let handle: Ref<CounterHandle> = Ref::new();
 
     ui! {
@@ -261,7 +261,7 @@ Here's the counter from above in three forms.
 
 ```rust
 #[component]
-pub fn counter(props: &CounterProps) -> Primitive {
+pub fn counter(props: &CounterProps) -> Element {
     let count = signal!(props.initial);
 
     ui! {
@@ -280,7 +280,7 @@ pub fn counter(props: &CounterProps) -> Primitive {
 
 ```rust
 #[component]
-pub fn counter(props: &CounterProps) -> Primitive {
+pub fn counter(props: &CounterProps) -> Element {
     let count = signal!(props.initial);
 
     jsx! {
@@ -298,17 +298,17 @@ pub fn counter(props: &CounterProps) -> Primitive {
 ### With no macro at all
 
 ```rust
-use runtime_core::{button, component, signal, text, view, IntoPrimitive, Primitive};
+use runtime_core::{button, component, signal, text, view, IntoElement, Element};
 
 #[component]
-pub fn counter(props: &CounterProps) -> Primitive {
+pub fn counter(props: &CounterProps) -> Element {
     let count = signal!(props.initial);
 
     view(vec![
-        text(move || format!("Count: {}", count.get())).into_primitive(),
-        button("Increment", move || count.update(|n| *n += 1)).into_primitive(),
+        text(move || format!("Count: {}", count.get())).into_element(),
+        button("Increment", move || count.update(|n| *n += 1)).into_element(),
     ])
-    .into_primitive()
+    .into_element()
 }
 ```
 
@@ -325,9 +325,9 @@ when debugging.
 Looking at the no-macro form, you can see what `ui!` does:
 
 - **`View { ... }`** → `view(vec![...])`. The `view` constructor
-  takes a `Vec<Primitive>`. The primitive constructors
+  takes a `Vec<Element>`. The primitive constructors
   (`text`, `button`, etc.) return `Bound<H>` handles, so each child
-  is coerced to a `Primitive` via `.into_primitive()` before
+  is coerced to a `Element` via `.into_element()` before
   joining the vec.
 - **`Text { format!("...", count.get()) }`** → because the
   expression contains `.get()`, the macro emits a *reactive* text:
@@ -336,10 +336,10 @@ Looking at the no-macro form, you can see what `ui!` does:
 - **`Button(label = "...", on_click = ...)`** → `button(label,
   on_click)`. Both arguments go through the framework's coercion
   traits (`IntoTextSource`, `IntoAction`).
-- **The trailing coercion** — `.into_primitive()` on the outer
-  `view(...)` returns a `Primitive`, which is what the function
+- **The trailing coercion** — `.into_element()` on the outer
+  `view(...)` returns a `Element`, which is what the function
   signature expects. The macro adds this coercion automatically
-  when the function's return type is `Primitive`.
+  when the function's return type is `Element`.
 
 ### Reactive `if`
 
@@ -378,7 +378,7 @@ ui! {
 }
 ```
 
-…lowers to a `Repeat` primitive or a regular `Vec<Primitive>`
+…lowers to a `Repeat` primitive or a regular `Vec<Element>`
 build, depending on whether the iterator is signal-backed. The
 macro takes care of the dispatch.
 
@@ -392,7 +392,7 @@ Building one today means writing a `proc_macro` that emits the
 shapes shown in the "What `ui!` actually emits" section above —
 `view(...)`, `text(...)`, `button(...)`, `when(...)`,
 per-component `name!(...)` invocations, and a final
-`.into_primitive()` coercion. That's all that's required, and it's
+`.into_element()` coercion. That's all that's required, and it's
 all there is — but it does mean parsing tokens and emitting them
 by hand.
 
@@ -407,7 +407,7 @@ references.
 Tying everything together:
 
 ```rust
-use runtime_core::{component, signal, ui, Bindable, Primitive};
+use runtime_core::{component, signal, ui, Bindable, Element};
 
 #[derive(Default)]
 pub struct CounterProps {
@@ -439,10 +439,10 @@ What's happening here:
 - `signal!` allocates a reactive state slot.
 - `methods!` declares `reset` and `bump_by` as imperative
   operations. The macro generates `CounterHandle` and rewrites the
-  return type from `Primitive` to `Bindable<CounterHandle>`.
+  return type from `Element` to `Bindable<CounterHandle>`.
 - `ui!` lowers to plain runtime-core calls, with the reactive
   text being wrapped in an Effect and the trailing value coerced
-  to `Primitive`.
+  to `Element`.
 
 The parent calls this with:
 

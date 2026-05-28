@@ -2,13 +2,13 @@
 //! main wasm bundle and loads it on demand. Web target only on
 //! wasm32; native compiles the block inline.
 
-use runtime_core::{ui, Primitive, Ref, ViewHandle};
+use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     let wip_ref: Ref<ViewHandle> = Ref::new();
     let macro_ref: Ref<ViewHandle> = Ref::new();
     let expansion_ref: Ref<ViewHandle> = Ref::new();
@@ -46,11 +46,11 @@ pub fn page() -> Primitive {
 // Section helpers
 // =============================================================================
 
-fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Primitive {
-    let mut children: Vec<Primitive> = Vec::new();
+fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Element {
+    let mut children: Vec<Element> = Vec::new();
     let title_text = title.to_string();
     children.push(ui! {
-        Typography(content = title_text, kind = idea_ui::typography_kind::H2.into())
+        Typography(content = title_text, kind = idea_ui::typography_kind::H2)
     });
     for p in paragraphs {
         let body = p.to_string();
@@ -69,12 +69,12 @@ fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Primitive 
 // Sections
 // =============================================================================
 
-fn status() -> Primitive {
+fn status() -> Element {
     section(
         "Status",
         vec![
             "Code splitting is a work in progress. The `lazy!` macro and the \
-             `Primitive::Lazy` runtime are wired end-to-end, but the underlying \
+             `Element::Lazy` runtime are wired end-to-end, but the underlying \
              wasm-split toolchain is still settling \u{2014} expect rough edges \
              around chunk naming, dead-code elimination on the main bundle, and \
              cold-load timing.",
@@ -85,7 +85,7 @@ fn status() -> Primitive {
     )
 }
 
-fn macro_syntax() -> Primitive {
+fn macro_syntax() -> Element {
     let example = "use runtime_core::{lazy, ui};\n\
                    \n\
                    ui! {\n    \
@@ -98,18 +98,18 @@ fn macro_syntax() -> Primitive {
         "The `lazy!` macro",
         vec![
             "`lazy!` wraps a block of UI. The block is interpreted exactly like a \
-             `ui!` body \u{2014} its tail expression must implement `IntoPrimitive`, \
+             `ui!` body \u{2014} its tail expression must implement `IntoElement`, \
              so the same primitives, components, and helpers compose inside.",
             "Use it as a child expression inside a parent `ui!` block. The braces \
              around `lazy! { ... }` are the standard `ui!` escape-to-Rust syntax; \
-             the macro returns a `LazyBuilder` that coerces into a `Primitive` \
+             the macro returns a `LazyBuilder` that coerces into a `Element` \
              through the surrounding `ui!`.",
         ],
         Some(example),
     )
 }
 
-fn expansion() -> Primitive {
+fn expansion() -> Element {
     let example = "// What you write:\n\
                    lazy! { Text { \"loaded on demand\" } }\n\
                    \n\
@@ -120,9 +120,9 @@ fn expansion() -> Primitive {
                        // wasm-split dependency needed in your crate.\n    \
                        use ::runtime_core::__wasm_split as wasm_split;\n    \
                        #[::runtime_core::__wasm_split::wasm_split(__idealyst_lazy_<hash>)]\n    \
-                       async fn __idealyst_lazy_body_<hash>(_: ()) -> Primitive {\n        \
-                           use ::runtime_core::IntoPrimitive as _;\n        \
-                           { ui! { Text { \"loaded on demand\" } } }.into_primitive()\n    \
+                       async fn __idealyst_lazy_body_<hash>(_: ()) -> Element {\n        \
+                           use ::runtime_core::IntoElement as _;\n        \
+                           { ui! { Text { \"loaded on demand\" } } }.into_element()\n    \
                        }\n    \
                        ::runtime_core::primitives::lazy::lazy_split(|| {\n        \
                            Box::pin(__idealyst_lazy_body_<hash>(()))\n    \
@@ -147,7 +147,7 @@ fn expansion() -> Primitive {
     )
 }
 
-fn placeholder_and_lifecycle() -> Primitive {
+fn placeholder_and_lifecycle() -> Element {
     let example = "lazy! { Text { \"heavy subtree\" } }\n    \
                        .placeholder(|| ui! { Text { \"loading\u{2026}\" } })\n    \
                        .on_state(|state| match state {\n        \
@@ -161,7 +161,7 @@ fn placeholder_and_lifecycle() -> Primitive {
         vec![
             "The `LazyBuilder` returned from `lazy!` exposes `.placeholder(...)` \
              and `.on_state(...)` for the load window. The placeholder mounts \
-             immediately and is replaced when the chunk's `Primitive` is ready; \
+             immediately and is replaced when the chunk's `Element` is ready; \
              `on_state` fires synchronously on each lifecycle transition so you \
              can drive a spinner or error UI elsewhere in the tree.",
             "On native, the callback fires once with `LazyState::Rendered` and \
@@ -172,7 +172,7 @@ fn placeholder_and_lifecycle() -> Primitive {
     )
 }
 
-fn v1_constraints() -> Primitive {
+fn v1_constraints() -> Element {
     section(
         "v1 constraints",
         vec![
@@ -181,9 +181,9 @@ fn v1_constraints() -> Primitive {
              captured state. If you need to pass data in, hoist it to a signal \
              or a route param the chunk reads itself. Capture forwarding via a \
              typed `Args` struct is the v2 plan.",
-            "The tail expression must coerce to `Primitive` via `IntoPrimitive`. \
+            "The tail expression must coerce to `Element` via `IntoElement`. \
              A `ui! { ... }` block satisfies this; so does a bare \
-             `Primitive::*` constructor, a `#[component]`-built builder, or \
+             `Element::*` constructor, a `#[component]`-built builder, or \
              another `LazyBuilder` (lazy boundaries nest).",
         ],
         None,

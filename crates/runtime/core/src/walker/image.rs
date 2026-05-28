@@ -1,4 +1,4 @@
-//! `Primitive::Image` build path. Reactive `src` is wrapped in an
+//! `Element::Image` build path. Reactive `src` is wrapped in an
 //! Effect that calls `update_image_src` when the closure's signal
 //! deps change. Asset-backed images register the asset with the
 //! backend before `create_image` so the sentinel `"asset://{id}"`

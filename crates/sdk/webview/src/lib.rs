@@ -1,7 +1,7 @@
 //! Third-party `WebView` SDK for the idealyst framework.
 //!
 //! Provides a `WebView` primitive backed by the framework's
-//! `Primitive::External` extension mechanism. Author-facing API
+//! `Element::External` extension mechanism. Author-facing API
 //! mirrors the framework's other reactive primitives — typed props,
 //! `.bind(...)`-able handle, `.with_style(...)`.
 //!
@@ -32,7 +32,7 @@
 //!
 //! # Architecture
 //!
-//! - The `Primitive::External` payload type is [`WebViewProps`] — all
+//! - The `Element::External` payload type is [`WebViewProps`] — all
 //!   props (URL + callbacks) are owned by the SDK, not the framework.
 //! - Per-backend `register(&mut backend)` impls live in cfg-gated
 //!   `web` / `android` / `ios` modules below. Each one calls
@@ -49,7 +49,7 @@
 //!   when it builds the native view. No framework-level
 //!   `update_web_view_url` plumbing involved.
 
-use runtime_core::{Bound, Primitive, Ref, RefFill};
+use runtime_core::{Bound, Element, Ref, RefFill};
 use std::any::{Any, TypeId};
 use std::rc::Rc;
 
@@ -59,7 +59,7 @@ use std::rc::Rc;
 
 /// Author-supplied props for a `WebView` instance. Owned by the SDK,
 /// not the framework — the framework just type-erases this struct
-/// behind `Primitive::External { payload: Rc<dyn Any>, .. }` and hands
+/// behind `Element::External { payload: Rc<dyn Any>, .. }` and hands
 /// it back to the registered backend handler on mount.
 ///
 /// Callbacks are reactive: they fire each time the embedded content
@@ -77,7 +77,7 @@ pub struct WebViewProps {
     /// embedded content `JSON.stringify`'d before posting.
     ///
     /// `Rc` (not `Box`) because the framework hands the SDK a
-    /// `Rc<WebViewProps>` (the type-erased `Primitive::External`
+    /// `Rc<WebViewProps>` (the type-erased `Element::External`
     /// payload) — the handler can only borrow, so it clones the `Rc`
     /// into each listener closure rather than moving the inner box.
     pub on_message: Option<Rc<dyn Fn(String)>>,
@@ -218,13 +218,13 @@ impl WebViewOps for UnsupportedOps {}
 /// party primitives (`View`, `Button`, `Image`) inside a `ui!` block.
 /// Interpolate as `{ webview::WebView(WebViewProps { .. }) }`.
 ///
-/// Under the hood this is `Primitive::External` with a `WebViewProps`
+/// Under the hood this is `Element::External` with a `WebViewProps`
 /// payload — same machinery as any other third-party SDK. The marker
 /// type on `Bound<H>` is `WebViewHandle` so the `.bind(...)` from
 /// [`WebViewBind`] resolves with type-checked refs.
 #[allow(non_snake_case)]
 pub fn WebView(props: WebViewProps) -> Bound<WebViewHandle> {
-    Bound::new(Primitive::External {
+    Bound::new(Element::External {
         type_id: TypeId::of::<WebViewProps>(),
         type_name: std::any::type_name::<WebViewProps>(),
         payload: Rc::new(props) as Rc<dyn Any>,
@@ -252,7 +252,7 @@ pub trait WebViewBind {
 
 impl WebViewBind for Bound<WebViewHandle> {
     fn bind(mut self, r: Ref<WebViewHandle>) -> Self {
-        if let Primitive::External { ref_fill, .. } = self.primitive_mut() {
+        if let Element::External { ref_fill, .. } = self.primitive_mut() {
             *ref_fill = Some(RefFill::External(Box::new(move |node_any| {
                 r.fill(WebViewHandle::new(node_any, OPS));
             })));

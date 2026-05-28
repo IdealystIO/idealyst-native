@@ -25,8 +25,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    ui, Easing, Length, Primitive, Signal, StyleApplication, StyleRules, StyleSheet, Tokenized,
-    Transition, VariantEnum, VariantSet,
+    ui, Easing, Length, Element, Reactive, Signal, StyleApplication, StyleRules, StyleSheet,
+    Tokenized, Transition, VariantEnum, VariantSet,
 };
 
 use idea_theme::active_theme;
@@ -38,7 +38,9 @@ pub use crate::stylesheets::FieldSize;
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct FieldProps {
-    pub label: Option<String>,
+    /// Optional field label. `Reactive<Option<String>>` — static
+    /// (`None`/`Some`) or live (signal/`rx!`).
+    pub label: Reactive<Option<String>>,
     pub value: Signal<String>,
     pub on_change: Rc<dyn Fn(String)>,
     pub placeholder: Option<String>,
@@ -54,7 +56,7 @@ pub struct FieldProps {
 impl Default for FieldProps {
     fn default() -> Self {
         Self {
-            label: None,
+            label: Reactive::Static(None),
             value: Signal::new(String::new()),
             on_change: Rc::new(|_| {}),
             placeholder: None,
@@ -249,7 +251,7 @@ fn size_key(size: FieldSize) -> &'static str {
     size.as_variant_str()
 }
 
-pub fn field(props: &FieldProps) -> Primitive {
+pub fn field(props: &FieldProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
     let placeholder = props.placeholder.clone();
@@ -272,10 +274,11 @@ pub fn field(props: &FieldProps) -> Primitive {
         .with("tone", tone_key.clone());
     let help_style = StyleApplication::new(field_help_sheet()).with("tone", tone_key);
 
-    let label_text = props.label.clone();
+    let label_node =
+        crate::components::optional_reactive_text(props.label.clone(), FieldLabel());
     let help_text = props.error.clone().or_else(|| props.help.clone());
 
-    let input_node: Primitive = if let Some(p) = placeholder {
+    let input_node: Element = if let Some(p) = placeholder {
         ui! {
             TextInput(
                 value = value,
@@ -294,9 +297,9 @@ pub fn field(props: &FieldProps) -> Primitive {
         }
     };
 
-    let mut children: Vec<Primitive> = Vec::with_capacity(3);
-    if let Some(l) = label_text {
-        children.push(ui! { Text(style = FieldLabel()) { l } });
+    let mut children: Vec<Element> = Vec::with_capacity(3);
+    if let Some(l) = label_node {
+        children.push(l);
     }
     children.push(input_node);
     if let Some(h) = help_text {

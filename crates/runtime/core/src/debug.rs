@@ -35,7 +35,7 @@ use std::collections::HashMap;
 // ---------------------------------------------------------------------------
 
 /// Tag for a primitive kind. Used in build/backend events to identify
-/// what kind of node was being built. Mirrors `Primitive`'s variants
+/// what kind of node was being built. Mirrors `Element`'s variants
 /// at a coarser granularity — we don't need full payload, just the
 /// kind.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]

@@ -17,7 +17,7 @@ surface landed before the primitive count grew further.
 |---|---|---|
 | `runtime_core::accessibility` module | ✅ | `Role`, `AccessibilityProps`, `AccessibilityTraits`, `LiveRegionPriority`, `AccessibilityAction`, `AccessibilityTree`, `AccessibilityNode`, `AccessibilityRect`, `PrimitiveKind`, `default_role()` — 7 unit tests |
 | `Backend` trait: `update_accessibility`, `announce_for_accessibility`, `dump_accessibility_tree` | ✅ | No-op defaults; every `create_*` takes `&AccessibilityProps` |
-| `Primitive` variants carry `accessibility: AccessibilityProps` | ✅ | 19 variants (control-flow `When`/`Switch`/`Repeat` excluded) |
+| `Element` variants carry `accessibility: AccessibilityProps` | ✅ | 19 variants (control-flow `When`/`Switch`/`Repeat` excluded) |
 | Walker plumbs a11y through every primitive build | ✅ | |
 | **Web backend** | ✅ | ARIA attributes, `aria-live` announcer, `update_accessibility` reapplies idempotently |
 | **iOS-mobile backend** | ✅ | `UIAccessibility*` setters + `UIAccessibility.post(.announcement)`. State flags without UIKit traits (CHECKED, EXPANDED, MIXED) ride `accessibilityValue`. iOS 17+ uses `UIAccessibilitySpeechAttributeAnnouncementPriority` on an `NSAttributedString` (Polite→Default, Assertive→High); older iOS falls back to a plain `NSString`. Runtime-gated via `NSProcessInfo.isOperatingSystemAtLeastVersion:`. |
@@ -423,7 +423,7 @@ fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
 ### Ownership / borrowing decisions
 
 **`&AccessibilityProps`, borrowed.** The walker has the prop in hand
-from the `Primitive` it's expanding; it can lend it to `create_*` for
+from the `Element` it's expanding; it can lend it to `create_*` for
 the duration of the call. No `Rc` needed at the trait boundary — each
 backend either ignores the prop (no allocation), maps it to per-attribute
 setter calls (no retention), or for backends that need the prop later
@@ -431,7 +431,7 @@ setter calls (no retention), or for backends that need the prop later
 parts it needs into its own state. This matches how `&Rc<StyleRules>`
 flows through `apply_style` today.
 
-**`Primitive` enum grows an `accessibility: AccessibilityProps` field on
+**`Element` enum grows an `accessibility: AccessibilityProps` field on
 each variant — not a derived-from-other-props computation.** Reasoning:
 the prop has fields (`hint`, `actions`, `identifier`, custom `role`)
 that have no analog in the primitive-specific props; trying to compute
@@ -623,7 +623,7 @@ sequentially per backend; only 6a (web) and 6b (iOS) gate the v1 launch.
 |-------|-------|-------|--------|----------------|
 | **1. Core types** | `Role`, `AccessibilityTraits`, `AccessibilityProps`, `AccessibilityAction`, `LiveRegionPriority`, `AccessibilityNode`, `AccessibilityTree`. Add `runtime_core::accessibility` module. Unit tests for default values + `Role`/trait mapping helpers. | `crates/framework/core/src/accessibility.rs` (new), `crates/framework/core/src/lib.rs` (re-export). | ~1d | No (foundation) |
 | **2. Backend trait additions** | Add `update_accessibility`, `announce_for_accessibility`, `dump_accessibility_tree` to `Backend` trait — **all with no-op defaults**. No existing-method changes yet. | `crates/framework/core/src/backend.rs` | ~0.5d | No (gates phases 4+) |
-| **3. Primitive enum field** | Add `accessibility: AccessibilityProps` field to every `Primitive::*` variant. Builder methods (`.label(...)`, `.hint(...)`, `.role(...)`, `.traits(...)`, `.identifier(...)`, etc.) on every primitive's builder. Default `AccessibilityProps::default()` so existing call sites keep compiling. | `crates/framework/core/src/primitive.rs`, every builder in `crates/framework/core/src/primitives/*.rs`, macros in `crates/framework/macros/src/ui.rs` if needed for shorthand. | ~2d | Yes (per primitive) |
+| **3. Element enum field** | Add `accessibility: AccessibilityProps` field to every `Element::*` variant. Builder methods (`.label(...)`, `.hint(...)`, `.role(...)`, `.traits(...)`, `.identifier(...)`, etc.) on every primitive's builder. Default `AccessibilityProps::default()` so existing call sites keep compiling. | `crates/framework/core/src/primitive.rs`, every builder in `crates/framework/core/src/primitives/*.rs`, macros in `crates/framework/macros/src/ui.rs` if needed for shorthand. | ~2d | Yes (per primitive) |
 | **4. Walker plumbing** | Every `walker::build_*` function reads its primitive's `accessibility` field and passes it to the backend's `create_*` call. Every `create_*` call site updated to pass `&primitive.accessibility`. | `crates/framework/core/src/walker/*.rs` | ~1d | No (depends on phase 3) |
 | **5. Breaking `Backend` trait change** | Add `a11y: &AccessibilityProps` parameter to every `create_*` method on the trait. All current backends update signatures with no behavior change (ignore the new param). | `crates/framework/core/src/backend.rs` + every backend's matching `impl Backend`. | ~1d | No (gates phases 6) |
 | **6a. Web backend** | Apply `aria-label`, `aria-describedby`, `role`, `aria-*` state attrs in `create_*` and `update_accessibility`. Implement `announce_for_accessibility` via a hidden polite/assertive live region pair appended to `<body>` once. | `crates/backend/web/src/*.rs` | ~3d | Yes (parallel with 6b–6f) |
@@ -678,7 +678,7 @@ Five items the team needs to resolve before phase-1 lands:
    later.
 
 4. **Per-primitive default-role table location.** Should `default_role()`
-   live as a method on `Primitive`, a free function in
+   live as a method on `Element`, a free function in
    `runtime_core::accessibility`, or be inlined into each `build_*`
    walker call? The macros / ui-layer may want to query it for
    compile-time validation ("you set `role: Role::Slider` on a

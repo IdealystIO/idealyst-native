@@ -37,7 +37,7 @@ use std::rc::Rc;
 
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::ViewportPlacement;
-use runtime_core::{ui, ChildList, Primitive};
+use runtime_core::{ui, ChildList, Element};
 
 use crate::stylesheets::Modal;
 
@@ -52,7 +52,7 @@ pub struct ModalProps {
     /// click-dismiss — useful for blocking flows that demand an
     /// explicit choice.
     pub dismissable: bool,
-    pub children: Vec<Primitive>,
+    pub children: Vec<Element>,
 }
 
 impl Default for ModalProps {
@@ -65,7 +65,7 @@ impl Default for ModalProps {
     }
 }
 
-pub fn modal(props: ModalProps) -> Primitive {
+pub fn modal(props: ModalProps) -> Element {
     let backdrop = if props.dismissable {
         BackdropMode::Dismiss
     } else {
@@ -75,7 +75,7 @@ pub fn modal(props: ModalProps) -> Primitive {
     let on_dismiss = props.on_dismiss.clone();
     let surface_style = Modal();
 
-    let mut content: Vec<Primitive> = Vec::with_capacity(props.children.len());
+    let mut content: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut content);
     }
@@ -96,5 +96,5 @@ pub fn modal(props: ModalProps) -> Primitive {
     if let Some(d) = on_dismiss_handler {
         bound = bound.on_dismiss(move || (d)());
     }
-    runtime_core::IntoPrimitive::into_primitive(bound)
+    runtime_core::IntoElement::into_element(bound)
 }

@@ -35,7 +35,7 @@ use web_time::{Duration, Instant};
 // (see the comment on `Host::mount`).
 #[allow(unused_imports)]
 use runtime_core::{
-    mount as fw_mount, render, ColorScheme, Easing, Owner, Primitive, StateBits, TouchEvent,
+    mount as fw_mount, render, ColorScheme, Easing, Owner, Element, StateBits, TouchEvent,
     TouchHandler, TouchId, TouchPhase, TouchPoint,
 };
 use glyphon::FontSystem;
@@ -531,7 +531,7 @@ impl Host {
     /// animations on the wgpu sim.
     pub fn mount<F>(&mut self, build_ui: F)
     where
-        F: FnOnce() -> Primitive + 'static,
+        F: FnOnce() -> Element + 'static,
     {
         if self._owner.is_some() {
             return;

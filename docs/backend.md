@@ -94,7 +94,7 @@ handle).
 ## The render walker
 
 `runtime_core::render(backend, primitive)` is the entry point.
-The walker visits each `Primitive` and emits calls into the
+The walker visits each `Element` and emits calls into the
 backend trait.
 
 ```text
@@ -104,7 +104,7 @@ render(backend, tree)
 with_scope(&mut owner.scope, || build(backend, tree))
    │
    ▼
-build(backend, Primitive::View { children, style, ref_fill })
+build(backend, Element::View { children, style, ref_fill })
    ├─ backend.create_view()                          → node
    ├─ for child in children:
    │     child_node = build(backend, child)          (recurse)
@@ -227,8 +227,8 @@ In return, a backend must:
    identical input — the requirement is to not get clever.
 
 4. **Honor the `release_*` lifecycle for primitives with
-   listeners.** If the backend creates a `Primitive::Virtualizer`,
-   `Primitive::Graphics`, or `Primitive::Navigator`, it almost
+   listeners.** If the backend creates a `Element::Virtualizer`,
+   `Element::Graphics`, or `Element::Navigator`, it almost
    certainly registers native event listeners that capture
    wasm-bindgen / JNI closures that hold framework state. When the
    primitive's enclosing scope drops, those listeners need to be
@@ -388,7 +388,7 @@ data-side closures pre-wired.
 
 ## Navigator
 
-A `Primitive::Navigator` is the framework's screen-stack container.
+A `Element::Navigator` is the framework's screen-stack container.
 The backend owns the platform-native stack
 (`UINavigationController`, `FragmentManager`, an inline subtree on
 web). The framework owns the route table, the imperative
@@ -438,7 +438,7 @@ For subsequent navigations:
 
 ## Graphics
 
-`Primitive::Graphics` is an authored GPU surface. The author owns
+`Element::Graphics` is an authored GPU surface. The author owns
 the rendering — the framework just provides the platform-native
 drawable widget (`<canvas>` on web, `SurfaceView` on Android,
 `UIView` + `CAMetalLayer` on iOS) and the lifecycle callbacks.
@@ -528,7 +528,7 @@ directly.
 
 ## Batched `Repeat` fast path
 
-When the walker expands a `Primitive::Repeat`, it inspects the row
+When the walker expands a `Element::Repeat`, it inspects the row
 shape and — if every row is a static `View`/`Text` tree with static
 styles — accumulates the whole expansion into a `BackendBatch`
 instead of issuing per-row backend calls. The batch ships in one

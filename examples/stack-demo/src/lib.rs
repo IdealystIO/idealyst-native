@@ -12,7 +12,7 @@
 //! is what makes the demo portable across every target.
 
 use runtime_core::{
-    component, signal, text, ui, IntoPrimitive, Primitive, Ref, Route, Screen, Signal,
+    component, signal, text, ui, IntoElement, Element, Ref, Route, Screen, Signal,
 };
 use idea_ui::{Typography, Card, install_idea_theme, light_theme, Stack, StackGap, StackPadding};
 use stack_navigator::{Navigator, StackBuilder, StackHandle, StackScreenExt};
@@ -64,7 +64,7 @@ const COUNTER: Route<()> = Route::<()>::new("counter", "/counter");
 // ---------------------------------------------------------------------------
 
 #[component]
-pub fn app() -> Primitive {
+pub fn app() -> Element {
     install_idea_theme(light_theme());
 
     let nav: Ref<StackHandle> = Ref::new();
@@ -84,20 +84,20 @@ pub fn app() -> Primitive {
 }
 
 // ---------------------------------------------------------------------------
-// Pages. Each is a plain function returning a `Primitive`. Children
-// are built into a `Vec<Primitive>` first to keep the `ui!` body
+// Pages. Each is a plain function returning a `Element`. Children
+// are built into a `Vec<Element>` first to keep the `ui!` body
 // unambiguous — `Typography(...)` followed by a `{ expr }` brace-block in
 // the same scope would otherwise be parsed as `Typography(...) { children }`
 // and the macro errors because `TypographyProps` has no `children` field.
 // ---------------------------------------------------------------------------
 
-fn home_page(nav: Ref<StackHandle>) -> Primitive {
+fn home_page(nav: Ref<StackHandle>) -> Element {
     let go_about = move || nav.get().map(|h| h.push(&ABOUT, ())).unwrap_or_default();
     let go_settings = move || nav.get().map(|h| h.push(&SETTINGS, ())).unwrap_or_default();
     let go_counter = move || nav.get().map(|h| h.push(&COUNTER, ())).unwrap_or_default();
 
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Stack demo".to_string(), kind = idea_ui::typography_kind::H1.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Stack demo".to_string(), kind = idea_ui::typography_kind::H1) },
         ui! {
             Typography(
                 content = "Tap a button to push a detail screen onto the stack. Each detail screen has a Back button that pops.".to_string(),
@@ -114,9 +114,9 @@ fn home_page(nav: Ref<StackHandle>) -> Primitive {
     }
 }
 
-fn about_page(nav: Ref<StackHandle>) -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "About".to_string(), kind = idea_ui::typography_kind::H1.into()) },
+fn about_page(nav: Ref<StackHandle>) -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "About".to_string(), kind = idea_ui::typography_kind::H1) },
         ui! {
             Typography(
                 content = "This screen was pushed onto the stack. Press Back to pop it.".to_string(),
@@ -130,15 +130,15 @@ fn about_page(nav: Ref<StackHandle>) -> Primitive {
     }
 }
 
-fn settings_page(nav: Ref<StackHandle>) -> Primitive {
-    let card_children: Vec<Primitive> = vec![ui! {
+fn settings_page(nav: Ref<StackHandle>) -> Element {
+    let card_children: Vec<Element> = vec![ui! {
         Typography(
             content = "Imagine real settings here. The card is just to show that pages can carry their own layout.".to_string(),
             muted = true,
         )
     }];
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Settings".to_string(), kind = idea_ui::typography_kind::H1.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Settings".to_string(), kind = idea_ui::typography_kind::H1) },
         ui! { Card { card_children } },
         back_button(nav),
     ];
@@ -147,7 +147,7 @@ fn settings_page(nav: Ref<StackHandle>) -> Primitive {
     }
 }
 
-fn counter_page(nav: Ref<StackHandle>, count: Signal<i32>) -> Primitive {
+fn counter_page(nav: Ref<StackHandle>, count: Signal<i32>) -> Element {
     let increment = move || count.update(|n| *n += 1);
     let decrement = move || count.update(|n| *n -= 1);
     // Reactive label — `text(closure)` returns a `Bound<TextHandle>`
@@ -155,10 +155,10 @@ fn counter_page(nav: Ref<StackHandle>, count: Signal<i32>) -> Primitive {
     // unlike `Typography(content = String)` which captures a string at
     // build time. Keeps the demo wired correctly for the canonical
     // "stateful counter survives push/pop" pattern.
-    let label = text(move || format!("Count: {}", count.get())).into_primitive();
+    let label = text(move || format!("Count: {}", count.get())).into_element();
 
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Counter".to_string(), kind = idea_ui::typography_kind::H1.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Counter".to_string(), kind = idea_ui::typography_kind::H1) },
         label,
         ui! { Button(label = "+".to_string(), on_click = increment) },
         ui! { Button(label = "-".to_string(), on_click = decrement) },
@@ -174,7 +174,7 @@ fn counter_page(nav: Ref<StackHandle>, count: Signal<i32>) -> Primitive {
 // back chrome (iOS chevron, Android system back, browser back) does
 // the same thing, the button is the portable in-content equivalent
 // for terminal.
-fn back_button(nav: Ref<StackHandle>) -> Primitive {
+fn back_button(nav: Ref<StackHandle>) -> Element {
     let on_back = move || nav.get().map(|h| h.pop()).unwrap_or_default();
     ui! { Button(label = "Back".to_string(), on_click = on_back) }
 }

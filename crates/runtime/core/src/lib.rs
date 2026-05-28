@@ -12,7 +12,7 @@ mod external;
 mod handles;
 mod identity;
 pub mod logging;
-mod primitive;
+mod element;
 mod reactive;
 mod reactive_value;
 mod safe_area;
@@ -86,15 +86,15 @@ pub use handles::{
 };
 pub use builder::{
     button, each, pressable, switch, text, view, when, Bindable, Bound, ChildList,
-    IntoDisabledSource, IntoPrimitive, ReactiveForEach, StaticForEach,
+    IntoDisabledSource, IntoElement, ReactiveForEach, StaticForEach,
 };
 pub use derive::{Action, Derived, IntoAction, IntoDerived};
 pub use identity::{
     current_identity, hash_key, style_path_hash, use_id, use_id_keyed, with_current_identity,
     Identity,
 };
-pub use primitive::Primitive;
-pub use reactive_value::{IntoProp, Reactive};
+pub use element::Element;
+pub use reactive_value::Reactive;
 pub use sources::{
     signal_class, IntoStyleSource, IntoTextSource, JsBindingSpec, SignalClassSpec, StyleSource,
     TextSource,
@@ -241,9 +241,9 @@ pub use mcp_catalog as __mcp;
 //                  IntoStyleSource
 //   handles.rs   — StateBits / ButtonHandle / ViewHandle / TextHandle /
 //                  RefOps / RefFill
-//   primitive.rs — the `Primitive` enum and `impl Primitive`
+//   primitive.rs — the `Element` enum and `impl Element`
 //   builder.rs   — Bound<H> / Bindable<H> / ChildList /
-//                  IntoDisabledSource / IntoPrimitive plus the
+//                  IntoDisabledSource / IntoElement plus the
 //                  `view`/`text`/`button`/`when`/`switch` constructors
 //   walker.rs    — `render`, `Owner`, the `build` walker, per-primitive
 //                  builders, style attachment + theme cohort, and the
@@ -308,10 +308,10 @@ macro_rules! effect {
     };
 }
 
-/// Builds a `Vec<Primitive>` from a mixed-shape list of children.
+/// Builds a `Vec<Element>` from a mixed-shape list of children.
 ///
 /// Each argument must implement [`ChildList`]; the macro flattens
-/// `Option<Primitive>` (skipping `None`) and `Vec<Primitive>` (extending
+/// `Option<Element>` (skipping `None`) and `Vec<Element>` (extending
 /// inline) so call sites can write conditionals naturally.
 ///
 /// ```ignore
@@ -324,7 +324,7 @@ macro_rules! effect {
 #[macro_export]
 macro_rules! children {
     ($($child:expr),* $(,)?) => {{
-        let mut __c: ::std::vec::Vec<$crate::Primitive> = ::std::vec::Vec::new();
+        let mut __c: ::std::vec::Vec<$crate::Element> = ::std::vec::Vec::new();
         $( $crate::ChildList::append_to($child, &mut __c); )*
         __c
     }};

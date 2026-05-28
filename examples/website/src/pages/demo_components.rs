@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{signal, ui, Primitive, Ref, ViewHandle};
+use runtime_core::{signal, ui, Element, Ref, ViewHandle};
 use idea_ui::{
     Alert, Badge, Btn, Card, Divider, Field, Stack, Switch, Tag, Typography, StackAxis, StackGap,
 };
@@ -10,7 +10,7 @@ use idea_ui::{
 use crate::pages::common::{page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     let intents_ref: Ref<ViewHandle> = Ref::new();
     let kinds_ref: Ref<ViewHandle> = Ref::new();
     let feedback_ref: Ref<ViewHandle> = Ref::new();
@@ -46,7 +46,7 @@ pub fn page() -> Primitive {
     layout_with_toc(content, toc)
 }
 
-fn intents() -> Primitive {
+fn intents() -> Element {
     let intent_list: Vec<(&str, fn() -> idea_ui::ToneRef)> = vec![
         ("Primary", || idea_ui::tone::Primary.into()),
         ("Secondary", || idea_ui::tone::Secondary.into()),
@@ -56,19 +56,19 @@ fn intents() -> Primitive {
         ("Warning", || idea_ui::tone::Warning.into()),
         ("Info", || idea_ui::tone::Info.into()),
     ];
-    let mut rows: Vec<Primitive> = Vec::with_capacity(intent_list.len());
+    let mut rows: Vec<Element> = Vec::with_capacity(intent_list.len());
     for (name, make_tone) in intent_list {
         let label = name.to_string();
         let noop: Rc<dyn Fn()> = Rc::new(|| {});
-        let row: Vec<Primitive> = vec![
-            ui! { Btn(label = label.clone(), on_click = noop.clone(), tone = make_tone(), variant = idea_ui::variant::Filled.into()) },
-            ui! { Badge(label = label.clone(), tone = make_tone(), variant = idea_ui::variant::Soft.into()) },
-            ui! { Tag(label = label, tone = make_tone(), variant = idea_ui::variant::Outlined.into()) },
+        let row: Vec<Element> = vec![
+            ui! { Btn(label = label.clone(), on_click = noop.clone(), tone = make_tone(), variant = idea_ui::variant::Filled) },
+            ui! { Badge(label = label.clone(), tone = make_tone(), variant = idea_ui::variant::Soft) },
+            ui! { Tag(label = label, tone = make_tone(), variant = idea_ui::variant::Outlined) },
         ];
         rows.push(ui! { Stack(gap = StackGap::Md, axis = StackAxis::Row) { row } });
     }
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Intents".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Intents".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Every themed component takes a `tone` handle \u{2014} a \
                 shared vocabulary of seven semantic actions (Primary, Secondary, Neutral, \
@@ -82,24 +82,24 @@ fn intents() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn button_kinds() -> Primitive {
+fn button_kinds() -> Element {
     let kinds: Vec<(&str, fn() -> idea_ui::VariantRef)> = vec![
         ("Solid", || idea_ui::variant::Filled.into()),
         ("Soft", || idea_ui::variant::Soft.into()),
         ("Outlined", || idea_ui::variant::Outlined.into()),
         ("Ghost", || idea_ui::variant::Ghost.into()),
     ];
-    let mut buttons: Vec<Primitive> = Vec::with_capacity(kinds.len());
+    let mut buttons: Vec<Element> = Vec::with_capacity(kinds.len());
     for (name, make_variant) in kinds {
         let label = name.to_string();
         let noop: Rc<dyn Fn()> = Rc::new(|| {});
-        buttons.push(ui! { Btn(label = label, on_click = noop, tone = idea_ui::tone::Primary.into(), variant = make_variant()) });
+        buttons.push(ui! { Btn(label = label, on_click = noop, tone = idea_ui::tone::Primary, variant = make_variant()) });
     }
-    let card_children: Vec<Primitive> = vec![
+    let card_children: Vec<Element> = vec![
         ui! { Stack(gap = StackGap::Md, axis = StackAxis::Row) { buttons } },
     ];
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Button kinds".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Button kinds".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "All four visual treatments for the same intent. Solid \
                 is the filled call-to-action; Soft is a tinted background; Outlined uses \
@@ -111,15 +111,15 @@ fn button_kinds() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn feedback() -> Primitive {
-    let alerts: Vec<Primitive> = vec![
-        ui! { Alert(title = "Heads up".to_string(), body = Some("This is the Info intent.".to_string()), tone = idea_ui::tone::Info.into()) },
-        ui! { Alert(title = "All set".to_string(), body = Some("Your changes have been saved.".to_string()), tone = idea_ui::tone::Success.into()) },
-        ui! { Alert(title = "Careful".to_string(), body = Some("This action can't be undone.".to_string()), tone = idea_ui::tone::Warning.into()) },
-        ui! { Alert(title = "Something went wrong".to_string(), body = Some("Couldn't reach the server.".to_string()), tone = idea_ui::tone::Danger.into()) },
+fn feedback() -> Element {
+    let alerts: Vec<Element> = vec![
+        ui! { Alert(title = "Heads up".to_string(), body = Some("This is the Info intent.".to_string()), tone = idea_ui::tone::Info) },
+        ui! { Alert(title = "All set".to_string(), body = Some("Your changes have been saved.".to_string()), tone = idea_ui::tone::Success) },
+        ui! { Alert(title = "Careful".to_string(), body = Some("This action can't be undone.".to_string()), tone = idea_ui::tone::Warning) },
+        ui! { Alert(title = "Something went wrong".to_string(), body = Some("Couldn't reach the server.".to_string()), tone = idea_ui::tone::Danger) },
     ];
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Feedback".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Feedback".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Alerts use the same intent vocabulary as buttons \u{2014} \
                 Info / Success / Warning / Danger drive the surface color and the matching \
@@ -131,13 +131,13 @@ fn feedback() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn inputs() -> Primitive {
+fn inputs() -> Element {
     let value = signal!("hello".to_string());
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |s| value.set(s));
     let switch_value = signal!(false);
     let on_toggle: Rc<dyn Fn(bool)> = Rc::new(move |b| switch_value.set(b));
 
-    let card_children: Vec<Primitive> = vec![
+    let card_children: Vec<Element> = vec![
         ui! {
             Field(
                 label = Some("Name".to_string()),
@@ -156,8 +156,8 @@ fn inputs() -> Primitive {
             )
         },
     ];
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Inputs".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Inputs".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "All controlled. `Field` and `Switch` take a `Signal<T>` \
                 value plus an `on_change` callback \u{2014} the host owns the source of \
@@ -169,21 +169,21 @@ fn inputs() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn typography_demo() -> Primitive {
-    let samples: Vec<Primitive> = vec![
-        ui! { Typography(content = "Display".to_string(), kind = idea_ui::typography_kind::Display.into()) },
-        ui! { Typography(content = "Heading 1".to_string(), kind = idea_ui::typography_kind::H1.into()) },
-        ui! { Typography(content = "Heading 2".to_string(), kind = idea_ui::typography_kind::H2.into()) },
-        ui! { Typography(content = "Heading 3".to_string(), kind = idea_ui::typography_kind::H3.into()) },
-        ui! { Typography(content = "Body extra-large \u{2014} for hero subheads.".to_string(), kind = idea_ui::typography_kind::BodyXl.into()) },
-        ui! { Typography(content = "Body large.".to_string(), kind = idea_ui::typography_kind::BodyLg.into()) },
+fn typography_demo() -> Element {
+    let samples: Vec<Element> = vec![
+        ui! { Typography(content = "Display".to_string(), kind = idea_ui::typography_kind::Display) },
+        ui! { Typography(content = "Heading 1".to_string(), kind = idea_ui::typography_kind::H1) },
+        ui! { Typography(content = "Heading 2".to_string(), kind = idea_ui::typography_kind::H2) },
+        ui! { Typography(content = "Heading 3".to_string(), kind = idea_ui::typography_kind::H3) },
+        ui! { Typography(content = "Body extra-large \u{2014} for hero subheads.".to_string(), kind = idea_ui::typography_kind::BodyXl) },
+        ui! { Typography(content = "Body large.".to_string(), kind = idea_ui::typography_kind::BodyLg) },
         ui! { Typography(content = "Body \u{2014} the default for paragraphs.".to_string()) },
-        ui! { Typography(content = "Body small.".to_string(), kind = idea_ui::typography_kind::BodySm.into()) },
-        ui! { Typography(content = "Caption for helper rows".to_string(), kind = idea_ui::typography_kind::Caption.into()) },
-        ui! { Typography(content = "overline section label".to_string(), kind = idea_ui::typography_kind::Overline.into()) },
+        ui! { Typography(content = "Body small.".to_string(), kind = idea_ui::typography_kind::BodySm) },
+        ui! { Typography(content = "Caption for helper rows".to_string(), kind = idea_ui::typography_kind::Caption) },
+        ui! { Typography(content = "overline section label".to_string(), kind = idea_ui::typography_kind::Overline) },
     ];
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Typography".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Typography".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Ten variants on the same Typography component. The \
                 size scale is theme-tokenized so apps can retune without touching \
@@ -195,9 +195,9 @@ fn typography_demo() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn footer() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "There's more".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+fn footer() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "There's more".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Stack, Card, Divider, Center, Spacer, Modal, Popover, \
                 Select, Tabs, Avatar, Skeleton, Spinner, IconButton \u{2014} the full \

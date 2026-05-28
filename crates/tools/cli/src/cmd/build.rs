@@ -79,6 +79,16 @@ pub struct Args {
     /// `<project>/dist`. Has no effect on non-web targets.
     #[arg(long, value_name = "PATH")]
     pub out_dir: Option<PathBuf>,
+
+    /// Web only: disable code-splitting — compile every `lazy! { … }`
+    /// body inline into the main bundle (one binary, stable toolchain,
+    /// no loader). By default a web build that uses `lazy!` is split via
+    /// wasm dynamic linking (each body → a PIC `--shared` side module
+    /// loaded on demand), which needs a nightly toolchain with `rust-src`
+    /// (override via `IDEALYST_DYNLINK_TOOLCHAIN`). Pass this to opt out.
+    /// Has no effect on non-web targets.
+    #[arg(long)]
+    pub no_split: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -207,6 +217,13 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
             user_features: Vec::new(),
             bundle_out_dir: bundle_out_dir.clone(),
             gzip: args.gzip,
+            // `idealyst build` splits when `lazy!` is present unless told
+            // not to; the detection (+ nightly cost) lives in build-web.
+            split: if args.no_split {
+                build_web::SplitMode::Off
+            } else {
+                build_web::SplitMode::Auto
+            },
         },
     )?;
     let bundle = artifact

@@ -1,11 +1,11 @@
-//! `Primitive::Virtualizer` build path — both the runtime closure
+//! `Element::Virtualizer` build path — both the runtime closure
 //! variant ([`build_virtualizer`]) and the structured /
 //! generator-backend variant ([`build_virtualizer_declarative`]).
 //!
 //! [`build`] is the dispatcher invoked by the walker — it picks
 //! between the two paths based on the backend's
 //! `supports_lazy_slot_capture` capability plus whether the
-//! `Primitive::Virtualizer` carries a `row_template`.
+//! `Element::Virtualizer` carries a `row_template`.
 
 use super::cleanup::VirtualizerHandleCleanup;
 use super::debug::time_backend_create;
@@ -13,7 +13,7 @@ use super::style::attach_style;
 use crate::accessibility::AccessibilityProps;
 use crate::backend::{Backend, VirtualizerCallbacks};
 use crate::handles::RefFill;
-use crate::primitive::Primitive;
+use crate::element::Element;
 use crate::primitives;
 use crate::reactive::{self, Effect};
 use crate::sources::StyleSource;
@@ -30,8 +30,8 @@ pub(super) fn build<B: Backend + 'static>(
     item_count: crate::derive::Derived<usize>,
     item_key: Box<dyn Fn(usize) -> primitives::virtualizer::ItemKey>,
     item_size: primitives::virtualizer::ItemSize,
-    render_item: Rc<dyn Fn(usize) -> Primitive>,
-    row_template: Option<Box<Primitive>>,
+    render_item: Rc<dyn Fn(usize) -> Element>,
+    row_template: Option<Box<Element>>,
     row_index_signal_id: Option<u64>,
     overscan: f32,
     horizontal: bool,
@@ -107,8 +107,8 @@ fn build_virtualizer<B: Backend + 'static>(
     item_count: crate::derive::Derived<usize>,
     item_key: Box<dyn Fn(usize) -> primitives::virtualizer::ItemKey>,
     item_size: primitives::virtualizer::ItemSize,
-    render_item: Rc<dyn Fn(usize) -> Primitive>,
-    _row_template: Option<Box<Primitive>>,
+    render_item: Rc<dyn Fn(usize) -> Element>,
+    _row_template: Option<Box<Element>>,
     _row_index_signal_id: Option<u64>,
     overscan: f32,
     horizontal: bool,
@@ -293,7 +293,7 @@ fn build_virtualizer<B: Backend + 'static>(
     node
 }
 
-/// Build a `Primitive::Virtualizer` for the structured /
+/// Build a `Element::Virtualizer` for the structured /
 /// generator-backend path (Roku). Captures the row template's
 /// commands as a single slot the backend stashes for per-row
 /// replay on the device. Skips the closure-driven Virtualizer
@@ -303,7 +303,7 @@ fn build_virtualizer<B: Backend + 'static>(
 fn build_virtualizer_declarative<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     item_count: crate::derive::Derived<usize>,
-    row_template: Primitive,
+    row_template: Element,
     row_index_signal_id: Option<u64>,
     horizontal: bool,
 ) -> B::Node {

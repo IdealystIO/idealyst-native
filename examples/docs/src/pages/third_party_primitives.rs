@@ -1,6 +1,6 @@
 //! Third-party primitives page — built via the `docs!` macro.
 //!
-//! Covers `Primitive::External` as the framework's single extension
+//! Covers `Element::External` as the framework's single extension
 //! hatch, the per-backend registry pattern, and the umbrella crate
 //! convention third-party SDKs use to ship a primitive across
 //! multiple platforms.
@@ -15,7 +15,7 @@ docs! {
     slug = "third-party-primitives",
     title = "Third-party primitives",
     category = Advanced,
-    description = "Ship a new primitive (with its own native FFI) without forking runtime-core. One escape hatch — Primitive::External — plus a per-backend registry pattern and a small umbrella-crate convention.",
+    description = "Ship a new primitive (with its own native FFI) without forking runtime-core. One escape hatch — Element::External — plus a per-backend registry pattern and a small umbrella-crate convention.",
     related = ["primitives", "backends", "writing-a-backend"],
     concepts = [External],
 
@@ -32,19 +32,19 @@ docs! {
            with no business living in runtime-core, but they need to look \
            and behave like primitives at the call site — they need styles, \
            refs, scope-tied cleanup, the works."),
-        p(code("Primitive::External"), " is the one extension hatch the \
+        p(code("Element::External"), " is the one extension hatch the \
            framework provides for this. It lets you ship a primitive in your \
            own crate, register a handler per backend you care about, and \
            call it like any other primitive from user code."),
     },
 
     section(heading = "The shape, at a glance") {
-        p("Everything below is one variant on the ", code("Primitive"),
+        p("Everything below is one variant on the ", code("Element"),
           " enum, one inherent method on each backend, and a small \
            three-crate convention for SDK authors:"),
         list(
             [code("runtime-core"),
-             " — defines ", code("Primitive::External { type_id, type_name, payload, .. }"),
+             " — defines ", code("Element::External { type_id, type_name, payload, .. }"),
              " and a per-backend ", code("ExternalRegistry<B>"),
              " helper. Knows nothing about specific external kinds."],
             ["Each backend (", code("backend-web"), ", ",
@@ -268,7 +268,7 @@ docs! {
     },
 
     section(heading = "Why the closed enum + escape hatch") {
-        p("A natural question: why not just make the ", code("Primitive"),
+        p("A natural question: why not just make the ", code("Element"),
           " enum open, so third-party crates can add cases directly?"),
         p("Two reasons. The first is a Rust language constraint: closed \
            enums are the only way the framework can prove at compile time \

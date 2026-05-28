@@ -55,7 +55,7 @@
 //! it's not invoked with the initial size (use `on_ready.size` for
 //! that).
 
-use crate::{Bound, Primitive, Ref, RefFill};
+use crate::{Bound, Element, Ref, RefFill};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::any::Any;
 use std::rc::Rc;
@@ -201,7 +201,7 @@ pub fn graphics<F>(on_ready: F) -> Bound<GraphicsHandle>
 where
     F: FnMut(OnReadyEvent) + 'static,
 {
-    Bound::new(Primitive::Graphics {
+    Bound::new(Element::Graphics {
         on_ready: Box::new(on_ready),
         on_resize: Box::new(|_| {}),
         on_lost: Box::new(|| {}),
@@ -213,21 +213,21 @@ where
 
 impl Bound<GraphicsHandle> {
     pub fn on_resize<F: FnMut(OnResizeEvent) + 'static>(mut self, f: F) -> Self {
-        if let Primitive::Graphics { on_resize, .. } = &mut self.primitive {
+        if let Element::Graphics { on_resize, .. } = &mut self.primitive {
             *on_resize = Box::new(f);
         }
         self
     }
 
     pub fn on_lost<F: FnMut() + 'static>(mut self, f: F) -> Self {
-        if let Primitive::Graphics { on_lost, .. } = &mut self.primitive {
+        if let Element::Graphics { on_lost, .. } = &mut self.primitive {
             *on_lost = Box::new(f);
         }
         self
     }
 
     pub fn bind(mut self, r: Ref<GraphicsHandle>) -> Self {
-        if let Primitive::Graphics { ref_fill, .. } = &mut self.primitive {
+        if let Element::Graphics { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::Graphics(Box::new(move |h| r.fill(h))));
         }
         self

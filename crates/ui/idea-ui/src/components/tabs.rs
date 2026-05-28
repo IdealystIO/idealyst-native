@@ -29,7 +29,7 @@
 //! }
 //! ```
 
-use runtime_core::{pressable, text, ui, Primitive, Signal, StyleApplication};
+use runtime_core::{pressable, text, ui, Element, Signal, StyleApplication};
 use std::rc::Rc;
 
 use crate::stylesheets::{TabBar, TabButton};
@@ -72,14 +72,14 @@ impl Default for TabsProps {
     }
 }
 
-pub fn tabs(props: TabsProps) -> Primitive {
+pub fn tabs(props: TabsProps) -> Element {
     let tab_items = props.tabs;
     let active = props.active;
     let on_change = props.on_change;
 
     let container_style = TabBar();
 
-    let mut children: Vec<Primitive> = Vec::with_capacity(tab_items.len());
+    let mut children: Vec<Element> = Vec::with_capacity(tab_items.len());
     for (idx, item) in tab_items.into_iter().enumerate() {
         // Each tab gets its own captured copy of `idx` + `on_change`,
         // so the press closure dispatches the right index regardless
@@ -100,8 +100,8 @@ pub fn tabs(props: TabsProps) -> Primitive {
         // functions — `Pressable` isn't a ui!-level tag (the
         // framework macro deliberately omits it so idea-ui can own
         // the styled wrapper), so we construct it directly.
-        let label_primitive: Primitive = text(label).into();
-        let tab_primitive: Primitive = pressable(vec![label_primitive], press)
+        let label_primitive: Element = text(label).into();
+        let tab_primitive: Element = pressable(vec![label_primitive], press)
             .with_style(tab_style)
             .into();
         children.push(tab_primitive);

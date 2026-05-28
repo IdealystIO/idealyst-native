@@ -8,8 +8,8 @@
 //!
 //! ```no_run
 //! # use std::rc::Rc;
-//! # use runtime_core::Primitive;
-//! # fn my_app() -> Primitive { todo!() }
+//! # use runtime_core::Element;
+//! # fn my_app() -> Element { todo!() }
 //! use ios_sim::IosSim;
 //!
 //! fn main() {
@@ -19,7 +19,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ColorScheme, Primitive};
+use runtime_core::{ColorScheme, Element};
 use host_winit::{run as run_core, DeviceProfile, RunError};
 use render_wgpu::Painter;
 
@@ -35,7 +35,7 @@ pub const TITLE: &str = "Idealyst Preview — Phone";
 /// knob; the variant crate fixes the window size + title.
 pub fn run<F>(skin: Rc<dyn Painter>, build_ui: F) -> Result<(), RunError>
 where
-    F: FnOnce() -> Primitive + 'static,
+    F: FnOnce() -> Element + 'static,
 {
     run_at(skin, None, build_ui)
 }
@@ -49,7 +49,7 @@ pub fn run_at<F>(
     build_ui: F,
 ) -> Result<(), RunError>
 where
-    F: FnOnce() -> Primitive + 'static,
+    F: FnOnce() -> Element + 'static,
 {
     run_core(
         DeviceProfile {

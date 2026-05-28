@@ -6,7 +6,7 @@
 //! card bodies). Use `axis = StackAxis::Row` for row layouts (toolbars,
 //! button groups, badge rows).
 
-use runtime_core::{ui, ChildList, Primitive};
+use runtime_core::{ui, ChildList, Element};
 
 use crate::stylesheets::Stack;
 
@@ -26,17 +26,17 @@ pub struct StackProps {
     pub axis: StackAxis,
     pub align: StackAlign,
     pub justify: StackJustify,
-    pub children: Vec<Primitive>,
+    pub children: Vec<Element>,
 }
 
-pub fn stack(props: StackProps) -> Primitive {
+pub fn stack(props: StackProps) -> Element {
     let style = Stack()
         .gap(props.gap)
         .padding(props.padding)
         .axis(props.axis)
         .align(props.align)
         .justify(props.justify);
-    let mut children: Vec<Primitive> = Vec::with_capacity(props.children.len());
+    let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut children);
     }

@@ -1,13 +1,13 @@
 //! Quickstart — scaffold a project and run it.
 
-use runtime_core::{ui, Primitive, Ref, ViewHandle};
+use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::routes::CONCEPTS_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     let scaffold_ref: Ref<ViewHandle> = Ref::new();
     let layout_ref: Ref<ViewHandle> = Ref::new();
     let run_web_ref: Ref<ViewHandle> = Ref::new();
@@ -42,10 +42,10 @@ pub fn page() -> Primitive {
     layout_with_toc(content, toc)
 }
 
-fn scaffold() -> Primitive {
+fn scaffold() -> Element {
     let snippet = "idealyst new my-app\ncd my-app";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Scaffold a project".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Scaffold a project".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "`idealyst new` creates a fresh Rust crate seeded \
                 with the welcome example \u{2014} a complete reactive app the CLI knows \
@@ -58,7 +58,7 @@ fn scaffold() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn layout_section() -> Primitive {
+fn layout_section() -> Element {
     let snippet = "my-app/\n  Cargo.toml          # crate-type: cdylib + rlib\n\
                    \x20 index.html          # web entry, loads /pkg/my_app.js\n\
                    \x20 fonts/              # bundled typeface assets\n\
@@ -66,8 +66,8 @@ fn layout_section() -> Primitive {
                        lib.rs            # app() + register_extensions()\n    \
                        app.rs            # the root component\n    \
                        components/       # one file per ui! element";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Project layout".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Project layout".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Your crate is platform-agnostic Rust. There's no \
                 web.rs / ios.rs / android.rs split, and there are no Xcode or Gradle \
@@ -90,10 +90,10 @@ fn layout_section() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn run_web() -> Primitive {
+fn run_web() -> Element {
     let snippet = "idealyst dev          # hot-reload at http://localhost:8080";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Run on web".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Run on web".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "`idealyst dev` is the hot-reload dev server. It \
                 builds the wasm bundle, starts a static file server, and opens your \
@@ -105,11 +105,11 @@ fn run_web() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn run_native() -> Primitive {
+fn run_native() -> Element {
     let snippet = "idealyst run ios       # boot in iOS simulator\n\
                    idealyst run android   # install on emulator or USB device";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Run on iOS / Android".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Run on iOS / Android".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "iOS and Android use the same source tree. The CLI \
                 produces the platform binary, generates the Xcode / Gradle wrapper as \
@@ -124,11 +124,11 @@ fn run_native() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn edit_and_reload() -> Primitive {
-    let snippet = "use runtime_core::{bind, component, signal, text_fmt, ui, Primitive};\n\
+fn edit_and_reload() -> Element {
+    let snippet = "use runtime_core::{bind, component, signal, text_fmt, ui, Element};\n\
                    \n\
                    #[component]\n\
-                   pub fn app() -> Primitive {\n    \
+                   pub fn app() -> Element {\n    \
                        let count = signal!(0);\n    \
                        ui! {\n        \
                            Text { text_fmt!(\"Count: {}\", bind!(count)) }\n        \
@@ -138,8 +138,8 @@ fn edit_and_reload() -> Primitive {
                            )\n    \
                        }\n\
                    }";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Make a change".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Make a change".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Open `src/app.rs` and replace it with the canonical \
                 counter. Save and the running app updates in place \u{2014} on web, in \
@@ -150,13 +150,13 @@ fn edit_and_reload() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn next() -> Primitive {
+fn next() -> Element {
     let title = ui! {
-        Typography(content = "Next: understand the model".to_string(), kind = idea_ui::typography_kind::H2.into())
+        Typography(content = "Next: understand the model".to_string(), kind = idea_ui::typography_kind::H2)
     };
     let para = ui! {
         Typography(content = "If you want to know why the app crate compiles for every \
-            platform unchanged, what `Primitive` actually is, and how the reactive layer \
+            platform unchanged, what `Element` actually is, and how the reactive layer \
             works, the Core concepts page is the next step.".to_string())
     };
     let cta = ui! {
@@ -164,6 +164,6 @@ fn next() -> Primitive {
             Typography(content = "Read Core concepts \u{2192}".to_string())
         }
     };
-    let children: Vec<Primitive> = vec![title, para, cta];
+    let children: Vec<Element> = vec![title, para, cta];
     ui! { Stack(gap = StackGap::Md) { children } }
 }

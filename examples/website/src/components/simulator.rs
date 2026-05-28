@@ -17,7 +17,7 @@ use std::rc::Rc;
 
 use runtime_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
 use runtime_core::{
-    component, ui, view, Color, IntoPrimitive, Length, Overflow, Primitive, Shadow, StyleRules,
+    component, ui, view, Color, IntoElement, Length, Overflow, Element, Shadow, StyleRules,
     StyleSheet,
 };
 use host_web::DeviceProfile;
@@ -90,7 +90,7 @@ const PREVIEW_WIDTH_PX: f32 = 300.0;
 pub struct SimulatorProps {
     /// The app to mount inside the simulator. Invoked once after the
     /// wgpu surface is up and the host is built.
-    pub build_ui: Rc<dyn Fn() -> Primitive>,
+    pub build_ui: Rc<dyn Fn() -> Element>,
     /// Which device chrome to paint. Defaults to `Ios`. Kept as a
     /// plain enum (not an `Rc<dyn Painter>`) so author call sites
     /// don't have to import or `#[cfg]`-gate `host_web::Painter` /
@@ -165,10 +165,10 @@ fn chassis_sheet() -> Rc<StyleSheet> {
     }))
 }
 
-fn wrap_in_chassis(canvas_wrapper: Primitive) -> Primitive {
+fn wrap_in_chassis(canvas_wrapper: Element) -> Element {
     view(vec![canvas_wrapper])
         .with_style(chassis_sheet())
-        .into_primitive()
+        .into_element()
 }
 
 fn preview_dimensions(profile: &DeviceProfile) -> (f32, f32) {
@@ -187,7 +187,7 @@ fn preview_dimensions(profile: &DeviceProfile) -> (f32, f32) {
 /// Pass the same `profile` you'll give to `simulator(...)` (or `None`
 /// for the iPhone-portrait default) so the placeholder's preview
 /// rectangle matches the loaded canvas's aspect ratio.
-pub fn simulator_placeholder(profile: Option<DeviceProfile>) -> Primitive {
+pub fn simulator_placeholder(profile: Option<DeviceProfile>) -> Element {
     // Welcome app's COLOR_LIGHT_BG. Inlined rather than imported so
     // the placeholder stays in main's bundle on web (importing the
     // welcome crate would pull its full transitive deps into main).
@@ -210,7 +210,7 @@ pub fn simulator_placeholder(profile: Option<DeviceProfile>) -> Primitive {
 
     let off_screen = view(Vec::new())
         .with_style(screen_style)
-        .into_primitive();
+        .into_element();
     wrap_in_chassis(off_screen)
 }
 
@@ -228,7 +228,7 @@ fn default_profile() -> DeviceProfile {
     profile = None,
     chassis = true,
 ))]
-pub fn Simulator(props: SimulatorProps) -> Primitive {
+pub fn Simulator(props: SimulatorProps) -> Element {
     let SimulatorProps {
         build_ui,
         skin,
@@ -322,9 +322,9 @@ pub fn Simulator(props: SimulatorProps) -> Primitive {
         wrapper_rules.border_bottom_right_radius = Some(Length::Px(r).into());
         wrapper_rules.overflow = Some(Overflow::Hidden);
     }
-    let wrapper = view(vec![graphics.into_primitive()])
+    let wrapper = view(vec![graphics.into_element()])
         .with_style(Rc::new(StyleSheet::r#static(wrapper_rules)))
-        .into_primitive();
+        .into_element();
 
     if chassis {
         wrap_in_chassis(wrapper)

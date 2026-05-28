@@ -263,7 +263,7 @@ pub fn release(node: &GlobalRef) {
 
 /// Attach a freshly-built sidebar view to a drawer navigator. Called
 /// by the drawer SDK handler after `host.build_node` (deferred via
-/// microtask) materializes the sidebar Primitive into a `GlobalRef`.
+/// microtask) materializes the sidebar Element into a `GlobalRef`.
 ///
 /// No-op on tab and stack navigators.
 pub fn drawer_attach_sidebar(navigator: &GlobalRef, sidebar: GlobalRef) {

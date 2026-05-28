@@ -1,11 +1,11 @@
 //! Platforms — what each backend looks like and where it runs.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Element};
 use idea_ui::{Typography, Card};
 
 use crate::shell::{PageBody, PageHeader, Section, PageTypographyProps, PageHeaderProps, SectionProps};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     ui! {
         PageBody {
             PageHeader(
@@ -24,7 +24,7 @@ pub fn page() -> Primitive {
             )
 
             Card {
-                Typography(content = "Web (WASM)".to_string(), kind = idea_ui::typography_kind::H2.into())
+                Typography(content = "Web (WASM)".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
                     content = "`backend-web` compiles to WebAssembly via `wasm-bindgen`. \
                                Primitives map to DOM nodes; stylesheets compile to CSS \
@@ -37,7 +37,7 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Typography(content = "iOS (UIKit)".to_string(), kind = idea_ui::typography_kind::H2.into())
+                Typography(content = "iOS (UIKit)".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
                     content = "The `backend-ios-*` family (`-core`, `-mobile`, `-tv`) \
                                binds to UIKit via the `objc2` crate. Views become \
@@ -51,7 +51,7 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Typography(content = "Android".to_string(), kind = idea_ui::typography_kind::H2.into())
+                Typography(content = "Android".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
                     content = "The `backend-android-*` family (`-core`, `-mobile`, `-tv`) \
                                bridges to the native View hierarchy via JNI. The Rust \
@@ -64,7 +64,7 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Typography(content = "Roku (BrightScript)".to_string(), kind = idea_ui::typography_kind::H2.into())
+                Typography(content = "Roku (BrightScript)".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
                     content = "Roku has no Rust runtime — `backend-roku` is a code generator. \
                                Your Rust app is rebuilt as a declarative model, serialized, \
@@ -77,7 +77,7 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Typography(content = "runtime-server — App-as-Server".to_string(), kind = idea_ui::typography_kind::H2.into())
+                Typography(content = "runtime-server — App-as-Server".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
                     content = "runtime-server runs the Rust app on a server and ships a wire-format \
                                command stream to thin clients. The server owns state and \

@@ -22,9 +22,9 @@ use crate::path_analysis::{
 
 /// Walks the function body, rewriting reactive `text(...)` and
 /// `button(...)` calls. If the function's declared return type is
-/// `Primitive`, also wraps the trailing expression with
-/// `IntoPrimitive::into_primitive(...)` so components can return
-/// either a bare `Primitive` or a `Bound<H>` (from a primitive
+/// `Element`, also wraps the trailing expression with
+/// `IntoElement::into_element(...)` so components can return
+/// either a bare `Element` or a `Bound<H>` (from a primitive
 /// constructor like `view(...)`) and have it coerced automatically —
 /// matching the coercion `ui!` applies at the top level.
 ///
@@ -41,9 +41,9 @@ pub(crate) fn rewrite(item_fn: &mut ItemFn) {
 }
 
 /// Checks whether the function's declared return type is bare
-/// `Primitive`. We do a simple token-level match — this catches the
-/// common spellings (`Primitive`, `runtime_core::Primitive`,
-/// `::runtime_core::Primitive`) without trying to be a full type
+/// `Element`. We do a simple token-level match — this catches the
+/// common spellings (`Element`, `runtime_core::Element`,
+/// `::runtime_core::Element`) without trying to be a full type
 /// resolver. Anything else — `Bindable<H>`, `Bound<H>`, `impl Into<…>`,
 /// etc. — is left as-is.
 fn returns_primitive(item_fn: &ItemFn) -> bool {
@@ -53,17 +53,17 @@ fn returns_primitive(item_fn: &ItemFn) -> bool {
         ReturnType::Default => return false,
     };
     let rendered = quote::quote!(#ty).to_string();
-    // Strip whitespace to normalize `:: runtime_core :: Primitive`
-    // vs `::runtime_core::Primitive`.
+    // Strip whitespace to normalize `:: runtime_core :: Element`
+    // vs `::runtime_core::Element`.
     let normalized: String = rendered.chars().filter(|c| !c.is_whitespace()).collect();
     matches!(
         normalized.as_str(),
-        "Primitive" | "runtime_core::Primitive" | "::runtime_core::Primitive"
+        "Element" | "runtime_core::Element" | "::runtime_core::Element"
     )
 }
 
 /// Wraps the function's final expression (the implicit return) with
-/// `IntoPrimitive::into_primitive(...)`. We only wrap if the body's
+/// `IntoElement::into_element(...)`. We only wrap if the body's
 /// trailing expression is a "real" expression (i.e. the function
 /// implicitly returns it); we don't try to find explicit `return`
 /// statements deeper in the body. That's fine — if you write
@@ -76,7 +76,7 @@ fn coerce_return_to_primitive(item_fn: &mut ItemFn) {
     if let Stmt::Expr(expr, None) = last {
         let inner = std::mem::replace(expr, syn::parse_quote!(()));
         *expr = syn::parse_quote! {
-            ::runtime_core::IntoPrimitive::into_primitive(#inner)
+            ::runtime_core::IntoElement::into_element(#inner)
         };
     }
 }

@@ -1,7 +1,7 @@
 //! Writing your own backend — built via the `docs!` macro.
 //!
 //! Demonstrates the macro end-to-end: one `docs!` invocation emits
-//! `pub fn page() -> Primitive` and `pub static PAGE_META: PageMeta`.
+//! `pub fn page() -> Element` and `pub static PAGE_META: PageMeta`.
 
 use docs_macro::docs;
 #[allow(unused_imports)]
@@ -13,13 +13,13 @@ docs! {
     slug = "writing-a-backend",
     title = "Writing your own backend",
     category = Reference,
-    description = "Translate the framework's Primitive tree into something a platform can put on screen.",
+    description = "Translate the framework's Element tree into something a platform can put on screen.",
     related = ["backends", "cli", "primitives", "styles"],
     concepts = [Backend, RuntimeBackend, GeneratorBackend, LazySlotCapture, WireProtocol],
 
     section(heading = "Overview") {
         p("A backend is the piece of code that translates the framework's ",
-          code("Primitive"), " tree into something a particular platform can \
+          code("Element"), " tree into something a particular platform can \
            put on screen — DOM elements, UIViews, Android Views, BrightScript \
            SceneGraph nodes, or anything else you can drive from Rust."),
         p("You'd write one when the shipped backends don't cover your target: \
@@ -471,7 +471,7 @@ docs! {
           " adopt the root scope, so their cleanups run on ",
           code("Owner"), " drop instead of being silently cancelled."),
 
-        p("If you have a pre-built ", code("Primitive"),
+        p("If you have a pre-built ", code("Element"),
           " (e.g. in a test fixture or a wire-protocol replay) and there's \
            no constructor to run inside the scope, ",
           code("runtime_core::render(backend, tree)"),

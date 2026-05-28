@@ -14,9 +14,9 @@
 #[cfg(target_os = "macos")]
 fn main() {
     use menu::{Menu, MenuBarSpec, MenuItem, Shortcut};
-    use runtime_core::{install_tokens, view, Primitive};
+    use runtime_core::{install_tokens, view, Element};
 
-    let app = || -> Primitive {
+    let app = || -> Element {
         install_tokens(&[]);
         // Empty view — the menu bar lives outside the view tree
         // entirely. Window body is just blank.

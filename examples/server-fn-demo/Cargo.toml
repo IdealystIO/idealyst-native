@@ -50,20 +50,12 @@ axum = { version = "0.7", optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"], optional = true }
 tower-http = { version = "0.6", features = ["fs"], optional = true }
 
-# Per-target backend selection for the client UI. The CLI's
-# `idealyst build --web` generates a wrapper crate that calls
-# `register_extensions(&mut WebBackend)`; the equivalent applies
-# per platform.
+# Web-only client extra. `register_extensions` is generic over `Backend`
+# (no SDKs), so no backend dep is needed — the CLI wrappers bring their own.
+# `web-sys` is still required to read `window.location.origin` for
+# `server::configure`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
-# Needed to read `window.location.origin` for `server::configure`.
 web-sys = { version = "0.3", features = ["Window", "Location"] }
-
-[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
-backend-ios-mobile = { workspace = true }
-
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
-backend-terminal = { workspace = true }
 
 [[bin]]
 name = "server"

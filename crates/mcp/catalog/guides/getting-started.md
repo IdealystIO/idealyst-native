@@ -20,12 +20,12 @@ idealyst dev
 
 ## The minimum app
 
-Every Idealyst app exposes an `app()` function that returns a [[View]] (or any [[Primitive]]). The framework's host calls this once at startup, and reactive signals inside it drive incremental updates.
+Every Idealyst app exposes an `app()` function that returns a [[View]] (or any [[Element]]). The framework's host calls this once at startup, and reactive signals inside it drive incremental updates.
 
 ```rust
 use runtime_core::*;
 
-pub fn app() -> Primitive {
+pub fn app() -> Element {
     ui! {
         View(style = view_style()) {
             Text("Hello, Idealyst!")

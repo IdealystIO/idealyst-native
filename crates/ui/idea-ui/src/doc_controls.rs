@@ -43,7 +43,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, ChildList, Primitive, Signal, VariantEnum};
+use runtime_core::{ui, ChildList, Element, Signal, VariantEnum};
 
 // `ui!`-lowered names need the local macros + variant types in
 // scope.
@@ -82,7 +82,7 @@ pub trait DocControls: Sized {
     /// Render a control panel that mutates `state`. The panel is
     /// composed entirely of idea-ui components — that's the
     /// self-referencing part.
-    fn render_controls(state: &Self::State) -> Primitive;
+    fn render_controls(state: &Self::State) -> Element;
 
     /// Wrap a preview-builder closure in a `switch` whose key
     /// reads every controllable signal. When any signal flips,
@@ -107,10 +107,10 @@ pub trait DocControls: Sized {
     ///     )
     /// });
     /// ```
-    fn reactive_preview<F: Fn(Self) -> Primitive + 'static>(
+    fn reactive_preview<F: Fn(Self) -> Element + 'static>(
         state: &Self::State,
         build: F,
-    ) -> Primitive;
+    ) -> Element;
 }
 
 // =============================================================================
@@ -119,9 +119,9 @@ pub trait DocControls: Sized {
 
 /// A row of [label, control] used by every auto-generated control
 /// panel.
-pub fn control_row(label: &str, control: Primitive) -> Primitive {
+pub fn control_row(label: &str, control: Element) -> Element {
     let label_text = label.to_string();
-    let label_node = ui! { Typography(content = label_text, kind = crate::typography_kind::Caption.into()) };
+    let label_node = ui! { Typography(content = label_text, kind = crate::typography_kind::Caption) };
     let children = vec![label_node, control];
     ui! {
         Stack(gap = StackGap::Xs) { children }
@@ -131,16 +131,16 @@ pub fn control_row(label: &str, control: Primitive) -> Primitive {
 /// Wraps a list of control rows into a documented "controls panel"
 /// surface — Card with a "Controls" heading and the rows stacked
 /// below.
-pub fn controls_panel(rows: Vec<Primitive>) -> Primitive {
-    let mut children: Vec<Primitive> = Vec::with_capacity(rows.len() + 1);
-    children.push(ui! { Typography(content = "Controls".to_string(), kind = crate::typography_kind::H3.into()) });
+pub fn controls_panel(rows: Vec<Element>) -> Element {
+    let mut children: Vec<Element> = Vec::with_capacity(rows.len() + 1);
+    children.push(ui! { Typography(content = "Controls".to_string(), kind = crate::typography_kind::H3) });
     for r in rows {
         ChildList::append_to(r, &mut children);
     }
     ui! { Card { children } }
 }
 
-pub fn string_control(value: Signal<String>) -> Primitive {
+pub fn string_control(value: Signal<String>) -> Element {
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |s| value.set(s));
     ui! {
         Field(
@@ -156,7 +156,7 @@ pub fn string_control(value: Signal<String>) -> Primitive {
 pub fn optional_string_control(
     enabled: Signal<bool>,
     value: Signal<String>,
-) -> Primitive {
+) -> Element {
     let on_toggle: Rc<dyn Fn(bool)> = Rc::new(move |b| enabled.set(b));
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |s| value.set(s));
     ui! {
@@ -184,7 +184,7 @@ pub fn optional_string_value(enabled: Signal<bool>, value: Signal<String>) -> Op
     }
 }
 
-pub fn bool_control(value: Signal<bool>) -> Primitive {
+pub fn bool_control(value: Signal<bool>) -> Element {
     let on_change: Rc<dyn Fn(bool)> = Rc::new(move |b| value.set(b));
     ui! { Switch(value = value, on_change = on_change) }
 }
@@ -193,7 +193,7 @@ pub fn bool_control(value: Signal<bool>) -> Primitive {
 /// signal holds typed `E` values; the Select internally binds to a
 /// shadow `Signal<String>` whose string ids we keep in sync via a
 /// pair of effects.
-pub fn variant_enum_control<E>(value: Signal<E>) -> Primitive
+pub fn variant_enum_control<E>(value: Signal<E>) -> Element
 where
     E: VariantEnum + PartialEq + 'static,
 {
@@ -274,7 +274,7 @@ where
 /// wrapper to plug into this same picker.
 pub fn ref_picker_control<T: idea_theme::extensible::RefBuiltins>(
     value: Signal<T>,
-) -> Primitive {
+) -> Element {
     use runtime_core::Effect;
 
     let builtins = T::builtins_list();

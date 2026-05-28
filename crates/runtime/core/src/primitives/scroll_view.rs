@@ -6,7 +6,7 @@
 //! scrolling. Two-axis scrolling is not supported in v1 — pick one
 //! direction.
 
-use crate::{Bound, Primitive, Ref, RefFill};
+use crate::{Bound, Element, Ref, RefFill};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -39,8 +39,8 @@ pub trait ScrollViewOps {
     fn scroll_to(&self, node: &dyn Any, x: f32, y: f32);
 }
 
-pub fn scroll_view(children: Vec<Primitive>) -> Bound<ScrollViewHandle> {
-    Bound::new(Primitive::ScrollView {
+pub fn scroll_view(children: Vec<Element>) -> Bound<ScrollViewHandle> {
+    Bound::new(Element::ScrollView {
         children,
         horizontal: false,
         style: None,
@@ -55,14 +55,14 @@ impl Bound<ScrollViewHandle> {
     /// Configure the scroll axis. `horizontal(true)` makes the
     /// container scroll left-right instead of up-down.
     pub fn horizontal(mut self, h: bool) -> Self {
-        if let Primitive::ScrollView { horizontal, .. } = &mut self.primitive {
+        if let Element::ScrollView { horizontal, .. } = &mut self.primitive {
             *horizontal = h;
         }
         self
     }
 
     pub fn bind(mut self, r: Ref<ScrollViewHandle>) -> Self {
-        if let Primitive::ScrollView { ref_fill, .. } = &mut self.primitive {
+        if let Element::ScrollView { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::ScrollView(Box::new(move |h| r.fill(h))));
         }
         self
@@ -74,7 +74,7 @@ impl Bound<ScrollViewHandle> {
     /// `SafeAreaSides::VERTICAL` so its content respects status bar
     /// + home indicator while the background bleeds under both.
     pub fn safe_area(mut self, sides: crate::SafeAreaSides) -> Self {
-        if let Primitive::ScrollView { safe_area_sides, .. } = &mut self.primitive {
+        if let Element::ScrollView { safe_area_sides, .. } = &mut self.primitive {
             *safe_area_sides |= sides;
         }
         self
@@ -92,7 +92,7 @@ impl Bound<ScrollViewHandle> {
     /// against `ViewHandle::absolute_frame()` for cross-platform
     /// scroll-spy / sticky-header / parallax patterns.
     pub fn on_scroll<F: Fn(f32, f32) + 'static>(mut self, cb: F) -> Self {
-        if let Primitive::ScrollView { on_scroll, .. } = &mut self.primitive {
+        if let Element::ScrollView { on_scroll, .. } = &mut self.primitive {
             *on_scroll = Some(Rc::new(cb));
         }
         self

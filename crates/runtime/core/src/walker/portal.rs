@@ -1,4 +1,4 @@
-//! `Primitive::Portal` build path. Same lifecycle pattern as
+//! `Element::Portal` build path. Same lifecycle pattern as
 //! `Overlay`/`AnchoredOverlay`: backend stands up the platform-native
 //! render-elsewhere mount, framework inserts children, attaches
 //! style, wires the optional ref, and installs an RAII cleanup that
@@ -12,7 +12,7 @@ use super::view::insert_children;
 use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
-use crate::primitive::Primitive;
+use crate::element::Element;
 use crate::primitives;
 use crate::reactive::Effect;
 use crate::sources::StyleSource;
@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 pub(super) fn build<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
-    children: Vec<Primitive>,
+    children: Vec<Element>,
     target: primitives::portal::PortalTarget,
     on_dismiss: Option<Rc<dyn Fn()>>,
     trap_focus: bool,

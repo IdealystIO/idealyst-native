@@ -2,13 +2,13 @@
 
 use std::rc::Rc;
 
-use runtime_core::{signal, ui, Primitive};
+use runtime_core::{signal, ui, Element};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{Avatar, Typography, Card, Stack, Tabs, AvatarProps, StackGap, Tab};
 
 use crate::shell::{demo_card, page_header};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     ui! {
         Stack(gap = StackGap::Xl) {
             { page_header(
@@ -22,7 +22,7 @@ pub fn page() -> Primitive {
     }
 }
 
-fn avatar_demo() -> Primitive {
+fn avatar_demo() -> Element {
     let state = AvatarProps::init_state();
     state.initials.set("AB".to_string());
 
@@ -45,7 +45,7 @@ fn avatar_demo() -> Primitive {
     )
 }
 
-fn tabs_demo() -> Primitive {
+fn tabs_demo() -> Element {
     // `Tabs` is intentionally minimal: it owns the strip and the
     // active-index signal, nothing else. Panel switching is wired
     // by the caller via `runtime_core::switch`, keyed off the
@@ -61,7 +61,7 @@ fn tabs_demo() -> Primitive {
         |idx: &usize| match idx {
             0 => ui! {
                 Stack(gap = StackGap::Sm) {
-                    Typography(content = "Overview".to_string(), kind = idea_ui::typography_kind::H3.into())
+                    Typography(content = "Overview".to_string(), kind = idea_ui::typography_kind::H3)
                     Typography(content = "High-level summary of the active project. The Overview \
                                       tab is mounted whenever the active index is 0; switching \
                                       tabs disposes this subtree and mounts a fresh one for the \
@@ -71,7 +71,7 @@ fn tabs_demo() -> Primitive {
             },
             1 => ui! {
                 Stack(gap = StackGap::Sm) {
-                    Typography(content = "Activity".to_string(), kind = idea_ui::typography_kind::H3.into())
+                    Typography(content = "Activity".to_string(), kind = idea_ui::typography_kind::H3)
                     Typography(content = "Recent events would render here. Because the panel is \
                                       rebuilt from scratch on every tab change, any signal \
                                       subscriptions inside it are released when the user \
@@ -81,7 +81,7 @@ fn tabs_demo() -> Primitive {
             },
             _ => ui! {
                 Stack(gap = StackGap::Sm) {
-                    Typography(content = "Settings".to_string(), kind = idea_ui::typography_kind::H3.into())
+                    Typography(content = "Settings".to_string(), kind = idea_ui::typography_kind::H3)
                     Typography(content = "Per-project configuration would render here. The strip \
                                       doesn't dictate panel layout — each branch can return \
                                       whatever primitive tree makes sense for that view.".to_string(),
@@ -93,7 +93,7 @@ fn tabs_demo() -> Primitive {
 
     ui! {
         Card {
-            Typography(content = "Tabs".to_string(), kind = idea_ui::typography_kind::H2.into())
+            Typography(content = "Tabs".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "Controlled by a `Signal<usize>` indexing the active tab. \
                               Tap a tab to swap the panel below — panel content is wired \
                               by the caller via `runtime_core::switch`, keyed off the same \

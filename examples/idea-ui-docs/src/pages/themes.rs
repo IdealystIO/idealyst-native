@@ -2,12 +2,12 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, Primitive, Signal};
+use runtime_core::{ui, Element, Signal};
 use idea_ui::{Badge, Typography, Btn, Card, Stack, StackAxis, StackGap, ToneRef};
 
 use crate::shell::page_header;
 
-pub fn page(_is_dark: Signal<bool>) -> Primitive {
+pub fn page(_is_dark: Signal<bool>) -> Element {
     ui! {
         Stack(gap = StackGap::Xl) {
             { page_header(
@@ -24,7 +24,7 @@ pub fn page(_is_dark: Signal<bool>) -> Primitive {
 }
 
 /// A grid of every built-in intent rendered as a Button + a Badge.
-fn intent_grid() -> Primitive {
+fn intent_grid() -> Element {
     let intents: Vec<(&'static str, ToneRef)> = vec![
         ("Primary", idea_ui::tone::Primary.into()),
         ("Secondary", idea_ui::tone::Secondary.into()),
@@ -34,7 +34,7 @@ fn intent_grid() -> Primitive {
         ("Warning", idea_ui::tone::Warning.into()),
         ("Info", idea_ui::tone::Info.into()),
     ];
-    let mut rows: Vec<Primitive> = Vec::with_capacity(intents.len());
+    let mut rows: Vec<Element> = Vec::with_capacity(intents.len());
     for (name_str, tone) in intents {
         let name = name_str.to_string();
         let on_click: Rc<dyn Fn()> = Rc::new(|| {});
@@ -44,15 +44,15 @@ fn intent_grid() -> Primitive {
                     label = name.clone(),
                     on_click = on_click.clone(),
                     tone = tone.clone(),
-                    variant = idea_ui::variant::Filled.into(),
+                    variant = idea_ui::variant::Filled,
                 )
-                Badge(label = name, tone = tone, variant = idea_ui::variant::Soft.into())
+                Badge(label = name, tone = tone, variant = idea_ui::variant::Soft)
             }
         });
     }
     ui! {
         Card {
-            Typography(content = "Built-in intents".to_string(), kind = idea_ui::typography_kind::H2.into())
+            Typography(content = "Built-in intents".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "Each row pairs a Button (Solid) and a Badge (Soft) for the same \
                               intent. The intent is shared vocabulary; the kind picks the visual.".to_string(),
                  muted = true)
@@ -61,10 +61,10 @@ fn intent_grid() -> Primitive {
     }
 }
 
-fn extension_section() -> Primitive {
+fn extension_section() -> Element {
     ui! {
         Card {
-            Typography(content = "Adding a custom intent".to_string(), kind = idea_ui::typography_kind::H2.into())
+            Typography(content = "Adding a custom intent".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "v1's component props take a built-in `IntentTag` enum directly. \
                               Custom intents (a `Hype` brand color, a `Beta` flag color) plug in \
                               by implementing `Intent` and `IntentTag::Custom(\"hype\")` — \

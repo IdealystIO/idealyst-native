@@ -1,4 +1,4 @@
-//! `Primitive::Icon` — renders vector paths via Android's Path/Canvas
+//! `Element::Icon` — renders vector paths via Android's Path/Canvas
 //! system inside an ImageView with a custom Drawable.
 //!
 //! Strategy:

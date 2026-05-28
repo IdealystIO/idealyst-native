@@ -156,7 +156,7 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
             is_open,
             // The helper crate's `build_content` slot is the
             // closure-shaped sidebar builder. The SDK's typed
-            // `SidebarBuilder` returns a `Primitive`; we wrap it in a
+            // `SidebarBuilder` returns a `Element`; we wrap it in a
             // microtask-deferred closure that calls `host.build_node`
             // to materialize and returns the resulting `IosNode`. The
             // helpers crate's drawer engine doesn't currently invoke

@@ -17,7 +17,7 @@ use render_api::{
     ScrollEvent,
 };
 use render_wgpu::{install_redraw_hook, Host, Renderer, Painter};
-use runtime_core::Primitive;
+use runtime_core::Element;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 
@@ -308,7 +308,7 @@ pub fn run<F>(
     build_ui: F,
 ) -> Result<(), RunError>
 where
-    F: FnOnce() -> Primitive + 'static,
+    F: FnOnce() -> Element + 'static,
 {
     let event_loop: EventLoop<AppEvent> = EventLoop::with_user_event()
         .build()
@@ -386,7 +386,7 @@ struct App {
     /// exclusive with `runtime_server_app_id`: local-mount mode
     /// supplies a `build_ui` closure, runtime-server mode supplies
     /// an app id and the shell is wired up post-resume.
-    build_ui: Option<Box<dyn FnOnce() -> Primitive>>,
+    build_ui: Option<Box<dyn FnOnce() -> Element>>,
     /// Set in runtime-server mode. On `resumed()` we spawn a
     /// `RuntimeServerShell<WgpuBackend>` against `host.backend()`
     /// (the same `Rc<RefCell<>>` the renderer reads from) so the
@@ -438,7 +438,7 @@ impl App {
     fn new(
         profile: DeviceProfile,
         skin: Rc<dyn Painter>,
-        build_ui: Box<dyn FnOnce() -> Primitive>,
+        build_ui: Box<dyn FnOnce() -> Element>,
     ) -> Self {
         let host = Host::new(skin, profile.color_scheme);
         let logical = (profile.logical_size.0 as f32, profile.logical_size.1 as f32);

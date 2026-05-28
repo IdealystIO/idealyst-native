@@ -1,4 +1,4 @@
-//! `Primitive::Text` build path.
+//! `Element::Text` build path.
 //!
 //! Three sources: static (`create_text` once, no effect), `Bound`
 //! (the canonical reactive path — installs an `Effect` that calls

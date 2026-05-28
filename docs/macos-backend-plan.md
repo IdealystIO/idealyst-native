@@ -140,7 +140,7 @@ crates/backend/
           stack.rs             // NSToolbar + content swap
           tab.rs               // NSSegmentedControl in toolbar OR NSTabViewController
           drawer.rs            // NSSplitView w/ NSSourceList sidebar
-        external.rs            // Primitive::External handler registry
+        external.rs            // Element::External handler registry
 crates/host/
   appkit/                      <-- new
     Cargo.toml
@@ -314,7 +314,7 @@ regardless of which variant the author chose.
 
 ## Portal & overlay mapping
 
-`Primitive::Portal` exposes two shapes, both already lowered by
+`Element::Portal` exposes two shapes, both already lowered by
 `runtime-core`:
 
 - **Anchored** (`AnchorTarget::Element { handle, side, align }`):
@@ -506,7 +506,7 @@ reasoning so a future contributor doesn't relitigate them.
    bubbling, no `useKeyboardShortcut()` primitive, no menu-bar
    shortcut binding in v1. The framework is mobile-first; phones
    don't have a keyboard shortcut model. macOS authors who need
-   shortcuts can reach for AppKit directly via `Primitive::External`
+   shortcuts can reach for AppKit directly via `Element::External`
    until there's a cross-platform shape worth designing. **A
    placeholder app menu bar (File / Edit / View / Window / Help
    with system items only) still ships in `host-appkit` Phase 5
@@ -518,7 +518,7 @@ reasoning so a future contributor doesn't relitigate them.
    framework's design philosophy is mobile-first; two-screen
    workflows aren't a standard mobile pattern. If multi-window
    matters later, the most likely shape is a third-party
-   extension (a `Primitive::External` that opens an auxiliary
+   extension (a `Element::External` that opens an auxiliary
    NSWindow) rather than a core-trait expansion — keeps
    mobile-first backends from having to ignore a method that
    doesn't apply to them.
@@ -565,7 +565,7 @@ boundaries — flagging so they don't get lost:
 
 ## Related memory entries
 
-- [[project_third_party_extension]] — `Primitive::External` shape
+- [[project_third_party_extension]] — `Element::External` shape
   the macOS backend will mirror.
 - [[project_ios_intrinsic_size_measurer]] — same problem applies
   to AppKit widgets.

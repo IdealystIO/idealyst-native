@@ -1,4 +1,4 @@
-//! `Primitive::TextArea` — a `<textarea>` with a controlled value
+//! `Element::TextArea` — a `<textarea>` with a controlled value
 //! signal and a per-keystroke `on_change` callback. Mirrors the
 //! shape of `text_input.rs`; the only difference is the element
 //! tag (`<textarea>` instead of `<input type="text">`) and the

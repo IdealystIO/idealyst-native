@@ -1,5 +1,5 @@
 //! One module per documented category. Each module exports a
-//! `page() -> Primitive` (or `page(&signals)`) that the Navigator
+//! `page() -> Element` (or `page(&signals)`) that the Navigator
 //! mounts for the matching route.
 
 pub mod actions;

@@ -6,7 +6,7 @@
 //!
 //! The convention: each page module exports `pub static PAGE_META:
 //! PageMeta` (emitted by the `docs!` macro) and `pub fn page() ->
-//! Primitive` (also emitted by `docs!`). Routes wire `page()` into
+//! Element` (also emitted by `docs!`). Routes wire `page()` into
 //! the navigator; this registry wires `PAGE_META` into MCP queries.
 
 use crate::meta::{DocConcept, PageCategory, PageMeta};

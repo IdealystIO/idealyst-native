@@ -15,7 +15,7 @@
 //! }
 //! ```
 
-use runtime_core::{ui, Primitive, StyleApplication, VariantEnum};
+use runtime_core::{ui, Element, StyleApplication, VariantEnum};
 
 use crate::stylesheets::{Avatar, AvatarText};
 use crate::theme::IdeaThemeRef;
@@ -47,7 +47,7 @@ impl Default for AvatarProps {
     }
 }
 
-pub fn avatar(props: &AvatarProps) -> Primitive {
+pub fn avatar(props: &AvatarProps) -> Element {
     let size = props.size;
     let color = props.color;
 

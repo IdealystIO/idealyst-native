@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, AlignItems, FlexDirection, FontWeight, Primitive, StyleRules, StyleSheet,
+    component, ui, AlignItems, FlexDirection, FontWeight, Element, StyleRules, StyleSheet,
     TextAlign, Tokenized,
 };
 
@@ -33,7 +33,7 @@ pub struct WelcomePhraseProps {
 }
 
 #[component]
-pub fn WelcomePhrase(props: &WelcomePhraseProps) -> Primitive {
+pub fn WelcomePhrase(props: &WelcomePhraseProps) -> Element {
     let refs = props.refs;
     let wrapper = wrapper_sheet();
     let headline = headline_sheet();

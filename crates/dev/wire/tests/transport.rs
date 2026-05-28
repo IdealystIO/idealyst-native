@@ -18,7 +18,7 @@ use std::thread;
 use std::time::Duration;
 
 use runtime_core::accessibility::AccessibilityTraits;
-use runtime_core::{render, Backend, Primitive, StyleRules, TextSource};
+use runtime_core::{render, Backend, Element, StyleRules, TextSource};
 use runtime_server_shell_native::connect_and_run;
 use dev_client::WireBackend;
 use dev_server::{serve, WireRecordingBackend};
@@ -123,16 +123,16 @@ fn websocket_round_trip_basic_tree() {
             traits: AccessibilityTraits::SELECTED,
             ..Default::default()
         };
-        let tree = Primitive::View {
+        let tree = Element::View {
             children: vec![
-                Primitive::Text {
+                Element::Text {
                     source: TextSource::Static("hello".into()),
                     style: None,
                     ref_fill: None,
                     accessibility: hello_a11y,
                     test_id: None,
                 },
-                Primitive::Text {
+                Element::Text {
                     source: TextSource::Static("world".into()),
                     style: None,
                     ref_fill: None,

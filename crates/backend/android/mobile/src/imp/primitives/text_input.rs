@@ -1,4 +1,4 @@
-//! `Primitive::TextInput` and `Primitive::TextArea` — both backed by
+//! `Element::TextInput` and `Element::TextArea` — both backed by
 //! `android.widget.EditText`. TextArea calls [`create_multiline`]
 //! which sets `inputType` to `TYPE_CLASS_TEXT |
 //! TYPE_TEXT_FLAG_MULTI_LINE`; otherwise the wiring is identical
@@ -27,7 +27,7 @@ pub(crate) fn create(
 }
 
 /// Multi-line variant — same widget, multiline input-type flag set.
-/// `Primitive::TextArea` on Android materialises through here.
+/// `Element::TextArea` on Android materialises through here.
 pub(crate) fn create_multiline(
     b: &AndroidBackend,
     initial_value: &str,
@@ -64,7 +64,7 @@ fn create_inner(
         if multiline {
             // InputType bits: TYPE_CLASS_TEXT (1) |
             // TYPE_TEXT_FLAG_MULTI_LINE (0x00020000) = 0x00020001.
-            // The framework's `Primitive::TextArea` contract is
+            // The framework's `Element::TextArea` contract is
             // "newlines are content, Enter inserts \n"; that's
             // exactly what the multiline flag delivers.
             let _ = env.call_method(

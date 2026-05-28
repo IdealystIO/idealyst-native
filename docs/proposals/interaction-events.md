@@ -149,14 +149,14 @@ cursor for a spotlight effect — use both.
 
 ---
 
-## Changes to `Primitive::View`
+## Changes to `Element::View`
 
 The variant grows two optional callback slots:
 
 ```rust
-pub enum Primitive {
+pub enum Element {
     View {
-        children: Vec<Primitive>,
+        children: Vec<Element>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         on_pointer: Option<Rc<dyn Fn(PointerEvent)>>,
@@ -270,10 +270,10 @@ A few reasons:
 
 ## Walker integration
 
-Inside the `Primitive::View` arm of `build`:
+Inside the `Element::View` arm of `build`:
 
 ```rust
-Primitive::View { children, style, ref_fill, on_pointer, on_hover } => {
+Element::View { children, style, ref_fill, on_pointer, on_hover } => {
     let n = build_view(backend, children);
     if let Some(s) = style { attach_style(backend, &n, s); }
     if let Some(RefFill::View(fill)) = ref_fill {
@@ -435,7 +435,7 @@ components reading the raw stream. A few canonical sketches:
 
 ```rust
 #[component]
-pub fn tappable(props: &TappableProps, children: Vec<Primitive>) -> Primitive {
+pub fn tappable(props: &TappableProps, children: Vec<Element>) -> Element {
     let start: Signal<Option<(f32, f32, std::time::Instant)>> = signal!(None);
     let on_tap = props.on_tap.clone();
     let slop_px = 8.0_f32;
@@ -474,7 +474,7 @@ Same shape, with a scheduled callback after a threshold:
 
 ```rust
 #[component]
-pub fn long_pressable(props: &LongPressableProps, children: Vec<Primitive>) -> Primitive {
+pub fn long_pressable(props: &LongPressableProps, children: Vec<Element>) -> Element {
     let task: Signal<Option<ScheduledTask>> = signal!(None);
     let on_long = props.on_long_press.clone();
     let threshold_ms = props.threshold_ms.unwrap_or(500);
@@ -504,7 +504,7 @@ signal value aborts the pending callback.
 
 ```rust
 #[component]
-pub fn draggable(props: &DraggableProps, children: Vec<Primitive>) -> Primitive {
+pub fn draggable(props: &DraggableProps, children: Vec<Element>) -> Element {
     let start: Signal<Option<(f32, f32, u32)>> = signal!(None);
     let on_drag = props.on_drag.clone();
 
@@ -587,12 +587,12 @@ The reasons builder-on-View wins:
    precedent.
 
 4. **`None` is cheap.** Adding `on_pointer: Option<Rc<dyn Fn>>` to
-   `View` costs one word per View at the Primitive layer (the enum
+   `View` costs one word per View at the Element layer (the enum
    already has Options for `style` and `ref_fill`), and the walker
    skips the attach call if it's None. A view without pointer
    listeners pays nothing in the backend.
 
-The cost is `Primitive::View` grows two more fields. Worth it.
+The cost is `Element::View` grows two more fields. Worth it.
 
 ---
 
@@ -603,7 +603,7 @@ container," a one-liner component in userspace covers it:
 
 ```rust
 #[component]
-pub fn touchable<F: Fn(PointerEvent) + 'static>(on_pointer: F, children: Vec<Primitive>) -> Primitive {
+pub fn touchable<F: Fn(PointerEvent) + 'static>(on_pointer: F, children: Vec<Element>) -> Element {
     ui! { View.on_pointer(on_pointer) { children } }
 }
 ```

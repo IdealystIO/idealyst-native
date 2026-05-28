@@ -1,4 +1,4 @@
-//! `Primitive::ScrollView` build path. The safe-area opt-in routes
+//! `Element::ScrollView` build path. The safe-area opt-in routes
 //! through `attach_scroll_view_safe_area_inset` (contentInset
 //! semantics) instead of the `attach_safe_area` outer-padding mode
 //! Views use — the only place the two paths diverge.
@@ -9,14 +9,14 @@ use super::view::insert_children;
 use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
-use crate::primitive::Primitive;
+use crate::element::Element;
 use crate::sources::StyleSource;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 pub(super) fn build<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
-    children: Vec<Primitive>,
+    children: Vec<Element>,
     horizontal: bool,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,

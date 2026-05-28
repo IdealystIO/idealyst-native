@@ -32,7 +32,7 @@
 //!     `<Text>"hello"</Text>` or `<Text>{format!("score: {}", n)}</Text>`.
 //!   Bare strings between tags are *not* allowed (matches `ui!`).
 //! - **Reactive `if`** (condition containing `.get()`) is rewritten to
-//!   `when(...)`, same as `ui!`. `for` desugars to a `Vec<Primitive>`.
+//!   `when(...)`, same as `ui!`. `for` desugars to a `Vec<Element>`.
 //!
 //! The emitter is shared with `ui!` wherever possible — primitive
 //! dispatch (`Text`/`Button`/`View`/`When`) and user-component dispatch
@@ -65,9 +65,9 @@ enum JsxNode {
         children: Option<Vec<JsxNode>>,
     },
     /// `<>children</>` — a group of siblings without a container element.
-    /// Emits as `Vec<Primitive>`; the surrounding context's `ChildList`
+    /// Emits as `Vec<Element>`; the surrounding context's `ChildList`
     /// impl flattens it (multi-child position) or it gets wrapped in
-    /// `view(...)` when a single `Primitive` is required (if/else branch,
+    /// `view(...)` when a single `Element` is required (if/else branch,
     /// top-level single-node).
     Fragment {
         children: Vec<JsxNode>,
@@ -172,7 +172,7 @@ fn is_close_tag_ahead(input: ParseStream) -> bool {
 fn parse_element(input: ParseStream) -> syn::Result<JsxNode> {
     let _lt: Token![<] = input.parse()?;
 
-    // Fragment open: `<>` — no name, no attrs. Emits a Vec<Primitive> so
+    // Fragment open: `<>` — no name, no attrs. Emits a Vec<Element> so
     // siblings flatten into the parent's child list without an extra
     // container element.
     if input.peek(Token![>]) {
@@ -366,7 +366,7 @@ pub fn emit(jsx: Jsx) -> TokenStream2 {
         0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
         // Single top-level node — but a fragment at this position has
         // to be wrapped in a view, because the macro contract is to
-        // return a `Primitive`, not a `Vec<Primitive>`.
+        // return a `Element`, not a `Vec<Element>`.
         1 => match &jsx.elements[0] {
             JsxNode::Fragment { children } => emit_fragment_as_view(children),
             n => emit_node(n),
@@ -375,7 +375,7 @@ pub fn emit(jsx: Jsx) -> TokenStream2 {
             let kids = jsx.elements.iter().map(emit_node);
             quote! {
                 ::runtime_core::view({
-                    let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                    let mut __c: ::std::vec::Vec<::runtime_core::Element>
                         = ::std::vec::Vec::new();
                     #( ::runtime_core::ChildList::append_to(#kids, &mut __c); )*
                     __c
@@ -383,18 +383,18 @@ pub fn emit(jsx: Jsx) -> TokenStream2 {
             }
         }
     };
-    quote! { ::runtime_core::IntoPrimitive::into_primitive(#body) }
+    quote! { ::runtime_core::IntoElement::into_element(#body) }
 }
 
 /// Wraps a fragment's children in `view(...)` so it can stand in where a
-/// single `Primitive` is required (top-level single-node, if/else branch).
-/// In multi-child positions this isn't needed — the bare `Vec<Primitive>`
+/// single `Element` is required (top-level single-node, if/else branch).
+/// In multi-child positions this isn't needed — the bare `Vec<Element>`
 /// emission flows through `ChildList::append_to` and flattens inline.
 fn emit_fragment_as_view(children: &[JsxNode]) -> TokenStream2 {
     let parts = children.iter().map(emit_node);
     quote! {
         ::runtime_core::view({
-            let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+            let mut __c: ::std::vec::Vec<::runtime_core::Element>
                 = ::std::vec::Vec::new();
             #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
             __c
@@ -416,14 +416,14 @@ fn emit_node(node: &JsxNode) -> TokenStream2 {
     }
 }
 
-/// Emits a fragment as a bare `Vec<Primitive>`. Used in child-list
+/// Emits a fragment as a bare `Vec<Element>`. Used in child-list
 /// positions where `ChildList::append_to` will flatten the Vec inline,
 /// achieving the "no wrapper container" behavior fragments promise.
 fn emit_fragment_as_vec(children: &[JsxNode]) -> TokenStream2 {
     let parts = children.iter().map(emit_node);
     quote! {
         {
-            let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+            let mut __c: ::std::vec::Vec<::runtime_core::Element>
                 = ::std::vec::Vec::new();
             #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
             __c
@@ -431,19 +431,10 @@ fn emit_fragment_as_vec(children: &[JsxNode]) -> TokenStream2 {
     }
 }
 
-/// Emit a prop value. String literals get an implicit `.into()` so they
-/// flow into `String` fields without `.to_string()`. Braced expressions
-/// pass through verbatim (Rust's normal coercion rules apply).
-fn emit_attr_value(value: &PropValue) -> TokenStream2 {
-    match value {
-        PropValue::Str(s) => quote! { #s.into() },
-        PropValue::Expr(e) => quote! { #e },
-    }
-}
-
-/// Returns the tokens for a primitive-style raw value (no `.into()`),
-/// used by Text content / Button label / etc. where the framework
-/// primitive accepts `impl Into<String>` or similar.
+/// Returns the tokens for a prop value verbatim (no `.into()`). Used by
+/// primitives (Text content / Button label) AND user components — the
+/// invocation macro applies the uniform `.into()` coercion for the
+/// latter, so emitting a literal `.into()` here would double-convert.
 fn emit_attr_value_raw(value: &PropValue) -> TokenStream2 {
     match value {
         PropValue::Str(s) => quote! { #s },
@@ -548,7 +539,7 @@ fn emit_view(_props: &[&Prop], children: Option<&[JsxNode]>) -> TokenStream2 {
     let parts = kids.iter().map(emit_node);
     quote! {
         ::runtime_core::view({
-            let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+            let mut __c: ::std::vec::Vec<::runtime_core::Element>
                 = ::std::vec::Vec::new();
             #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
             __c
@@ -579,9 +570,12 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[JsxNode]>) -> Toke
     // Dispatch to the component's real `Name!` macro by its PascalCase
     // name directly — no `pascal_to_snake` (parity with `ui!`).
     let macro_name = name;
+    // Pass values verbatim — the invocation macro applies the uniform
+    // `.into()` coercion (parity with `ui!`). A literal `.into()` here
+    // would double-convert.
     let prop_assignments = props.iter().map(|p| {
         let n = &p.name;
-        let v = emit_attr_value(&p.value);
+        let v = emit_attr_value_raw(&p.value);
         quote! { #n = #v }
     });
 
@@ -591,7 +585,7 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[JsxNode]>) -> Toke
             #macro_name!(
                 #(#prop_assignments,)*
                 children = {
-                    let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                    let mut __c: ::std::vec::Vec<::runtime_core::Element>
                         = ::std::vec::Vec::new();
                     #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
                     __c
@@ -634,7 +628,7 @@ fn emit_for(pat: &syn::Pat, iter: &Expr, body: &[JsxNode]) -> TokenStream2 {
     let body_expr = emit_block_as_primitive(body);
     quote! {
         {
-            let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+            let mut __c: ::std::vec::Vec<::runtime_core::Element>
                 = ::std::vec::Vec::new();
             for #pat in #iter {
                 ::runtime_core::ChildList::append_to(#body_expr, &mut __c);
@@ -648,7 +642,7 @@ fn emit_block_as_primitive(nodes: &[JsxNode]) -> TokenStream2 {
     let body = match nodes.len() {
         0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
         // A single fragment in a branch position still needs a view
-        // wrapper — `when(...)`'s closures return `Primitive`, not Vec.
+        // wrapper — `when(...)`'s closures return `Element`, not Vec.
         1 => match &nodes[0] {
             JsxNode::Fragment { children } => emit_fragment_as_view(children),
             n => emit_node(n),
@@ -657,7 +651,7 @@ fn emit_block_as_primitive(nodes: &[JsxNode]) -> TokenStream2 {
             let parts = nodes.iter().map(emit_node);
             quote! {
                 ::runtime_core::view({
-                    let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                    let mut __c: ::std::vec::Vec<::runtime_core::Element>
                         = ::std::vec::Vec::new();
                     #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
                     __c
@@ -665,7 +659,7 @@ fn emit_block_as_primitive(nodes: &[JsxNode]) -> TokenStream2 {
             }
         }
     };
-    quote! { ::runtime_core::IntoPrimitive::into_primitive(#body) }
+    quote! { ::runtime_core::IntoElement::into_element(#body) }
 }
 
 #[allow(dead_code)]
@@ -716,9 +710,11 @@ mod tests {
     fn user_component_self_closing() {
         let out = parse_and_emit(quote! { <Counter label="x" value={score} /> });
         assert!(out.contains("Counter !"));
-        // String literal gets .into() coercion.
-        assert!(out.contains("\"x\" . into ()"));
-        // Braced expr passes through verbatim.
+        // Values pass VERBATIM — the invocation macro applies the
+        // uniform `.into()` coercion, so jsx! must not add its own.
+        assert!(out.contains("\"x\""));
+        assert!(!out.contains("\"x\" . into ()"));
+        // Braced expr passes through verbatim too.
         assert!(!out.contains("score . into"));
     }
 
@@ -841,7 +837,7 @@ mod tests {
 
     #[test]
     fn fragment_as_top_level_wraps_in_view() {
-        // A bare fragment at the macro root has to become a Primitive,
+        // A bare fragment at the macro root has to become a Element,
         // so it wraps in view(). The two text children flow through
         // ChildList::append_to.
         let out = parse_and_emit(quote! {
@@ -858,7 +854,7 @@ mod tests {
     #[test]
     fn fragment_inside_element_flattens_via_childlist() {
         // <View><><Text/><Text/></></View> — the fragment emits a
-        // Vec<Primitive> that ChildList::append_to extends into the
+        // Vec<Element> that ChildList::append_to extends into the
         // view's children inline. No nested view container.
         let out = parse_and_emit(quote! {
             <View>
@@ -878,7 +874,7 @@ mod tests {
 
     #[test]
     fn fragment_in_if_branch_wraps_in_view() {
-        // `when(...)`'s branch closures return `Primitive`, so a fragment
+        // `when(...)`'s branch closures return `Element`, so a fragment
         // used as a branch body needs the view wrapper.
         let out = parse_and_emit(quote! {
             if flag.get() {

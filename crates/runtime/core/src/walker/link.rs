@@ -1,4 +1,4 @@
-//! `Primitive::Link` build path. The walker builds the
+//! `Element::Link` build path. The walker builds the
 //! `on_activate` callable (route lookup + URL emit + param
 //! rebuilds) and hands the backend a `LinkConfig`. Children are
 //! inserted just like View into the link's native container.
@@ -9,7 +9,7 @@ use super::view::insert_children;
 use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
-use crate::primitive::Primitive;
+use crate::element::Element;
 use crate::primitives;
 use crate::sources::StyleSource;
 use std::any::Any;
@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 pub(super) fn build<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
-    children: Vec<Primitive>,
+    children: Vec<Element>,
     route: &'static str,
     url: String,
     make_params: Rc<dyn Fn() -> Box<dyn Any>>,

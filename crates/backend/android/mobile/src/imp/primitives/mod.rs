@@ -1,5 +1,5 @@
 //! Per-primitive create/update functions. Each module owns one
-//! `Primitive` kind end-to-end: the create call, any update call,
+//! `Element` kind end-to-end: the create call, any update call,
 //! the `Ops` impl for refs (where applicable), and the
 //! `make_*_handle` builder.
 //!

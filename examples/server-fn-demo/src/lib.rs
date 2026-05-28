@@ -25,7 +25,7 @@ use idea_ui::{
 };
 use runtime_core::{
     async_reducer, component, fixed_size, flat_list, signal, ui, AsyncReducer, AsyncStatus,
-    Effect, IntoPrimitive, Primitive, Signal,
+    Effect, IntoElement, Element, Signal,
 };
 use serde::{Deserialize, Serialize};
 use server::{server, ServerError};
@@ -184,21 +184,13 @@ fn configure_server() {
 }
 
 // ============================================================================
-// Per-target SDK-handler registration hook the CLI-generated wrappers
-// invoke before mount. The wrappers pass `&mut backend.borrow_mut()` (a
-// `RefMut`), which deref-coerces to the concrete `&mut <Backend>` here; a
-// generic `<B: Backend>` can't accept that, so the signature is per-backend.
-// No third-party SDKs in this demo, so each body is empty.
+// SDK-handler registration hook the CLI-generated wrappers invoke before
+// mount. No third-party SDKs in this demo, so it's an empty generic over
+// `Backend` — backend-agnostic, no per-target `#[cfg]` and no `backend-*`
+// dep. The wrappers pass the concrete backend per platform.
 // ============================================================================
 
-#[cfg(target_arch = "wasm32")]
-pub fn register_extensions(_backend: &mut backend_web::WebBackend) {}
-
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {}
-
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
-pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
+pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 
 // ============================================================================
 // `app()` — the idealyst UI.
@@ -221,7 +213,7 @@ pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
 // ============================================================================
 
 #[component]
-pub fn app() -> Primitive {
+pub fn app() -> Element {
     install_idea_theme(light_theme());
     configure_server();
 
@@ -281,7 +273,7 @@ pub fn app() -> Primitive {
         AsyncStatus::Loading => "loading...".to_string(),
         AsyncStatus::Error(e) => format!("error: {e}"),
     })
-    .into_primitive();
+    .into_element();
 
     let on_refresh = {
         let refresh = refresh.clone();
@@ -292,8 +284,8 @@ pub fn app() -> Primitive {
     let on_add_dog = make_adder(create.clone(), "Walk the dog");
     let on_add_demo = make_adder(create.clone(), "Demo idealyst");
 
-    let header: Vec<Primitive> = vec![
-        ui! { Typography(content = "Server-fn todos".to_string(), kind = idea_ui::typography_kind::H1.into()) },
+    let header: Vec<Element> = vec![
+        ui! { Typography(content = "Server-fn todos".to_string(), kind = idea_ui::typography_kind::H1) },
         ui! {
             Typography(
                 content = "Every interaction is a #[server] call. Open the network tab \
@@ -324,7 +316,7 @@ pub fn app() -> Primitive {
         )
     };
 
-    let body: Vec<Primitive> = vec![
+    let body: Vec<Element> = vec![
         ui! { Stack(gap = StackGap::Md, padding = StackPadding::Lg) { header } },
         list,
     ];
@@ -350,7 +342,7 @@ fn todo_row(
     todos: Signal<Vec<Todo>>,
     toggle: AsyncReducer<u64, ServerError>,
     delete: AsyncReducer<u64, ServerError>,
-) -> Primitive {
+) -> Element {
     let id = t.id;
     let initial_title = t.title.clone();
     let initial_done = t.done;
@@ -375,7 +367,7 @@ fn todo_row(
     };
     let on_toggle = move || toggle.trigger(id);
     let on_delete = move || delete.trigger(id);
-    let children: Vec<Primitive> = vec![
+    let children: Vec<Element> = vec![
         ui! { Button(label = label, on_click = on_toggle) },
         ui! { Button(label = "delete".to_string(), on_click = on_delete) },
     ];

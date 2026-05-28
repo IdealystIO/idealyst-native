@@ -1,6 +1,6 @@
 //! Third-party primitive extension infrastructure.
 //!
-//! Framework-core defines `Primitive::External` as a single escape
+//! Framework-core defines `Element::External` as a single escape
 //! hatch for primitives the framework itself doesn't ship. Third-party
 //! crates construct an External primitive whose payload is type-erased
 //! props; backends consult their own [`ExternalRegistry`] to dispatch
@@ -8,7 +8,7 @@
 //!
 //! # Layering
 //!
-//! - **Framework-core** owns this module + the `Primitive::External`
+//! - **Framework-core** owns this module + the `Element::External`
 //!   variant + the `Backend::create_external` trait method. It knows
 //!   nothing about specific backends or specific external primitive
 //!   types.
@@ -24,7 +24,7 @@
 //!   per third-party SDK, regardless of platform.
 //!
 //! The contract: runtime-core stays platform-agnostic, the closed
-//! `Primitive` enum stays closed, type erasure is paid at exactly one
+//! `Element` enum stays closed, type erasure is paid at exactly one
 //! line per backend (inside `register_external`), and user-facing code
 //! is fully typed.
 
@@ -68,7 +68,7 @@ impl<B: Backend + 'static> ExternalRegistry<B> {
         // store downcasts the payload back to `Rc<T>` on each
         // invocation. Downcast panics if the framework ever delivers
         // the wrong type — which it shouldn't, because the TypeId in
-        // the Primitive::External matches the registered TypeId.
+        // the Element::External matches the registered TypeId.
         let erased: ErasedHandler<B> = Rc::new(move |any, backend| {
             let typed: Rc<T> = any
                 .clone()
@@ -156,10 +156,10 @@ impl<T: 'static> ExternalHandle<T> {
 
 use crate::builder::Bound;
 use crate::handles::RefFill;
-use crate::primitive::Primitive;
+use crate::element::Element;
 use crate::reactive::Ref;
 
-/// Build a third-party `Primitive::External` whose payload type is
+/// Build a third-party `Element::External` whose payload type is
 /// `T`. Returns a `Bound<ExternalHandle<T>>` so `.bind(...)` is type-
 /// checked against the call-site `Ref<ExternalHandle<T>>`.
 ///
@@ -173,7 +173,7 @@ use crate::reactive::Ref;
 /// let view = external(MapViewProps { lat: 37.7749, lon: -122.4194, zoom: 12.0 });
 /// ```
 pub fn external<T: 'static>(props: T) -> Bound<ExternalHandle<T>> {
-    Bound::new(Primitive::External {
+    Bound::new(Element::External {
         type_id: TypeId::of::<T>(),
         type_name: std::any::type_name::<T>(),
         payload: Rc::new(props) as Rc<dyn Any>,
@@ -187,7 +187,7 @@ impl<T: 'static> Bound<ExternalHandle<T>> {
     /// Bind a `Ref<ExternalHandle<T>>` for imperative access to the
     /// mounted external primitive's backend node.
     pub fn bind(mut self, r: Ref<ExternalHandle<T>>) -> Self {
-        if let Primitive::External { ref_fill, .. } = self.primitive_mut() {
+        if let Element::External { ref_fill, .. } = self.primitive_mut() {
             *ref_fill = Some(RefFill::External(Box::new(move |node_any| {
                 r.fill(ExternalHandle::<T>::new(node_any));
             })));

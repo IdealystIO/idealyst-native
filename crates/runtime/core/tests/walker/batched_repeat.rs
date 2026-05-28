@@ -1,7 +1,7 @@
 //! Batched-`Repeat` fast path — `execute_batch_with_attach`.
 //!
 //! When a backend opts into `supports_batched_repeat() = true` and a
-//! `Primitive::Repeat` has rows that match the batchable shape (View
+//! `Element::Repeat` has rows that match the batchable shape (View
 //! + Text + static-style, no `ref_fill`, no `on_touch`, no
 //! `safe_area_sides`), the walker collapses the whole expansion into
 //! one [`Backend::execute_batch_with_attach`] call.
@@ -20,7 +20,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use runtime_core::{
-    text, view, IntoPrimitive, Primitive, StyleApplication, StyleRules, StyleSheet, VariantSet,
+    text, view, IntoElement, Element, StyleApplication, StyleRules, StyleSheet, VariantSet,
 };
 
 use crate::common::{BatchOpSummary, Event, MockBackendConfig, TestRuntime};
@@ -37,16 +37,16 @@ fn make_static_sheet() -> Rc<StyleSheet> {
 }
 
 /// The bench's batchable shape: `View > [Repeat { rows of View > Text
-/// with static style }]`. Returns the outer container Primitive that
+/// with static style }]`. Returns the outer container Element that
 /// the test runtime will render.
-fn batchable_tree(count: usize, sheet: Rc<StyleSheet>) -> Primitive {
+fn batchable_tree(count: usize, sheet: Rc<StyleSheet>) -> Element {
     let sheet_for_rows = sheet;
-    let row_builder: Box<dyn Fn(usize) -> Primitive> = Box::new(move |i| {
-        view(vec![text(format!("Row #{}", i)).into_primitive()])
+    let row_builder: Box<dyn Fn(usize) -> Element> = Box::new(move |i| {
+        view(vec![text(format!("Row #{}", i)).into_element()])
             .with_style(sheet_for_rows.clone())
-            .into_primitive()
+            .into_element()
     });
-    view(vec![Primitive::Repeat { count, row_builder }]).into_primitive()
+    view(vec![Element::Repeat { count, row_builder }]).into_element()
 }
 
 /// Count `ExecuteBatchWithAttach` events.
@@ -135,20 +135,20 @@ fn non_batchable_shape_falls_back_to_per_call() {
         ..Default::default()
     });
     let sheet = make_static_sheet();
-    let row_builder: Box<dyn Fn(usize) -> Primitive> = Box::new(move |i| {
+    let row_builder: Box<dyn Fn(usize) -> Element> = Box::new(move |i| {
         let sheet_for_row = sheet.clone();
-        view(vec![text(format!("Row #{}", i)).into_primitive()])
+        view(vec![text(format!("Row #{}", i)).into_element()])
             // Closure form → `StyleSource::Reactive`, which the
             // walker explicitly bails on at
             // `enqueue_primitive`'s View arm.
             .with_style(move || StyleApplication::new(sheet_for_row.clone()))
-            .into_primitive()
+            .into_element()
     });
-    let tree = view(vec![Primitive::Repeat {
+    let tree = view(vec![Element::Repeat {
         count: 3,
         row_builder,
     }])
-    .into_primitive();
+    .into_element();
     let _owner = rt.render(tree);
 
     let events = rt.events();
@@ -355,18 +355,18 @@ fn batched_path_is_taken_on_each_rebuild_via_switch() {
             0 => {
                 let n = count.get();
                 let sheet_for_rows = sheet.clone();
-                let row_builder: Box<dyn Fn(usize) -> Primitive> = Box::new(move |i| {
-                    view(vec![text(format!("Row #{}", i)).into_primitive()])
+                let row_builder: Box<dyn Fn(usize) -> Element> = Box::new(move |i| {
+                    view(vec![text(format!("Row #{}", i)).into_element()])
                         .with_style(sheet_for_rows.clone())
-                        .into_primitive()
+                        .into_element()
                 });
-                view(vec![Primitive::Repeat {
+                view(vec![Element::Repeat {
                     count: n,
                     row_builder,
                 }])
-                .into_primitive()
+                .into_element()
             }
-            _ => view(Vec::<Primitive>::new()).into_primitive(),
+            _ => view(Vec::<Element>::new()).into_element(),
         },
     );
     let _owner = rt.render(tree);

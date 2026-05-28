@@ -311,7 +311,7 @@ pub fn drawer_attach_initial(
 
 /// Attach the deferred-built sidebar UIView to the drawer. Called
 /// from the SDK handler's microtask after `host.build_node`
-/// materializes the SDK's sidebar Primitive into an `IosNode`.
+/// materializes the SDK's sidebar Element into an `IosNode`.
 pub fn drawer_attach_sidebar(
     mtm: MainThreadMarker,
     navigator: &IosNode,

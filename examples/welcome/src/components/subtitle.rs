@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, AlignItems, FlexDirection, FontWeight, Primitive, StyleRules, StyleSheet,
+    component, ui, AlignItems, FlexDirection, FontWeight, Element, StyleRules, StyleSheet,
     TextAlign, Tokenized,
 };
 
@@ -22,7 +22,7 @@ pub struct SubtitleProps {
 }
 
 #[component]
-pub fn Subtitle(props: &SubtitleProps) -> Primitive {
+pub fn Subtitle(props: &SubtitleProps) -> Element {
     let refs = props.refs;
     let wrapper = wrapper_sheet();
     let text = text_sheet();

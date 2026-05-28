@@ -3,7 +3,7 @@
 //! Hand-built (not via the `docs!` macro) so the page can drop the
 //! `Simulator` component inline alongside the prose. The `docs!`
 //! macro only emits text-flavored blocks (paragraphs, lists, code);
-//! a live preview is a custom `Primitive`, so it goes here.
+//! a live preview is a custom `Element`, so it goes here.
 //!
 //! What the preview actually does:
 //!
@@ -23,7 +23,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Element};
 
 use crate::components::simulator::{Simulator, SimulatorProps};
 use crate::shell::{PageBody, PageHeader, PageTypographyProps, PageHeaderProps};
@@ -48,15 +48,15 @@ use crate::shell::{PageBody, PageHeader, PageTypographyProps, PageHeaderProps};
 /// - No infinite recursion: the inner app's Simulator route only
 ///   activates if you navigate to it inside the preview, and
 ///   navigation is one of the unwired paths above.
-fn embedded_app() -> Primitive {
+fn embedded_app() -> Element {
     crate::app()
 }
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     // `Rc<dyn Fn>` so the Simulator can clone it into the Graphics
     // primitive's `on_ready` closure. Invoked once when the
     // embedded host mounts.
-    let build_ui: Rc<dyn Fn() -> Primitive> = Rc::new(embedded_app);
+    let build_ui: Rc<dyn Fn() -> Element> = Rc::new(embedded_app);
 
     ui! {
         PageBody {

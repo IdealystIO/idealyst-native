@@ -22,7 +22,7 @@ Your repo looks like this:
 my-app/
   Cargo.toml          # crate manifest + Idealyst metadata
   src/
-    lib.rs            # exports `pub fn app() -> Primitive`
+    lib.rs            # exports `pub fn app() -> Element`
 ```
 
 There's no `ios/`, no `android/`, no `web/`. The per-platform host
@@ -169,7 +169,7 @@ full rebuild + remount when it detects one. The common cases:
 - **Top-level signature changes** — adding a parameter to `app()`,
   for example. The dispatcher can't reconcile the call site.
 - **Adding a `methods!` block** to a component that didn't have
-  one. The return type changes from `Primitive` to
+  one. The return type changes from `Element` to
   `Bindable<Handle>`.
 - **Renaming or removing a component.** No identity to map.
 

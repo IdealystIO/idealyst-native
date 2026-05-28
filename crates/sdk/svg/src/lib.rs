@@ -1,7 +1,7 @@
 //! Third-party SVG renderer SDK for the idealyst framework.
 //!
 //! Provides an `Svg` primitive backed by the framework's
-//! `Primitive::External` extension mechanism. Renders the same SVG
+//! `Element::External` extension mechanism. Renders the same SVG
 //! spec on every backend; the mechanism differs (native browser SVG
 //! on web, resvg + tiny-skia on iOS/Android) but the output converges.
 //!
@@ -32,7 +32,7 @@
 //!
 //! # Architecture
 //!
-//! - `Primitive::External` payload type is [`SvgProps`] — every prop
+//! - `Element::External` payload type is [`SvgProps`] — every prop
 //!   (markup + callbacks) is owned by the SDK, not the framework.
 //! - Per-backend `register(&mut backend)` impls live in cfg-gated
 //!   `web` / `android` / `ios` modules below. Each one calls
@@ -45,7 +45,7 @@
 //!   `Rc<dyn Any>` to the native node plus a `&'static dyn SvgOps`
 //!   pointer that the active backend module exposes as a static.
 
-use runtime_core::{Bound, Primitive, Ref, RefFill};
+use runtime_core::{Bound, Element, Ref, RefFill};
 use std::any::{Any, TypeId};
 use std::rc::Rc;
 
@@ -54,7 +54,7 @@ use std::rc::Rc;
 // ============================================================================
 
 /// Author-supplied props for an `Svg` instance. Type-erased into a
-/// `Primitive::External` payload at build time; the active backend's
+/// `Element::External` payload at build time; the active backend's
 /// registered handler reads the typed `Rc<SvgProps>` back out.
 ///
 /// `markup` is reactive: the backend subscribes via `Effect::new(...)`
@@ -192,7 +192,7 @@ impl SvgOps for UnsupportedOps {}
 /// Interpolate as `{ svg::Svg(SvgProps { .. }) }`.
 #[allow(non_snake_case)]
 pub fn Svg(props: SvgProps) -> Bound<SvgHandle> {
-    Bound::new(Primitive::External {
+    Bound::new(Element::External {
         type_id: TypeId::of::<SvgProps>(),
         type_name: std::any::type_name::<SvgProps>(),
         payload: Rc::new(props) as Rc<dyn Any>,
@@ -212,7 +212,7 @@ pub trait SvgBind {
 
 impl SvgBind for Bound<SvgHandle> {
     fn bind(mut self, r: Ref<SvgHandle>) -> Self {
-        if let Primitive::External { ref_fill, .. } = self.primitive_mut() {
+        if let Element::External { ref_fill, .. } = self.primitive_mut() {
             *ref_fill = Some(RefFill::External(Box::new(move |node_any| {
                 r.fill(SvgHandle::new(node_any, OPS));
             })));

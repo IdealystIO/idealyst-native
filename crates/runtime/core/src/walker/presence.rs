@@ -1,4 +1,4 @@
-//! `Primitive::Presence` build path. Manages mount/unmount timing so
+//! `Element::Presence` build path. Manages mount/unmount timing so
 //! the child's enter/exit animations actually have a window to
 //! play.
 //!
@@ -32,7 +32,7 @@ use super::debug::time_backend_create;
 use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
-use crate::primitive::Primitive;
+use crate::element::Element;
 use crate::primitives;
 use crate::reactive::{self, untrack, Effect};
 use std::cell::RefCell;
@@ -40,7 +40,7 @@ use std::rc::Rc;
 
 pub(super) fn build<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
-    child: Box<dyn Fn() -> Primitive>,
+    child: Box<dyn Fn() -> Element>,
     present: Box<dyn Fn() -> bool>,
     enter: Option<primitives::presence::PresenceAnim>,
     exit: Option<primitives::presence::PresenceAnim>,
@@ -57,7 +57,7 @@ pub(super) fn build<B: Backend + 'static>(
 
 fn build_presence<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
-    child_fn: Box<dyn Fn() -> Primitive>,
+    child_fn: Box<dyn Fn() -> Element>,
     present: Box<dyn Fn() -> bool>,
     enter: Option<primitives::presence::PresenceAnim>,
     exit: Option<primitives::presence::PresenceAnim>,

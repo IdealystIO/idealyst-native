@@ -9,7 +9,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, ChildList, Primitive, Signal, StyleApplication, VariantEnum};
+use runtime_core::{ui, ChildList, Element, Signal, StyleApplication, VariantEnum};
 // NOTE: LayoutProps is gone — the stack-navigator SDK no longer has
 // a `.layout(...)` API. This shell module's old `web_layout` function
 // has been deleted alongside; the helper components below
@@ -35,14 +35,14 @@ fn sidebar(
     active_route: Signal<&'static str>,
     is_dark: Signal<bool>,
     container_style: crate::styles::Sidebar,
-) -> Primitive {
+) -> Element {
     let header_style = SidebarHeader();
-    let header_children: Vec<Primitive> = vec![
-        ui! { Typography(content = "idea-ui".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let header_children: Vec<Element> = vec![
+        ui! { Typography(content = "idea-ui".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! { Typography(content = "Component reference".to_string(), muted = true) },
     ];
 
-    let mut links: Vec<Primitive> = Vec::with_capacity(INDEX.len());
+    let mut links: Vec<Element> = Vec::with_capacity(INDEX.len());
     for entry in INDEX {
         links.push(nav_link(entry.name, entry.label, active_route));
     }
@@ -59,8 +59,8 @@ fn sidebar(
     // Compose the sidebar: brand header → links list → spacer
     // (handled by margin-top: auto on the theme switch row) →
     // theme switch.
-    let theme_row_children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Theme".to_string(), kind = idea_ui::typography_kind::Caption.into()) },
+    let theme_row_children: Vec<Element> = vec![
+        ui! { Typography(content = "Theme".to_string(), kind = idea_ui::typography_kind::Caption) },
         ui! {
             Switch(
                 label = Some("Dark mode".to_string()),
@@ -70,7 +70,7 @@ fn sidebar(
         },
     ];
 
-    let mut children: Vec<Primitive> = Vec::new();
+    let mut children: Vec<Element> = Vec::new();
     children.push(ui! { View(style = header_style) { header_children } });
     for l in links {
         ChildList::append_to(l, &mut children);
@@ -93,7 +93,7 @@ fn nav_link(
     name: &'static str,
     label: &'static str,
     active_route: Signal<&'static str>,
-) -> Primitive {
+) -> Element {
     let label_text = label.to_string();
     // The on_click side-navigates by calling history.pushState
     // through the Navigator. Since we don't have a `Ref` to the
@@ -194,9 +194,9 @@ fn nav_link(
 pub fn demo_card(
     title: &str,
     description: &str,
-    preview: Primitive,
-    controls: Primitive,
-) -> Primitive {
+    preview: Element,
+    controls: Element,
+) -> Element {
     use crate::styles::{ControlsBox, DemoCard, DemoRow, PreviewBox};
     let title_text = title.to_string();
     let desc_text = description.to_string();
@@ -226,7 +226,7 @@ pub fn demo_card(
 
     ui! {
         View(style = card_style) {
-            Typography(content = title_text, kind = idea_ui::typography_kind::H2.into())
+            Typography(content = title_text, kind = idea_ui::typography_kind::H2)
             body_node
             row
         }
@@ -234,11 +234,11 @@ pub fn demo_card(
 }
 
 /// Page title block — every page calls this at the top.
-pub fn page_header(title: &str, description: &str) -> Primitive {
+pub fn page_header(title: &str, description: &str) -> Element {
     let title_text = title.to_string();
     let desc_text = description.to_string();
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H1.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H1) },
         ui! { Typography(content = desc_text, muted = true) },
     ];
     ui! {

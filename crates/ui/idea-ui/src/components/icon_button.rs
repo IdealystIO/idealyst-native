@@ -23,7 +23,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{text, IntoPrimitive, Primitive, StyleApplication, VariantEnum};
+use runtime_core::{text, IntoElement, Element, StyleApplication, VariantEnum};
 
 use idea_theme::extensible::{installed_icon_button_sheet, tone, variant, ToneRef, VariantRef};
 
@@ -52,7 +52,7 @@ impl Default for IconButtonProps {
     }
 }
 
-pub fn icon_button(props: &IconButtonProps) -> Primitive {
+pub fn icon_button(props: &IconButtonProps) -> Element {
     let glyph = props.glyph.clone();
     let on_click = props.on_click.clone();
     let tone = props.tone.clone();
@@ -68,11 +68,11 @@ pub fn icon_button(props: &IconButtonProps) -> Primitive {
         .with("appearance", appearance_key)
         .with("size", size_key);
 
-    let glyph_child = text(glyph).into_primitive();
+    let glyph_child = text(glyph).into_element();
     let mut bound = runtime_core::pressable(vec![glyph_child], move || (on_click)())
         .with_style(style);
     if let Some(d) = disabled {
         bound = bound.disabled(move || (d)());
     }
-    bound.into_primitive()
+    bound.into_element()
 }

@@ -1,13 +1,13 @@
-//! `Primitive::Lazy` build path.
+//! `Element::Lazy` build path.
 //!
 //! Mounts the placeholder synchronously, then spawns an async task
 //! that drives the loader. When the loader's future resolves with
-//! the chunk's `Primitive`, we build it and replace the
+//! the chunk's `Element`, we build it and replace the
 //! placeholder's children with the chunk's content.
 //!
 //! - **Wasm**: the loader is `wasm-split`'s generated wrapper. Its
 //!   future awaits the chunk fetch + the chunk's async fn before
-//!   yielding the `Primitive`.
+//!   yielding the `Element`.
 //! - **Native**: the loader's future resolves synchronously on
 //!   first poll because the chunk's async fn is just a regular
 //!   async function compiled into the same binary.
@@ -23,7 +23,7 @@ use super::style::attach_style;
 use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
-use crate::primitive::Primitive;
+use crate::element::Element;
 use crate::primitives::lazy::{LazyLoader, LazyState};
 use crate::reactive;
 use crate::sources::StyleSource;
@@ -35,7 +35,7 @@ pub(super) fn build<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     loader: LazyLoader,
     on_state: Option<Rc<dyn Fn(LazyState)>>,
-    placeholder: Option<Box<dyn Fn() -> Primitive>>,
+    placeholder: Option<Box<dyn Fn() -> Element>>,
     style: Option<StyleSource>,
     _ref_fill: Option<RefFill>,
     a11y: AccessibilityProps,
@@ -93,7 +93,7 @@ pub(super) fn build<B: Backend + 'static>(
     // the container node, the chunk slot, and the state callback.
     // On native the future resolves on first poll; on wasm the
     // `wasm-split` runtime drives the dynamic import + chunk
-    // function invocation before the future yields a Primitive.
+    // function invocation before the future yields a Element.
     //
     // Requires the `async-driver` feature on runtime-core. Without
     // it the chunk never loads (placeholder stays visible

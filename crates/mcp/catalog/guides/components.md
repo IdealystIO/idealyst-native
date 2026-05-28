@@ -14,7 +14,7 @@ tags = ["components", "core"]
 use runtime_core::*;
 
 #[component]
-pub fn Greeting(name: &str) -> Primitive {
+pub fn Greeting(name: &str) -> Element {
     ui! {
         Text(text_fmt!("Hello, {}!", name))
     }
@@ -48,7 +48,7 @@ pub struct CardProps<'a> {
 }
 
 #[component]
-pub fn Card(props: &CardProps) -> Primitive {
+pub fn Card(props: &CardProps) -> Element {
     ui! {
         View {
             Text(props.title)
@@ -59,6 +59,39 @@ pub fn Card(props: &CardProps) -> Primitive {
 ```
 
 The MCP catalog inlines the schema's per-field docs/constraints into the component's `params` output, so consumers get the full prop API in one place.
+
+### Prop coercion — never write `.into()` at the call site
+
+The invocation macro coerces every prop value into its field type via `.into()`. So you pass the bare value and the macro does the conversion:
+
+```rust
+ui! {
+    Typography(content = "Hello", kind = typography_kind::H1)   // not H1.into()
+    Badge(label = label_string, tone = tone::Primary)            // not tone::Primary.into()
+}
+```
+
+Writing `.into()` yourself (`kind = typography_kind::H1.into()`) is a compile error — it double-converts (`(H1.into()).into()`), which is ambiguous. Pass the value bare.
+
+### Reactive props — live text with `Reactive<T>` and `rx!`
+
+A prop typed `Reactive<T>` can carry either a static value or a live one, decided by the value's TYPE (no `.get()` scanning):
+
+```rust
+pub struct LabelProps {
+    pub content: Reactive<String>,   // static OR live
+}
+```
+
+```rust
+ui! {
+    Typography(content = "Static")                       // From<&str>  → static
+    Typography(content = title_signal)                   // From<Signal> → live
+    Typography(content = rx!(format!("{}×", count.get()))) // rx!         → live (computed)
+}
+```
+
+`rx!(expr)` wraps a computed expression as a live `Reactive`; a bare `Signal<String>` is live too. The component renders it with plain `text(props.content.clone())` — a live value re-paints just that text node when its signals change, with no parent rebuild. idea-ui's `Typography` (`content`), `Button`/`Badge`/`Tag` (`label`), and `Alert` (`title`) all take `Reactive<String>`.
 
 ## Methods — imperative handles
 
@@ -86,7 +119,7 @@ The macro generates a sibling `CounterHandle` type with the methods as accessors
 
 ```rust
 #[component]
-pub fn Fader(props: &FaderProps) -> Primitive {
+pub fn Fader(props: &FaderProps) -> Element {
     let opacity = animated!(0.0_f32);
     // ... animate opacity, bind it into a style ...
 }

@@ -1,4 +1,4 @@
-//! `Primitive::External` build path. Backend's
+//! `Element::External` build path. Backend's
 //! `create_external` consults its `ExternalRegistry` to dispatch on
 //! `type_id`; unregistered kinds render a platform-native
 //! "not supported" placeholder. The cleanup guard mirrors the

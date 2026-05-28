@@ -17,7 +17,7 @@
 //!   - `imp/style.rs` — `apply_rules` plus the GradientDrawable path.
 //!   - `imp/animation.rs` — animator builders + the
 //!     `Easing → Interpolator` mapping.
-//!   - `imp/primitives/*.rs` — one module per `Primitive` kind.
+//!   - `imp/primitives/*.rs` — one module per `Element` kind.
 //! - [`stub`] — non-Android `unreachable!()` stub so the workspace
 //!   `cargo check`s on host platforms without an NDK.
 //!

@@ -57,5 +57,5 @@ app registers concrete renderers locally and the wire carries an opaque
 apply time.
 
 This is also why runtime-server mode currently emits a *placeholder* for
-`Primitive::Graphics` rather than a real surface. See
+`Element::Graphics` rather than a real surface. See
 `project_aas_graphics_unsupported` in memory.

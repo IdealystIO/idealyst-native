@@ -22,11 +22,11 @@
 //! Quick start:
 //!
 //! ```ignore
-//! use runtime_core::{component, signal, ui, Primitive};
+//! use runtime_core::{component, signal, ui, Element};
 //! use idea_ui::{install_idea_theme, light_theme, ButtonKind, IntentTag, StackGap};
 //!
 //! #[component]
-//! pub fn app() -> Primitive {
+//! pub fn app() -> Element {
 //!     install_idea_theme(light_theme());
 //!     let count = signal!(0);
 //!     ui! {

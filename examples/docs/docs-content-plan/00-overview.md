@@ -118,7 +118,7 @@ Nothing else in the framework cares which one produced the tree.
 ## How a render happens
 
 When the app starts, the host crate calls `app()`. That function
-returns a `Primitive` — a tree of view, text, button, and other
+returns a `Element` — a tree of view, text, button, and other
 primitive nodes, with reactive expressions interleaved inside. The
 framework hands the tree to a piece of code called the **render
 walker**.
@@ -396,7 +396,7 @@ This is worth saying directly because it's the point that catches
 people coming from most other frameworks.
 
 A `#[component]` function runs **once**, when its part of the tree is
-built. It returns a `Primitive` tree. After that, the component
+built. It returns a `Element` tree. After that, the component
 function itself is gone; what's left on the platform is the tree it
 produced, with Effects threaded through it. State changes don't
 re-call the component. They re-run only the small reactive closures
@@ -563,7 +563,7 @@ all hook in at one of these layers without reaching past it.
   replace bits of it, or skip it.
 
 - **dev-hot** — Diff-and-patch for hot reload. Compares two
-  `Primitive` trees by their identity hashes and produces the minimal
+  `Element` trees by their identity hashes and produces the minimal
   sequence of backend operations to morph one into the other.
 
 - **framework-wire** — The wire protocol. Pure data: a `Command` enum

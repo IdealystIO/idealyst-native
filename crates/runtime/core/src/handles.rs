@@ -1,4 +1,4 @@
-//! Primitive handles + backend ops + state bitflags + `RefFill`.
+//! Element handles + backend ops + state bitflags + `RefFill`.
 //!
 //! Each primitive kind has a corresponding handle type that the parent
 //! reaches via a `Ref<Handle>`. A handle is a thin record:
@@ -13,7 +13,7 @@
 //!
 //! Also home to `StateBits` (the interaction-state bitmask) and
 //! `RefFill` (the type-erased enum of mount-time ref-fill closures
-//! `Primitive` variants carry).
+//! `Element` variants carry).
 
 use crate::primitives;
 use std::any::Any;
@@ -362,7 +362,7 @@ pub struct RefOps {
 /// handle without runtime kind-matching on the closure itself. The
 /// closure is monomorphic to `H`, so type-checking against the
 /// call-site `Ref<H>` happens at `.bind()`. User code never constructs
-/// this directly; it's exposed only because `Primitive`'s variants
+/// this directly; it's exposed only because `Element`'s variants
 /// carry it.
 pub enum RefFill {
     Button(Box<dyn FnOnce(ButtonHandle)>),
@@ -381,13 +381,13 @@ pub enum RefFill {
     Graphics(Box<dyn FnOnce(primitives::graphics::GraphicsHandle)>),
     Link(Box<dyn FnOnce(primitives::link::LinkHandle)>),
     Portal(Box<dyn FnOnce(primitives::portal::PortalHandle)>),
-    /// Fill closure for third-party `Primitive::External` primitives.
+    /// Fill closure for third-party `Element::External` primitives.
     /// The framework hands the closure an `Rc<dyn Any>` wrapping the
     /// backend's native node; the third-party facade downcasts to
     /// build the user-facing `ExternalHandle<T>` before filling the
     /// `Ref`.
     External(Box<dyn FnOnce(Rc<dyn Any>)>),
-    /// Fill closure for `Primitive::Navigator`. Hands the SDK a
+    /// Fill closure for `Element::Navigator`. Hands the SDK a
     /// pre-built `NavigatorHandle` wired to the navigator's control
     /// plane; the SDK wraps it in its own kind-specific handle type
     /// (`StackHandle` / `TabsHandle` / `DrawerHandle` / custom) before

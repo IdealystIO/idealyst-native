@@ -2,7 +2,7 @@
 //! syntax-highlighted code panel, the placeholder block used by
 //! stubbed-out screens.
 
-use runtime_core::{switch, ui, Color, IntoPrimitive, Primitive, Ref, StyleApplication, Tokenized, ViewHandle};
+use runtime_core::{switch, ui, Color, IntoElement, Element, Ref, StyleApplication, Tokenized, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
 use crate::styles::{CodePanel, CodeText, PlaceholderBox, SectionWrap};
@@ -13,12 +13,12 @@ use crate::styles::{CodePanel, CodeText, PlaceholderBox, SectionWrap};
 /// A bare `View` with no flex props stays `display: block` and the
 /// Typography children inherit HTML's default inline span behavior \u{2014}
 /// the title and blurb end up on the same line.
-pub fn page_header(title: &str, blurb: &str) -> Primitive {
+pub fn page_header(title: &str, blurb: &str) -> Element {
     let title_text = title.to_string();
     let blurb_text = blurb.to_string();
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H1.into()) },
-        ui! { Typography(content = blurb_text, kind = idea_ui::typography_kind::BodyLg.into(), muted = true) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H1) },
+        ui! { Typography(content = blurb_text, kind = idea_ui::typography_kind::BodyLg, muted = true) },
     ];
     // `Md` not `Sm`: the H1 + lead-body pair is the page's most
     // important hierarchy moment, deserves a comfortable gap.
@@ -36,7 +36,7 @@ pub fn page_header(title: &str, blurb: &str) -> Primitive {
 /// list and the corresponding `page_section(handle, ...)` call.
 /// `Ref<H>` is `Copy`, so the same handle threads through both
 /// without ceremony.
-pub fn page_section(handle: Ref<ViewHandle>, children: Vec<Primitive>) -> Primitive {
+pub fn page_section(handle: Ref<ViewHandle>, children: Vec<Element>) -> Element {
     let wrap_style = SectionWrap();
     ui! { View(style = wrap_style) { children }.bind(handle) }
 }
@@ -199,7 +199,7 @@ fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
 /// On non-web targets, `idea-codeblock` falls back to a "External
 /// CodeBlockProps not supported" placeholder \u{2014} the surrounding
 /// card chrome still renders.
-pub fn code_panel(src: &str) -> Primitive {
+pub fn code_panel(src: &str) -> Element {
     let panel_style = CodePanel();
     let src_owned = src.to_string();
     let dynamic = switch(
@@ -210,7 +210,7 @@ pub fn code_panel(src: &str) -> Primitive {
             let code_style = move || StyleApplication::new(CodeText::sheet());
             idea_codeblock::code_block(spans)
                 .with_style(code_style)
-                .into_primitive()
+                .into_element()
         },
     );
     ui! { View(style = panel_style) { dynamic } }
@@ -219,10 +219,10 @@ pub fn code_panel(src: &str) -> Primitive {
 /// "Coming soon" surface used by every placeholder page. Keeps the
 /// nav structure visible while signalling each route still needs
 /// its real content authored.
-pub fn placeholder_block(text: &str) -> Primitive {
+pub fn placeholder_block(text: &str) -> Element {
     let style = PlaceholderBox();
     let label = text.to_string();
-    let children: Vec<Primitive> = vec![
+    let children: Vec<Element> = vec![
         ui! { Typography(content = label, muted = true) },
     ];
     ui! { View(style = style) { children } }

@@ -84,7 +84,7 @@ use std::any::Any;
 use std::rc::Rc;
 
 use crate::style::Easing;
-use crate::{Bound, Primitive, Ref, RefFill};
+use crate::{Bound, Element, Ref, RefFill};
 
 // ============================================================================
 // PresenceState — the animatable vocabulary
@@ -197,9 +197,9 @@ pub trait PresenceOps {}
 /// near-miss flicker.
 pub fn presence<F>(child: F) -> Bound<PresenceHandle>
 where
-    F: Fn() -> Primitive + 'static,
+    F: Fn() -> Element + 'static,
 {
-    Bound::new(Primitive::Presence {
+    Bound::new(Element::Presence {
         child: Box::new(child),
         // Default: always present (the child mounts immediately and
         // never exits). Useful for testing the shape; real call
@@ -217,28 +217,28 @@ impl Bound<PresenceHandle> {
     where
         F: Fn() -> bool + 'static,
     {
-        if let Primitive::Presence { present, .. } = &mut self.primitive {
+        if let Element::Presence { present, .. } = &mut self.primitive {
             *present = Box::new(f);
         }
         self
     }
 
     pub fn enter(mut self, anim: PresenceAnim) -> Self {
-        if let Primitive::Presence { enter, .. } = &mut self.primitive {
+        if let Element::Presence { enter, .. } = &mut self.primitive {
             *enter = Some(anim);
         }
         self
     }
 
     pub fn exit(mut self, anim: PresenceAnim) -> Self {
-        if let Primitive::Presence { exit, .. } = &mut self.primitive {
+        if let Element::Presence { exit, .. } = &mut self.primitive {
             *exit = Some(anim);
         }
         self
     }
 
     pub fn bind(mut self, r: Ref<PresenceHandle>) -> Self {
-        if let Primitive::Presence { ref_fill, .. } = &mut self.primitive {
+        if let Element::Presence { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::Presence(Box::new(move |h| r.fill(h))));
         }
         self

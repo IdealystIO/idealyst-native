@@ -148,7 +148,7 @@ pub use command::{
 /// stubs that the runtime calls in response to events.
 pub fn snapshot<F>(builder: F) -> Vec<RokuCommand>
 where
-    F: FnOnce() -> runtime_core::Primitive,
+    F: FnOnce() -> runtime_core::Element,
 {
     let backend = Rc::new(RefCell::new(RokuBackend::new()));
     let tree = builder();
@@ -161,7 +161,7 @@ where
 /// write to disk.
 pub fn snapshot_to_json<F>(builder: F) -> Result<String, serde_json::Error>
 where
-    F: FnOnce() -> runtime_core::Primitive,
+    F: FnOnce() -> runtime_core::Element,
 {
     serde_json::to_string(&snapshot(builder))
 }
@@ -170,7 +170,7 @@ where
 /// eyeball when debugging the build pipeline.
 pub fn snapshot_to_pretty_json<F>(builder: F) -> Result<String, serde_json::Error>
 where
-    F: FnOnce() -> runtime_core::Primitive,
+    F: FnOnce() -> runtime_core::Element,
 {
     serde_json::to_string_pretty(&snapshot(builder))
 }

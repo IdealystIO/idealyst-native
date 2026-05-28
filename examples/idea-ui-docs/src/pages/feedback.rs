@@ -1,12 +1,12 @@
 //! Feedback — Spinner, Skeleton, Alert.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Element};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{Alert, Skeleton, Spinner, Stack, AlertProps, SkeletonProps, SpinnerProps, StackGap};
 
 use crate::shell::{demo_card, page_header};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     ui! {
         Stack(gap = StackGap::Xl) {
             { page_header(
@@ -21,7 +21,7 @@ pub fn page() -> Primitive {
     }
 }
 
-fn spinner_demo() -> Primitive {
+fn spinner_demo() -> Element {
     let state = SpinnerProps::init_state();
     let preview = SpinnerProps::reactive_preview(&state, |props| {
         let size = props.size;
@@ -36,7 +36,7 @@ fn spinner_demo() -> Primitive {
     )
 }
 
-fn skeleton_demo() -> Primitive {
+fn skeleton_demo() -> Element {
     // SkeletonProps' fields don't auto-derive into controls (`f32`
     // and the `Px(f32)` variant fall to Unknown). Static preview.
     let state = SkeletonProps::init_state();
@@ -52,7 +52,7 @@ fn skeleton_demo() -> Primitive {
     )
 }
 
-fn alert_demo() -> Primitive {
+fn alert_demo() -> Element {
     let state = AlertProps::init_state();
     state.title.set("Heads up".to_string());
     let preview = AlertProps::reactive_preview(&state, |props| {

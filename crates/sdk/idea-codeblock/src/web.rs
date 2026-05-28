@@ -1,7 +1,7 @@
 //! Web leaf for the `idea-codeblock` primitive. Registers a
 //! `CodeBlockProps` handler against `WebBackend` that builds a
 //! `<pre>` of color-styled `<span>` children — the same DOM shape
-//! the old runtime-core `Primitive::CodeBlock` produced.
+//! the old runtime-core `Element::CodeBlock` produced.
 //!
 //! Lifted verbatim from the old
 //! `backend-web/src/primitives/code_block.rs` so existing fiddle

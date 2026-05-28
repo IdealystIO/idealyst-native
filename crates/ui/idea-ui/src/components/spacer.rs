@@ -13,14 +13,14 @@
 //! }
 //! ```
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Element};
 
 use crate::stylesheets::Spacer;
 
 #[derive(Default)]
 pub struct SpacerProps;
 
-pub fn spacer(_props: &SpacerProps) -> Primitive {
+pub fn spacer(_props: &SpacerProps) -> Element {
     let style = Spacer();
     ui! { View(style = style) {} }
 }

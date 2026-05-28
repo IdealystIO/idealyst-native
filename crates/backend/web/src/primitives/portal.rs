@@ -1,4 +1,4 @@
-//! `Primitive::Portal` — a floating subtree mounted directly to `<body>`,
+//! `Element::Portal` — a floating subtree mounted directly to `<body>`,
 //! escaping the parent's layout and clipping context.
 //!
 //! # Why we portal

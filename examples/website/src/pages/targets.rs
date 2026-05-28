@@ -1,13 +1,13 @@
 //! Every target — user-facing list of platforms idealyst runs on.
 
-use runtime_core::{ui, Primitive, Ref, ViewHandle};
+use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
 use crate::pages::common::{page_header, page_section};
 use crate::routes::BACKENDS_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     let phones_ref: Ref<ViewHandle> = Ref::new();
     let desktops_ref: Ref<ViewHandle> = Ref::new();
     let browser_ref: Ref<ViewHandle> = Ref::new();
@@ -51,18 +51,18 @@ pub fn page() -> Primitive {
     layout_with_toc(content, toc)
 }
 
-fn target_row(title: &str, blurb: &str) -> Primitive {
+fn target_row(title: &str, blurb: &str) -> Element {
     let title_text = title.to_string();
     let blurb_text = blurb.to_string();
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H3.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H3) },
         ui! { Typography(content = blurb_text, muted = true) },
     ];
     ui! { Stack(gap = StackGap::Xs) { children } }
 }
 
-fn phones() -> Primitive {
-    let rows: Vec<Primitive> = vec![
+fn phones() -> Element {
+    let rows: Vec<Element> = vec![
         target_row(
             "iOS",
             "UIKit driven via objc2. Native UIView hierarchy, native back gestures, \
@@ -76,15 +76,15 @@ fn phones() -> Primitive {
              toolchain. Distributable via Play Store / sideload / closed beta.",
         ),
     ];
-    let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Phones".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let mut children: Vec<Element> = vec![
+        ui! { Typography(content = "Phones".to_string(), kind = idea_ui::typography_kind::H2) },
     ];
     children.extend(rows);
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn desktops() -> Primitive {
-    let rows: Vec<Primitive> = vec![
+fn desktops() -> Element {
+    let rows: Vec<Element> = vec![
         target_row(
             "macOS",
             "AppKit via objc2. Native NSWindow + NSView hierarchy. Today: window shell, \
@@ -102,15 +102,15 @@ fn desktops() -> Primitive {
              reach.",
         ),
     ];
-    let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Desktops".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let mut children: Vec<Element> = vec![
+        ui! { Typography(content = "Desktops".to_string(), kind = idea_ui::typography_kind::H2) },
     ];
     children.extend(rows);
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn browser() -> Primitive {
-    let rows: Vec<Primitive> = vec![
+fn browser() -> Element {
+    let rows: Vec<Element> = vec![
         target_row(
             "Web (WASM + DOM)",
             "Reference backend, most complete primitive coverage. Compiles to a WASM \
@@ -118,15 +118,15 @@ fn browser() -> Primitive {
              JavaScript framework dependency \u{2014} the app is the wasm.",
         ),
     ];
-    let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Browsers".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let mut children: Vec<Element> = vec![
+        ui! { Typography(content = "Browsers".to_string(), kind = idea_ui::typography_kind::H2) },
     ];
     children.extend(rows);
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn native_gpu() -> Primitive {
-    let rows: Vec<Primitive> = vec![
+fn native_gpu() -> Element {
+    let rows: Vec<Element> = vec![
         target_row(
             "wgpu renderer",
             "A second-implementation backend that drives the framework over wgpu. \
@@ -142,15 +142,15 @@ fn native_gpu() -> Primitive {
              against. Useful for development, screenshots, simulator-style demos.",
         ),
     ];
-    let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Native GPU rendering".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let mut children: Vec<Element> = vec![
+        ui! { Typography(content = "Native GPU rendering".to_string(), kind = idea_ui::typography_kind::H2) },
     ];
     children.extend(rows);
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn embedded() -> Primitive {
-    let rows: Vec<Primitive> = vec![
+fn embedded() -> Element {
+    let rows: Vec<Element> = vec![
         target_row(
             "Microcontrollers (planned)",
             "A CPU-based graphics backend targeting `embedded-graphics`-compatible \
@@ -166,15 +166,15 @@ fn embedded() -> Primitive {
              target has a windowing system or a GPU or anything else.",
         ),
     ];
-    let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Embedded & custom".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let mut children: Vec<Element> = vec![
+        ui! { Typography(content = "Embedded & custom".to_string(), kind = idea_ui::typography_kind::H2) },
     ];
     children.extend(rows);
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn tty() -> Primitive {
-    let rows: Vec<Primitive> = vec![
+fn tty() -> Element {
+    let rows: Vec<Element> = vec![
         target_row(
             "Terminal (TTY)",
             "crossterm-backed text-cell renderer. The framework treats the terminal grid \
@@ -183,15 +183,15 @@ fn tty() -> Primitive {
              a sequence of prompts.",
         ),
     ];
-    let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Terminal".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let mut children: Vec<Element> = vec![
+        ui! { Typography(content = "Terminal".to_string(), kind = idea_ui::typography_kind::H2) },
     ];
     children.extend(rows);
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn tv() -> Primitive {
-    let rows: Vec<Primitive> = vec![
+fn tv() -> Element {
+    let rows: Vec<Element> = vec![
         target_row(
             "Roku",
             "BrightScript / SceneGraph transpile. The framework's `ui!` tree is rewritten \
@@ -206,16 +206,16 @@ fn tv() -> Primitive {
              the priority right now, TV is a known follow-up.",
         ),
     ];
-    let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Television".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let mut children: Vec<Element> = vec![
+        ui! { Typography(content = "Television".to_string(), kind = idea_ui::typography_kind::H2) },
     ];
     children.extend(rows);
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn extending() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Adding your own target".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+fn extending() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Adding your own target".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Adding a new target is implementing the Backend trait. \
                 A trait. One file's worth of contract.".to_string())
@@ -233,9 +233,9 @@ fn extending() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn status_link() -> Primitive {
+fn status_link() -> Element {
     let title = ui! {
-        Typography(content = "Implementation status".to_string(), kind = idea_ui::typography_kind::H2.into())
+        Typography(content = "Implementation status".to_string(), kind = idea_ui::typography_kind::H2)
     };
     let para = ui! {
         Typography(content = "Per-backend implementation status \u{2014} which primitives \
@@ -247,6 +247,6 @@ fn status_link() -> Primitive {
             Typography(content = "See the Backends matrix \u{2192}".to_string())
         }
     };
-    let children: Vec<Primitive> = vec![title, para, cta];
+    let children: Vec<Element> = vec![title, para, cta];
     ui! { Stack(gap = StackGap::Md) { children } }
 }

@@ -66,8 +66,8 @@ For each framework crate (especially runtime crates — `core`,
         worst form of this smell.
       - Helpers that take `target_type: &str` / `kind: &str` and
         `match`/`if` on the value.
-      - `match primitive { Primitive::X => …, Primitive::Y => … }`
-        or chained `if let Primitive::X { .. }` blocks in framework
+      - `match primitive { Element::X => …, Element::Y => … }`
+        or chained `if let Element::X { .. }` blocks in framework
         code *outside* the canonical walker (the dispatch site
         whose entire job is to call `backend.create_X(...)` per
         variant — `crates/runtime/core/src/walker/*.rs` today). If

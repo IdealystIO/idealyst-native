@@ -1,4 +1,4 @@
-//! `Primitive::Toggle` build path. Same controlled pattern as
+//! `Element::Toggle` build path. Same controlled pattern as
 //! TextInput: `Signal<bool>` round-trips through `on_change`; the
 //! framework installs an Effect that pushes signal changes back into
 //! the native widget.

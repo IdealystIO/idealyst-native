@@ -22,16 +22,11 @@ mod typeface;
 
 pub use app::app;
 
-// Per-target SDK-handler registration hook the CLI-generated wrappers
-// invoke before mount. The wrappers pass `&mut backend.borrow_mut()` (a
-// `RefMut`), which deref-coerces to the concrete `&mut <Backend>` here; a
-// generic `<B: Backend>` can't accept that, so the signature is per-backend.
-// `welcome` registers no third-party SDKs, so each body is empty.
-#[cfg(target_arch = "wasm32")]
-pub fn register_extensions(_backend: &mut backend_web::WebBackend) {}
-
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {}
-
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
-pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
+// SDK-handler registration hook the CLI-generated wrappers invoke before
+// mount. `welcome` registers no third-party SDKs, so it's an empty generic
+// over `Backend` — backend-agnostic (no per-target `#[cfg]`, no `backend-*`
+// dep), matching the scaffold's platform-agnostic app crate. The wrappers
+// pass the concrete backend per platform (web/iOS by value, android via
+// `&mut *b`), so `B` resolves to that backend. A project that adds a
+// navigator / external SDK specializes this to that backend's concrete type.
+pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}

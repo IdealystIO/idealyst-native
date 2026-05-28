@@ -24,7 +24,7 @@ use std::rc::Rc;
 
 use dev_server::{scheduler, WireRecordingBackend};
 use runtime_core::{
-    after_ms_scoped, mount, render, Primitive, SafeAreaSides,
+    after_ms_scoped, mount, render, Element, SafeAreaSides,
 };
 
 /// An "app" constructor that schedules a 0-ms scope-anchored timer
@@ -32,10 +32,10 @@ use runtime_core::{
 /// scope, the timer fires on the next `drive_pending`; outside a
 /// scope, `on_cleanup` drops the cleanup closure (which owns the
 /// `ScheduledTask`), cancelling the timer before it can fire.
-fn make_app(fired: Rc<Cell<bool>>) -> impl FnOnce() -> Primitive + 'static {
+fn make_app(fired: Rc<Cell<bool>>) -> impl FnOnce() -> Element + 'static {
     move || {
         after_ms_scoped(0, move || fired.set(true));
-        Primitive::View {
+        Element::View {
             children: vec![],
             style: None,
             ref_fill: None,

@@ -25,7 +25,7 @@ pub struct Message {
 }
 
 #[component]
-pub fn inbox() -> Primitive {
+pub fn inbox() -> Element {
     let messages: Signal<Vec<Message>> = signal!(load_messages());
 
     ui! {
@@ -38,7 +38,7 @@ pub fn inbox() -> Primitive {
     }
 }
 
-fn message_row(msg: &Message) -> Primitive {
+fn message_row(msg: &Message) -> Element {
     ui! {
         View {
             Text { msg.author.clone() }

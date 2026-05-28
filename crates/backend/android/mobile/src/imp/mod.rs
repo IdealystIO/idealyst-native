@@ -201,7 +201,7 @@ pub struct AndroidBackend {
     /// layout pass to apply computed frames.
     pub(crate) view_to_layout:
         HashMap<usize, (GlobalRef, runtime_layout::LayoutNode)>,
-    /// Registry of third-party `Primitive::External` handlers,
+    /// Registry of third-party `Element::External` handlers,
     /// populated by `register_external::<T>(...)` calls from
     /// per-platform leaf crates (e.g. `webview-android::register`).
     /// `create_external` looks the handler up by payload TypeId;
@@ -209,7 +209,7 @@ pub struct AndroidBackend {
     /// TextView.
     pub(crate) external_handlers:
         runtime_core::ExternalRegistry<AndroidBackend>,
-    /// Registry of `Primitive::Navigator` handler factories.
+    /// Registry of `Element::Navigator` handler factories.
     /// SDK leaf crates install factories keyed by their presentation
     /// TypeId via `register_navigator`.
     pub(crate) navigator_handlers:
@@ -242,7 +242,7 @@ pub struct AndroidBackend {
     /// [`sticky::on_scroll_event`]. See [`sticky`] for the rationale
     /// (side registry over ScrollView subclass).
     pub(crate) sticky_registry: sticky::StickyRegistry,
-    /// User-supplied `on_scroll` callbacks for `Primitive::ScrollView`.
+    /// User-supplied `on_scroll` callbacks for `Element::ScrollView`.
     /// Keyed by the scroll view's JObject pointer. Lives parallel to
     /// `sticky_registry` so both subsystems can ride the single
     /// `setOnScrollChangeListener` slot Android allows per view \u{2014}
@@ -458,7 +458,7 @@ impl AndroidBackend {
     }
 
     /// Register a navigator-kind handler factory. Mirrors `register_external`
-    /// but for `Primitive::Navigator`. SDK leaf crates
+    /// but for `Element::Navigator`. SDK leaf crates
     /// (`stack_navigator::register`, etc.) call this once at app bootstrap.
     pub fn register_navigator<P, F>(&mut self, factory: F)
     where
@@ -996,7 +996,7 @@ fn read_system_bar_dimens(
 /// drop them after the walk (avoids borrowing `pending_sticky`
 /// mutably across the recursion).
 ///
-/// Subtree walk (not just the root view): a `Primitive::View`
+/// Subtree walk (not just the root view): a `Element::View`
 /// containing a `View { position: Sticky }` child will see the
 /// outer View as `child_view` in `insert`, with the sticky child
 /// nested inside. Both flagged in `pending_sticky` until this walk

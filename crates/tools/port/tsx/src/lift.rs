@@ -202,7 +202,7 @@ fn default_imports() -> Vec<String> {
         "on_cleanup".into(),
         "provide".into(),
         "inject".into(),
-        "Primitive".into(),
+        "Element".into(),
         "Signal".into(),
     ]
 }
@@ -1407,7 +1407,7 @@ fn is_provider_element(n: &ast::JSXElementName) -> Option<String> {
 /// Lower `<Ctx.Provider value={v}>…</Ctx.Provider>` to a Rust
 /// block `{ provide(v); jsx!{children…} }`. The block is wrapped
 /// in `JsxNode::Expr` so the outer `jsx!` accepts it as a
-/// `{expr}` child evaluating to a `Primitive`.
+/// `{expr}` child evaluating to a `Element`.
 fn lower_provider(
     el: &ast::JSXElement,
     ctx_name: &str,
@@ -1475,7 +1475,7 @@ fn lower_provider(
     });
 
     // Walk children and render each via inline JSX so the
-    // resulting block has a single Primitive return.
+    // resulting block has a single Element return.
     let kids: Vec<JsxNode> = el
         .children
         .iter()
@@ -1613,7 +1613,7 @@ fn jsx_child_to_node(
                 // dominant ternary shape in real React). Emit as
                 // a Rust `if`-expression whose branches are
                 // recursive `jsx! {}` invocations producing
-                // Primitive values.
+                // Element values.
                 if let ast::Expr::Cond(cond) = &**e {
                     if branch_contains_jsx(&cond.cons) || branch_contains_jsx(&cond.alt) {
                         return lower_jsx_cond_child(cond, lifter, prop_fields, state_idents, report);

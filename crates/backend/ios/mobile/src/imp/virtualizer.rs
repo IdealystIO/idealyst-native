@@ -1,4 +1,4 @@
-//! `Primitive::Virtualizer` — `UICollectionView` with a flow layout
+//! `Element::Virtualizer` — `UICollectionView` with a flow layout
 //! that drives real cell recycling. Supports vertical and horizontal
 //! single-section lists.
 //!

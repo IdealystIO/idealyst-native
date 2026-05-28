@@ -1,4 +1,4 @@
-//! `Primitive::Toggle` — `android.widget.Switch` with a Kotlin-side
+//! `Element::Toggle` — `android.widget.Switch` with a Kotlin-side
 //! `RustToggleListener` bridge.
 
 use crate::imp::callbacks::{leak, ToggleChangeCallback};

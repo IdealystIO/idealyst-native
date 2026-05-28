@@ -16,13 +16,14 @@
 //! before mounting. The default sheet is installed by
 //! `install_idea_theme`.
 
-use runtime_core::{text, IntoPrimitive, Primitive, StyleApplication};
+use runtime_core::{text, IntoElement, Element, Reactive, StyleApplication};
 
 use idea_theme::extensible::{installed_badge_sheet, tone, variant, ToneRef, VariantRef};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct BadgeProps {
-    pub label: String,
+    /// Badge text. `Reactive<String>` — static or live (signal/`rx!`).
+    pub label: Reactive<String>,
     pub tone: ToneRef,
     pub variant: VariantRef,
 }
@@ -30,14 +31,14 @@ pub struct BadgeProps {
 impl Default for BadgeProps {
     fn default() -> Self {
         Self {
-            label: String::new(),
+            label: Reactive::Static(String::new()),
             tone: tone::Neutral.into(),
             variant: variant::Soft.into(),
         }
     }
 }
 
-pub fn badge(props: &BadgeProps) -> Primitive {
+pub fn badge(props: &BadgeProps) -> Element {
     let label = props.label.clone();
     let tone = props.tone.clone();
     let variant = props.variant.clone();
@@ -47,5 +48,5 @@ pub fn badge(props: &BadgeProps) -> Primitive {
     let style =
         StyleApplication::new(installed_badge_sheet()).with("appearance", appearance_key);
 
-    text(label).with_style(style).into_primitive()
+    text(label).with_style(style).into_element()
 }

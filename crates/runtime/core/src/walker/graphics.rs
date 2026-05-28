@@ -1,4 +1,4 @@
-//! `Primitive::Graphics` build path. Installs an unconditional
+//! `Element::Graphics` build path. Installs an unconditional
 //! cleanup hook — an empty Effect capturing a
 //! `GraphicsHandleCleanup` whose Drop calls `release_graphics`.
 //! Independent of the style effect so unstyled Graphics still get

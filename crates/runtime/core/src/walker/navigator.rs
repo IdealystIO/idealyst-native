@@ -1,4 +1,4 @@
-//! `Primitive::Navigator` build path.
+//! `Element::Navigator` build path.
 //!
 //! Builds the framework substrate (routing, scopes, control plane,
 //! reactive nav state) and hands the bundle to the SDK handler the
@@ -11,7 +11,7 @@ use super::style::attach_style;
 use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
-use crate::primitive::Primitive;
+use crate::element::Element;
 use crate::primitives;
 use crate::reactive::{self, Effect, Signal};
 use crate::sources::StyleSource;
@@ -166,7 +166,7 @@ pub(super) fn build<B: Backend + 'static>(
     let nav_chrome_scopes: Rc<RefCell<Vec<Box<reactive::Scope>>>> =
         Rc::new(RefCell::new(Vec::new()));
 
-    let build_node: Rc<dyn Fn(Primitive) -> B::Node> = {
+    let build_node: Rc<dyn Fn(Element) -> B::Node> = {
         let backend = backend.clone();
         let scopes_slot = nav_chrome_scopes.clone();
         let chrome_identity = crate::Identity::node(nav_identity, 2, None, None);
@@ -182,7 +182,7 @@ pub(super) fn build<B: Backend + 'static>(
         })
     };
 
-    let build_in_screen: Rc<dyn Fn(u64, Primitive) -> B::Node> = {
+    let build_in_screen: Rc<dyn Fn(u64, Element) -> B::Node> = {
         let backend = backend.clone();
         let scopes_map = scopes.clone();
         let screen_chrome_identity = crate::Identity::node(nav_identity, 3, None, None);

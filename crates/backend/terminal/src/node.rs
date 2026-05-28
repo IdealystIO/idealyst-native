@@ -135,7 +135,7 @@ pub(crate) struct NodeData {
     pub scroll_x: f32,
     /// Current vertical scroll offset in cells. See `scroll_x`.
     pub scroll_y: f32,
-    /// User-supplied `Primitive::ScrollView::on_scroll` callback.
+    /// User-supplied `Element::ScrollView::on_scroll` callback.
     /// Fired by `apply_scroll_delta` after every offset change with
     /// `(scroll_x, scroll_y)` in cell units \u{2014} mirrors the
     /// other backends' "current offset in the native coordinate

@@ -1,6 +1,6 @@
 //! Animation-system smoke test.
 //!
-//! Single platform-agnostic crate. [`app`] returns a `Primitive` tree
+//! Single platform-agnostic crate. [`app`] returns a `Element` tree
 //! that exercises every built-in animator and composition primitive
 //! through the `AnimatedValue` → `Signal` → reactive-style bridge.
 //!
@@ -48,7 +48,7 @@ use runtime_core::animation::{
 use runtime_core::primitives::slider::slider;
 use runtime_core::{
     pan, signal, tap, text, view, AlignItems, Color, Easing, Effect, FlexDirection,
-    JustifyContent, Length, Overflow, PanEvent, PanRecognizer, Position, Primitive, Ref, Signal,
+    JustifyContent, Length, Overflow, PanEvent, PanRecognizer, Position, Element, Ref, Signal,
     StyleApplication, StyleRules, StyleSheet, TapRecognizer, Tokenized, TouchEvent, TouchPhase,
     TouchResponse, ViewHandle,
 };
@@ -73,7 +73,7 @@ impl ThemeTokens for EmptyTheme {
 // App root
 // =============================================================================
 
-pub fn app() -> Primitive {
+pub fn app() -> Element {
     install_theme(EmptyTheme);
 
     // Two-column body below the header:
@@ -110,7 +110,7 @@ pub fn app() -> Primitive {
 // Card 1 — Spring tap. Tap to scale up; tap again to spring back.
 // =============================================================================
 
-fn spring_tap_card() -> Primitive {
+fn spring_tap_card() -> Element {
     let scale = AnimatedValue::new(1.0_f32);
     let view_ref: Ref<ViewHandle> = Ref::new();
     drive_scale(&scale, view_ref);
@@ -142,7 +142,7 @@ fn spring_tap_card() -> Primitive {
 // Card 2 — Decay drag. Pan horizontally; release decays from velocity.
 // =============================================================================
 
-fn decay_drag_card() -> Primitive {
+fn decay_drag_card() -> Element {
     let translate = AnimatedValue::new(0.0_f32);
     let view_ref: Ref<ViewHandle> = Ref::new();
     drive_translate_x(&translate, view_ref);
@@ -188,7 +188,7 @@ fn decay_drag_card() -> Primitive {
 // Card 3 — Loop pulse. Forever-looping two-segment sequence.
 // =============================================================================
 
-fn loop_pulse_card() -> Primitive {
+fn loop_pulse_card() -> Element {
     let scale = AnimatedValue::new(1.0_f32);
     let view_ref: Ref<ViewHandle> = Ref::new();
     drive_scale(&scale, view_ref);
@@ -216,7 +216,7 @@ fn loop_pulse_card() -> Primitive {
 // Card 4 — Keyframes bounce. Three-stop curve.
 // =============================================================================
 
-fn keyframes_bounce_card() -> Primitive {
+fn keyframes_bounce_card() -> Element {
     let scale = AnimatedValue::new(1.0_f32);
     let view_ref: Ref<ViewHandle> = Ref::new();
     drive_scale(&scale, view_ref);
@@ -252,7 +252,7 @@ fn keyframes_bounce_card() -> Primitive {
 const STAGGER_COUNT: usize = 5;
 const STAGGER_STEP_MS: u64 = 60;
 
-fn stagger_row_section() -> Primitive {
+fn stagger_row_section() -> Element {
     // Each chip gets its own AnimatedValue<f32> driving translateX
     // (offscreen at -240 → settled at 0) and its own ViewHandle ref
     // for per-frame inline writes.
@@ -266,7 +266,7 @@ fn stagger_row_section() -> Primitive {
         .collect();
 
     // Build the row of chip Views before we move out of `chips`.
-    let chip_views: Vec<Primitive> = chips
+    let chip_views: Vec<Element> = chips
         .iter()
         .map(|(_, view_ref)| {
             view(vec![])
@@ -290,7 +290,7 @@ fn stagger_row_section() -> Primitive {
         );
     });
 
-    let reveal_button: Primitive = view(vec![text("Reveal")
+    let reveal_button: Element = view(vec![text("Reveal")
         .with_style(button_label_sheet())
         .into()])
     .with_style(button_sheet())
@@ -770,7 +770,7 @@ enum GestureState {
 /// `0.6` matches the pan recognizer's smoothing constant.
 const ADD_PARTICLE_VELOCITY_SMOOTHING: f32 = 0.6;
 
-fn particle_sim_section() -> Primitive {
+fn particle_sim_section() -> Element {
     let sim = Rc::new(RefCell::new(ParticleSim::new(SIM_WIDTH, SIM_HEIGHT)));
 
     // Seed the simulation. Slot 0 is the big ball — we need a
@@ -885,7 +885,7 @@ fn particle_sim_section() -> Primitive {
     // a draw-in-progress gesture.
     let (particle_views, wall_views) = {
         let s = sim.borrow();
-        let particles: Vec<Primitive> = s
+        let particles: Vec<Element> = s
             .particles
             .iter()
             .map(|p| {
@@ -896,7 +896,7 @@ fn particle_sim_section() -> Primitive {
                     .into()
             })
             .collect();
-        let walls: Vec<Primitive> = s
+        let walls: Vec<Element> = s
             .walls
             .iter()
             .map(|w| {
@@ -908,7 +908,7 @@ fn particle_sim_section() -> Primitive {
             .collect();
         (particles, walls)
     };
-    let mut canvas_children: Vec<Primitive> = Vec::new();
+    let mut canvas_children: Vec<Element> = Vec::new();
     canvas_children.extend(wall_views);
     canvas_children.extend(particle_views);
 
@@ -967,7 +967,7 @@ fn particle_sim_section() -> Primitive {
         }
     };
 
-    let canvas: Primitive = view(canvas_children)
+    let canvas: Element = view(canvas_children)
         .with_style(canvas_sheet())
         .on_touch(canvas_handler)
         .bind(canvas_ref)
@@ -1137,7 +1137,7 @@ fn toolbar_section(
     mode: Signal<Mode>,
     restitution: Signal<f32>,
     air_drag: Signal<f32>,
-) -> Primitive {
+) -> Element {
     let mode_row = view(vec![
         mode_button("Throw", Mode::Throw, mode).into(),
         mode_button("Draw wall", Mode::DrawWall, mode).into(),
@@ -1163,7 +1163,7 @@ fn toolbar_section(
         .into()
 }
 
-fn mode_button(label: &'static str, target: Mode, mode: Signal<Mode>) -> Primitive {
+fn mode_button(label: &'static str, target: Mode, mode: Signal<Mode>) -> Element {
     let tap_handler = tap(TapRecognizer::new(), move || {
         mode.set(target);
     });
@@ -1180,7 +1180,7 @@ fn labeled_slider(
     min: f32,
     max: f32,
     on_change: impl Fn(f32) + 'static,
-) -> Primitive {
+) -> Element {
     view(vec![
         text(label).with_style(slider_label_sheet()).into(),
         slider(value, on_change).range(min, max).into(),

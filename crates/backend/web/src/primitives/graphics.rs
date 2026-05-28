@@ -1,4 +1,4 @@
-//! `Primitive::Graphics` — a `<canvas>` element exposed as a
+//! `Element::Graphics` — a `<canvas>` element exposed as a
 //! `raw_window_handle` surface provider.
 //!
 //! No GPU library lives in the backend now. The previous design

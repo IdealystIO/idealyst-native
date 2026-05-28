@@ -205,7 +205,7 @@ fn validate_files(files: &BTreeMap<String, String>) -> Result<()> {
     if !files.contains_key(ENTRY_PATH) {
         bail!(
             "project missing entry file `{ENTRY_PATH}` — every snippet \
-             needs a top-level `lib.rs` that defines `pub fn app() -> Primitive`."
+             needs a top-level `lib.rs` that defines `pub fn app() -> Element`."
         );
     }
     for rel in files.keys() {

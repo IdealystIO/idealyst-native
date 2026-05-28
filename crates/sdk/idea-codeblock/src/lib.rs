@@ -9,7 +9,7 @@
 //!
 //! ## Why this is a third-party primitive, not a framework one
 //!
-//! It used to be `Primitive::CodeBlock` in `runtime-core`. A
+//! It used to be `Element::CodeBlock` in `runtime-core`. A
 //! measurement showed the perf justification was real — the
 //! equivalent composition (`View` + `Repeat<styled-View+Text>`)
 //! generates 100–300× more backend ops per re-render even with the
@@ -22,7 +22,7 @@
 //! a platform-native widget (no platform has a "code block"
 //! element) and it's expressible from existing primitives if perf
 //! weren't a concern. CLAUDE.md rule 3 says exactly this case
-//! belongs in a third-party extension via `Primitive::External`.
+//! belongs in a third-party extension via `Element::External`.
 //! So we kept the fast single-node renderer but moved the type out
 //! of core.
 //!
@@ -43,7 +43,7 @@
 //! On targets without a registered backend (iOS, Android), the
 //! framework renders a "not supported" placeholder at mount.
 //! Re-renders pay the same per-render cost as any other
-//! `Primitive::External`: tear down old node + create new node.
+//! `Element::External`: tear down old node + create new node.
 
 use runtime_core::{external, Bound, Color, ExternalHandle};
 
@@ -71,7 +71,7 @@ pub type CodeBlockHandle = ExternalHandle<CodeBlockProps>;
 ///
 /// Returns a `Bound<CodeBlockHandle>` so `.with_style(...)` and
 /// `.bind(...)` work the same way they would for any other
-/// `Primitive::External`-backed primitive.
+/// `Element::External`-backed primitive.
 ///
 /// ```ignore
 /// code_block(vec![

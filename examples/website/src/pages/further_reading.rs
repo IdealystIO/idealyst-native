@@ -1,12 +1,12 @@
 //! Further reading — curated outbound links.
 
-use runtime_core::{ui, Primitive, Ref, ViewHandle};
+use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
 use crate::pages::common::{page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     let source_ref: Ref<ViewHandle> = Ref::new();
     let docs_ref: Ref<ViewHandle> = Ref::new();
     let crates_ref: Ref<ViewHandle> = Ref::new();
@@ -36,9 +36,9 @@ pub fn page() -> Primitive {
     layout_with_toc(content, toc)
 }
 
-fn source_section() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Source".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+fn source_section() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Source".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "github.com/IdealystIO/idealyst-native".to_string())
         },
@@ -52,7 +52,7 @@ fn source_section() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn docs_section() -> Primitive {
+fn docs_section() -> Element {
     let entries: [(&str, &str); 6] = [
         ("docs/ui-layer.md", "The authoring surface: ui! / jsx! / #[component] / stylesheet! / Ref<H>. Read this for the day-to-day API."),
         ("docs/reactivity.md", "Signals, effects, derived signals, batched writes. The reactive layer end-to-end."),
@@ -61,13 +61,13 @@ fn docs_section() -> Primitive {
         ("docs/backend.md", "The Backend trait contract \u{2014} render walker rules, per-primitive lifecycle, what a backend must guarantee."),
         ("docs/fonts.md", "Typeface registration, fallback chains, per-platform font loading."),
     ];
-    let mut rows: Vec<Primitive> = Vec::with_capacity(entries.len() * 2);
+    let mut rows: Vec<Element> = Vec::with_capacity(entries.len() * 2);
     for (path, desc) in entries {
-        rows.push(ui! { Typography(content = path.to_string(), kind = idea_ui::typography_kind::H3.into()) });
+        rows.push(ui! { Typography(content = path.to_string(), kind = idea_ui::typography_kind::H3) });
         rows.push(ui! { Typography(content = desc.to_string(), muted = true) });
     }
-    let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Design documents".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let mut children: Vec<Element> = vec![
+        ui! { Typography(content = "Design documents".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Long-form design rationale and reference material. \
                 These live in the `docs/` directory of the repo.".to_string())
@@ -77,22 +77,22 @@ fn docs_section() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn crate_readmes() -> Primitive {
+fn crate_readmes() -> Element {
     let entries: [(&str, &str); 6] = [
         ("crates/runtime/core/README.md", "Backend trait, primitive vocabulary, render walker, reactivity internals."),
         ("crates/runtime/macros/README.md", "#[component], ui!, jsx!, stylesheet! \u{2014} the author-facing macros and what they expand to."),
         ("crates/backend/web/README.md", "Scheduler / time-source bootstrap requirements, animated-value capabilities."),
         ("crates/backend/ios/mobile/README.md", "UIKit quirks the iOS backend works around (scroll bounds, intrinsic sizing, corner-radius clamping)."),
         ("crates/backend/android/mobile/README.md", "Kotlin runtime requirements, JNI integration, Android Views translation."),
-        ("crates/sdk/README.md", "How third-party SDKs (Maps, WebView, navigators) plug in via Primitive::External."),
+        ("crates/sdk/README.md", "How third-party SDKs (Maps, WebView, navigators) plug in via Element::External."),
     ];
-    let mut rows: Vec<Primitive> = Vec::with_capacity(entries.len() * 2);
+    let mut rows: Vec<Element> = Vec::with_capacity(entries.len() * 2);
     for (path, desc) in entries {
-        rows.push(ui! { Typography(content = path.to_string(), kind = idea_ui::typography_kind::H3.into()) });
+        rows.push(ui! { Typography(content = path.to_string(), kind = idea_ui::typography_kind::H3) });
         rows.push(ui! { Typography(content = desc.to_string(), muted = true) });
     }
-    let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Per-crate READMEs".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let mut children: Vec<Element> = vec![
+        ui! { Typography(content = "Per-crate READMEs".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "When a crate has non-obvious wiring or behavioural \
                 quirks, it has its own README. The most useful entry points:".to_string())
@@ -102,9 +102,9 @@ fn crate_readmes() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn acknowledgements() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Acknowledgements".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+fn acknowledgements() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Acknowledgements".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Dioxus is another Rust cross-platform UI initiative. \
                 Idealyst's iOS and Android backends use Taffy, one of their tools, as \

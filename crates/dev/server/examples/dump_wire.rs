@@ -1,5 +1,5 @@
 //! Runnable example that demonstrates the prototype: build a small
-//! Primitive tree, drive it through `runtime_core::render(...)`
+//! Element tree, drive it through `runtime_core::render(...)`
 //! against a [`WireRecordingBackend`], and print the captured
 //! command stream as pretty JSON.
 //!
@@ -11,24 +11,24 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::{render, IntoAction, Primitive, TextSource};
+use runtime_core::{render, IntoAction, Element, TextSource};
 use dev_server::WireRecordingBackend;
 
 fn main() {
     // Construct a small UI tree by hand. Real apps build this via
     // the `ui!` macro; for the demo we keep it raw to avoid pulling
     // in macro infrastructure.
-    let tree = Primitive::View {
+    let tree = Element::View {
         children: vec![
-            Primitive::Text {
+            Element::Text {
                 source: TextSource::Static("Hot reload demo".into()),
                 style: None,
                 ref_fill: None,
                 accessibility: Default::default(),
                 test_id: None,
             },
-            Primitive::View {
-                children: vec![Primitive::Text {
+            Element::View {
+                children: vec![Element::Text {
                     source: TextSource::Static("v0.1".into()),
                     style: None,
                     ref_fill: None,
@@ -42,7 +42,7 @@ fn main() {
                 accessibility: Default::default(),
                 test_id: None,
             },
-            Primitive::Button {
+            Element::Button {
                 label: TextSource::Static("Press me".into()),
                 on_click: (|| {
                     println!("(dev) button fired — would mutate a signal");

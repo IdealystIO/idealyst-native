@@ -32,9 +32,9 @@ When you change behavior, find the documentation that describes it and update it
 
 ## 3. Core stays minimal — peripheral features go through External
 
-`crates/framework/core/` is for the lowest primitives only. If you're tempted to add a feature that feels like a "widget," "helper," "convenience," or anything composable from existing primitives, build it as a third-party extension using `Primitive::External` plus the per-backend registry (see [[project_third_party_extension]]). Do not bloat core with peripheral features.
+`crates/framework/core/` is for the lowest primitives only. If you're tempted to add a feature that feels like a "widget," "helper," "convenience," or anything composable from existing primitives, build it as a third-party extension using `Element::External` plus the per-backend registry (see [[project_third_party_extension]]). Do not bloat core with peripheral features.
 
-If `Primitive::External` isn't wired up yet for the surface you need, that's a signal to wire it up — not a license to add the feature directly to core.
+If `Element::External` isn't wired up yet for the surface you need, that's a signal to wire it up — not a license to add the feature directly to core.
 
 ## 4. No timeline-deferral
 
@@ -100,7 +100,7 @@ That means **no per-platform hacks in framework/backend code** to make a feature
 Concretely:
 
 - **Backend implementations diverge in mechanism but converge in output.** UIKit uses `UIView.transform`, AppKit uses CALayer + frame offset, web uses CSS `transform`. The visual result is the same.
-- **Don't add framework-side `if platform == X` workarounds** to compensate for a backend bug. Fix the bug. If a primitive cannot work on a backend without hacks, that's a sign the primitive's design is wrong for that backend — redesign or escalate to `Primitive::External`, don't compromise the others.
+- **Don't add framework-side `if platform == X` workarounds** to compensate for a backend bug. Fix the bug. If a primitive cannot work on a backend without hacks, that's a sign the primitive's design is wrong for that backend — redesign or escalate to `Element::External`, don't compromise the others.
 - **`is_simulator()` does not belong in the public API.** "Simulator vs device" is a dev-time concept that has no consistent meaning across backends (iOS Simulator, wgpu sim, web in DevTools, …) and any author code branching on it is necessarily fragile. The `Platform` enum + `Backend::platform()` exist for *legitimate* runtime variance (different keyboard shortcuts on `MacOs`, different copy on `Web`, etc.) — that branching is fine. A sim/device predicate is not.
 - **Dev-only markers** ("am I in the dev build?") belong behind `#[cfg(debug_assertions)]`, not behind a runtime predicate. They should not survive into release builds.
 

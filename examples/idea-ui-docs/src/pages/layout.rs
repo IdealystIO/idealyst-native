@@ -1,6 +1,6 @@
 //! Layout — Stack, Card, Divider, Center, Spacer.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Element};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
     Badge, Btn, Card, Center, Divider, Spacer, Stack, Typography,
@@ -9,7 +9,7 @@ use idea_ui::{
 
 use crate::shell::{demo_card, page_header};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     ui! {
         Stack(gap = StackGap::Xl) {
             { page_header(
@@ -27,15 +27,15 @@ pub fn page() -> Primitive {
     }
 }
 
-fn filler_children() -> Vec<Primitive> {
+fn filler_children() -> Vec<Element> {
     vec![
-        ui! { Badge(label = "one".to_string(), tone = idea_ui::tone::Primary.into(), variant = idea_ui::variant::Soft.into()) },
-        ui! { Badge(label = "two".to_string(), tone = idea_ui::tone::Success.into(), variant = idea_ui::variant::Soft.into()) },
-        ui! { Badge(label = "three".to_string(), tone = idea_ui::tone::Warning.into(), variant = idea_ui::variant::Soft.into()) },
+        ui! { Badge(label = "one".to_string(), tone = idea_ui::tone::Primary, variant = idea_ui::variant::Soft) },
+        ui! { Badge(label = "two".to_string(), tone = idea_ui::tone::Success, variant = idea_ui::variant::Soft) },
+        ui! { Badge(label = "three".to_string(), tone = idea_ui::tone::Warning, variant = idea_ui::variant::Soft) },
     ]
 }
 
-fn stack_demo() -> Primitive {
+fn stack_demo() -> Element {
     let state = StackProps::init_state();
     let preview = StackProps::reactive_preview(&state, |props| {
         let gap = props.gap;
@@ -63,14 +63,14 @@ fn stack_demo() -> Primitive {
     )
 }
 
-fn card_demo() -> Primitive {
+fn card_demo() -> Element {
     let state = CardProps::init_state();
     let preview = CardProps::reactive_preview(&state, |props| {
         let variant = props.variant;
         let padding = props.padding;
         ui! {
             Card(variant = variant, padding = padding) {
-                Typography(content = "Card heading".to_string(), kind = idea_ui::typography_kind::H3.into())
+                Typography(content = "Card heading".to_string(), kind = idea_ui::typography_kind::H3)
                 Typography(content = "Cards group related content. Tone variants pick the surface; \
                                 padding controls the inner spacing.".to_string())
             }
@@ -86,7 +86,7 @@ fn card_demo() -> Primitive {
     )
 }
 
-fn divider_demo() -> Primitive {
+fn divider_demo() -> Element {
     let state = DividerProps::init_state();
     let preview = DividerProps::reactive_preview(&state, |props| {
         let axis = props.axis;
@@ -101,7 +101,7 @@ fn divider_demo() -> Primitive {
     )
 }
 
-fn center_demo() -> Primitive {
+fn center_demo() -> Element {
     // Center has no props beyond `children`, so the preview is static.
     // The point of the demo is showing what Center does at all — every
     // child lands on both axes' midpoint of the available box.
@@ -109,8 +109,8 @@ fn center_demo() -> Primitive {
         Center {
             Badge(
                 label = "Centered".to_string(),
-                tone = idea_ui::tone::Primary.into(),
-                variant = idea_ui::variant::Soft.into(),
+                tone = idea_ui::tone::Primary,
+                variant = idea_ui::variant::Soft,
             )
         }
     };
@@ -126,20 +126,20 @@ fn center_demo() -> Primitive {
     demo_card("Center", "Two-axis centering container.", preview, notes)
 }
 
-fn spacer_demo() -> Primitive {
+fn spacer_demo() -> Element {
     // Spacer takes no controllable props — it's a flex item that
     // grows to fill available space. Show it pushing two siblings to
     // opposite ends of a row.
     let noop: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(|| {});
     let preview = ui! {
         Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
-            Typography(content = "Title".to_string(), kind = idea_ui::typography_kind::H3.into())
+            Typography(content = "Title".to_string(), kind = idea_ui::typography_kind::H3)
             Spacer()
             Btn(
                 label = "Save".to_string(),
                 on_click = noop,
-                tone = idea_ui::tone::Primary.into(),
-                variant = idea_ui::variant::Filled.into(),
+                tone = idea_ui::tone::Primary,
+                variant = idea_ui::variant::Filled,
             )
         }
     };

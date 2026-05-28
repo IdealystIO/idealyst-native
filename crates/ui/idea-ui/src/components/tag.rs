@@ -24,7 +24,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, IntoPrimitive, Primitive, StyleApplication};
+use runtime_core::{ui, IntoElement, Element, Reactive, StyleApplication};
 
 use idea_theme::extensible::{installed_tag_sheet, tone, variant, ToneRef, VariantRef};
 
@@ -32,7 +32,8 @@ use crate::stylesheets::{TagClose, TagLabel};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TagProps {
-    pub label: String,
+    /// Tag text. `Reactive<String>` — static or live (signal/`rx!`).
+    pub label: Reactive<String>,
     pub tone: ToneRef,
     pub variant: VariantRef,
     /// When `Some`, a close button renders to the right of the label.
@@ -42,7 +43,7 @@ pub struct TagProps {
 impl Default for TagProps {
     fn default() -> Self {
         Self {
-            label: String::new(),
+            label: Reactive::Static(String::new()),
             tone: tone::Neutral.into(),
             variant: variant::Soft.into(),
             on_remove: None,
@@ -50,7 +51,7 @@ impl Default for TagProps {
     }
 }
 
-pub fn tag(props: &TagProps) -> Primitive {
+pub fn tag(props: &TagProps) -> Element {
     let label = props.label.clone();
     let tone = props.tone.clone();
     let variant = props.variant.clone();
@@ -66,10 +67,10 @@ pub fn tag(props: &TagProps) -> Primitive {
 
     match props.on_remove.clone() {
         Some(on_remove) => {
-            let close_text = runtime_core::text("×".to_string()).into_primitive();
+            let close_text = runtime_core::text("×".to_string()).into_element();
             let close = runtime_core::pressable(vec![close_text], move || (on_remove)())
                 .with_style(close_style)
-                .into_primitive();
+                .into_element();
             ui! {
                 View(style = container_style) {
                     Text(style = label_style) { label }

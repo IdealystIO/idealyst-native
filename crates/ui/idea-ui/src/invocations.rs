@@ -37,7 +37,7 @@ macro_rules! Stack {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::stack::stack($crate::components::stack::StackProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::stack::StackProps as ::core::default::Default>::default()
         })
     };
@@ -64,7 +64,7 @@ macro_rules! Btn {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::button::button(&$crate::components::button::ButtonProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::button::ButtonProps as ::core::default::Default>::default()
         })
     };
@@ -86,7 +86,7 @@ macro_rules! Typography {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::typography::typography(&$crate::components::typography::TypographyProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::typography::TypographyProps as ::core::default::Default>::default()
         })
     };
@@ -106,7 +106,7 @@ macro_rules! Card {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::card::card($crate::components::card::CardProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::card::CardProps as ::core::default::Default>::default()
         })
     };
@@ -126,7 +126,7 @@ macro_rules! Field {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::field::field(&$crate::components::field::FieldProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::field::FieldProps as ::core::default::Default>::default()
         })
     };
@@ -146,7 +146,7 @@ macro_rules! Switch {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::switch::switch(&$crate::components::switch::SwitchProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::switch::SwitchProps as ::core::default::Default>::default()
         })
     };
@@ -166,7 +166,7 @@ macro_rules! Spinner {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::spinner::spinner(&$crate::components::spinner::SpinnerProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::spinner::SpinnerProps as ::core::default::Default>::default()
         })
     };
@@ -182,7 +182,7 @@ macro_rules! Divider {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::divider::divider(&$crate::components::divider::DividerProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::divider::DividerProps as ::core::default::Default>::default()
         })
     };
@@ -198,7 +198,7 @@ macro_rules! Badge {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::badge::badge(&$crate::components::badge::BadgeProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::badge::BadgeProps as ::core::default::Default>::default()
         })
     };
@@ -218,7 +218,7 @@ macro_rules! Spacer {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::spacer::spacer(&$crate::components::spacer::SpacerProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::spacer::SpacerProps as ::core::default::Default>::default()
         })
     };
@@ -234,7 +234,7 @@ macro_rules! Center {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::center::center($crate::components::center::CenterProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::center::CenterProps as ::core::default::Default>::default()
         })
     };
@@ -259,7 +259,7 @@ macro_rules! IconButton {
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::icon_button::icon_button(
             &$crate::components::icon_button::IconButtonProps {
-                $( $field: $value, )+
+                $( $field: ($value).into(), )+
                 ..<$crate::components::icon_button::IconButtonProps as ::core::default::Default>::default()
             }
         )
@@ -280,7 +280,7 @@ macro_rules! Avatar {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::avatar::avatar(&$crate::components::avatar::AvatarProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::avatar::AvatarProps as ::core::default::Default>::default()
         })
     };
@@ -300,7 +300,7 @@ macro_rules! Tag {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::tag::tag(&$crate::components::tag::TagProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::tag::TagProps as ::core::default::Default>::default()
         })
     };
@@ -320,7 +320,7 @@ macro_rules! Alert {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::alert::alert(&$crate::components::alert::AlertProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::alert::AlertProps as ::core::default::Default>::default()
         })
     };
@@ -340,7 +340,7 @@ macro_rules! Skeleton {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::skeleton::skeleton(&$crate::components::skeleton::SkeletonProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::skeleton::SkeletonProps as ::core::default::Default>::default()
         })
     };
@@ -360,7 +360,7 @@ macro_rules! Tabs {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::tabs::tabs($crate::components::tabs::TabsProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::tabs::TabsProps as ::core::default::Default>::default()
         })
     };
@@ -380,7 +380,7 @@ macro_rules! Select {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::select::select($crate::components::select::SelectProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::select::SelectProps as ::core::default::Default>::default()
         })
     };
@@ -400,7 +400,7 @@ macro_rules! Modal {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::modal::modal($crate::components::modal::ModalProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::modal::ModalProps as ::core::default::Default>::default()
         })
     };
@@ -416,7 +416,7 @@ macro_rules! Popover {
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
         $crate::components::popover::popover($crate::components::popover::PopoverProps {
-            $( $field: $value, )+
+            $( $field: ($value).into(), )+
             ..<$crate::components::popover::PopoverProps as ::core::default::Default>::default()
         })
     };

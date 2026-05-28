@@ -24,7 +24,7 @@
 use backend_roku::method;
 use runtime_core::{
     signal, stylesheet, ui, AlignItems, Color, FlexDirection, FontWeight,
-    JustifyContent, Length, Primitive, Signal, Tokenized,
+    JustifyContent, Length, Element, Signal, Tokenized,
 };
 use idea_ui::{install_themes, ThemeTokens, TokenEntry, TokenValue};
 
@@ -418,7 +418,7 @@ pub fn item_at(v: Vec<i32>, i: i32) -> i32 {
 // The app
 // ---------------------------------------------------------------------------
 
-pub fn app() -> Primitive {
+pub fn app() -> Element {
     // Active-theme signal. Its String value names the current
     // theme variant; `install_themes` registers both variants
     // with the backend and binds this signal as the active-theme

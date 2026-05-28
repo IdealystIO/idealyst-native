@@ -40,7 +40,7 @@
 use crate::primitives::navigator::{
     ambient_navigator, NavCommand, NavigatorControl, Route, RouteParams,
 };
-use crate::{Bound, Primitive, Ref, RefFill};
+use crate::{Bound, Element, Ref, RefFill};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -160,7 +160,7 @@ pub struct LinkConfig {
 pub fn link<P: RouteParams + Clone>(
     route: &Route<P>,
     params: P,
-    children: Vec<Primitive>,
+    children: Vec<Element>,
 ) -> Bound<LinkHandle> {
     // Pre-compute the URL once. Web uses it for the `<a href>` and
     // right-click "copy link"; native backends ignore it but the
@@ -185,7 +185,7 @@ pub fn link<P: RouteParams + Clone>(
         Rc::new(move || Box::new((*params_rc).clone()) as Box<dyn Any>)
     };
 
-    Bound::new(Primitive::Link {
+    Bound::new(Element::Link {
         children,
         route: route_name,
         url,
@@ -213,14 +213,14 @@ pub fn link<P: RouteParams + Clone>(
 ///
 /// Use this for GitHub links, docs, `mailto:` etc. For in-app
 /// navigation between routes, use [`link`] so web stays single-page.
-pub fn external_link(url: impl Into<String>, children: Vec<Primitive>) -> Bound<LinkHandle> {
+pub fn external_link(url: impl Into<String>, children: Vec<Element>) -> Bound<LinkHandle> {
     // External links carry no params; the dispatcher never reads this
     // (the walker builds an `open_url` closure instead of a
     // NavCommand), but the field is non-optional so supply a noop.
     let make_params: Rc<dyn Fn() -> Box<dyn Any>> =
         Rc::new(|| Box::new(()) as Box<dyn Any>);
 
-    Bound::new(Primitive::Link {
+    Bound::new(Element::Link {
         children,
         route: "",
         url: url.into(),
@@ -241,7 +241,7 @@ pub fn external_link(url: impl Into<String>, children: Vec<Primitive>) -> Bound<
 impl Bound<LinkHandle> {
     /// Switch dispatch shape. Default is `NavKind::Push`.
     pub fn kind(mut self, k: NavKind) -> Self {
-        if let Primitive::Link { kind, .. } = &mut self.primitive {
+        if let Element::Link { kind, .. } = &mut self.primitive {
             *kind = k;
         }
         self
@@ -249,7 +249,7 @@ impl Bound<LinkHandle> {
 
     /// Bind to a `Ref<LinkHandle>` for imperative `activate()`.
     pub fn bind(mut self, r: Ref<LinkHandle>) -> Self {
-        if let Primitive::Link { ref_fill, .. } = &mut self.primitive {
+        if let Element::Link { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::Link(Box::new(move |h| r.fill(h))));
         }
         self
@@ -292,7 +292,7 @@ pub(crate) fn make_on_activate(
 mod tests {
     use super::*;
 
-    /// `external_link` must build a `Primitive::Link` flagged
+    /// `external_link` must build a `Element::Link` flagged
     /// external, carrying the raw URL, with no route and no captured
     /// navigator — the walker keys off `external` to route activation
     /// to `open_url` and the web backend to emit `<a target="_blank">`.
@@ -300,13 +300,13 @@ mod tests {
     fn external_link_builds_external_primitive() {
         let bound = external_link("https://example.com/docs", Vec::new());
         match &bound.primitive {
-            Primitive::Link { external, url, route, target, .. } => {
+            Element::Link { external, url, route, target, .. } => {
                 assert!(*external, "external_link must set external = true");
                 assert_eq!(url, "https://example.com/docs");
                 assert_eq!(*route, "", "external links carry no in-app route");
                 assert!(target.is_none(), "external links capture no navigator");
             }
-            _ => panic!("external_link must build a Primitive::Link"),
+            _ => panic!("external_link must build a Element::Link"),
         }
     }
 }

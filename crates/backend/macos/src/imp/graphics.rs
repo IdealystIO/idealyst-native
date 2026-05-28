@@ -1,4 +1,4 @@
-//! `Primitive::Graphics` — wgpu Surface backed by a CAMetalLayer
+//! `Element::Graphics` — wgpu Surface backed by a CAMetalLayer
 //! attached to a layer-backed NSView. Mirrors the iOS UIView+
 //! CAMetalLayer pattern at
 //! `crates/backend/ios/mobile/src/imp/graphics.rs`.

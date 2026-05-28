@@ -1,6 +1,6 @@
 // The ULTIMATE realistic proof: a REAL WebBackend main (the actual DOM
 // renderer) hosts a non-bindgen side and mounts the side-built UI into the
-// real DOM — exactly how Primitive::Lazy's web handler roots a WebBackend
+// real DOM — exactly how Element::Lazy's web handler roots a WebBackend
 // at the placeholder container.
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -8,7 +8,7 @@ use std::rc::Rc;
 use backend_web::WebBackend;
 use dynlink_shared::DYNLINK_COUNTER;
 use runtime_core::signal;
-use runtime_core::{text, view, IntoPrimitive, Primitive};
+use runtime_core::{text, view, IntoElement, Element};
 use wasm_bindgen::prelude::*;
 
 #[no_mangle]
@@ -52,15 +52,15 @@ pub fn boot() {
     let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
     backend_web::install_global_self(&backend);
     let owner = runtime_core::mount(backend, || {
-        view(vec![text("main shell (always loaded)").into_primitive()]).into_primitive()
+        view(vec![text("main shell (always loaded)").into_element()]).into_element()
     });
     OWNERS.with(|o| o.borrow_mut().push(owner));
 }
 
-// Mount a side-built Primitive into #lazy-slot via a REAL WebBackend rooted
-// there — the same mechanism Primitive::Lazy uses on web.
+// Mount a side-built Element into #lazy-slot via a REAL WebBackend rooted
+// there — the same mechanism Element::Lazy uses on web.
 #[no_mangle]
-pub extern "C" fn main_mount_side(ptr: *mut Primitive) -> i32 {
+pub extern "C" fn main_mount_side(ptr: *mut Element) -> i32 {
     let p = unsafe { *Box::from_raw(ptr) };
     let backend = Rc::new(RefCell::new(WebBackend::new("#lazy-slot")));
     backend_web::install_global_self(&backend);

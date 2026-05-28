@@ -123,7 +123,7 @@ docs! {
         "##),
 
         p("The ", code("Screen::new(...)"), " builder takes anything that \
-           converts to a ", code("Primitive"), ". Chainable methods set \
+           converts to a ", code("Element"), ". Chainable methods set \
            per-screen header options:"),
 
         list(
@@ -140,11 +140,11 @@ docs! {
               a screen rebuild."],
         ),
 
-        p("If you don't need options, return a bare ", code("Primitive"),
+        p("If you don't need options, return a bare ", code("Element"),
           " — the ", code("Into<Screen>"), " impl wraps it for you:"),
 
         code(rust, r##"
-            fn render_home(_: ()) -> Primitive {
+            fn render_home(_: ()) -> Element {
                 ui! { /* ... */ }
             }
         "##),

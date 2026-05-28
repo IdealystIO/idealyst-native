@@ -76,7 +76,7 @@ pub struct MacosBackend {
     /// `create_image` / `update_image_src` when the framework hands
     /// us an `asset://{id}` src.
     pub(crate) image_cache: image::ImageCache,
-    /// Third-party `Primitive::External` registry. Populated by
+    /// Third-party `Element::External` registry. Populated by
     /// `register_external::<T>(...)` calls from per-platform leaf
     /// crates (e.g. a future `maps-macos::register`). `create_external`
     /// looks up the handler by payload TypeId; unregistered kinds
@@ -92,7 +92,7 @@ pub struct MacosBackend {
     /// release count goes to zero.
     pub(crate) virtualizer_instances:
         HashMap<usize, virtualizer::VirtualizerInstance>,
-    /// Registry of `Primitive::Navigator` handler factories. SDK
+    /// Registry of `Element::Navigator` handler factories. SDK
     /// leaf crates (`stack_navigator::register`, `tab_navigator::
     /// register`, `drawer_navigator::register`, …) install factories
     /// keyed by their presentation TypeId at app bootstrap. The
@@ -229,7 +229,7 @@ impl MacosBackend {
         }
     }
 
-    /// Register a `Primitive::Navigator` handler factory keyed by
+    /// Register a `Element::Navigator` handler factory keyed by
     /// the presentation type `P`. SDK leaf crates call this once at
     /// bootstrap. Mirrors `IosBackend::register_navigator`.
     pub fn register_navigator<P, F>(&mut self, factory: F)

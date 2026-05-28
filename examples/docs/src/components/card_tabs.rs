@@ -21,22 +21,22 @@
 //!
 //! The macro de-sugars each `Tab(...)` child into a
 //! `(label_string, render_closure)` pair so panels mount lazily —
-//! the inactive tabs never build their `Primitive` tree until the
+//! the inactive tabs never build their `Element` tree until the
 //! user switches to them. The `switch(...)` primitive subscribes
 //! to the active-index Signal and swaps which closure runs.
 
 use std::rc::Rc;
 
-use runtime_core::{component, signal, switch, ui, view, Primitive, Signal};
+use runtime_core::{component, signal, switch, ui, view, Element, Signal};
 use idea_ui::{Card, tabs, Tab, TabPanel, TabsProps};
 
 /// Props delivered by the `cardtabs!` invocation macro. Each entry
 /// is a `(label, render_closure)` pair — the macro wraps each
 /// `Tab` child's body in `Rc::new(move || ... )` so the closure
 /// can be cheaply cloned into the switch's branch closure without
-/// requiring `Primitive: Clone`.
+/// requiring `Element: Clone`.
 pub struct CardTabsProps {
-    pub tabs: Vec<(String, Rc<dyn Fn() -> Primitive>)>,
+    pub tabs: Vec<(String, Rc<dyn Fn() -> Element>)>,
 }
 
 impl Default for CardTabsProps {
@@ -46,7 +46,7 @@ impl Default for CardTabsProps {
 }
 
 #[component]
-pub fn CardTabs(props: CardTabsProps) -> Primitive {
+pub fn CardTabs(props: CardTabsProps) -> Element {
     // Local Signal owns the active-tab index. Lives in the
     // component's reactive scope, so it survives across re-renders
     // triggered by parent updates but tears down when the

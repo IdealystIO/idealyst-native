@@ -16,7 +16,7 @@
 //! each call site honest about which shape it wants.
 
 use crate::primitives::key::{KeyEvent, KeyOutcome};
-use crate::{Bound, Primitive, Ref, RefFill, Signal};
+use crate::{Bound, Element, Ref, RefFill, Signal};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -78,7 +78,7 @@ pub fn text_area<F: Fn(String) + 'static>(
     value: Signal<String>,
     on_change: F,
 ) -> Bound<TextAreaHandle> {
-    Bound::new(Primitive::TextArea {
+    Bound::new(Element::TextArea {
         value,
         on_change: Rc::new(on_change),
         on_key_down: None,
@@ -93,14 +93,14 @@ pub fn text_area<F: Fn(String) + 'static>(
 
 impl Bound<TextAreaHandle> {
     pub fn placeholder(mut self, text: String) -> Self {
-        if let Primitive::TextArea { placeholder, .. } = &mut self.primitive {
+        if let Element::TextArea { placeholder, .. } = &mut self.primitive {
             *placeholder = Some(text);
         }
         self
     }
 
     pub fn bind(mut self, r: Ref<TextAreaHandle>) -> Self {
-        if let Primitive::TextArea { ref_fill, .. } = &mut self.primitive {
+        if let Element::TextArea { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::TextArea(Box::new(move |h| r.fill(h))));
         }
         self
@@ -115,7 +115,7 @@ impl Bound<TextAreaHandle> {
     where
         F: Fn(&KeyEvent) -> KeyOutcome + 'static,
     {
-        if let Primitive::TextArea { on_key_down, .. } = &mut self.primitive {
+        if let Element::TextArea { on_key_down, .. } = &mut self.primitive {
             *on_key_down = Some(Rc::new(handler));
         }
         self

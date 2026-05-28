@@ -1,4 +1,4 @@
-//! `Primitive::TextInput` and `Primitive::TextArea` build paths.
+//! `Element::TextInput` and `Element::TextArea` build paths.
 //! Same controlled-value pattern: the parent owns a `Signal<String>`;
 //! the framework installs an Effect that writes the signal's value
 //! back to the native widget on every change. Widgets no-op when set

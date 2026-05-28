@@ -4,14 +4,14 @@
 //! the page on the deeper argument: the language's *shape* fits UI
 //! authoring in ways most languages don't.
 
-use runtime_core::{ui, Primitive, Ref, ViewHandle};
+use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::routes::QUICKSTART_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     // One `Ref<ViewHandle>` per section. The same handle is stored
     // in the `TocEntry` (so the spy can read its `absolute_frame`)
     // and passed to `page_section(...)` (which binds it to the
@@ -72,11 +72,11 @@ pub fn page() -> Primitive {
 // Section helpers — each section is a heading + prose + optional code panel.
 // =============================================================================
 
-fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Primitive {
-    let mut children: Vec<Primitive> = Vec::new();
+fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Element {
+    let mut children: Vec<Element> = Vec::new();
     let title_text = title.to_string();
     children.push(ui! {
-        Typography(content = title_text, kind = idea_ui::typography_kind::H2.into())
+        Typography(content = title_text, kind = idea_ui::typography_kind::H2)
     });
     for p in paragraphs {
         let body = p.to_string();
@@ -98,7 +98,7 @@ fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Primitive 
 // Sections
 // =============================================================================
 
-fn standard_story() -> Primitive {
+fn standard_story() -> Element {
     section(
         "The boilerplate, briefly",
         vec![
@@ -114,7 +114,7 @@ fn standard_story() -> Primitive {
     )
 }
 
-fn pivot() -> Primitive {
+fn pivot() -> Element {
     section(
         "The shape of the language fits UI",
         vec![
@@ -129,7 +129,7 @@ fn pivot() -> Primitive {
     )
 }
 
-fn expressions_section() -> Primitive {
+fn expressions_section() -> Element {
     let example = "// Every block in Rust evaluates to a value.\n\
                    let label = if count > 9 { \"9+\".to_string() } else { count.to_string() };\n\
                    ui! { Text { label } }\n\
@@ -153,7 +153,7 @@ fn expressions_section() -> Primitive {
     )
 }
 
-fn pattern_matching_section() -> Primitive {
+fn pattern_matching_section() -> Element {
     let example = "let view = match fetch_state.get() {\n    \
                        FetchState::Idle => idle_view(),\n    \
                        FetchState::Loading => spinner(),\n    \
@@ -176,7 +176,7 @@ fn pattern_matching_section() -> Primitive {
     )
 }
 
-fn enums_section() -> Primitive {
+fn enums_section() -> Element {
     let example = "// In JavaScript, every combination is reachable:\n\
                    { loading: true,  data: null,    error: null    }  // valid\n\
                    { loading: false, data: result,  error: null    }  // valid\n\
@@ -205,7 +205,7 @@ fn enums_section() -> Primitive {
     )
 }
 
-fn macros_section() -> Primitive {
+fn macros_section() -> Element {
     let example = "// What you write:\n\
                    ui! {\n    Button(label = \"Hi\".to_string(), on_click = on_press)\n}\n\
                    \n\
@@ -234,7 +234,7 @@ fn macros_section() -> Primitive {
     )
 }
 
-fn closures_section() -> Primitive {
+fn closures_section() -> Element {
     let example = "// `move` is explicit \u{2014} you see what the closure captures.\n\
                    let on_click = move || count.update(|n| *n += 1);\n\
                    \n\
@@ -259,7 +259,7 @@ fn closures_section() -> Primitive {
     )
 }
 
-fn refs_section() -> Primitive {
+fn refs_section() -> Element {
     let example = "// You don't get the handle directly. You read it through a closure:\n\
                    btn_ref.with(|handle| handle.focus());\n\
                    \n\
@@ -281,12 +281,12 @@ fn refs_section() -> Primitive {
     )
 }
 
-fn traits_section() -> Primitive {
+fn traits_section() -> Element {
     section(
         "Traits, not inheritance",
         vec![
             "`Backend` is a trait. So is `IdeaTheme`, `IntoStyleSource`, `RouteParams`, \
-             `IntoPrimitive`. Adding a new platform, a new theme implementation, or a \
+             `IntoElement`. Adding a new platform, a new theme implementation, or a \
              new style source means implementing a trait \u{2014} no class extension, no \
              method-override resolution, no diamond inheritance, no `super` calls.",
             "Composition over inheritance isn't a moral guideline in Rust; it's the \
@@ -298,12 +298,12 @@ fn traits_section() -> Primitive {
     )
 }
 
-fn zero_cost_section() -> Primitive {
+fn zero_cost_section() -> Element {
     section(
         "The macro expansion IS the runtime",
         vec![
             "`ui! { Button(label = \"Hi\") }` becomes `button(&ButtonProps { ... })` \
-             becomes a `Primitive::Button { ... }` constructor. No virtual DOM diff, no \
+             becomes a `Element::Button { ... }` constructor. No virtual DOM diff, no \
              JSX-to-element transformation, no reflection pass, no decorator metadata. \
              You read the macro as one thing; the compiler reads it as another; the \
              machine code is the second one.",
@@ -316,7 +316,7 @@ fn zero_cost_section() -> Primitive {
     )
 }
 
-fn tradeoff_section() -> Primitive {
+fn tradeoff_section() -> Element {
     let cta = ui! {
         Link(route = &QUICKSTART_ROUTE, params = ()) {
             Typography(
@@ -326,7 +326,7 @@ fn tradeoff_section() -> Primitive {
         }
     };
     let title = ui! {
-        Typography(content = "The tradeoff".to_string(), kind = idea_ui::typography_kind::H2.into())
+        Typography(content = "The tradeoff".to_string(), kind = idea_ui::typography_kind::H2)
     };
     let para_1 = ui! {
         Typography(content = "Rust costs something. You need the toolchain installed (rustup is one command, but it's \
@@ -339,6 +339,6 @@ fn tradeoff_section() -> Primitive {
             entire categories of bugs before you run the code. We think the leverage above earns the cost. \
             The Quickstart is the fastest way to find out for yourself.".to_string())
     };
-    let children: Vec<Primitive> = vec![title, para_1, para_2, cta];
+    let children: Vec<Element> = vec![title, para_1, para_2, cta];
     ui! { Stack(gap = StackGap::Md) { children } }
 }

@@ -208,7 +208,7 @@ pub fn default_transition() -> Rc<dyn ScreenTransition> {
 // Lifecycle note: the override stays installed until the next
 // `create_stack_navigator` call consumes it — it is *not* cleared on
 // `with_transition`'s exit. This is intentional: the framework's
-// walker processes the returned `Primitive::Navigator` *after*
+// walker processes the returned `Element::Navigator` *after*
 // the screen-builder closure (and `with_transition`) has
 // already returned, so an auto-cleared override would always
 // be gone by the time `create_stack_navigator` actually runs. Leaving
@@ -227,7 +227,7 @@ thread_local! {
 /// Stage an animator for the next `Navigator` constructed on
 /// this thread. The framework's walker only fires
 /// `create_stack_navigator` *after* the user closure that built the
-/// `Primitive::Navigator` has returned, so this thread-local
+/// `Element::Navigator` has returned, so this thread-local
 /// stays set across the closure boundary and is consumed
 /// when the walker eventually reaches the navigator node.
 ///

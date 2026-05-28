@@ -1,4 +1,4 @@
-//! `Primitive::Presence` — web-side apply_presence implementation.
+//! `Element::Presence` — web-side apply_presence implementation.
 //!
 //! Maps a `PresenceState` (opacity + 2D translate + uniform scale)
 //! to CSS via inline `style` properties on the node:

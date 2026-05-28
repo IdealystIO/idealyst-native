@@ -118,11 +118,11 @@ re-render trigger.
 ### The code
 
 ```rust
-use runtime_core::{component, install_theme, set_theme, signal, ui, Primitive};
+use runtime_core::{component, install_theme, set_theme, signal, ui, Element};
 use crate::theme::{MyTheme};  // your app's theme; see Styles
 
 #[component]
-pub fn app() -> Primitive {
+pub fn app() -> Element {
     install_theme(MyTheme::light());
 
     let is_dark = signal!(false);

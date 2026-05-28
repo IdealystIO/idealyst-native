@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, AlignItems, FlexDirection, JustifyContent, Position, Primitive, StyleRules,
+    component, ui, AlignItems, FlexDirection, JustifyContent, Position, Element, StyleRules,
     StyleSheet,
 };
 
@@ -18,7 +18,7 @@ pub struct ContentLayerProps {
 }
 
 #[component]
-pub fn ContentLayer(props: &ContentLayerProps) -> Primitive {
+pub fn ContentLayer(props: &ContentLayerProps) -> Element {
     let refs = props.refs;
     let sheet = sheet();
     ui! {

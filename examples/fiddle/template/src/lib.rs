@@ -1,6 +1,6 @@
 //! Wrapping crate for the user's snippet.
 //!
-//! The user writes a `pub fn app() -> Primitive` (plus any helpers).
+//! The user writes a `pub fn app() -> Element` (plus any helpers).
 //! `compile.rs` on the server prepends an ambient `use` line —
 //! `use crate::__rt::*;` — so common framework imports are available
 //! without the user having to remember which crate any given symbol
@@ -43,7 +43,7 @@ mod sim_mode {
     use std::rc::Rc;
 
     use runtime_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
-    use runtime_core::{ui, view, ColorScheme, IntoPrimitive, Length, StyleRules, StyleSheet};
+    use runtime_core::{ui, view, ColorScheme, IntoElement, Length, StyleRules, StyleSheet};
     use host_web::{DeviceProfile, Painter};
     use wasm_bindgen::prelude::*;
 
@@ -87,7 +87,7 @@ mod sim_mode {
         OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
     }
 
-    fn simulator_tree() -> runtime_core::Primitive {
+    fn simulator_tree() -> runtime_core::Element {
         let graphics = runtime_core::primitives::graphics::graphics(move |event: OnReadyEvent| {
             wasm_bindgen_futures::spawn_local(async move {
                 let profile = DeviceProfile {
@@ -133,7 +133,7 @@ mod sim_mode {
             height: Some(Length::Percent(100.0).into()),
             ..Default::default()
         }));
-        let wrapper = view(vec![graphics.into_primitive()]).with_style(wrapper_sheet);
+        let wrapper = view(vec![graphics.into_element()]).with_style(wrapper_sheet);
 
         ui! { wrapper }
     }
@@ -202,7 +202,7 @@ pub mod __rt {
     pub use runtime_core::{
         bind, button, component, pressable, signal, switch, text, text_fmt, ui, view, when,
         AlignItems, Color, ColorScheme, Easing, Effect, FlexDirection, FontWeight,
-        JustifyContent, Length, Overflow, Position, Primitive, Ref, Signal, StyleRules,
+        JustifyContent, Length, Overflow, Position, Element, Ref, Signal, StyleRules,
         StyleSheet,
     };
     // Style declaration macro — re-export so snippets can write

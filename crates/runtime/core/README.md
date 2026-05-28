@@ -11,7 +11,7 @@ in app code.
 
 ## What this crate owns
 
-- **`Primitive` enum**. The closed set of "things the render walker knows
+- **`Element` enum**. The closed set of "things the render walker knows
   how to walk." `View`, `Text`, `Button`, `Image`, `TextInput`, `ScrollView`,
   `Slider`, `Toggle`, `Icon`, `ActivityIndicator`, `Virtualizer`,
   `Graphics`, `Link`, `When`, `Portal`, `Presence`, `External`, navigators.
@@ -25,7 +25,7 @@ in app code.
   default to `unimplemented!()` so a backend that hasn't wired a primitive
   panics loudly rather than silently no-oping. See `docs/backend.md` for the
   long version.
-- **Render walker** (`walker.rs`). Recurses the `Primitive` tree, calls the
+- **Render walker** (`walker.rs`). Recurses the `Element` tree, calls the
   backend trait, and wires per-node `Effect`s so signal changes drive the
   smallest possible backend update. No virtual DOM.
 - **Reactivity** (`reactive.rs` + `sources.rs`). `Signal<T>`, `Effect`,
@@ -88,7 +88,7 @@ in app code.
   delivered via `Ops` traits on handle types. Backends that need animation
   to work **must** override the corresponding `ViewOps`/`TextOps` methods;
   the trait defaults are silent no-ops.
-- `Primitive::External` carries a `kind: &'static str` and a `props: Vec<…>`.
+- `Element::External` carries a `kind: &'static str` and a `props: Vec<…>`.
   Per-backend `ExternalRegistry` instances resolve the kind to a renderer.
   Third-party SDKs (Maps, WebView) follow this pattern; see
   `project_third_party_extension` in memory.

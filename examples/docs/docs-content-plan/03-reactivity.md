@@ -453,7 +453,7 @@ write the same arena slot.
 
 ```rust
 #[component]
-fn counter(count: Signal<i32>) -> Primitive {
+fn counter(count: Signal<i32>) -> Element {
     ui! {
         Text { format!("Count: {}", count.get()) }
         Button(label = "++", on_click = move || count.update(|n| *n += 1))
@@ -461,7 +461,7 @@ fn counter(count: Signal<i32>) -> Primitive {
 }
 
 #[component]
-fn app() -> Primitive {
+fn app() -> Element {
     let count = signal!(0);
     ui! {
         counter(count = count)
@@ -517,7 +517,7 @@ If you write:
 
 ```rust
 #[component]
-fn greeting(name: Signal<String>) -> Primitive {
+fn greeting(name: Signal<String>) -> Element {
     let greeting_text = format!("Hello, {}", name.get());  // computed ONCE
     ui! {
         Text { greeting_text.clone() }

@@ -7,7 +7,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{component, ui, Primitive, SafeAreaSides, Signal, StyleApplication};
+use runtime_core::{component, ui, Element, SafeAreaSides, Signal, StyleApplication};
 use drawer_navigator::DrawerSlotProps;
 use idea_ui::{Typography, Card, dark_theme, Divider, light_theme, set_idea_theme, Stack, Switch, StackGap, StackPadding};
 
@@ -25,19 +25,19 @@ use crate::styles::{
 
 pub fn content_builder(
     is_dark: Signal<bool>,
-) -> impl Fn(DrawerSlotProps) -> Primitive + 'static {
+) -> impl Fn(DrawerSlotProps) -> Element + 'static {
     move |props: DrawerSlotProps| {
         let active_route = props.active_route;
         drawer_content(active_route, is_dark)
     }
 }
 
-fn drawer_content(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> Primitive {
+fn drawer_content(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> Element {
     let container_style = Sidebar();
     let header_style = SidebarHeader();
 
-    let header_children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Idealyst".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let header_children: Vec<Element> = vec![
+        ui! { Typography(content = "Idealyst".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(
                 content = "Cross-platform Rust framework".to_string(),
@@ -46,7 +46,7 @@ fn drawer_content(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> 
         },
     ];
 
-    let mut children: Vec<Primitive> = Vec::new();
+    let mut children: Vec<Element> = Vec::new();
     children.push(ui! { View(style = header_style) { header_children } });
 
     for s in SECTIONS {
@@ -70,12 +70,12 @@ fn drawer_content(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> 
 fn sidebar_section(
     s: &'static crate::routes::IndexSection,
     active_route: Signal<&'static str>,
-) -> Primitive {
+) -> Element {
     let section_style = SidebarSection();
     let label_style = SidebarSectionLabel();
     let label_text = s.label.to_string();
 
-    let mut entries: Vec<Primitive> = Vec::with_capacity(s.items.len() + 1);
+    let mut entries: Vec<Element> = Vec::with_capacity(s.items.len() + 1);
     entries.push(ui! { Text(style = label_style) { label_text } });
     for entry in s.items {
         entries.push(nav_link(entry.name, entry.label, active_route));
@@ -86,7 +86,7 @@ fn sidebar_section(
     }
 }
 
-fn theme_toggle(is_dark: Signal<bool>) -> Primitive {
+fn theme_toggle(is_dark: Signal<bool>) -> Element {
     let on_dark_change: Rc<dyn Fn(bool)> = Rc::new(move |dark| {
         is_dark.set(dark);
         if dark {
@@ -96,8 +96,8 @@ fn theme_toggle(is_dark: Signal<bool>) -> Primitive {
         }
     });
 
-    let row_children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Theme".to_string(), kind = idea_ui::typography_kind::Caption.into()) },
+    let row_children: Vec<Element> = vec![
+        ui! { Typography(content = "Theme".to_string(), kind = idea_ui::typography_kind::Caption) },
         ui! {
             Switch(
                 label = Some("Dark mode".to_string()),
@@ -120,7 +120,7 @@ fn nav_link(
     name: &'static str,
     label: &'static str,
     active_route: Signal<&'static str>,
-) -> Primitive {
+) -> Element {
     let label_text = label.to_string();
     let route_for_match: &str = name;
     // Padding/background/border-radius belong to the outer pill (a
@@ -347,7 +347,7 @@ fn nav_link(
 // web_layout removed — `.layout(...)` is no longer part of the
 // drawer-navigator API. On web, the drawer SDK's chrome arranges
 // the sidebar + screen outlet itself; the author just passes the
-// sidebar Primitive via `.sidebar_with(builder)`.
+// sidebar Element via `.sidebar_with(builder)`.
 
 // =============================================================================
 // Per-page surface helpers — exposed as `#[component]`s so pages
@@ -357,7 +357,7 @@ fn nav_link(
 
 #[derive(Default)]
 pub struct PageTypographyProps {
-    pub children: Vec<Primitive>,
+    pub children: Vec<Element>,
 }
 
 /// `PageBody { ... }` — the per-page surface every doc screen wraps
@@ -370,7 +370,7 @@ pub struct PageTypographyProps {
 /// page layout. If you need a one-off override, hand-roll the
 /// `ScrollView { Stack(...) { ... } }` instead.
 #[component]
-pub fn PageBody(props: PageTypographyProps) -> Primitive {
+pub fn PageBody(props: PageTypographyProps) -> Element {
     let children = props.children;
     ui! {
         ScrollView {
@@ -390,11 +390,11 @@ pub struct PageHeaderProps {
 /// `PageHeader(title = "...", description = "...")` — the H1 + subtitle
 /// every page opens with.
 #[component]
-pub fn PageHeader(props: PageHeaderProps) -> Primitive {
+pub fn PageHeader(props: PageHeaderProps) -> Element {
     let title = props.title;
     let description = props.description;
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = title, kind = idea_ui::typography_kind::H1.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = title, kind = idea_ui::typography_kind::H1) },
         ui! { Typography(content = description, muted = true) },
     ];
     ui! {
@@ -413,12 +413,12 @@ pub struct SectionProps {
 /// also has a code sample, or compose a `Card { ... }` by hand for
 /// richer layouts.
 #[component]
-pub fn Section(props: SectionProps) -> Primitive {
+pub fn Section(props: SectionProps) -> Element {
     let title = props.title;
     let body_text = props.body;
     ui! {
         Card {
-            Typography(content = title, kind = idea_ui::typography_kind::H2.into())
+            Typography(content = title, kind = idea_ui::typography_kind::H2)
             Typography(content = body_text, muted = true)
         }
     }
@@ -434,7 +434,7 @@ pub struct SectionWithCodeProps {
 /// `SectionWithCode(title = "...", body = "...", code = "...")` —
 /// section card with a code block under the prose.
 #[component]
-pub fn SectionWithCode(props: SectionWithCodeProps) -> Primitive {
+pub fn SectionWithCode(props: SectionWithCodeProps) -> Element {
     let title = props.title;
     let body_text = props.body;
     let code_text = props.code;
@@ -443,7 +443,7 @@ pub fn SectionWithCode(props: SectionWithCodeProps) -> Primitive {
 
     ui! {
         Card {
-            Typography(content = title, kind = idea_ui::typography_kind::H2.into())
+            Typography(content = title, kind = idea_ui::typography_kind::H2)
             Typography(content = body_text, muted = true)
             View(style = code_style) {
                 Text(style = code_text_style) { code_text }
@@ -461,7 +461,7 @@ pub struct CodeBlockProps {
 /// chrome. Use inside a hand-rolled `Card { ... }` when you need
 /// multiple code blocks or interleaved prose.
 #[component]
-pub fn CodeBlock(props: CodeBlockProps) -> Primitive {
+pub fn CodeBlock(props: CodeBlockProps) -> Element {
     let code_text = props.code;
     let code_style = CodeBlockSheet();
     let code_text_style = CodeBlockText();

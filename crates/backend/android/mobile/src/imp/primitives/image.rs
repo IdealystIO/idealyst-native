@@ -1,4 +1,4 @@
-//! `Primitive::Image` — bare `android.widget.ImageView` stub. Actual
+//! `Element::Image` — bare `android.widget.ImageView` stub. Actual
 //! URL loading on Android needs a third-party loader (Glide, Coil,
 //! etc.) — not in v1. Authors who need images today should wrap a
 //! custom component over this.

@@ -1,4 +1,4 @@
-//! `Primitive::Slider` build path. The walker wraps the user's
+//! `Element::Slider` build path. The walker wraps the user's
 //! `on_change` to snap to `step` before dispatching so all backends
 //! produce identical values regardless of native step handling.
 

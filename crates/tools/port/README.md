@@ -197,7 +197,7 @@ pub struct CounterProps {
 }
 
 #[component(default(initial = 0))]
-pub fn counter(props: &CounterProps) -> Primitive {
+pub fn counter(props: &CounterProps) -> Element {
     let count = signal!(props.initial);
     Effect::new(move || {
         todo!("port handler-body (line N): console.log → idiomatic Rust logging — <original>");

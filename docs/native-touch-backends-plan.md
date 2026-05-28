@@ -26,7 +26,7 @@ fn install_touch_handler(
 fn claim_touch(&mut self, node: &Self::Node, touch_id: TouchId);
 ```
 
-`install_touch_handler` is called once per `Primitive::View {
+`install_touch_handler` is called once per `Element::View {
 on_touch: Some(_), .. }` after node creation. The backend's job:
 
 1. Wire `handler` to whatever native touch delivery the platform

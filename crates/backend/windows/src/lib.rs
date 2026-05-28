@@ -134,7 +134,7 @@ pub struct WindowsBackend {
     /// `NodeMeta`'s `on_click` slot for diagnostics + future
     /// keyboard-activation routing.
     command_handlers: HashMap<u16, Rc<dyn Fn()>>,
-    /// Third-party `Primitive::External` registry. Populated by
+    /// Third-party `Element::External` registry. Populated by
     /// `register_external::<T>(...)` calls from per-platform leaf
     /// crates (e.g. `toolbar::register_windows`). `create_external`
     /// looks up the handler by payload TypeId; unregistered kinds
@@ -408,7 +408,7 @@ fn class_static() -> PCWSTR {
 }
 
 // =========================================================================
-// IdealystScroll — custom WNDCLASS for `Primitive::ScrollView`
+// IdealystScroll — custom WNDCLASS for `Element::ScrollView`
 // =========================================================================
 //
 // Win32 has no first-class scroll-view widget; the canonical pattern
@@ -436,7 +436,7 @@ struct ScrollState {
     /// Android `getScrollY`/`getScrollX` (after dp conversion).
     offset_x: f32,
     offset_y: f32,
-    /// User-supplied `Primitive::ScrollView::on_scroll`. `None`
+    /// User-supplied `Element::ScrollView::on_scroll`. `None`
     /// means "scroll is observable through input only; author
     /// didn't ask for reactive observation."
     on_scroll: Option<Rc<dyn Fn(f32, f32)>>,

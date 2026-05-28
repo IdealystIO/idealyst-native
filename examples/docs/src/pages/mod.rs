@@ -1,6 +1,6 @@
 //! One module per documentation page. Each exposes:
 //!
-//! - `pub fn page() -> Primitive` — emitted by the `docs!` macro;
+//! - `pub fn page() -> Element` — emitted by the `docs!` macro;
 //!   the navigator wires this into the matching route.
 //! - `pub static PAGE_META: PageMeta` — also emitted by `docs!`;
 //!   registered in [`crate::registry::PAGES`] for the MCP server
@@ -34,7 +34,7 @@ pub mod writing_a_backend;
 
 // Hand-built — embeds the `Simulator` component for a live preview.
 // The `docs!` macro only emits text-flavored blocks, so a page with
-// a custom `Primitive` in the middle is built directly.
+// a custom `Element` in the middle is built directly.
 pub mod simulator_demo;
 
 // Pages still hand-built. To be migrated to the `docs!` macro when

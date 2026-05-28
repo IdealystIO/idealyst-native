@@ -1,6 +1,6 @@
 //! Author-facing DSL: `Bound<H>`, `Bindable<H>`, `ChildList`, the
 //! primitive constructors (`view`, `text`, `button`, `when`,
-//! `switch`), and `IntoPrimitive` / `IntoDisabledSource`.
+//! `switch`), and `IntoElement` / `IntoDisabledSource`.
 //!
 //! These compose into the fluent builder pattern call sites use:
 //!
@@ -14,7 +14,7 @@
 //! type-checked against the call-site `Ref<HandleType>`.
 
 use crate::handles::{ButtonHandle, PressableHandle, RefFill, TextHandle, ViewHandle};
-use crate::primitive::Primitive;
+use crate::element::Element;
 use crate::reactive::Ref;
 use crate::sources::{IntoStyleSource, IntoTextSource};
 use std::cell::RefCell;
@@ -25,28 +25,28 @@ use std::rc::Rc;
 // =============================================================================
 //
 // A constructor like `button(...)` returns `Bound<ButtonHandle>` rather
-// than a bare `Primitive`. Carrying the handle type in the type system
+// than a bare `Element`. Carrying the handle type in the type system
 // makes `.bind(r: Ref<ButtonHandle>)` a compile-time check — passing
 // `Ref<ViewHandle>` to a button's `.bind` is a type error, no runtime
 // dispatch needed.
 //
-// `Bound<H>` implements `Into<Primitive>` and `ChildList`, so call sites
-// and the rest of the framework continue to work with `Primitive` after
+// `Bound<H>` implements `Into<Element>` and `ChildList`, so call sites
+// and the rest of the framework continue to work with `Element` after
 // `.bind()` (or without ever calling it). Authors who don't care about
 // refs never see `Bound` — the constructors return it, the children
 // macro coerces it, no friction.
 
-/// A `Primitive` plus a phantom handle type. Constructed by primitive
+/// A `Element` plus a phantom handle type. Constructed by primitive
 /// builder functions (`button(...)`, `view(...)`, …); coerced back to
-/// `Primitive` automatically for child lists. Only purpose: type-check
+/// `Element` automatically for child lists. Only purpose: type-check
 /// `.bind(r)` against the call-site `Ref<H>`.
 pub struct Bound<H> {
-    pub(crate) primitive: Primitive,
+    pub(crate) primitive: Element,
     _handle: std::marker::PhantomData<H>,
 }
 
 impl<H> Bound<H> {
-    /// Wrap a `Primitive` in a typed `Bound<H>`. The handle marker `H`
+    /// Wrap a `Element` in a typed `Bound<H>`. The handle marker `H`
     /// is purely a type-check hook for `.bind(r: Ref<H>)`; it doesn't
     /// affect the wrapped primitive.
     ///
@@ -54,23 +54,23 @@ impl<H> Bound<H> {
     /// (`view(...)`, `button(...)`, …) which call this internally.
     /// Third-party SDK crates that want a typed handle (e.g.
     /// `Bound<WebViewHandle>` for `webview::WebView(...)`) build a
-    /// `Primitive::External` and wrap it here.
-    pub fn new(primitive: Primitive) -> Self {
+    /// `Element::External` and wrap it here.
+    pub fn new(primitive: Element) -> Self {
         Self { primitive, _handle: std::marker::PhantomData }
     }
 
-    /// Mutable access to the wrapped `Primitive`. Public so the
+    /// Mutable access to the wrapped `Element`. Public so the
     /// `ui!` macro's structured-emission paths can fill in
     /// per-primitive fields that the closure-shape builders don't
     /// expose — e.g. patching `Virtualizer.row_template` and
     /// `row_index_signal_id` after going through
     /// `primitives::virtualizer::virtualizer(...)`.
     #[doc(hidden)]
-    pub fn primitive_mut(&mut self) -> &mut Primitive {
+    pub fn primitive_mut(&mut self) -> &mut Element {
         &mut self.primitive
     }
 
-    /// Attaches a style. Same semantics as `Primitive::with_style`.
+    /// Attaches a style. Same semantics as `Element::with_style`.
     pub fn with_style<S: IntoStyleSource>(mut self, style: S) -> Self {
         self.primitive = self.primitive.with_style(style);
         self
@@ -94,7 +94,7 @@ impl Bound<ButtonHandle> {
     /// a `ButtonHandle` from the just-created backend node and calls
     /// `r.fill(handle)`. Pre-mount calls on `r` are no-ops.
     pub fn bind(mut self, r: Ref<ButtonHandle>) -> Self {
-        if let Primitive::Button { ref_fill, .. } = &mut self.primitive {
+        if let Element::Button { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::Button(Box::new(move |h| r.fill(h))));
         }
         self
@@ -107,7 +107,7 @@ impl Bound<ButtonHandle> {
     /// `state disabled { ... }` overlay applies) and tells the backend
     /// to mark the native widget inert.
     pub fn disabled<D: IntoDisabledSource>(mut self, disabled: D) -> Self {
-        if let Primitive::Button { disabled: slot, .. } = &mut self.primitive {
+        if let Element::Button { disabled: slot, .. } = &mut self.primitive {
             *slot = Some(disabled.into_disabled_source());
         }
         self
@@ -115,7 +115,7 @@ impl Bound<ButtonHandle> {
 
     /// Set a leading icon (rendered before the label).
     pub fn leading_icon(mut self, icon: crate::IconData) -> Self {
-        if let Primitive::Button { leading_icon, .. } = &mut self.primitive {
+        if let Element::Button { leading_icon, .. } = &mut self.primitive {
             *leading_icon = Some(icon);
         }
         self
@@ -123,7 +123,7 @@ impl Bound<ButtonHandle> {
 
     /// Set a trailing icon (rendered after the label).
     pub fn trailing_icon(mut self, icon: crate::IconData) -> Self {
-        if let Primitive::Button { trailing_icon, .. } = &mut self.primitive {
+        if let Element::Button { trailing_icon, .. } = &mut self.primitive {
             *trailing_icon = Some(icon);
         }
         self
@@ -156,7 +156,7 @@ where
 
 impl Bound<ViewHandle> {
     pub fn bind(mut self, r: Ref<ViewHandle>) -> Self {
-        if let Primitive::View { ref_fill, .. } = &mut self.primitive {
+        if let Element::View { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::View(Box::new(move |h| r.fill(h))));
         }
         self
@@ -183,7 +183,7 @@ impl Bound<ViewHandle> {
     /// should put `.safe_area(...)` on the outermost container that
     /// needs it.
     pub fn safe_area(mut self, sides: crate::SafeAreaSides) -> Self {
-        if let Primitive::View { safe_area_sides, .. } = &mut self.primitive {
+        if let Element::View { safe_area_sides, .. } = &mut self.primitive {
             *safe_area_sides |= sides;
         }
         self
@@ -205,7 +205,7 @@ impl Bound<ViewHandle> {
     where
         F: Fn(&crate::TouchEvent) -> crate::TouchResponse + 'static,
     {
-        if let Primitive::View { on_touch, .. } = &mut self.primitive {
+        if let Element::View { on_touch, .. } = &mut self.primitive {
             *on_touch = Some(std::rc::Rc::new(handler));
         }
         self
@@ -217,7 +217,7 @@ impl Bound<PressableHandle> {
     /// fills the ref with a `PressableHandle` constructed from the
     /// just-mounted backend node.
     pub fn bind(mut self, r: Ref<PressableHandle>) -> Self {
-        if let Primitive::Pressable { ref_fill, .. } = &mut self.primitive {
+        if let Element::Pressable { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::Pressable(Box::new(move |h| r.fill(h))));
         }
         self
@@ -227,7 +227,7 @@ impl Bound<PressableHandle> {
     /// [`Bound::<ButtonHandle>::disabled`] for semantics — same
     /// state-bit + native-inert behavior.
     pub fn disabled<D: IntoDisabledSource>(mut self, disabled: D) -> Self {
-        if let Primitive::Pressable { disabled: slot, .. } = &mut self.primitive {
+        if let Element::Pressable { disabled: slot, .. } = &mut self.primitive {
             *slot = Some(disabled.into_disabled_source());
         }
         self
@@ -236,15 +236,15 @@ impl Bound<PressableHandle> {
 
 impl Bound<TextHandle> {
     pub fn bind(mut self, r: Ref<TextHandle>) -> Self {
-        if let Primitive::Text { ref_fill, .. } = &mut self.primitive {
+        if let Element::Text { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::Text(Box::new(move |h| r.fill(h))));
         }
         self
     }
 }
 
-impl<H> From<Bound<H>> for Primitive {
-    fn from(b: Bound<H>) -> Primitive { b.primitive }
+impl<H> From<Bound<H>> for Element {
+    fn from(b: Bound<H>) -> Element { b.primitive }
 }
 
 // =============================================================================
@@ -263,18 +263,18 @@ impl<H> From<Bound<H>> for Primitive {
 //   function returns, the handle `H` already exists (the component
 //   body constructed it explicitly, closing over its own Signals or
 //   Refs). `.bind(r)` fills the ref synchronously — no `RefFill`
-//   plumbing through `Primitive` needed.
+//   plumbing through `Element` needed.
 //
-// Both implement `Into<Primitive>` and `ChildList` so the rest of the
-// framework (children lists, `IntoPrimitive` coercion) doesn't care
+// Both implement `Into<Element>` and `ChildList` so the rest of the
+// framework (children lists, `IntoElement` coercion) doesn't care
 // whether the call site uses one or the other.
 
-/// A `Primitive` plus an already-constructed component handle. Returned
+/// A `Element` plus an already-constructed component handle. Returned
 /// by user `#[component]` functions that expose imperative methods.
 /// Authors construct this in their component body and `.bind(r)` to
 /// hook it up to a `Ref<H>` owned by the parent.
 pub struct Bindable<H> {
-    primitive: Primitive,
+    primitive: Element,
     handle: H,
 }
 
@@ -282,12 +282,12 @@ impl<H: 'static> Bindable<H> {
     /// Constructs a `Bindable` from the component's primitive tree and
     /// the handle it exposes. Called from inside the component body —
     /// typically as the final expression.
-    pub fn new(primitive: Primitive, handle: H) -> Self {
+    pub fn new(primitive: Element, handle: H) -> Self {
         Self { primitive, handle }
     }
 
     /// Attaches a style to the component's root primitive. Same
-    /// semantics as `Primitive::with_style` / `Bound::with_style` —
+    /// semantics as `Element::with_style` / `Bound::with_style` —
     /// the inner primitive's style slot is overwritten, and the chain
     /// returns `Self` so subsequent calls like `.bind(r)` keep the
     /// handle type.
@@ -297,31 +297,31 @@ impl<H: 'static> Bindable<H> {
     }
 
     /// Fills `r` with this component's handle and returns the
-    /// underlying `Primitive`. The fill happens *immediately* — the
+    /// underlying `Element`. The fill happens *immediately* — the
     /// handle exists by the time the component function returned, so
     /// there's no mount-time deferral.
     ///
     /// Compile-time type checking: `r: Ref<H>` and the component
     /// returns `Bindable<H>`, so passing the wrong ref type is a type
     /// error.
-    pub fn bind(self, r: Ref<H>) -> Primitive {
+    pub fn bind(self, r: Ref<H>) -> Element {
         r.fill(self.handle);
         self.primitive
     }
 }
 
-impl<H> From<Bindable<H>> for Primitive {
-    fn from(b: Bindable<H>) -> Primitive { b.primitive }
+impl<H> From<Bindable<H>> for Element {
+    fn from(b: Bindable<H>) -> Element { b.primitive }
 }
 
 impl<H> ChildList for Bindable<H> {
-    fn append_to(self, out: &mut Vec<Primitive>) {
+    fn append_to(self, out: &mut Vec<Element>) {
         out.push(self.primitive);
     }
 }
 
 impl<H> ChildList for Option<Bindable<H>> {
-    fn append_to(self, out: &mut Vec<Primitive>) {
+    fn append_to(self, out: &mut Vec<Element>) {
         if let Some(b) = self {
             out.push(b.primitive);
         }
@@ -335,27 +335,27 @@ impl<H> ChildList for Option<Bindable<H>> {
 /// Flexible-shape source for a child-list slot. Implementors say how to
 /// append themselves (zero or more primitives) to a growing Vec. Used by
 /// the `children!(...)` macro so call sites can mix:
-///   - a single `Primitive`
-///   - `Option<Primitive>` (often from `cond.then(|| ...)`)
-///   - `Vec<Primitive>` (e.g. from a `.map().collect()`)
+///   - a single `Element`
+///   - `Option<Element>` (often from `cond.then(|| ...)`)
+///   - `Vec<Element>` (e.g. from a `.map().collect()`)
 pub trait ChildList {
-    fn append_to(self, out: &mut Vec<Primitive>);
+    fn append_to(self, out: &mut Vec<Element>);
 }
 
-impl ChildList for Primitive {
-    fn append_to(self, out: &mut Vec<Primitive>) {
+impl ChildList for Element {
+    fn append_to(self, out: &mut Vec<Element>) {
         out.push(self);
     }
 }
 
 impl<H> ChildList for Bound<H> {
-    fn append_to(self, out: &mut Vec<Primitive>) {
+    fn append_to(self, out: &mut Vec<Element>) {
         out.push(self.primitive);
     }
 }
 
-impl ChildList for Option<Primitive> {
-    fn append_to(self, out: &mut Vec<Primitive>) {
+impl ChildList for Option<Element> {
+    fn append_to(self, out: &mut Vec<Element>) {
         if let Some(p) = self {
             out.push(p);
         }
@@ -363,25 +363,25 @@ impl ChildList for Option<Primitive> {
 }
 
 impl<H> ChildList for Option<Bound<H>> {
-    fn append_to(self, out: &mut Vec<Primitive>) {
+    fn append_to(self, out: &mut Vec<Element>) {
         if let Some(b) = self {
             out.push(b.primitive);
         }
     }
 }
 
-impl ChildList for Vec<Primitive> {
-    fn append_to(self, out: &mut Vec<Primitive>) {
+impl ChildList for Vec<Element> {
+    fn append_to(self, out: &mut Vec<Element>) {
         out.extend(self);
     }
 }
 
 // =============================================================================
-// Primitive constructors: view, text, button, when, switch
+// Element constructors: view, text, button, when, switch
 // =============================================================================
 
-pub fn view(children: Vec<Primitive>) -> Bound<ViewHandle> {
-    Bound::new(Primitive::View {
+pub fn view(children: Vec<Element>) -> Bound<ViewHandle> {
+    Bound::new(Element::View {
         children,
         style: None,
         ref_fill: None,
@@ -394,7 +394,7 @@ pub fn view(children: Vec<Primitive>) -> Bound<ViewHandle> {
 }
 
 pub fn text<T: IntoTextSource>(source: T) -> Bound<TextHandle> {
-    Bound::new(Primitive::Text {
+    Bound::new(Element::Text {
         source: source.into_text_source(),
         style: None,
         ref_fill: None,
@@ -409,7 +409,7 @@ where
     L: IntoTextSource,
     A: crate::derive::IntoAction,
 {
-    Bound::new(Primitive::Button {
+    Bound::new(Element::Button {
         label: label.into_text_source(),
         on_click: on_click.into_action(),
         leading_icon: None,
@@ -424,13 +424,13 @@ where
 }
 
 /// Clickable container — like [`view`] but with a press callback.
-/// See [`Primitive::Pressable`] for why a separate primitive exists
+/// See [`Element::Pressable`] for why a separate primitive exists
 /// rather than `View` gaining an optional `on_click`.
 pub fn pressable<F: Fn() + 'static>(
-    children: Vec<Primitive>,
+    children: Vec<Element>,
     on_click: F,
 ) -> Bound<PressableHandle> {
-    Bound::new(Primitive::Pressable {
+    Bound::new(Element::Pressable {
         children,
         on_click: Rc::new(on_click),
         style: None,
@@ -444,19 +444,19 @@ pub fn pressable<F: Fn() + 'static>(
 
 /// Reactive conditional. Author code provides three closures:
 /// - `cond` reads one or more signals and returns a `bool`.
-/// - `then` and `otherwise` each return a `Primitive` to render.
+/// - `then` and `otherwise` each return a `Element` to render.
 ///
 /// When any signal `cond()` reads changes, the active branch is rebuilt
 /// from scratch. The hidden branch's effects are dropped, so any signal
 /// subscriptions in it are released. State in the hidden branch is lost
 /// on toggle — this is the "dispose on hide" model.
-pub fn when<C, T, O>(cond: C, then: T, otherwise: O) -> Primitive
+pub fn when<C, T, O>(cond: C, then: T, otherwise: O) -> Element
 where
     C: crate::derive::IntoDerived<bool>,
-    T: Fn() -> Primitive + 'static,
-    O: Fn() -> Primitive + 'static,
+    T: Fn() -> Element + 'static,
+    O: Fn() -> Element + 'static,
 {
-    Primitive::When {
+    Element::When {
         cond: cond.into_derived(),
         then: Box::new(then),
         otherwise: Box::new(otherwise),
@@ -486,11 +486,11 @@ where
 ///     Screen::Performance => performance().into(),
 /// })
 /// ```
-pub fn switch<S, F, B>(scrutinee: F, branches: B) -> Primitive
+pub fn switch<S, F, B>(scrutinee: F, branches: B) -> Element
 where
     S: PartialEq + 'static,
     F: Fn() -> S + 'static,
-    B: Fn(&S) -> Primitive + 'static,
+    B: Fn(&S) -> Element + 'static,
 {
     use std::rc::Rc;
 
@@ -501,13 +501,13 @@ where
     // dispatch using the typed scrutinee directly. This keeps the
     // closure-driven API constraint-free (only `PartialEq` is
     // required, same as before the refactor) while still routing
-    // through the structured `Primitive::Switch` shape that
+    // through the structured `Element::Switch` shape that
     // generator backends consume.
     //
     // Authors who need generator-backend-compatible reactivity
     // (Roku) should construct the primitive through the structured
     // entry point (a `#[method]`-backed discriminant + literal-key
-    // arms) — `Primitive::Switch` with a non-opaque `discriminant`
+    // arms) — `Element::Switch` with a non-opaque `discriminant`
     // and a non-empty `arms` vec. The macro layer (`ui!`'s `match`
     // lowering, eventually) will emit that form.
     let scrutinee = Rc::new(scrutinee);
@@ -528,7 +528,7 @@ where
             crate::__serde_json::Value::Null
         }),
     };
-    let dispatch: Box<dyn Fn() -> Primitive> = Box::new(move || {
+    let dispatch: Box<dyn Fn() -> Element> = Box::new(move || {
         // Use the cached scrutinee value from the most-recent
         // discriminant evaluation. The walker's Effect always calls
         // `discriminant.compute()` immediately before `default()`,
@@ -542,7 +542,7 @@ where
             branches(&scrutinee())
         }
     });
-    Primitive::Switch {
+    Element::Switch {
         discriminant,
         arms: Vec::new(),
         default: dispatch,
@@ -554,7 +554,7 @@ where
 /// [`switch`] for a *vector* of children. `build` reads one or more
 /// signals and returns the current children; the framework rebuilds
 /// the whole list (dropping the prior rows' scope first) whenever a
-/// signal `build` reads changes. See [`Primitive::Each`] for the
+/// signal `build` reads changes. See [`Element::Each`] for the
 /// lifecycle and tracking contract.
 ///
 /// Emitted by `ui!`'s `for PAT in ITER { … }` when `ITER` reads a
@@ -571,8 +571,8 @@ where
 ///     c
 /// })
 /// ```
-pub fn each(build: impl Fn() -> Vec<Primitive> + 'static) -> Primitive {
-    Primitive::Each {
+pub fn each(build: impl Fn() -> Vec<Element> + 'static) -> Element {
+    Element::Each {
         build: Box::new(build),
         style: None,
     }
@@ -588,9 +588,9 @@ pub fn each(build: impl Fn() -> Vec<Primitive> + 'static) -> Primitive {
 // picks the impl from ITER's *type*:
 //
 //   - `Signal<C>` (a signal of any cloneable iterable) → `ReactiveForEach`
-//     → a reactive `Primitive::Each` that rebuilds on change.
+//     → a reactive `Element::Each` that rebuilds on change.
 //   - any other `IntoIterator` (Vec, &Vec, array, range, HashMap, …) →
-//     `StaticForEach` → a flat `Vec<Primitive>` built once.
+//     `StaticForEach` → a flat `Vec<Element>` built once.
 //
 // There is NO `.get()` substring heuristic involved — the *type*
 // decides, so a `HashMap::get()` or any incidental `.get()` in the
@@ -607,27 +607,27 @@ pub fn each(build: impl Fn() -> Vec<Primitive> + 'static) -> Primitive {
 /// [`ReactiveForEach`] by the iterable's type.
 #[doc(hidden)]
 pub trait StaticForEach<Item> {
-    fn __idealyst_for_each<F: Fn(Item) -> Vec<Primitive> + 'static>(self, f: F)
-        -> Vec<Primitive>;
+    fn __idealyst_for_each<F: Fn(Item) -> Vec<Element> + 'static>(self, f: F)
+        -> Vec<Element>;
 }
 
 /// Reactive `for`-loop lowering for a `Signal` of a cloneable iterable.
-/// Produces a single [`Primitive::Each`] (wrapped in a one-element vec
+/// Produces a single [`Element::Each`] (wrapped in a one-element vec
 /// so the call site flattens it uniformly with the static path).
 #[doc(hidden)]
 pub trait ReactiveForEach<Item> {
-    fn __idealyst_for_each<F: Fn(Item) -> Vec<Primitive> + 'static>(self, f: F)
-        -> Vec<Primitive>;
+    fn __idealyst_for_each<F: Fn(Item) -> Vec<Element> + 'static>(self, f: F)
+        -> Vec<Element>;
 }
 
 impl<I, Item> StaticForEach<Item> for I
 where
     I: IntoIterator<Item = Item>,
 {
-    fn __idealyst_for_each<F: Fn(Item) -> Vec<Primitive> + 'static>(
+    fn __idealyst_for_each<F: Fn(Item) -> Vec<Element> + 'static>(
         self,
         f: F,
-    ) -> Vec<Primitive> {
+    ) -> Vec<Element> {
         let mut out = Vec::new();
         for item in self {
             out.extend(f(item));
@@ -640,10 +640,10 @@ impl<C, Item> ReactiveForEach<Item> for crate::Signal<C>
 where
     C: Clone + IntoIterator<Item = Item> + 'static,
 {
-    fn __idealyst_for_each<F: Fn(Item) -> Vec<Primitive> + 'static>(
+    fn __idealyst_for_each<F: Fn(Item) -> Vec<Element> + 'static>(
         self,
         f: F,
-    ) -> Vec<Primitive> {
+    ) -> Vec<Element> {
         let sig = self;
         // One reactive region. On each rebuild we clone the signal's
         // current value and rebuild every row. The `each` Effect tracks
@@ -659,27 +659,27 @@ where
 }
 
 // =============================================================================
-// IntoPrimitive — coercion helper used by the `ui!` macro and direct
+// IntoElement — coercion helper used by the `ui!` macro and direct
 // when/switch callers.
 // =============================================================================
 
 /// Coercion helper: lets `when()`'s `then`/`otherwise` closures return
-/// either a bare `Primitive` or a `Bound<H>`. `Into<Primitive>` is
+/// either a bare `Element` or a `Bound<H>`. `Into<Element>` is
 /// already implemented for `Bound<H>`; this trait makes the implicit
 /// conversion happen in argument position so users don't have to spell
 /// `.into()`. Used by the `ui!` macro and by direct `when(...)` callers.
-pub trait IntoPrimitive {
-    fn into_primitive(self) -> Primitive;
+pub trait IntoElement {
+    fn into_element(self) -> Element;
 }
 
-impl IntoPrimitive for Primitive {
-    fn into_primitive(self) -> Primitive { self }
+impl IntoElement for Element {
+    fn into_element(self) -> Element { self }
 }
 
-impl<H> IntoPrimitive for Bound<H> {
-    fn into_primitive(self) -> Primitive { self.primitive }
+impl<H> IntoElement for Bound<H> {
+    fn into_element(self) -> Element { self.primitive }
 }
 
-impl<H> IntoPrimitive for Bindable<H> {
-    fn into_primitive(self) -> Primitive { self.primitive }
+impl<H> IntoElement for Bindable<H> {
+    fn into_element(self) -> Element { self.primitive }
 }

@@ -1,5 +1,5 @@
 //! Robot-feature metadata extraction. The build walker calls
-//! [`robot_extract_meta`] *before* destructuring a `Primitive`, so the
+//! [`robot_extract_meta`] *before* destructuring a `Element`, so the
 //! returned `RobotMeta` can be pre-registered with the robot registry
 //! while the build proceeds.
 //!
@@ -7,7 +7,7 @@
 
 #![cfg(feature = "robot")]
 
-use crate::primitive::Primitive;
+use crate::element::Element;
 use crate::primitives;
 use crate::sources::TextSource;
 
@@ -22,17 +22,17 @@ pub(super) struct RobotMeta {
 /// match destructures it. Only interactive primitives (buttons,
 /// inputs, etc.) produce a `Some`; structural primitives that aren't
 /// useful to query (When, Switch, Repeat) produce `None`.
-pub(super) fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
+pub(super) fn robot_extract_meta(node: &Element) -> Option<RobotMeta> {
     use crate::robot::{ElementActions, ElementKind};
 
     match node {
-        Primitive::View { test_id, .. } => Some(RobotMeta {
+        Element::View { test_id, .. } => Some(RobotMeta {
             kind: ElementKind::View,
             test_id: *test_id,
             label: None,
             actions: ElementActions::empty(),
         }),
-        Primitive::Text { source, test_id, .. } => {
+        Element::Text { source, test_id, .. } => {
             let label = match source {
                 TextSource::Static(s) => Some(s.clone()),
                 TextSource::Bound(d) => Some((d.compute)()),
@@ -45,7 +45,7 @@ pub(super) fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
                 actions: ElementActions::empty(),
             })
         }
-        Primitive::Button { label, on_click, test_id, .. } => {
+        Element::Button { label, on_click, test_id, .. } => {
             let label_text = match label {
                 TextSource::Static(s) => Some(s.clone()),
                 TextSource::Bound(d) => Some((d.compute)()),
@@ -67,7 +67,7 @@ pub(super) fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
                 },
             })
         }
-        Primitive::Pressable { on_click, test_id, .. } => {
+        Element::Pressable { on_click, test_id, .. } => {
             let click = on_click.clone();
             Some(RobotMeta {
                 kind: ElementKind::Pressable,
@@ -79,13 +79,13 @@ pub(super) fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
                 },
             })
         }
-        Primitive::Image { test_id, .. } => Some(RobotMeta {
+        Element::Image { test_id, .. } => Some(RobotMeta {
             kind: ElementKind::Image,
             test_id: *test_id,
             label: None,
             actions: ElementActions::empty(),
         }),
-        Primitive::TextInput { on_change, test_id, .. } => {
+        Element::TextInput { on_change, test_id, .. } => {
             let set_text = on_change.clone();
             Some(RobotMeta {
                 kind: ElementKind::TextInput,
@@ -97,7 +97,7 @@ pub(super) fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
                 },
             })
         }
-        Primitive::TextArea { on_change, test_id, .. } => {
+        Element::TextArea { on_change, test_id, .. } => {
             // Reuse `ElementKind::TextInput` — the robot
             // surface doesn't distinguish single- vs.
             // multi-line; the `set_text` action covers both.
@@ -114,7 +114,7 @@ pub(super) fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
                 },
             })
         }
-        Primitive::Toggle { on_change, test_id, .. } => {
+        Element::Toggle { on_change, test_id, .. } => {
             let set_toggle = on_change.clone();
             Some(RobotMeta {
                 kind: ElementKind::Toggle,
@@ -126,7 +126,7 @@ pub(super) fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
                 },
             })
         }
-        Primitive::Slider { on_change, test_id, .. } => {
+        Element::Slider { on_change, test_id, .. } => {
             let set_slider = on_change.clone();
             Some(RobotMeta {
                 kind: ElementKind::Slider,
@@ -138,7 +138,7 @@ pub(super) fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
                 },
             })
         }
-        Primitive::Link { route, url, make_params, kind, target, .. } => {
+        Element::Link { route, url, make_params, kind, target, .. } => {
             // Build the same on_activate the backend wires onto the
             // native tap target so the robot's `click` triggers the
             // navigator just like a real tap would.
@@ -159,7 +159,7 @@ pub(super) fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
                 },
             })
         }
-        Primitive::Navigator { .. } => Some(RobotMeta {
+        Element::Navigator { .. } => Some(RobotMeta {
             kind: ElementKind::Navigator,
             test_id: None,
             label: None,

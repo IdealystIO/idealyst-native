@@ -1,6 +1,6 @@
 //! First-party Drawer navigator SDK.
 //!
-//! Routes through `Primitive::Navigator`; the SDK registers a
+//! Routes through `Element::Navigator`; the SDK registers a
 //! per-backend `NavigatorHandler` that drives a slide-in side panel
 //! on iOS/Android and a flex-row sidebar + outlet on web.
 //!
@@ -31,7 +31,7 @@ use runtime_core::primitives::navigator::{
     Screen, ScreenBuilder, ScrollContext,
 };
 use runtime_core::{
-    Bound, Color, IntoStyleSource, Primitive, Ref, RefFill, Signal, StyleApplication, StyleRules,
+    Bound, Color, IntoStyleSource, Element, Ref, RefFill, Signal, StyleApplication, StyleRules,
     StyleSheet, StyleSource, VariantSet,
 };
 use std::any::{Any, TypeId};
@@ -119,7 +119,7 @@ pub struct DrawerSlotProps {
 /// SDK-defined sidebar builder. The presentation stores one of these;
 /// the per-backend handler invokes it via `host.build_node` to
 /// materialize the sidebar UIView/Node/DOM-element.
-pub type SidebarBuilder = Rc<dyn Fn(DrawerSlotProps) -> Primitive>;
+pub type SidebarBuilder = Rc<dyn Fn(DrawerSlotProps) -> Element>;
 
 // =============================================================================
 // Next-gen slot system: leading / top / bottom / trailing
@@ -275,7 +275,7 @@ pub enum BarTitle {
     /// Override with an author-controlled reactive string.
     Text(Signal<String>),
     /// Author-supplied view — search input, breadcrumb, logo, etc.
-    View(Box<dyn Fn(SlotProps) -> Primitive>),
+    View(Box<dyn Fn(SlotProps) -> Element>),
 }
 
 impl Default for BarTitle {
@@ -305,7 +305,7 @@ pub enum TopSlot {
         title: BarTitle,
         trailing: Vec<SlotBarButton>,
     },
-    Custom(Box<dyn Fn(SlotProps) -> Primitive>),
+    Custom(Box<dyn Fn(SlotProps) -> Element>),
 }
 
 /// Closure type for the slot variants that don't have a Filled /
@@ -314,7 +314,7 @@ pub enum TopSlot {
 /// shape to mirror — every author wants different pixels in those
 /// positions, so the SDK doesn't impose a structure beyond the
 /// `SlotProps` it hands in.
-pub type SlotBuilder = Box<dyn Fn(SlotProps) -> Primitive>;
+pub type SlotBuilder = Box<dyn Fn(SlotProps) -> Element>;
 
 // Screens / SDK-foreign code that want to react to the drawer's
 // scroll surface should call
@@ -439,7 +439,7 @@ fn with_drawer_options(
 }
 
 // =============================================================================
-// DrawerPresentation — SDK's typed payload riding on Primitive::Navigator
+// DrawerPresentation — SDK's typed payload riding on Element::Navigator
 // =============================================================================
 
 pub struct DrawerPresentation {
@@ -448,7 +448,7 @@ pub struct DrawerPresentation {
     pub drawer_width: f32,
     pub swipe_to_open: bool,
     pub mount_policy: MountPolicy,
-    /// Sidebar Primitive builder. Author sets via `.sidebar(prim)` or
+    /// Sidebar Element builder. Author sets via `.sidebar(prim)` or
     /// `.sidebar_with(closure)`. SDK handler invokes during `init` (via
     /// `host.build_node` deferred to microtask) to materialize the
     /// sidebar native view.
@@ -609,12 +609,12 @@ impl DrawerNavigator {
             style: None,
             ref_fill: None,
         };
-        Bound::new(nav.into_primitive())
+        Bound::new(nav.into_element())
     }
 
-    fn into_primitive(self) -> Primitive {
+    fn into_element(self) -> Element {
         let DrawerNavigator { config, presentation, slot_styles, style, ref_fill } = self;
-        Primitive::Navigator {
+        Element::Navigator {
             type_id: TypeId::of::<DrawerPresentation>(),
             type_name: std::any::type_name::<DrawerPresentation>(),
             presentation: Rc::new(presentation) as Rc<dyn Any>,
@@ -627,12 +627,12 @@ impl DrawerNavigator {
     }
 }
 
-fn with_navigator_prim<F: FnOnce(&mut Primitive)>(b: &mut Bound<DrawerHandle>, f: F) {
+fn with_navigator_prim<F: FnOnce(&mut Element)>(b: &mut Bound<DrawerHandle>, f: F) {
     f(b.primitive_mut());
 }
 
 fn with_presentation<F: FnOnce(&DrawerPresentation)>(b: &mut Bound<DrawerHandle>, f: F) {
-    if let Primitive::Navigator { presentation, .. } = b.primitive_mut() {
+    if let Element::Navigator { presentation, .. } = b.primitive_mut() {
         if let Some(pres) = presentation.downcast_ref::<DrawerPresentation>() {
             f(pres);
         }
@@ -643,7 +643,7 @@ fn with_presentation_mut<F: FnOnce(&mut DrawerPresentation)>(
     b: &mut Bound<DrawerHandle>,
     f: F,
 ) {
-    if let Primitive::Navigator { presentation, .. } = b.primitive_mut() {
+    if let Element::Navigator { presentation, .. } = b.primitive_mut() {
         let pres = Rc::get_mut(presentation)
             .expect("drawer-navigator: presentation Rc already shared (builder misuse)");
         if let Some(typed) = (pres as &mut dyn Any).downcast_mut::<DrawerPresentation>() {
@@ -666,16 +666,16 @@ pub trait DrawerBuilder: Sized {
     fn drawer_type(self, dt: DrawerType) -> Self;
     fn swipe_to_open(self, enabled: bool) -> Self;
     fn mount_policy(self, policy: MountPolicy) -> Self;
-    /// Pass a pre-built sidebar Primitive. Used when the sidebar
+    /// Pass a pre-built sidebar Element. Used when the sidebar
     /// doesn't need reactive access to nav state.
-    fn sidebar(self, prim: Primitive) -> Self;
+    fn sidebar(self, prim: Element) -> Self;
     /// Pass a builder closure that receives reactive `DrawerSlotProps`
     /// (active route, is_open, on_select, on_close). Used when the
     /// sidebar's content needs to react to nav state — nav-link
     /// highlights, animated open/close, etc.
     fn sidebar_with<F>(self, f: F) -> Self
     where
-        F: Fn(DrawerSlotProps) -> Primitive + 'static;
+        F: Fn(DrawerSlotProps) -> Element + 'static;
     fn sidebar_style(self, s: impl IntoStyleSource) -> Self;
     fn scrim_style(self, s: impl IntoStyleSource) -> Self;
     /// Bundled header styling — sets background/title/tint/body
@@ -692,10 +692,10 @@ pub trait DrawerBuilder: Sized {
     /// Replaces `sidebar_with(...)` going forward; both currently
     /// work and the handler prefers `leading_with` if set. The
     /// closure runs once at navigator init and returns a
-    /// [`Primitive`] that survives every screen swap.
+    /// [`Element`] that survives every screen swap.
     fn leading_with<F>(self, f: F) -> Self
     where
-        F: Fn(SlotProps) -> Primitive + 'static;
+        F: Fn(SlotProps) -> Element + 'static;
 
     /// Mount the persistent top bar. Pass [`TopSlot::Filled`] for
     /// the platform-conventional shape (leading buttons + title +
@@ -707,13 +707,13 @@ pub trait DrawerBuilder: Sized {
     /// Closure runs once at init.
     fn bottom_with<F>(self, f: F) -> Self
     where
-        F: Fn(SlotProps) -> Primitive + 'static;
+        F: Fn(SlotProps) -> Element + 'static;
 
     /// Mount persistent chrome at the trailing edge — utility
     /// panel / inspector. Closure runs once at init.
     fn trailing_with<F>(self, f: F) -> Self
     where
-        F: Fn(SlotProps) -> Primitive + 'static;
+        F: Fn(SlotProps) -> Element + 'static;
 
     /// Supply an author-owned `Signal<bool>` for the drawer's
     /// open state. Without this, the SDK allocates one internally
@@ -780,7 +780,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
         let route_name = route.name();
         let route_path = route.path();
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { config, .. } = p {
+            if let Element::Navigator { config, .. } = p {
                 let builder: ScreenBuilder = Rc::new(move |any_params: Box<dyn Any>| {
                     let typed: Box<P> = any_params
                         .downcast::<P>()
@@ -822,15 +822,15 @@ impl DrawerBuilder for Bound<DrawerHandle> {
         self
     }
 
-    fn sidebar(mut self, prim: Primitive) -> Self {
+    fn sidebar(mut self, prim: Element) -> Self {
         // Wrap as a closure that yields the captured primitive on
         // first call. Subsequent calls panic — sidebars are built
         // exactly once per navigator lifetime.
-        let cell: Rc<RefCell<Option<Primitive>>> = Rc::new(RefCell::new(Some(prim)));
+        let cell: Rc<RefCell<Option<Element>>> = Rc::new(RefCell::new(Some(prim)));
         let builder: SidebarBuilder = Rc::new(move |_props| {
             cell.borrow_mut()
                 .take()
-                .expect("drawer-navigator: sidebar Primitive already consumed")
+                .expect("drawer-navigator: sidebar Element already consumed")
         });
         with_presentation(&mut self, |p| {
             *p.sidebar.borrow_mut() = Some(builder);
@@ -840,7 +840,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
 
     fn sidebar_with<F>(mut self, f: F) -> Self
     where
-        F: Fn(DrawerSlotProps) -> Primitive + 'static,
+        F: Fn(DrawerSlotProps) -> Element + 'static,
     {
         let builder: SidebarBuilder = Rc::new(f);
         with_presentation(&mut self, |p| {
@@ -851,7 +851,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
 
     fn sidebar_style(mut self, s: impl IntoStyleSource) -> Self {
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { slot_styles, .. } = p {
+            if let Element::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("sidebar", s.into_style_source()));
             }
         });
@@ -860,7 +860,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
 
     fn scrim_style(mut self, s: impl IntoStyleSource) -> Self {
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { slot_styles, .. } = p {
+            if let Element::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("scrim", s.into_style_source()));
             }
         });
@@ -904,7 +904,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
             ));
         }
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { slot_styles, .. } = p {
+            if let Element::Navigator { slot_styles, .. } = p {
                 slot_styles.extend(pushes);
             }
         });
@@ -919,7 +919,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
             is_open_signal = p.is_open;
         });
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { ref_fill, .. } = p {
+            if let Element::Navigator { ref_fill, .. } = p {
                 *ref_fill = Some(RefFill::Navigator(Box::new(move |handle| {
                     r.fill(DrawerHandle::from_inner(handle, is_open_signal));
                 })));
@@ -930,7 +930,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
 
     fn leading_with<F>(mut self, f: F) -> Self
     where
-        F: Fn(SlotProps) -> Primitive + 'static,
+        F: Fn(SlotProps) -> Element + 'static,
     {
         let builder: SlotBuilder = Box::new(f);
         with_presentation(&mut self, |p| {
@@ -948,7 +948,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
 
     fn bottom_with<F>(mut self, f: F) -> Self
     where
-        F: Fn(SlotProps) -> Primitive + 'static,
+        F: Fn(SlotProps) -> Element + 'static,
     {
         let builder: SlotBuilder = Box::new(f);
         with_presentation(&mut self, |p| {
@@ -959,7 +959,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
 
     fn trailing_with<F>(mut self, f: F) -> Self
     where
-        F: Fn(SlotProps) -> Primitive + 'static,
+        F: Fn(SlotProps) -> Element + 'static,
     {
         let builder: SlotBuilder = Box::new(f);
         with_presentation(&mut self, |p| {

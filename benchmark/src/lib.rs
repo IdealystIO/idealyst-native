@@ -28,7 +28,7 @@
 use backend_web::WebBackend;
 use runtime_core::{
     button, signal, stylesheet, text_input, toggle, ui, AlignItems, Color,
-    FlexDirection, JustifyContent, Length, Overflow, Primitive, Signal, TokenEntry, TokenValue,
+    FlexDirection, JustifyContent, Length, Overflow, Element, Signal, TokenEntry, TokenValue,
     Tokenized,
 };
 use idea_ui::{install_theme, ThemeTokens};
@@ -1273,7 +1273,7 @@ fn handle_message(payload: String) {
 // UI builders
 // =============================================================================
 
-fn sidebar() -> Primitive {
+fn sidebar() -> Element {
     let st = state();
     let selected = st.selected_variants.clone();
     let current_suite_sig = st.current_suite.clone();
@@ -1284,7 +1284,7 @@ fn sidebar() -> Primitive {
 
     // Suite-picker rows. Each row is a Toggle (acting as a radio)
     // bound to a per-suite "is selected" derived signal.
-    let suite_rows: Vec<Primitive> = SUITES.iter().map(|s| {
+    let suite_rows: Vec<Element> = SUITES.iter().map(|s| {
         let suite_name = s.name;
         let title = s.title;
         let selected_for_read = current_suite_sig.clone();
@@ -1341,7 +1341,7 @@ fn sidebar() -> Primitive {
                     {
                         let suite_name: &'static str = suite_name;
                         let selected = selected_v.clone();
-                        let rows: Vec<Primitive> = VARIANTS.iter()
+                        let rows: Vec<Element> = VARIANTS.iter()
                             .filter(|v| v.supports.contains(&suite_name))
                             .map(|v| {
                                 let id = v.id;
@@ -1397,7 +1397,7 @@ fn sidebar() -> Primitive {
                 suite_name => {
                     {
                         let suite = suite_by_name(suite_name);
-                        let rows: Vec<Primitive> = suite.params.iter().map(|p| {
+                        let rows: Vec<Element> = suite.params.iter().map(|p| {
                             let sig = st_for_params.params.get(&(suite.name, p.name))
                                 .expect("param signal missing for active suite")
                                 .clone();
@@ -1433,7 +1433,7 @@ fn sidebar() -> Primitive {
     }
 }
 
-fn frame_header() -> Primitive {
+fn frame_header() -> Element {
     let st = state();
     let cv_for_label = st.current_variant.clone();
     let status_sig = st.current_status.clone();
@@ -1471,7 +1471,7 @@ fn frame_header() -> Primitive {
     }
 }
 
-fn frame_wrap() -> Primitive {
+fn frame_wrap() -> Element {
     let st = state();
     let url_sig = st.iframe_url.clone();
     ui! {
@@ -1489,7 +1489,7 @@ fn frame_wrap() -> Primitive {
     }
 }
 
-fn results_table() -> Primitive {
+fn results_table() -> Element {
     let st = state();
     let results = st.results.clone();
     let version_sig = st.results_version.clone();
@@ -1513,7 +1513,7 @@ fn results_table() -> Primitive {
                     let headers = table_headers(suite);
                     let ncols_metrics = ncols(suite);
 
-                    let header_cells: Vec<Primitive> = headers.iter().map(|h| {
+                    let header_cells: Vec<Element> = headers.iter().map(|h| {
                         ui! { Text(style = TableHeaderCell()) { h.clone() } }
                     }).collect();
 
@@ -1541,7 +1541,7 @@ fn results_table() -> Primitive {
                                         }
                                     }
 
-                                    let body_rows: Vec<Primitive> = VARIANTS.iter().filter_map(|v| {
+                                    let body_rows: Vec<Element> = VARIANTS.iter().filter_map(|v| {
                                         let entry = results.get(v.id)?;
                                         let cols = column_medians(entry, suite);
                                         let (status_text, status_kind) = match &entry.status {
@@ -1551,7 +1551,7 @@ fn results_table() -> Primitive {
                                             VariantStatus::Done => ("done".to_string(), TableCellKind::Normal),
                                             VariantStatus::Error(msg) => (format!("× {}", msg), TableCellKind::Error),
                                         };
-                                        let mut cells: Vec<Primitive> = Vec::with_capacity(ncols_metrics + 2);
+                                        let mut cells: Vec<Element> = Vec::with_capacity(ncols_metrics + 2);
                                         cells.push(ui! { Text(style = TableCell().kind(TableCellKind::Label)) { v.label } });
                                         cells.push(ui! { Text(style = TableCell().kind(status_kind)) { status_text } });
                                         for i in 0..ncols_metrics {
@@ -1607,7 +1607,7 @@ fn results_table() -> Primitive {
     }
 }
 
-fn app() -> Primitive {
+fn app() -> Element {
     install_theme(bench_theme());
     ui! {
         View(style = Root()) {

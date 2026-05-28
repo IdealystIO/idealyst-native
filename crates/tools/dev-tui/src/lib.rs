@@ -25,7 +25,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use runtime_core::{raf_loop, text, view, Primitive, Signal};
+use runtime_core::{raf_loop, text, view, Element, Signal};
 
 /// One line of log output, scoped to the target that produced it.
 #[derive(Clone, Debug)]
@@ -107,7 +107,7 @@ pub struct RunOptions {
 /// land in a file instead).
 pub fn run(bus: DevBus, opts: RunOptions) -> Result<(), host_terminal::RunError> {
     // Capture for the app closure. `host_terminal::run` requires
-    // `Fn() -> Primitive + 'static`; the bus + opts get cloned in
+    // `Fn() -> Element + 'static`; the bus + opts get cloned in
     // once and the closure is re-invokable.
     let bus_for_app = bus.clone();
     let opts_for_app = opts.clone();
@@ -135,7 +135,7 @@ pub fn run(bus: DevBus, opts: RunOptions) -> Result<(), host_terminal::RunError>
 
 /// Construct the panel's primitive tree. Called once per mount; the
 /// framework's reactive system handles re-renders via signals.
-fn build_panel(bus: DevBus, opts: RunOptions) -> Primitive {
+fn build_panel(bus: DevBus, opts: RunOptions) -> Element {
     install_theme_once();
 
     // Backing store for the log view. Workers push into `bus`; the

@@ -13,7 +13,7 @@ mod widgets;
 use widgets::{title, TitleProps};
 
 #[component]
-pub fn app() -> Primitive {
+pub fn app() -> Element {
     let count: Signal<i32> = signal!(0_i32);
 
     ui! {

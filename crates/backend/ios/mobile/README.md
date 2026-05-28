@@ -71,7 +71,7 @@ adding a per-platform hack to the *call site* (in runtime-core or in
 author code), stop. The fix belongs in this backend. See
 `feedback_backend_owns_rendering` in memory and the project CLAUDE.md §7.
 
-## Primitive coverage status
+## Element coverage status
 
 Not all primitives are implemented yet. As of this README, the iOS backend
 is missing:

@@ -185,7 +185,7 @@ docs! {
 
     section(heading = "Extension primitives") {
         p("The Runtime ships a fixed list of primitives, but ",
-          code("Primitive::External"), " is an escape hatch: a tagged \
+          code("Element::External"), " is an escape hatch: a tagged \
            variant that lets a third-party crate define its own primitive \
            plus per-Backend implementations, then register them through the \
            Backend's external registry."),

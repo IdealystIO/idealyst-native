@@ -50,7 +50,7 @@ use crossterm::{
 };
 pub use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use runtime_core::color::Rgba;
-use runtime_core::Primitive;
+use runtime_core::Element;
 
 /// Where stderr lands while the terminal session is alive. Lives
 /// under the cwd's `.idealyst/` so it's easy to `tail -f` from
@@ -134,13 +134,13 @@ impl std::error::Error for RunError {}
 /// `register_extensions` runs after the [`TerminalBackend`] is
 /// constructed and the global self-handle is installed, but before
 /// the first `mount(...)`. SDK leaf crates (drawer-navigator,
-/// stack-navigator, third-party `Primitive::External` providers) get
+/// stack-navigator, third-party `Element::External` providers) get
 /// installed here — mirrors the web/iOS/Android wrappers which call
 /// `<user_crate>::register_extensions(&mut backend)` at the same
 /// point. Pass `|_| {}` if the app has no SDKs to register.
 pub fn run<F, R>(app: F, opts: RunOptions, register_extensions: R) -> Result<(), RunError>
 where
-    F: Fn() -> Primitive + 'static,
+    F: Fn() -> Element + 'static,
     R: FnOnce(&mut TerminalBackend),
 {
     let mut stdout = io::stdout();

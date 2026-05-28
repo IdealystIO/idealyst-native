@@ -1,4 +1,4 @@
-//! `Primitive::Virtualizer` — a scrolling `<div>` whose visible-range
+//! `Element::Virtualizer` — a scrolling `<div>` whose visible-range
 //! diff is handled by `runtime/js/virtualizer.js`.
 //!
 //! The shim defines `window.__idealystVirtualizer` (a JS class).

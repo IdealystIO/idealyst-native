@@ -13,7 +13,7 @@
 //!
 //! Screen swap on `Select` mirrors the stack handler's `Replace` —
 //! the outlet holds exactly one child at a time. The author renders
-//! per-screen titles inside their page Primitive.
+//! per-screen titles inside their page Element.
 
 use crate::{DrawerCmd, DrawerPresentation, DrawerSide, DrawerSlotProps};
 use backend_terminal::{TermNode, TerminalBackend};
@@ -167,7 +167,7 @@ impl NavigatorHandler<TerminalBackend> for TerminalDrawerHandler {
         control.install_link_activator(select_activator);
 
         // Materialize the sidebar content via the SDK's builder. The
-        // builder takes typed DrawerSlotProps and returns a Primitive;
+        // builder takes typed DrawerSlotProps and returns a Element;
         // `host.build_node` realizes it as a TermNode. The call MUST
         // run outside the outer backend borrow window (per host docs),
         // so we defer through `schedule_microtask`.

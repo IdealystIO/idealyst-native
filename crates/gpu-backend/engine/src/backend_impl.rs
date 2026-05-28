@@ -127,7 +127,7 @@ pub struct WgpuBackend {
     /// by `AssetId` in their per-backend `ImageCache`.
     pub(crate) image_asset_bytes:
         std::collections::HashMap<runtime_core::AssetId, Vec<u8>>,
-    /// Third-party `Primitive::External` registry. Populated by
+    /// Third-party `Element::External` registry. Populated by
     /// per-platform leaf crates at app bootstrap. wgpu apps wire
     /// WebView / Maps / etc. by calling
     /// `backend.register_external::<T, _>(handler)` on the wgpu
@@ -135,7 +135,7 @@ pub struct WgpuBackend {
     /// (no native overlay yet; the overlay-per-host story remains
     /// pending). Same registry shape iOS / Android / macOS use.
     pub(crate) external_handlers: runtime_core::ExternalRegistry<WgpuBackend>,
-    /// Registry of `Primitive::Navigator` handler factories. SDK
+    /// Registry of `Element::Navigator` handler factories. SDK
     /// leaves (`stack_navigator`, `tab_navigator`, `drawer_navigator`)
     /// call `register_navigator::<TheirPresentation, _>(factory)` at
     /// bootstrap; `create_navigator` resolves the matching factory
@@ -241,7 +241,7 @@ impl WgpuBackend {
         self.external_handlers.register::<T, _>(handler);
     }
 
-    /// Register a `Primitive::Navigator` handler factory keyed by
+    /// Register a `Element::Navigator` handler factory keyed by
     /// presentation type `P`. SDK leaf crates call this once at
     /// bootstrap. Mirrors `IosBackend::register_navigator` /
     /// `MacosBackend::register_navigator`.
@@ -2048,7 +2048,7 @@ where
     // it up starting from the next render. Bypasses `.bind(r)` —
     // the author doesn't need a `Ref` for this case.
     let drawer_box: crate::node::GraphicsDrawer = Box::new(drawer);
-    if let runtime_core::Primitive::Graphics { ref_fill, .. } = prim.primitive_mut() {
+    if let runtime_core::Element::Graphics { ref_fill, .. } = prim.primitive_mut() {
         *ref_fill = Some(runtime_core::RefFill::Graphics(Box::new(
             move |h: runtime_core::primitives::graphics::GraphicsHandle| {
                 register_graphics_drawer(&h, drawer_box);

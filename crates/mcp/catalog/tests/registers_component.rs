@@ -4,12 +4,12 @@
 //! any `ui!` / `jsx!` invocations in the body. Validates the full
 //! emission + `inventory` distributed slice round-trip.
 //!
-//! Test components return `Primitive` so the real `ui!` / `jsx!`
+//! Test components return `Element` so the real `ui!` / `jsx!`
 //! expansions inside the host components actually typecheck — the
 //! macro emission has to walk a parseable, compilable AST. Stubs
 //! return an empty view; bodies are never invoked at runtime.
 
-use runtime_core::Primitive;
+use runtime_core::Element;
 use runtime_macros::{component, idealyst_tool, jsx, ui, IdealystSchema};
 
 #[allow(dead_code)]
@@ -34,17 +34,17 @@ pub fn democomponent(_props: &DemoProps) -> u32 {
 // verbatim. Components are PascalCase; `#[component]` suppresses the
 // `non_snake_case` lint.
 #[component]
-pub fn ChildA() -> Primitive {
+pub fn ChildA() -> Element {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
 #[component]
-pub fn ChildB() -> Primitive {
+pub fn ChildB() -> Element {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
 #[component]
-pub fn ChildC() -> Primitive {
+pub fn ChildC() -> Element {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
@@ -52,17 +52,17 @@ pub fn ChildC() -> Primitive {
 // prove a lowercase tag still resolves verbatim: `<jsx_outer>` →
 // `jsx_outer!()` → `jsx_outer()`.
 #[component]
-pub fn jsx_outer() -> Primitive {
+pub fn jsx_outer() -> Element {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
 #[component]
-pub fn jsx_inner() -> Primitive {
+pub fn jsx_inner() -> Element {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
 #[component]
-pub fn jsx_fragmented() -> Primitive {
+pub fn jsx_fragmented() -> Element {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
@@ -129,7 +129,7 @@ pub fn nested_host(_props: &DemoProps) -> u32 {
 /// Host whose `ui!` body uses `for` to iterate. The visitor walks
 /// `UiNode::For.body` so the iterated `ChildA()` is captured.
 /// `View` wraps the for-loop because the top-level coercion expects
-/// a single `Primitive`, not a `Vec<Primitive>`.
+/// a single `Element`, not a `Vec<Element>`.
 #[allow(non_snake_case)]
 #[component]
 pub fn for_host(_props: &DemoProps) -> u32 {
@@ -189,11 +189,11 @@ pub fn multiline_docs(_props: &DemoProps) -> u32 {
 // over the root-level duplicate when both share a name.
 
 mod submodule {
-    use runtime_core::Primitive;
+    use runtime_core::Element;
     use runtime_macros::{component, ui};
 
     #[component]
-    pub fn Ambiguousname() -> Primitive {
+    pub fn Ambiguousname() -> Element {
         ::runtime_core::view(::std::vec::Vec::new())
     }
 
@@ -208,7 +208,7 @@ mod submodule {
 /// Root-level duplicate of `submodule::Ambiguousname`. Resolver must
 /// disambiguate per spec §6.
 #[component]
-pub fn Ambiguousname() -> Primitive {
+pub fn Ambiguousname() -> Element {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
@@ -838,7 +838,7 @@ pub struct CounterProps {
 /// Counter component with two imperative methods. The catalog should
 /// pick up both `reset` and `bump_by` with their docs and parameters.
 #[component]
-pub fn counter(_props: &CounterProps) -> runtime_core::Primitive {
+pub fn counter(_props: &CounterProps) -> runtime_core::Element {
     let value = runtime_core::signal!(0_i32);
     methods! {
         /// Reset the counter to zero.
@@ -878,7 +878,7 @@ fn methods_block_emits_method_entries() {
 // -----------------------------------------------------------------------------
 
 #[component]
-pub fn fader_demo() -> runtime_core::Primitive {
+pub fn fader_demo() -> runtime_core::Element {
     let _opacity = runtime_core::animated!(0.0_f32);
     let _scale = runtime_core::animated!(1.0_f32);
     ::runtime_core::view(::std::vec::Vec::new())

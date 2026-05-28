@@ -135,7 +135,7 @@ inventory::collect!(TypeEntry);
 /// can't write `PrimitiveEntry { name: ..., _seal: () }` — `#[non_exhaustive]`
 /// further blocks struct-literal construction at any call site. The
 /// open extension point for third-party "primitive-like" things is
-/// `Primitive::External` + the per-backend `ExternalRegistry`, not
+/// `Element::External` + the per-backend `ExternalRegistry`, not
 /// this slice.
 ///
 /// Read-only consumption: every metadata field is `pub`, so callers
@@ -148,7 +148,7 @@ pub struct PrimitiveEntry {
     /// Stable across versions.
     pub name: &'static str,
     /// PascalCase tag — what authors actually type inside `ui!` /
-    /// `jsx!`. Mirrors the variant ident on `Primitive`.
+    /// `jsx!`. Mirrors the variant ident on `Element`.
     pub pascal_name: &'static str,
     /// Concatenated `///` doc comments describing the primitive.
     /// Same shape/empty-string rules as [`ComponentEntry::docs`].

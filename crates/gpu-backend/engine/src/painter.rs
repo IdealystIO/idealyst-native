@@ -76,7 +76,7 @@ pub trait Painter {
     }
 
     // -----------------------------------------------------------
-    // Primitive style defaults
+    // Element style defaults
     // -----------------------------------------------------------
 
     /// Default `StyleRules` for a `Button`. The backend merges

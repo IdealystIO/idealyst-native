@@ -1,0 +1,23 @@
+# Detached (empty [workspace]) demo app for `idealyst build --web
+# --dynamic-split`. Not a workspace member — builds standalone against the
+# framework via path deps, so it's unaffected by in-progress edits elsewhere
+# in the workspace.
+[workspace]
+
+[package]
+name = "dynsplit-demo"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { path = "../../../runtime/core" }
+
+[package.metadata.idealyst.app]
+name      = "DynSplit Demo"
+bundle_id = "ai.idealyst.dynsplit_demo"
+version   = "0.0.1"
+targets   = ["web"]

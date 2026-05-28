@@ -1,12 +1,12 @@
 //! Robot & MCP — first-class automation and agentic control.
 
-use runtime_core::{ui, Primitive, Ref, ViewHandle};
+use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     let registry_ref: Ref<ViewHandle> = Ref::new();
     let e2e_ref: Ref<ViewHandle> = Ref::new();
     let methods_ref: Ref<ViewHandle> = Ref::new();
@@ -40,9 +40,9 @@ pub fn page() -> Primitive {
     layout_with_toc(content, toc)
 }
 
-fn registry() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "The introspection registry".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+fn registry() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "The introspection registry".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Every mounted primitive registers itself with a shared \
                 registry. Each entry carries a stable handle, a `test_id`, a label, and a \
@@ -57,15 +57,15 @@ fn registry() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn e2e_tests() -> Primitive {
+fn e2e_tests() -> Element {
     let snippet = "// Robot.rs \u{2014} cross-platform E2E test harness.\n\
                    let robot = Robot::connect(\"localhost:9000\")?;\n\
                    robot.tap_by_test_id(\"submit-button\")?;\n\
                    robot.type_text_into(\"name-field\", \"Alice\")?;\n\
                    let count = robot.signal_value::<i32>(\"counter\")?;\n\
                    assert_eq!(count, 1);";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "E2E test harnesses".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "E2E test harnesses".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Query by `test_id`, click buttons, type into inputs, \
                 read signals, snapshot the tree. The same `Robot` API drives web, iOS, \
@@ -77,8 +77,8 @@ fn e2e_tests() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn methods_macro() -> Primitive {
-    let snippet = "#[component]\npub fn Cart(props: &CartProps) -> Primitive {\n    \
+fn methods_macro() -> Element {
+    let snippet = "#[component]\npub fn Cart(props: &CartProps) -> Element {\n    \
                        let items = signal!(Vec::<Item>::new());\n    \
                        \n    \
                        methods! {\n        \
@@ -95,8 +95,8 @@ fn methods_macro() -> Primitive {
                        \n    \
                        // ...the rest of the component\n\
                    }";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "`methods! { ... }`".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "`methods! { ... }`".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Inside a `#[component]` body, a `methods! { ... }` block \
                 exposes named methods that the registry registers as JSON-callable. \
@@ -112,7 +112,7 @@ fn methods_macro() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn mcp_server() -> Primitive {
+fn mcp_server() -> Element {
     let snippet = "// claude_desktop_config.json\n\
                    {\n  \"mcpServers\": {\n    \
                        \"idealyst\": {\n      \
@@ -120,8 +120,8 @@ fn mcp_server() -> Primitive {
                            \"args\": [\"--from-bin\", \"./target/debug/my-app\"]\n    \
                        }\n  }\n\
                    }";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "MCP server".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "MCP server".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "`idealyst-mcp` is a stdio MCP server that turns each \
                 registry capability into an MCP tool. Drop it into a Claude Desktop \
@@ -138,9 +138,9 @@ fn mcp_server() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn build_profile() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Gated on a Cargo feature".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+fn build_profile() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Gated on a Cargo feature".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "The Robot bridge + registry compile in only when the \
                 `robot` feature is on. Production release builds leave it off; there's \

@@ -27,7 +27,7 @@ system the renderer paints with.
 
 ## What's supported
 
-| Primitive            | Status                | Notes                                  |
+| Element            | Status                | Notes                                  |
 |----------------------|-----------------------|----------------------------------------|
 | View                 | Full                  | Backgrounds, borders, opacity, rounded corners |
 | Text                 | Full                  | 8×8 bitmap font, multi-line wrap       |

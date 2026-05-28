@@ -1,7 +1,7 @@
 //! `TextSource` + `StyleSource` and their `Into*Source` constructor
 //! traits.
 //!
-//! These are foundational types — `Primitive` variants store them
+//! These are foundational types — `Element` variants store them
 //! directly, and the public-facing primitive constructors (`text`,
 //! `button`, `with_style`, …) accept anything implementing the
 //! associated `Into*Source` trait so author code can pass static

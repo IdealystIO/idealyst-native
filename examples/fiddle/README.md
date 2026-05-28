@@ -48,7 +48,7 @@ iframe reloads with the freshly-compiled snippet.
    shim that imports `./pkg/snippet.js`.
 4. Editor flips the iframe `src` to `/compiled/<hash>/?t=<bust>`.
 5. Iframe loads the snippet wasm, which mounts a `host-web` simulator
-   on a canvas and renders the user's `pub fn app() -> Primitive`
+   on a canvas and renders the user's `pub fn app() -> Element`
    inside the iOS skin.
 
 The cache key is `sha256(source)[:8]`, so re-running unchanged source
@@ -69,7 +69,7 @@ and `std::rc::Rc`. Anything outside that prelude needs the usual
 fully-qualified path. Snippets must define:
 
 ```rust
-pub fn app() -> Primitive { /* ... */ }
+pub fn app() -> Element { /* ... */ }
 ```
 
 ## Caveats (v1)

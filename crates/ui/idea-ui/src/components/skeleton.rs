@@ -18,7 +18,7 @@
 //! }
 //! ```
 
-use runtime_core::{ui, Length, Primitive, StyleApplication};
+use runtime_core::{ui, Length, Element, StyleApplication};
 
 use crate::stylesheets::Skeleton;
 use crate::theme::IdeaThemeRef;
@@ -56,7 +56,7 @@ impl Default for SkeletonProps {
     }
 }
 
-pub fn skeleton(props: &SkeletonProps) -> Primitive {
+pub fn skeleton(props: &SkeletonProps) -> Element {
     let height = props.height;
     let radius = props.radius;
     let width = match props.width {

@@ -1,4 +1,4 @@
-//! `Primitive::Text` — `android.widget.TextView`.
+//! `Element::Text` — `android.widget.TextView`.
 
 use backend_android_core::helpers::{apply_default_layout_params, set_text};
 use crate::imp::{with_env, AndroidBackend};

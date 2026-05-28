@@ -1,4 +1,4 @@
-//! `Primitive::ScrollView` — a `<div>` with `overflow: auto` on the
+//! `Element::ScrollView` — a `<div>` with `overflow: auto` on the
 //! requested axis.
 
 use crate::WebBackend;

@@ -1,6 +1,6 @@
 //! `Divider` — thin separator line, horizontal or vertical.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Element};
 
 use crate::stylesheets::Divider;
 pub use crate::stylesheets::DividerAxis;
@@ -11,7 +11,7 @@ pub struct DividerProps {
     pub axis: DividerAxis,
 }
 
-pub fn divider(props: &DividerProps) -> Primitive {
+pub fn divider(props: &DividerProps) -> Element {
     let axis = props.axis;
     let style = Divider().axis(axis);
     ui! { View(style = style) {} }

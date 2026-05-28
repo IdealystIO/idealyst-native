@@ -22,7 +22,7 @@
 //! immediately followed by `(` or `{`. Capitalization is purely a
 //! convention; the parser doesn't consult it. A bare `Foo` (no parens,
 //! no brace) is parsed as a plain Rust expression — useful for things
-//! like dropping a precomputed `Primitive` into a children slot.
+//! like dropping a precomputed `Element` into a children slot.
 //!
 //! ## Dispatch
 //!
@@ -36,7 +36,7 @@
 //!
 //! Reactive `if` (conditions containing `.get()`) is rewritten to
 //! `when(cond, then, otherwise)`; non-reactive `if` is emitted verbatim.
-//! `for` desugars to a `Vec<Primitive>` built by mapping over the
+//! `for` desugars to a `Vec<Element>` built by mapping over the
 //! iterable.
 //!
 //! ## Attribute coercion
@@ -392,13 +392,13 @@ fn collect_from_nodes(nodes: &[UiNode], out: &mut Vec<(String, u32)>) {
     }
 }
 
-/// Top-level emit: produce a single expression that yields a `Primitive`.
+/// Top-level emit: produce a single expression that yields a `Element`.
 /// If the `ui!` body has exactly one element, emit it directly. Otherwise
 /// wrap in `view(children![...])`. The whole expression is coerced via
-/// `IntoPrimitive` so the macro's caller (typically a `#[component]`
-/// function returning `Primitive`) gets the right type whether the
+/// `IntoElement` so the macro's caller (typically a `#[component]`
+/// function returning `Element`) gets the right type whether the
 /// inner expression is a `Bound<H>` (from a primitive constructor like
-/// `view(...)`) or a plain `Primitive` (from a user component's macro
+/// `view(...)`) or a plain `Element` (from a user component's macro
 /// expansion).
 /// Where a node is being emitted, which decides how control-flow
 /// lowers:
@@ -406,13 +406,13 @@ fn collect_from_nodes(nodes: &[UiNode], out: &mut Vec<(String, u32)>) {
 /// - [`Ctx::Child`] — the node sits in a children list (`View { … }`,
 ///   a component's children, a `for`/`if`/`match` body, the top-level
 ///   when there's more than one element). Here a control-flow node may
-///   produce a flat `Vec<Primitive>` (0 / 1 / N siblings); the
+///   produce a flat `Vec<Element>` (0 / 1 / N siblings); the
 ///   surrounding `ChildList::append_to` flattens it. Static `if`/`match`
 ///   branches therefore emit **flat siblings** — no wrapper `View`, and
 ///   a missing `else` contributes nothing (not an empty `View`).
 ///
-/// - [`Ctx::Single`] — the node must be exactly one `Primitive`: the
-///   sole top-level element (coerced via `IntoPrimitive`), or a
+/// - [`Ctx::Single`] — the node must be exactly one `Element`: the
+///   sole top-level element (coerced via `IntoElement`), or a
 ///   `when`/`switch` branch / virtualizer row built by
 ///   [`emit_block_as_primitive`]. Control-flow that would otherwise be a
 ///   `Vec` (a `for`, a flattened `if`) is wrapped in a single `View`
@@ -429,14 +429,14 @@ enum Ctx {
 pub fn emit(ui: Ui) -> TokenStream2 {
     let body = match ui.elements.len() {
         0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
-        // Sole element: it is coerced to one `Primitive` below, so emit
+        // Sole element: it is coerced to one `Element` below, so emit
         // it in single-slot context.
         1 => emit_node(&ui.elements[0], Ctx::Single),
         _ => {
             let kids = ui.elements.iter().map(|n| emit_node(n, Ctx::Child));
             quote! {
                 ::runtime_core::view({
-                    let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                    let mut __c: ::std::vec::Vec<::runtime_core::Element>
                         = ::std::vec::Vec::new();
                     #( ::runtime_core::ChildList::append_to(#kids, &mut __c); )*
                     __c
@@ -444,7 +444,7 @@ pub fn emit(ui: Ui) -> TokenStream2 {
             }
         }
     };
-    quote! { ::runtime_core::IntoPrimitive::into_primitive(#body) }
+    quote! { ::runtime_core::IntoElement::into_element(#body) }
 }
 
 fn emit_node(node: &UiNode, ctx: Ctx) -> TokenStream2 {
@@ -882,7 +882,7 @@ fn emit_view(_props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
     quote! {
         ::runtime_core::view({
-            let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+            let mut __c: ::std::vec::Vec<::runtime_core::Element>
                 = ::std::vec::Vec::new();
             #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
             __c
@@ -1021,7 +1021,7 @@ fn emit_scroll_view(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2
     };
     quote! {
         ::runtime_core::primitives::scroll_view::scroll_view({
-            let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+            let mut __c: ::std::vec::Vec<::runtime_core::Element>
                 = ::std::vec::Vec::new();
             #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
             __c
@@ -1142,7 +1142,7 @@ fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
     let children_vec = quote! {
         {
-            let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+            let mut __c: ::std::vec::Vec<::runtime_core::Element>
                 = ::std::vec::Vec::new();
             #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
             __c
@@ -1224,7 +1224,7 @@ fn emit_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
 
     quote! {
         ::runtime_core::primitives::overlay::overlay({
-            let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+            let mut __c: ::std::vec::Vec<::runtime_core::Element>
                 = ::std::vec::Vec::new();
             #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
             __c
@@ -1324,7 +1324,7 @@ fn emit_anchored_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenSt
         ::runtime_core::primitives::overlay::anchored_overlay(
             #target_value,
             {
-                let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                let mut __c: ::std::vec::Vec<::runtime_core::Element>
                     = ::std::vec::Vec::new();
                 #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
                 __c
@@ -1439,15 +1439,21 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> Token
     // macro-name resolution, so renamed imports (`use … as Foo`),
     // qualified paths, and IDE go-to-definition work.
     let macro_name = name;
+    // Pass prop values VERBATIM. The invocation macro coerces every
+    // field via `.into()` (uniform Path-A coercion), so adding a literal
+    // `.into()` here would create an ambiguous double conversion.
+    // `From<&str>/From<String>` land literals in `String` (or
+    // `Reactive<String>`) props; `From<T> for T` is reflexive for
+    // anything already the field type.
     let prop_assignments = props.iter().map(|p| {
         let n = &p.name;
-        let v = emit_attr_value(&p.value);
+        let v = &p.value;
         quote! { #n = #v }
     });
 
     if let Some(kids) = children {
         let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
-        // Always emit children as a Vec<Primitive>. If the component expects
+        // Always emit children as a Vec<Element>. If the component expects
         // a different type, the user gets a type error at the call site —
         // intentional; we don't try to be polymorphic across children types
         // for user components in this first cut.
@@ -1455,7 +1461,7 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> Token
             #macro_name!(
                 #(#prop_assignments,)*
                 children = {
-                    let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                    let mut __c: ::std::vec::Vec<::runtime_core::Element>
                         = ::std::vec::Vec::new();
                     #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
                     __c
@@ -1467,12 +1473,12 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> Token
     }
 }
 
-/// An empty `View`, coerced to `Primitive` — used as the `else`
+/// An empty `View`, coerced to `Element` — used as the `else`
 /// branch of a single-slot `if`/`when` that has no author `else`, so
-/// both arms have the same `Primitive` type.
+/// both arms have the same `Element` type.
 fn empty_view_primitive() -> TokenStream2 {
     quote! {
-        ::runtime_core::IntoPrimitive::into_primitive(
+        ::runtime_core::IntoElement::into_element(
             ::runtime_core::view(::std::vec::Vec::new())
         )
     }
@@ -1484,7 +1490,7 @@ fn emit_if(
     else_body: Option<&[UiNode]>,
     ctx: Ctx,
 ) -> TokenStream2 {
-    // Reactive lowerings return ONE `when(...)` Primitive — a reactive
+    // Reactive lowerings return ONE `when(...)` Element — a reactive
     // branch is a single subtree, so multi-node branches wrap by
     // necessity (that's correct; the reactive anchor needs one root per
     // branch). `then`/`else` are single Primitives via
@@ -1512,15 +1518,15 @@ fn emit_if(
 
     // 3. Static `if` — no reactivity. How it lowers depends on context.
     match ctx {
-        // Single-slot: must be one Primitive. Plain Rust `if`, both arms
-        // coerced to Primitive (missing `else` → empty View).
+        // Single-slot: must be one Element. Plain Rust `if`, both arms
+        // coerced to Element (missing `else` → empty View).
         Ctx::Single => {
             let then_expr = emit_block_as_primitive(then_body);
             let else_expr =
                 else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
             quote! { if #cond { #then_expr } else { #else_expr } }
         }
-        // Children-slot: flatten to a `Vec<Primitive>`. The taken branch
+        // Children-slot: flatten to a `Vec<Element>`. The taken branch
         // appends its nodes as FLAT siblings (no wrapper View); a missing
         // `else` contributes nothing (no empty-View placeholder). The
         // surrounding `ChildList::append_to` flattens the vec.
@@ -1535,7 +1541,7 @@ fn emit_if(
             };
             quote! {
                 {
-                    let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                    let mut __c: ::std::vec::Vec<::runtime_core::Element>
                         = ::std::vec::Vec::new();
                     if #cond {
                         #( ::runtime_core::ChildList::append_to(#then_parts, &mut __c); )*
@@ -1580,11 +1586,11 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
     // Priority order, same as emit_if:
     //   1. Structured match — scrutinee is a `method(sig, ...)` call
     //      and every arm is `LITERAL => body` (or `_ => body` for
-    //      the default). Lower to a structured `Primitive::Switch`
+    //      the default). Lower to a structured `Element::Switch`
     //      so generator backends (Roku) can ship the binding
     //      declaratively.
     //   2. Reactive closure — scrutinee reads a signal via `.get()`.
-    //      Lower to `runtime_core::switch(..)` — one Primitive per arm.
+    //      Lower to `runtime_core::switch(..)` — one Element per arm.
     //   3. Plain Rust `match` — no reactivity. Flattens in children-slot.
     if let Some(structured) = try_emit_structured_match(scrutinee, arms) {
         return structured;
@@ -1599,7 +1605,7 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
                 let pat = &arm.pat;
                 let body = emit_block_as_primitive(&arm.body);
                 let body_coerced =
-                    quote! { ::runtime_core::IntoPrimitive::into_primitive(#body) };
+                    quote! { ::runtime_core::IntoElement::into_element(#body) };
                 match &arm.guard {
                     Some(g) => quote! { #pat if #g => #body_coerced },
                     None => quote! { #pat => #body_coerced },
@@ -1618,7 +1624,7 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
 
     // Static `match` — no reactivity.
     match ctx {
-        // Single-slot: one Primitive. Each arm coerced via IntoPrimitive.
+        // Single-slot: one Element. Each arm coerced via IntoElement.
         Ctx::Single => {
             let arm_tokens: Vec<TokenStream2> = arms
                 .iter()
@@ -1626,7 +1632,7 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
                     let pat = &arm.pat;
                     let body = emit_block_as_primitive(&arm.body);
                     let body_coerced =
-                        quote! { ::runtime_core::IntoPrimitive::into_primitive(#body) };
+                        quote! { ::runtime_core::IntoElement::into_element(#body) };
                     match &arm.guard {
                         Some(g) => quote! { #pat if #g => #body_coerced },
                         None => quote! { #pat => #body_coerced },
@@ -1641,7 +1647,7 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
         }
         // Children-slot: each arm appends its nodes as FLAT siblings into
         // a shared vec (no per-arm wrapper View). The whole `match`
-        // evaluates to that `Vec<Primitive>`.
+        // evaluates to that `Vec<Element>`.
         Ctx::Child => {
             let arm_tokens: Vec<TokenStream2> = arms
                 .iter()
@@ -1659,7 +1665,7 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
                 .collect();
             quote! {
                 {
-                    let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                    let mut __c: ::std::vec::Vec<::runtime_core::Element>
                         = ::std::vec::Vec::new();
                     match #scrutinee {
                         #( #arm_tokens )*
@@ -1672,7 +1678,7 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
 }
 
 /// Lower `match method(sig) { 0 => body0, 1 => body1, _ => default }`
-/// directly into a `Primitive::Switch` carrying a structured
+/// directly into a `Element::Switch` carrying a structured
 /// `Derived<serde_json::Value>` discriminant + literal-keyed arms.
 /// Returns `None` if any arm has a non-literal pattern, a guard,
 /// or the scrutinee isn't a structured call shape — the caller
@@ -1757,7 +1763,7 @@ fn try_emit_structured_match(scrutinee: &Expr, arms: &[MatchArm]) -> Option<Toke
                 (
                     #pat_value,
                     ::std::boxed::Box::new(move || #body_expr)
-                        as ::std::boxed::Box<dyn ::std::ops::Fn() -> ::runtime_core::Primitive>,
+                        as ::std::boxed::Box<dyn ::std::ops::Fn() -> ::runtime_core::Element>,
                 )
             }
         })
@@ -1765,7 +1771,7 @@ fn try_emit_structured_match(scrutinee: &Expr, arms: &[MatchArm]) -> Option<Toke
     let default_expr = emit_block_as_primitive(default);
 
     Some(quote! {
-        ::runtime_core::Primitive::Switch {
+        ::runtime_core::Element::Switch {
             discriminant: ::runtime_core::Derived::<::runtime_core::__serde_json::Value> {
                 method:  #method_lit,
                 inputs:  ::std::vec![ #(#id_calls),* ],
@@ -1818,7 +1824,7 @@ fn emit_for(
     // `ChildList`-appendable, so it drops straight into a children slot.
     // In single-slot position (sole top-level element, or a `when` /
     // `switch` branch that is just a loop) the result must be ONE
-    // `Primitive`: the Virtualizer / reactive-range `each` forms already
+    // `Element`: the Virtualizer / reactive-range `each` forms already
     // ARE one primitive (`is_single`), so they pass through; the `Vec`
     // forms (Repeat, type-driven dispatch) are wrapped in a `View`.
     let (child_form, is_single) = emit_for_children(pat, iter, body, chain);
@@ -1827,7 +1833,7 @@ fn emit_for(
         Ctx::Single if is_single => child_form,
         Ctx::Single => quote! {
             ::runtime_core::view({
-                let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                let mut __c: ::std::vec::Vec<::runtime_core::Element>
                     = ::std::vec::Vec::new();
                 ::runtime_core::ChildList::append_to(#child_form, &mut __c);
                 __c
@@ -1837,8 +1843,8 @@ fn emit_for(
 }
 
 /// Returns `(tokens, is_single)` where `is_single` is true when the
-/// emitted form is already exactly one `Primitive` (Virtualizer /
-/// reactive-range `each`) and false when it's a `Vec<Primitive>`
+/// emitted form is already exactly one `Element` (Virtualizer /
+/// reactive-range `each`) and false when it's a `Vec<Element>`
 /// (Repeat / type-driven dispatch) that a single-slot caller must wrap.
 fn emit_for_children(
     pat: &syn::Pat,
@@ -1847,7 +1853,7 @@ fn emit_for_children(
     chain: &[TokenStream2],
 ) -> (TokenStream2, bool) {
     // Reactive-list path: `for IDENT in count_method(sig) { body }` —
-    // lower to a `Primitive::Virtualizer` carrying a structured
+    // lower to a `Element::Virtualizer` carrying a structured
     // `Derived<usize>` for the count plus a row template. This is
     // what `bind_repeat!` used to do explicitly. Try this BEFORE
     // the static range path so a method-call iterator wins over
@@ -1872,7 +1878,7 @@ fn emit_for_children(
         let parts: Vec<TokenStream2> = body.iter().map(|n| emit_node(n, Ctx::Child)).collect();
         let each = quote! {
             ::runtime_core::each(move || {
-                let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                let mut __c: ::std::vec::Vec<::runtime_core::Element>
                     = ::std::vec::Vec::new();
                 for #pat in #iter {
                     #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
@@ -1889,7 +1895,7 @@ fn emit_for_children(
     }
 
     // Static range fast path: `for i in 0..n { single_node }` → batched
-    // `Primitive::Repeat`, expanded by the walker into the parent's
+    // `Element::Repeat`, expanded by the walker into the parent's
     // children via `insert_many` (DocumentFragment batching on web).
     // Single-node bodies only: `Repeat` is one-node-per-index, so a
     // multi-node body would need a wrapper View — refused, since
@@ -1907,14 +1913,14 @@ fn emit_for_children(
     // with BOTH `StaticForEach` and `ReactiveForEach` in scope; Rust
     // method resolution picks the impl from ITER's *type*:
     //   - `Signal<C>` (a signal of a cloneable iterable) → a reactive
-    //     `Primitive::Each` that rebuilds when the signal changes,
+    //     `Element::Each` that rebuilds when the signal changes,
     //   - any other `IntoIterator` (Vec, &Vec, array, HashMap, …) → a
-    //     flat, built-once `Vec<Primitive>`.
+    //     flat, built-once `Vec<Element>`.
     //
     // No `.get()` substring is inspected — the type decides — so a
     // `HashMap::get()` (or any incidental `.get()`) can never make a
     // loop accidentally reactive, and a real signal iterable is never
-    // silently missed. The per-item builder returns a `Vec<Primitive>`
+    // silently missed. The per-item builder returns a `Vec<Element>`
     // (flat siblings; multi-node bodies contribute multiple siblings)
     // and the impl concatenates them.
     let parts: Vec<TokenStream2> = body.iter().map(|n| emit_node(n, Ctx::Child)).collect();
@@ -1923,7 +1929,7 @@ fn emit_for_children(
             #[allow(unused_imports)]
             use ::runtime_core::{StaticForEach as _, ReactiveForEach as _};
             (#iter).__idealyst_for_each(move |#pat| {
-                let mut __row: ::std::vec::Vec<::runtime_core::Primitive>
+                let mut __row: ::std::vec::Vec<::runtime_core::Element>
                     = ::std::vec::Vec::new();
                 #( ::runtime_core::ChildList::append_to(#parts, &mut __row); )*
                 __row
@@ -1939,7 +1945,7 @@ fn emit_for_children(
 }
 
 /// Try to lower `for IDENT in count_method(sig, ...) { body }` to a
-/// `Primitive::Virtualizer` carrying a structured `Derived<usize>`
+/// `Element::Virtualizer` carrying a structured `Derived<usize>`
 /// (the count) + a captured row template. The IDENT inside the
 /// body becomes a `Signal<i32>` carrying the row's index — same
 /// trick `bind_repeat!` used. Returns `None` if the iterator
@@ -2012,13 +2018,13 @@ fn try_emit_for_virtualizer(
             let __row_index_id: ::std::option::Option<u64> =
                 ::std::option::Option::Some(::runtime_core::Signal::<i32>::id(&#row_ident));
             // Build the row template against the index-0 placeholder.
-            let __row_template: ::runtime_core::Primitive =
-                ::runtime_core::IntoPrimitive::into_primitive(#body_expr);
+            let __row_template: ::runtime_core::Element =
+                ::runtime_core::IntoElement::into_element(#body_expr);
             // Wrap in a `Bound<VirtualizerHandle>` so the trailing
             // chain (e.g. `.with_style(...)`, `.horizontal(true)`)
             // applies to the Bound's methods. The structured
             // emission populates every field of the underlying
-            // `Primitive::Virtualizer`; chain methods can mutate
+            // `Element::Virtualizer`; chain methods can mutate
             // them after construction.
             #[allow(unused_mut)]
             let mut __vh = ::runtime_core::primitives::virtualizer::virtualizer(
@@ -2043,14 +2049,14 @@ fn try_emit_for_virtualizer(
                     // rows on every runtime backend.
                     let #row_ident: ::runtime_core::Signal<i32> =
                         ::runtime_core::signal!(__idx as i32);
-                    ::runtime_core::IntoPrimitive::into_primitive(#body_expr)
+                    ::runtime_core::IntoElement::into_element(#body_expr)
                 }),
             );
             // Patch the structured-only fields on the underlying
-            // Primitive::Virtualizer. The `virtualizer()` builder
+            // Element::Virtualizer. The `virtualizer()` builder
             // doesn't know about them (it only handles the closure
             // shape) so we mutate them directly here.
-            if let ::runtime_core::Primitive::Virtualizer {
+            if let ::runtime_core::Element::Virtualizer {
                 item_count, row_template, row_index_signal_id, ..
             } = &mut __vh.primitive_mut() {
                 *item_count = ::runtime_core::Derived::<usize> {
@@ -2070,7 +2076,7 @@ fn try_emit_for_virtualizer(
 }
 
 /// Try to lower `for PAT in RANGE { body }` to a single
-/// `Primitive::Repeat`. Returns `Some(tokens)` only when the
+/// `Element::Repeat`. Returns `Some(tokens)` only when the
 /// shape is one we can statically recognize:
 ///
 /// - `iter` is a syntactic range expression with both bounds.
@@ -2115,33 +2121,33 @@ fn try_emit_for_repeat(
     // of `for i in 5..10 { use(i) }` inside the row builder.
     Some(quote! {
         ::std::vec![
-            ::runtime_core::Primitive::Repeat {
+            ::runtime_core::Element::Repeat {
                 // `(end - start)` evaluated as `usize`. Author code
                 // commonly writes `0..n` where `n: usize`; this works
                 // with any integer type via the `usize::try_from`
-                // fallback in `Primitive::Repeat`'s constructor, but
+                // fallback in `Element::Repeat`'s constructor, but
                 // we accept the simpler cast here because the macro's
                 // surface is `usize`-typed loops.
                 count: (#end - #start) as usize,
                 row_builder: ::std::boxed::Box::new(move |__i: usize| {
                     let #ident = (#start) + __i;
-                    ::runtime_core::IntoPrimitive::into_primitive(#body_expr)
+                    ::runtime_core::IntoElement::into_element(#body_expr)
                 }),
             }
         ]
     })
 }
 
-/// Emit a block of UI nodes as a single `Primitive`-producing expression.
+/// Emit a block of UI nodes as a single `Element`-producing expression.
 /// Used for if/else/for branches where we need exactly one primitive value.
-/// The result is coerced via `IntoPrimitive` so the branch can produce
-/// either a `Bound<H>` (from a primitive constructor) or a `Primitive`
+/// The result is coerced via `IntoElement` so the branch can produce
+/// either a `Bound<H>` (from a primitive constructor) or a `Element`
 /// (from a user component) and the surrounding `when()` / `if`
-/// expression always sees `Primitive`.
+/// expression always sees `Element`.
 fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
     let body = match nodes.len() {
         0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
-        // Sole node must itself be one Primitive: single-slot context.
+        // Sole node must itself be one Element: single-slot context.
         1 => emit_node(&nodes[0], Ctx::Single),
         // Multiple nodes genuinely need a wrapper to collapse to one
         // value; the wrapper's children are a list, so each is Child.
@@ -2149,7 +2155,7 @@ fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
             let parts = nodes.iter().map(|n| emit_node(n, Ctx::Child));
             quote! {
                 ::runtime_core::view({
-                    let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
+                    let mut __c: ::std::vec::Vec<::runtime_core::Element>
                         = ::std::vec::Vec::new();
                     #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
                     __c
@@ -2157,7 +2163,7 @@ fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
             }
         }
     };
-    quote! { ::runtime_core::IntoPrimitive::into_primitive(#body) }
+    quote! { ::runtime_core::IntoElement::into_element(#body) }
 }
 
 /// Emit a `DrawerNavigator(...) { Screen(...) { ... } ... }`
@@ -2218,7 +2224,7 @@ fn emit_drawer_navigator(props: &[Prop], children: Option<&[UiNode]>) -> TokenSt
                         };
                     }
                 };
-                // Build the body Primitive from the Screen's children
+                // Build the body Element from the Screen's children
                 // and wrap it in a render closure so the framework
                 // can rebuild lazily on each Select.
                 let body_nodes: &[UiNode] = screen_children.as_deref().unwrap_or(&[]);
@@ -2292,9 +2298,9 @@ fn emit_card_tabs(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
                         };
                     }
                 };
-                // Build the body Primitive from the Tab's children
+                // Build the body Element from the Tab's children
                 // and wrap it in a render closure. The closure is
-                // `Rc<dyn Fn() -> Primitive>` so it can be cheaply
+                // `Rc<dyn Fn() -> Element>` so it can be cheaply
                 // cloned into a `switch` branches closure that
                 // dispatches by index.
                 let body_nodes: &[UiNode] = tab_children.as_deref().unwrap_or(&[]);
@@ -2303,7 +2309,7 @@ fn emit_card_tabs(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
                     (
                         ::std::string::String::from(#label),
                         ::std::rc::Rc::new(move || #body_expr)
-                            as ::std::rc::Rc<dyn Fn() -> ::runtime_core::Primitive>,
+                            as ::std::rc::Rc<dyn Fn() -> ::runtime_core::Element>,
                     )
                 });
             }
@@ -2391,10 +2397,17 @@ mod tests {
     }
 
     #[test]
-    fn user_component_string_literal_attr_gets_into() {
+    fn user_component_attr_values_pass_verbatim() {
         let out = parse_and_emit(quote! { Counter(label = "x", value = score) });
-        // `.into()` applied to the string literal attribute value.
-        assert!(out.contains("\"x\" . into ()"));
+        // emit_user passes prop values VERBATIM — the invocation macro
+        // applies the uniform `.into()` coercion, so `ui!` must NOT add
+        // its own (a second conversion would be ambiguous).
+        assert!(out.contains("\"x\""));
+        assert!(
+            !out.contains("\"x\" . into ()"),
+            "ui! must not add .into() to user-component props; got: {}",
+            out,
+        );
     }
 
     #[test]
@@ -2427,7 +2440,7 @@ mod tests {
         // `Text { ... }` without the parser trying to grab `count` as
         // a prop name.
         let out = parse_and_emit(quote! { mycomp(x = 1) });
-        // Should be wrapped via IntoPrimitive::into_primitive (the
+        // Should be wrapped via IntoElement::into_element (the
         // expression-passthrough path), NOT dispatched to a
         // `mycomp!` invocation macro.
         assert!(
@@ -2436,7 +2449,7 @@ mod tests {
             out,
         );
         assert!(
-            out.contains("into_primitive") && out.contains("mycomp"),
+            out.contains("into_element") && out.contains("mycomp"),
             "expected expression-passthrough; got: {}",
             out,
         );
@@ -2512,7 +2525,7 @@ mod tests {
             }
         });
         // Both Counter calls appear, and the wrapping ChildList::append_to
-        // ensures they flatten into Vec<Primitive>.
+        // ensures they flatten into Vec<Element>.
         let count = out.matches("Counter !").count();
         assert_eq!(count, 2);
     }

@@ -33,7 +33,7 @@ docs! {
             my-app/
               Cargo.toml          # crate manifest + Idealyst metadata
               src/
-                lib.rs            # exports `pub fn app() -> Primitive`
+                lib.rs            # exports `pub fn app() -> Element`
         "##),
         p("There's no ", code("ios/"), ", no ", code("android/"), ", no ",
           code("web/"), ". The per-platform host crates that turn ", code("app()"),
@@ -152,7 +152,7 @@ docs! {
            rebuild + remount when it detects one. The common cases:"),
         list(
             ["Top-level signature changes — adding a parameter to ", code("app()"), ", for example. The dispatcher can't reconcile the call site."],
-            ["Adding a ", code("methods!"), " block to a component that didn't have one. The return type changes from ", code("Primitive"), " to ", code("Bindable<Handle>"), "."],
+            ["Adding a ", code("methods!"), " block to a component that didn't have one. The return type changes from ", code("Element"), " to ", code("Bindable<Handle>"), "."],
             ["Renaming or removing a component. No identity to map."],
         ),
         p("For everyday editing — tweaking strings, layout, styles, signal \

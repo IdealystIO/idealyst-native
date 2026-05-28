@@ -1,6 +1,6 @@
 //! Idealyst documentation site.
 //!
-//! Single, platform-agnostic crate: [`app`] returns a `Primitive`
+//! Single, platform-agnostic crate: [`app`] returns a `Element`
 //! tree that runs unchanged on every backend the framework supports.
 //! The per-platform glue (wasm-bindgen entry for web, etc.) is the
 //! responsibility of the `idealyst` CLI, which materializes those
@@ -18,7 +18,7 @@
 //! `#[macro_use]` lifts those to crate-root scope so page modules
 //! can invoke them via the `ui!` DSL.
 
-use runtime_core::{component, signal, ui, Primitive, Ref, Screen, Signal};
+use runtime_core::{component, signal, ui, Element, Ref, Screen, Signal};
 use drawer_navigator::{
     DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerScreenExt, HeaderStyle,
 };
@@ -102,7 +102,7 @@ use routes::{
 use shell::content_builder;
 
 #[component]
-pub fn app() -> Primitive {
+pub fn app() -> Element {
     install_idea_theme(light_theme());
 
     // Theme flag the sidebar's dark-mode toggle drives. Owned at
@@ -112,7 +112,7 @@ pub fn app() -> Primitive {
 
     // Builder-pattern form so the typed `Bound<DrawerHandle>` flows
     // through and we can call `.layout(web_layout())` without losing
-    // the type after `IntoPrimitive` coercion. The layout closure
+    // the type after `IntoElement` coercion. The layout closure
     // applies on both the local-render path (wasm in-browser) and
     // the runtime-server-replay path (recording backend serializes the layout
     // subtree + ships `AttachNavigatorLayout` over the wire).

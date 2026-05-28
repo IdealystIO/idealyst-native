@@ -17,7 +17,7 @@
 //!   resolved location.
 
 use crate::assets::{kinds, Asset};
-use crate::{Bound, Primitive, Ref, RefFill};
+use crate::{Bound, Element, Ref, RefFill};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -75,7 +75,7 @@ where
 /// via `IntoImageSource` — pass a `&str`/`String` for a static URL
 /// or a closure for a signal-driven one.
 pub fn image<S: IntoImageSource>(src: S) -> Bound<ImageHandle> {
-    Bound::new(Primitive::Image {
+    Bound::new(Element::Image {
         src: src.into_image_source(),
         alt: None,
         style: None,
@@ -106,7 +106,7 @@ pub fn image<S: IntoImageSource>(src: S) -> Bound<ImageHandle> {
 /// rewrites that to its real loader path on `create_image`.
 pub fn image_asset(asset: Asset<kinds::Image>) -> Bound<ImageHandle> {
     let id = asset.id;
-    Bound::new(Primitive::Image {
+    Bound::new(Element::Image {
         src: Box::new(move || format!("asset://{}", id.0)),
         alt: None,
         style: None,
@@ -122,7 +122,7 @@ impl Bound<ImageHandle> {
     /// Set an accessibility label. Maps to `alt` on web,
     /// `accessibilityLabel` on iOS, `contentDescription` on Android.
     pub fn alt(mut self, alt: String) -> Self {
-        if let Primitive::Image { alt: slot, .. } = &mut self.primitive {
+        if let Element::Image { alt: slot, .. } = &mut self.primitive {
             *slot = Some(alt);
         }
         self
@@ -131,7 +131,7 @@ impl Bound<ImageHandle> {
     /// Bind to a `Ref<ImageHandle>` so the parent can call ops on
     /// this image post-mount. Mirrors `Bound<ButtonHandle>::bind`.
     pub fn bind(mut self, r: Ref<ImageHandle>) -> Self {
-        if let Primitive::Image { ref_fill, .. } = &mut self.primitive {
+        if let Element::Image { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::Image(Box::new(move |h| r.fill(h))));
         }
         self
@@ -148,7 +148,7 @@ mod tests {
     fn image_url_constructor_leaves_asset_unset() {
         let b = image("https://example.com/x.png");
         match &b.primitive {
-            Primitive::Image { src, asset, .. } => {
+            Element::Image { src, asset, .. } => {
                 assert!(asset.is_none(), "url path should not carry an asset");
                 assert_eq!(src(), "https://example.com/x.png");
             }
@@ -161,7 +161,7 @@ mod tests {
         static LOGO: Asset<ImageKind> = asset!("logo.png");
         let b = image_asset(LOGO);
         match &b.primitive {
-            Primitive::Image { src, asset, .. } => {
+            Element::Image { src, asset, .. } => {
                 let a = asset.expect("asset path should carry an Asset");
                 assert_eq!(a.id, LOGO.id);
                 assert_eq!(a.tag, AssetTag::Image);
@@ -178,7 +178,7 @@ mod tests {
         static AVATAR: Asset<ImageKind> = asset!("avatar.png");
         let b = image_asset(AVATAR).alt("User avatar".to_string());
         match &b.primitive {
-            Primitive::Image { alt, asset, .. } => {
+            Element::Image { alt, asset, .. } => {
                 assert_eq!(alt.as_deref(), Some("User avatar"));
                 assert!(asset.is_some());
             }

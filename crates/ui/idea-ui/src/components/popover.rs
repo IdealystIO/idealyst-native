@@ -40,7 +40,7 @@ use std::rc::Rc;
 
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
-use runtime_core::{ui, ChildList, Primitive};
+use runtime_core::{ui, ChildList, Element};
 
 use crate::stylesheets::Popover;
 
@@ -60,7 +60,7 @@ pub struct PopoverProps {
     /// Gap in pixels between the anchor and the popover.
     pub offset: f32,
     pub on_dismiss: Option<Rc<dyn Fn()>>,
-    pub children: Vec<Primitive>,
+    pub children: Vec<Element>,
 }
 
 impl Default for PopoverProps {
@@ -76,14 +76,14 @@ impl Default for PopoverProps {
     }
 }
 
-pub fn popover(props: PopoverProps) -> Primitive {
+pub fn popover(props: PopoverProps) -> Element {
     let target = props
         .target
         .expect("Popover: required `target` prop missing — set it to an AnchorTarget built from a Ref");
 
     let surface_style = Popover();
 
-    let mut content: Vec<Primitive> = Vec::with_capacity(props.children.len());
+    let mut content: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut content);
     }
@@ -100,5 +100,5 @@ pub fn popover(props: PopoverProps) -> Primitive {
     if let Some(d) = props.on_dismiss {
         bound = bound.on_dismiss(move || (d)());
     }
-    runtime_core::IntoPrimitive::into_primitive(bound)
+    runtime_core::IntoElement::into_element(bound)
 }

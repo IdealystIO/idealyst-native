@@ -35,7 +35,7 @@
 //!   on the SDK's presentation payload.
 //! - `match_pattern` — pure-Rust URL-against-pattern matcher.
 
-use crate::Primitive;
+use crate::Element;
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -160,7 +160,7 @@ pub struct RouteEntry {
 // Screen — what a route's render closure returns
 // ---------------------------------------------------------------------------
 
-/// A renderable screen: the body Primitive plus SDK-defined options.
+/// A renderable screen: the body Element plus SDK-defined options.
 ///
 /// Options are opaque to the framework (`Box<dyn Any>`). Each SDK
 /// defines its own typed options struct (e.g. `StackScreenOptions`
@@ -169,15 +169,15 @@ pub struct RouteEntry {
 /// which stash a typed value into `Screen.options`. The SDK handler
 /// downcasts at apply time.
 ///
-/// `impl From<Primitive> for Screen` keeps the no-options form
+/// `impl From<Element> for Screen` keeps the no-options form
 /// ergonomic: `.screen(R, |_| my_body_view().into())`.
 pub struct Screen {
-    pub primitive: Primitive,
+    pub primitive: Element,
     pub options: Box<dyn Any>,
 }
 
 impl Screen {
-    pub fn new(primitive: impl Into<Primitive>) -> Self {
+    pub fn new(primitive: impl Into<Element>) -> Self {
         Self {
             primitive: primitive.into(),
             options: Box::new(()),
@@ -200,8 +200,8 @@ impl Screen {
     }
 }
 
-impl From<Primitive> for Screen {
-    fn from(p: Primitive) -> Self {
+impl From<Element> for Screen {
+    fn from(p: Element) -> Self {
         Self::new(p)
     }
 }
@@ -547,9 +547,9 @@ pub struct NavState {
 // ---------------------------------------------------------------------------
 
 /// The framework-owned routing config carried by every
-/// `Primitive::Navigator`. SDK builders fill this from their
+/// `Element::Navigator`. SDK builders fill this from their
 /// `.screen(...)` declarations. Kind-specific config (drawer width,
-/// tab placement, sidebar Primitive, etc.) lives on the SDK's
+/// tab placement, sidebar Element, etc.) lives on the SDK's
 /// presentation payload, not here.
 pub struct NavigatorConfig {
     pub initial: &'static str,

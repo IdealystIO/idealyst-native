@@ -20,13 +20,16 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, Primitive, Signal};
+use runtime_core::{ui, Element, Reactive, Signal};
 
 use crate::stylesheets::{FieldLabel, SwitchRow};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct SwitchProps {
-    pub label: Option<String>,
+    /// Optional inline label. `Reactive<Option<String>>` — `None` /
+    /// `Some("…")` are static; a `Signal<Option<String>>` or
+    /// `rx!(Some(…))` makes the label text live.
+    pub label: Reactive<Option<String>>,
     pub value: Signal<bool>,
     pub on_change: Rc<dyn Fn(bool)>,
 }
@@ -34,26 +37,26 @@ pub struct SwitchProps {
 impl Default for SwitchProps {
     fn default() -> Self {
         Self {
-            label: None,
+            label: Reactive::Static(None),
             value: Signal::new(false),
             on_change: Rc::new(|_| {}),
         }
     }
 }
 
-pub fn switch(props: &SwitchProps) -> Primitive {
+pub fn switch(props: &SwitchProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
-    let label_text = props.label.clone();
 
-    if let Some(l) = label_text {
-        ui! {
+    let label_node = crate::components::optional_reactive_text(props.label.clone(), FieldLabel());
+
+    match label_node {
+        Some(label) => ui! {
             View(style = SwitchRow()) {
-                Text(style = FieldLabel()) { l }
+                label
                 Toggle(value = value, on_change = move |v: bool| (on_change)(v))
             }
-        }
-    } else {
-        ui! { Toggle(value = value, on_change = move |v: bool| (on_change)(v)) }
+        },
+        None => ui! { Toggle(value = value, on_change = move |v: bool| (on_change)(v)) },
     }
 }

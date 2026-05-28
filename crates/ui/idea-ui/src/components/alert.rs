@@ -24,7 +24,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, IntoPrimitive, Primitive, StyleApplication};
+use runtime_core::{ui, IntoElement, Element, Reactive, StyleApplication};
 
 use idea_theme::extensible::{installed_alert_sheet, tone, variant, ToneRef, VariantRef};
 
@@ -32,9 +32,11 @@ use crate::stylesheets::{AlertBody, AlertTitle, TagClose};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct AlertProps {
-    pub title: String,
-    /// Optional second-line detail text. Rendered beneath the title.
-    pub body: Option<String>,
+    /// Alert title. `Reactive<String>` — static or live (signal/`rx!`).
+    pub title: Reactive<String>,
+    /// Optional second-line detail text, beneath the title.
+    /// `Reactive<Option<String>>` — static or live.
+    pub body: Reactive<Option<String>>,
     pub tone: ToneRef,
     pub variant: VariantRef,
     /// When `Some`, a close affordance appears in the top-right.
@@ -44,8 +46,8 @@ pub struct AlertProps {
 impl Default for AlertProps {
     fn default() -> Self {
         Self {
-            title: String::new(),
-            body: None,
+            title: Reactive::Static(String::new()),
+            body: Reactive::Static(None),
             // Info/Soft = the common informational alert. Use Danger/Filled
             // for breaking news, Warning/Soft for cautionary, etc.
             tone: tone::Info.into(),
@@ -55,9 +57,8 @@ impl Default for AlertProps {
     }
 }
 
-pub fn alert(props: &AlertProps) -> Primitive {
+pub fn alert(props: &AlertProps) -> Element {
     let title = props.title.clone();
-    let body = props.body.clone();
     let tone = props.tone.clone();
     let variant = props.variant.clone();
 
@@ -71,18 +72,19 @@ pub fn alert(props: &AlertProps) -> Primitive {
     let body_style = AlertBody();
     let close_style = TagClose();
 
-    let title_node: Primitive = ui! { Text(style = title_style) { title } };
-    let body_node: Option<Primitive> = body.map(|b| ui! { Text(style = body_style) { b } });
+    let title_node: Element = ui! { Text(style = title_style) { title } };
+    let body_node: Option<Element> =
+        crate::components::optional_reactive_text(props.body.clone(), body_style);
 
-    let close_node: Option<Primitive> = props.on_dismiss.clone().map(|on_dismiss| {
-        let close_text = runtime_core::text("×".to_string()).into_primitive();
+    let close_node: Option<Element> = props.on_dismiss.clone().map(|on_dismiss| {
+        let close_text = runtime_core::text("×".to_string()).into_element();
         runtime_core::pressable(vec![close_text], move || (on_dismiss)())
             .with_style(close_style)
-            .into_primitive()
+            .into_element()
     });
 
-    let mut children: Vec<Primitive> = Vec::with_capacity(2);
-    let mut text_column: Vec<Primitive> = Vec::with_capacity(2);
+    let mut children: Vec<Element> = Vec::with_capacity(2);
+    let mut text_column: Vec<Element> = Vec::with_capacity(2);
     text_column.push(title_node);
     if let Some(b) = body_node {
         text_column.push(b);

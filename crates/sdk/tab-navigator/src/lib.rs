@@ -1,6 +1,6 @@
 //! First-party Tab navigator SDK.
 //!
-//! Routes through `Primitive::Navigator`; the SDK registers a
+//! Routes through `Element::Navigator`; the SDK registers a
 //! per-backend `NavigatorHandler` that drives a native tab bar
 //! (UITabBarController, BottomNavigationView, or DOM `role=tablist`).
 //!
@@ -22,7 +22,7 @@ use runtime_core::primitives::navigator::{
     NavCommand, NavigatorConfig, NavigatorControl, NavigatorHandle, NavigatorOps, Route,
     RouteEntry, RouteParams, Screen, ScreenBuilder,
 };
-use runtime_core::{Bound, IntoStyleSource, Primitive, Ref, RefFill, StyleSource};
+use runtime_core::{Bound, IntoStyleSource, Element, Ref, RefFill, StyleSource};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -160,12 +160,12 @@ impl TabNavigator {
             style: None,
             ref_fill: None,
         };
-        Bound::new(nav.into_primitive())
+        Bound::new(nav.into_element())
     }
 
-    fn into_primitive(self) -> Primitive {
+    fn into_element(self) -> Element {
         let TabNavigator { config, presentation, slot_styles, style, ref_fill } = self;
-        Primitive::Navigator {
+        Element::Navigator {
             type_id: TypeId::of::<TabPresentation>(),
             type_name: std::any::type_name::<TabPresentation>(),
             presentation: Rc::new(presentation) as Rc<dyn Any>,
@@ -178,12 +178,12 @@ impl TabNavigator {
     }
 }
 
-fn with_navigator_prim<F: FnOnce(&mut Primitive)>(b: &mut Bound<TabsHandle>, f: F) {
+fn with_navigator_prim<F: FnOnce(&mut Element)>(b: &mut Bound<TabsHandle>, f: F) {
     f(b.primitive_mut());
 }
 
 fn with_presentation_mut<F: FnOnce(&mut TabPresentation)>(b: &mut Bound<TabsHandle>, f: F) {
-    if let Primitive::Navigator { presentation, .. } = b.primitive_mut() {
+    if let Element::Navigator { presentation, .. } = b.primitive_mut() {
         let pres = Rc::get_mut(presentation)
             .expect("tab-navigator: presentation Rc already shared (builder misuse)");
         if let Some(typed) = (pres as &mut dyn Any).downcast_mut::<TabPresentation>() {
@@ -226,7 +226,7 @@ impl TabsBuilder for Bound<TabsHandle> {
         let route_name = route.name();
         let route_path = route.path();
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { config, .. } = p {
+            if let Element::Navigator { config, .. } = p {
                 let builder: ScreenBuilder = Rc::new(move |any_params: Box<dyn Any>| {
                     let typed: Box<P> = any_params
                         .downcast::<P>()
@@ -260,7 +260,7 @@ impl TabsBuilder for Bound<TabsHandle> {
     }
     fn tab_bar_style(mut self, s: impl IntoStyleSource) -> Self {
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { slot_styles, .. } = p {
+            if let Element::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("tab_bar", s.into_style_source()));
             }
         });
@@ -268,7 +268,7 @@ impl TabsBuilder for Bound<TabsHandle> {
     }
     fn tab_icon_style(mut self, s: impl IntoStyleSource) -> Self {
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { slot_styles, .. } = p {
+            if let Element::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("tab_icon", s.into_style_source()));
             }
         });
@@ -276,7 +276,7 @@ impl TabsBuilder for Bound<TabsHandle> {
     }
     fn tab_label_style(mut self, s: impl IntoStyleSource) -> Self {
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { slot_styles, .. } = p {
+            if let Element::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("tab_label", s.into_style_source()));
             }
         });
@@ -284,7 +284,7 @@ impl TabsBuilder for Bound<TabsHandle> {
     }
     fn bind(mut self, r: Ref<TabsHandle>) -> Self {
         with_navigator_prim(&mut self, |p| {
-            if let Primitive::Navigator { ref_fill, .. } = p {
+            if let Element::Navigator { ref_fill, .. } = p {
                 *ref_fill = Some(RefFill::Navigator(Box::new(move |handle| {
                     r.fill(TabsHandle::from_inner(handle));
                 })));

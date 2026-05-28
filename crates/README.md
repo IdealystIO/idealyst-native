@@ -32,7 +32,7 @@ crates/
 │
 ├── sdk/            ← Third-party extension primitives. Each crate
 │                     defines a new primitive plus per-Backend impls,
-│                     wired through `Primitive::External`.
+│                     wired through `Element::External`.
 │
 └── tools/          ← User-facing orchestration: the CLI, per-platform
                       build/run, and the source-language porters.

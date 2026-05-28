@@ -4,7 +4,7 @@ use std::rc::Rc;
 use runtime_core::accessibility::AccessibilityProps;
 use runtime_core::primitives::icon::IconData;
 use runtime_core::signal;
-use runtime_core::{Action, Backend, Platform, Primitive, StyleRules};
+use runtime_core::{Action, Backend, Platform, Element, StyleRules};
 use dynlink_shared::DYNLINK_COUNTER;
 #[no_mangle] pub extern "C" fn main_bump() -> i32 { let c=&DYNLINK_COUNTER.0; c.set(c.get()+1); c.get() }
 #[no_mangle] pub extern "C" fn main_read() -> i32 { DYNLINK_COUNTER.0.get() }
@@ -18,7 +18,7 @@ use dynlink_shared::DYNLINK_COUNTER;
 }
 
 // Minimal Backend that counts create_view / create_text and sums text
-// bytes. Enough to prove the walker mounts a side-built Primitive; it
+// bytes. Enough to prove the walker mounts a side-built Element; it
 // pulls the full walker (build dispatcher, scope/effect machinery) into
 // main, which is where every backend call happens in the real design.
 #[derive(Default)]
@@ -70,11 +70,11 @@ impl Backend for CountBackend {
     fn finish(&mut self, _root: u64) {}
 }
 
-// Take a `Primitive` the SIDE module built (on the shared heap) and mount
+// Take a `Element` the SIDE module built (on the shared heap) and mount
 // it through main's real walker. Returns `texts * 1000 + total_text_bytes`
 // so the JS harness can verify the side's UI actually reached the backend.
 #[no_mangle]
-pub extern "C" fn main_render_side(ptr: *mut Primitive) -> i32 {
+pub extern "C" fn main_render_side(ptr: *mut Element) -> i32 {
     let primitive = unsafe { *Box::from_raw(ptr) };
     let backend = Rc::new(RefCell::new(CountBackend::default()));
     let owner = runtime_core::render(backend.clone(), primitive);

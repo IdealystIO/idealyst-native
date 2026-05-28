@@ -20,11 +20,11 @@
 
 #[cfg(target_os = "macos")]
 fn main() {
-    use runtime_core::{install_tokens, signal, view, Primitive};
+    use runtime_core::{install_tokens, signal, view, Element};
 
     let count = signal!(0_i32);
 
-    let app = move || -> Primitive {
+    let app = move || -> Element {
         // `install_tokens` is required before render even when no
         // styles read tokens — see [[project_install_theme_required]].
         install_tokens(&[]);

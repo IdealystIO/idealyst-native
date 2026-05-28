@@ -20,7 +20,7 @@ docs! {
     section(heading = "Intro") {
         p("A backend is the piece of code that knows how to put an Idealyst \
            app on a specific platform's screen. The framework hands it a tree \
-           of ", code("Primitive"), "s and a stream of updates; the backend \
+           of ", code("Element"), "s and a stream of updates; the backend \
            translates those into native widgets, layout, and input events."),
         p("The ", code("Backend"), " trait is the seam. Anything that \
            implements it can run an app. This page is the map of the backends \

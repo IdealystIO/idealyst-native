@@ -24,7 +24,7 @@ use std::rc::Rc;
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
-    signal, ui, IntoPrimitive, PressableHandle, Primitive, Ref, Signal, StyleApplication,
+    signal, ui, IntoElement, PressableHandle, Element, Ref, Signal, StyleApplication,
     VariantEnum,
 };
 
@@ -66,7 +66,7 @@ impl Default for SelectProps {
     }
 }
 
-pub fn select(props: SelectProps) -> Primitive {
+pub fn select(props: SelectProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
     let size = props.size;
@@ -88,7 +88,7 @@ pub fn select(props: SelectProps) -> Primitive {
                 .unwrap_or_default()
         },
     );
-    let label_child = runtime_core::text(label_source).into_primitive();
+    let label_child = runtime_core::text(label_source).into_element();
     let trigger_style = move || {
         let _ = idea_theme::active_theme()
             .downcast_ref::<IdeaThemeRef>()
@@ -100,7 +100,7 @@ pub fn select(props: SelectProps) -> Primitive {
     let trigger = runtime_core::pressable(vec![label_child], move || (on_open)())
         .with_style(trigger_style)
         .bind(trigger_ref)
-        .into_primitive();
+        .into_element();
 
     let menu_options = options.clone();
     let menu_on_change = on_change.clone();
@@ -116,7 +116,7 @@ pub fn select(props: SelectProps) -> Primitive {
                 trigger_ref,
             )
         },
-        || ui! { View {} }.into_primitive(),
+        || ui! { View {} }.into_element(),
     );
 
     ui! {
@@ -133,8 +133,8 @@ fn menu_build(
     on_change: Rc<dyn Fn(String)>,
     menu_close: Rc<dyn Fn()>,
     trigger_ref: Ref<PressableHandle>,
-) -> Primitive {
-    let mut rows: Vec<Primitive> = Vec::with_capacity(options.len());
+) -> Element {
+    let mut rows: Vec<Element> = Vec::with_capacity(options.len());
     for option in options.iter() {
         let opt_id = option.id.clone();
         let opt_label = option.label.clone();
@@ -158,10 +158,10 @@ fn menu_build(
         };
 
         let label_child =
-            runtime_core::text(runtime_core::TextSource::Static(opt_label)).into_primitive();
+            runtime_core::text(runtime_core::TextSource::Static(opt_label)).into_element();
         let row = runtime_core::pressable(vec![label_child], move || (on_click)())
             .with_style(row_style)
-            .into_primitive();
+            .into_element();
         rows.push(row);
     }
 
@@ -176,5 +176,5 @@ fn menu_build(
     .backdrop(BackdropMode::None)
     .trap_focus(false)
     .on_dismiss(move || (menu_close)())
-    .into_primitive()
+    .into_element()
 }

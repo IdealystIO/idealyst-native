@@ -43,7 +43,7 @@
 //!   `layoutSubviews` on iOS, `OnLayoutChangeListener` on Android)
 //!   re-fires and refreshes the stored size.
 
-use crate::{Bound, Primitive, Ref, RefFill};
+use crate::{Bound, Element, Ref, RefFill};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -121,14 +121,14 @@ pub fn virtualizer(
     item_count: Box<dyn Fn() -> usize>,
     item_key: Box<dyn Fn(usize) -> ItemKey>,
     item_size: ItemSize,
-    render_item: Rc<dyn Fn(usize) -> Primitive>,
+    render_item: Rc<dyn Fn(usize) -> Element>,
 ) -> Bound<VirtualizerHandle> {
     // Closure-driven entry point: produce a `Derived<usize>` with
     // empty metadata (`is_opaque() == true`) so runtime backends
     // pick up the closure but generator backends report a clear
     // build-time error.
     let item_count = crate::derive::IntoDerived::<usize>::into_derived(item_count);
-    Bound::new(Primitive::Virtualizer {
+    Bound::new(Element::Virtualizer {
         item_count,
         item_key,
         item_size,
@@ -148,7 +148,7 @@ impl Bound<VirtualizerHandle> {
     /// (one viewport extent above and below). Higher = smoother
     /// fast-scroll, more memory.
     pub fn overscan(mut self, factor: f32) -> Self {
-        if let Primitive::Virtualizer { overscan, .. } = &mut self.primitive {
+        if let Element::Virtualizer { overscan, .. } = &mut self.primitive {
             *overscan = factor;
         }
         self
@@ -156,14 +156,14 @@ impl Bound<VirtualizerHandle> {
 
     /// Horizontal scrolling instead of the default vertical.
     pub fn horizontal(mut self, h: bool) -> Self {
-        if let Primitive::Virtualizer { horizontal, .. } = &mut self.primitive {
+        if let Element::Virtualizer { horizontal, .. } = &mut self.primitive {
             *horizontal = h;
         }
         self
     }
 
     pub fn bind(mut self, r: Ref<VirtualizerHandle>) -> Self {
-        if let Primitive::Virtualizer { ref_fill, .. } = &mut self.primitive {
+        if let Element::Virtualizer { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::Virtualizer(Box::new(move |h| r.fill(h))));
         }
         self

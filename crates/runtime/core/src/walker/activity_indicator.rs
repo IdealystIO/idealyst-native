@@ -1,4 +1,4 @@
-//! `Primitive::ActivityIndicator` build path. Passive widget with
+//! `Element::ActivityIndicator` build path. Passive widget with
 //! no reactive props; only style and ref need wiring after create.
 
 use super::debug::time_backend_create;

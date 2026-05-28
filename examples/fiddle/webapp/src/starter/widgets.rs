@@ -7,7 +7,7 @@ pub struct TitleProps {
 }
 
 #[component]
-pub fn title(props: &TitleProps) -> Primitive {
+pub fn title(props: &TitleProps) -> Element {
     // idea-ui's `Heading` is a styled-text component; it takes its
     // string via the `content` prop, not as a `{ ... }` body.
     let label = props.label.clone();

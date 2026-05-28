@@ -19,8 +19,8 @@
 
 use backend_web::WebBackend;
 use runtime_core::{
-    signal, stylesheet, ui, view, AlignItems, Color, FlexDirection, IntoPrimitive, JustifyContent,
-    Length, Overflow, Primitive, Signal, TokenEntry, TokenValue, Tokenized,
+    signal, stylesheet, ui, view, AlignItems, Color, FlexDirection, IntoElement, JustifyContent,
+    Length, Overflow, Element, Signal, TokenEntry, TokenValue, Tokenized,
 };
 use idea_ui::{install_theme, set_theme, ThemeTokens};
 use std::cell::RefCell;
@@ -442,11 +442,11 @@ fn gen_tree_shape(seed: u32, target_leaves: usize, max_depth: Option<u32>) -> Tr
     TreeShape { root, target_leaf_id }
 }
 
-/// Build the Primitive for a leaf. Closes over `global` and, if
+/// Build the Element for a leaf. Closes over `global` and, if
 /// the leaf is the BRANCH target, `branch` — so only the target
 /// subscribes to `branch`. Other leaves only subscribe to
 /// `global`.
-fn build_leaf(id: u32, target_id: u32, global: Signal<u32>, branch: Signal<u32>) -> Primitive {
+fn build_leaf(id: u32, target_id: u32, global: Signal<u32>, branch: Signal<u32>) -> Element {
     // `text_fmt!("template", args...)` constructs a
     // `TextSource::JsBinding`: per-fire fan-out happens entirely
     // on the backend side (web → JS reactive layer). Args in
@@ -457,7 +457,7 @@ fn build_leaf(id: u32, target_id: u32, global: Signal<u32>, branch: Signal<u32>)
     // `text(...)` builder), so it drops naturally into the
     // primitive constructor — same shape as `text(String)` for a
     // static label. Was previously emitted as a raw expression
-    // block + `.into_primitive()` because the macro wrapped the
+    // block + `.into_element()` because the macro wrapped the
     // whole component construction; the cleanup of that macro
     // collapsed both arms here.
     let source = if id == target_id {
@@ -474,30 +474,30 @@ fn build_leaf(id: u32, target_id: u32, global: Signal<u32>, branch: Signal<u32>)
             runtime_core::bind!(global),
         )
     };
-    runtime_core::text(source).into_primitive()
+    runtime_core::text(source).into_element()
 }
 
-/// Recursively turn a NodeSpec into a Primitive tree. Branches
+/// Recursively turn a NodeSpec into a Element tree. Branches
 /// become `view(children)`; leaves become reactive `text(...)`.
 fn build_tree_primitive(
     node: &NodeSpec,
     target_id: u32,
     global: Signal<u32>,
     branch: Signal<u32>,
-) -> Primitive {
+) -> Element {
     match &node.kind {
         NodeKind::Leaf => build_leaf(node.id, target_id, global, branch),
         NodeKind::Branch(children) => {
-            let kids: Vec<Primitive> = children
+            let kids: Vec<Element> = children
                 .iter()
                 .map(|c| build_tree_primitive(c, target_id, global, branch))
                 .collect();
-            view(kids).into_primitive()
+            view(kids).into_element()
         }
     }
 }
 
-fn app(initial_rows: usize) -> Primitive {
+fn app(initial_rows: usize) -> Element {
     install_theme(light());
 
     // Reactive row count + mode + hierarchy state. Stored in
@@ -732,7 +732,7 @@ fn app(initial_rows: usize) -> Primitive {
                                                         global_counter,
                                                         branch_counter,
                                                     ),
-                                                    None => view(Vec::new()).into_primitive(),
+                                                    None => view(Vec::new()).into_element(),
                                                 }
                                             }
                                         }

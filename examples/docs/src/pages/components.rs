@@ -15,7 +15,7 @@ docs! {
     concepts = [Component, ComponentMethods, Bindable, Bound, Props, Defaults, UiMacro, JsxMacro],
 
     section(heading = "Overview") {
-        p("A component is a Rust function that returns a ", code("Primitive"),
+        p("A component is a Rust function that returns a ", code("Element"),
           ". The framework wraps that function in some compile-time machinery so it \
            can be called from a DSL, reuse a stable identity for hot reload, expose \
            imperative methods, and rewrite reactive call sites for ergonomics. This \
@@ -24,14 +24,14 @@ docs! {
 
     section(heading = "The shape") {
         code(rust, r##"
-            use runtime_core::{component, signal, ui, Primitive};
+            use runtime_core::{component, signal, ui, Element};
 
             pub struct CounterProps {
                 pub initial: i32,
             }
 
             #[component]
-            pub fn counter(props: &CounterProps) -> Primitive {
+            pub fn counter(props: &CounterProps) -> Element {
                 let count = signal!(props.initial);
 
                 ui! {
@@ -54,10 +54,10 @@ docs! {
             ["Take one parameter, by reference: ", code("props: &MyProps"),
              ". The props struct is a regular Rust struct you declare next to (or above) \
               the function. Field names become prop names in the invocation macro."],
-            ["Return ", code("Primitive"), ". The framework wraps the returned value \
-              through ", code("IntoPrimitive::into_primitive(...)"), ", so you can return \
-              a bare ", code("Primitive"), ", a ", code("Bound<H>"), " from a primitive \
-              constructor, or anything else that implements ", code("IntoPrimitive"), "."],
+            ["Return ", code("Element"), ". The framework wraps the returned value \
+              through ", code("IntoElement::into_element(...)"), ", so you can return \
+              a bare ", code("Element"), ", a ", code("Bound<H>"), " from a primitive \
+              constructor, or anything else that implements ", code("IntoElement"), "."],
         ),
     },
 
@@ -71,27 +71,27 @@ docs! {
             }
 
             // Directly, as a plain Rust call:
-            let prim: Primitive = counter(&CounterProps { initial: 0 });
+            let prim: Element = counter(&CounterProps { initial: 0 });
         "##),
 
         p("Inside a DSL, the call site reads like a constructor. Outside, it's a \
            function call with a struct-literal props argument. They produce the same ",
-          code("Primitive"), "."),
+          code("Element"), "."),
     },
 
     section(heading = "Variants of the signature") {
         p("The shape above is the common case. Three legitimate variants:"),
         list(
-            ["No props: ", code("pub fn header() -> Primitive"),
+            ["No props: ", code("pub fn header() -> Element"),
              ". The invocation macro accepts ", code("Header()"), " with no arguments."],
-            ["By value: ", code("pub fn list_view(props: MyProps) -> Primitive"),
+            ["By value: ", code("pub fn list_view(props: MyProps) -> Element"),
              ". Used when the component needs to take ownership of something in ",
-             code("props"), " — typically a ", code("Vec<Primitive>"),
+             code("props"), " — typically a ", code("Vec<Element>"),
              " of children it consumes. The macro detects this and emits the right \
               ownership form."],
             ["Bindable return: ", code("pub fn counter(props: &Props) -> Bindable<CounterHandle>"),
              ". Used when the component exposes a ", code("methods!"),
-             " block (see below). The DSL coerces it back to a ", code("Primitive"),
+             " block (see below). The DSL coerces it back to a ", code("Element"),
              " automatically."],
         ),
     },
@@ -102,7 +102,7 @@ docs! {
 
         code(rust, r##"
             #[component(default(initial = 0, step = 1))]
-            pub fn counter(props: &CounterProps) -> Primitive {
+            pub fn counter(props: &CounterProps) -> Element {
                 // ...
             }
         "##),
@@ -126,9 +126,9 @@ docs! {
              " — shorthand for an ", code("Effect::new(...)"),
              " bound to the surrounding scope. Covered in Reactivity."],
             [code("children![ … ]"),
-             " — builds a ", code("Vec<Primitive>"),
+             " — builds a ", code("Vec<Element>"),
              " from a mixed-shape list (single primitives, ",
-             code("Option<Primitive>"), ", ", code("Vec<Primitive>"),
+             code("Option<Element>"), ", ", code("Vec<Element>"),
              "). Used to assemble children outside ", code("ui!"), "."],
             [code("ui! { … }"),
              " — the primary UI DSL. Lowers to plain runtime-core calls. Covered \
@@ -155,7 +155,7 @@ docs! {
         p("You declare methods inside the component's body:"),
 
         code(rust, r##"
-            use runtime_core::{component, signal, ui, Bindable, Primitive};
+            use runtime_core::{component, signal, ui, Bindable, Element};
 
             #[derive(Default)]
             pub struct CounterProps {
@@ -186,7 +186,7 @@ docs! {
         p("The macro generates a ", code("CounterHandle"), " struct with ",
           code("reset"), " and ", code("bump_by"),
           " methods. The component now returns ", code("Bindable<CounterHandle>"),
-          " instead of ", code("Primitive"), "."),
+          " instead of ", code("Element"), "."),
 
         p("The parent captures the handle via a ", code("Ref"), ":"),
 
@@ -194,7 +194,7 @@ docs! {
             use runtime_core::Ref;
 
             #[component]
-            pub fn parent_app() -> Primitive {
+            pub fn parent_app() -> Element {
                 let handle: Ref<CounterHandle> = Ref::new();
 
                 ui! {
@@ -300,7 +300,7 @@ docs! {
     section(heading = "With ui!") {
         code(rust, r##"
             #[component]
-            pub fn counter(props: &CounterProps) -> Primitive {
+            pub fn counter(props: &CounterProps) -> Element {
                 let count = signal!(props.initial);
 
                 ui! {
@@ -319,7 +319,7 @@ docs! {
     section(heading = "With jsx!") {
         code(rust, r##"
             #[component]
-            pub fn counter(props: &CounterProps) -> Primitive {
+            pub fn counter(props: &CounterProps) -> Element {
                 let count = signal!(props.initial);
 
                 jsx! {
@@ -337,17 +337,17 @@ docs! {
 
     section(heading = "With no macro at all") {
         code(rust, r##"
-            use runtime_core::{button, component, signal, text, view, IntoPrimitive, Primitive};
+            use runtime_core::{button, component, signal, text, view, IntoElement, Element};
 
             #[component]
-            pub fn counter(props: &CounterProps) -> Primitive {
+            pub fn counter(props: &CounterProps) -> Element {
                 let count = signal!(props.initial);
 
                 view(vec![
-                    text(move || format!("Count: {}", count.get())).into_primitive(),
-                    button("Increment", move || count.update(|n| *n += 1)).into_primitive(),
+                    text(move || format!("Count: {}", count.get())).into_element(),
+                    button("Increment", move || count.update(|n| *n += 1)).into_element(),
                 ])
-                .into_primitive()
+                .into_element()
             }
         "##),
 
@@ -363,11 +363,11 @@ docs! {
         p("Looking at the no-macro form, you can see what ", code("ui!"), " does:"),
         list(
             [code("View { ... }"), " → ", code("view(vec![...])"), ". The ",
-             code("view"), " constructor takes a ", code("Vec<Primitive>"),
+             code("view"), " constructor takes a ", code("Vec<Element>"),
              ". The primitive constructors (", code("text"), ", ", code("button"),
              ", etc.) return ", code("Bound<H>"),
-             " handles, so each child is coerced to a ", code("Primitive"), " via ",
-             code(".into_primitive()"), " before joining the vec."],
+             " handles, so each child is coerced to a ", code("Element"), " via ",
+             code(".into_element()"), " before joining the vec."],
             [code("Text { format!(\"...\", count.get()) }"),
              " → because the expression contains ", code(".get()"),
              ", the macro emits a reactive text: ", code("text(move || format!(...))"),
@@ -377,11 +377,11 @@ docs! {
              code("button(label, on_click)"),
              ". Both arguments go through the framework's coercion traits (",
              code("IntoTextSource"), ", ", code("IntoAction"), ")."],
-            ["The trailing coercion — ", code(".into_primitive()"), " on the outer ",
-             code("view(...)"), " returns a ", code("Primitive"),
+            ["The trailing coercion — ", code(".into_element()"), " on the outer ",
+             code("view(...)"), " returns a ", code("Element"),
              ", which is what the function signature expects. The macro adds this \
               coercion automatically when the function's return type is ",
-             code("Primitive"), "."],
+             code("Element"), "."],
         ),
     },
 
@@ -422,7 +422,7 @@ docs! {
         "##),
 
         p("…lowers to a ", code("Repeat"), " primitive or a regular ",
-          code("Vec<Primitive>"),
+          code("Vec<Element>"),
           " build, depending on whether the iterator is signal-backed. The macro \
            takes care of the dispatch."),
     },
@@ -438,7 +438,7 @@ docs! {
           " actually emits\" section above — ", code("view(...)"), ", ",
           code("text(...)"), ", ", code("button(...)"), ", ", code("when(...)"),
           ", per-component ", code("name!(...)"), " invocations, and a final ",
-          code(".into_primitive()"),
+          code(".into_element()"),
           " coercion. That's all that's required, and it's all there is — but it \
            does mean parsing tokens and emitting them by hand."),
 
@@ -453,7 +453,7 @@ docs! {
         p("Tying everything together:"),
 
         code(rust, r##"
-            use runtime_core::{component, signal, ui, Bindable, Primitive};
+            use runtime_core::{component, signal, ui, Bindable, Element};
 
             #[derive(Default)]
             pub struct CounterProps {
@@ -486,12 +486,12 @@ docs! {
             [code("signal!"), " allocates a reactive state slot."],
             [code("methods!"), " declares ", code("reset"), " and ", code("bump_by"),
              " as imperative operations. The macro generates ", code("CounterHandle"),
-             " and rewrites the return type from ", code("Primitive"), " to ",
+             " and rewrites the return type from ", code("Element"), " to ",
              code("Bindable<CounterHandle>"), "."],
             [code("ui!"),
              " lowers to plain runtime-core calls, with the reactive text being \
               wrapped in an Effect and the trailing value coerced to ",
-             code("Primitive"), "."],
+             code("Element"), "."],
         ),
 
         p("The parent calls this with:"),

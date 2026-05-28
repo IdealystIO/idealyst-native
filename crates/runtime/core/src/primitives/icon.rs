@@ -24,7 +24,7 @@
 //! still renders fully drawn.
 
 use crate::style::Easing;
-use crate::{Bound, Primitive, Ref, RefFill};
+use crate::{Bound, Element, Ref, RefFill};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -207,7 +207,7 @@ pub trait IconOps {
 /// icon(SEARCH).stroke(|| scroll_progress.get())
 /// ```
 pub fn icon(data: IconData) -> Bound<IconHandle> {
-    Bound::new(Primitive::Icon {
+    Bound::new(Element::Icon {
         data,
         color: None,
         stroke: None,
@@ -223,7 +223,7 @@ impl Bound<IconHandle> {
     /// the icon inherits `currentColor` on web or the nearest text
     /// color on native platforms.
     pub fn color<F: Fn() -> crate::style::Color + 'static>(mut self, f: F) -> Self {
-        if let Primitive::Icon { color, .. } = &mut self.primitive {
+        if let Element::Icon { color, .. } = &mut self.primitive {
             *color = Some(Box::new(f));
         }
         self
@@ -236,7 +236,7 @@ impl Bound<IconHandle> {
     /// When set, the icon mounts at the initial value of the closure
     /// and updates reactively as signals change.
     pub fn stroke<F: Fn() -> f32 + 'static>(mut self, f: F) -> Self {
-        if let Primitive::Icon { stroke, .. } = &mut self.primitive {
+        if let Element::Icon { stroke, .. } = &mut self.primitive {
             *stroke = Some(Box::new(f));
         }
         self
@@ -253,7 +253,7 @@ impl Bound<IconHandle> {
     /// For ongoing programmatic control, use `.stroke()` with a
     /// reactive signal, or `.bind()` and call handle methods.
     pub fn animate(mut self, anim: StrokeAnimation) -> Self {
-        if let Primitive::Icon { draw_in, .. } = &mut self.primitive {
+        if let Element::Icon { draw_in, .. } = &mut self.primitive {
             *draw_in = Some(anim);
         }
         self
@@ -268,7 +268,7 @@ impl Bound<IconHandle> {
     /// `animate_stroke()`, `set_stroke_progress()`, or `replay()`
     /// imperatively.
     pub fn bind(mut self, r: Ref<IconHandle>) -> Self {
-        if let Primitive::Icon { ref_fill, .. } = &mut self.primitive {
+        if let Element::Icon { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::Icon(Box::new(move |h| r.fill(h))));
         }
         self

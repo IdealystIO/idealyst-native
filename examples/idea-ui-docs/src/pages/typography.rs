@@ -4,13 +4,13 @@
 //! its native size, plus one interactive demo where every prop is
 //! twiddleable through the auto-generated controls panel.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Element};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{Typography, Card, Stack, TypographyKindRef, TypographyProps, StackGap};
 
 use crate::shell::{demo_card, page_header};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     ui! {
         Stack(gap = StackGap::Xl) {
             { page_header(
@@ -31,8 +31,8 @@ pub fn page() -> Primitive {
 // Static gallery — every kind shown at its native scale
 // =============================================================================
 
-fn variant_gallery() -> Primitive {
-    let rows: Vec<Primitive> = vec![
+fn variant_gallery() -> Element {
+    let rows: Vec<Element> = vec![
         variant_row("Display", "The quick brown fox", idea_ui::typography_kind::Display.into()),
         variant_row("H1", "The quick brown fox", idea_ui::typography_kind::H1.into()),
         variant_row("H2", "The quick brown fox", idea_ui::typography_kind::H2.into()),
@@ -46,7 +46,7 @@ fn variant_gallery() -> Primitive {
     ];
 
     let label = ui! {
-        Typography(content = "Variant gallery".to_string(), kind = idea_ui::typography_kind::H2.into())
+        Typography(content = "Variant gallery".to_string(), kind = idea_ui::typography_kind::H2)
     };
     let blurb = ui! {
         Typography(
@@ -56,7 +56,7 @@ fn variant_gallery() -> Primitive {
             muted = true,
         )
     };
-    let mut children: Vec<Primitive> = Vec::with_capacity(rows.len() + 2);
+    let mut children: Vec<Element> = Vec::with_capacity(rows.len() + 2);
     children.push(label);
     children.push(blurb);
     for r in rows {
@@ -67,17 +67,17 @@ fn variant_gallery() -> Primitive {
     }
 }
 
-fn variant_row(name: &str, sample: &str, kind: TypographyKindRef) -> Primitive {
+fn variant_row(name: &str, sample: &str, kind: TypographyKindRef) -> Element {
     let name_text = name.to_string();
     // Render the kind name in muted Overline so it doesn't fight the
     // sample line above it.
     let label = ui! {
-        Typography(content = name_text, kind = idea_ui::typography_kind::Overline.into(), muted = true)
+        Typography(content = name_text, kind = idea_ui::typography_kind::Overline, muted = true)
     };
     let sample_line = ui! {
         Typography(content = sample.to_string(), kind = kind)
     };
-    let children: Vec<Primitive> = vec![label, sample_line];
+    let children: Vec<Element> = vec![label, sample_line];
     ui! {
         Stack(gap = StackGap::Xs) { children }
     }
@@ -87,7 +87,7 @@ fn variant_row(name: &str, sample: &str, kind: TypographyKindRef) -> Primitive {
 // Interactive demo — auto-generated controls for every Typography prop
 // =============================================================================
 
-fn interactive_demo() -> Primitive {
+fn interactive_demo() -> Element {
     let state = TypographyProps::init_state();
     state.content.set(
         "Twiddle the controls to see the variant, tone, and align axes live.".to_string(),
@@ -115,7 +115,7 @@ fn interactive_demo() -> Primitive {
 // Tone gallery — one Body sample per tone
 // =============================================================================
 
-fn tone_gallery() -> Primitive {
+fn tone_gallery() -> Element {
     use idea_ui::ToneRef;
     enum ToneCell {
         Default,
@@ -131,7 +131,7 @@ fn tone_gallery() -> Primitive {
         ("Warning", ToneCell::Color(idea_ui::tone::Warning.into())),
         ("Info", ToneCell::Color(idea_ui::tone::Info.into())),
     ];
-    let mut rows: Vec<Primitive> = Vec::with_capacity(tones.len());
+    let mut rows: Vec<Element> = Vec::with_capacity(tones.len());
     for (label, cell) in tones {
         let sample = format!("{} — readable on both light and dark surfaces.", label);
         rows.push(match cell {
@@ -147,7 +147,7 @@ fn tone_gallery() -> Primitive {
         });
     }
     let label = ui! {
-        Typography(content = "Tone gallery".to_string(), kind = idea_ui::typography_kind::H2.into())
+        Typography(content = "Tone gallery".to_string(), kind = idea_ui::typography_kind::H2)
     };
     let blurb = ui! {
         Typography(
@@ -156,7 +156,7 @@ fn tone_gallery() -> Primitive {
             muted = true,
         )
     };
-    let mut children: Vec<Primitive> = Vec::with_capacity(rows.len() + 2);
+    let mut children: Vec<Element> = Vec::with_capacity(rows.len() + 2);
     children.push(label);
     children.push(blurb);
     for r in rows {

@@ -9,7 +9,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, Color, Gradient, GradientKind, GradientStop, Position, Primitive, StyleRules,
+    component, ui, Color, Gradient, GradientKind, GradientStop, Position, Element, StyleRules,
     StyleSheet, Tokenized,
 };
 
@@ -30,7 +30,7 @@ pub struct VignetteProps {
 }
 
 #[component]
-pub fn Vignette(props: &VignetteProps) -> Primitive {
+pub fn Vignette(props: &VignetteProps) -> Element {
     let refs = props.refs;
     let wrapper = wrapper_sheet();
     let top = band_sheet(Edge::Top);

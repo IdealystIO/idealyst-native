@@ -20,7 +20,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::{render, Owner, Primitive};
+use runtime_core::{render, Owner, Element};
 
 use super::mock_backend::{MockBackend, MockBackendConfig};
 
@@ -47,7 +47,7 @@ impl TestRuntime {
     /// Render a primitive tree into the test runtime. Returns the
     /// `Owner` that keeps the render tree alive — drop it to unmount
     /// the whole tree (each release_* fires through the backend).
-    pub fn render(&self, root: Primitive) -> Owner {
+    pub fn render(&self, root: Element) -> Owner {
         render(self.backend.clone(), root)
     }
 
@@ -66,7 +66,7 @@ impl TestRuntime {
         self.backend.borrow().events()
     }
 
-    /// Drive every mounted `Primitive::Virtualizer`'s mount/release
+    /// Drive every mounted `Element::Virtualizer`'s mount/release
     /// callbacks to match its current item count. Real backends do this
     /// from scroll / rAF — OUTSIDE the framework's `backend.borrow_mut()`
     /// — so the mock stores the callbacks and this helper invokes them

@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, Color, Gradient, GradientKind, GradientStop, Position, Primitive, RadialExtent,
+    component, ui, Color, Gradient, GradientKind, GradientStop, Position, Element, RadialExtent,
     StyleRules, StyleSheet, Tokenized,
 };
 
@@ -75,7 +75,7 @@ pub struct PlanetProps {
 }
 
 #[component]
-pub fn Planet(props: &PlanetProps) -> Primitive {
+pub fn Planet(props: &PlanetProps) -> Element {
     let cfg = &PLANETS[props.idx];
     let sheet = sheet(cfg.size_dp, cfg.color);
     let target = props.refs.planets[props.idx];

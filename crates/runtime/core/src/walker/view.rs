@@ -1,9 +1,9 @@
-//! `Primitive::View` build path, including the batched-Repeat
+//! `Element::View` build path, including the batched-Repeat
 //! shortcut (`try_build_repeat_batched` + `enqueue_primitive`).
 //!
 //! [`build`] is the entry point invoked by the walker dispatcher; it
 //! creates the native container, walks children via [`insert_children`]
-//! (which expands `Primitive::Repeat` inline), then layers on style /
+//! (which expands `Element::Repeat` inline), then layers on style /
 //! safe-area / touch handlers / ref-fill.
 //!
 //! [`insert_children`] is exported so other primitives with child
@@ -17,7 +17,7 @@ use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::batch::{BackendBatch, BatchOp};
 use crate::handles::RefFill;
-use crate::primitive::Primitive;
+use crate::element::Element;
 use crate::sources::{StyleSource, TextSource};
 use crate::style::{self, resolve as resolve_style, StyleApplication, StyleRules};
 use std::cell::RefCell;
@@ -25,7 +25,7 @@ use std::rc::Rc;
 
 pub(super) fn build<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
-    children: Vec<Primitive>,
+    children: Vec<Element>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     safe_area_sides: crate::SafeAreaSides,
@@ -51,7 +51,7 @@ pub(super) fn build<B: Backend + 'static>(
 
 fn build_view<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
-    children: Vec<Primitive>,
+    children: Vec<Element>,
     a11y: &AccessibilityProps,
 ) -> B::Node {
     let mut parent = time_backend_create(pkind!(View), || backend.borrow_mut().create_view(a11y));
@@ -60,20 +60,20 @@ fn build_view<B: Backend + 'static>(
 }
 
 /// Walk a children vec and append each child to `parent`. Expands
-/// `Primitive::Repeat` inline: instead of `count` individual `insert`
+/// `Element::Repeat` inline: instead of `count` individual `insert`
 /// calls, builds all `count` child nodes first and hands them to the
 /// backend's `insert_many` for batched DOM insertion (typically via
 /// a `DocumentFragment` on web). For non-Repeat children this is the
 /// same `build + insert` loop as before.
 ///
-/// Why expand Repeat here and not as a regular Primitive in the
+/// Why expand Repeat here and not as a regular Element in the
 /// match: Repeat doesn't correspond to a single backend node — it
 /// stands for N sibling nodes. So it can only appear inside a
 /// children list, never as the root of a subtree.
 pub(super) fn insert_children<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     parent: &mut B::Node,
-    children: Vec<Primitive>,
+    children: Vec<Element>,
 ) {
     // Running count of backend nodes inserted into `parent` so far. A
     // normal child contributes 1, a `Repeat` contributes `count`, a
@@ -84,7 +84,7 @@ pub(super) fn insert_children<B: Backend + 'static>(
     for (slot_idx, child) in children.into_iter().enumerate() {
         let slot = slot_idx as u32;
         match child {
-            Primitive::Repeat { count, row_builder } => {
+            Element::Repeat { count, row_builder } => {
                 // Try the batched-Repeat path first: if the backend
                 // opts in AND every row matches the batchable shape
                 // (View+Text+static-style, no other primitives), we
@@ -111,7 +111,7 @@ pub(super) fn insert_children<B: Backend + 'static>(
                     // its iteration index — documented to lose
                     // identity on reorder, same as React index-keyed
                     // lists. A keyed `for` macro will eventually
-                    // synthesize `Primitive::Keyed` siblings, at
+                    // synthesize `Element::Keyed` siblings, at
                     // which point the row index becomes the fallback
                     // for missing keys.
                     let row_id = crate::Identity::node(
@@ -134,7 +134,7 @@ pub(super) fn insert_children<B: Backend + 'static>(
             // `create_reactive_anchor` node. Styled `Each` (or backends
             // without splice support) fall through to `other`, taking the
             // anchored path that can host the style on the anchor node.
-            Primitive::Each { build, style }
+            Element::Each { build, style }
                 if style.is_none() && backend.borrow().supports_child_splice() =>
             {
                 inserted += super::each::build_spliced(backend, parent, inserted, build);
@@ -148,16 +148,16 @@ pub(super) fn insert_children<B: Backend + 'static>(
     }
 }
 
-/// Try the batched-Repeat path for a `Primitive::Repeat` expansion.
+/// Try the batched-Repeat path for a `Element::Repeat` expansion.
 /// Returns `true` if the batch was submitted and the parent inserted;
 /// `false` if any row failed the batchable-shape check, in which case
 /// the caller falls back to the per-call path.
 ///
 /// Batchable shape (V1):
-/// - Row is a `Primitive::View` with no `safe_area_sides`, no
+/// - Row is a `Element::View` with no `safe_area_sides`, no
 ///   `on_touch`, no `ref_fill`, and a `StyleSource::Static` (or no
 ///   style at all).
-/// - Row's children are exclusively `Primitive::Text` with a
+/// - Row's children are exclusively `Element::Text` with a
 ///   `TextSource::Static`, no `style`, no `ref_fill`.
 ///
 /// Anything else (Button, Image, reactive bindings, state overlays,
@@ -169,7 +169,7 @@ fn try_build_repeat_batched<B: Backend + 'static>(
     parent: &mut B::Node,
     slot: u32,
     count: usize,
-    row_builder: &dyn Fn(usize) -> Primitive,
+    row_builder: &dyn Fn(usize) -> Element,
 ) -> bool {
     // Empty Repeat: nothing to do, no FFI needed. Report success
     // so the fallback doesn't run.
@@ -177,7 +177,7 @@ fn try_build_repeat_batched<B: Backend + 'static>(
         return true;
     }
 
-    // Pass 1: build each row's `Primitive`, check shape, resolve
+    // Pass 1: build each row's `Element`, check shape, resolve
     // static styles, and queue BatchOps. Each row's reactive setup
     // (theme cohort, cleanup handle adoption) is captured here too
     // — we apply it after the batch returns, against the real
@@ -290,16 +290,16 @@ fn try_build_repeat_batched<B: Backend + 'static>(
     true
 }
 
-/// Walk a single Primitive subtree and push `BatchOp` entries to
+/// Walk a single Element subtree and push `BatchOp` entries to
 /// `batch`. Returns the `local_id` of the subtree's top node, or
 /// `None` if the subtree contains any non-batchable shape. On `None`
 /// the caller discards `batch` and `deferred` — no partial batches.
 ///
 /// Batchable shapes (V1):
-/// - `Primitive::View` with `style: None | Some(Static)`, no
+/// - `Element::View` with `style: None | Some(Static)`, no
 ///   `safe_area_sides`, no `on_touch`, no `ref_fill`, and children
 ///   that are themselves batchable.
-/// - `Primitive::Text` with `source: Static`, no `style`, no
+/// - `Element::Text` with `source: Static`, no `style`, no
 ///   `ref_fill`.
 ///
 /// Why so narrow: the rebuild benchmark uses exactly this shape, and
@@ -311,11 +311,11 @@ fn try_build_repeat_batched<B: Backend + 'static>(
 fn enqueue_primitive<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     batch: &mut BackendBatch,
-    prim: Primitive,
+    prim: Element,
     style_attachments: &mut Vec<(u32, StyleApplication)>,
 ) -> Option<u32> {
     match prim {
-        Primitive::Text {
+        Element::Text {
             source,
             style,
             ref_fill,
@@ -347,7 +347,7 @@ fn enqueue_primitive<B: Backend + 'static>(
             });
             Some(id)
         }
-        Primitive::View {
+        Element::View {
             children,
             style,
             ref_fill,

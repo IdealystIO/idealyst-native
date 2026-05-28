@@ -1,12 +1,12 @@
 //! Backends — implementation status per platform.
 
-use runtime_core::{ui, Primitive, Ref, ViewHandle};
+use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
 use crate::pages::common::{page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     let matrix_ref: Ref<ViewHandle> = Ref::new();
     let coverage_ref: Ref<ViewHandle> = Ref::new();
     let roadmap_ref: Ref<ViewHandle> = Ref::new();
@@ -33,7 +33,7 @@ pub fn page() -> Primitive {
     layout_with_toc(content, toc)
 }
 
-fn matrix() -> Primitive {
+fn matrix() -> Element {
     let rows: Vec<(&str, &str, &str)> = vec![
         ("Web (WASM + DOM)", "Working", "Reference backend. Most complete primitive coverage."),
         ("Android (JNI + Views)", "Working", "Phone form factor. TV variant is a stub."),
@@ -47,33 +47,33 @@ fn matrix() -> Primitive {
         ("Terminal (TTY)", "Working", "crossterm-backed; no animations or auto-rendered header chrome (per terminal-minimalism convention)."),
     ];
 
-    let mut row_children: Vec<Primitive> = Vec::with_capacity(rows.len() * 3);
+    let mut row_children: Vec<Element> = Vec::with_capacity(rows.len() * 3);
     for (name, status, notes) in rows {
         let title = format!("{} \u{00b7} {}", name, status);
         row_children.push(ui! {
-            Typography(content = title, kind = idea_ui::typography_kind::H3.into())
+            Typography(content = title, kind = idea_ui::typography_kind::H3)
         });
         row_children.push(ui! {
             Typography(content = notes.to_string(), muted = true)
         });
     }
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Backend status".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Backend status".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "\"Working\" means the backend implements the Backend \
                 trait and runs the existing example apps. It doesn't mean every primitive \
                 works (see the coverage matrix below).".to_string())
         },
     ];
-    let mut all: Vec<Primitive> = Vec::with_capacity(children.len() + row_children.len());
+    let mut all: Vec<Element> = Vec::with_capacity(children.len() + row_children.len());
     all.extend(children);
     all.extend(row_children);
     ui! { Stack(gap = StackGap::Md) { all } }
 }
 
-fn coverage() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Per-primitive coverage".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+fn coverage() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Per-primitive coverage".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Every backend now implements every Backend method — no \
                 `unimplemented!()` panics anywhere. Primitives that aren't yet fully \
@@ -81,11 +81,11 @@ fn coverage() -> Primitive {
                 `feedback_cpu_unsupported_placeholders`); the dev / user sees the gap \
                 instead of hitting a silent crash or empty rect.".to_string())
         },
-        ui! { Typography(content = "Core primitives".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = "Core primitives".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "View, Text, Button, Pressable: every backend.".to_string())
         },
-        ui! { Typography(content = "Inputs + media".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = "Inputs + media".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "Image, TextInput, TextArea, Slider, Toggle, ActivityIndicator, \
                 Icon: web / iOS / Android / macOS / wgpu all render real widgets. Icon shares \
@@ -93,15 +93,15 @@ fn coverage() -> Primitive {
                 Linux scaffolds use placeholder text for the inputs they don't yet wire to \
                 native widgets.".to_string())
         },
-        ui! { Typography(content = "Lists".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = "Lists".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "Virtualizer: web + Android + iOS + macOS (single-section, \
                 vertical or horizontal; macOS via NSCollectionView with real cell reuse). \
                 wgpu mounts every item. CPU / Win32 / Linux render placeholder text.".to_string())
         },
-        ui! { Typography(content = "External SDKs".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = "External SDKs".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
-            Typography(content = "`Primitive::External` registry is wired on web + iOS + \
+            Typography(content = "`Element::External` registry is wired on web + iOS + \
                 Android + macOS. Per-SDK leaves: Video (web/iOS/Android), \
                 WebView (web full / iOS full / Android URL-only — Kotlin shim pending), \
                 Maps (web/iOS via MKMapView — Android leaf pending), \
@@ -112,10 +112,10 @@ fn coverage() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn roadmap() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Framework-level subsystems".to_string(), kind = idea_ui::typography_kind::H2.into()) },
-        ui! { Typography(content = "Working".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+fn roadmap() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Framework-level subsystems".to_string(), kind = idea_ui::typography_kind::H2) },
+        ui! { Typography(content = "Working".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "Primitives + reactivity + render walker; `ui!` / `jsx!` / \
                 `#[component]` / `stylesheet!`; reactive `if` / `when` / `for` in the DSLs; \
@@ -124,13 +124,13 @@ fn roadmap() -> Primitive {
                 server-driven UI over the wire protocol.".to_string(),
                 muted = true)
         },
-        ui! { Typography(content = "In progress".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = "In progress".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "Custom rendering via wgpu (skins for phone, tablet, \
                 tv); native backend interactions / media / OS integration.".to_string(),
                 muted = true)
         },
-        ui! { Typography(content = "Planned".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = "Planned".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "Async data + `Resource<T>`; first-class accessibility \
                 across every primitive; SSR + hydration.".to_string(),

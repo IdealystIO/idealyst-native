@@ -84,7 +84,7 @@ pub(crate) struct StickyChild {
 }
 
 /// Per-scroll-view sticky state. Listener lifecycle lives in the
-/// `AndroidBackend::scroll_listeners` map \u{2014} the `Primitive::
+/// `AndroidBackend::scroll_listeners` map \u{2014} the `Element::
 /// ScrollView` `on_scroll` callback rides the same Android
 /// `setOnScrollChangeListener` slot, so both subsystems coordinate
 /// install/detach through that shared registry.
@@ -210,7 +210,7 @@ fn key_of(node: &GlobalRef) -> usize {
 ///
 /// `scroll_listeners` is the backend's shared "what scroll views
 /// already have the Kotlin listener attached" map. We consult it
-/// here and through `Primitive::ScrollView::on_scroll`'s wiring so
+/// here and through `Element::ScrollView::on_scroll`'s wiring so
 /// both subsystems use a single `setOnScrollChangeListener` slot.
 pub(crate) fn register(
     env: &mut JNIEnv,

@@ -1,6 +1,6 @@
 //! CLI — the `idealyst` command-line tool.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Element};
 use idea_ui::{Typography, Card};
 
 use crate::shell::{
@@ -8,7 +8,7 @@ use crate::shell::{
     PageHeaderProps, SectionProps, SectionWithCodeProps,
 };
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     ui! {
         PageBody {
             PageHeader(
@@ -63,7 +63,7 @@ pub fn page() -> Primitive {
             )
 
             Card {
-                Typography(content = "Other commands".to_string(), kind = idea_ui::typography_kind::H2.into())
+                Typography(content = "Other commands".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
                     content = "`check` runs `cargo check` across configured platforms. `clean` \
                                removes the build cache. `sync` regenerates derived assets \

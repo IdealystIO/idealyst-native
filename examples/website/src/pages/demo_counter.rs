@@ -2,13 +2,13 @@
 
 use std::rc::Rc;
 
-use runtime_core::{bind, signal, text_fmt, ui, Primitive, Ref, ViewHandle};
+use runtime_core::{bind, signal, text_fmt, ui, Element, Ref, ViewHandle};
 use idea_ui::{Btn, Card, Stack, Typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     let live_ref: Ref<ViewHandle> = Ref::new();
     let source_ref: Ref<ViewHandle> = Ref::new();
     let explain_ref: Ref<ViewHandle> = Ref::new();
@@ -35,7 +35,7 @@ pub fn page() -> Primitive {
     layout_with_toc(content, toc)
 }
 
-fn live_demo() -> Primitive {
+fn live_demo() -> Element {
     let count = signal!(0);
     // `Signal<T>` is `Copy`, so each closure owns its own handle to
     // the same reactive cell \u{2014} no shadowing dance, no `.clone()`.
@@ -43,13 +43,13 @@ fn live_demo() -> Primitive {
     let decrement: Rc<dyn Fn()> = Rc::new(move || count.update(|n| *n -= 1));
     let reset: Rc<dyn Fn()> = Rc::new(move || count.set(0));
 
-    let buttons: Vec<Primitive> = vec![
-        ui! { Btn(label = "\u{2212}".to_string(), on_click = decrement, tone = idea_ui::tone::Neutral.into(), variant = idea_ui::variant::Soft.into()) },
-        ui! { Btn(label = "Reset".to_string(), on_click = reset, tone = idea_ui::tone::Neutral.into(), variant = idea_ui::variant::Ghost.into()) },
-        ui! { Btn(label = "+".to_string(), on_click = increment, tone = idea_ui::tone::Primary.into(), variant = idea_ui::variant::Filled.into()) },
+    let buttons: Vec<Element> = vec![
+        ui! { Btn(label = "\u{2212}".to_string(), on_click = decrement, tone = idea_ui::tone::Neutral, variant = idea_ui::variant::Soft) },
+        ui! { Btn(label = "Reset".to_string(), on_click = reset, tone = idea_ui::tone::Neutral, variant = idea_ui::variant::Ghost) },
+        ui! { Btn(label = "+".to_string(), on_click = increment, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled) },
     ];
-    let card_children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Live counter".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+    let card_children: Vec<Element> = vec![
+        ui! { Typography(content = "Live counter".to_string(), kind = idea_ui::typography_kind::H3) },
         // `text_fmt!` builds a reactive `TextSource` that drops directly
         // into a `Text { ... }` child slot. `bind!(signal)` marks each
         // arg the framework should subscribe to \u{2014} the resulting
@@ -61,11 +61,11 @@ fn live_demo() -> Primitive {
     ui! { Card { card_children } }
 }
 
-fn source() -> Primitive {
-    let snippet = "use runtime_core::{bind, component, signal, text_fmt, ui, Primitive};\n\
+fn source() -> Element {
+    let snippet = "use runtime_core::{bind, component, signal, text_fmt, ui, Element};\n\
                    \n\
                    #[component]\n\
-                   pub fn counter() -> Primitive {\n    \
+                   pub fn counter() -> Element {\n    \
                        let count = signal!(0);\n    \
                        ui! {\n        \
                            Stack(gap = StackGap::Md) {\n            \
@@ -81,20 +81,20 @@ fn source() -> Primitive {
                            }\n    \
                        }\n\
                    }";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "The whole source".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "The whole source".to_string(), kind = idea_ui::typography_kind::H2) },
         code_panel(snippet),
     ];
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn explanation() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "What just happened".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+fn explanation() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "What just happened".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Three things to notice.".to_string())
         },
-        ui! { Typography(content = "1. The signal".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = "1. The signal".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "`signal!(0)` allocates a reactive `i32` cell. Reading \
                 `count.get()` inside a reactive scope subscribes that scope to the cell's \
@@ -102,7 +102,7 @@ fn explanation() -> Primitive {
                 every subscriber.".to_string(),
                 muted = true)
         },
-        ui! { Typography(content = "2. Reactive text via `text_fmt!`".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = "2. Reactive text via `text_fmt!`".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "`text_fmt!(\"template\", bind!(signal))` builds a \
                 reactive `TextSource` that drops directly into a `Text { ... }` child \
@@ -111,7 +111,7 @@ fn explanation() -> Primitive {
                 with no surrounding tree rebuild.".to_string(),
                 muted = true)
         },
-        ui! { Typography(content = "3. Closures own the signal".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = "3. Closures own the signal".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "`move || count.update(...)` is the framework's standard \
                 event-handler shape. `Signal<T>` is Copy, so the closures own their own \

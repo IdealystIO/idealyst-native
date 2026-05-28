@@ -3,9 +3,9 @@
 //! ops trait, constructor function, and any `Bound<H>`-specific
 //! builder methods.
 //!
-//! The `Primitive` enum itself stays in the crate root — Rust's
+//! The `Element` enum itself stays in the crate root — Rust's
 //! enum-variant constraint means we can't split it across files
-//! without sum-type machinery (`Box<dyn Primitive>`-style) and the
+//! without sum-type machinery (`Box<dyn Element>`-style) and the
 //! cost of that doesn't pay off at this scale. So this module is
 //! about *per-primitive surface* (handles, builders, constructors),
 //! not the enum data.

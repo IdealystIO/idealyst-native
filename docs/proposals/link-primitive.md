@@ -52,11 +52,11 @@ build fails.
 pub fn link<P: RouteParams>(
     route: &Route<P>,
     params: P,
-    children: Vec<Primitive>,
+    children: Vec<Element>,
 ) -> Bound<LinkHandle>
 ```
 
-Children are the visible content — the same `Vec<Primitive>` slot
+Children are the visible content — the same `Vec<Element>` slot
 `scroll_view`, `view`, and `navigator` accept. The link itself
 contributes interaction + accessibility; visual styling is the
 content's job (or the link's optional `style` slot).
@@ -115,13 +115,13 @@ pub trait LinkOps {
 
 ---
 
-## The `Primitive` variant
+## The `Element` variant
 
 ```rust
-pub enum Primitive {
+pub enum Element {
     // …existing…
     Link {
-        children: Vec<Primitive>,
+        children: Vec<Element>,
 
         /// Route name (stable; matches `Route::name()`). The backend
         /// passes this to the dispatcher as-is — no string parsing
@@ -219,10 +219,10 @@ hatch is the explicit fix.
 
 ## Render walker
 
-Add a `Primitive::Link` arm to `build`:
+Add a `Element::Link` arm to `build`:
 
 ```rust
-Primitive::Link { children, route, url, params, kind, target, style, ref_fill } => {
+Element::Link { children, route, url, params, kind, target, style, ref_fill } => {
     let on_activate: Rc<dyn Fn()> = {
         let route_name = route;
         let url = url.clone();
@@ -413,9 +413,9 @@ fn create_link(&mut self, config: LinkConfig) -> GlobalRef {
 
 ## What changes elsewhere
 
-- `Primitive` enum grows one variant.
+- `Element` enum grows one variant.
 - `RefFill` enum grows one variant: `Link(Box<dyn FnOnce(LinkHandle)>)`.
-- Walker grows the `Primitive::Link` arm above.
+- Walker grows the `Element::Link` arm above.
 - `runtime_macros::ui` / `jsx` recognize `Link` as a primitive
   name — same special-casing as `Button`, `View`, `Text`. (Lower
   to `runtime_core::primitives::link::link(...)`.)
@@ -478,7 +478,7 @@ The explicit `.via(...)` escape hatch covers nested navigators.
 ### Why type-erase params via `Rc<dyn Any>` instead of keeping `P`?
 
 Same reason `NavCommand::Push` already type-erases: keeping the
-generic `P` would parameterize `Primitive` (and the whole walker)
+generic `P` would parameterize `Element` (and the whole walker)
 on the link's params type, which doesn't work — different links
 in the same tree have different `P`. The downcast at the
 screen-builder boundary is the same downcast `nav.push` already

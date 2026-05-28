@@ -1,13 +1,13 @@
-//! Core concepts — app vs host crates, Primitive, signals, ui!, the Backend trait.
+//! Core concepts — app vs host crates, Element, signals, ui!, the Backend trait.
 
-use runtime_core::{ui, Primitive, Ref, ViewHandle};
+use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::routes::{BACKENDS_ROUTE, WHY_RUST_ROUTE};
 use crate::shell::{layout_with_toc, TocEntry};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     let app_vs_host_ref: Ref<ViewHandle> = Ref::new();
     let primitives_ref: Ref<ViewHandle> = Ref::new();
     let reactivity_ref: Ref<ViewHandle> = Ref::new();
@@ -22,7 +22,7 @@ pub fn page() -> Primitive {
         TocEntry { handle: primitives_ref, label: "Primitives are the vocabulary" },
         TocEntry { handle: reactivity_ref, label: "Signals (reactivity)" },
         TocEntry { handle: ui_macro_ref, label: "The ui! macro" },
-        TocEntry { handle: builders_ref, label: "Builders and Primitive" },
+        TocEntry { handle: builders_ref, label: "Builders and Element" },
         TocEntry { handle: backend_ref, label: "The Backend trait" },
         TocEntry { handle: building_ref, label: "Building your own" },
         TocEntry { handle: next_ref, label: "Where to go from here" },
@@ -33,8 +33,8 @@ pub fn page() -> Primitive {
             { page_header(
                 "Core concepts",
                 "The ideas you need to hold in your head to read or write idealyst \
-                 code: the app/host split, Primitive, signals, the `ui!` macro, the \
-                 builder/Primitive distinction, the Backend trait, and the path to \
+                 code: the app/host split, Element, signals, the `ui!` macro, the \
+                 builder/Element distinction, the Backend trait, and the path to \
                  building your own component library and theme system on top."
             ) }
             { page_section(app_vs_host_ref, vec![app_vs_host()]) }
@@ -50,9 +50,9 @@ pub fn page() -> Primitive {
     layout_with_toc(content, toc)
 }
 
-fn app_vs_host() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "App crate vs host crate".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+fn app_vs_host() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "App crate vs host crate".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Your code lives in an app crate that depends only on \
                 `runtime-core`. It declares components, styles, and a root tree, and knows \
@@ -73,23 +73,23 @@ fn app_vs_host() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn primitives() -> Primitive {
-    let snippet = "// Built-in primitives in runtime-core::Primitive:\n\
+fn primitives() -> Element {
+    let snippet = "// Built-in primitives in runtime-core::Element:\n\
                    View · Text · Button · Image · TextInput · TextArea · ScrollView\n\
                    Slider · Toggle · Icon · Link · ActivityIndicator · Graphics\n\
                    Video · Virtualizer · Navigator · External (third-party SDKs)";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Primitives are the vocabulary".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Primitives are the vocabulary".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
-            Typography(content = "Every UI tree is built from a fixed set of `Primitive` \
+            Typography(content = "Every UI tree is built from a fixed set of `Element` \
                 variants. The framework tells each backend \"create one of these, \
                 update its props, attach these children\" \u{2014} the backend translates \
                 that into a UIKit view, a DOM element, a wgpu draw call, whatever it owns.".to_string())
         },
         code_panel(snippet),
         ui! {
-            Typography(content = "Components are functions that return a `Primitive` \
-                tree. `#[component] fn Welcome(props: &Props) -> Primitive` is the \
+            Typography(content = "Components are functions that return a `Element` \
+                tree. `#[component] fn Welcome(props: &Props) -> Element` is the \
                 whole contract. Composition is function composition; there's no class, \
                 no lifecycle, no special framework method to override.".to_string())
         },
@@ -97,7 +97,7 @@ fn primitives() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn reactivity() -> Primitive {
+fn reactivity() -> Element {
     let snippet = "let count = signal!(0);\n\
                    \n\
                    // `text_fmt!` builds a reactive text source. `bind!(signal)`\n\
@@ -106,8 +106,8 @@ fn reactivity() -> Primitive {
                    \n\
                    // Update fires every subscribed dependent and nothing else:\n\
                    count.update(|n| *n += 1);";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Signals (the reactive layer)".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Signals (the reactive layer)".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "`Signal<T>` is the framework's reactive primitive. Reads \
                 inside a reactive scope (a component body, an effect, a style closure) \
@@ -125,7 +125,7 @@ fn reactivity() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn ui_macro() -> Primitive {
+fn ui_macro() -> Element {
     let snippet = "// `ui!` is sugar over plain function calls.\n\
                    ui! {\n    \
                        View(style = card) {\n        \
@@ -143,12 +143,12 @@ fn ui_macro() -> Primitive {
                            ..Default::default()\n    \
                        }),\n\
                    ])";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "The `ui!` macro".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "The `ui!` macro".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "`ui!` is the declarative authoring syntax. It's a \
                 proc-macro that desugars to plain function calls against props structs \
-                and `Primitive` constructors. Both forms compile to the same code; the \
+                and `Element` constructors. Both forms compile to the same code; the \
                 macro is opt-in (but recommended) sugar.".to_string())
         },
         code_panel(snippet),
@@ -162,7 +162,7 @@ fn ui_macro() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn builders() -> Primitive {
+fn builders() -> Element {
     let chain = "text(move || format!(\"Count: {}\", count.get()))\n    \
                      .bind(label_ref)             // attach a Ref<TextHandle>\n    \
                      .with_style(my_style)        // apply a stylesheet\n    \
@@ -170,16 +170,16 @@ fn builders() -> Primitive {
     let unwrap = "// Inside `ui!`, the macro inserts the unwrap for you.\n\
                   // Outside `ui!`, you spell it yourself:\n\
                   let label = text(move || format!(\"Count: {}\", count.get()))\n    \
-                      .into_primitive();\n\
+                      .into_element();\n\
                   \n\
-                  // `label` is now a Primitive \u{2014} can go into a Vec<Primitive>\n\
+                  // `label` is now a Element \u{2014} can go into a Vec<Element>\n\
                   // or be passed as a child.";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Builders and `Primitive`".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Builders and `Element`".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "The `ui!` macro hides one detail you'll meet the \
-                moment you step outside it. Primitive constructors don't return \
-                `Primitive` directly \u{2014} they return a builder wrapper, typically \
+                moment you step outside it. Element constructors don't return \
+                `Element` directly \u{2014} they return a builder wrapper, typically \
                 `Bound<H>`, where `H` is the primitive's handle type (`TextHandle`, \
                 `ButtonHandle`, etc.). The wrapper exists so you can chain configuration \
                 before committing to the final value.".to_string())
@@ -188,32 +188,32 @@ fn builders() -> Primitive {
         ui! {
             Typography(content = "Each method takes `self` and returns `Self`, so the \
                 chain accumulates state. At the end of the chain you still have a \
-                `Bound<TextHandle>`, not a `Primitive`.".to_string())
+                `Bound<TextHandle>`, not a `Element`.".to_string())
         },
         ui! {
-            Typography(content = "Inside the `ui!` macro, an `.into_primitive()` call is \
-                inserted at every leaf so the framework's tree sees `Primitive` values. \
+            Typography(content = "Inside the `ui!` macro, an `.into_element()` call is \
+                inserted at every leaf so the framework's tree sees `Element` values. \
                 Outside `ui!`, you call it yourself.".to_string())
         },
         code_panel(unwrap),
         ui! {
             Typography(content = "If you forget the unwrap and try to use the builder \
-                where a `Primitive` is expected, the compiler tells you exactly that: \
-                `expected Primitive, found Bound<TextHandle>`. The fix is one method \
+                where a `Element` is expected, the compiler tells you exactly that: \
+                `expected Element, found Bound<TextHandle>`. The fix is one method \
                 call.".to_string())
         },
         ui! {
             Typography(content = "The same shape applies to every builder-returning \
                 function in the framework \u{2014} `text`, `pressable`, `image`, \
                 `anchored_overlay`, `code_block`, and the idea-ui components that wrap \
-                them. If a function returns a builder, treat `.into_primitive()` as its \
-                terminator when you need the bare `Primitive`.".to_string())
+                them. If a function returns a builder, treat `.into_element()` as its \
+                terminator when you need the bare `Element`.".to_string())
         },
     ];
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn backend_trait() -> Primitive {
+fn backend_trait() -> Element {
     let snippet = "// Sketch of the Backend trait (real surface is larger):\n\
                    pub trait Backend {\n    \
                        type Node;\n    \
@@ -224,8 +224,8 @@ fn backend_trait() -> Primitive {
                        fn insert(&mut self, parent: &Self::Node, child: Self::Node, idx: usize);\n    \
                        // ...one method per primitive + property update path\n\
                    }";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "The Backend trait".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "The Backend trait".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "The framework's only seam to the platform. Implement \
                 this trait once per target and the entire existing app surface runs \
@@ -242,12 +242,12 @@ fn backend_trait() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn building_your_own() -> Primitive {
-    let component_snippet = "// A component is a function returning a Primitive.\n\
+fn building_your_own() -> Element {
+    let component_snippet = "// A component is a function returning a Element.\n\
                              // That's the whole contract \u{2014} no class, no lifecycle\n\
                              // method, no framework-side registration.\n\
                              #[component]\n\
-                             pub fn MyButton(props: &MyButtonProps) -> Primitive {\n    \
+                             pub fn MyButton(props: &MyButtonProps) -> Element {\n    \
                                  let on_click = props.on_click.clone();\n    \
                                  let label = props.label.clone();\n    \
                                  let style = button_style().intent(props.intent);\n    \
@@ -278,19 +278,19 @@ fn building_your_own() -> Primitive {
                          \n\
                          // 3. The app installs a concrete implementation at bootstrap.\n\
                          install_theme(MyConcreteTheme::default());";
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Building your own".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "Building your own".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "The framework's core is small on purpose. Most of what \
                 idealyst-the-shipping-product is \u{2014} `idea-ui`, the navigator SDKs, \
                 the icon registry \u{2014} sits on top of the framework as ordinary user \
                 code. Your own component library and theme system slot in the same way.".to_string())
         },
-        ui! { Typography(content = "Custom component libraries".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = "Custom component libraries".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "A component library is a crate full of `#[component]` \
                 functions. Each one takes a props struct, builds a `ui!` tree, returns a \
-                `Primitive`. There's nothing privileged about idea-ui's components versus \
+                `Element`. There's nothing privileged about idea-ui's components versus \
                 yours \u{2014} they all go through the same path.".to_string())
         },
         code_panel(component_snippet),
@@ -301,7 +301,7 @@ fn building_your_own() -> Primitive {
                 composed; there's no framework-side registration step, no metadata to \
                 ship, no plugin manifest.".to_string())
         },
-        ui! { Typography(content = "Custom theme systems".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = "Custom theme systems".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "A theme is a trait, not a struct. Your library defines \
                 the trait \u{2014} which colors / sizes / weights / radii it reads from \
@@ -327,8 +327,8 @@ fn building_your_own() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn where_next() -> Primitive {
-    let title = ui! { Typography(content = "Where to go from here".to_string(), kind = idea_ui::typography_kind::H2.into()) };
+fn where_next() -> Element {
+    let title = ui! { Typography(content = "Where to go from here".to_string(), kind = idea_ui::typography_kind::H2) };
     let para_a = ui! {
         Typography(content = "If you want the language-shape argument \u{2014} why this is \
             written in Rust rather than TypeScript or Kotlin \u{2014} read the Why Rust page.".to_string())
@@ -347,6 +347,6 @@ fn where_next() -> Primitive {
             Typography(content = "Backends \u{2192}".to_string())
         }
     };
-    let children: Vec<Primitive> = vec![title, para_a, cta_a, para_b, cta_b];
+    let children: Vec<Element> = vec![title, para_a, cta_a, para_b, cta_b];
     ui! { Stack(gap = StackGap::Md) { children } }
 }

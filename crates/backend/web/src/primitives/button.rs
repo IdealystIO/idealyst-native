@@ -1,4 +1,4 @@
-//! `Primitive::Button` — a `<button>` element plus a click closure
+//! `Element::Button` — a `<button>` element plus a click closure
 //! kept alive in `WebBackend::_click_closures`.
 
 use crate::WebBackend;

@@ -5,7 +5,7 @@
 //! sibling `docs-macro` crate, imported by the docs site) emits
 //! two items into the calling module:
 //!
-//! 1. `pub fn page() -> Primitive` — the renderable screen.
+//! 1. `pub fn page() -> Element` — the renderable screen.
 //! 2. `pub static PAGE_META: PageMeta` — the structured metadata,
 //!    consumable by MCP servers, text exporters, search indexers,
 //!    and other introspection tools.
@@ -355,7 +355,7 @@ pub enum DocConcept {
     JsxMacro,
 
     // ---- Primitives ----
-    Primitive,
+    Element,
     /// View / ScrollView / Pressable.
     Container,
     /// Text / Image / Icon / Video.
@@ -381,7 +381,7 @@ pub enum DocConcept {
 
     // ---- Refs and handles ----
     Ref,
-    /// Primitive handles plus user-component handles.
+    /// Element handles plus user-component handles.
     Handle,
 
     // ---- Navigation ----
@@ -407,13 +407,13 @@ pub enum DocConcept {
     StrokeAnimation,
 
     // ---- Floating UI / animation ----
-    /// `Primitive::Portal` — the framework's one render-elsewhere
+    /// `Element::Portal` — the framework's one render-elsewhere
     /// primitive. Authoritative explainer: `portal` page.
     Portal,
-    /// `overlay()` composition. Lowers to `Primitive::Portal` with a
+    /// `overlay()` composition. Lowers to `Element::Portal` with a
     /// viewport target + backdrop child. Not a primitive itself.
     Overlay,
-    /// `anchored_overlay()` composition. Lowers to `Primitive::Portal`
+    /// `anchored_overlay()` composition. Lowers to `Element::Portal`
     /// with an anchor target. Not a primitive itself.
     AnchoredOverlay,
     Presence,
@@ -457,7 +457,7 @@ pub enum DocConcept {
     Stagger,
 
     // ---- Third-party extension ----
-    /// `Primitive::External` — the framework's one extension hatch for
+    /// `Element::External` — the framework's one extension hatch for
     /// third-party primitives. Authoritative explainer:
     /// `third-party-primitives` page.
     External,
@@ -602,7 +602,7 @@ impl DocConcept {
             DocConcept::UiMacro => "ui!",
             DocConcept::JsxMacro => "jsx!",
 
-            DocConcept::Primitive => "Primitive",
+            DocConcept::Element => "Element",
             DocConcept::Container => "Container primitives",
             DocConcept::Content => "Content primitives",
             DocConcept::Input => "Input primitives",
@@ -732,7 +732,7 @@ impl DocConcept {
             DocConcept::UiMacro => "ui-macro",
             DocConcept::JsxMacro => "jsx-macro",
 
-            DocConcept::Primitive => "primitive",
+            DocConcept::Element => "primitive",
             DocConcept::Container => "container",
             DocConcept::Content => "content",
             DocConcept::Input => "input",

@@ -1,6 +1,6 @@
 //! Overview page — built via the `docs!` macro.
 //!
-//! Single `docs!` invocation emits `pub fn page() -> Primitive` and
+//! Single `docs!` invocation emits `pub fn page() -> Element` and
 //! `pub static PAGE_META: PageMeta`. The docs site mounts `page()` into
 //! a route; `PAGE_META` registers in `registry::PAGES` for the MCP
 //! server.
@@ -17,7 +17,7 @@ docs! {
     category = Overview,
     description = "What an Idealyst app looks like, and what happens when it runs.",
     related = ["getting-started", "primitives", "reactivity", "backends", "writing-a-backend"],
-    concepts = [AppBackendSplit, Primitive, Component, Signal, Stylesheet, UiMacro, JsxMacro, Backend],
+    concepts = [AppBackendSplit, Element, Component, Signal, Stylesheet, UiMacro, JsxMacro, Backend],
 
     section(heading = "Overview intro") {
         p("This page answers one question: what does an Idealyst app actually look \
@@ -139,7 +139,7 @@ docs! {
 
     section(heading = "How a render happens") {
         p("When the app starts, the host crate calls ", code("app()"), ". That \
-           function returns a ", code("Primitive"), " — a tree of view, text, \
+           function returns a ", code("Element"), " — a tree of view, text, \
            button, and other primitive nodes, with reactive expressions \
            interleaved inside. The framework hands the tree to a piece of code \
            called the render walker."),
@@ -416,7 +416,7 @@ docs! {
         p("This is worth saying directly because it's the point that catches \
            people coming from most other frameworks."),
         p("A ", code("#[component]"), " function runs once, when its part of \
-           the tree is built. It returns a ", code("Primitive"), " tree. After \
+           the tree is built. It returns a ", code("Element"), " tree. After \
            that, the component function itself is gone; what's left on the \
            platform is the tree it produced, with Effects threaded through it. \
            State changes don't re-call the component. They re-run only the small \
@@ -589,7 +589,7 @@ docs! {
               runtime-core. Heading, Card, Stack, Btn, themed colors, \
               breakpoints. Use it, replace bits of it, or skip it."],
             [code("dev-hot"), " — Diff-and-patch for hot reload. Compares \
-              two ", code("Primitive"), " trees by their identity hashes and \
+              two ", code("Element"), " trees by their identity hashes and \
               produces the minimal sequence of backend operations to morph one \
               into the other."],
             [code("framework-wire"), " — The wire protocol. Pure data: a ",

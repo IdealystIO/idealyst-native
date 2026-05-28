@@ -1,4 +1,4 @@
-//! `Primitive::Graphics` — `android.view.SurfaceView` exposed as a
+//! `Element::Graphics` — `android.view.SurfaceView` exposed as a
 //! `raw_window_handle` surface provider.
 //!
 //! Lifecycle:

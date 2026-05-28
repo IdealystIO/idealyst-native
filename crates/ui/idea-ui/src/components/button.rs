@@ -26,7 +26,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{text, IntoPrimitive, PressableHandle, Primitive, Ref, StyleApplication};
+use runtime_core::{text, IntoElement, PressableHandle, Element, Reactive, Ref, StyleApplication};
 
 use idea_theme::extensible::{installed_button_sheet, ButtonSizeRef, ShapeRef, ToneRef, VariantRef};
 
@@ -36,7 +36,9 @@ use idea_theme::extensible::{installed_button_sheet, ButtonSizeRef, ShapeRef, To
 /// defaults route to Filled/Primary/Md/Md.
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ButtonProps {
-    pub label: String,
+    /// Button text. `Reactive<String>` — static for a literal/`String`,
+    /// live for a `Signal<String>` or `rx!(…)`.
+    pub label: Reactive<String>,
     pub on_click: Rc<dyn Fn()>,
     pub tone: ToneRef,
     pub variant: VariantRef,
@@ -51,7 +53,7 @@ pub struct ButtonProps {
 impl Default for ButtonProps {
     fn default() -> Self {
         Self {
-            label: String::new(),
+            label: Reactive::Static(String::new()),
             on_click: Rc::new(|| {}),
             tone: ToneRef::default(),
             variant: VariantRef::default(),
@@ -63,7 +65,7 @@ impl Default for ButtonProps {
     }
 }
 
-pub fn button(props: &ButtonProps) -> Primitive {
+pub fn button(props: &ButtonProps) -> Element {
     let label = props.label.clone();
     let on_click = props.on_click.clone();
     let tone = props.tone.clone();
@@ -95,7 +97,7 @@ pub fn button(props: &ButtonProps) -> Primitive {
         .with("size", size_key)
         .with("shape", shape_key);
 
-    let children: Vec<Primitive> = vec![text(label).into_primitive()];
+    let children: Vec<Element> = vec![text(label).into_element()];
     let on_click_for_p = on_click.clone();
     let mut bound = runtime_core::pressable(children, move || (on_click_for_p)())
         .with_style(style);
@@ -105,5 +107,5 @@ pub fn button(props: &ButtonProps) -> Primitive {
     if let Some(r) = bind_to {
         bound = bound.bind(r);
     }
-    bound.into_primitive()
+    bound.into_element()
 }

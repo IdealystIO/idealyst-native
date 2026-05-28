@@ -818,7 +818,9 @@ dependencies = [
  "anyhow",
  "build-ios",
  "flate2",
+ "proc-macro2",
  "serde_json",
+ "sha2",
  "tempfile",
  "toml 0.8.23",
  "wasm-split-cli",
@@ -4575,10 +4577,6 @@ version = "0.0.1"
 name = "reactive-loops"
 version = "0.0.1"
 dependencies = [
- "backend-android-mobile",
- "backend-ios-mobile",
- "backend-terminal",
- "backend-web",
  "idea-ui",
  "runtime-core",
 ]
@@ -5205,9 +5203,6 @@ name = "server-fn-demo"
 version = "0.0.1"
 dependencies = [
  "axum",
- "backend-ios-mobile",
- "backend-terminal",
- "backend-web",
  "idea-ui",
  "net",
  "runtime-core",
@@ -6985,9 +6980,6 @@ dependencies = [
 name = "welcome"
 version = "0.0.1"
 dependencies = [
- "backend-ios-mobile",
- "backend-terminal",
- "backend-web",
  "runtime-core",
 ]
 

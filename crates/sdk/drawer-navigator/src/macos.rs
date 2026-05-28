@@ -151,7 +151,7 @@ impl NavigatorHandler<MacosBackend> for MacosDrawerHandler {
         });
         control.install_link_activator(select_activator);
 
-        // Materialise the sidebar Primitive via the SDK's builder.
+        // Materialise the sidebar Element via the SDK's builder.
         // Must run outside the outer backend borrow window per the
         // host docs — defer via `schedule_microtask`.
         let sidebar_slot = presentation.sidebar.borrow().clone();

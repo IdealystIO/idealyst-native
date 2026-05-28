@@ -1,6 +1,6 @@
 //! Third-party `Toolbar` SDK for the idealyst framework.
 //!
-//! Provides a `Toolbar` primitive backed by `Primitive::External`. On
+//! Provides a `Toolbar` primitive backed by `Element::External`. On
 //! native desktop hosts (macOS via `NSToolbar`; Windows/Linux land in
 //! follow-ups when their backends gain `register_external`), the
 //! toolbar attaches to the host window's chrome — title bar on macOS,
@@ -53,7 +53,7 @@
 //!
 //! # Architecture
 //!
-//! - The `Primitive::External` payload type is [`ToolbarProps`].
+//! - The `Element::External` payload type is [`ToolbarProps`].
 //! - Per-backend `register(&mut backend)` impls live in cfg-gated
 //!   modules. The macOS impl installs an `Effect::new` inside its
 //!   handler closure, so the `items` closure re-runs whenever the
@@ -66,7 +66,7 @@
 //!   transparent view — toolbars are window chrome, not view content,
 //!   so the placeholder is invisible regardless of where it's mounted.
 
-use runtime_core::{Bound, Primitive, Ref, RefFill};
+use runtime_core::{Bound, Element, Ref, RefFill};
 use std::any::{Any, TypeId};
 use std::rc::Rc;
 
@@ -76,7 +76,7 @@ use std::rc::Rc;
 
 /// Author-supplied props for a `Toolbar` instance. Owned by the SDK,
 /// not the framework — the framework just type-erases this behind
-/// `Primitive::External { payload: Rc<dyn Any>, .. }` and hands it
+/// `Element::External { payload: Rc<dyn Any>, .. }` and hands it
 /// back to the registered backend handler on mount.
 ///
 /// `items` is reactive: the backend handler wraps the call in an
@@ -253,13 +253,13 @@ impl ToolbarOps for UnsupportedOps {}
 /// PascalCase intentionally — matches first-party primitive cadence
 /// inside a `ui!` block. Interpolate as `{ toolbar::Toolbar(props) }`.
 ///
-/// Under the hood this is `Primitive::External` with a `ToolbarProps`
+/// Under the hood this is `Element::External` with a `ToolbarProps`
 /// payload; on non-desktop backends the framework's "External not
 /// registered" placeholder fires, but since the toolbar is window
 /// chrome (not view content) the in-tree footprint stays invisible.
 #[allow(non_snake_case)]
 pub fn Toolbar(props: ToolbarProps) -> Bound<ToolbarHandle> {
-    Bound::new(Primitive::External {
+    Bound::new(Element::External {
         type_id: TypeId::of::<ToolbarProps>(),
         type_name: std::any::type_name::<ToolbarProps>(),
         payload: Rc::new(props) as Rc<dyn Any>,
@@ -279,7 +279,7 @@ pub trait ToolbarBind {
 
 impl ToolbarBind for Bound<ToolbarHandle> {
     fn bind(mut self, r: Ref<ToolbarHandle>) -> Self {
-        if let Primitive::External { ref_fill, .. } = self.primitive_mut() {
+        if let Element::External { ref_fill, .. } = self.primitive_mut() {
             *ref_fill = Some(RefFill::External(Box::new(move |node_any| {
                 r.fill(ToolbarHandle::new(node_any, OPS));
             })));

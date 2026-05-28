@@ -265,7 +265,7 @@ pub fn emit(input: TextFmtInput) -> TokenStream2 {
     // `text(...)` builder call we used to. The old shape forced
     // every call site to either land directly as a child (and the
     // ui! macro had to special-case "raw primitive in child slot"
-    // via `{ text_fmt!(...).into_primitive() }`) or fail to type-
+    // via `{ text_fmt!(...).into_element() }`) or fail to type-
     // check at component arg sites like `Button(label = …)`. With
     // this shape, `text_fmt!` is a value that drops naturally into
     // anywhere an `IntoTextSource` is expected:

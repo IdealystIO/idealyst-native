@@ -1,6 +1,6 @@
 //! Navigator primitive.
 //!
-//! Core ships exactly one navigator primitive (`Primitive::Navigator`)
+//! Core ships exactly one navigator primitive (`Element::Navigator`)
 //! plus its substrate. Specific navigator kinds (stack, tabs, drawer,
 //! anything third-party) live in SDK crates under `crates/sdk/` and
 //! register handlers into each backend's `NavigatorRegistry`.

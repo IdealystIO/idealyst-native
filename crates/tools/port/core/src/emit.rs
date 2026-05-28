@@ -7,7 +7,7 @@
 //! pub struct CounterProps { pub initial: i32 }
 //!
 //! #[component(default(initial = 0))]
-//! pub fn Counter(props: &CounterProps) -> Primitive {
+//! pub fn Counter(props: &CounterProps) -> Element {
 //!     let count = signal!(props.initial);
 //!     Effect::new(move || {
 //!         todo!("port handler-body: console.log('count:', count)");
@@ -127,7 +127,7 @@ fn emit_component(out: &mut String, c: &Component) {
     // call name, matching the framework's transform-free dispatch.
     // `#[component]` suppresses the `non_snake_case` lint.
     out.push_str(&format!(
-        "pub fn {fn_name}(props: &{props_ty}) -> Primitive {{\n",
+        "pub fn {fn_name}(props: &{props_ty}) -> Element {{\n",
         fn_name = c.name,
         props_ty = props_struct_name(&c.name),
     ));

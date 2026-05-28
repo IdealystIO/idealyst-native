@@ -9,14 +9,14 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo, TweenTo};
-use runtime_core::{node_ref, ui, Primitive, Ref, ViewHandle};
+use runtime_core::{node_ref, ui, Element, Ref, ViewHandle};
 use idea_ui::{Btn, Card, Stack, Typography, StackAxis, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
 use crate::styles::{DemoStage, DemoStageRow};
 
-pub fn page() -> Primitive {
+pub fn page() -> Element {
     let model_ref: Ref<ViewHandle> = Ref::new();
     let fade_ref: Ref<ViewHandle> = Ref::new();
     let spring_tween_ref: Ref<ViewHandle> = Ref::new();
@@ -63,9 +63,9 @@ pub fn page() -> Primitive {
 // Explainer (kept tight; the demos do the heavy lifting now)
 // =============================================================================
 
-fn model() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "The model".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+fn model() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "The model".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "An `AnimatedValue<T>` is a reactive cell with a driver. \
                 You write target values; the driver interpolates current toward target \
@@ -87,7 +87,7 @@ fn model() -> Primitive {
 // Demo 1 — Fade toggle
 // =============================================================================
 
-fn fade_demo() -> Primitive {
+fn fade_demo() -> Element {
     let opacity = AnimatedValue::new(1.0_f32);
     let box_ref: Ref<ViewHandle> = node_ref!(ViewHandle);
     opacity.bind(box_ref, AnimProp::Opacity);
@@ -103,7 +103,7 @@ fn fade_demo() -> Primitive {
 
     let stage_style = DemoStage();
     let row_style = DemoStageRow();
-    let stage_children: Vec<Primitive> = vec![
+    let stage_children: Vec<Element> = vec![
         ui! { View(style = stage_style) {} .bind(box_ref) },
     ];
     let snippet = "let opacity = AnimatedValue::new(1.0_f32);\n\
@@ -115,8 +115,8 @@ fn fade_demo() -> Primitive {
                        TweenTo::new(target, Duration::from_millis(300)).ease_out()\n\
                    );";
 
-    let card_children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Fade toggle".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+    let card_children: Vec<Element> = vec![
+        ui! { Typography(content = "Fade toggle".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "Tween a scalar between 0.0 and 1.0. The framework writes \
                 the value to `AnimProp::Opacity` on the bound view every frame.".to_string(),
@@ -125,7 +125,7 @@ fn fade_demo() -> Primitive {
         ui! { View(style = row_style) { stage_children } },
         ui! {
             Stack(gap = StackGap::Md, axis = StackAxis::Row) {
-                Btn(label = "Toggle".to_string(), on_click = on_toggle, tone = idea_ui::tone::Primary.into(), variant = idea_ui::variant::Filled.into())
+                Btn(label = "Toggle".to_string(), on_click = on_toggle, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled)
             }
         },
         code_panel(snippet),
@@ -137,7 +137,7 @@ fn fade_demo() -> Primitive {
 // Demo 2 — Spring vs tween (two boxes side by side)
 // =============================================================================
 
-fn spring_vs_tween_demo() -> Primitive {
+fn spring_vs_tween_demo() -> Element {
     let tween_x = AnimatedValue::new(0.0_f32);
     let spring_x = AnimatedValue::new(0.0_f32);
     let tween_ref: Ref<ViewHandle> = node_ref!(ViewHandle);
@@ -164,12 +164,12 @@ fn spring_vs_tween_demo() -> Primitive {
     let row_style_a = DemoStageRow();
     let row_style_b = DemoStageRow();
     // Two stacked rows so the labels sit above the moving boxes.
-    let tween_row: Vec<Primitive> = vec![
-        ui! { Typography(content = "Tween".to_string(), kind = idea_ui::typography_kind::Overline.into()) },
+    let tween_row: Vec<Element> = vec![
+        ui! { Typography(content = "Tween".to_string(), kind = idea_ui::typography_kind::Overline) },
         ui! { View(style = row_style_a) { View(style = stage_a) {}.bind(tween_ref) } },
     ];
-    let spring_row: Vec<Primitive> = vec![
-        ui! { Typography(content = "Spring".to_string(), kind = idea_ui::typography_kind::Overline.into()) },
+    let spring_row: Vec<Element> = vec![
+        ui! { Typography(content = "Spring".to_string(), kind = idea_ui::typography_kind::Overline) },
         ui! { View(style = row_style_b) { View(style = stage_b) {}.bind(spring_ref) } },
     ];
 
@@ -180,8 +180,8 @@ fn spring_vs_tween_demo() -> Primitive {
                        SpringTo::new(120.0).stiffness(140.0).damping(12.0)\n\
                    );";
 
-    let card_children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Spring vs tween".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+    let card_children: Vec<Element> = vec![
+        ui! { Typography(content = "Spring vs tween".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "Click \"Move\" repeatedly. The tween always takes \
                 exactly 600 ms with its ease-in-out curve, even if you click again \
@@ -193,7 +193,7 @@ fn spring_vs_tween_demo() -> Primitive {
         ui! { Stack(gap = StackGap::Sm) { spring_row } },
         ui! {
             Stack(gap = StackGap::Md, axis = StackAxis::Row) {
-                Btn(label = "Move".to_string(), on_click = on_move, tone = idea_ui::tone::Primary.into(), variant = idea_ui::variant::Filled.into())
+                Btn(label = "Move".to_string(), on_click = on_move, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled)
             }
         },
         code_panel(snippet),
@@ -205,7 +205,7 @@ fn spring_vs_tween_demo() -> Primitive {
 // Demo 3 — Multi-property entrance (welcome Act 1 shape)
 // =============================================================================
 
-fn entrance_demo() -> Primitive {
+fn entrance_demo() -> Element {
     let opacity = AnimatedValue::new(0.0_f32);
     let scale = AnimatedValue::new(0.85_f32);
     let translate_y = AnimatedValue::new(24.0_f32);
@@ -239,12 +239,12 @@ fn entrance_demo() -> Primitive {
                    scale.animate(SpringTo::new(1.0).stiffness(170.0).damping(22.0));\n\
                    translate_y.animate(SpringTo::new(0.0).stiffness(170.0).damping(22.0));";
 
-    let buttons: Vec<Primitive> = vec![
-        ui! { Btn(label = "Enter".to_string(), on_click = on_enter, tone = idea_ui::tone::Primary.into(), variant = idea_ui::variant::Filled.into()) },
-        ui! { Btn(label = "Reset".to_string(), on_click = on_reset, tone = idea_ui::tone::Neutral.into(), variant = idea_ui::variant::Ghost.into()) },
+    let buttons: Vec<Element> = vec![
+        ui! { Btn(label = "Enter".to_string(), on_click = on_enter, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled) },
+        ui! { Btn(label = "Reset".to_string(), on_click = on_reset, tone = idea_ui::tone::Neutral, variant = idea_ui::variant::Ghost) },
     ];
-    let card_children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Multi-property entrance".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+    let card_children: Vec<Element> = vec![
+        ui! { Typography(content = "Multi-property entrance".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "The welcome example's Act 1 in miniature: opacity \
                 tweens while scale and translate-y spring in parallel. Three animated \
@@ -262,7 +262,7 @@ fn entrance_demo() -> Primitive {
 // Demo 4 — Color tween (background)
 // =============================================================================
 
-fn color_demo() -> Primitive {
+fn color_demo() -> Element {
     let palette: [(f32, f32, f32, f32); 4] = [
         (0.353, 0.310, 0.812, 1.0), // indigo
         (0.231, 0.647, 0.365, 1.0), // green
@@ -292,8 +292,8 @@ fn color_demo() -> Primitive {
                        TweenTo::new(next_rgba, Duration::from_millis(500)).ease_in_out()\n\
                    );";
 
-    let card_children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Color tween".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+    let card_children: Vec<Element> = vec![
+        ui! { Typography(content = "Color tween".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "Animated values handle color too. `bind_color` writes \
                 an `(r, g, b, a)` 4-tuple to the bound view's background each frame; \
@@ -303,7 +303,7 @@ fn color_demo() -> Primitive {
         ui! { View(style = row_style) { View(style = stage_style) {}.bind(stage_ref) } },
         ui! {
             Stack(gap = StackGap::Md, axis = StackAxis::Row) {
-                Btn(label = "Next color".to_string(), on_click = on_next, tone = idea_ui::tone::Primary.into(), variant = idea_ui::variant::Filled.into())
+                Btn(label = "Next color".to_string(), on_click = on_next, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled)
             }
         },
         code_panel(snippet),
@@ -315,9 +315,9 @@ fn color_demo() -> Primitive {
 // Explainer continued (springs vs tweens deep dive)
 // =============================================================================
 
-fn springs_vs_tweens_note() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "When to pick which".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+fn springs_vs_tweens_note() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "When to pick which".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Tweens are right for choreographed motion: act \
                 transitions, page-in fades, anything where the duration is part of \
@@ -335,26 +335,26 @@ fn springs_vs_tweens_note() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn welcome_breakdown() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "The welcome scene".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+fn welcome_breakdown() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "The welcome scene".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "`idealyst new my-app` scaffolds the welcome example: \
                 a three-act cinematic intro built from the same API the demos above use.".to_string())
         },
-        ui! { Typography(content = "Act 1".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = "Act 1".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "The phrase \"Welcome to Idealyst\" rises into a light \
                 frame. Three animated values: opacity (tween, 700 ms ease-out), scale \
                 (spring, slight bounce on settle), translate-y (spring, lifts to rest).".to_string())
         },
-        ui! { Typography(content = "Act 2".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = "Act 2".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "The frame washes dark while the headline color tweens \
                 to its inverse. A radial sun gradient blooms from the top-right, pulled \
                 in by a separate animation tied to a corner-anchored gradient stop.".to_string())
         },
-        ui! { Typography(content = "Act 3".to_string(), kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = "Act 3".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "The headline shuffles up to make room for the subtitle, \
                 which fades in from below. A `raf_loop` then drives a steady-state pulse \
@@ -365,9 +365,9 @@ fn welcome_breakdown() -> Primitive {
     ui! { Stack(gap = StackGap::Md) { children } }
 }
 
-fn performance() -> Primitive {
-    let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "What you don't pay for".to_string(), kind = idea_ui::typography_kind::H2.into()) },
+fn performance() -> Element {
+    let children: Vec<Element> = vec![
+        ui! { Typography(content = "What you don't pay for".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
             Typography(content = "Animations don't go through the render walker every \
                 frame. The walker mounts once; the animation system pushes per-frame \

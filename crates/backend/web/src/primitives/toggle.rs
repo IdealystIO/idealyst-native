@@ -1,4 +1,4 @@
-//! `Primitive::Toggle` — an `<input type="checkbox" role="switch">`.
+//! `Element::Toggle` — an `<input type="checkbox" role="switch">`.
 
 use crate::WebBackend;
 use std::rc::Rc;

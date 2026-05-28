@@ -713,7 +713,7 @@ docs! {
             let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
             let owner = mount(backend, super::app);
             //                            ^^^^^^^^^^
-            //          function pointer (`fn() -> Primitive`); `mount`
+            //          function pointer (`fn() -> Element`); `mount`
             //          calls it inside the root scope, then walks the
             //          returned tree.
         "##),
@@ -731,7 +731,7 @@ docs! {
 
         code(rust, r##"
             #[component]
-            pub fn app() -> Primitive {
+            pub fn app() -> Element {
                 let phase = signal!(0u8);
 
                 // Schedule a 3-beat timeline. Cleanups fire on
@@ -787,7 +787,7 @@ docs! {
     section(heading = "render() — the value-taking variant") {
         p(code("runtime_core::render(backend, primitive_value)"),
           " is the pre-built-tree alternative: it takes a ",
-          code("Primitive"),
+          code("Element"),
           " value that the caller has already constructed, and opens \
            the root scope around the build walk only. It's literally ",
           code("mount(backend, move || tree)"),
@@ -796,7 +796,7 @@ docs! {
         code(rust, r##"
             pub fn render<B: Backend + 'static>(
                 backend: Rc<RefCell<B>>,
-                tree: Primitive,
+                tree: Element,
             ) -> Owner {
                 mount(backend, move || tree)
             }
@@ -805,7 +805,7 @@ docs! {
         p("Reach for ", code("render"),
           " when there is no user-authored constructor to run inside \
            the scope — e.g. tests that build a fixture ",
-          code("Primitive"),
+          code("Element"),
           " by hand, or wire-protocol replay paths that synthesize a \
            tree from incoming commands. New host glue should prefer ",
           code("mount"),
@@ -932,7 +932,7 @@ docs! {
 
         code(rust, r##"
             #[component]
-            fn counter(count: Signal<i32>) -> Primitive {
+            fn counter(count: Signal<i32>) -> Element {
                 ui! {
                     Text { format!("Count: {}", count.get()) }
                     Button(label = "++", on_click = move || count.update(|n| *n += 1))
@@ -940,7 +940,7 @@ docs! {
             }
 
             #[component]
-            fn app() -> Primitive {
+            fn app() -> Element {
                 let count = signal!(0);
                 ui! {
                     counter(count = count)
@@ -995,7 +995,7 @@ docs! {
 
         code(rust, r##"
             #[component]
-            fn greeting(name: Signal<String>) -> Primitive {
+            fn greeting(name: Signal<String>) -> Element {
                 let greeting_text = format!("Hello, {}", name.get());  // computed ONCE
                 ui! {
                     Text { greeting_text.clone() }

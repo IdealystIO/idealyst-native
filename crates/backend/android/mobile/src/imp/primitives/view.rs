@@ -1,4 +1,4 @@
-//! `Primitive::View` — `android.widget.FrameLayout`. FrameLayout
+//! `Element::View` — `android.widget.FrameLayout`. FrameLayout
 //! is chosen (over LinearLayout) because the backend now drives
 //! layout entirely through Taffy: every child gets its position
 //! and size written directly onto its `FrameLayout.LayoutParams`
