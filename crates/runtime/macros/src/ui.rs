@@ -1728,19 +1728,19 @@ fn emit_for(
         return virt;
     }
 
-    // Reactive list: the iterator reads a signal — `for x in items.get()`
-    // (signal of an iterable), or a reactive count `for i in 0..n.get()`.
-    // Lower to `each(...)`: a full-rebuild reactive list, the dual of
-    // `when`/`switch` for a *vector* of children. The whole loop re-runs
-    // inside the Each's Effect whenever a signal it reads changes; the
-    // prior rows' scope is dropped first (see `Primitive::Each`). Same
-    // `.get()` heuristic as reactive `if`/`match`.
+    // Reactive COUNT range — `for i in A..B` where a bound reads a
+    // signal (e.g. `for i in 0..n.get()`). The iterable is a `Range`,
+    // which is a *static* type, so the type-driven path below would
+    // snapshot it once. We special-case a syntactic range whose bounds
+    // read a signal and wrap the loop in a reactive `each` so the count
+    // re-evaluates on change.
     //
-    // Checked BEFORE the static range path so a reactive count
-    // (`0..n.get()`) rebuilds on change instead of being snapshot once
-    // into a `Repeat`. The body parts are appended as flat siblings,
-    // identical to the static accumulator below.
-    if condition_is_reactive(iter) {
+    // This `.get()` check is deliberately scoped to RANGE BOUNDS only —
+    // it is NOT the old general iterable heuristic (that's gone; the
+    // type-driven path decides reactivity for every other iterable).
+    // A `.get()` somewhere in a non-range iterable can no longer make a
+    // loop accidentally reactive.
+    if matches!(iter, Expr::Range(_)) && condition_is_reactive(iter) {
         let parts: Vec<TokenStream2> = body.iter().map(emit_node).collect();
         let each = quote! {
             ::runtime_core::each(move || {
@@ -1759,24 +1759,13 @@ fn emit_for(
         };
     }
 
-    // Fast path: `for IDENT in RANGE_EXPR { single_node }` where the
-    // iterator is a syntactic `0..n` (any bounded range) — lower to
-    // `Primitive::Repeat`, which the build walker expands into the
-    // parent's children list via the backend's `insert_many`
-    // (DocumentFragment batching on web). Collapses N individual
-    // `appendChild` FFI calls into one and lets the backend amortize
-    // any other per-batch setup.
-    //
-    // Gated to single-node bodies: `Primitive::Repeat` is
-    // one-node-per-index (`row_builder: Fn(usize) -> Primitive`), so a
-    // multi-node iteration could only batch by wrapping each row in a
-    // synthetic View — which is exactly the behavior this lowering must
-    // NOT have (children are inherently a flat vector). Multi-node
-    // ranged loops fall through to the flattening accumulator below.
-    //
-    // We don't try to handle non-range iterators on the fast path —
-    // the macro can't prove the iterator length up-front without
-    // evaluating it.
+    // Static range fast path: `for i in 0..n { single_node }` → batched
+    // `Primitive::Repeat`, expanded by the walker into the parent's
+    // children via `insert_many` (DocumentFragment batching on web).
+    // Single-node bodies only: `Repeat` is one-node-per-index, so a
+    // multi-node body would need a wrapper View — refused, since
+    // children are a flat vector. Multi-node / non-range loops fall
+    // through to the type-driven path below.
     if body.len() == 1 {
         let body_expr = emit_block_as_primitive(body);
         if let Some(repeat) = try_emit_for_repeat(pat, iter, &body_expr) {
@@ -1784,25 +1773,38 @@ fn emit_for(
         }
     }
 
-    // General fallback: accumulate FLAT siblings. Each body node is
-    // appended to the per-iteration vec individually, so an iteration
-    // with N sibling nodes contributes N siblings to the parent's
-    // children list — NOT one wrapper View around them. A nested
-    // Vec-producing node (e.g. another `for`) flattens inline through
-    // `ChildList`. Single-node bodies behave exactly as before (one
-    // sibling per iteration). This matches the truth that a parent's
-    // `children` is a vector: a loop emits siblings into it, the same
-    // as hand-written `vec.push(...)` would.
+    // Type-driven dispatch — the heuristic-free path for every other
+    // iterable. We emit `ITER.__idealyst_for_each(|PAT| row_children)`
+    // with BOTH `StaticForEach` and `ReactiveForEach` in scope; Rust
+    // method resolution picks the impl from ITER's *type*:
+    //   - `Signal<C>` (a signal of a cloneable iterable) → a reactive
+    //     `Primitive::Each` that rebuilds when the signal changes,
+    //   - any other `IntoIterator` (Vec, &Vec, array, HashMap, …) → a
+    //     flat, built-once `Vec<Primitive>`.
+    //
+    // No `.get()` substring is inspected — the type decides — so a
+    // `HashMap::get()` (or any incidental `.get()`) can never make a
+    // loop accidentally reactive, and a real signal iterable is never
+    // silently missed. The per-item builder returns a `Vec<Primitive>`
+    // (flat siblings; multi-node bodies contribute multiple siblings)
+    // and the impl concatenates them.
     let parts: Vec<TokenStream2> = body.iter().map(emit_node).collect();
-    quote! {
+    let dispatch = quote! {
         {
-            let mut __c: ::std::vec::Vec<::runtime_core::Primitive>
-                = ::std::vec::Vec::new();
-            for #pat in #iter {
-                #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
-            }
-            __c
+            #[allow(unused_imports)]
+            use ::runtime_core::{StaticForEach as _, ReactiveForEach as _};
+            (#iter).__idealyst_for_each(move |#pat| {
+                let mut __row: ::std::vec::Vec<::runtime_core::Primitive>
+                    = ::std::vec::Vec::new();
+                #( ::runtime_core::ChildList::append_to(#parts, &mut __row); )*
+                __row
+            })
         }
+    };
+    if chain.is_empty() {
+        dispatch
+    } else {
+        quote! { (#dispatch) #(#chain)* }
     }
 }
 
@@ -1895,23 +1897,23 @@ fn try_emit_for_virtualizer(
                 ::runtime_core::primitives::virtualizer::ItemSize::Known(
                     ::std::rc::Rc::new(|_| 40.0)
                 ),
-                ::std::rc::Rc::new(|_i| {
-                    // Closure-driven path placeholder. Runtime
-                    // backends that consume Virtualizer for real
-                    // cell recycling would need the closure to be
-                    // the actual row builder — TODO when those
-                    // backends grow Virtualizer support for the
-                    // for-loop lowering.
-                    ::runtime_core::Primitive::View {
-                        children: ::std::vec::Vec::new(),
-                        style: ::std::option::Option::None,
-                        ref_fill: ::std::option::Option::None,
-                        safe_area_sides: ::runtime_core::SafeAreaSides::NONE,
-                        on_touch: ::std::option::Option::None,
-                        accessibility: ::runtime_core::accessibility::AccessibilityProps::default(),
-                        #[cfg(feature = "robot")]
-                        test_id: ::std::option::Option::None,
-                    }
+                ::std::rc::Rc::new(move |__idx: usize| {
+                    // Real per-row builder for runtime backends (web,
+                    // iOS, Android, wgpu). Each row gets its OWN index
+                    // signal, seeded to the row's index, declared fresh
+                    // on every call — `build_virtualizer` runs this
+                    // inside a per-item `Scope`, so reactive reads of the
+                    // loop variable resolve to *that* row's index with no
+                    // cross-row signal sharing. Generator backends (Roku)
+                    // ignore this closure and clone `row_template`,
+                    // remapping `row_index_signal_id` per device row.
+                    //
+                    // Previously this was an empty-View placeholder, so
+                    // `for i in count(sig) { … }` silently rendered blank
+                    // rows on every runtime backend.
+                    let #row_ident: ::runtime_core::Signal<i32> =
+                        ::runtime_core::signal!(__idx as i32);
+                    ::runtime_core::IntoPrimitive::into_primitive(#body_expr)
                 }),
             );
             // Patch the structured-only fields on the underlying

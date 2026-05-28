@@ -10,23 +10,38 @@
 //!     `for` accumulating a flat `Vec<Primitive>` (the React
 //!     `arr.map(e => <C/>)` equivalent).
 //!   - static `0..n` range → `Primitive::Repeat`.
-//!   - direct signal iteration `for x in sig.get()` → REACTIVE
-//!     `Primitive::Each` (full-rebuild list); a reactive count
-//!     `for i in 0..n.get()` rebuilds too.
+//!   - REACTIVE iteration is TYPE-DRIVEN, not heuristic: `for x in sig`
+//!     (sig: `Signal<Vec<_>>`) → reactive `Primitive::Each` because the
+//!     *type* is a signal; `for x in sig.get()` iterates a `Vec`
+//!     snapshot → STATIC. A reactive count `for i in 0..n.get()` is the
+//!     one narrow range-bound special case that still rebuilds.
 //!   - `FlatList(data = sig, ...)` → reactive `Primitive::Virtualizer`
 //!     (the keyed/windowed reactive-list path for large/scrolling lists).
 //!   - static / reactive `if`/`else` → plain Rust `if` / `when(...)`.
 //!   - static / reactive `match` → plain Rust `match` / `switch(...)`.
 //!
-//! NOTE: the `MockBackend`'s `create_virtualizer` records the event but
-//! does not drive `mount_item`, so reactive-list ROW CONTENT is not
-//! observable here — only creation and data-changed notifications.
+//! NOTE: the `MockBackend`'s `create_virtualizer` stores the callbacks
+//! rather than driving them inline (driving inline would re-enter the
+//! framework's backend borrow — real backends mount from scroll/rAF).
+//! Tests drive mount/release out-of-band via `TestRuntime::
+//! sync_virtualizers`, so reactive-list ROW CONTENT, incremental mount,
+//! and per-row scope teardown ARE observable here.
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
-use runtime_core::{signal, ui, Primitive, Signal};
+use runtime_core::{on_cleanup, signal, ui, Primitive, Signal};
 
 use crate::common::{Event, TestRuntime};
+
+/// Plain (non-`#[method]`) helper used by the structured-count test:
+/// `for i in count(sig)` only requires `count` to be a single-segment
+/// call whose args are bare signal paths — the macro reads it
+/// syntactically.
+fn structured_count(n: usize) -> usize {
+    n
+}
 
 fn texts(events: &[Event]) -> Vec<String> {
     events
@@ -135,19 +150,20 @@ fn static_range_maps_to_components() {
 }
 
 // ---------------------------------------------------------------------------
-// Direct signal iteration — REACTIVE via Primitive::Each
+// Type-driven reactive iteration — Signal<Vec<_>> via Primitive::Each
 // ---------------------------------------------------------------------------
 
-/// `for x in sig.get() { ... }` is reactive: it lowers to a
-/// `Primitive::Each` that rebuilds the whole list whenever the signal
-/// changes. Push / shrink / replace / empty all re-render the rows.
+/// `for x in sig { ... }` (where `sig: Signal<Vec<_>>`) is reactive
+/// because the *type* is a signal — it lowers to a `Primitive::Each`
+/// that rebuilds the whole list whenever the signal changes. No
+/// `.get()` needed; push / shrink / replace / empty all re-render.
 #[test]
 fn signal_iteration_rebuilds_on_change() {
     let rt = TestRuntime::new();
     let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
     let tree: Primitive = ui! {
         View {
-            for s in data.get() {
+            for s in data {
                 Text { s.to_string() }
             }
         }
@@ -169,6 +185,64 @@ fn signal_iteration_rebuilds_on_change() {
     rt.backend_mut().clear_events();
     data.set(vec![]);
     assert_eq!(texts(&rt.events()), Vec::<String>::new(), "rebuilt empty");
+}
+
+/// On rebuild, `Primitive::Each` drops the PREVIOUS list's scope before
+/// building the new one — freeing every row's signals/effects. Each row
+/// registers an `on_cleanup`; growing the list must fire exactly the old
+/// rows' cleanups (no leak, atomic teardown).
+#[test]
+fn each_releases_old_row_scopes_on_rebuild() {
+    let rt = TestRuntime::new();
+    let cleaned = Rc::new(Cell::new(0usize));
+    let data: Signal<Vec<i32>> = signal!(vec![1, 2]);
+    let c = cleaned.clone();
+    let tree: Primitive = ui! {
+        View {
+            for n in data {
+                {
+                    let c2 = c.clone();
+                    on_cleanup(move || c2.set(c2.get() + 1));
+                    ui! { Text { n.to_string() } }
+                }
+            }
+        }
+    };
+    let _owner = rt.render(tree); // 2 rows built, 2 on_cleanups in scope v1
+    assert_eq!(cleaned.get(), 0, "nothing torn down on first build");
+
+    data.set(vec![1, 2, 3]); // Each rebuilds: drop scope v1, build v2
+    assert_eq!(cleaned.get(), 2, "both old row scopes freed on rebuild");
+}
+
+/// The type decides reactivity, not a `.get()` substring: iterating a
+/// `Vec` SNAPSHOT (`for s in sig.get()`) is STATIC — `sig.get()` returns
+/// a `Vec`, whose type resolves to the static impl. This is the
+/// counterpart to `signal_iteration_rebuilds_on_change` and proves the
+/// `.get()` heuristic is gone: a `.get()` in the iterable no longer
+/// makes the loop reactive.
+#[test]
+fn snapshot_get_iteration_is_static() {
+    let rt = TestRuntime::new();
+    let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
+    let tree: Primitive = ui! {
+        View {
+            for s in data.get() {
+                Text { s.to_string() }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    assert_eq!(texts(&rt.events()), vec!["a", "b"], "snapshot rendered once");
+
+    // Mutating the signal does nothing — we iterated a detached Vec.
+    rt.backend_mut().clear_events();
+    data.set(vec!["a", "b", "c", "d"]);
+    assert!(
+        rt.events().is_empty(),
+        "iterating a .get() snapshot is static; mutation must not re-render: {:?}",
+        rt.events()
+    );
 }
 
 /// A reactive *count* (range whose bound reads a signal) rebuilds too —
@@ -202,7 +276,7 @@ fn reactive_for_multi_node_body_flattens_on_rebuild() {
     let data: Signal<Vec<i32>> = signal!(vec![1]);
     let tree: Primitive = ui! {
         View {
-            for n in data.get() {
+            for n in data {
                 Text { format!("h{}", n) }
                 Text { format!("b{}", n) }
             }
@@ -255,6 +329,138 @@ fn reactive_flat_list_creates_virtualizer_and_reacts_to_data() {
     assert!(
         rt.events().iter().any(|e| matches!(e, Event::VirtualizerDataChanged { .. })),
         "data signal change must notify the backend: {:?}",
+        rt.events()
+    );
+}
+
+/// Drive the virtualizer's mount callbacks (via `sync_virtualizers`)
+/// and assert each row builds its REAL content — `mount_item` runs the
+/// `render` closure in a per-item scope and produces the expected
+/// `Text`. This is the row-content coverage the create/data-changed
+/// test can't give (the mock doesn't auto-mount).
+#[test]
+fn flat_list_mounts_rows_with_real_content() {
+    let rt = TestRuntime::new();
+    let data: Signal<Vec<i32>> = signal!(vec![10, 20, 30]);
+    let tree: Primitive = ui! {
+        FlatList(
+            data = data,
+            render = |_idx, item: &i32| ui! { Text { format!("item {}", item) } },
+        )
+    };
+    let _owner = rt.render(tree);
+
+    rt.backend_mut().clear_events();
+    rt.sync_virtualizers();
+    assert_eq!(texts(&rt.events()), vec!["item 10", "item 20", "item 30"]);
+}
+
+/// Growing the data signal mounts ONLY the new row on the next sync —
+/// `render_item` reads the current signal value, so the new index
+/// renders the freshly-added item.
+#[test]
+fn flat_list_mounts_only_new_row_on_growth() {
+    let rt = TestRuntime::new();
+    let data: Signal<Vec<i32>> = signal!(vec![1, 2]);
+    let tree: Primitive = ui! {
+        FlatList(
+            data = data,
+            render = |_idx, item: &i32| ui! { Text { format!("v{}", item) } },
+        )
+    };
+    let _owner = rt.render(tree);
+    rt.sync_virtualizers(); // mount rows 0,1
+
+    rt.backend_mut().clear_events();
+    data.set(vec![1, 2, 3]);
+    rt.sync_virtualizers(); // only index 2 is new
+    assert_eq!(texts(&rt.events()), vec!["v3"], "only the newly-added row mounts");
+}
+
+/// Shrinking the data signal RELEASES the dropped rows' scopes on the
+/// next sync — `release_item` drops each row's `Scope`, firing its
+/// `on_cleanup`. Proves per-row teardown (no leak) through the real
+/// Virtualizer machinery.
+#[test]
+fn flat_list_releases_row_scopes_on_shrink() {
+    let rt = TestRuntime::new();
+    let cleaned = Rc::new(Cell::new(0usize));
+    let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
+    let c = cleaned.clone();
+    let tree: Primitive = ui! {
+        FlatList(
+            data = data,
+            render = move |_idx, item: &i32| {
+                let c2 = c.clone();
+                on_cleanup(move || c2.set(c2.get() + 1));
+                ui! { Text { format!("v{}", item) } }
+            },
+        )
+    };
+    let _owner = rt.render(tree);
+    rt.sync_virtualizers(); // mount 3 rows, register 3 on_cleanups
+    assert_eq!(cleaned.get(), 0, "no rows released yet");
+
+    data.set(vec![1]); // shrink to a single row
+    rt.sync_virtualizers(); // release rows 1 and 2
+    assert_eq!(cleaned.get(), 2, "two row scopes torn down on shrink");
+}
+
+// ---------------------------------------------------------------------------
+// Structured count `for i in count(sig)` — Virtualizer with REAL rows
+// ---------------------------------------------------------------------------
+
+/// `for i in count(sig) { body }` lowers to a structured
+/// `Primitive::Virtualizer` (count `Derived` + `row_template` for
+/// generator backends). Regression: its runtime `render_item` must
+/// build the REAL row body — previously it was a hardcoded empty-View
+/// placeholder, so this construct rendered blank rows on every runtime
+/// backend (web/iOS/Android/wgpu).
+#[test]
+fn for_count_signal_renders_real_rows_not_placeholder() {
+    let count_sig: Signal<usize> = signal!(3);
+    let tree: Primitive = ui! {
+        for _i in structured_count(count_sig) {
+            Text { "row".to_string() }
+        }
+    };
+    match tree {
+        Primitive::Virtualizer { render_item, item_count, row_template, .. } => {
+            // Count derives from the signal-reading call.
+            assert_eq!((item_count.compute)(), 3, "item_count derives from count(sig)");
+            // Structured form preserved for generator backends (Roku).
+            assert!(row_template.is_some(), "row_template kept for generator backends");
+            // THE FIX: runtime render builds the real row, not a placeholder View.
+            assert!(
+                matches!(render_item(0), Primitive::Text { .. }),
+                "render_item must build the real row body (Text), not an empty placeholder View",
+            );
+        }
+        _ => panic!("`for i in count(sig)` must lower to Primitive::Virtualizer"),
+    }
+}
+
+/// End-to-end: `for i in count(sig)` mounts real rows through the
+/// actual Virtualizer machinery (driven via `sync_virtualizers`), not
+/// just at the primitive level — the full mount path complements the
+/// primitive-level assertion above.
+#[test]
+fn for_count_signal_mounts_real_rows_end_to_end() {
+    let rt = TestRuntime::new();
+    let n: Signal<usize> = signal!(2usize);
+    let tree: Primitive = ui! {
+        for _i in structured_count(n) {
+            Text { "cell".to_string() }
+        }
+    };
+    let _owner = rt.render(tree);
+
+    rt.backend_mut().clear_events();
+    rt.sync_virtualizers();
+    assert_eq!(
+        count_text(&rt.events(), "cell"),
+        2,
+        "both rows mount with real content: {:?}",
         rt.events()
     );
 }

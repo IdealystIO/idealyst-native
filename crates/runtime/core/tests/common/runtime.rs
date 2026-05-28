@@ -65,6 +65,70 @@ impl TestRuntime {
     pub fn events(&self) -> Vec<super::mock_backend::Event> {
         self.backend.borrow().events()
     }
+
+    /// Drive every mounted `Primitive::Virtualizer`'s mount/release
+    /// callbacks to match its current item count. Real backends do this
+    /// from scroll / rAF — OUTSIDE the framework's `backend.borrow_mut()`
+    /// — so the mock stores the callbacks and this helper invokes them
+    /// with no borrow held (it clones the shared core, dropping the
+    /// backend borrow before calling any callback).
+    ///
+    /// Non-windowing: it mounts every index in `0..item_count()` and
+    /// releases any previously-mounted index that's now out of range.
+    /// That's enough to unit-test row content, incremental mount on
+    /// growth, and per-row `Scope` teardown on shrink (`release_item`
+    /// drops the row's scope, firing its `on_cleanup`s).
+    pub fn sync_virtualizers(&self) {
+        use std::collections::HashSet;
+
+        // Clone the shared core (Rc-clone) and DROP the backend borrow
+        // before invoking any callback — `mount_item` re-borrows the
+        // backend internally.
+        let core = self.backend.borrow().inspector();
+        let nodes: Vec<super::mock_backend::NodeId> =
+            core.virtualizers.borrow().keys().copied().collect();
+
+        for node in nodes {
+            let (count_fn, mount_fn, release_fn, mut mounted) = {
+                let vs = core.virtualizers.borrow();
+                let sv = vs.get(&node).expect("virtualizer entry present");
+                (
+                    sv.item_count.clone(),
+                    sv.mount_item.clone(),
+                    sv.release_item.clone(),
+                    sv.mounted.clone(),
+                )
+            };
+
+            let count = count_fn();
+
+            // Release rows that fell outside `0..count` (shrink).
+            mounted.retain(|(idx, scope_id, _node)| {
+                if *idx >= count {
+                    release_fn(*scope_id);
+                    false
+                } else {
+                    true
+                }
+            });
+
+            // Mount any in-range index not already mounted (growth).
+            let have: HashSet<usize> = mounted.iter().map(|(i, _, _)| *i).collect();
+            for idx in 0..count {
+                if !have.contains(&idx) {
+                    let (n, sid) = mount_fn(idx);
+                    mounted.push((idx, sid, n));
+                }
+            }
+            mounted.sort_by_key(|(i, _, _)| *i);
+
+            core.virtualizers
+                .borrow_mut()
+                .get_mut(&node)
+                .expect("virtualizer entry present")
+                .mounted = mounted;
+        }
+    }
 }
 
 impl Default for TestRuntime {

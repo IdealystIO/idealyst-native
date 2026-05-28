@@ -85,7 +85,7 @@ pub use handles::{
 };
 pub use builder::{
     button, each, pressable, switch, text, view, when, Bindable, Bound, ChildList,
-    IntoDisabledSource, IntoPrimitive,
+    IntoDisabledSource, IntoPrimitive, ReactiveForEach, StaticForEach,
 };
 pub use derive::{Action, Derived, IntoAction, IntoDerived};
 pub use identity::{

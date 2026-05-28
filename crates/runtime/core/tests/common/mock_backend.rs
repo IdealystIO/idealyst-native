@@ -230,6 +230,23 @@ impl Default for MockBackendConfig {
     }
 }
 
+/// Captured `Primitive::Virtualizer` callbacks + the rows currently
+/// mounted. The framework hands these callbacks to `create_virtualizer`;
+/// a real backend invokes `mount_item` / `release_item` from scroll /
+/// rAF events — i.e. OUTSIDE the framework's `backend.borrow_mut()`.
+/// The mock can't drive them inline (that would re-enter the borrow),
+/// so it stores them here and [`TestRuntime::sync_virtualizers`] drives
+/// them with no borrow held. Lets unit tests observe real row mounting,
+/// incremental mount on data growth, and per-row scope teardown on
+/// shrink — without a browser.
+pub(crate) struct StoredVirtualizer {
+    pub(crate) item_count: Rc<dyn Fn() -> usize>,
+    pub(crate) mount_item: Rc<dyn Fn(usize) -> (NodeId, u64)>,
+    pub(crate) release_item: Rc<dyn Fn(u64)>,
+    /// `(index, scope_id, node)` for each currently-mounted row.
+    pub(crate) mounted: Vec<(usize, u64, NodeId)>,
+}
+
 /// Shared event log + monotonic id state. Cloning a `MockBackendCore`
 /// is cheap (Rc-clone) and gives you the same log + same id counter.
 #[derive(Clone)]
@@ -245,6 +262,9 @@ pub struct MockBackendCore {
     /// without driving an actual scroll event from a host.
     pub(crate) scroll_handlers:
         Rc<RefCell<std::collections::HashMap<NodeId, Rc<dyn Fn(f32, f32)>>>>,
+    /// Captured virtualizer callbacks keyed by the virtualizer node,
+    /// driven out-of-band by [`TestRuntime::sync_virtualizers`].
+    pub(crate) virtualizers: Rc<RefCell<std::collections::HashMap<NodeId, StoredVirtualizer>>>,
 }
 
 impl Default for MockBackendCore {
@@ -254,6 +274,7 @@ impl Default for MockBackendCore {
             events: Rc::new(RefCell::new(Vec::new())),
             key_handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
             scroll_handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            virtualizers: Rc::new(RefCell::new(std::collections::HashMap::new())),
         }
     }
 }
@@ -717,22 +738,39 @@ impl Backend for MockBackend {
 
     fn create_virtualizer(
         &mut self,
-        _callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
+        callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
         horizontal: bool,
         _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateVirtualizer { overscan, horizontal });
+        // Stash the callbacks so a test can drive mount/release
+        // out-of-band via `TestRuntime::sync_virtualizers` (real
+        // backends drive these from scroll/rAF, outside the borrow).
+        self.core.virtualizers.borrow_mut().insert(
+            id,
+            StoredVirtualizer {
+                item_count: callbacks.item_count.clone(),
+                mount_item: callbacks.mount_item.clone(),
+                release_item: callbacks.release_item.clone(),
+                mounted: Vec::new(),
+            },
+        );
         id
     }
 
     fn virtualizer_data_changed(&mut self, node: &Self::Node) {
+        // Record only — re-diffing mounts/releases would re-enter this
+        // borrow. The test re-syncs via `sync_virtualizers` afterward,
+        // matching how a real backend defers the work to its next
+        // scroll/layout pass.
         self.core.record(Event::VirtualizerDataChanged { node: *node });
     }
 
     fn release_virtualizer(&mut self, node: &Self::Node) {
         self.core.record(Event::ReleaseVirtualizer { node: *node });
+        self.core.virtualizers.borrow_mut().remove(node);
     }
 
     fn create_graphics(

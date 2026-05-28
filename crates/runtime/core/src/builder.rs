@@ -579,6 +579,86 @@ pub fn each(build: impl Fn() -> Vec<Primitive> + 'static) -> Primitive {
 }
 
 // =============================================================================
+// for-each dispatch — type-driven reactive-vs-static iteration.
+// =============================================================================
+//
+// `ui!`'s `for PAT in ITER { … }` lowers to
+// `ITER.__idealyst_for_each(|item| row_children)` inside a block that
+// brings BOTH traits below into scope. Rust method resolution then
+// picks the impl from ITER's *type*:
+//
+//   - `Signal<C>` (a signal of any cloneable iterable) → `ReactiveForEach`
+//     → a reactive `Primitive::Each` that rebuilds on change.
+//   - any other `IntoIterator` (Vec, &Vec, array, range, HashMap, …) →
+//     `StaticForEach` → a flat `Vec<Primitive>` built once.
+//
+// There is NO `.get()` substring heuristic involved — the *type*
+// decides, so a `HashMap::get()` or any incidental `.get()` in the
+// iterable can never accidentally make a loop reactive, and a real
+// signal iterable can never be silently missed. The two traits don't
+// overlap because `Signal<C>` does not implement `IntoIterator`, so no
+// type satisfies both and method resolution is unambiguous.
+//
+// Both methods share the same signature so the macro emits one closure
+// regardless of which impl wins.
+
+/// Static (built-once) `for`-loop lowering for any `IntoIterator`. See
+/// the module-level note above; the `ui!` macro selects this vs
+/// [`ReactiveForEach`] by the iterable's type.
+#[doc(hidden)]
+pub trait StaticForEach<Item> {
+    fn __idealyst_for_each<F: Fn(Item) -> Vec<Primitive> + 'static>(self, f: F)
+        -> Vec<Primitive>;
+}
+
+/// Reactive `for`-loop lowering for a `Signal` of a cloneable iterable.
+/// Produces a single [`Primitive::Each`] (wrapped in a one-element vec
+/// so the call site flattens it uniformly with the static path).
+#[doc(hidden)]
+pub trait ReactiveForEach<Item> {
+    fn __idealyst_for_each<F: Fn(Item) -> Vec<Primitive> + 'static>(self, f: F)
+        -> Vec<Primitive>;
+}
+
+impl<I, Item> StaticForEach<Item> for I
+where
+    I: IntoIterator<Item = Item>,
+{
+    fn __idealyst_for_each<F: Fn(Item) -> Vec<Primitive> + 'static>(
+        self,
+        f: F,
+    ) -> Vec<Primitive> {
+        let mut out = Vec::new();
+        for item in self {
+            out.extend(f(item));
+        }
+        out
+    }
+}
+
+impl<C, Item> ReactiveForEach<Item> for crate::Signal<C>
+where
+    C: Clone + IntoIterator<Item = Item> + 'static,
+{
+    fn __idealyst_for_each<F: Fn(Item) -> Vec<Primitive> + 'static>(
+        self,
+        f: F,
+    ) -> Vec<Primitive> {
+        let sig = self;
+        // One reactive region. On each rebuild we clone the signal's
+        // current value and rebuild every row. The `each` Effect tracks
+        // the `sig.get()` read, so any write to `sig` re-runs this.
+        vec![each(move || {
+            let mut out = Vec::new();
+            for item in sig.get() {
+                out.extend(f(item));
+            }
+            out
+        })]
+    }
+}
+
+// =============================================================================
 // IntoPrimitive — coercion helper used by the `ui!` macro and direct
 // when/switch callers.
 // =============================================================================

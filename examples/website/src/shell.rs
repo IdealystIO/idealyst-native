@@ -513,30 +513,29 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Primitive {
 
     let active_route = slot.active_route;
 
-    let mut children: Vec<Primitive> = Vec::new();
-    children.push(ui! { View(style = header_style) { header_children } });
-
-    for section in SECTIONS {
-        if !section.title.is_empty() {
-            let title = section.title.to_string();
-            let section_style = SidebarSection();
-            children.push(ui! { Text(style = section_style) { title } });
-        }
-        for entry in section.entries {
-            children.push(nav_link(entry.route, entry.label, active_route));
+    // The whole sidebar is one `ui!` tree. Nested `for` loops over the
+    // static route table emit flat siblings (no per-iteration wrapper
+    // View); the section title is a `.then(...)` so title-less sections
+    // (e.g. Home) add nothing; and `Spacer` / `theme_toggle` sit inline
+    // rather than being pushed onto a vector afterwards.
+    ui! {
+        View(style = body_style) {
+            View(style = header_style) { header_children }
+            for section in SECTIONS {
+                (!section.title.is_empty()).then(|| ui! {
+                    Text(style = SidebarSection()) { section.title.to_string() }
+                })
+                for entry in section.entries {
+                    nav_link(entry.route, entry.label, active_route)
+                }
+            }
+            // `Spacer` grows to fill leftover vertical space, pinning the
+            // footer to the bottom when nav content is short; when it
+            // overflows, the outer `.ui-nav-drawer-sidebar` div scrolls.
+            Spacer()
+            theme_toggle(footer_style, is_dark)
         }
     }
-
-    // `Spacer` grows to fill the leftover vertical space, pinning
-    // the footer to the bottom of the sidebar column when nav
-    // content is short. When nav content overflows, the spacer has
-    // no room to grow and the footer just sits after the last nav
-    // link (the outer `.ui-nav-drawer-sidebar` div is overflow:auto
-    // so the whole sidebar scrolls in that case).
-    children.push(ui! { Spacer() });
-    children.push(theme_toggle(footer_style, is_dark));
-
-    ui! { View(style = body_style) { children } }
 }
 
 /// Dark/light theme switch pinned to the bottom of the sidebar.

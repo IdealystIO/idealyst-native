@@ -587,30 +587,31 @@ impl<'a> Splitter<'a> {
                     // intentionally do nothing — see comment above.
                 }
 
-                // Otherwise, zero out the data segment, which should lead to elimination by wasm-opt
-                Node::DataSymbol(id) => {
-                    // PATCHED for idealyst: don't panic on missing
-                    // data symbols. Mirror the function-symbol path
-                    // — log and skip. Lets complex bindgened wasms
-                    // split even when some symbols don't resolve.
-                    let Some(symbol) = self.data_symbols.get(&id) else {
-                        tracing::error!("Could not find data symbol {:?} in module - skipping", id);
-                        continue;
-                    };
-
-                    // VERY IMPORTANT
-                    //
-                    // apparently wasm-bindgen makes data segments that aren't the main one
-                    // even *touching* those will break the vtable / binding layer
-                    // We can only interact with the first data segment - the rest need to stay available
-                    // for the `.js` to interact with.
-                    if symbol.which_data_segment == 0 {
-                        let data_id = out.data.iter().nth(symbol.which_data_segment).unwrap().id();
-                        let data = out.data.get_mut(data_id);
-                        for i in symbol.segment_offset..symbol.segment_offset + symbol.symbol_size {
-                            data.value[i] = 0;
-                        }
-                    }
+                // PATCHED for idealyst: leave "unused" data intact — do
+                // NOT zero it. Same reasoning as the function arm above.
+                // Main's static call graph can't reliably tell which data
+                // is reachable from main: data is reached through pointers
+                // embedded in the data section (trait-object vtables,
+                // &'static tables), and the original→bindgened remapping
+                // in `build_call_graph` collapses duplicate mangled names
+                // (release codegen emits several functions per name once
+                // `--emit-relocs` disables ICF). Either way, live data can
+                // be misclassified as chunk-only; zeroing it then corrupts
+                // main (the release crash: a zeroed CSS string made
+                // `WebBackend::insert_rule` feed the browser bad CSS, its
+                // `.expect()` panicked while a `backend.borrow_mut()` was
+                // held, and with `panic = "abort"` every later microtask
+                // hit "RefCell already borrowed").
+                //
+                // Trade-off: chunk-only data stays in main, so the main
+                // bundle is larger than it could be. Correct beats small.
+                // wasm-opt's DCE removes data that is genuinely
+                // unreferenced. A real size fix needs a reliable
+                // main-reachability analysis (see notes in the data
+                // call-graph remapping) so we can zero ONLY provably
+                // chunk-only data.
+                Node::DataSymbol(_id) => {
+                    // intentionally do nothing — see comment above.
                 }
             }
         }
