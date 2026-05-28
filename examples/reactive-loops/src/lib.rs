@@ -10,8 +10,11 @@
 //!     `count: Signal<i32>`, so a row's `+` updates ONLY that row, and
 //!     the count SURVIVES add/remove (state lives in the data, not the
 //!     render scope).
-//!   * `for i in 0..count.get()` — reactive COUNT. Each iteration mounts
-//!     a `GridCell` component; the grid grows/shrinks as `count` changes.
+//!   * `for i in 0..count.get()` — reactive COUNT, where `count` is a
+//!     `Reactive<usize>` DERIVED from the list's length
+//!     (`rx!(items.get().len())`), NOT a separate signal — so it can't
+//!     desync. Each iteration mounts a `GridCell`; add/remove rows above
+//!     and the grid grows/shrinks.
 //!   * `for label in LEGEND` — a plain `&[&str]` → STATIC (built once).
 //!     Same syntax, different type → different lowering.
 //!
@@ -31,7 +34,7 @@ use idea_ui::{
     install_idea_theme, light_theme, typography_kind, Card, CardPadding, Stack, StackAxis,
     StackGap, StackPadding, Typography,
 };
-use runtime_core::{component, memo, rx, signal, ui, Element, Signal};
+use runtime_core::{component, memo, rx, signal, ui, Element, Reactive, Signal};
 
 // ---------------------------------------------------------------------------
 // SDK-registration hook the CLI-generated wrappers call before mount. No
@@ -193,34 +196,28 @@ fn DynamicList(props: &DynamicListProps) -> Element {
 }
 
 struct CountGridProps {
-    count: Signal<usize>,
+    /// The cell count — a `Reactive<usize>`, not a stored signal. The
+    /// caller derives it from the list (`rx!(items.get().len())`), so
+    /// there's nothing to keep in sync: the grid IS a view of the list.
+    count: Reactive<usize>,
 }
 
-/// Section 2 — the reactive count grid: `for i in 0..count.get()`.
+/// Section 2 — the reactive count grid: `for i in 0..count.get()`,
+/// where `count` is derived from the list above (single source of
+/// truth). Add/remove rows and the grid grows/shrinks.
 #[component]
 fn CountGrid(props: &CountGridProps) -> Element {
-    let count = props.count;
-
-    let inc = move || count.update(|n| *n += 1);
-    let dec = move || {
-        count.update(|n| {
-            if *n > 0 {
-                *n -= 1;
-            }
-        });
-    };
+    let label_count = props.count.clone();
+    let grid_count = props.count.clone();
     ui! {
         Card(padding = CardPadding::Md) {
             Typography(content = "Reactive count — for i in 0..count.get() → GridCell(...)".to_string(), kind = typography_kind::H3)
+            Typography(content = rx!(format!("count = {} (one cell per row above)", label_count.get())), muted = true)
+            // Reactive COUNT: the range bound reads a `Reactive<usize>`
+            // that derives from the list. Each cell is a `GridCell`; the
+            // grid grows/shrinks reactively when the list changes.
             Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
-                Button(label = "−".to_string(), on_click = dec)
-                Typography(content = rx!(format!("count = {}", count.get())))
-                Button(label = "+".to_string(), on_click = inc)
-            }
-            // Reactive COUNT: a range whose bound reads a signal. Each cell
-            // is a `GridCell` component; the grid grows/shrinks reactively.
-            Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
-                for i in 0..count.get() {
+                for i in 0..grid_count.get() {
                     GridCell(index = i)
                 }
             }
@@ -241,13 +238,18 @@ pub fn app() -> Element {
         Row { id: 1, label: "for".to_string(), count: signal!(0) },
         Row { id: 2, label: "loops".to_string(), count: signal!(0) },
     ]);
-    let next_id: Signal<u32> = signal!(items.count() as u32);
+    // The id allocator is genuinely a counter (must stay monotonic
+    // across removes), so it's its own signal — seeded from the initial
+    // row count rather than a magic number.
+    let next_id: Signal<u32> = signal!(items.get().len() as u32);
 
     ui! {
         Stack(gap = StackGap::Xl, padding = StackPadding::Lg) {
             Header()
             DynamicList(items = items, next_id = next_id)
-            CountGrid(count = items.get().len())
+            // count is DERIVED from the list, not a separate signal:
+            // `rx!` makes it live so the grid tracks add/remove.
+            CountGrid(count = rx!(items.get().len()))
             Legend()
         }
     }
