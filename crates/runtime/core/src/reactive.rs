@@ -1258,18 +1258,32 @@ fn with_signal<T: 'static, R>(id: SignalId, f: impl FnOnce(&SignalInner<T>) -> R
 }
 
 fn with_signal_mut<T: 'static, R>(id: SignalId, f: impl FnOnce(&mut SignalInner<T>) -> R) -> R {
-    ARENA.with(|arena| {
-        let mut arena = arena.borrow_mut();
-        let slot = arena
+    // `f` is a user closure (e.g. `Signal::update`'s) that may create or
+    // touch OTHER signals — each of which re-enters the arena RefCell.
+    // Holding the arena borrow across `f` would panic ("RefCell already
+    // borrowed"), so we TAKE the signal's box out of the arena, drop the
+    // borrow, run `f`, then restore the box.
+    //
+    // Safe against aliasing: the taken slot is left `None` but is NOT
+    // added to `signal_free`, and `insert_signal` only recycles slots
+    // popped from that free-list — so a signal created inside `f` can
+    // never grab this slot. (Re-entrant access to *this same* signal
+    // inside `f` is the one unsupported case; the slot reads as `None`.)
+    let mut boxed = ARENA.with(|a| {
+        a.borrow_mut()
             .signals
             .get_mut(id.0 as usize)
-            .and_then(|o| o.as_mut())
-            .unwrap_or_else(|| panic!("signal used after its scope was dropped (id {:?})", id));
-        let inner = slot
-            .downcast_mut::<SignalInner<T>>()
-            .expect("internal: signal type mismatch");
-        f(inner)
-    })
+            .and_then(|o| o.take())
+            .unwrap_or_else(|| panic!("signal used after its scope was dropped (id {:?})", id))
+    });
+    let inner = boxed
+        .downcast_mut::<SignalInner<T>>()
+        .expect("internal: signal type mismatch");
+    let result = f(inner);
+    ARENA.with(|a| {
+        a.borrow_mut().signals[id.0 as usize] = Some(boxed);
+    });
+    result
 }
 
 /// Drop every dependency link the effect currently holds. Called right

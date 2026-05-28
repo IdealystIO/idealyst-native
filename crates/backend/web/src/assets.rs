@@ -13,9 +13,19 @@
 //!    pointing at the per-face asset URL. The rule indices are
 //!    recorded so `unregister_typeface` can reclaim them.
 //!
-//! `AssetSource::Embedded { bytes, .. }` is wrapped in a `Blob` and
-//! handed to `URL.createObjectURL`, producing a `blob:` URL the
-//! browser handles like any same-origin resource. The blob URL is
+//! Fonts are resolved to a **served-file URL**, never a blob: a
+//! `Bundled`/`BundledEmbedded` font becomes the root-absolute URL
+//! `/{path}` and the `@font-face` rule links it with `src: url(...)`.
+//! This keeps the font out of the wasm download — the browser fetches
+//! and HTTP-caches the `.ttf`/`.woff2` like any other static asset.
+//! (For `BundledEmbedded` the carried `bytes` exist only for the
+//! byte-consuming backends in the same build, e.g. the wgpu Simulator;
+//! the web backend ignores them.)
+//!
+//! Only a bytes-only `AssetSource::Embedded { bytes, .. }` (from
+//! `embed_asset!`, with no bundle path to link) is wrapped in a `Blob`
+//! and handed to `URL.createObjectURL`, producing a `blob:` URL the
+//! browser handles like any same-origin resource. That blob URL is
 //! revoked on `unregister_asset` to free the underlying allocation.
 //!
 //! [`AssetId`]: runtime_core::AssetId
@@ -83,14 +93,31 @@ impl WebBackend {
     pub(crate) fn impl_register_asset(
         &mut self,
         id: AssetId,
-        _kind: AssetTag,
+        kind: AssetTag,
         source: &AssetSource,
     ) {
         if self.asset_urls.contains_key(&id) {
             return;
         }
         let url = match source {
-            AssetSource::Bundled { path } => format!("{ASSET_ROUTE}/{path}"),
+            // A font with a bundle path is *linked*, not embedded: emit
+            // a root-absolute served-file URL so `@font-face` can
+            // `src: url("/fonts/…")` it and the browser fetches +
+            // HTTP-caches the file. Root-absolute (not `assets/…`)
+            // because (a) the build stages the project's top-level font
+            // dir verbatim and the dev server serves the project root,
+            // and (b) a relative URL would break under the SPA router
+            // when the document path isn't `/`. Any embedded `bytes`
+            // (BundledEmbedded, present when a byte-consuming backend
+            // shares the build) are ignored here.
+            AssetSource::Bundled { path } | AssetSource::BundledEmbedded { path, .. }
+                if kind == AssetTag::Font =>
+            {
+                format!("/{path}")
+            }
+            AssetSource::Bundled { path } | AssetSource::BundledEmbedded { path, .. } => {
+                format!("{ASSET_ROUTE}/{path}")
+            }
             AssetSource::Remote { url } => (*url).to_string(),
             AssetSource::Embedded { bytes, extension } => {
                 let mime = mime_for(extension);
@@ -211,6 +238,7 @@ fn build_font_face_rule(family_name: &str, face: &TypefaceFace, url: &str) -> St
 fn format_hint_from_source(source: &AssetSource) -> Option<&'static str> {
     let path = match source {
         AssetSource::Bundled { path } => *path,
+        AssetSource::BundledEmbedded { path, .. } => *path,
         AssetSource::Remote { url } => *url,
         AssetSource::Embedded { extension, .. } => extension,
     };

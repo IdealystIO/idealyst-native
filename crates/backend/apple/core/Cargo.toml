@@ -22,7 +22,10 @@ crate-type = ["rlib"]
 default = []
 
 [dependencies]
-runtime-core = { workspace = true }
+# `embed-font-bytes`: CoreText registers fonts from their raw bytes
+# (`CTFontManagerRegisterGraphicsFont`), so iOS/macOS builds need the
+# bytes embedded. See `runtime_core::assets`.
+runtime-core = { workspace = true, features = ["embed-font-bytes"] }
 
 [target.'cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))'.dependencies]
 objc2 = "0.5"

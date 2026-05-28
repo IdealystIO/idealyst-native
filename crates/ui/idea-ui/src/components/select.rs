@@ -24,7 +24,7 @@ use std::rc::Rc;
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
-    signal, ui, IntoElement, PressableHandle, Element, Ref, Signal, StyleApplication,
+    signal, ui, IntoElement, PressableHandle, Element, Reactive, Ref, Signal, StyleApplication,
     VariantEnum,
 };
 
@@ -37,11 +37,12 @@ pub use crate::stylesheets::SelectTriggerSize as SelectSize;
 #[derive(Clone)]
 pub struct SelectOption {
     pub id: String,
-    pub label: String,
+    /// Row label. `Reactive<String>` — static or live (signal/`rx!`).
+    pub label: Reactive<String>,
 }
 
 impl SelectOption {
-    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<String>, label: impl Into<Reactive<String>>) -> Self {
         Self { id: id.into(), label: label.into() }
     }
 }
@@ -83,7 +84,7 @@ pub fn select(props: SelectProps) -> Element {
             label_options
                 .iter()
                 .find(|o| o.id == value.get())
-                .map(|o| o.label.clone())
+                .map(|o| o.label.get())
                 .or_else(|| label_placeholder.clone())
                 .unwrap_or_default()
         },
@@ -157,8 +158,10 @@ fn menu_build(
             StyleApplication::new(SelectOptionStyle::sheet()).with("active", variant.to_string())
         };
 
-        let label_child =
-            runtime_core::text(runtime_core::TextSource::Static(opt_label)).into_element();
+        // `opt_label` is a `Reactive<String>` — route it through
+        // `IntoTextSource` (Static→Static, Dynamic→Bound) so a live
+        // option label re-paints its row.
+        let label_child = runtime_core::text(opt_label).into_element();
         let row = runtime_core::pressable(vec![label_child], move || (on_click)())
             .with_style(row_style)
             .into_element();

@@ -27,7 +27,10 @@ runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-nativ
 async-driver = ["runtime-core/async-driver", "backend-android-core/async-driver"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# `embed-font-bytes`: Android loads fonts by writing the raw bytes to
+# the cache dir and calling `Typeface.createFromFile`, so it needs the
+# bytes embedded. See `runtime_core::assets`.
+runtime-core = { workspace = true, features = ["embed-font-bytes"] }
 # Shared Android helpers (JNI utilities + render loop driver). Same
 # crate is consumed by `backend-android-tv`.
 backend-android-core = { workspace = true }

@@ -52,7 +52,7 @@ pub(crate) fn register_asset(
         return;
     }
     let bytes: &[u8] = match source {
-        AssetSource::Embedded { bytes, .. } => bytes,
+        AssetSource::Embedded { bytes, .. } | AssetSource::BundledEmbedded { bytes, .. } => bytes,
         AssetSource::Bundled { .. } | AssetSource::Remote { .. } => return,
     };
     let Some(image) = decode_image_from_bytes(bytes) else {

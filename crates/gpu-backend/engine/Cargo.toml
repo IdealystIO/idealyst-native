@@ -20,7 +20,12 @@ async-driver = ["runtime-core/async-driver"]
 
 [dependencies]
 render-api = { workspace = true }
-runtime-core = { workspace = true }
+# `embed-font-bytes`: the wgpu Simulator shapes text with cosmic-text,
+# which needs the raw font bytes. Turning it on here means any build
+# that links this backend (e.g. the website's embedded Simulator)
+# embeds the fonts; the web DOM backend in the same build still links
+# them as files. See `runtime_core::assets`.
+runtime-core = { workspace = true, features = ["embed-font-bytes"] }
 runtime-layout = { workspace = true }
 
 # Wgpu pipelines + glyph atlas. No platform deps come along.

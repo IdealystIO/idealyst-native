@@ -125,8 +125,8 @@ fn hero_simulator() -> Element {
         let tab_strip = ui! {
             Tabs(
                 tabs = vec![
-                    Tab { label: "iOS".to_string() },
-                    Tab { label: "Android".to_string() },
+                    Tab::new("iOS"),
+                    Tab::new("Android"),
                 ],
                 active = active,
                 on_change = on_change,

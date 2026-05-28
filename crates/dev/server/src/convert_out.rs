@@ -347,6 +347,14 @@ pub fn asset_source_to_wire(s: &AssetSource) -> WireAssetSource {
         AssetSource::Bundled { path } => WireAssetSource::Bundled {
             path: (*path).to_string(),
         },
+        // The AAS client is always the web backend, which links fonts
+        // by URL and never needs the bytes — so collapse to the path
+        // and keep the (potentially multi-MB) font bytes off the
+        // websocket. The client resolves `Bundled` + `Font` to the
+        // same `/{path}` served-file URL.
+        AssetSource::BundledEmbedded { path, .. } => WireAssetSource::Bundled {
+            path: (*path).to_string(),
+        },
         AssetSource::Remote { url } => WireAssetSource::Remote {
             url: (*url).to_string(),
         },

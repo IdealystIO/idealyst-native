@@ -103,9 +103,9 @@ fn tabs_demo() -> Element {
                 active = active,
                 on_change = on_change,
                 tabs = vec![
-                    Tab { label: "Overview".to_string() },
-                    Tab { label: "Activity".to_string() },
-                    Tab { label: "Settings".to_string() },
+                    Tab::new("Overview"),
+                    Tab::new("Activity"),
+                    Tab::new("Settings"),
                 ]
             )
             panel

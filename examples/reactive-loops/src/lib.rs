@@ -1,11 +1,12 @@
-//! `reactive-loops` — a small demo that flexes the framework's reactive
-//! iteration, with the loop bodies being real `#[component]`s (not
-//! helper fns). Every list is a `for … in …` written directly inside
-//! `ui!`; the iterable's TYPE decides reactivity:
+//! `reactive-loops` — a small demo that flexes two type-driven reactive
+//! mechanisms, with every body being a real `#[component]` (not a helper
+//! fn). No `.get()` heuristic anywhere: the TYPE decides reactivity.
+//!
+//! ## Reactive iteration — `for … in …` directly inside `ui!`
 //!
 //!   * `for row in items` — `items: Signal<Vec<Row>>` → REACTIVE. Each
 //!     iteration mounts an `ItemRow` component; add/remove re-renders the
-//!     list (no manual diffing, no `.get()`). Each `Row` owns its own
+//!     list (no manual diffing). Each `Row` owns its own
 //!     `count: Signal<i32>`, so a row's `+` updates ONLY that row, and
 //!     the count SURVIVES add/remove (state lives in the data, not the
 //!     render scope).
@@ -13,6 +14,14 @@
 //!     a `GridCell` component; the grid grows/shrinks as `count` changes.
 //!   * `for label in LEGEND` — a plain `&[&str]` → STATIC (built once).
 //!     Same syntax, different type → different lowering.
+//!
+//! ## Reactive component props — `Typography(content = …)`
+//!
+//! idea-ui's `Typography.content` is a `Reactive<String>`. A bare value
+//! is a static snapshot; `rx!(expr)` wraps a `.get()`-bearing expression
+//! as a live `Reactive::Dynamic`, so the text re-paints IN PLACE (no
+//! parent rebuild) with full styling. Every reactive label/count below
+//! is a styled `Typography(content = rx!(…))` — never a raw primitive.
 //!
 //! Components are `#[component]` fns invoked PascalCase in `ui!`
 //! (`ItemRow(...)`, `GridCell(...)`, …). Defined leaf-first because the
@@ -37,7 +46,7 @@ pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 /// Static data — a plain array. `for label in LEGEND` lowers to a
 /// built-once list (the type isn't a signal): the SAME `for` syntax is
 /// static when the iterable is static.
-const LEGEND: &[&str] = &["type-driven", "no .get() heuristic", "flat siblings"];
+const LEGEND: &[&str] = &["This", "is", "a", "flat", "list", "of", "siblings"];
 
 /// A list row. `count` is the row's OWN reactive state. It lives in the
 /// data model (the `Signal<Vec<Row>>`), NOT the row's render scope —
@@ -108,10 +117,9 @@ struct GridCellProps {
 
 #[component]
 fn GridCell(props: &GridCellProps) -> Element {
-    let i = props.index;
     ui! {
         Card(padding = CardPadding::Md) {
-            Typography(content = format!("#{}", i))
+            Typography(content = format!("#{}", props.index))
         }
     }
 }
@@ -151,9 +159,10 @@ fn DynamicList(props: &DynamicListProps) -> Element {
     let add = move || {
         let id = next_id.get();
         next_id.set(id + 1);
-        items.update(|l| {
-            l.push(Row { id, label: format!("Item {}", id), count: signal!(0) });
-        });
+        // Each new row carries its OWN `count` signal, allocated inline.
+        // (Creating a signal inside `update` is fine — `update` doesn't
+        // hold the arena borrow across its closure.)
+        items.update(|l| l.push(Row { id, label: format!("Item {}", id), count: signal!(0) }));
     };
     let clear = move || items.set(Vec::new());
 
@@ -164,9 +173,9 @@ fn DynamicList(props: &DynamicListProps) -> Element {
     ui! {
         Card(padding = CardPadding::Md) {
             Typography(content = "Dynamic list — for row in items → ItemRow(...)".to_string(), kind = typography_kind::H3)
-            // Inline reactive `Text` — reads `items` + the `total` memo,
-            // so it re-renders on add/remove/per-row clicks.
-            Text(content = format!("{} row(s), {} total clicks", items.get().len(), total.get()))
+            // Reactive styled text — `rx!` reads `items` + the `total`
+            // memo, so it re-renders on add/remove/per-row clicks.
+            Typography(content = rx!(format!("{} row(s), {} total clicks", items.get().len(), total.get())), muted = true)
             Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
                 Button(label = "Add item".to_string(), on_click = add)
                 Button(label = "Clear".to_string(), on_click = clear)
@@ -205,7 +214,7 @@ fn CountGrid(props: &CountGridProps) -> Element {
             Typography(content = "Reactive count — for i in 0..count.get() → GridCell(...)".to_string(), kind = typography_kind::H3)
             Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
                 Button(label = "−".to_string(), on_click = dec)
-                Text(content = format!("count = {}", count.get()))
+                Typography(content = rx!(format!("count = {}", count.get())))
                 Button(label = "+".to_string(), on_click = inc)
             }
             // Reactive COUNT: a range whose bound reads a signal. Each cell
@@ -227,19 +236,18 @@ fn CountGrid(props: &CountGridProps) -> Element {
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let next_id: Signal<u32> = signal!(3);
     let items: Signal<Vec<Row>> = signal!(vec![
         Row { id: 0, label: "Reactive".to_string(), count: signal!(0) },
         Row { id: 1, label: "for".to_string(), count: signal!(0) },
         Row { id: 2, label: "loops".to_string(), count: signal!(0) },
     ]);
-    let count: Signal<usize> = signal!(4);
+    let next_id: Signal<u32> = signal!(items.count() as u32);
 
     ui! {
         Stack(gap = StackGap::Xl, padding = StackPadding::Lg) {
             Header()
             DynamicList(items = items, next_id = next_id)
-            CountGrid(count = count)
+            CountGrid(count = items.get().len())
             Legend()
         }
     }

@@ -44,8 +44,13 @@ pub struct FieldProps {
     pub value: Signal<String>,
     pub on_change: Rc<dyn Fn(String)>,
     pub placeholder: Option<String>,
-    pub help: Option<String>,
-    pub error: Option<String>,
+    /// Helper text below the input. `Reactive<Option<String>>` — static
+    /// or live (signal/`rx!`).
+    pub help: Reactive<Option<String>>,
+    /// Error text below the input; takes precedence over `help` when
+    /// present. `Reactive<Option<String>>` — typically the live one
+    /// (validation result).
+    pub error: Reactive<Option<String>>,
     /// Optional tone overlay (border + help-text color). Write
     /// `Some(tone::Warning.into())`; orphan rule blocks a bare-tone
     /// `Into<Option<ToneRef>>`.
@@ -60,8 +65,8 @@ impl Default for FieldProps {
             value: Signal::new(String::new()),
             on_change: Rc::new(|_| {}),
             placeholder: None,
-            help: None,
-            error: None,
+            help: Reactive::Static(None),
+            error: Reactive::Static(None),
             tone: None,
             size: FieldSize::default(),
         }
@@ -256,7 +261,11 @@ pub fn field(props: &FieldProps) -> Element {
     let on_change = props.on_change.clone();
     let placeholder = props.placeholder.clone();
     let size = props.size;
-    let has_error = props.error.is_some();
+    // Error TEXT is reactive (see `help_combined` below), but the
+    // error-driven TONE is a static style decision (per the framework's
+    // static-style fast path), so it reads the error's value once. A
+    // reactive border-on-validation would use the reactive-style path.
+    let has_error = props.error.get().is_some();
 
     // Tone resolution: explicit `tone` wins; Danger on error; else none.
     let tone: Option<ToneRef> = props.tone.clone().or_else(|| {
@@ -276,7 +285,15 @@ pub fn field(props: &FieldProps) -> Element {
 
     let label_node =
         crate::components::optional_reactive_text(props.label.clone(), FieldLabel());
-    let help_text = props.error.clone().or_else(|| props.help.clone());
+
+    // error wins over help. Combine into one `Reactive<Option<String>>`,
+    // staying `Static` when both inputs are (no Effect, and no empty
+    // help slot when both are absent).
+    let help_combined = match (props.error.clone(), props.help.clone()) {
+        (Reactive::Static(e), Reactive::Static(h)) => Reactive::Static(e.or(h)),
+        (e, h) => Reactive::Dynamic(Rc::new(move || e.get().or_else(|| h.get()))),
+    };
+    let help_node = crate::components::optional_reactive_text(help_combined, help_style);
 
     let input_node: Element = if let Some(p) = placeholder {
         ui! {
@@ -302,8 +319,8 @@ pub fn field(props: &FieldProps) -> Element {
         children.push(l);
     }
     children.push(input_node);
-    if let Some(h) = help_text {
-        children.push(ui! { Text(style = help_style) { h } });
+    if let Some(h) = help_node {
+        children.push(h);
     }
 
     ui! { View(style = FieldGroup()) { children } }

@@ -95,6 +95,25 @@ async-driver = [
     "dep:log",
 ]
 
+# When on, the `face!` macro embeds each font file's bytes into the
+# binary via `include_bytes!` (emitting `AssetSource::BundledEmbedded`,
+# which carries the bytes alongside the bundle path). When off, `face!`
+# emits a bytes-free `AssetSource::Bundled` carrying only the path.
+#
+# The decision is made by the dep graph, not the author: backends that
+# consume font *bytes* (cosmic-text/wgpu Simulator, CoreText on
+# iOS/macOS, Android `Typeface`) turn this on through their own
+# `runtime-core` dep, so any build containing one of them embeds the
+# fonts. A pure web (DOM) build links none of those backends, leaves
+# this off, and resolves every font to a served-file URL via
+# `@font-face { src: url(...) }` — keeping the fonts out of the wasm.
+#
+# This is why the `#[cfg]` split lives on the `__face_source!` helper
+# *defined here in runtime-core* (evaluated against runtime-core's own
+# unified feature set) rather than inside the `face!` expansion (which
+# would be evaluated against the author crate's features).
+embed-font-bytes = []
+
 [dependencies]
 runtime-macros = { workspace = true }
 # `dev-hot` is only linked in when the `hot-reload` cargo

@@ -9,10 +9,24 @@
 //! For images / audio / video / blobs, [`asset!`] records a
 //! `Bundled` path the build tool / per-backend resolver is
 //! responsible for getting in front of the platform.
-//! Fonts work differently: [`face!`] uses `include_bytes!` to embed
-//! the file at compile time, so a `Typeface` declaration is fully
-//! self-contained. URL-loaded fonts are intentionally not
-//! supported — only project-shipped font files are valid.
+//! Fonts carry a `Bundled` path too, so a backend can fetch the font
+//! file by URL (the web `@font-face { src: url(...) }` path). Whether
+//! [`face!`] *also* embeds the file's bytes via `include_bytes!` is
+//! decided by the `embed-font-bytes` cargo feature on this crate:
+//!
+//! - **feature off** (e.g. a pure web/DOM build): `face!` emits
+//!   [`AssetSource::Bundled`] — path only, no bytes in the binary. The
+//!   web backend links the font as a separately-fetched file.
+//! - **feature on** (any build that links a byte-consuming backend —
+//!   cosmic-text/wgpu, CoreText, Android): `face!` emits
+//!   [`AssetSource::BundledEmbedded`], which carries the bytes *and*
+//!   the path. Native/wgpu use the bytes; web still prefers the path.
+//!
+//! The feature is flipped by the dep graph, not the author: each
+//! byte-consuming backend enables `runtime-core/embed-font-bytes`
+//! through its own dep. URL-loaded fonts (arbitrary remote `Remote`
+//! sources) are still intentionally unsupported for fonts — only
+//! project-shipped font files are valid.
 //!
 //! At render time the framework calls [`Backend::register_asset`] /
 //! [`Backend::register_typeface`] the first time an asset id is
@@ -139,6 +153,21 @@ pub enum AssetSource {
     /// before the binary runs. The framework does not read the file —
     /// it just forwards the path to the backend.
     Bundled { path: &'static str },
+    /// Both a bundle-relative `path` (for backends that fetch the file
+    /// by URL — the web backend's `@font-face { src: url(...) }`) and
+    /// the file's `bytes` embedded at compile time (for backends that
+    /// consume bytes directly — cosmic-text/wgpu, CoreText, Android).
+    ///
+    /// Emitted by [`face!`] when the `embed-font-bytes` feature is on.
+    /// Each backend picks the half it needs: web ignores `bytes` and
+    /// links the `path`; native/wgpu ignore `path` and load `bytes`.
+    BundledEmbedded {
+        path: &'static str,
+        bytes: &'static [u8],
+        /// Lowercase extension without leading dot — same role as on
+        /// [`AssetSource::Embedded`].
+        extension: &'static str,
+    },
     /// Raw URL. Backend fetches at runtime. Escape hatch for
     /// CDN-hosted or user-supplied assets.
     Remote { url: &'static str },
@@ -277,6 +306,41 @@ pub const fn extension_from_path(path: &'static str) -> &'static str {
     ""
 }
 
+/// Normalize a `face!`/`include_bytes!` source path (relative to the
+/// calling `.rs` file) into a bundle-root-relative path suitable for a
+/// served-file URL. Strips leading `./` and `../` segments so a path
+/// like `"../fonts/Inter-Regular.ttf"` (written from `src/typeface.rs`)
+/// becomes `"fonts/Inter-Regular.ttf"`.
+///
+/// The convention this assumes: font files live in a top-level project
+/// directory (`fonts/`, `assets/`, …) that the web build stages into
+/// the deployed bundle, and the `src:` literal walks up out of `src/`
+/// to reach it. The web backend turns the result into a root-absolute
+/// URL (`/fonts/Inter-Regular.ttf`).
+#[doc(hidden)]
+pub const fn bundle_path_from_src(path: &'static str) -> &'static str {
+    let bytes = path.as_bytes();
+    let mut i = 0;
+    loop {
+        // Strip a leading "./"
+        if i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b'/' {
+            i += 2;
+            continue;
+        }
+        // Strip a leading "../"
+        if i + 2 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b'.' && bytes[i + 2] == b'/' {
+            i += 3;
+            continue;
+        }
+        break;
+    }
+    // SAFETY-equivalent: `i` only ever advances past whole ASCII
+    // `./` / `../` prefixes, which are char boundaries, so the tail is
+    // a valid utf-8 slice of `path`.
+    let (_head, tail) = path.split_at(i);
+    tail
+}
+
 // ---------------------------------------------------------------------------
 // Macros
 // ---------------------------------------------------------------------------
@@ -391,15 +455,22 @@ macro_rules! typeface {
 }
 
 /// Declare one face within a [`typeface!`] block. Takes a weight, a
-/// style, and a path literal.
+/// style, and a path literal (relative to the calling source file, per
+/// `include_bytes!` rules).
 ///
-/// The font file is **embedded into the binary** via `include_bytes!`
-/// — path resolution follows `include_bytes!` rules (relative to the
-/// calling source file). This makes a `face!` declaration fully
-/// self-contained: no build-tool step has to copy the file into the
-/// platform bundle and no runtime fetch happens. URL-loaded fonts
-/// are intentionally not supported; only fonts shipped as part of
-/// the project are valid.
+/// Whether the file's bytes are embedded depends on the
+/// `embed-font-bytes` feature on `runtime-core` (see the module docs):
+///
+/// - **feature on** → [`AssetSource::BundledEmbedded`]: bytes are
+///   `include_bytes!`-baked into the binary *and* a bundle path is
+///   recorded. Native/wgpu backends load the bytes; web links the path.
+/// - **feature off** → [`AssetSource::Bundled`]: only the bundle path
+///   is recorded, no bytes. The web backend links the font as a
+///   separately-fetched file. Nothing reads the file at compile time.
+///
+/// The feature is flipped by which backends are in the build, not by
+/// the author — see [`crate::__face_source`]. URL-loaded fonts are
+/// intentionally unsupported; only project-shipped files are valid.
 ///
 /// The asset id is `const_hash(crate_name + "::" + path)`, the same
 /// scheme [`asset!`] uses, so two crates referencing the same path
@@ -407,8 +478,6 @@ macro_rules! typeface {
 #[macro_export]
 macro_rules! face {
     (weight: $w:expr, style: $s:expr, src: $path:literal $(,)?) => {{
-        const BYTES: &[u8] = include_bytes!($path);
-        const EXTENSION: &'static str = $crate::assets::extension_from_path($path);
         $crate::assets::TypefaceFace {
             weight: $w,
             style: $s,
@@ -417,12 +486,43 @@ macro_rules! face {
                     concat!(env!("CARGO_PKG_NAME"), "::", $path).as_bytes(),
                 ),
             ),
-            source: $crate::assets::AssetSource::Embedded {
-                bytes: BYTES,
-                extension: EXTENSION,
-            },
+            source: $crate::__face_source!($path),
         }
     }};
+}
+
+/// Internal: build the [`AssetSource`] for a [`face!`]. Two
+/// `#[cfg]`-split definitions live here in `runtime-core` so the
+/// embed/no-embed decision is made against *this crate's* unified
+/// feature set (the dep graph), not the author crate's features —
+/// `#[cfg(feature = ...)]` inside the `face!` expansion would resolve
+/// against the author crate, which never declares the feature.
+///
+/// The `include_bytes!($path)` still resolves relative to the author's
+/// invocation site (macro_rules paths are call-site-relative), so the
+/// `src:` literal in `face!` keeps its `include_bytes!` semantics.
+#[cfg(feature = "embed-font-bytes")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __face_source {
+    ($path:literal) => {
+        $crate::assets::AssetSource::BundledEmbedded {
+            path: $crate::assets::bundle_path_from_src($path),
+            bytes: include_bytes!($path),
+            extension: $crate::assets::extension_from_path($path),
+        }
+    };
+}
+
+#[cfg(not(feature = "embed-font-bytes"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __face_source {
+    ($path:literal) => {
+        $crate::assets::AssetSource::Bundled {
+            path: $crate::assets::bundle_path_from_src($path),
+        }
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -463,10 +563,12 @@ mod tests {
 
     #[test]
     fn typeface_macro_mints_face_ids_from_paths() {
-        // Tests use this file as the embed target — `face!` calls
+        // Uses this file (`assets.rs`) and `lib.rs` as the `src:`
+        // targets: under the `embed-font-bytes` feature `face!` calls
         // `include_bytes!`, which needs a real file at the literal
-        // path. The two `face!` calls use distinct paths (`assets.rs`
-        // and `lib.rs`) so the const-hash-derived asset ids differ.
+        // path; without the feature only the path string is recorded.
+        // Either way the two distinct paths produce distinct
+        // const-hash-derived asset ids.
         let tf: Typeface = typeface! {
             name: "Inter",
             faces: [
@@ -508,11 +610,27 @@ mod tests {
     }
 
     #[test]
-    fn typeface_face_carries_embedded_bytes_in_source() {
-        // `face!` embeds via `include_bytes!`, so the source carries
-        // the file's raw bytes + its extension. Picking this very
-        // file as the embed target avoids depending on real fonts in
-        // the test tree.
+    fn bundle_path_from_src_strips_relative_prefixes() {
+        // The web backend turns these into root-absolute served-file
+        // URLs, so the leading `./` / `../` that `include_bytes!` needs
+        // (to climb out of `src/`) must be stripped to a bundle-root
+        // path.
+        assert_eq!(bundle_path_from_src("../fonts/Inter-Regular.ttf"), "fonts/Inter-Regular.ttf");
+        assert_eq!(bundle_path_from_src("../../fonts/Inter-Bold.ttf"), "fonts/Inter-Bold.ttf");
+        assert_eq!(bundle_path_from_src("./fonts/x.ttf"), "fonts/x.ttf");
+        assert_eq!(bundle_path_from_src("../assets/fonts/x.woff2"), "assets/fonts/x.woff2");
+        // Already bundle-relative — unchanged.
+        assert_eq!(bundle_path_from_src("fonts/x.ttf"), "fonts/x.ttf");
+        // A `..` that isn't a leading path segment is left alone.
+        assert_eq!(bundle_path_from_src("fonts/a..b.ttf"), "fonts/a..b.ttf");
+    }
+
+    #[test]
+    fn typeface_face_source_records_bundle_path() {
+        // `face!` always records the bundle path (for the web backend
+        // to link the file). The `src:` literal climbs out of the
+        // (hypothetical) `src/` dir, so the recorded path is
+        // normalized to bundle-root.
         let tf: Typeface = typeface! {
             name: "Mono",
             faces: [
@@ -525,13 +643,63 @@ mod tests {
         assert_eq!(face.weight, FontWeight::Normal);
         assert_eq!(face.style, FontStyle::Italic);
         match face.source {
-            AssetSource::Embedded { bytes, extension } => {
+            // `embed-font-bytes` ON: carries both the path and the
+            // embedded bytes (this file, used as the embed target).
+            AssetSource::BundledEmbedded { path, bytes, extension } => {
+                assert_eq!(path, "assets.rs");
                 assert!(!bytes.is_empty());
                 assert_eq!(extension, "rs");
             }
-            other => panic!("expected Embedded, got {:?}", other),
+            // `embed-font-bytes` OFF (runtime-core's default test
+            // build): path only, no bytes baked into the binary.
+            AssetSource::Bundled { path } => {
+                assert_eq!(path, "assets.rs");
+            }
+            other => panic!("expected Bundled/BundledEmbedded, got {:?}", other),
         }
         assert_eq!(tf.fallback, SystemFallback::Monospace);
+    }
+
+    #[test]
+    #[cfg(not(feature = "embed-font-bytes"))]
+    fn face_emits_bytes_free_bundled_when_feature_off() {
+        // The pure-web path: no font bytes in the binary, just a path
+        // the web backend links via `@font-face { src: url(...) }`.
+        let tf: Typeface = typeface! {
+            name: "Inter",
+            faces: [
+                face!(weight: FontWeight::Normal, style: FontStyle::Normal,
+                      src: "../fonts/Inter-Regular.ttf"),
+            ],
+            fallback: SystemFallback::SansSerif,
+        };
+        match tf.faces[0].source {
+            AssetSource::Bundled { path } => assert_eq!(path, "fonts/Inter-Regular.ttf"),
+            other => panic!("expected Bundled (no bytes), got {:?}", other),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "embed-font-bytes")]
+    fn face_embeds_bytes_and_path_when_feature_on() {
+        // Byte-consuming-backend path: bytes baked in for
+        // cosmic-text/CoreText/Android, path kept for web linking.
+        let tf: Typeface = typeface! {
+            name: "Mono",
+            faces: [
+                face!(weight: FontWeight::Normal, style: FontStyle::Normal,
+                      src: "assets.rs"),
+            ],
+            fallback: SystemFallback::Monospace,
+        };
+        match tf.faces[0].source {
+            AssetSource::BundledEmbedded { path, bytes, extension } => {
+                assert_eq!(path, "assets.rs");
+                assert!(!bytes.is_empty());
+                assert_eq!(extension, "rs");
+            }
+            other => panic!("expected BundledEmbedded, got {:?}", other),
+        }
     }
 
     #[test]

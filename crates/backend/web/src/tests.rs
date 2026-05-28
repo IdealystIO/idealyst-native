@@ -354,6 +354,132 @@ fn apply_styled_states_snapshots_gradient_shape_for_animation() {
 }
 
 // ---------------------------------------------------------------------------
+// Font linking — regression for fonts shipping inside the wasm
+// ---------------------------------------------------------------------------
+
+/// REGRESSION TEST.
+///
+/// On web a typeface must be **linked** as a separately-fetched file,
+/// not embedded. The bug: `face!` only ever emitted
+/// `AssetSource::Embedded { bytes }`, and the web backend turned those
+/// bytes into a `blob:` URL — so the whole font (the website ships nine
+/// ~400 KB Inter weights) rode inside the wasm download and was
+/// re-minted into memory on every page load instead of being fetched
+/// and HTTP-cached as a normal static asset.
+///
+/// After the fix `face!` carries a bundle path (`Bundled` when no
+/// byte-consuming backend is in the build, `BundledEmbedded` when one
+/// is), and the web backend resolves either to a root-absolute
+/// served-file URL. This test pins both shapes to a `/fonts/...` URL
+/// (never `blob:`) and checks the emitted `@font-face` rule links it.
+#[wasm_bindgen_test]
+fn regression_font_is_linked_as_served_file_not_blob() {
+    use runtime_core::{
+        AssetId, AssetSource, AssetTag, Backend, FontStyle, FontWeight, SystemFallback,
+        TypefaceFace, TypefaceId,
+    };
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+
+    // Shape 1: pure-web build (`embed-font-bytes` off) → `Bundled`.
+    let bundled_id = AssetId(0xB00D);
+    backend.register_asset(
+        bundled_id,
+        AssetTag::Font,
+        &AssetSource::Bundled { path: "fonts/Inter-Regular.ttf" },
+    );
+
+    // Shape 2: build that also links a byte-consuming backend (e.g. the
+    // website's wgpu Simulator) → `BundledEmbedded`. Web must STILL
+    // link the path and ignore the embedded bytes.
+    let embedded_id = AssetId(0xB33F);
+    backend.register_asset(
+        embedded_id,
+        AssetTag::Font,
+        &AssetSource::BundledEmbedded {
+            path: "fonts/Inter-Bold.ttf",
+            bytes: b"not-a-real-font-but-must-be-ignored-on-web",
+            extension: "ttf",
+        },
+    );
+
+    let bundled_url = backend
+        .asset_urls
+        .get(&bundled_id)
+        .expect("Bundled font must resolve to a URL");
+    let embedded_url = backend
+        .asset_urls
+        .get(&embedded_id)
+        .expect("BundledEmbedded font must resolve to a URL");
+
+    assert_eq!(bundled_url, "/fonts/Inter-Regular.ttf");
+    assert_eq!(
+        embedded_url, "/fonts/Inter-Bold.ttf",
+        "BundledEmbedded must link the served file on web, not mint a blob from the bytes",
+    );
+    assert!(
+        !bundled_url.starts_with("blob:") && !embedded_url.starts_with("blob:"),
+        "fonts must be linked, never embedded as a blob: URL",
+    );
+    assert!(
+        !backend.blob_asset_urls.contains(&bundled_id)
+            && !backend.blob_asset_urls.contains(&embedded_id),
+        "no Blob/object-URL should be minted for a linked font",
+    );
+
+    // Registering the typeface must emit an `@font-face` rule whose
+    // `src: url(...)` points at the linked file, not a blob.
+    let faces = [
+        TypefaceFace {
+            weight: FontWeight::Normal,
+            style: FontStyle::Normal,
+            asset: bundled_id,
+            source: AssetSource::Bundled { path: "fonts/Inter-Regular.ttf" },
+        },
+        TypefaceFace {
+            weight: FontWeight::Bold,
+            style: FontStyle::Normal,
+            asset: embedded_id,
+            source: AssetSource::BundledEmbedded {
+                path: "fonts/Inter-Bold.ttf",
+                bytes: b"ignored",
+                extension: "ttf",
+            },
+        },
+    ];
+    backend.register_typeface(TypefaceId(0xFACE), "Inter", &faces, SystemFallback::SansSerif);
+
+    // Walk the shared stylesheet and collect every @font-face rule text.
+    let sheet = backend.sheet();
+    let rules = sheet.css_rules().expect("stylesheet css_rules");
+    let mut font_face_css = String::new();
+    for i in 0..rules.length() {
+        if let Some(rule) = rules.get(i) {
+            let text = rule.css_text();
+            if text.contains("@font-face") {
+                font_face_css.push_str(&text);
+            }
+        }
+    }
+
+    assert!(
+        font_face_css.contains("url(\"/fonts/Inter-Regular.ttf\")")
+            || font_face_css.contains("url(/fonts/Inter-Regular.ttf)"),
+        "@font-face must link the Bundled font file; got: {font_face_css}",
+    );
+    assert!(
+        font_face_css.contains("url(\"/fonts/Inter-Bold.ttf\")")
+            || font_face_css.contains("url(/fonts/Inter-Bold.ttf)"),
+        "@font-face must link the BundledEmbedded font file (not the bytes); got: {font_face_css}",
+    );
+    assert!(
+        !font_face_css.contains("blob:"),
+        "@font-face src must never be a blob: URL; got: {font_face_css}",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // First-class-apply timing — regression for the boot/navigation FOUC
 // ---------------------------------------------------------------------------
 

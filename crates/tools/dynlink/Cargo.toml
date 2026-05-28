@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["shared", "main", "side", "mainbg", "mainweb"]
+members = ["shared", "main", "side", "mainbg", "mainweb", "side-bg"]
 
 [profile.release]
 panic = "abort"

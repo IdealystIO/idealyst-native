@@ -601,17 +601,19 @@ fn signal_class_falls_back_to_reactive_effect_on_unsupporting_backend() {
 /// assert that the framework drives the backend through the full
 /// font-registration contract:
 ///
-/// 1. `register_asset` fires for every face with `kind: Font`, an
-///    `Embedded` source carrying the **actual font bytes**, and the
-///    expected file extension.
+/// 1. `register_asset` fires for every face with `kind: Font`. Whether
+///    that source carries the **actual font bytes** depends on the
+///    `embed-font-bytes` feature:
+///    - feature ON (any build linking a byte-consuming backend —
+///      CoreText/Android/cosmic-text): `BundledEmbedded`, bytes +
+///      extension flow through, so custom fonts reach those backends.
+///    - feature OFF (pure web/DOM build): `Bundled`, path only — the
+///      web backend links the font as a separately-fetched file
+///      instead of shipping it inside the wasm.
 /// 2. `register_typeface` fires once for the family with the right
 ///    face count, AFTER all per-face `register_asset` calls land.
 ///
-/// Pre-fix, `face!` emitted `Bundled { path }` (no bytes), so the
-/// `source_bytes_len` assertion would observe `None`. This test
-/// pins the corrected behavior: `face!` uses `include_bytes!` so
-/// the bytes ride along with the asset registration call and
-/// custom fonts actually reach the backend on iOS and Android.
+/// The ordering invariant (asset before typeface) holds in both cases.
 #[test]
 fn typeface_emits_register_asset_with_real_bytes_then_register_typeface() {
     use runtime_core::assets::{SystemFallback, Typeface};
@@ -623,15 +625,15 @@ fn typeface_emits_register_asset_with_real_bytes_then_register_typeface() {
 
     use common::{Event, TestRuntime};
 
-    // Use a real .ttf that already lives in the repo so this test
-    // exercises the `include_bytes!` path on a genuine font binary,
-    // not a synthetic byte string. Path is relative to THIS test
-    // file — `crates/framework/core/tests/style.rs`.
+    // Use a real .ttf that already lives in the repo so that under
+    // `embed-font-bytes` this test exercises the `include_bytes!` path
+    // on a genuine font binary, not a synthetic byte string. Path is
+    // relative to THIS test file — `crates/runtime/core/tests/style.rs`.
     static INTER: Typeface = typeface! {
         name: "Inter",
         faces: [
             face!(weight: FontWeight::Normal, style: FontStyle::Normal,
-                  src: "../../../render/wgpu/assets/fonts/Inter-Regular.ttf"),
+                  src: "../../../gpu-backend/engine/assets/fonts/Inter-Regular.ttf"),
         ],
         fallback: SystemFallback::SansSerif,
     };
@@ -679,22 +681,35 @@ fn typeface_emits_register_asset_with_real_bytes_then_register_typeface() {
         runtime_core::AssetTag::Font,
         "register_asset should report AssetTag::Font for a typeface face"
     );
-    assert_eq!(
-        extension.as_deref(),
-        Some("ttf"),
-        "embedded-source extension should come from the file path"
-    );
-    let len = bytes_len
-        .expect("Embedded source means we should see a byte length; got None (Bundled?)");
-    // Inter-Regular.ttf in this repo is ~407 KB. Assert "non-trivial
-    // size" without pinning an exact byte count — keeps the test
-    // resilient to a font upgrade.
-    assert!(
-        len > 10_000,
-        "expected at least 10 KB of font bytes to flow through, got {} bytes \
-         (did `face!` regress back to Bundled?)",
-        len,
-    );
+    if cfg!(feature = "embed-font-bytes") {
+        // Byte-consuming-backend build: `face!` → `BundledEmbedded`,
+        // so the real font bytes + extension ride along.
+        assert_eq!(
+            extension.as_deref(),
+            Some("ttf"),
+            "embedded-source extension should come from the file path"
+        );
+        let len = bytes_len.expect(
+            "embed-font-bytes is on, so the source should carry bytes; got None",
+        );
+        // Inter-Regular.ttf in this repo is ~407 KB. Assert "non-trivial
+        // size" without pinning an exact byte count — keeps the test
+        // resilient to a font upgrade.
+        assert!(
+            len > 10_000,
+            "expected at least 10 KB of font bytes to flow through, got {} bytes",
+            len,
+        );
+    } else {
+        // Pure web/DOM build: `face!` → `Bundled` (path only). The mock
+        // backend records no bytes/extension for a bytes-free source —
+        // the font is linked, not embedded.
+        assert_eq!(
+            bytes_len, None,
+            "embed-font-bytes is off, so no font bytes should ship in the binary",
+        );
+        assert_eq!(extension, None, "Bundled source carries no extension field");
+    }
 
     // ---- 2. register_typeface for Inter, with one face ----
     let typeface_event = events

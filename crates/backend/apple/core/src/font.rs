@@ -148,16 +148,17 @@ impl FontRegistry {
         if self.asset_psnames.contains_key(&id) {
             return true;
         }
-        // The public `face!` macro always emits `Embedded` (via
-        // `include_bytes!`), so this is the only branch fonts can
-        // actually take. `Bundled` / `Remote` are intentionally
-        // unreachable for fonts — URL-loaded fonts are not supported
-        // and only project-shipped files are permitted. The
-        // fallthrough is defense-in-depth for anyone hand-constructing
-        // a `TypefaceFace` outside the macro.
-        let AssetSource::Embedded { bytes, .. } = source else {
+        // With `embed-font-bytes` on (this backend enables it), `face!`
+        // emits `BundledEmbedded` (path + bytes); `Embedded` covers a
+        // hand-rolled `embed_asset!` font. Both carry the bytes
+        // CoreText needs. Bytes-free `Bundled` / `Remote` are
+        // intentionally unreachable for fonts — URL-loaded fonts are
+        // not supported and only project-shipped files are permitted.
+        let (AssetSource::Embedded { bytes, .. } | AssetSource::BundledEmbedded { bytes, .. }) =
+            source
+        else {
             crate::log::apple_log(&format!(
-                "[font] register_asset id={:?} skipped — non-Embedded source (URL fonts are unsupported)",
+                "[font] register_asset id={:?} skipped — bytes-free source (URL fonts are unsupported)",
                 id
             ));
             return true;

@@ -29,7 +29,7 @@
 //! }
 //! ```
 
-use runtime_core::{pressable, text, ui, Element, Signal, StyleApplication};
+use runtime_core::{pressable, text, ui, Element, Reactive, Signal, StyleApplication};
 use std::rc::Rc;
 
 use crate::stylesheets::{TabBar, TabButton};
@@ -39,8 +39,15 @@ use crate::stylesheets::{TabBar, TabButton};
 #[derive(Clone, Default)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct Tab {
-    /// Human-readable label shown on the tab.
-    pub label: String,
+    /// Human-readable label shown on the tab. `Reactive<String>` —
+    /// static or live (signal/`rx!`).
+    pub label: Reactive<String>,
+}
+
+impl Tab {
+    pub fn new(label: impl Into<Reactive<String>>) -> Self {
+        Self { label: label.into() }
+    }
 }
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]

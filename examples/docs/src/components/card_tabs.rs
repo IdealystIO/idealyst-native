@@ -60,7 +60,7 @@ pub fn CardTabs(props: CardTabsProps) -> Element {
     let tab_items: Vec<Tab> = props
         .tabs
         .iter()
-        .map(|(label, _)| Tab { label: label.clone() })
+        .map(|(label, _)| Tab::new(label.clone()))
         .collect();
 
     // `Tabs.on_change` updates the active signal. Owned `Rc` so

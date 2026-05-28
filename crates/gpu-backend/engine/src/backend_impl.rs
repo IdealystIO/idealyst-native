@@ -1249,7 +1249,13 @@ impl Backend for WgpuBackend {
         // aren't supported yet — silently ignored.
         match kind {
             runtime_core::AssetTag::Font => {
-                if let runtime_core::AssetSource::Embedded { bytes, .. } = source {
+                // `face!` emits `BundledEmbedded` (path + bytes) here
+                // because this backend enables `embed-font-bytes`;
+                // `Embedded` covers a hand-rolled `embed_asset!` font.
+                // Either way we consume the bytes.
+                if let runtime_core::AssetSource::Embedded { bytes, .. }
+                | runtime_core::AssetSource::BundledEmbedded { bytes, .. } = source
+                {
                     // `to_vec()` because `load_font_data` takes
                     // ownership; the underlying bytes are
                     // `'static` so the clone is cheap to amortize
@@ -1259,14 +1265,18 @@ impl Backend for WgpuBackend {
                         .db_mut()
                         .load_font_data(bytes.to_vec());
                 }
-                // Bundled / Remote font sources aren't supported
-                // here — the build-tool resolves Bundled into a
-                // per-platform path that the wgpu sim has no asset
-                // loader for, and Remote would require an async
-                // fetch the renderer can't issue.
+                // Bytes-free `Bundled` / `Remote` font sources aren't
+                // supported here — the wgpu sim has no asset loader for
+                // a URL path and Remote would require an async fetch
+                // the renderer can't issue. (A `Bundled`-only font only
+                // arises when `embed-font-bytes` is off, i.e. no
+                // byte-consuming backend in the build — so the sim
+                // isn't present anyway.)
             }
             runtime_core::AssetTag::Image => {
-                if let runtime_core::AssetSource::Embedded { bytes, .. } = source {
+                if let runtime_core::AssetSource::Embedded { bytes, .. }
+                | runtime_core::AssetSource::BundledEmbedded { bytes, .. } = source
+                {
                     // Store the raw bytes; the renderer decodes
                     // lazily on first `asset://{id}` reference. The
                     // image crate auto-detects PNG/JPEG/WebP/etc

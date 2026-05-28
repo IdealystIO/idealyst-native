@@ -15,7 +15,7 @@
 //! }
 //! ```
 
-use runtime_core::{ui, Element, StyleApplication, VariantEnum};
+use runtime_core::{ui, Element, Reactive, StyleApplication, VariantEnum};
 
 use crate::stylesheets::{Avatar, AvatarText};
 use crate::theme::IdeaThemeRef;
@@ -28,7 +28,8 @@ pub struct AvatarProps {
     /// and the initials are hidden. When `None`, the initials show.
     pub src: Option<String>,
     /// Fallback text rendered when `src` is `None`.
-    pub initials: String,
+    /// `Reactive<String>` — static or live (signal/`rx!`).
+    pub initials: Reactive<String>,
     /// Placeholder tint. Reads from `theme.intents().<color>.soft_bg`
     /// and matching `soft_text`. Distinct from `Intent` because an
     /// avatar doesn't represent a semantic action.
@@ -40,7 +41,7 @@ impl Default for AvatarProps {
     fn default() -> Self {
         Self {
             src: None,
-            initials: String::new(),
+            initials: Reactive::Static(String::new()),
             color: AvatarColor::default(),
             size: AvatarSize::default(),
         }

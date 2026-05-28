@@ -1,11 +1,22 @@
 # Fonts and typefaces
 
-Custom typefaces are bundled into the binary and registered with each
-backend at first style-apply. There's one declaration site (the
-`typeface!` + `face!` macros) and one consumer surface
-(`StyleRules.font_family`); everything else — embedding the bytes,
-hashing a stable id, wiring the right native API on each platform —
-is the framework's problem.
+Custom typefaces are declared once (the `typeface!` + `face!` macros)
+and registered with each backend at first style-apply, with one
+consumer surface (`StyleRules.font_family`). Everything else — hashing
+a stable id, wiring the right native API on each platform, and
+deciding whether the bytes ride inside the binary or are linked as a
+separate file — is the framework's problem.
+
+**Web links fonts as files; native embeds the bytes.** The binary only
+carries the font bytes when a *byte-consuming* backend is in the build
+(cosmic-text/wgpu Simulator, CoreText on iOS/macOS, Android
+`Typeface`). Those backends turn on the `embed-font-bytes` cargo
+feature on `runtime-core` through their own dep; the macro reacts to
+the unified feature set. A pure web (DOM) build links none of them, so
+`face!` emits a bytes-free path and the web backend serves the font as
+a normal static file via `@font-face { src: url(...) }` — keeping the
+fonts out of the wasm download. See `runtime_core::assets` for the
+`embed-font-bytes` / `__face_source!` mechanism.
 
 Implementation: `runtime_core::assets` (declaration macros + types),
 `runtime_core::style::ensure_typefaces_registered_with` (registration
@@ -55,12 +66,20 @@ scheme stable across crates.
     literal.
   - `src` is resolved like `include_bytes!` — relative to the **calling
     source file**, not the crate root.
-  - `asset: AssetId(const_hash(crate_name + "::" + path))` — same
-    bytes embedded under the same id every build, but two crates
-    embedding the same file get distinct ids.
-  - `source: AssetSource::Embedded { bytes, extension }` — bytes from
-    `include_bytes!`, extension derived from the trailing `.ext` of
-    the path literal.
+  - `asset: AssetId(const_hash(crate_name + "::" + path))` — stable id
+    under the same path every build; two crates referencing the same
+    file get distinct ids.
+  - `source:` depends on the `embed-font-bytes` feature (set by the dep
+    graph, see the intro):
+    - **on** → `AssetSource::BundledEmbedded { path, bytes, extension }`
+      — `include_bytes!` bytes for native/wgpu, plus a bundle path the
+      web backend links.
+    - **off** → `AssetSource::Bundled { path }` — path only, no
+      `include_bytes!`, nothing read at compile time.
+    The `path` is normalized from the `src:` literal (leading `./` /
+    `../` stripped, e.g. `"../fonts/Inter-Bold.ttf"` →
+    `"fonts/Inter-Bold.ttf"`), so the web backend can serve it at a
+    root-absolute URL.
 
 - `typeface! { name, faces: [...], fallback }`
   - Expands to a `Typeface { id, family_name, faces, fallback }`
@@ -69,9 +88,10 @@ scheme stable across crates.
   - Must be assigned to a `static` (or `const`) so the `&'static`
     references on `faces` are stable.
 
-Only `Embedded` sources are supported for fonts — URL-loaded fonts
-are intentionally not part of the contract. Ship the bytes with the
-app or don't ship the font.
+Only project-shipped font files are supported — arbitrary remote
+(`Remote { url }`) fonts are intentionally not part of the contract.
+Ship the file with the app or don't ship the font. On web that file is
+served from the bundle; on native its bytes are embedded.
 
 ---
 
@@ -130,34 +150,46 @@ fake-italicize, which on Android in particular doesn't render well.
 ## Per-platform mechanics
 
 The same `typeface!` declaration takes a different path through each
-backend. The framework hands all three the same data — `face.asset`
-(an opaque id), `face.source` (the embedded bytes), `tf.family_name`
-— and each translates it to the native font API.
+backend. The framework hands all of them the same data — `face.asset`
+(an opaque id), `face.source` (a bundle path and, when
+`embed-font-bytes` is on, the bytes), `tf.family_name` — and each
+translates it to the native font API.
 
 ### Web (`backend-web`)
 
-At `register_asset` the backend wraps the embedded bytes in a `Blob`
-URL and emits an `@font-face` rule:
+At `register_asset` the backend resolves a font to a **root-absolute
+served-file URL** (`/{path}`) — never a blob, and the embedded bytes
+(if any rode along as `BundledEmbedded`) are ignored. `register_typeface`
+then emits one `@font-face` rule per face linking that file:
 
 ```css
 @font-face {
   font-family: "Inter";
-  src: url(blob:…) format("truetype");
+  src: url("/fonts/Inter-Bold.ttf") format("truetype");
   font-weight: 700;
   font-style: normal;
 }
 ```
 
-`StyleRules.font_family: Typeface(INTER)` then maps to inline
+The browser fetches and HTTP-caches the `.ttf`/`.woff2` like any other
+static asset, and only downloads the weights actually rendered. The
+URL is root-absolute (not relative) so it resolves the same under the
+SPA router regardless of the current document path. The file is served
+from the project's top-level font dir: `idealyst dev --web` serves the
+project root directly, and `idealyst build web` stages every top-level
+asset directory (`fonts/`, `assets/`, …) into the deployed bundle — so
+a `face!(src: "../fonts/Inter-Bold.ttf")` resolves to `/fonts/Inter-Bold.ttf`.
+
+`StyleRules.font_family: Typeface(INTER)` maps to inline
 `font-family: "Inter"` on the element, and the browser's own
 font-weight/style matching picks the right `@font-face` rule by the
-declared `font-weight` and `font-style` descriptors on each.
-Multi-weight families just emit multiple `@font-face` rules sharing a
-`font-family` name.
+declared `font-weight` / `font-style` descriptors. Multi-weight
+families just emit multiple `@font-face` rules sharing a `font-family`
+name.
 
-Caching: blob URLs survive for the lifetime of the page; the
-framework's thread-local seen-set keeps the backend from re-emitting
-the same rule.
+Caching: the framework's thread-local seen-set keeps the backend from
+re-emitting the same rule. (A hand-rolled `embed_asset!` font with no
+bundle path is the one case that still falls back to a `blob:` URL.)
 
 ### iOS (`backend-ios-mobile` + `backend-ios-core`)
 
@@ -246,11 +278,15 @@ If text doesn't look right:
    `[font] register_typeface family=… faces_resolved=N/N`. **N must
    equal the number of `face!` entries you wrote.** A mismatch means
    one or more face files failed to decode.
-2. Confirm the bytes embedded. The byte-count printed alongside each
-   id should match the file size on disk; if it's `0` the
-   `include_bytes!` resolved a wrong path. (`face!` resolves `src`
-   relative to the calling source file, not the crate root — adjust
-   the `../` prefix accordingly.)
+2. On native (`embed-font-bytes` on), confirm the bytes embedded: the
+   byte-count printed alongside each id should match the file size on
+   disk; if it's `0` the `include_bytes!` resolved a wrong path.
+   (`face!` resolves `src` relative to the calling source file, not the
+   crate root — adjust the `../` prefix accordingly.) On web, instead
+   open DevTools → Network and confirm each rendered weight fetches its
+   `/fonts/<Face>.ttf` with `200` (not a `404` — a `404` means the file
+   isn't in the served root / staged bundle, or the `src:` path doesn't
+   normalize to where the file actually lives).
 3. If the headline is rendering bold *too* thick on Android, the
    synthesis bug above has regressed — verify the `setTypeface` call
    in [`apply_resolved_font_to_textview`](../crates/backend/android/mobile/src/imp/font.rs)

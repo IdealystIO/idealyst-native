@@ -841,7 +841,8 @@ impl Backend for MockBackend {
 
     fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
         let (source_bytes_len, source_extension) = match source {
-            AssetSource::Embedded { bytes, extension } => {
+            AssetSource::Embedded { bytes, extension }
+            | AssetSource::BundledEmbedded { bytes, extension, .. } => {
                 (Some(bytes.len()), Some((*extension).to_string()))
             }
             AssetSource::Bundled { .. } | AssetSource::Remote { .. } => (None, None),

@@ -56,7 +56,7 @@ pub(crate) fn register_asset(
         return;
     }
     let bytes: &[u8] = match source {
-        AssetSource::Embedded { bytes, .. } => bytes,
+        AssetSource::Embedded { bytes, .. } | AssetSource::BundledEmbedded { bytes, .. } => bytes,
         AssetSource::Bundled { .. } | AssetSource::Remote { .. } => {
             // Bundled/Remote on iOS need a bundle-resource lookup or
             // an async fetch. Skip for now so `create_image` falls

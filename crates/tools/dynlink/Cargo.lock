@@ -149,6 +149,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dynlink-side-bg"
+version = "0.0.0"
+dependencies = [
+ "dynlink-shared",
+ "js-sys",
+ "runtime-core",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "flume"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
