@@ -4,6 +4,7 @@ pub mod accessibility;
 pub mod animation;
 pub mod assets;
 mod backend;
+pub mod breakpoint;
 pub mod color;
 mod batch;
 mod builder;
@@ -126,7 +127,7 @@ pub use primitives::portal::{
     portal, AnchorTarget, AnchorableHandle, ElementAlign, ElementSide, PortalHandle,
     PortalOps, PortalTarget, ViewportPlacement, ViewportRect,
 };
-pub use external::{external, ErasedHandler, ExternalHandle, ExternalRegistry};
+pub use external::{external, ErasedHandler, ExternalHandle, ExternalRegistry, RegisterExternal};
 pub use primitives::presence::{
     presence, PresenceAnim, PresenceHandle, PresenceOps, PresenceState,
 };
@@ -164,6 +165,9 @@ pub use async_reducer::{async_reducer, AsyncReducer, AsyncStatus};
 pub use network_state::NetworkState;
 pub use safe_area::{safe_area_insets, set_safe_area_insets, EdgeInsets, SafeAreaSides};
 pub use viewport::{set_viewport_size, viewport_size, ViewportSize};
+pub use breakpoint::{
+    breakpoints, current_breakpoint, install_breakpoints, Breakpoint, Breakpoints,
+};
 pub use scheduling::{
     after_animation_frame, after_ms, after_ms_scoped, raf_loop, raf_loop_scoped,
     schedule_microtask, RafLoop, ScheduledTask,

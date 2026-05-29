@@ -16,11 +16,16 @@ use wasm_bindgen::JsCast;
 use web_sys::Node;
 
 pub(crate) fn create(b: &mut WebBackend) -> Node {
+    if let Some(el) = b.hydrate_next("div") {
+        return el.unchecked_into::<Node>();
+    }
     let el = b
         .doc
         .create_element("div")
         .expect("create_element failed");
-    el.unchecked_into::<Node>()
+    let node: Node = el.unchecked_into();
+    b.hydrate_note_fresh(&node);
+    node
 }
 
 /// Placeholder `<div>` for reactive `when` / `switch` branches.
@@ -38,12 +43,18 @@ pub(crate) fn create(b: &mut WebBackend) -> Node {
 /// in the DOM (so the walker can `clear_children` + reinsert on
 /// each rebuild), it's just invisible to layout.
 pub(crate) fn create_reactive_anchor(b: &mut WebBackend) -> Node {
+    if let Some(el) = b.hydrate_next("div") {
+        // SSR already stamped `display: contents`; adopt as-is.
+        return el.unchecked_into::<Node>();
+    }
     let el = b
         .doc
         .create_element("div")
         .expect("create_element failed");
     let _ = el.set_attribute("style", css::REACTIVE_ANCHOR_STYLE);
-    el.unchecked_into::<Node>()
+    let node: Node = el.unchecked_into();
+    b.hydrate_note_fresh(&node);
+    node
 }
 
 pub(crate) fn insert(parent: &mut Node, child: Node) {

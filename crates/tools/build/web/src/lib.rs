@@ -567,10 +567,10 @@ pub fn main() {{
     backend_web::install_time_source();
     backend_web::install_async_executor();
     backend_web::install_render_loop();
-    // Push `window.innerWidth/innerHeight` into the framework's
-    // reactive viewport signal on initial install + every `resize`
-    // event. Author code reads via `runtime_core::viewport_size()`.
-    backend_web::install_viewport_observer();
+    // NOTE: the viewport observer is installed INSIDE the start fns, not
+    // here — its timing differs for hydration (after mount, so the first
+    // render uses the SSR-assumed viewport) vs a fresh boot (before mount,
+    // so the first render sees the real viewport).
 
     #[cfg(feature = "runtime-server")]
     {{
@@ -584,9 +584,25 @@ pub fn main() {{
 
 /// Local mode: framework runtime lives in this browser. Same flow as
 /// `idealyst build --web` (no `--aas`).
+///
+/// HYDRATION: if `#app` was server-rendered (has children), ADOPT that
+/// DOM instead of mounting fresh — `WebBackend::hydrate` reuses the
+/// server's nodes and just wires handlers/reactivity. To keep the first
+/// (hydration) render matching the server's tree, we seed the
+/// SSR-assumed viewport (`#app[data-ssr-viewport]`) before the build,
+/// then install the viewport observer AFTER mount so the real viewport
+/// drives a reactive reconcile. A fresh boot (empty `#app`) reads the
+/// real viewport up front, as before.
 #[cfg(not(feature = "runtime-server"))]
 fn start_local() {{
-    let mut web = WebBackend::new("#app");
+    let selector = "#app";
+    let prerendered = backend_web::page_is_prerendered(selector);
+
+    let mut web = if prerendered {{
+        WebBackend::hydrate(selector)
+    }} else {{
+        WebBackend::new(selector)
+    }};
     // Hand the bare backend to the user crate so it can install
     // navigator-SDK / external-primitive handlers before mount. The
     // user crate must expose `pub fn register_extensions(&mut WebBackend)`;
@@ -594,8 +610,28 @@ fn start_local() {{
     {lib}::register_extensions(&mut web);
     let backend = Rc::new(RefCell::new(web));
     backend_web::install_global_self(&backend);
-    let owner = runtime_core::mount(backend, {lib}::app);
+
+    // Fresh boot: read the real viewport BEFORE the first render.
+    if !prerendered {{
+        backend_web::install_viewport_observer();
+    }}
+
+    // Seed the SSR-assumed viewport INSIDE the mount scope so the
+    // hydration render matches the server's tree (clean DOM adoption).
+    let seed = if prerendered {{ backend_web::ssr_viewport(selector) }} else {{ None }};
+    let owner = runtime_core::mount(backend, move || {{
+        if let Some((w, h)) = seed {{
+            runtime_core::set_viewport_size(runtime_core::ViewportSize::new(w, h));
+        }}
+        {lib}::app()
+    }});
     OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
+
+    // Hydration done: switch to the REAL viewport; reactivity reconciles
+    // any viewport-dependent content AFTER adoption.
+    if prerendered {{
+        backend_web::install_viewport_observer();
+    }}
 }}
 
 /// runtime-server mode: framework runtime lives in the runtime-server sidecar on the dev
@@ -603,6 +639,9 @@ fn start_local() {{
 /// forwards events back.
 #[cfg(feature = "runtime-server")]
 fn start_aas() {{
+    // runtime-server mode doesn't hydrate (the host renders); read the
+    // real viewport up front, as the old `main()` did.
+    backend_web::install_viewport_observer();
     let url = match read_aas_url() {{
         Some(u) => u,
         None => {{

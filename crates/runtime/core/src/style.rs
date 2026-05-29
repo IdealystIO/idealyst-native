@@ -1294,6 +1294,14 @@ pub struct StyleSheet {
     /// — `resolve_state_overlays` short-circuits on `is_empty()` and
     /// avoids walking the variants BTreeMap per styled node.
     state_axes: Vec<(crate::StateBits, VariantAxis)>,
+    /// Cached list of breakpoint-overlay axes the sheet declares.
+    /// Populated in `.variant(...)` whenever an axis named `__bp_*` is
+    /// added (a `stylesheet!`'s `breakpoint md { … }` block). Empty for
+    /// the common case of sheets with no breakpoint blocks —
+    /// `resolve_breakpoint_overlays` short-circuits on `is_empty()` and
+    /// avoids walking the variants BTreeMap per styled node. Exactly
+    /// parallel to [`Self::state_axes`].
+    breakpoint_axes: Vec<(crate::Breakpoint, VariantAxis)>,
     /// Per-sheet variant cache. Keyed on the effective `VariantSet`;
     /// value is the pre-resolved `Rc<StyleRules>` for the no-overrides
     /// case. Populated by [`ensure_registered_with`] at registration
@@ -1314,6 +1322,7 @@ impl StyleSheet {
             variants: BTreeMap::new(),
             compounds: Vec::new(),
             state_axes: Vec::new(),
+            breakpoint_axes: Vec::new(),
             variant_cache: std::cell::RefCell::new(HashMap::new()),
         }
     }
@@ -1325,6 +1334,7 @@ impl StyleSheet {
             variants: BTreeMap::new(),
             compounds: Vec::new(),
             state_axes: Vec::new(),
+            breakpoint_axes: Vec::new(),
             variant_cache: std::cell::RefCell::new(HashMap::new()),
         }
     }
@@ -1352,6 +1362,14 @@ impl StyleSheet {
                 self.state_axes.push((bit, axis.clone()));
             }
         }
+        // Same caching for breakpoint overlays (`__bp_*` axes), so
+        // `resolve_breakpoint_overlays` short-circuits on the common
+        // no-breakpoint-blocks case instead of walking the variants map.
+        if let Some(bp) = crate::Breakpoint::from_axis_name(&axis) {
+            if !self.breakpoint_axes.iter().any(|(_, a)| a == &axis) {
+                self.breakpoint_axes.push((bp, axis.clone()));
+            }
+        }
         let entry = self.variants.entry(axis).or_insert_with(|| VariantAxisDef {
             default: None,
             values: BTreeMap::new(),
@@ -1367,6 +1385,15 @@ impl StyleSheet {
     /// full variants map.
     pub(crate) fn state_axes(&self) -> &[(crate::StateBits, VariantAxis)] {
         &self.state_axes
+    }
+
+    /// The cached set of breakpoint-overlay axes declared on this
+    /// stylesheet, in declaration order. Returns an empty slice for the
+    /// common case of sheets with no `breakpoint` blocks. Used by
+    /// `resolve_breakpoint_overlays` to skip per-call iteration of the
+    /// full variants map. Parallel to [`Self::state_axes`].
+    pub(crate) fn breakpoint_axes(&self) -> &[(crate::Breakpoint, VariantAxis)] {
+        &self.breakpoint_axes
     }
 
     /// Per-sheet variant-cache lookup. Returns the pre-resolved

@@ -46,18 +46,32 @@ pub mod nav_class {
     pub const DRAWER_BODY_SCROLLS: &str = "ui-nav-drawer-body-scrolls";
 }
 
-/// The canonical navigator layout stylesheet — the **single definition**
-/// of how navigator chrome lays out. The web backend injects it into
-/// `<head>` at navigator-init time; the SSR backend ships it in the
+/// The canonical navigator layout stylesheet **base** — the structural
+/// rules plus the **mobile-first** sidebar/body layout. Register the
+/// composed sheet via [`navigator_layout_css`] (NOT this const directly),
+/// which appends the responsive `@media (min-width: …)` overlay that pins
+/// the sidebar on wide viewports.
+///
+/// **Mobile-first by design.** The base here is the *narrow* layout: the
+/// drawer sidebar is an off-canvas modal (fixed, slid off-screen, revealed
+/// by toggling `.drawer-open` on the root) and the body fills the width.
+/// This is the whole point of expressing responsiveness as CSS media
+/// queries — the browser picks the right layout at paint time, so there's
+/// **no render-time decision** and the SSR / pre-hydration first paint is
+/// already correct at any viewport (a mobile request gets the mobile
+/// layout in static HTML; no JS needed to fix it). The pinned-sidebar
+/// layout is the additive `@media` overlay, keyed off the customizable
+/// [`navigator_pin_width`].
+///
+/// The web backend injects [`navigator_layout_css`] into `<head>` at
+/// navigator-init time; the SSR backend ships the identical sheet in the
 /// rendered document `<head>`. One definition guarantees the server's
 /// first paint matches the live web layout exactly (no style-flash on
 /// hydration).
 ///
-/// See [`nav_class`] for the class names and the layout diagram in
-/// `web-navigator-helpers`'s `ensure_navigator_css`. Scrolling here is
-/// expressed as `overflow-y: auto` on the chrome wrappers (a layout
-/// concern owned by the navigator), distinct from the framework's
-/// `ScrollView` primitive.
+/// See [`nav_class`] for the class names. Scrolling here is expressed as
+/// `overflow-y: auto` on the chrome wrappers (a layout concern owned by
+/// the navigator), distinct from the framework's `ScrollView` primitive.
 pub const NAVIGATOR_LAYOUT_CSS: &str = concat!(
     ".ui-nav-root{position:relative;width:100%;height:100%;}",
     ".ui-nav-screen{position:absolute!important;inset:0!important;width:100%;height:100%;}",
@@ -65,12 +79,77 @@ pub const NAVIGATOR_LAYOUT_CSS: &str = concat!(
     ".ui-nav-drawer-top{flex:0 0 auto;width:100%;}",
     ".ui-nav-drawer-bottom{flex:0 0 auto;width:100%;}",
     ".ui-nav-drawer-middle{flex:1 1 auto;display:flex;flex-direction:row;width:100%;min-height:0;}",
-    ".ui-nav-drawer-sidebar{flex:0 0 auto;height:100%;overflow-y:auto;}",
+    // Sidebar — mobile-first base: an off-canvas modal drawer pinned to the
+    // start edge, slid out of view until `.drawer-open` is toggled on the
+    // root (the runtime's job on interaction). `navigator_layout_css`'s
+    // `@media` overlay turns this back into an in-flow flex column at >=
+    // the pin width.
+    ".ui-nav-drawer-sidebar{position:fixed;top:0;left:0;height:100%;width:min(82vw,300px);\
+       transform:translateX(-100%);transition:transform 240ms cubic-bezier(0.2,0.0,0.0,1.0);\
+       z-index:1000;box-shadow:6px 0 28px rgba(0,0,0,0.22);overflow-y:auto;}",
+    ".ui-nav-drawer-root.drawer-open .ui-nav-drawer-sidebar{transform:translateX(0);}",
     ".ui-nav-drawer-trailing{flex:0 0 auto;height:100%;overflow-y:auto;}",
-    ".ui-nav-drawer-body{flex:1 1 auto;position:relative;height:100%;overflow:hidden;}",
+    // Body fills the full width in the mobile base (the sidebar is fixed /
+    // out of flow). The `@media` overlay drops `width:100%` so the pinned
+    // sidebar reclaims its track.
+    ".ui-nav-drawer-body{flex:1 1 auto;position:relative;height:100%;overflow:hidden;width:100%;}",
     ".ui-nav-drawer-body-scrolls{flex:1 1 auto;position:relative;height:100%;overflow-y:auto;display:flex;flex-direction:column;}",
     ".ui-nav-drawer-body-scrolls>*{flex-shrink:0;}",
 );
+
+/// The pinned-sidebar overlay rules — wrapped in `@media (min-width: …)`
+/// by [`navigator_layout_css`]. Restores the sidebar to an in-flow flex
+/// column (undoing the mobile-first modal base) and lets the body size to
+/// the remaining track. Properties here mirror the pre-responsive sidebar
+/// defaults so a wide viewport renders exactly as before.
+const NAVIGATOR_PINNED_RULES: &str = concat!(
+    ".ui-nav-drawer-sidebar{position:static;transform:none;flex:0 0 auto;width:auto;\
+       z-index:auto;box-shadow:none;transition:none;}",
+    ".ui-nav-drawer-body{width:auto;}",
+);
+
+thread_local! {
+    /// App-customizable viewport width (px) at which the drawer sidebar
+    /// switches between its modal (narrow) and pinned (wide) layouts.
+    /// `None` => derive from the breakpoint table (`Breakpoints::lg_min`).
+    /// Thread-local to match `runtime_core::breakpoints` and the
+    /// single-threaded reactive runtime.
+    static NAV_PIN_WIDTH: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+}
+
+/// Override the viewport width (px) at which the drawer sidebar flips
+/// between its modal (off-canvas) and pinned (in-flow) layouts. Call once
+/// at app setup, **before** the navigator registers its stylesheet (i.e.
+/// before mount / SSR render), so both the web and SSR sheets agree.
+///
+/// Defaults to the Large breakpoint (`runtime_core::breakpoints().lg_min`,
+/// 1024 px out of the box) when unset. Tune the whole breakpoint scale via
+/// `runtime_core::install_breakpoints`, or pin just this navigator
+/// threshold to an explicit width here.
+pub fn install_navigator_pin_width(px: f32) {
+    NAV_PIN_WIDTH.with(|c| c.set(Some(px)));
+}
+
+/// The active navigator pin width — the installed override, else the
+/// Large-breakpoint threshold from the active breakpoint table.
+pub fn navigator_pin_width() -> f32 {
+    NAV_PIN_WIDTH
+        .with(|c| c.get())
+        .unwrap_or_else(|| runtime_core::breakpoints().lg_min)
+}
+
+/// The complete navigator layout stylesheet: the mobile-first
+/// [`NAVIGATOR_LAYOUT_CSS`] base plus the `@media (min-width: <pin>px)`
+/// overlay ([`NAVIGATOR_PINNED_RULES`]) that pins the sidebar on wide
+/// viewports. `<pin>` is [`navigator_pin_width`]. Register THIS (not the
+/// base const) so the navigator's responsive behavior lives entirely in
+/// CSS — identical for the live web backend and the SSR first paint.
+pub fn navigator_layout_css() -> String {
+    format!(
+        "{NAVIGATOR_LAYOUT_CSS}@media (min-width: {}){{{NAVIGATOR_PINNED_RULES}}}",
+        px_value(navigator_pin_width()),
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Base reset + per-primitive default styles — single source of truth
@@ -166,6 +245,47 @@ pub fn state_pseudo(state: runtime_core::StateBits) -> Option<&'static str> {
         StateBits::FOCUSED => Some(":focus"),
         StateBits::DISABLED => Some(":disabled"),
         _ => None,
+    }
+}
+
+/// The `@media (min-width: …)` prelude for a breakpoint overlay, using
+/// the app's active [`runtime_core::breakpoints`] threshold table.
+/// `None` for `Breakpoint::Xs` (the mobile-first base, which has no
+/// media query) and for any breakpoint with no installed threshold.
+///
+/// Reads the *installed* table so a custom `install_breakpoints(...)`
+/// shifts the emitted query to match — and so the web `@media`
+/// boundary lands at exactly the same width the native classifier uses
+/// for the same bucket. Single source of truth shared by the web
+/// backend (`apply_styled_variants`) and SSR.
+pub fn breakpoint_media_query(bp: runtime_core::Breakpoint) -> Option<String> {
+    let px = runtime_core::breakpoints().min_width(bp)?;
+    Some(format!("@media (min-width: {})", px_value(px)))
+}
+
+/// A full breakpoint-overlay rule: the `@media (min-width: …)` query
+/// wrapping `.<class_name> { <body> }`. `None` for `Breakpoint::Xs`
+/// (no media query — its rules are the base class itself). `body` is
+/// the overlay's [`rules_to_css`] output.
+///
+/// Single source of truth shared by the web backend (which inserts this
+/// into the live stylesheet) and SSR (which emits it into `<head>`), so
+/// a `breakpoint md { … }` overlay produces a byte-identical rule on
+/// both — the SSR first paint already carries the responsive layout the
+/// hydrated web build would, no JS round trip needed.
+pub fn breakpoint_media_rule(class_name: &str, bp: runtime_core::Breakpoint, body: &str) -> Option<String> {
+    let query = breakpoint_media_query(bp)?;
+    Some(format!("{query} {{ .{class_name} {{ {body} }} }}"))
+}
+
+/// Format a `min-width` threshold (always carried as `f32` dp) as a CSS
+/// `px` length, trimming a redundant `.0` so `768.0` renders as `768px`
+/// — both for byte-stable SSR/web class dedup and for readable output.
+fn px_value(v: f32) -> String {
+    if v.fract() == 0.0 {
+        format!("{}px", v as i64)
+    } else {
+        format!("{v}px")
     }
 }
 
@@ -796,6 +916,82 @@ mod tests {
     #[test]
     fn tokens_to_root_css_empty_is_blank() {
         assert_eq!(tokens_to_root_css(&[]), "");
+    }
+
+    #[test]
+    fn breakpoint_media_query_uses_installed_thresholds() {
+        use runtime_core::Breakpoint;
+        // Xs is the mobile-first base — no media query.
+        assert_eq!(breakpoint_media_query(Breakpoint::Xs), None);
+        // The default tailwind-scale thresholds, rendered without a
+        // redundant `.0` so the px value reads cleanly.
+        assert_eq!(
+            breakpoint_media_query(Breakpoint::Sm).as_deref(),
+            Some("@media (min-width: 640px)")
+        );
+        assert_eq!(
+            breakpoint_media_query(Breakpoint::Md).as_deref(),
+            Some("@media (min-width: 768px)")
+        );
+        assert_eq!(
+            breakpoint_media_query(Breakpoint::Lg).as_deref(),
+            Some("@media (min-width: 1024px)")
+        );
+        assert_eq!(
+            breakpoint_media_query(Breakpoint::Xl).as_deref(),
+            Some("@media (min-width: 1280px)")
+        );
+    }
+
+    #[test]
+    fn navigator_layout_css_is_mobile_first_with_customizable_pin_width() {
+        // Default pin width is the Large breakpoint (1024 px). This test
+        // is the only one touching NAV_PIN_WIDTH, and a #[test] body runs
+        // without interleaving, so the default read here is reliable.
+        assert_eq!(navigator_pin_width(), runtime_core::breakpoints().lg_min);
+
+        let base = navigator_layout_css();
+        // Mobile-first base: the sidebar is an off-canvas modal (slid out).
+        assert!(
+            base.contains(".ui-nav-drawer-sidebar{position:fixed")
+                && base.contains("translateX(-100%)"),
+            "base sidebar must be the off-canvas modal layout; got: {base}"
+        );
+        // Pinned layout is the additive @media overlay at the Lg threshold.
+        assert!(
+            base.contains("@media (min-width: 1024px){"),
+            "default pin width is the Lg breakpoint (1024px); got: {base}"
+        );
+        assert!(
+            base.contains(".ui-nav-drawer-sidebar{position:static"),
+            "the @media overlay must pin the sidebar (position:static); got: {base}"
+        );
+
+        // Customizable: an explicit override moves the media-query boundary.
+        install_navigator_pin_width(720.0);
+        assert_eq!(navigator_pin_width(), 720.0);
+        let custom = navigator_layout_css();
+        assert!(
+            custom.contains("@media (min-width: 720px){"),
+            "install_navigator_pin_width must move the @media boundary; got: {custom}"
+        );
+        assert!(
+            !custom.contains("@media (min-width: 1024px){"),
+            "the default boundary must be gone after override; got: {custom}"
+        );
+    }
+
+    #[test]
+    fn breakpoint_media_rule_wraps_class_in_media_query() {
+        use runtime_core::Breakpoint;
+        // The overlay body is whatever `rules_to_css` produced; here we
+        // pass a fixed body to pin the exact wrapping the web backend
+        // inserts (and SSR emits) — single source of truth.
+        let rule = breakpoint_media_rule("ui-abc123", Breakpoint::Md, "width: 500px")
+            .expect("md is an overlay bucket");
+        assert_eq!(rule, "@media (min-width: 768px) { .ui-abc123 { width: 500px } }");
+        // Xs has no media query → no rule.
+        assert_eq!(breakpoint_media_rule("ui-abc123", Breakpoint::Xs, "width: 100px"), None);
     }
 
     #[test]

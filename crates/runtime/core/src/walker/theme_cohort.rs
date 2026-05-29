@@ -170,6 +170,18 @@ pub(super) fn install_theme_cohort_driver<B: Backend + 'static>(backend: &Rc<Ref
         // subscriptions fresh as the cohort grows.
         crate::style::subscribe_to_all_token_signals();
 
+        // Subscribe to the active breakpoint bucket too. Static-styled
+        // nodes have no per-node Effect, so without this a viewport
+        // resize that crosses a breakpoint would never re-apply their
+        // `breakpoint …` overlays on native backends. Reading the
+        // signal here re-fires this driver on a bucket flip; the
+        // fan-out below then re-runs `apply_one` for every entry, which
+        // re-merges the now-active bucket. Web short-circuits at the
+        // cascade fast-path below (it emits `@media` CSS, so the
+        // browser handles the switch) — the subscription is a cheap
+        // no-op cost there. Fires only on bucket change, not per pixel.
+        let _ = crate::current_breakpoint().get();
+
         // Flush pending token updates to the backend BEFORE deciding
         // whether to fan out. The normal flush path lives inside
         // `ensure_registered_with` (called by `apply_one`) — but if

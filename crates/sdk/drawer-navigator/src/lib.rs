@@ -987,6 +987,18 @@ impl DrawerBuilder for Bound<DrawerHandle> {
     }
 }
 
+/// Customize the viewport width (px) at which the drawer sidebar flips
+/// between its modal (off-canvas, narrow) and pinned (in-flow, wide)
+/// layouts. The collapse is driven entirely by a CSS `@media` query in
+/// the navigator's shared stylesheet, so this affects the live web layout
+/// AND the SSR first paint identically — there is no render-time decision.
+///
+/// Call once at app setup, before mount / SSR render. Defaults to the
+/// Large breakpoint (`runtime_core::breakpoints().lg_min`, 1024 px) when
+/// unset. Re-exported from the `css` crate (the single source of truth for
+/// navigator layout CSS).
+pub use css::{install_navigator_pin_width, navigator_pin_width};
+
 // =============================================================================
 // Backend selector
 // =============================================================================
@@ -1045,9 +1057,9 @@ pub use terminal::register;
 
 pub mod prelude {
     pub use super::{
-        register, BarButton, BarTitle, DrawerBuilder, DrawerCmd, DrawerHandle, DrawerNavigator,
-        DrawerPresentation, DrawerScreenExt, DrawerScreenOptions, DrawerSide, DrawerSlotProps,
-        DrawerType, HeaderStyle, LeadingIntent, MountPolicy, SlotBarButton, SlotBuilder,
-        SlotProps, TopSlot, TrailingIntent,
+        install_navigator_pin_width, navigator_pin_width, register, BarButton, BarTitle,
+        DrawerBuilder, DrawerCmd, DrawerHandle, DrawerNavigator, DrawerPresentation,
+        DrawerScreenExt, DrawerScreenOptions, DrawerSide, DrawerSlotProps, DrawerType, HeaderStyle,
+        LeadingIntent, MountPolicy, SlotBarButton, SlotBuilder, SlotProps, TopSlot, TrailingIntent,
     };
 }

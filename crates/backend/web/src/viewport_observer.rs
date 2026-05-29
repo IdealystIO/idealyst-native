@@ -20,6 +20,31 @@ use wasm_bindgen::JsCast;
 ///
 /// Safe to call without a browser context (worker, SSR) — no-ops if
 /// `web_sys::window()` returns `None`.
+/// True if the mount element already has server-rendered children — the
+/// signal to hydrate (adopt) rather than mount fresh.
+pub fn page_is_prerendered(mount_selector: &str) -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.query_selector(mount_selector).ok().flatten())
+        .map(|el| el.first_element_child().is_some())
+        .unwrap_or(false)
+}
+
+/// Read the viewport the page was server-rendered at, from the mount's
+/// `data-ssr-viewport="WxH"` attribute (emitted by `backend_ssr`). A
+/// hydrating client seeds this BEFORE its first render so the initial
+/// tree matches the server's; then [`install_viewport_observer`] pushes
+/// the real viewport and reactivity reconciles. `None` if absent/malformed.
+pub fn ssr_viewport(mount_selector: &str) -> Option<(f32, f32)> {
+    let el = web_sys::window()?
+        .document()?
+        .query_selector(mount_selector)
+        .ok()??;
+    let raw = el.get_attribute("data-ssr-viewport")?;
+    let (w, h) = raw.split_once('x')?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+}
+
 pub fn install_viewport_observer() {
     let Some(win) = web_sys::window() else { return };
 

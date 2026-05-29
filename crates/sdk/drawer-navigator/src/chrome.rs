@@ -142,8 +142,11 @@ impl<B: Backend + 'static> NavigatorHandler<B> for DrawerChromeHandler<B> {
 
         // Ship the canonical navigator layout sheet (deduped by the
         // backend). This — not any inline style here — defines the
-        // layout, identical to the live web navigator.
-        backend.register_raw_css(css::NAVIGATOR_LAYOUT_CSS);
+        // layout, identical to the live web navigator. `navigator_layout_css`
+        // bakes the responsive sidebar pin/modal `@media` query into the
+        // sheet, so the server's first paint already respects size
+        // boundaries (a mobile request gets the modal layout in static HTML).
+        backend.register_raw_css(&css::navigator_layout_css());
 
         let a11y = AccessibilityProps::default();
 

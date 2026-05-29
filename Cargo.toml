@@ -135,6 +135,7 @@ members = [
     "examples/mcp-demo",
     "examples/fiddle",
     "examples/website",
+    "examples/hydration-demo",
     "examples/toolbar-demo",
     "examples/menu-demo",
     "examples/reactive-loops",

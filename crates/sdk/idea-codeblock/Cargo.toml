@@ -9,27 +9,13 @@ license.workspace = true
 # `runtime-core` after a measurement showed the equivalent
 # composition (`View` + `Repeat<styled-View-with-Text>`) generates
 # 100-300× more backend ops per re-render than the single-node
-# primitive, even with the batched-Repeat fast path. The structural
-# gap (composition rebuilds every span on each render; the primitive
-# replaces a single node) couldn't be closed by framework
-# optimization alone, so the primitive moved out of core to keep
-# core clean while preserving the perf shape.
+# primitive, even with the batched-Repeat fast path.
 #
-# Layering matches the `maps` SDK pattern: facade + cfg-routed
-# `register` re-export. Web is the only backend that ships an impl
-# today; on iOS / Android, `register` is a no-op and the framework's
-# "External CodeBlockProps not supported" placeholder renders.
-#
-# Single-crate variant (not split into `idea-codeblock-core` +
-# `idea-codeblock-web`) because the surface is small enough that the
-# split would be more Cargo.toml plumbing than it's worth. If a new
-# backend wants to ship a CodeBlock impl, splitting becomes the
-# right move.
+# The renderer is now BACKEND-NEUTRAL: it builds its `<pre>`+spans via
+# the `Backend` trait (`create_element` / `create_text` / `apply_style`),
+# so it server-renders on the SSR backend AND hydrates cleanly on web
+# (the build goes through the adoption cursor). No `web_sys` / backend
+# dependency — one generic `register<B: RegisterExternal>(b)`.
 
 [dependencies]
 runtime-core = { workspace = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
-wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Document", "Element", "Window"] }

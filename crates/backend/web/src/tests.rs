@@ -353,6 +353,67 @@ fn apply_styled_states_snapshots_gradient_shape_for_animation() {
     }
 }
 
+/// `apply_styled_variants` must emit a node's `breakpoint` overlays as
+/// `@media (min-width: …)` rules scoped to its base class — the
+/// SSR-critical behavior: the responsive layout lives in the stylesheet
+/// (browser-evaluated), so the static first paint is already correct
+/// with no JS. Asserts the inserted CSSOM carries the media query and
+/// the overlay's resolved properties.
+///
+/// Runs under `wasm-bindgen-test` in a headless browser (it needs a
+/// live CSSOM stylesheet); it is not exercised by `cargo test` on the
+/// host.
+#[wasm_bindgen_test]
+fn apply_styled_variants_emits_media_rule_for_breakpoint_overlay() {
+    use runtime_core::{Breakpoint, Length, StyleRules, Tokenized};
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let element = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&element).unwrap();
+    let node: web_sys::Node = element.unchecked_into();
+
+    let base = Rc::new(StyleRules {
+        width: Some(Tokenized::Literal(Length::Px(100.0))),
+        ..Default::default()
+    });
+    // Resolved md overlay (base merged with the bp overlay), as the
+    // walker hands it over.
+    let md_overlay = Rc::new(StyleRules {
+        width: Some(Tokenized::Literal(Length::Px(500.0))),
+        ..Default::default()
+    });
+    let bp_overlays = vec![(Breakpoint::Md, md_overlay)];
+
+    use runtime_core::Backend;
+    backend.apply_styled_variants(&node, &base, &[], &bp_overlays);
+
+    // Read back every rule the backend inserted into its stylesheet.
+    let sheet = backend.sheet();
+    let rules = sheet.css_rules().expect("css_rules");
+    let mut all = String::new();
+    for i in 0..rules.length() {
+        if let Some(r) = rules.get(i) {
+            all.push_str(&r.css_text());
+            all.push('\n');
+        }
+    }
+
+    assert!(
+        all.contains("min-width: 768px"),
+        "apply_styled_variants must emit an @media (min-width: 768px) rule for the md \
+         breakpoint overlay; stylesheet was:\n{all}",
+    );
+    assert!(
+        all.contains("width: 500px"),
+        "the md overlay's resolved properties must live inside the media rule; \
+         stylesheet was:\n{all}",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Font linking — regression for fonts shipping inside the wasm
 // ---------------------------------------------------------------------------

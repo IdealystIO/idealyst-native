@@ -212,21 +212,24 @@ transition:background 220ms ease;pointer-events:none;z-index:998;}\
 \n";
 
 /// Rules that live *inside* the sidebar-collapse media query.
+///
+/// The sidebar pin/modal collapse itself now lives in the navigator's
+/// shared stylesheet (`css::navigator_layout_css`, driven by
+/// [`drawer_navigator::install_navigator_pin_width`] — which `app()` pins
+/// to [`SIDEBAR_COLLAPSE_PX`]). That sheet is emitted by BOTH the live web
+/// backend and SSR, so the collapse is correct on the static first paint —
+/// the whole point of the migration. We no longer duplicate those rules
+/// here (a duplicate, wasm-only `!important` block would diverge from the
+/// SSR sheet and flash on hydration).
+///
+/// What remains is purely a content concern: wrap long code lines on
+/// narrow screens. Without this, `<pre>`'s default `white-space: pre`
+/// keeps single-line snippets at their full natural width — and even with
+/// `min-width: 0` on the panel wrapper letting the panel shrink, the
+/// visible text would be clipped by `overflow: hidden`. Wrapping preserves
+/// readability; `word-break: break-word` lets very long identifiers / URLs
+/// break mid-token rather than pushing the line wider than the viewport.
 const COLLAPSE_RULES: &str = "\
-  .ui-nav-drawer-sidebar{position:fixed!important;top:0;left:0;height:100%;\
-    width:min(82vw,300px);transform:translateX(-100%);\
-    transition:transform 240ms cubic-bezier(0.2,0.0,0.0,1.0);\
-    z-index:1000;box-shadow:6px 0 28px rgba(0,0,0,0.22);}\
-  .ui-nav-drawer-root.drawer-open .ui-nav-drawer-sidebar{transform:translateX(0);}\
-  .ui-nav-drawer-body{width:100%!important;}\
-  /* Wrap long code lines on narrow screens. Without this, `<pre>`'s \
-     default `white-space: pre` keeps single-line snippets at their \
-     full natural width — and even with `min-width: 0` on the panel \
-     wrapper letting the panel shrink, the visible text would be \
-     clipped by `overflow: hidden`. Wrapping preserves readability; \
-     `word-break: break-word` lets very long identifiers / URLs \
-     break mid-token rather than pushing the line wider than the \
-     viewport. */\
   pre{white-space:pre-wrap!important;word-break:break-word;}";
 
 // ---------------------------------------------------------------------------

@@ -121,19 +121,21 @@ fn roadmap() -> Element {
                 `#[component]` / `stylesheet!`; reactive `if` / `when` / `for` in the DSLs; \
                 refs via `Ref<H>`; idea-ui component library; icon registry; Robot + MCP \
                 introspection; hot-reload dev server with runtime-server shell; \
-                server-driven UI over the wire protocol.".to_string(),
+                server-driven UI over the wire protocol; server-side rendering to \
+                HTML + CSS at a URL (`backend-ssr`).".to_string(),
                 muted = true)
         },
         ui! { Typography(content = "In progress".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "Custom rendering via wgpu (skins for phone, tablet, \
-                tv); native backend interactions / media / OS integration.".to_string(),
+                tv); native backend interactions / media / OS integration; in-place \
+                hydration (DOM adoption + viewport-determinism prototype).".to_string(),
                 muted = true)
         },
         ui! { Typography(content = "Planned".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(content = "Async data + `Resource<T>`; first-class accessibility \
-                across every primitive; SSR + hydration.".to_string(),
+                across every primitive.".to_string(),
                 muted = true)
         },
     ];

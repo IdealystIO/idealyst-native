@@ -2620,6 +2620,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
+name = "hydration-demo"
+version = "0.0.1"
+dependencies = [
+ "backend-ssr",
+ "idea-ui",
+ "runtime-core",
+]
+
+[[package]]
 name = "hyper"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2806,10 +2815,7 @@ dependencies = [
 name = "idea-codeblock"
 version = "0.0.1"
 dependencies = [
- "backend-web",
  "runtime-core",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]

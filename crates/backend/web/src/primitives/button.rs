@@ -20,6 +20,17 @@ pub(crate) fn create(
     // UA reset is in place before any author class rules attach to
     // this element. Cheap after the first call (just a flag check).
     let _ = b.ensure_style_element();
+    // HYDRATION: adopt the SSR `<button>` (its label/content is already
+    // there) and only wire the click handler below. The button's content
+    // is built internally (not via separate walker `create_*` calls), so
+    // the cursor treats it as one node — we skip the content-build branch.
+    if let Some(adopted) = b.hydrate_next("button") {
+        let button: web_sys::HtmlElement = adopted.unchecked_into();
+        let closure = Closure::<dyn FnMut()>::new(move || on_click());
+        button.set_onclick(Some(closure.as_ref().unchecked_ref()));
+        b._click_closures.push(closure);
+        return button.unchecked_into::<Node>();
+    }
     let button = b
         .doc
         .create_element("button")
@@ -49,7 +60,9 @@ pub(crate) fn create(
     let closure = Closure::<dyn FnMut()>::new(move || on_click());
     button.set_onclick(Some(closure.as_ref().unchecked_ref()));
     b._click_closures.push(closure);
-    button.unchecked_into::<Node>()
+    let node: Node = button.unchecked_into();
+    b.hydrate_note_fresh(&node);
+    node
 }
 
 /// The node was created via `create_element("button")` then upcast to

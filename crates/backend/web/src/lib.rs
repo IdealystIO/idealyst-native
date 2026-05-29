@@ -72,7 +72,7 @@ pub use logger::install_logger;
 pub use render_loop::install_render_loop;
 pub use scheduler::install_scheduler;
 pub use time_source::install_time_source;
-pub use viewport_observer::install_viewport_observer;
+pub use viewport_observer::{install_viewport_observer, page_is_prerendered, ssr_viewport};
 
 /// Install a `Weak` self-handle for the active `WebBackend`. Required
 /// by any code path that needs `&mut WebBackend` from outside the
@@ -220,6 +220,39 @@ static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 pub struct WebBackend {
     pub(crate) doc: Document,
     pub(crate) mount: web_sys::Element,
+    /// HYDRATION (prototype): when `true`, `create_*` adopts the
+    /// pre-rendered SSR DOM node at [`hydration_cursor`] instead of
+    /// creating a fresh element — so the booting bundle reuses the
+    /// server's DOM (and its layout) and just wires handlers/reactivity
+    /// onto it. The cursor walks the SSR tree in pre-order, matching the
+    /// walker's pre-order `create_*` calls. Turned off in `finish` once
+    /// the initial adoption pass completes (later reactive rebuilds
+    /// create fresh nodes normally).
+    pub(crate) hydrating: bool,
+    /// Next SSR node to adopt (pre-order). `None` once exhausted.
+    pub(crate) hydration_cursor: Option<web_sys::Node>,
+    /// SUBTREE-LOCAL REMOUNT: when the walker's node doesn't match the
+    /// SSR node at the cursor, we don't fail the whole hydration — we
+    /// build *that one subtree* fresh, replace the stale SSR node in
+    /// place, and resume adopting its siblings. These four fields track
+    /// the single in-flight remount (only the OUTERMOST mismatch needs
+    /// tracking — everything nested under it is fresh via `suppress`):
+    ///
+    /// `suppress` — inside the fresh remount subtree; `create_*` builds
+    /// fresh and `hydrate_next` doesn't touch the cursor.
+    pub(crate) hydration_suppress: bool,
+    /// The last `hydrate_next` mismatched; the next fresh node a
+    /// `create_*` makes IS the remount root (recorded via
+    /// [`Self::hydrate_note_fresh`]).
+    pub(crate) hydration_pending_fresh: bool,
+    /// The fresh subtree root being built; when the walker `insert`s it,
+    /// the remount completes (replace the stale node, resume cursor).
+    pub(crate) hydration_remount_root: Option<web_sys::Node>,
+    /// The stale SSR node the remount root replaces (removed on resync).
+    pub(crate) hydration_remount_stale: Option<web_sys::Node>,
+    /// Cursor to restore once the remount subtree completes (the stale
+    /// node's next sibling — so the remounted node's siblings adopt).
+    pub(crate) hydration_remount_resume: Option<web_sys::Node>,
     pub(crate) _click_closures: Vec<Closure<dyn FnMut()>>,
     /// Keyboard handlers for `Element::Pressable` (Enter/Space →
     /// click). Held so JS doesn't drop them while the element is in
@@ -592,6 +625,133 @@ pub(crate) struct DynamicRule {
 impl WebBackend {
     /// Constructs a backend that will mount its root under `mount_selector`
     /// (e.g. `"#app"`). Panics if the element is not found.
+    /// Boot in HYDRATION mode against a server-rendered mount: instead
+    /// of clearing `#app` and rebuilding, the backend ADOPTS the existing
+    /// SSR DOM — `create_*` returns the matching pre-rendered node (walked
+    /// in pre-order) and just wires handlers/reactivity onto it. The
+    /// browser keeps the server's already-laid-out DOM (no flash, no
+    /// rebuild). On a tag mismatch (server/client render divergence) it
+    /// disables adoption and `finish` falls back to a clean rebuild.
+    ///
+    /// PREREQUISITE for a clean adoption: the first client render must
+    /// match the server render. The viewport is the main divergence — seed
+    /// `runtime_core::set_viewport_size(...)` with the SSR-assumed viewport
+    /// (see `data-ssr-viewport` / [`ssr_viewport`](crate::ssr_viewport))
+    /// BEFORE `mount`, then `install_viewport_observer()` AFTER so the real
+    /// viewport drives a reactive update post-adoption.
+    pub fn hydrate(mount_selector: &str) -> Self {
+        let mut b = Self::new(mount_selector);
+        b.hydrating = true;
+        // First element child of the mount = the SSR root the walker's
+        // first `create_*` will adopt.
+        b.hydration_cursor = b.mount.first_element_child().map(|e| e.unchecked_into());
+        b
+    }
+
+    /// During hydration, return the next SSR node to adopt if its tag
+    /// matches `tag` (advancing the cursor into its children); otherwise
+    /// `None` (the caller creates a fresh element).
+    ///
+    /// On a TAG MISMATCH it does NOT advance or fail — it leaves the
+    /// cursor parked on the stale node and flags `pending_fresh`, so the
+    /// caller's freshly-created node is captured by
+    /// [`Self::hydrate_note_fresh`] as a subtree-local remount root.
+    /// Inside a remount subtree (`suppress`), it always returns `None`.
+    pub(crate) fn hydrate_next(&mut self, tag: &str) -> Option<web_sys::Element> {
+        if !self.hydrating || self.hydration_suppress {
+            return None;
+        }
+        let cur = self.hydration_cursor.clone()?;
+        let el: web_sys::Element = cur.dyn_into().ok()?;
+        if el.tag_name().eq_ignore_ascii_case(tag) {
+            self.hydration_cursor = Self::next_preorder(&el, &self.mount);
+            Some(el)
+        } else {
+            // Mismatch — leave the cursor on the stale node; the next
+            // fresh node the caller builds becomes the remount root.
+            self.hydration_pending_fresh = true;
+            None
+        }
+    }
+
+    /// Called by every `create_*` right after it builds a FRESH node.
+    /// If a mismatch is pending, this `fresh` node is the root of a
+    /// subtree-local remount: record what it replaces (the stale SSR
+    /// node at the cursor) and where to resume adopting (the stale
+    /// node's next sibling), and enter `suppress` so the rest of this
+    /// subtree builds fresh. Cheap no-op otherwise.
+    pub(crate) fn hydrate_note_fresh(&mut self, fresh: &web_sys::Node) {
+        if !self.hydration_pending_fresh {
+            return;
+        }
+        self.hydration_pending_fresh = false;
+        let Some(stale) = self.hydration_cursor.clone() else { return };
+
+        // Diagnostics: which BRANCH is being remounted.
+        if let Some(se) = stale.dyn_ref::<web_sys::Element>() {
+            let here: String = se.outer_html().chars().take(140).collect();
+            let mut chain = Vec::new();
+            let mut p = se.parent_element();
+            while let Some(pe) = p {
+                if pe.is_same_node(Some(self.mount.as_ref())) {
+                    break;
+                }
+                let cls = pe.class_name();
+                chain.push(if cls.is_empty() {
+                    format!("<{}>", pe.tag_name().to_lowercase())
+                } else {
+                    format!("<{} .{}>", pe.tag_name().to_lowercase(), cls.split(' ').next().unwrap_or(""))
+                });
+                p = pe.parent_element();
+            }
+            chain.reverse();
+            web_sys::console::warn_1(
+                &format!(
+                    "[hydrate] SSR/client diverge — remounting just this subtree (siblings still \
+                     adopt).\n  branch: {}\n  stale SSR node: {}",
+                    chain.join(" > "),
+                    here
+                )
+                .into(),
+            );
+        }
+
+        self.hydration_remount_resume = Self::next_preorder_skip_subtree(&stale, &self.mount);
+        self.hydration_remount_root = Some(fresh.clone());
+        self.hydration_remount_stale = Some(stale);
+        self.hydration_suppress = true;
+    }
+
+    /// Next node in a pre-order DFS of the SSR tree, bounded by `mount`.
+    /// Descends into children first. Matches the walker's pre-order
+    /// `create_*` order.
+    fn next_preorder(node: &web_sys::Node, mount: &web_sys::Element) -> Option<web_sys::Node> {
+        let el = node.dyn_ref::<web_sys::Element>()?;
+        if let Some(child) = el.first_element_child() {
+            return Some(child.unchecked_into());
+        }
+        Self::next_preorder_skip_subtree(node, mount)
+    }
+
+    /// Pre-order successor that SKIPS `node`'s subtree (its next sibling,
+    /// else climb). Used to resume after a remounted subtree.
+    fn next_preorder_skip_subtree(
+        node: &web_sys::Node,
+        mount: &web_sys::Element,
+    ) -> Option<web_sys::Node> {
+        let mut cur: web_sys::Element = node.dyn_ref::<web_sys::Element>()?.clone();
+        loop {
+            if let Some(sib) = cur.next_element_sibling() {
+                return Some(sib.unchecked_into());
+            }
+            let parent = cur.parent_element()?;
+            if parent.is_same_node(Some(mount.as_ref())) {
+                return None;
+            }
+            cur = parent;
+        }
+    }
+
     pub fn new(mount_selector: &str) -> Self {
         let window = web_sys::window().expect("no window");
         let doc = window.document().expect("no document");
@@ -602,6 +762,13 @@ impl WebBackend {
         Self {
             doc,
             mount,
+            hydrating: false,
+            hydration_cursor: None,
+            hydration_suppress: false,
+            hydration_pending_fresh: false,
+            hydration_remount_root: None,
+            hydration_remount_stale: None,
+            hydration_remount_resume: None,
             _click_closures: Vec::new(),
             _pressable_key_closures: Vec::new(),
             _link_click_closures: Vec::new(),
@@ -1507,6 +1674,21 @@ impl WebBackend {
 // Keep this thin — anything substantial belongs in the primitive's file.
 // ---------------------------------------------------------------------------
 
+/// Backend-neutral external registration (the `RegisterExternal` trait)
+/// so SDKs can `register<B: RegisterExternal>(b)` without naming
+/// `WebBackend`. Forwards to the same `external_handlers` registry as the
+/// inherent `register_external`; here the handler returns `Self::Node`
+/// (a `Node`) directly — the generic-handler shape.
+impl runtime_core::RegisterExternal for WebBackend {
+    fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&std::rc::Rc<T>, &mut WebBackend) -> Node + 'static,
+    {
+        self.external_handlers.register::<T, _>(handler);
+    }
+}
+
 impl Backend for WebBackend {
     type Node = Node;
 
@@ -1559,6 +1741,22 @@ impl Backend for WebBackend {
     ) -> Self::Node {
         let node = primitives::view::create(self);
         a11y::apply(&node, a11y, None);
+        node
+    }
+
+    fn create_element(&mut self, tag: &str) -> Self::Node {
+        // Cursor-aware: during hydration, adopt the matching SSR element
+        // (so an External handler built through the Backend reuses the
+        // server's DOM rather than bypassing it via raw `web_sys`).
+        if let Some(el) = self.hydrate_next(tag) {
+            return el.unchecked_into::<web_sys::Node>();
+        }
+        let node: web_sys::Node = self
+            .doc
+            .create_element(tag)
+            .expect("create_element failed")
+            .unchecked_into();
+        self.hydrate_note_fresh(&node);
         node
     }
 
@@ -1637,6 +1835,41 @@ impl Backend for WebBackend {
     // framework dispatches events externally.
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
+        if self.hydrating {
+            // Subtree-remount resync: the fresh remount root is being
+            // inserted → swap it in for the stale SSR node *in place*,
+            // restore the cursor to the stale node's next sibling, and
+            // leave the fresh subtree so siblings adopt again.
+            if self
+                .hydration_remount_root
+                .as_ref()
+                .map(|r| r.is_same_node(Some(&child)))
+                .unwrap_or(false)
+            {
+                if let Some(stale) = self.hydration_remount_stale.take() {
+                    if let Some(sp) = stale.parent_node() {
+                        let _ = sp.replace_child(&child, &stale);
+                    } else {
+                        let _ = parent.append_child(&child);
+                    }
+                }
+                self.hydration_cursor = self.hydration_remount_resume.take();
+                self.hydration_remount_root = None;
+                self.hydration_suppress = false;
+                return;
+            }
+            // Outside a remount subtree: adopted nodes are already
+            // parent↔child in the SSR DOM, so inserting is a no-op.
+            if !self.hydration_suppress {
+                if let Some(p) = child.parent_node() {
+                    if p.is_same_node(Some(&*parent)) {
+                        return;
+                    }
+                }
+            }
+            // Inside a remount subtree (suppress, not the root): a fresh
+            // node → fall through to a normal append.
+        }
         primitives::view::insert(parent, child)
     }
 
@@ -1700,7 +1933,7 @@ impl Backend for WebBackend {
         // (which removes all children + creates a new Text node).
         // Measured: at 20 k leaves / 12 fan-outs, the difference is
         // ~30 ms per flush.
-        let (span, inner_text) = primitives::text::create_with_inner_text(self, content);
+        let (span, inner_text) = primitives::text::create_with_inner_text_hydrating(self, content);
         let id = self.next_text_id;
         self.next_text_id += 1;
         let _ = self
@@ -2371,6 +2604,16 @@ impl Backend for WebBackend {
         self.impl_apply_styled_states(node, base, overlays)
     }
 
+    fn apply_styled_variants(
+        &mut self,
+        node: &Self::Node,
+        base: &Rc<StyleRules>,
+        state_overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
+        breakpoint_overlays: &[(runtime_core::Breakpoint, Rc<StyleRules>)],
+    ) {
+        self.impl_apply_styled_variants(node, base, state_overlays, breakpoint_overlays)
+    }
+
     fn on_node_unstyled(&mut self, node: &Self::Node) {
         self.impl_on_node_unstyled(node)
     }
@@ -2453,11 +2696,38 @@ impl Backend for WebBackend {
     }
 
     fn finish(&mut self, root: Self::Node) {
+        if self.hydrating {
+            // The initial adoption pass is done; subsequent reactive
+            // rebuilds create fresh nodes through the normal path.
+            self.hydrating = false;
+            // Clean / subtree-local outcome: the root was adopted (or
+            // remounted in place by `insert`), so it's already `#app`'s
+            // child — nothing to swap. Diverging subtrees were already
+            // replaced in place; the server's DOM is the live DOM.
+            if root
+                .parent_node()
+                .map(|p| p.is_same_node(Some(self.mount.as_ref())))
+                .unwrap_or(false)
+            {
+                return;
+            }
+            // The ROOT itself was a remount (it's never `insert`ed — it
+            // comes straight here). Swap it for the stale SSR root.
+            if let Some(stale) = self.hydration_remount_stale.take() {
+                if let Some(sp) = stale.parent_node() {
+                    let _ = sp.replace_child(&root, &stale);
+                    self.hydration_remount_root = None;
+                    self.hydration_suppress = false;
+                    return;
+                }
+            }
+            // Defensive fall-through (e.g. the navigator built its root
+            // outside the adoption cursor): clear + append.
+        }
         // Replace any prior contents of the mount point before attaching
         // the live tree. On a normal boot `#app` is empty and this is a
-        // no-op; with SSR it holds the server-rendered first-paint markup,
-        // which the booting bundle owns and replaces (the v1 "hydrate by
-        // replacing the generated DOM" path).
+        // no-op; with SSR-without-hydration it holds the server-rendered
+        // first-paint markup, which the booting bundle owns and replaces.
         while let Some(child) = self.mount.first_child() {
             let _ = self.mount.remove_child(&child);
         }

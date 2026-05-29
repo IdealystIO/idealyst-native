@@ -45,7 +45,11 @@
 //! Re-renders pay the same per-render cost as any other
 //! `Element::External`: tear down old node + create new node.
 
-use runtime_core::{external, Bound, Color, ExternalHandle};
+use runtime_core::accessibility::AccessibilityProps;
+use runtime_core::{
+    external, Backend, Bound, Color, ExternalHandle, RegisterExternal, StyleRules, Tokenized,
+};
+use std::rc::Rc;
 
 /// Type-erased payload for the CodeBlock external primitive. Lives
 /// here because the framework dispatches handlers by [`TypeId`], and
@@ -85,19 +89,42 @@ pub fn code_block(spans: Vec<(String, Color)>) -> Bound<CodeBlockHandle> {
 }
 
 // =============================================================================
-// Platform-routed `register` — exactly one of the cfg-gated re-exports
-// is active per build, selected by `target_arch`. Mirrors the `maps`
-// SDK pattern.
+// Generic, backend-neutral handler + registration.
+//
+// The renderer builds its DOM *through the `Backend` trait*
+// (`create_element("pre")` + `create_text` + `apply_style`) rather than
+// reaching for `web_sys` directly. That single generic handler then:
+//   - SERVER-RENDERS on the SSR backend (real `<pre>` + colored spans in
+//     the HTML — crawlable, and the first paint matches the live app), and
+//   - on web goes through the hydration adoption cursor (the
+//     `create_*` calls adopt the server's nodes), so a server-rendered
+//     code block HYDRATES cleanly instead of desyncing the cursor.
+//
+// Backends with no tag concept (iOS/Android) get `create_element`'s
+// `div` fallback — a container of colored text runs.
 // =============================================================================
 
-#[cfg(target_arch = "wasm32")]
-mod web;
-#[cfg(target_arch = "wasm32")]
-pub use web::register;
+/// Build the code block's node tree on any backend.
+fn build_code_block<B: Backend>(props: &Rc<CodeBlockProps>, backend: &mut B) -> B::Node {
+    let a11y = AccessibilityProps::default();
+    let mut pre = backend.create_element("pre");
+    for (text, color) in &props.spans {
+        let span = backend.create_text(text, &a11y);
+        // Per-run color via the framework's style path (a class on
+        // web/SSR) so it resolves identically on both — keeping the
+        // server and client DOM in sync for hydration.
+        let mut rules = StyleRules::default();
+        rules.color = Some(Tokenized::Literal(color.clone()));
+        backend.apply_style(&span, &Rc::new(rules));
+        backend.insert(&mut pre, span);
+    }
+    pre
+}
 
-#[cfg(not(target_arch = "wasm32"))]
-pub fn register<B>(_backend: &mut B) {
-    // No backend leaf for this target — the framework will render
-    // its "External CodeBlockProps not supported" placeholder at
-    // mount. Keeps user code uniformly compilable across targets.
+/// Register the code-block handler on any backend that owns an external
+/// registry (web, SSR, …). One call, every target — app bootstrap does
+/// `idea_codeblock::register(&mut backend)` and the SSR path does the
+/// same, so both render the block identically.
+pub fn register<B: RegisterExternal>(backend: &mut B) {
+    backend.register_external::<CodeBlockProps, _>(build_code_block::<B>);
 }

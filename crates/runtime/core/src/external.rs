@@ -103,6 +103,20 @@ impl<B: Backend + 'static> Default for ExternalRegistry<B> {
     }
 }
 
+/// Backend-neutral registration seam for third-party `Element::External`
+/// handlers — the external analogue of
+/// [`RegisterNavigator`](crate::primitives::navigator::RegisterNavigator).
+/// Lets an SDK write one `register<B: RegisterExternal>(b)` that works on
+/// any backend (web, SSR, …) without naming the concrete backend type or
+/// depending on a backend crate. Each backend that owns an
+/// [`ExternalRegistry`] implements this by forwarding to it.
+pub trait RegisterExternal: Backend + Sized + 'static {
+    fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&Rc<T>, &mut Self) -> Self::Node + 'static;
+}
+
 // =============================================================================
 // ExternalHandle<T> — typed handle for `Bound<ExternalHandle<T>>` /
 // `Ref<ExternalHandle<T>>`. The `T` parameter is a phantom marker so

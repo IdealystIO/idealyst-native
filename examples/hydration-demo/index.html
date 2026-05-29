@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hydration Demo</title>
+    <style>
+      html, body, #app { height: 100%; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <!--
+      Fresh-boot shell. `idealyst build --web` stages this file into
+      dist/web. For the hydration flow, the SSR generator
+      (`cargo run -p hydration-demo --example ssr -- dist/web`) OVERWRITES
+      dist/web/index.html with the server-rendered markup (a populated
+      `#app` + `data-ssr-viewport`); the bundle then ADOPTS it instead of
+      mounting fresh. Served as-is (empty `#app`), the bundle mounts fresh.
+    -->
+    <div id="app"></div>
+    <script type="module">
+      import init from "./pkg/hydration_demo.js";
+      init();
+    </script>
+  </body>
+</html>

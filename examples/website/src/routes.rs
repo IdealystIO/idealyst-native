@@ -8,6 +8,16 @@ use runtime_core::Route;
 // ---- Home ----
 pub const HOME_ROUTE: Route<()> = Route::<()>::new("home", "/");
 
+// ---- Features ----
+pub const FEATURES_ROUTE: Route<()> = Route::<()>::new("features", "/features");
+pub const CROSS_PLATFORM_ROUTE: Route<()> =
+    Route::<()>::new("cross-platform", "/features/cross-platform");
+pub const PERFORMANCE_ROUTE: Route<()> = Route::<()>::new("performance", "/features/performance");
+pub const TYPE_SAFETY_ROUTE: Route<()> = Route::<()>::new("type-safety", "/features/type-safety");
+pub const SSR_ROUTE: Route<()> = Route::<()>::new("ssr", "/features/ssr");
+pub const SERVER_FUNCTIONS_ROUTE: Route<()> = Route::<()>::new("server-functions", "/server-functions");
+pub const CODE_SPLITTING_ROUTE: Route<()> = Route::<()>::new("code-splitting", "/code-splitting");
+
 // ---- Instructions ----
 pub const INSTALL_ROUTE: Route<()> = Route::<()>::new("install", "/install");
 pub const QUICKSTART_ROUTE: Route<()> = Route::<()>::new("quickstart", "/quickstart");
@@ -22,8 +32,6 @@ pub const DEMO_NAVIGATION_ROUTE: Route<()> = Route::<()>::new("demo-navigation",
 
 // ---- Reference ----
 pub const BACKENDS_ROUTE: Route<()> = Route::<()>::new("backends", "/backends");
-pub const SERVER_FUNCTIONS_ROUTE: Route<()> = Route::<()>::new("server-functions", "/server-functions");
-pub const CODE_SPLITTING_ROUTE: Route<()> = Route::<()>::new("code-splitting", "/code-splitting");
 pub const AGENTIC_ROUTE: Route<()> = Route::<()>::new("agentic", "/agentic");
 pub const FURTHER_READING_ROUTE: Route<()> = Route::<()>::new("further-reading", "/further-reading");
 
@@ -85,6 +93,18 @@ pub const SECTIONS: &[IndexSection] = &[
         entries: &[IndexEntry { route: &HOME_ROUTE, label: "Home" }],
     },
     IndexSection {
+        title: "Features",
+        entries: &[
+            IndexEntry { route: &FEATURES_ROUTE, label: "Overview" },
+            IndexEntry { route: &CROSS_PLATFORM_ROUTE, label: "Cross-platform" },
+            IndexEntry { route: &PERFORMANCE_ROUTE, label: "High performance" },
+            IndexEntry { route: &TYPE_SAFETY_ROUTE, label: "Type safety" },
+            IndexEntry { route: &SSR_ROUTE, label: "Server-side rendering" },
+            IndexEntry { route: &SERVER_FUNCTIONS_ROUTE, label: "Server functions" },
+            IndexEntry { route: &CODE_SPLITTING_ROUTE, label: "Code splitting" },
+        ],
+    },
+    IndexSection {
         title: "Instructions",
         entries: &[
             IndexEntry { route: &INSTALL_ROUTE, label: "Install the CLI" },
@@ -106,8 +126,6 @@ pub const SECTIONS: &[IndexSection] = &[
         title: "Reference",
         entries: &[
             IndexEntry { route: &BACKENDS_ROUTE, label: "Backends" },
-            IndexEntry { route: &SERVER_FUNCTIONS_ROUTE, label: "Server functions" },
-            IndexEntry { route: &CODE_SPLITTING_ROUTE, label: "Code splitting" },
             IndexEntry { route: &AGENTIC_ROUTE, label: "Robot & MCP" },
             IndexEntry { route: &FURTHER_READING_ROUTE, label: "Further reading" },
         ],

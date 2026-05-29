@@ -14,6 +14,11 @@ use backend_ssr::{render_document, render_path_with};
 fn main() {
     let routes: &[(&str, &str)] = &[
         ("home", "/"),
+        ("features", "/features"),
+        ("cross-platform", "/features/cross-platform"),
+        ("performance", "/features/performance"),
+        ("type-safety", "/features/type-safety"),
+        ("ssr", "/features/ssr"),
         ("install", "/install"),
         ("quickstart", "/quickstart"),
         ("concepts", "/concepts"),
@@ -33,8 +38,14 @@ fn main() {
         // cross-render signal-slot recycling).
         let path = path.to_string();
         let doc = std::thread::spawn(move || {
-            let page =
-                render_path_with(&path, |b| drawer_navigator::chrome::register(b), website::app);
+            let page = render_path_with(
+                &path,
+                |b| {
+                    drawer_navigator::chrome::register(b);
+                    idea_codeblock::register(b);
+                },
+                website::app,
+            );
             // Pure rendered screen (no bundle script) — these files are
             // opened directly as a static SSR/SEO preview, not hydrated.
             render_document(&page, None)

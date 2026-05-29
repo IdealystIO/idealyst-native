@@ -132,6 +132,17 @@ impl WebBackend {
         rule.push_str(" { ");
         rule.push_str(body);
         rule.push_str(" }");
+        self.insert_rule_raw(&rule)
+    }
+
+    /// Insert a complete, already-formatted CSS rule (selector + body,
+    /// or a whole `@media (...) { … }` grouping) verbatim — unlike
+    /// [`Self::insert_rule`], which prepends `.` to build a class
+    /// selector. Used for breakpoint overlays, whose rule is a media
+    /// grouping (`@media (min-width: …) { .ui-x { … } }`) that must NOT
+    /// be class-prefixed. Shares the same recycle/append index logic so
+    /// CSSOM index bookkeeping stays O(1).
+    pub(crate) fn insert_rule_raw(&mut self, rule: &str) -> u32 {
         let sheet = self.sheet();
         if let Some(idx) = self.free_rule_indices.pop() {
             // Replace the deleted slot in place. The deleteRule
@@ -140,7 +151,7 @@ impl WebBackend {
             // Net: identical, so nothing else needs updating.
             let _ = sheet.delete_rule(idx);
             let new_idx = sheet
-                .insert_rule_with_index(&rule, idx)
+                .insert_rule_with_index(rule, idx)
                 .expect("insert_rule_with_index (recycle) failed");
             // CSSOM returns the inserted-at index; should equal `idx`.
             debug_assert_eq!(new_idx, idx);
@@ -149,7 +160,7 @@ impl WebBackend {
             // Append at sheet length. No existing index changes.
             let end = sheet.css_rules().map(|r| r.length()).unwrap_or(0);
             sheet
-                .insert_rule_with_index(&rule, end)
+                .insert_rule_with_index(rule, end)
                 .expect("insert_rule_with_index (append) failed")
         }
     }
@@ -418,6 +429,25 @@ impl WebBackend {
         base: &std::rc::Rc<StyleRules>,
         overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
     ) {
+        // States-only entry: no breakpoint overlays. Delegates to the
+        // superset so the two paths can never drift (the gradient
+        // snapshot, cache-key, and dedup logic all live in one place).
+        self.impl_apply_styled_variants(node, base, overlays, &[]);
+    }
+
+    /// Superset of [`Self::impl_apply_styled_states`]: emits a node's
+    /// interaction-state overlays as CSS pseudo-class rules AND its
+    /// breakpoint overlays as `@media (min-width: …)` rules, all scoped
+    /// to one base class. The browser then selects the active overlays
+    /// natively — the key property for SSR, since the statically
+    /// rendered HTML's stylesheet already encodes the responsive layout.
+    pub(crate) fn impl_apply_styled_variants(
+        &mut self,
+        node: &web_sys::Node,
+        base: &std::rc::Rc<StyleRules>,
+        overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
+        breakpoint_overlays: &[(runtime_core::Breakpoint, std::rc::Rc<StyleRules>)],
+    ) {
         // Outer phase covers the whole call — comparing this against
         // the sum of the sub-phases lets us see how much time is
         // unaccounted for (allocator, etc.).
@@ -454,7 +484,7 @@ impl WebBackend {
         // on the content-key-hit branch so post-theme-swap Rcs
         // (which carry new pointers) get cached after the first
         // row in the cohort pays the content-key lookup.
-        if overlays.is_empty() {
+        if overlays.is_empty() && breakpoint_overlays.is_empty() {
             let ptr = std::rc::Rc::as_ptr(base);
             let ptr_hit = {
                 let _t = PhaseTimer::start("pregen_lookup_ptr");
@@ -524,7 +554,7 @@ impl WebBackend {
             base.content_key()
         };
 
-        if overlays.is_empty() {
+        if overlays.is_empty() && breakpoint_overlays.is_empty() {
             let pregen_hit = {
                 let _t = PhaseTimer::start("pregen_lookup");
                 self.pregen.get(&base_key).map(|entry| entry.name.clone())
@@ -563,6 +593,17 @@ impl WebBackend {
             key.push(':');
             key.push_str(&ov.content_key());
         }
+        // Breakpoint overlays participate in the key too, so distinct
+        // (base, states, breakpoints) combinations get distinct minted
+        // classes. The `@bp_*` tag keeps them from colliding with state
+        // tags above.
+        for (bp, ov) in breakpoint_overlays {
+            key.push(';');
+            key.push('@');
+            key.push_str(bp.axis_name().unwrap_or("__bp_xs"));
+            key.push(':');
+            key.push_str(&ov.content_key());
+        }
 
         // Cache lookup. Refcount-bump-on-hit MUST happen before we
         // release the old slot below — if the previous slot pointed
@@ -587,8 +628,12 @@ impl WebBackend {
                 self.insert_rule(&class_name, &base_body)
             };
 
-            // Insert each state overlay as a pseudo-class scoped rule.
-            let mut state_indices: Vec<u32> = Vec::with_capacity(overlays.len());
+            // Insert each state overlay as a pseudo-class scoped rule,
+            // and each breakpoint overlay as a `@media (min-width: …)`
+            // rule. Both kinds' CSSOM indices go in one vec so
+            // `release_dynamic_rule` deletes them all on teardown.
+            let mut overlay_indices: Vec<u32> =
+                Vec::with_capacity(overlays.len() + breakpoint_overlays.len());
             for (bit, overlay) in overlays {
                 let pseudo = match *bit {
                     runtime_core::StateBits::HOVERED => ":hover",
@@ -606,7 +651,26 @@ impl WebBackend {
                     let _t = PhaseTimer::start("insert_rule");
                     self.insert_rule(&selector, &body)
                 };
-                state_indices.push(idx);
+                overlay_indices.push(idx);
+            }
+            // Breakpoint overlays: emitted ascending by rank (the walker
+            // pre-sorts `breakpoint_overlays`), so stacked `@media`
+            // rules cascade mobile-first — higher breakpoints come later
+            // in the sheet and win on conflicting properties.
+            for (bp, overlay) in breakpoint_overlays {
+                let body = {
+                    let _t = PhaseTimer::start("rules_to_css");
+                    rules_to_css(overlay)
+                };
+                // `None` only for `Breakpoint::Xs` (the base, no media
+                // query) — which the walker never emits as an overlay.
+                if let Some(rule) = css::breakpoint_media_rule(&class_name, *bp, &body) {
+                    let idx = {
+                        let _t = PhaseTimer::start("insert_rule");
+                        self.insert_rule_raw(&rule)
+                    };
+                    overlay_indices.push(idx);
+                }
             }
 
             let shared = std::rc::Rc::new(DynamicPtrEntry {
@@ -619,14 +683,14 @@ impl WebBackend {
                 DynamicRule {
                     shared: shared.clone(),
                     rule_index: base_idx,
-                    state_rule_indices: state_indices,
+                    state_rule_indices: overlay_indices,
                 },
             );
-            // Mirror into the pointer cache only for the empty-overlay
+            // Mirror into the pointer cache only for the no-overlay
             // path — when overlays are present, distinct base Rcs can
             // share a base content but require distinct combined keys,
             // so pointer identity isn't a safe shortcut.
-            if overlays.is_empty() {
+            if overlays.is_empty() && breakpoint_overlays.is_empty() {
                 self.dynamic_by_ptr
                     .insert(std::rc::Rc::as_ptr(base), shared.clone());
             }

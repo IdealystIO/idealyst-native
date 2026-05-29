@@ -192,6 +192,25 @@ pub struct SsrBackend {
     /// model the web backend uses, emitted as a `<head>` stylesheet
     /// instead of inline `style="…"`. `BTreeMap` for deterministic output.
     style_rules: std::collections::BTreeMap<String, String>,
+    /// Responsive breakpoint overlays from [`Backend::apply_styled_variants`],
+    /// emitted as `@media (min-width: …) { .ui-<hash> { … } }` rules so the
+    /// SSR first paint already respects size boundaries — a mobile request
+    /// gets the mobile layout in static HTML, with no JS/hydration needed
+    /// to correct it. Same `css::breakpoint_media_rule` the web backend
+    /// inserts at runtime, so the rule is byte-identical across both.
+    ///
+    /// Keyed by `{class}@{rank}` so the `BTreeMap` orders media rules
+    /// **ascending by breakpoint rank within each class** — stacked
+    /// min-width queries then cascade mobile-first (higher breakpoints,
+    /// later in source, win on conflicting properties). Emitted AFTER the
+    /// plain class rules in `head_css` so a matching `@media` overrides the
+    /// base declaration.
+    media_rules: std::collections::BTreeMap<String, String>,
+    /// Third-party `Element::External` handlers (e.g. `idea_codeblock`),
+    /// so externals SERVER-RENDER their real DOM (a code block's
+    /// `<pre>`+spans) instead of an empty host — matching web so
+    /// hydration adopts them.
+    external_handlers: runtime_core::ExternalRegistry<SsrBackend>,
 }
 
 impl SsrBackend {
@@ -216,7 +235,9 @@ impl SsrBackend {
     /// 3. the theme's `:root` token variables (so `var(--token, …)`
     ///    resolves to the real theme value, matching web);
     /// 4. registered stylesheets (navigator layout, etc.);
-    /// 5. the content-keyed per-node style classes (`apply_style`).
+    /// 5. the content-keyed per-node style classes (`apply_style`);
+    /// 6. responsive `@media (min-width: …)` breakpoint overlays — LAST,
+    ///    so a matching media query overrides the base class rule above it.
     pub fn head_css(&self) -> String {
         let mut out = css::base_reset_css();
         out.push_str(&self.font_faces.concat());
@@ -229,6 +250,9 @@ impl SsrBackend {
             out.push_str(body);
             out.push('}');
         }
+        for rule in self.media_rules.values() {
+            out.push_str(rule);
+        }
         out
     }
 }
@@ -240,6 +264,16 @@ impl RegisterNavigator for SsrBackend {
         F: Fn() -> Box<dyn NavigatorHandler<SsrBackend>> + 'static,
     {
         self.navigator_handlers.register::<P, _>(factory);
+    }
+}
+
+impl runtime_core::RegisterExternal for SsrBackend {
+    fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&Rc<T>, &mut SsrBackend) -> Self::Node + 'static,
+    {
+        self.external_handlers.register::<T, _>(handler);
     }
 }
 
@@ -348,6 +382,39 @@ impl Backend for SsrBackend {
 
     fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
         nref(HtmlNode::new("div"))
+    }
+
+    fn create_element(&mut self, tag: &str) -> Self::Node {
+        // `HtmlNode.tag` is `&'static str`; intern the structural tags an
+        // External handler might emit to a static (no allocation/leak).
+        // Unknown tags fall back to `div`.
+        let tag: &'static str = match tag {
+            "pre" => "pre",
+            "code" => "code",
+            "p" => "p",
+            "ul" => "ul",
+            "ol" => "ol",
+            "li" => "li",
+            "blockquote" => "blockquote",
+            "table" => "table",
+            "thead" => "thead",
+            "tbody" => "tbody",
+            "tr" => "tr",
+            "td" => "td",
+            "th" => "th",
+            "section" => "section",
+            "article" => "article",
+            "header" => "header",
+            "footer" => "footer",
+            "h1" => "h1",
+            "h2" => "h2",
+            "h3" => "h3",
+            "h4" => "h4",
+            "h5" => "h5",
+            "h6" => "h6",
+            _ => "div",
+        };
+        nref(HtmlNode::new(tag))
     }
 
     fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
@@ -472,13 +539,33 @@ impl Backend for SsrBackend {
         base: &Rc<StyleRules>,
         overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
     ) {
-        // Key the class by base + every overlay so a base shared with
-        // different hover styling still gets distinct classes (mirrors
-        // the web backend's combined-key scheme).
+        // States-only entry; delegate to the superset with no breakpoint
+        // overlays so the combined-key + emission logic lives in one place.
+        self.apply_styled_variants(node, base, overlays, &[]);
+    }
+
+    fn apply_styled_variants(
+        &mut self,
+        node: &Self::Node,
+        base: &Rc<StyleRules>,
+        overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
+        breakpoint_overlays: &[(runtime_core::Breakpoint, Rc<StyleRules>)],
+    ) {
+        // Key the class by base + every state overlay + every breakpoint
+        // overlay, so a base shared with different hover/responsive styling
+        // still gets distinct classes (mirrors the web backend's combined-key
+        // scheme, including the `@bp_*` tags).
         let mut combined = base.content_key();
         for (state, overlay) in overlays {
             combined.push('|');
             combined.push_str(&state.0.to_string());
+            combined.push(':');
+            combined.push_str(&overlay.content_key());
+        }
+        for (bp, overlay) in breakpoint_overlays {
+            combined.push(';');
+            combined.push('@');
+            combined.push_str(bp.axis_name().unwrap_or("__bp_xs"));
             combined.push(':');
             combined.push_str(&overlay.content_key());
         }
@@ -493,6 +580,18 @@ impl Backend for SsrBackend {
                 self.style_rules
                     .entry(format!("{class}{pseudo}"))
                     .or_insert_with(|| css::rules_to_css(overlay));
+            }
+        }
+        // Breakpoint overlays → `@media (min-width: …) { .ui-<hash> { … } }`.
+        // Keyed by `{class}@{rank}` so `head_css`'s BTreeMap iteration emits
+        // them ascending by rank (mobile-first cascade). `None` only for Xs,
+        // which the walker never sends as an overlay.
+        for (bp, overlay) in breakpoint_overlays {
+            let body = css::rules_to_css(overlay);
+            if let Some(rule) = css::breakpoint_media_rule(&class, *bp, &body) {
+                self.media_rules
+                    .entry(format!("{class}@{}", bp.rank()))
+                    .or_insert(rule);
             }
         }
         add_class(node, &class);
@@ -647,14 +746,21 @@ impl Backend for SsrBackend {
 
     fn create_external(
         &mut self,
-        _type_id: std::any::TypeId,
+        type_id: std::any::TypeId,
         _type_name: &'static str,
-        _payload: &Rc<dyn std::any::Any>,
+        payload: &Rc<dyn std::any::Any>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Third-party External widgets render via their own runtime on
-        // the client; emit a host container for the bundle to fill.
-        nref(HtmlNode::new("div"))
+        // Server-render the external via its registered handler (e.g.
+        // `idea_codeblock` → a real `<pre>` + spans), so SSR output
+        // matches the web build and hydration adopts it. Falls back to an
+        // empty host `<div>` only when no handler is registered (the
+        // client bundle then fills it).
+        if let Some(handler) = self.external_handlers.get(type_id) {
+            handler(payload, self)
+        } else {
+            nref(HtmlNode::new("div"))
+        }
     }
 
     fn create_portal(
@@ -876,7 +982,15 @@ pub fn render_document(page: &RenderedPage, bundle_module: Option<&str>) -> Stri
         escape_attr(url, &mut doc);
         doc.push_str("\">");
     }
-    doc.push_str("</head>\n<body><div id=\"app\">");
+    // Embed the viewport this page was rendered at, so a hydrating client
+    // can seed the IDENTICAL value before its first render — making the
+    // client's initial tree match the server's (clean DOM adoption) — then
+    // read the real viewport and reactively reconcile. Without this, a
+    // mobile client would render different nodes than the 1280px server
+    // and adoption would diverge. See `WebBackend::hydrate`.
+    doc.push_str("</head>\n<body><div id=\"app\" data-ssr-viewport=\"");
+    doc.push_str(&format!("{}x{}", SSR_VIEWPORT.width as i32, SSR_VIEWPORT.height as i32));
+    doc.push_str("\">");
     doc.push_str(&page.html);
     doc.push_str("</div>");
     if let Some(module) = bundle_module {
@@ -1033,6 +1147,67 @@ mod tests {
         assert!(head.contains(&format!(".{class}:hover{{background: #eeeeee}}")), "hover rule, got: {head}");
     }
 
+    /// `apply_styled_variants` emits the base rule plus an
+    /// `@media (min-width: …)` rule per breakpoint overlay — so the SSR
+    /// first paint already respects size boundaries (the whole point:
+    /// a mobile request gets the mobile layout in static HTML). This is
+    /// the SSR fix for the "sidebar pinned on initial mobile render" bug.
+    #[test]
+    fn apply_styled_variants_emits_breakpoint_media_rule() {
+        use runtime_core::{Breakpoint, Length};
+        let mut b = SsrBackend::new();
+        let v = b.create_view(&AccessibilityProps::default());
+
+        // Mobile-first base width; widen at md and again at lg. Pass the
+        // overlays out of rank order to prove emission order is by rank,
+        // not call order.
+        let mut base = StyleRules::default();
+        base.width = Some(Tokenized::Literal(Length::Px(100.0)));
+        let mut md = StyleRules::default();
+        md.width = Some(Tokenized::Literal(Length::Px(500.0)));
+        let mut lg = StyleRules::default();
+        lg.width = Some(Tokenized::Literal(Length::Px(900.0)));
+
+        b.apply_styled_variants(
+            &v,
+            &Rc::new(base),
+            &[],
+            &[
+                (Breakpoint::Lg, Rc::new(lg)),
+                (Breakpoint::Md, Rc::new(md)),
+            ],
+        );
+
+        let html = { let mut s = String::new(); serialize(&v, &mut s); s };
+        let class = html
+            .split("class=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap()
+            .to_string();
+
+        let head = b.head_css();
+        // Base (mobile) rule.
+        assert!(head.contains(&format!(".{class}{{width: 100px}}")), "base rule, got: {head}");
+        // One @media rule per overlay, wrapping the same class.
+        assert!(
+            head.contains(&format!("@media (min-width: 768px) {{ .{class} {{ width: 500px }} }}")),
+            "md media rule, got: {head}"
+        );
+        assert!(
+            head.contains(&format!("@media (min-width: 1024px) {{ .{class} {{ width: 900px }} }}")),
+            "lg media rule, got: {head}"
+        );
+        // Mobile-first cascade: the md (768) rule must precede the lg
+        // (1024) rule in source so higher breakpoints win at matching widths.
+        let md_at = head.find("min-width: 768px").expect("md present");
+        let lg_at = head.find("min-width: 1024px").expect("lg present");
+        assert!(md_at < lg_at, "md media rule must come before lg (ascending). head: {head}");
+        // And both media rules come AFTER the base class rule.
+        let base_at = head.find(&format!(".{class}{{width: 100px}}")).expect("base present");
+        assert!(base_at < md_at, "base class rule must precede the media rules. head: {head}");
+    }
+
     /// `create_pressable` is a clickable `<div>` with a hand cursor +
     /// button a11y, matching the web pressable.
     #[test]
@@ -1097,7 +1272,7 @@ mod tests {
         assert!(doc.contains(r#"<meta property="og:title" content="Home">"#));
         assert!(doc.contains(r#"<meta name="description" content="welcome">"#));
         assert!(doc.contains(r#"<meta property="og:image" content="/og.png">"#));
-        assert!(doc.contains(r#"<div id="app"><div>hi</div></div>"#));
+        assert!(doc.contains(r#"<div id="app" data-ssr-viewport="1280x800"><div>hi</div></div>"#));
         assert!(doc.contains(r#"import init from "/pkg/app.js";init();"#));
         // Registered stylesheets are emitted in <head>.
         assert!(doc.contains("<style>.x{color:red}</style>"));
@@ -1113,7 +1288,7 @@ mod tests {
             head_css: String::new(),
         };
         let doc = render_document(&page, None);
-        assert!(doc.contains(r#"<div id="app"><div>hi</div></div>"#));
+        assert!(doc.contains(r#"<div id="app" data-ssr-viewport="1280x800"><div>hi</div></div>"#));
         assert!(!doc.contains("<script"), "no bundle => no script, got: {doc}");
     }
 

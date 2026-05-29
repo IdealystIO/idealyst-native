@@ -30,9 +30,10 @@ mod styles;
 mod typeface;
 
 use routes::{
-    AGENTIC_ROUTE, BACKENDS_ROUTE, CODE_SPLITTING_ROUTE, CONCEPTS_ROUTE, DEMO_ANIMATIONS_ROUTE,
-    DEMO_COMPONENTS_ROUTE, DEMO_COUNTER_ROUTE, DEMO_NAVIGATION_ROUTE, FURTHER_READING_ROUTE,
-    HOME_ROUTE, INSTALL_ROUTE, QUICKSTART_ROUTE, SERVER_FUNCTIONS_ROUTE, TARGETS_ROUTE,
+    AGENTIC_ROUTE, BACKENDS_ROUTE, CODE_SPLITTING_ROUTE, CONCEPTS_ROUTE, CROSS_PLATFORM_ROUTE,
+    DEMO_ANIMATIONS_ROUTE, DEMO_COMPONENTS_ROUTE, DEMO_COUNTER_ROUTE, DEMO_NAVIGATION_ROUTE,
+    FEATURES_ROUTE, FURTHER_READING_ROUTE, HOME_ROUTE, INSTALL_ROUTE, PERFORMANCE_ROUTE,
+    QUICKSTART_ROUTE, SERVER_FUNCTIONS_ROUTE, SSR_ROUTE, TARGETS_ROUTE, TYPE_SAFETY_ROUTE,
     WHY_RUST_ROUTE,
 };
 
@@ -70,16 +71,28 @@ pub fn app() -> Element {
     // bg follows.
     sync_body_background_to_theme();
 
-    // Responsive chrome — drawer-sidebar overlay on narrow viewports.
-    // The CSS injection is a no-op on non-web targets. The new slot
-    // system delivers `open_drawer` / `close_drawer` / `active_route`
-    // directly through `SlotProps` so the legacy thread-local
-    // dispatchers (`set_open_drawer`, `install_active_route_observer`)
-    // are no longer needed.
+    // Pin the drawer sidebar's modal↔pinned breakpoint to the site's
+    // existing collapse point. This is the SINGLE threshold now: the
+    // navigator's shared stylesheet (web + SSR) carries the responsive
+    // `@media` query, so the collapse is correct on the static first
+    // paint — and it matches the mobile-header collapse
+    // (`collapse_responsive_style`, also keyed off `SIDEBAR_COLLAPSE_PX`).
+    // Must run before the navigator registers its sheet below — and on
+    // EVERY target (not just web), since SSR ships the same sheet.
+    drawer_navigator::install_navigator_pin_width(responsive::SIDEBAR_COLLAPSE_PX as f32);
+
+    // Site-only responsive chrome: the backdrop overlay + narrow-screen
+    // `<pre>` wrapping (the sidebar collapse itself is now navigator-owned,
+    // above). The CSS injection is a no-op on non-web targets.
     responsive::install_responsive_css();
 
     let builder = DrawerNavigator::new(&HOME_ROUTE)
         .screen(HOME_ROUTE, move |_| pages::home::page())
+        .screen(FEATURES_ROUTE, move |_| pages::features::page())
+        .screen(CROSS_PLATFORM_ROUTE, move |_| pages::cross_platform::page())
+        .screen(PERFORMANCE_ROUTE, move |_| pages::performance::page())
+        .screen(TYPE_SAFETY_ROUTE, move |_| pages::type_safety::page())
+        .screen(SSR_ROUTE, move |_| pages::ssr::page())
         .screen(INSTALL_ROUTE, move |_| pages::install::page())
         .screen(QUICKSTART_ROUTE, move |_| pages::quickstart::page())
         .screen(CONCEPTS_ROUTE, move |_| pages::concepts::page())

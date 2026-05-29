@@ -4,6 +4,20 @@
 //! setters, and a `IntoStyleSource` impl that handles both static and
 //! reactive (`Signal<T>`) inputs uniformly.
 //!
+//! Beyond `variant` axes and `override` fields, a declaration may also
+//! carry:
+//! - `state <hovered|pressed|focused|disabled>(theme) { … }` —
+//!   interaction-state overlays (realized as CSS pseudo-classes on web,
+//!   event-driven re-resolution on native).
+//! - `breakpoint <sm|md|lg|xl>(theme) { … }` — responsive overlays
+//!   layered mobile-first on the `base` (Xs) rules. Web realizes them
+//!   as `@media (min-width: …)` rules — so a statically rendered / SSR
+//!   first paint is already responsive without JS — while native
+//!   backends merge the active bucket reactively off
+//!   `runtime_core::current_breakpoint`. Both keyed off the installed
+//!   [`runtime_core::breakpoints`] thresholds.
+//! - `transitions { … }` — per-property animation declarations.
+//!
 //! # Grammar
 //!
 //! ```ignore
@@ -93,6 +107,13 @@ pub struct StyleSheetDecl {
     /// the node's active-state set; unsupported states (e.g.
     /// `hovered` on mobile) are silent no-ops.
     states: Vec<StateArm>,
+    /// Responsive breakpoint overlays (`breakpoint md { … }`). Stored
+    /// as overlays under reserved `__bp_*` axes — same machinery as
+    /// states/variants. Web realizes them as `@media (min-width: …)`
+    /// CSS (so SSR's first paint is responsive without JS); native
+    /// backends merge the active bucket reactively. `Xs` is the
+    /// mobile-first base and is therefore not a valid block name.
+    breakpoints: Vec<BreakpointArm>,
 }
 
 /// One `state name(theme) { ... }` block. The name must be one of
@@ -100,6 +121,17 @@ pub struct StyleSheetDecl {
 /// rejected so the cross-platform contract is enforced at compile
 /// time.
 struct StateArm {
+    name: Ident,
+    #[allow(dead_code)]
+    theme_binding: Ident,
+    rules: RulesBlock,
+}
+
+/// One `breakpoint name(theme) { ... }` block. The name must be one of
+/// the overlay breakpoints (`sm`, `md`, `lg`, `xl`); `xs` is the
+/// mobile-first base and is rejected so authors don't accidentally
+/// write a base-shadowing overlay.
+struct BreakpointArm {
     name: Ident,
     #[allow(dead_code)]
     theme_binding: Ident,
@@ -181,6 +213,7 @@ impl Parse for StyleSheetDecl {
         let mut overrides = Vec::new();
         let mut transitions = Vec::new();
         let mut states = Vec::new();
+        let mut breakpoints = Vec::new();
         while !body.is_empty() {
             // `override` is a reserved Rust keyword, so we can't parse
             // it as an Ident. Detect it specifically via Token![override]
@@ -235,11 +268,34 @@ impl Parse for StyleSheetDecl {
                     let rules = parse_rules_block(&body)?;
                     states.push(StateArm { name, theme_binding, rules });
                 }
+                "breakpoint" => {
+                    let name: Ident = body.parse()?;
+                    // Whitelist the overlay breakpoints. `xs` is the
+                    // mobile-first base (the `base { … }` block IS the
+                    // xs layout), so a `breakpoint xs` block is rejected
+                    // — it would otherwise silently shadow the base.
+                    let allowed = ["sm", "md", "lg", "xl"];
+                    if !allowed.contains(&name.to_string().as_str()) {
+                        return Err(syn::Error::new(
+                            name.span(),
+                            format!(
+                                "unknown breakpoint `{}`; expected one of: sm, md, lg, xl \
+                                 (`xs` is the mobile-first base — put those rules in `base`)",
+                                name
+                            ),
+                        ));
+                    }
+                    let theme_args;
+                    parenthesized!(theme_args in body);
+                    let theme_binding: Ident = theme_args.parse()?;
+                    let rules = parse_rules_block(&body)?;
+                    breakpoints.push(BreakpointArm { name, theme_binding, rules });
+                }
                 other => {
                     return Err(syn::Error::new(
                         kw.span(),
                         format!(
-                            "expected `variant`, `override`, `transitions`, or `state`, got `{}`",
+                            "expected `variant`, `override`, `transitions`, `state`, or `breakpoint`, got `{}`",
                             other
                         ),
                     ));
@@ -256,6 +312,7 @@ impl Parse for StyleSheetDecl {
             overrides,
             transitions,
             states,
+            breakpoints,
         })
     }
 }
@@ -398,6 +455,9 @@ fn check_no_theme_refs(decl: &StyleSheetDecl) -> syn::Result<()> {
     for arm in &decl.states {
         add(&mut bindings, &arm.theme_binding);
     }
+    for arm in &decl.breakpoints {
+        add(&mut bindings, &arm.theme_binding);
+    }
 
     struct Finder<'a> {
         bindings: &'a [String],
@@ -431,6 +491,9 @@ fn check_no_theme_refs(decl: &StyleSheetDecl) -> syn::Result<()> {
         }
     }
     for arm in &decl.states {
+        blocks.push(&arm.rules);
+    }
+    for arm in &decl.breakpoints {
         blocks.push(&arm.rules);
     }
     for block in blocks {
@@ -510,6 +573,19 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
         }
     });
 
+    // Breakpoints: each `breakpoint md { … }` block is a variant
+    // overlay under the reserved `__bp_md` axis (single "on" value),
+    // exactly like states. The framework recognizes the `__bp_*`
+    // namespace and realizes it per-backend (CSS `@media` on web,
+    // reactive merge on native).
+    let breakpoint_chain = decl.breakpoints.iter().map(|arm| {
+        let axis = format!("__bp_{}", arm.name);
+        let rules = emit_rules_struct(&arm.rules);
+        quote! {
+            .variant(#axis, "on", |_vs: &::runtime_core::VariantSet| #rules)
+        }
+    });
+
     quote! {
         #vis fn #fn_name() -> ::std::rc::Rc<::runtime_core::StyleSheet> {
             ::std::thread_local! {
@@ -520,6 +596,7 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
                         )
                             #(#variant_chain)*
                             #(#state_chain)*
+                            #(#breakpoint_chain)*
                     );
             }
             SHEET.with(|s| ::std::clone::Clone::clone(s))

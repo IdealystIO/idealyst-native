@@ -27,39 +27,37 @@ use wasm_bindgen::JsCast;
 use web_sys::Node;
 
 pub(crate) fn create(b: &mut WebBackend, config: LinkConfig) -> Node {
-    let anchor = b
-        .doc
-        .create_element("a")
-        .expect("create anchor")
-        .unchecked_into::<web_sys::HtmlAnchorElement>();
-    anchor.set_href(&config.url);
+    // HYDRATION: adopt the SSR `<a>` (href + reset style + external
+    // target/rel already set by the SSR `create_link`); its children are
+    // adopted separately as the cursor descends. Otherwise create fresh.
+    let anchor: web_sys::HtmlAnchorElement = if let Some(adopted) = b.hydrate_next("a") {
+        adopted.unchecked_into()
+    } else {
+        let anchor = b
+            .doc
+            .create_element("a")
+            .expect("create anchor")
+            .unchecked_into::<web_sys::HtmlAnchorElement>();
+        anchor.set_href(&config.url);
+        // De-default the anchor (blue/underlined) so the wrapping content's
+        // styling shows through. Shared with the SSR `create_link`.
+        let _ = anchor.set_attribute("style", css::LINK_RESET_STYLE);
+        // External: real `<a target="_blank">` (never popup-blocked); we
+        // don't `preventDefault`, so the SPA router doesn't swallow it.
+        if config.external {
+            let _ = anchor.set_attribute("target", "_blank");
+            let _ = anchor.set_attribute("rel", "noopener noreferrer");
+        }
+        anchor
+    };
 
-    // The default anchor styles (blue, underlined) are usually the
-    // wrong thing for app-shaped links — most authors want the
-    // content's styling to show through. Reset color and decoration
-    // here so the wrapping `Text` / `View` styles win out.
-    // Authors who actually want anchor defaults can override via
-    // their own style.
-    //
-    // Inline style via `set_attribute` rather than the typed
-    // `.style()` API avoids needing the `CssStyleDeclaration`
-    // web-sys feature. The framework applies its own classes on top
-    // via `apply_style`; this inline reset is below those in
-    // specificity terms when stylesheets target via class.
-    // Shared with the SSR backend's `create_link` so both render the
-    // same de-defaulted anchor.
-    let _ = anchor.set_attribute("style", css::LINK_RESET_STYLE);
+    // If this anchor is fresh-after-mismatch, register it as a
+    // subtree-local remount root (no-op when it was adopted).
+    let node: Node = anchor.clone().unchecked_into();
+    b.hydrate_note_fresh(&node);
 
-    // External link: open in a new tab via the browser's native
-    // anchor navigation. No JS click interception — a real
-    // `<a target="_blank">` is never popup-blocked (unlike a
-    // programmatic `window.open`), and we explicitly do NOT
-    // `preventDefault`, so the SPA router doesn't swallow it.
-    // `rel="noopener noreferrer"` severs the new tab's `window.opener`
-    // handle (security: stops the opened page from navigating us).
+    // External links navigate natively — no JS click interception.
     if config.external {
-        let _ = anchor.set_attribute("target", "_blank");
-        let _ = anchor.set_attribute("rel", "noopener noreferrer");
         return anchor.unchecked_into::<Node>();
     }
 

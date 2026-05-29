@@ -329,6 +329,22 @@ pub trait Backend {
 
     fn create_view(&mut self, a11y: &crate::accessibility::AccessibilityProps) -> Self::Node;
 
+    /// Create a structural element with an explicit HTML-ish tag (e.g.
+    /// `"pre"`, `"code"`, `"ul"`). Lets a third-party `Element::External`
+    /// handler build real DOM structure cross-backend *through the
+    /// Backend* — so it renders headlessly on SSR and participates in web
+    /// hydration's DOM adoption (rather than reaching for `web_sys`
+    /// directly, which bypasses both).
+    ///
+    /// Document-backed backends (web/SSR) create the actual tag; backends
+    /// with no tag concept (iOS/Android/terminal) fall back to a plain
+    /// container view — the element's children/text still render, just
+    /// without the tag's semantics.
+    #[allow(unused_variables)]
+    fn create_element(&mut self, tag: &str) -> Self::Node {
+        self.create_view(&crate::accessibility::AccessibilityProps::default())
+    }
+
     /// Stamp a stable identifier on `node` that JS code can find via
     /// `document.getElementById` (web) or analogous mechanisms
     /// elsewhere. Used by `Element::Lazy`'s web handler: the chunk
@@ -1309,6 +1325,47 @@ pub trait Backend {
         // Default: just apply the base style. Mobile backends drive
         // state overlays via signal-flip → re-resolve → apply_style.
         self.apply_style(node, base);
+    }
+
+    /// Apply a base style plus per-state overlays **and**
+    /// per-breakpoint overlays in a single call. This is the
+    /// declarative entry the build walker uses for backends that report
+    /// [`Backend::handles_states_natively`] — it supersets
+    /// [`Backend::apply_styled_states`] with the breakpoint axis so a
+    /// backend can emit *all* of a node's variant overlays (interaction
+    /// states + responsive breakpoints) keyed off one base class,
+    /// rather than minting two competing base classes from two calls.
+    ///
+    /// Web overrides this: state overlays become CSS pseudo-class rules
+    /// (`.ui-x:hover { … }`) and breakpoint overlays become
+    /// `@media (min-width: <threshold>px) { .ui-x { … } }` rules, both
+    /// scoped to the node's base class. The browser then selects the
+    /// active overlays natively — which is the whole point for SSR:
+    /// the statically-rendered HTML already carries the correct
+    /// responsive layout in its stylesheet, with no JS/hydration round
+    /// trip needed for the first paint.
+    ///
+    /// `breakpoint_overlays` are each the *fully resolved* rules for
+    /// that bucket (base merged with the `__bp_*` overlay), in ascending
+    /// breakpoint order, so stacking them by `min-width` reproduces the
+    /// mobile-first cascade. See `walker::resolve_breakpoint_overlays`.
+    ///
+    /// **Contract:** any backend returning `handles_states_natively() ==
+    /// true` MUST handle `breakpoint_overlays` here (web does). The
+    /// default impl drops them and delegates to
+    /// [`Backend::apply_styled_states`]; that's correct only for
+    /// backends that report `false` — they never reach this path,
+    /// receiving breakpoint overlays through the walker's reactive merge
+    /// (driven by [`crate::current_breakpoint`]) into the regular
+    /// `apply_style` path instead.
+    fn apply_styled_variants(
+        &mut self,
+        node: &Self::Node,
+        base: &Rc<StyleRules>,
+        state_overlays: &[(StateBits, Rc<StyleRules>)],
+        #[allow(unused_variables)] breakpoint_overlays: &[(crate::Breakpoint, Rc<StyleRules>)],
+    ) {
+        self.apply_styled_states(node, base, state_overlays);
     }
 
     /// Backend capability flag. `true` means the backend wants to

@@ -470,12 +470,21 @@ pub(super) fn apply_one<B: Backend + 'static>(
     }
     if handles_states_natively {
         let base = resolve_style(app);
-        let overlays = resolve_state_overlays(app);
+        let state_overlays = resolve_state_overlays(app);
+        let bp_overlays = resolve_breakpoint_overlays(app);
         backend
             .borrow_mut()
-            .apply_styled_states(node, &base, &overlays);
+            .apply_styled_variants(node, &base, &state_overlays, &bp_overlays);
     } else {
-        let resolved = resolve_style(app);
+        // Native backends: fold the active breakpoint bucket's overlay
+        // into the resolved rules and apply through the regular path.
+        // `merge_active_breakpoints` reads `current_breakpoint()` (only
+        // when overlays exist), so static-styled nodes re-apply when
+        // the bucket changes — the theme cohort driver subscribes to
+        // the same signal and re-runs `apply_one` on a bucket flip.
+        let base = resolve_style(app);
+        let bp_overlays = resolve_breakpoint_overlays(app);
+        let resolved = merge_active_breakpoints(base, &bp_overlays);
         backend.borrow_mut().apply_style(node, &resolved);
     }
 }
@@ -681,6 +690,7 @@ fn attach_style_reactive<B: Backend + 'static>(
             #[cfg(feature = "debug-stats")]
             let _t_overlays_start = debug::now_micros();
             let overlays = resolve_state_overlays(&app);
+            let bp_overlays = resolve_breakpoint_overlays(&app);
             #[cfg(feature = "debug-stats")]
             debug::record_apply_phase(
                 "attach_style_resolve_overlays",
@@ -694,9 +704,14 @@ fn attach_style_reactive<B: Backend + 'static>(
 
             #[cfg(feature = "debug-stats")]
             let _t_apply_start = debug::now_micros();
+            // Web (the only `handles_states_natively` backend) emits
+            // breakpoint overlays as `@media` CSS, so this branch does
+            // NOT read `current_breakpoint()` — the browser does the
+            // bucket switching, and the style effect should only re-fire
+            // on theme/variant/override changes, not on resize.
             backend_for_effect
                 .borrow_mut()
-                .apply_styled_states(&handle.node, &base, &overlays);
+                .apply_styled_variants(&handle.node, &base, &overlays, &bp_overlays);
             #[cfg(feature = "debug-stats")]
             debug::record_apply_phase(
                 "attach_style_apply_call",
@@ -718,7 +733,15 @@ fn attach_style_reactive<B: Backend + 'static>(
             }
             #[cfg(feature = "debug-stats")]
             let _t_resolve_start = debug::now_micros();
-            let resolved = resolve_style(&app);
+            // Breakpoints layer on top of the active-state resolution:
+            // `merge_active_breakpoints` reads `current_breakpoint()`
+            // (only when the sheet declares breakpoint blocks), which
+            // subscribes this effect so a bucket flip re-fires it and
+            // re-applies the right overlay — the native analog of the
+            // browser re-evaluating `@media` on resize.
+            let base = resolve_style(&app);
+            let bp_overlays = resolve_breakpoint_overlays(&app);
+            let resolved = merge_active_breakpoints(base, &bp_overlays);
             #[cfg(feature = "debug-stats")]
             debug::record_apply_phase(
                 "attach_style_resolve",
@@ -823,6 +846,80 @@ pub(super) fn resolve_state_overlays(app: &StyleApplication) -> Vec<(StateBits, 
     out
 }
 
+/// Breakpoint analog of [`resolve_state_overlays`]. Resolves each
+/// declared `__bp_*` overlay axis against the application's variants +
+/// theme, returning `(Breakpoint, Rc<StyleRules>)` pairs **sorted
+/// ascending by breakpoint rank**.
+///
+/// Each entry is the *fully resolved* rules for that bucket (base
+/// merged with the single breakpoint overlay), not just the overlay's
+/// own properties — so two consumers can reproduce the mobile-first
+/// min-width cascade by stacking them in order:
+///
+/// - **Web** emits each as `@media (min-width: <threshold>px) { .ui-x {
+///   … } }`; the browser layers all matching media queries by source
+///   order, higher breakpoints winning.
+/// - **Native** ([`merge_active_breakpoints`]) folds the overlays whose
+///   bucket is active at the current viewport width onto the base in
+///   the same ascending order.
+///
+/// Returns an empty Vec (no allocation past the slice check) for the
+/// common case of a sheet with no `breakpoint` blocks.
+pub(super) fn resolve_breakpoint_overlays(
+    app: &StyleApplication,
+) -> Vec<(crate::Breakpoint, Rc<StyleRules>)> {
+    let bp_axes = app.sheet.breakpoint_axes();
+    if bp_axes.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<(crate::Breakpoint, Rc<StyleRules>)> = Vec::with_capacity(bp_axes.len());
+    for (bp, axis) in bp_axes {
+        let mut bp_app = app.clone();
+        bp_app = bp_app.with(axis.clone(), "on");
+        let resolved = resolve_style(&bp_app);
+        out.push((*bp, resolved));
+    }
+    out.sort_by_key(|(bp, _)| bp.rank());
+    out
+}
+
+/// For backends that don't handle breakpoints natively (everything but
+/// web), fold the overlays whose bucket is active at the current
+/// viewport width onto the base rules, lowest breakpoint first so
+/// higher breakpoints win — the same mobile-first min-width cascade the
+/// web backend gets from stacked `@media` rules.
+///
+/// Reads [`crate::current_breakpoint`] *only when overlays are present*,
+/// so the caller's `Effect` (or the theme cohort driver) re-subscribes
+/// and re-fires when the bucket changes — but a style with no
+/// breakpoint blocks pays nothing and never subscribes. Returns the
+/// original `base` Rc untouched when no overlay is active (e.g. a phone
+/// width below `sm`), so the common cases allocate no new `StyleRules`.
+fn merge_active_breakpoints(
+    base: Rc<StyleRules>,
+    overlays: &[(crate::Breakpoint, Rc<StyleRules>)],
+) -> Rc<StyleRules> {
+    if overlays.is_empty() {
+        return base;
+    }
+    let current = crate::current_breakpoint().get();
+    let mut merged: Option<StyleRules> = None;
+    for (bp, overlay) in overlays {
+        if bp.rank() <= current.rank() {
+            // `StyleRules::merge` consumes `self` and returns the
+            // overlaid result (overlay's `Some(_)` fields win), so we
+            // thread the accumulator through by value rather than
+            // mutating in place.
+            let acc = merged.take().unwrap_or_else(|| (*base).clone());
+            merged = Some(acc.merge(overlay));
+        }
+    }
+    match merged {
+        Some(rules) => Rc::new(rules),
+        None => base,
+    }
+}
+
 /// Reactive disabled-state wiring. Runs the user's closure inside an
 /// `Effect` so the result tracks any signals it reads. On each
 /// firing: (1) calls `Backend::set_disabled` so the native widget
@@ -848,4 +945,85 @@ pub(super) fn attach_disabled<B: Backend + 'static>(
             setter(StateBits::DISABLED, d);
         }
     });
+}
+
+#[cfg(test)]
+mod breakpoint_tests {
+    use super::*;
+    use crate::style::StyleSheet;
+    use crate::{set_viewport_size, Breakpoint, Length, Tokenized, ViewportSize};
+
+    fn px(p: f32) -> Option<Tokenized<Length>> {
+        Some(Tokenized::Literal(Length::Px(p)))
+    }
+
+    fn width_of(rules: &StyleRules) -> Length {
+        *rules
+            .width
+            .as_ref()
+            .expect("width is set in these fixtures")
+            .value()
+    }
+
+    /// A sheet: base `width: 100`, `breakpoint md { width: 500 }`,
+    /// `breakpoint lg { width: 900 }` — declared out of rank order to
+    /// prove `resolve_breakpoint_overlays` sorts, not just preserves
+    /// declaration order.
+    fn responsive_app() -> StyleApplication {
+        let sheet = Rc::new(
+            StyleSheet::new(|_vs| StyleRules { width: px(100.0), ..Default::default() })
+                // lg declared BEFORE md on purpose.
+                .variant("__bp_lg", "on", |_vs| StyleRules { width: px(900.0), ..Default::default() })
+                .variant("__bp_md", "on", |_vs| StyleRules { width: px(500.0), ..Default::default() }),
+        );
+        StyleApplication::new(sheet)
+    }
+
+    #[test]
+    fn resolve_breakpoint_overlays_sorts_ascending_and_resolves_each() {
+        let app = responsive_app();
+        let overlays = resolve_breakpoint_overlays(&app);
+        assert_eq!(overlays.len(), 2, "two breakpoint overlays declared");
+        // Sorted ascending by rank regardless of declaration order.
+        assert_eq!(overlays[0].0, Breakpoint::Md);
+        assert_eq!(overlays[1].0, Breakpoint::Lg);
+        // Each overlay is the FULLY resolved rules for that bucket
+        // (base merged with the bp overlay), not just the overlay's own
+        // props — so consumers can stack them.
+        assert_eq!(width_of(&overlays[0].1), Length::Px(500.0));
+        assert_eq!(width_of(&overlays[1].1), Length::Px(900.0));
+    }
+
+    #[test]
+    fn resolve_breakpoint_overlays_empty_without_breakpoint_blocks() {
+        let sheet = Rc::new(StyleSheet::new(|_vs| StyleRules { width: px(100.0), ..Default::default() }));
+        let app = StyleApplication::new(sheet);
+        assert!(resolve_breakpoint_overlays(&app).is_empty());
+    }
+
+    #[test]
+    fn merge_active_breakpoints_layers_mobile_first_by_viewport_width() {
+        let app = responsive_app();
+        let base = resolve_style(&app);
+        let overlays = resolve_breakpoint_overlays(&app);
+
+        // Below sm: no overlay active → base width, and the SAME Rc is
+        // returned (no needless allocation on the common mobile path).
+        set_viewport_size(ViewportSize::new(390.0, 800.0));
+        let merged = merge_active_breakpoints(base.clone(), &overlays);
+        assert_eq!(width_of(&merged), Length::Px(100.0));
+        assert!(Rc::ptr_eq(&merged, &base), "no active overlay must reuse the base Rc");
+
+        // Md bucket: only the md overlay is active (lg is above) →
+        // width 500.
+        set_viewport_size(ViewportSize::new(800.0, 800.0));
+        let merged = merge_active_breakpoints(base.clone(), &overlays);
+        assert_eq!(width_of(&merged), Length::Px(500.0));
+
+        // Lg bucket: md AND lg both active (min-width cumulative),
+        // lg wins on the conflicting `width` → width 900.
+        set_viewport_size(ViewportSize::new(1100.0, 800.0));
+        let merged = merge_active_breakpoints(base.clone(), &overlays);
+        assert_eq!(width_of(&merged), Length::Px(900.0));
+    }
 }

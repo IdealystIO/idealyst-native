@@ -20,22 +20,33 @@ use wasm_bindgen::JsCast;
 use web_sys::Node;
 
 pub(crate) fn create(b: &mut WebBackend, on_click: Rc<dyn Fn()>) -> Node {
-    let el = b
-        .doc
-        .create_element("div")
-        .expect("create pressable")
-        .unchecked_into::<web_sys::HtmlElement>();
-    // Accessibility: announce as a button to assistive tech and
-    // make it focusable via Tab. Keyboard activation (Enter/Space)
-    // is wired below.
-    let _ = el.set_attribute("role", "button");
-    let _ = el.set_attribute("tabindex", "0");
-    // Hand cursor — every clickable element on the web should have
-    // one, and `cursor` isn't in the framework's styled-property
-    // model. Set inline at create time; the stylesheet's style
-    // attribute writes (which use class-based selectors) compose
-    // with this without overwriting.
-    let _ = el.style().set_property("cursor", "pointer");
+    // HYDRATION: adopt the SSR `<div role=button>` (role/tabindex/cursor
+    // already set by the SSR `create_pressable`); just wire the handlers
+    // below. Its children are adopted separately via cursor descent.
+    let adopted = b.hydrate_next("div");
+    let el: web_sys::HtmlElement = match adopted {
+        Some(el) => el.unchecked_into(),
+        None => {
+            let el = b
+                .doc
+                .create_element("div")
+                .expect("create pressable")
+                .unchecked_into::<web_sys::HtmlElement>();
+            // Accessibility: announce as a button + make it Tab-focusable.
+            let _ = el.set_attribute("role", "button");
+            let _ = el.set_attribute("tabindex", "0");
+            // Hand cursor — `cursor` isn't in the styled-property model, so
+            // set inline at create time (composes with class rules).
+            let _ = el.style().set_property("cursor", "pointer");
+            el
+        }
+    };
+    // Register as a subtree-local remount root if fresh-after-mismatch
+    // (no-op when adopted).
+    {
+        let node: Node = el.clone().unchecked_into();
+        b.hydrate_note_fresh(&node);
+    }
 
     let on_click_for_mouse = on_click.clone();
     let click_closure = Closure::<dyn FnMut()>::new(move || (on_click_for_mouse)());

@@ -7,12 +7,44 @@ use wasm_bindgen::JsCast;
 use web_sys::Node;
 
 pub(crate) fn create(b: &mut WebBackend, content: &str) -> Node {
+    if let Some(span) = b.hydrate_next("span") {
+        // SSR already rendered this text; adopt the span as-is (same
+        // author tree → same content). Reactive updates retarget it via
+        // `update_text`.
+        return span.unchecked_into::<Node>();
+    }
     let span = b
         .doc
         .create_element("span")
         .expect("create_element span failed");
     span.set_text_content(Some(content));
-    span.unchecked_into::<Node>()
+    let node: Node = span.unchecked_into();
+    b.hydrate_note_fresh(&node);
+    node
+}
+
+/// Hydration-aware variant of [`create_with_inner_text`]: adopts the SSR
+/// `<span>` (and its existing child Text node) when hydrating, so the
+/// batched-text registry binds the real text node. Falls back to creating
+/// fresh when not hydrating / on mismatch.
+pub(crate) fn create_with_inner_text_hydrating(b: &mut WebBackend, content: &str) -> (Node, Node) {
+    if let Some(span) = b.hydrate_next("span") {
+        // The SSR span's first child is its Text node. If somehow absent
+        // (empty text), synthesize one so the batched-update path has a
+        // node to write.
+        let text: Node = match span.first_child() {
+            Some(n) => n,
+            None => {
+                let t = b.doc.create_text_node(content);
+                let _ = span.append_child(&t);
+                t.unchecked_into::<Node>()
+            }
+        };
+        return (span.unchecked_into::<Node>(), text);
+    }
+    let (span, text) = create_with_inner_text(b, content);
+    b.hydrate_note_fresh(&span);
+    (span, text)
 }
 
 /// Variant of [`create`] that guarantees the returned span has a

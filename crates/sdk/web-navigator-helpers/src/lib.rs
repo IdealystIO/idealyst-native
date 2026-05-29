@@ -1537,12 +1537,16 @@ fn ensure_navigator_css(_b: &mut WebBackend) {
         // Single source of truth — the same sheet the generic SSR chrome
         // handlers ship via `Backend::register_raw_css`, so the live web
         // layout and the server's first paint are identical.
-        let sheet = css::NAVIGATOR_LAYOUT_CSS;
+        // `navigator_layout_css` bakes the responsive sidebar pin/modal
+        // `@media` query into the sheet (off-canvas modal base, pinned
+        // above the customizable `navigator_pin_width`), so the live web
+        // layout matches the SSR first paint with no render-time decision.
+        let sheet = css::navigator_layout_css();
         let Some(win) = web_sys::window() else { return };
         let Some(doc) = win.document() else { return };
         if let Some(head) = doc.head() {
             if let Ok(style) = doc.create_element("style") {
-                style.set_text_content(Some(sheet));
+                style.set_text_content(Some(sheet.as_str()));
                 let _ = head.append_child(&style);
             }
         }

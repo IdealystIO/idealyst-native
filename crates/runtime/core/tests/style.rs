@@ -36,6 +36,102 @@ stylesheet! {
     }
 }
 
+// A `stylesheet!` with a responsive `breakpoint` block. The base is the
+// mobile-first (Xs) layout; the `md` overlay widens at `>= md_min`.
+stylesheet! {
+    Responsive<()> {
+        base(_t) {
+            width: Length::Px(100.0),
+        }
+        breakpoint md(_t) {
+            width: Length::Px(500.0),
+        }
+    }
+}
+
+/// FUNCTIONAL, end-to-end through the walker.
+///
+/// Native backends (the mock here reports `handles_states_natively ==
+/// false`) realize `breakpoint` overlays by re-applying the active
+/// bucket's merged rules when the viewport crosses a threshold. A
+/// static-styled node has no per-node Effect, so this re-apply rides
+/// the theme-cohort driver — which now subscribes to
+/// `current_breakpoint()`. This test pins that wiring: crossing from
+/// the Xs base bucket into Md (and back) must re-fire an apply for the
+/// node. Pre-wiring the driver never re-ran on resize, so a
+/// breakpoint-styled static node would be frozen at its mount-time
+/// bucket.
+#[test]
+fn breakpoint_overlay_reapplies_on_bucket_change_native() {
+    use runtime_core::{set_viewport_size, view, IntoElement, ViewportSize};
+
+    use common::{Event, TestRuntime};
+
+    // Start in the mobile-first base bucket (Xs, < sm_min).
+    set_viewport_size(ViewportSize::new(390.0, 800.0));
+
+    let rt = TestRuntime::new();
+    let _owner = rt.render(view(vec![]).with_style(Responsive()).into_element());
+
+    // Drop the mount-time applies, then cross into the Md bucket.
+    rt.backend_mut().clear_events();
+    set_viewport_size(ViewportSize::new(900.0, 800.0));
+
+    let after = rt.events();
+    let applies = after
+        .iter()
+        .filter(|e| matches!(e, Event::ApplyStyle { .. }))
+        .count();
+    assert!(
+        applies >= 1,
+        "crossing into the md breakpoint must re-apply the static-styled node \
+         (the cohort driver subscribes to current_breakpoint); got {} applies. \
+         Events: {:?}",
+        applies,
+        after,
+    );
+
+    // Crossing back below sm re-applies again (returns to base bucket).
+    rt.backend_mut().clear_events();
+    set_viewport_size(ViewportSize::new(390.0, 800.0));
+    let back = rt.events();
+    assert!(
+        back.iter().filter(|e| matches!(e, Event::ApplyStyle { .. })).count() >= 1,
+        "crossing back below sm must re-apply too. Events: {:?}",
+        back,
+    );
+}
+
+/// A pixel resize that does NOT cross a breakpoint boundary must NOT
+/// re-apply — the `current_breakpoint()` memo dedups within a bucket,
+/// so the cohort driver stays idle. Without that, every resize frame
+/// would re-apply every static-styled node.
+#[test]
+fn breakpoint_overlay_does_not_reapply_within_a_bucket() {
+    use runtime_core::{set_viewport_size, view, IntoElement, ViewportSize};
+
+    use common::{Event, TestRuntime};
+
+    set_viewport_size(ViewportSize::new(800.0, 800.0)); // Md
+    let rt = TestRuntime::new();
+    let _owner = rt.render(view(vec![]).with_style(Responsive()).into_element());
+
+    rt.backend_mut().clear_events();
+    // Resize within the Md bucket (768..1024): no boundary crossed.
+    set_viewport_size(ViewportSize::new(1000.0, 800.0));
+
+    let after = rt.events();
+    let applies = after
+        .iter()
+        .filter(|e| matches!(e, Event::ApplyStyle { .. }))
+        .count();
+    assert_eq!(
+        applies, 0,
+        "a resize within the same bucket must not re-apply; got {} applies. Events: {:?}",
+        applies, after,
+    );
+}
+
 /// `Tokenized::Literal` returns the literal value from `.value()`.
 #[test]
 fn tokenized_literal_returns_literal_value() {
