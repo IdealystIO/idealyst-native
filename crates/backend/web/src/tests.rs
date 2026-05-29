@@ -929,3 +929,98 @@ fn regression_text_fmt_two_bindings_one_signal() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Cross-backend @font-face dedup — the lazy-chunk double-download fix.
+// ---------------------------------------------------------------------------
+
+/// REGRESSION GUARD: registering the same typeface across TWO live
+/// `WebBackend` instances on the same wasm thread must inject the
+/// `@font-face` rule exactly ONCE.
+///
+/// The bug this guards against: when a `lazy!` chunk's `mount_chunk`
+/// spins up its own `WebBackend` (so the chunk's children get their
+/// own walker), it re-runs the theme's typeface registration. Each
+/// backend has its own `font_face_rule_indices`, so without a
+/// process-wide dedup set BOTH backends emit a `@font-face` rule for
+/// the same font URL — the browser then fetches the font file again
+/// (the user-reported "double download" on the home page). The fix is
+/// the thread-local `FONT_FACES_PRESENT` HashSet in `lib.rs`; this
+/// test pins it.
+#[wasm_bindgen_test]
+fn font_face_dedup_across_backends_inserts_rule_once() {
+    use runtime_core::assets::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
+    use runtime_core::{Backend, FontStyle, FontWeight};
+
+    install_mount();
+
+    // Distinct URL/family per test invocation so the thread-local
+    // dedup set (which persists across wasm tests on the same thread)
+    // doesn't make this test depend on whatever ran before it.
+    let family_name = "DedupTestFamily";
+    let asset_id = AssetId(0xDEDD_F00D);
+    let type_id = TypefaceId(0xFACE_DEDF);
+    let url_path = "fonts/__dedup_test_font.ttf";
+    let served_url = format!("/{url_path}");
+    let face = TypefaceFace {
+        weight: FontWeight::Normal,
+        style: FontStyle::Normal,
+        asset: asset_id,
+        source: AssetSource::Bundled { path: url_path },
+    };
+
+    // ---- Backend A — first registration injects the rule.
+    let mut a = WebBackend::new("#app");
+    a.register_asset(asset_id, AssetTag::Font, &AssetSource::Bundled { path: url_path });
+    a.register_typeface(type_id, family_name, &[face], SystemFallback::SansSerif);
+    let a_indices = a
+        .font_face_rule_indices
+        .get(&type_id)
+        .cloned()
+        .expect("backend A: rule indices recorded for typeface");
+    assert_eq!(
+        a_indices.len(),
+        1,
+        "backend A must inject exactly ONE @font-face for the single face; got {a_indices:?}"
+    );
+
+    // ---- Backend B — same typeface, fresh backend (mirrors a lazy
+    // chunk's `mount_chunk` re-running the theme registration). The
+    // dedup must catch it before the second @font-face is injected.
+    let mut b = WebBackend::new("#app");
+    b.register_asset(asset_id, AssetTag::Font, &AssetSource::Bundled { path: url_path });
+    b.register_typeface(type_id, family_name, &[face], SystemFallback::SansSerif);
+    let b_indices = b
+        .font_face_rule_indices
+        .get(&type_id)
+        .cloned()
+        .expect("backend B: rule-index map entry exists (even if empty)");
+    assert!(
+        b_indices.is_empty(),
+        "backend B must NOT inject a duplicate @font-face for the same URL — the \
+         cross-backend dedup is the lazy-chunk double-download fix. got indices: {b_indices:?}"
+    );
+
+    // Final invariant: scan each backend's CSSOM rules (NOT the
+    // `<style>` text content — `insert_rule` updates the live CSSOM
+    // but leaves the element's textContent intact) and count
+    // `@font-face` rules whose `cssText` references this URL. Exactly
+    // one — anywhere more means a second URL fetch.
+    let needle = served_url.as_str();
+    let mut occurrences = 0usize;
+    for sheet in [a.sheet(), b.sheet()] {
+        let Ok(rules) = sheet.css_rules() else { continue };
+        for j in 0..rules.length() {
+            let Some(rule) = rules.item(j) else { continue };
+            let text = rule.css_text();
+            if text.contains("@font-face") && text.contains(needle) {
+                occurrences += 1;
+            }
+        }
+    }
+    assert_eq!(
+        occurrences, 1,
+        "exactly one @font-face for {served_url} across both backends' \
+         live stylesheets; got {occurrences}. A second one would re-fetch the font."
+    );
+}

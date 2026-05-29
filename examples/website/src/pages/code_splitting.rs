@@ -5,7 +5,7 @@
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
-use crate::pages::common::{code_panel, page_header, page_section};
+use crate::pages::common::{CodePanel, PageHeader, PageSection};
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Element {
@@ -25,18 +25,18 @@ pub fn page() -> Element {
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Code splitting",
-                "Carve a subtree out of the main wasm bundle and load it on demand. \
+            PageHeader(
+                title = "Code splitting",
+                blurb = "Carve a subtree out of the main wasm bundle and load it on demand. \
                  The `lazy!` macro wraps a `ui!` block in a build-time split point; \
                  the chunk fetches the first time the boundary mounts, and native \
-                 targets compile the block inline."
-            ) }
-            { page_section(wip_ref, vec![status()]) }
-            { page_section(macro_ref, vec![macro_syntax()]) }
-            { page_section(expansion_ref, vec![expansion()]) }
-            { page_section(placeholder_ref, vec![placeholder_and_lifecycle()]) }
-            { page_section(constraints_ref, vec![v1_constraints()]) }
+                 targets compile the block inline.",
+            )
+            PageSection(handle = wip_ref) { status() }
+            PageSection(handle = macro_ref) { macro_syntax() }
+            PageSection(handle = expansion_ref) { expansion() }
+            PageSection(handle = placeholder_ref) { placeholder_and_lifecycle() }
+            PageSection(handle = constraints_ref) { v1_constraints() }
         }
     };
     layout_with_toc(content, toc)
@@ -55,12 +55,12 @@ fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Element {
     for p in paragraphs {
         let body = p.to_string();
         // Default kind = `Body` (14 px) — the site-wide paragraph size.
-        // The page lead blurb gets `BodyLg` via `page_header`; section
+        // The page lead blurb gets `BodyLg` via `PageHeader`; section
         // prose does not, or body copy reads inconsistently large.
         children.push(ui! { Typography(content = body) });
     }
     if let Some(src) = code {
-        children.push(code_panel(src));
+        children.push(ui! { CodePanel(src = src) });
     }
     ui! { Stack(gap = StackGap::Lg) { children } }
 }

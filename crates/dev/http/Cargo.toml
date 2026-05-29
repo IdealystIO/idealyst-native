@@ -13,3 +13,8 @@ tiny_http = "0.12"
 # Source of the `ReloadSignal` (generation counter + condvar) we
 # stream over SSE. `dev-reload` is the producer; we're the transport.
 dev-reload = { workspace = true }
+# Shared HTML-augmentation helpers — `font_preload_tags` +
+# `inject_into_head`. Same fn calls `build-web`'s `stage_bundle` uses
+# so dev-mode HTML responses and the staged bundle ship the same set
+# of preload tags from the same TOML list.
+build-ios = { workspace = true }

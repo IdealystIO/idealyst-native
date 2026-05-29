@@ -143,6 +143,32 @@ pub fn set_animated_color(
     };
 }
 
+/// `true` if `el`'s `class` attribute contains `class` as a whole token.
+fn element_has_class(el: &web_sys::Element, class: &str) -> bool {
+    el.class_name().split_whitespace().any(|c| c == class)
+}
+
+/// During hydration, point the adoption cursor at the first element child
+/// of `region` (an adopted frame slot / body outlet) so the next walker
+/// `create_*` calls adopt the server content inside it. No-op off
+/// hydration.
+pub fn hydrate_enter(region: &web_sys::Node) {
+    let weak = WEB_BACKEND_HANDLE.with(|s| s.borrow().clone());
+    let Some(weak) = weak else { return };
+    let Some(rc) = weak.upgrade() else { return };
+    if let Ok(mut b) = rc.try_borrow_mut() {
+        if !b.hydrating {
+            return;
+        }
+        let first = region
+            .dyn_ref::<web_sys::Element>()
+            .and_then(|el| el.first_element_child());
+        b.hydration_cursor = first.map(|e| e.unchecked_into::<web_sys::Node>());
+        b.hydration_suppress = false;
+        b.hydration_pending_fresh = false;
+    };
+}
+
 /// Install a self-handle so the batched text-update path
 /// ([`Backend::create_text_with_id`] / [`Backend::update_text_by_id`])
 /// can schedule its microtask flush. Must be called once after the
@@ -188,6 +214,19 @@ std::thread_local! {
     /// most-recently-installed one.
     static WEB_BACKEND_HANDLE: std::cell::RefCell<Option<std::rc::Weak<std::cell::RefCell<WebBackend>>>> =
         const { std::cell::RefCell::new(None) };
+
+    /// `@font-face` rules already present in the document, keyed by the
+    /// exact rule text (`css::font_face_css`). Shared across EVERY
+    /// `WebBackend` on the (single wasm) thread — the main page backend,
+    /// the SSR `<head>` it adopts, AND each lazy chunk's own
+    /// `mount_chunk` backend. A face must be injected at most once:
+    /// otherwise a second `@font-face` for the same URL makes the browser
+    /// fetch the font file AGAIN (the lazy-chunk double-download bug). The
+    /// SSR/hydration case seeds this set without injecting (the rule is
+    /// already in the server `<head>`); the live page injects on first
+    /// sight; chunks then find it present and skip.
+    static FONT_FACES_PRESENT: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
 use runtime_core::{
@@ -645,7 +684,65 @@ impl WebBackend {
         // First element child of the mount = the SSR root the walker's
         // first `create_*` will adopt.
         b.hydration_cursor = b.mount.first_element_child().map(|e| e.unchecked_into());
+        // Buffer microtasks during the build so `mount` drains the nav's
+        // deferred chrome/screen builds inside the adoption window.
+        crate::scheduler::begin_hydration_buffering();
         b
+    }
+
+    /// During hydration, adopt the SSR navigator container: the element at
+    /// the cursor if it carries `class` (e.g. `"ui-nav-root"`). Returns it
+    /// (leaving the cursor on it); the navigator adopts its frame via
+    /// [`hydrate_adopt_child`] + re-enters regions via [`hydrate_enter`].
+    /// `None` when not hydrating or the cursor doesn't match.
+    pub fn hydrate_adopt_container(&mut self, class: &str) -> Option<web_sys::Node> {
+        if !self.hydrating {
+            return None;
+        }
+        let cur = self.hydration_cursor.clone()?;
+        let el = cur.dyn_ref::<web_sys::Element>()?;
+        if !element_has_class(el, class) {
+            return None;
+        }
+        Some(cur)
+    }
+
+    /// During hydration, adopt the server-rendered child of `parent`
+    /// carrying `class` (match-by-class, parent-relative). METHOD form —
+    /// for callers that hold `&mut WebBackend` synchronously (e.g. the
+    /// navigator frame build runs *inside* `create_navigator`'s
+    /// `borrow_mut`, so the global-handle free fn's `try_borrow` would
+    /// fail there). `None` when not hydrating or no match.
+    pub fn hydrate_adopt_child_of(
+        &self,
+        parent: &web_sys::Node,
+        class: &str,
+    ) -> Option<web_sys::Node> {
+        if !self.hydrating {
+            return None;
+        }
+        let parent_el = parent.dyn_ref::<web_sys::Element>()?;
+        let mut child = parent_el.first_element_child();
+        while let Some(c) = child {
+            if element_has_class(&c, class) {
+                return Some(c.unchecked_into());
+            }
+            child = c.next_element_sibling();
+        }
+        None
+    }
+
+    /// During hydration, suspend the cursor so the next `create_*` build
+    /// fresh without adopting/arming a remount. METHOD form for the
+    /// synchronous in-`borrow_mut` caller (end of the navigator frame
+    /// build, before the walker's throwaway initial screen).
+    pub fn hydrate_suspend_cursor(&mut self) {
+        if !self.hydrating {
+            return;
+        }
+        self.hydration_cursor = None;
+        self.hydration_suppress = false;
+        self.hydration_pending_fresh = false;
     }
 
     /// During hydration, return the next SSR node to adopt if its tag
@@ -1760,6 +1857,10 @@ impl Backend for WebBackend {
         node
     }
 
+    fn is_hydrating(&self) -> bool {
+        self.hydrating
+    }
+
     /// Set the HTML `id` attribute on the underlying element. Used
     /// by `Element::Lazy`'s web handler to give the placeholder
     /// container a stable id the chunk's `mount_chunk` can root its
@@ -2700,6 +2801,7 @@ impl Backend for WebBackend {
             // The initial adoption pass is done; subsequent reactive
             // rebuilds create fresh nodes through the normal path.
             self.hydrating = false;
+            crate::scheduler::end_hydration_buffering();
             // Clean / subtree-local outcome: the root was adopted (or
             // remounted in place by `insert`), so it's already `#app`'s
             // child — nothing to swap. Diverging subtrees were already

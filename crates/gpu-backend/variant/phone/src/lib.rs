@@ -64,16 +64,15 @@ where
 }
 
 /// Runtime-server variant of [`run`]. Instead of mounting a
-/// local `app()`, connects to an idealyst dev-host over the
-/// network and renders whatever wire commands the sidecar
-/// streams in. Discovery is by `app_id` (typically the bundle
-/// id) — the dev-server's mDNS TXT record advertises the same
-/// value. Each redraw ticks the runtime-server shell (which
-/// sends `RequestFrame` to drive the sidecar's animation
-/// clock) AND repaints the latest scene; window resizes
-/// propagate to the sidecar via the shell's viewport report.
+/// local `app()`, connects to the idealyst dev-host at `url`
+/// (CLI-baked via `IDEALYST_DEV_ENDPOINT`) and renders whatever
+/// wire commands the sidecar streams in. Each redraw ticks the
+/// runtime-server shell (which sends `RequestFrame` to drive the
+/// sidecar's animation clock) AND repaints the latest scene;
+/// window resizes propagate to the sidecar via the shell's
+/// viewport report.
 #[cfg(feature = "runtime-server")]
-pub fn run_runtime_server(skin: Rc<dyn Painter>, app_id: String) -> Result<(), RunError> {
+pub fn run_runtime_server(skin: Rc<dyn Painter>, url: String) -> Result<(), RunError> {
     host_winit::run_runtime_server(
         DeviceProfile {
             logical_size: (WIDTH, HEIGHT),
@@ -82,6 +81,6 @@ pub fn run_runtime_server(skin: Rc<dyn Painter>, app_id: String) -> Result<(), R
             color_scheme: ColorScheme::Auto,
         },
         skin,
-        app_id,
+        url,
     )
 }

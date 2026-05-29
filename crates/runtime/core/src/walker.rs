@@ -200,6 +200,14 @@ where
         let tree = tree_fn();
         build(&backend, 0, tree)
     });
+    // SSR hydration: drain the navigator SDK's deferred chrome/screen
+    // microtasks NOW — adoption window still open (`finish` not yet run),
+    // no backend borrow held — so they adopt the server's DOM instead of
+    // firing post-`finish` and rebuilding fresh. Mirrors SSR's own
+    // post-`mount` drain. No-op off hydration.
+    if backend.borrow().is_hydrating() {
+        crate::scheduling::drain_buffered_microtasks();
+    }
     backend.borrow_mut().finish(root);
     // Forward any page metadata an author screen declared during the
     // build to the backend (SSR emits <head>; most backends no-op).

@@ -50,6 +50,14 @@ If you're new to the codebase, read the docs in this order:
    lives, and it makes more sense after you've seen what gets handed
    across it.
 
+8. [`accessibility.md`](./accessibility.md). The author-facing
+   accessibility guide — default roles, the `AccessibilityProps` model
+   (roles, traits, live regions, actions), and how it maps to each
+   platform's native AX system.
+   [`accessibility-design.md`](./accessibility-design.md) has the
+   internals: per-platform mapping tables, the Backend-trait surface,
+   and the GPU-backend semantics tree.
+
 ## Crate map
 
 The repo is grouped by concern (`crates/framework/`, `crates/backend/`,

@@ -3,12 +3,13 @@ name = "web-dev-host"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Dev-time HTTP host for web bundles. Serves static files + bridges browser → runtime-server dev-server via mDNS discovery."
+description = "Dev-time HTTP host for web bundles. Serves static files + injects the dev-server URL read from a port-file sentinel."
 
 # Replaces the per-example `serve.py` scripts. Architecturally separate
-# from the runtime-server dev-server itself: runtime-server owns the wire WebSocket, this
-# binary owns the bundle delivery, and the two talk via Bonjour so
-# the user doesn't have to pick or align ports.
+# from the runtime-server dev-server itself: the dev-server owns the wire
+# WebSocket and writes its bound port to a sentinel file; this binary
+# owns the bundle delivery and reads the sentinel to inject
+# `window.IDEALYST_RUNTIME_SERVER_URL` into served HTML.
 
 [[bin]]
 name = "web-dev-host"
@@ -17,6 +18,3 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 dev-http = { workspace = true }
-# Pure-Rust mDNS / DNS-SD. Same crate the runtime-server server uses for
-# advertising; here we use the browse side to locate it.
-mdns-sd = { version = "0.10", default-features = false }

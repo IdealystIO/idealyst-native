@@ -345,6 +345,29 @@ pub trait Backend {
         self.create_view(&crate::accessibility::AccessibilityProps::default())
     }
 
+    /// Whether the backend is mid SSR-hydration adoption. Read by
+    /// [`mount`](crate::mount) to drain deferred microtasks inside the
+    /// adoption window. Default `false`; only the web backend adopts.
+    fn is_hydrating(&self) -> bool {
+        false
+    }
+
+    /// Whether `Element::Lazy` should resolve its chunk and render the
+    /// loaded body, or stop at the placeholder (loading state).
+    ///
+    /// Default `true`: web drives the async chunk load, and native
+    /// compiles the chunk inline (its loader resolves on first poll). The
+    /// **SSR backend returns `false`** so a headless render emits the
+    /// placeholder/loading state rather than synchronously resolving the
+    /// chunk — lazy content (e.g. a GPU `Graphics`/`Simulator` canvas)
+    /// can't render on the server, and shipping the resolved body makes
+    /// the SSR HTML diverge from the client's placeholder (which hydration
+    /// then has to tear down). The live client loads the real chunk after
+    /// hydrating the matching placeholder.
+    fn renders_lazy_chunks(&self) -> bool {
+        true
+    }
+
     /// Stamp a stable identifier on `node` that JS code can find via
     /// `document.getElementById` (web) or analogous mechanisms
     /// elsewhere. Used by `Element::Lazy`'s web handler: the chunk

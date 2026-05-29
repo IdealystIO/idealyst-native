@@ -150,16 +150,3 @@ wasm-split = { workspace = true }
 pollster = { version = "0.4", optional = true }
 log = { version = "0.4", optional = true }
 
-# mDNS responder for the Robot bridge — the running app advertises
-# `_idealyst-robot._tcp` so the MCP server can browse for live apps
-# without env-var plumbing or port files. Gated to **hosted** non-
-# wasm targets:
-# - `target_arch = "wasm32"` excluded because wasm has no socket layer.
-# - `target_os = "espidf"` excluded because `mdns-sd`'s transitive
-#   `if-addrs` crate has no `target_os = "espidf"` cfg branch (cargo
-#   still resolves cross-target deps even when the code paths are
-#   `#[cfg(feature = "robot")]`-gated, so the build breaks at compile
-#   time on embedded). Embedded targets that want robot/mDNS would
-#   use an ESP-IDF-native mDNS responder instead.
-[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "espidf")))'.dependencies]
-mdns-sd = { version = "0.10", default-features = false }

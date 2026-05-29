@@ -583,27 +583,12 @@ impl WebBackend {
         // bump that visually flips two colors. Catastrophic for any
         // N rows × shared-signal pattern.
         //
-        // Key: include the overlay states so distinct (base, overlays)
-        // combinations get distinct class names. We concat each
-        // overlay's content_key with a pseudo-class tag.
-        let mut key = base_key;
-        for (bit, ov) in overlays {
-            key.push(';');
-            key.push_str(state_bit_tag(*bit));
-            key.push(':');
-            key.push_str(&ov.content_key());
-        }
-        // Breakpoint overlays participate in the key too, so distinct
-        // (base, states, breakpoints) combinations get distinct minted
-        // classes. The `@bp_*` tag keeps them from colliding with state
-        // tags above.
-        for (bp, ov) in breakpoint_overlays {
-            key.push(';');
-            key.push('@');
-            key.push_str(bp.axis_name().unwrap_or("__bp_xs"));
-            key.push(':');
-            key.push_str(&ov.content_key());
-        }
+        // Combined key: base + every state overlay + every breakpoint
+        // overlay. Built through `css::variant_class_key` — the SINGLE
+        // SOURCE shared with the SSR backend, so the same
+        // `(base, states, breakpoints)` mints the IDENTICAL class on both
+        // and SSR→web hydration can reuse the server's styling.
+        let key = css::variant_class_key(&base_key, overlays, breakpoint_overlays);
 
         // Cache lookup. Refcount-bump-on-hit MUST happen before we
         // release the old slot below — if the previous slot pointed
@@ -840,20 +825,5 @@ impl WebBackend {
 /// state machine.
 pub(crate) fn color_to_srgb(c: &runtime_core::Color) -> [f32; 4] {
     runtime_core::color::parse_or(&c.0, runtime_core::color::Rgba::BLACK).to_srgb_f32()
-}
-
-
-/// Short string tag for a `StateBits` flag, used as part of the
-/// content key for state-bearing dynamic slots. Distinct tags ensure
-/// distinct keys (and thus distinct minted class names) for
-/// different state combinations.
-fn state_bit_tag(b: runtime_core::StateBits) -> &'static str {
-    match b {
-        runtime_core::StateBits::HOVERED => "h",
-        runtime_core::StateBits::PRESSED => "p",
-        runtime_core::StateBits::FOCUSED => "f",
-        runtime_core::StateBits::DISABLED => "d",
-        _ => "?",
-    }
 }
 

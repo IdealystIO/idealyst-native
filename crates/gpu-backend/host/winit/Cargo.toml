@@ -38,10 +38,9 @@ render-api = { workspace = true }
 render-wgpu = { workspace = true, features = ["embed-font-bytes"] }
 runtime-core = { workspace = true }
 
-# Only used when `runtime-server` is on. Pulls tungstenite + mdns-sd
-# + the worker-thread `RuntimeServerShell` from the shared native-
-# shell crate (same one iOS / Android / macOS / desktop AAS hosts
-# consume).
+# Only used when `runtime-server` is on. Pulls tungstenite + the
+# worker-thread `RuntimeServerShell` from the shared native-shell
+# crate (same one iOS / Android / macOS / desktop AAS hosts consume).
 runtime-server-shell-native = { workspace = true, optional = true }
 
 # Only used when `a11y` is on. Bridges the wgpu backend's parallel

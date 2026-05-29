@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <base href="/" />
+    <title>Idealyst Tutorial — learn the core</title>
+    <style>
+      html, body, #app { height: 100%; margin: 0; }
+      /*
+       * The app paints its own background via the `color-background`
+       * token on the screen root; this neutral light value just covers
+       * first paint and any overscroll gutter before the app mounts.
+       */
+      body {
+        background: #ffffff;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import init from "/pkg/tutorial.js";
+      init();
+    </script>
+  </body>
+</html>

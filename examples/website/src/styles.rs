@@ -680,6 +680,60 @@ stylesheet! {
 }
 
 // =============================================================================
+// Demo showcase card — one card split into two color regions: a clean
+// `color-surface` "preview" area on top and a tinted `color-surface-alt`
+// "code" area below, divided by a hairline top border. The distinct
+// backgrounds give a clear visual break between the running demo and its
+// source. (The animation stages also use `color-surface-alt`, so without
+// separate regions the stage and the code block read as one continuous
+// block — see `DemoStageRow`.) Mirrors idea-ui's `Card` chrome (surface
+// bg, `color-border`, `radius-lg`) so it sits consistently beside the
+// plain `Card`s used by the component sections.
+// =============================================================================
+
+stylesheet! {
+    pub ShowcaseCard<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            // Clip the tinted code region's background to the rounded
+            // corners (otherwise its square bottom corners poke past the
+            // card radius).
+            overflow: Overflow::Hidden,
+        }
+    }
+}
+
+stylesheet! {
+    pub ShowcaseDemo<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
+            padding: 20.0,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub ShowcaseCode<IdeaThemeRef> {
+        base(_t) {
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+            border_top_width: 1.0,
+            border_top_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            padding: 20.0,
+            overflow: Overflow::Hidden,
+            // Let the region shrink below its longest code line's
+            // intrinsic width (paired with the responsive `<pre>` wrap).
+            min_width: 0.0,
+        }
+    }
+}
+
+// =============================================================================
 // Differentiator grid — the cards under the hero on Home.
 // =============================================================================
 

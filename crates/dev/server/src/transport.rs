@@ -45,7 +45,6 @@ use std::io::ErrorKind;
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tungstenite::{Message, WebSocket};
 use runtime_core::ColorScheme;
 use wire::{AppToDev, ClientIdentity, DevToApp, WireColorScheme, WireTheme, PROTOCOL_VERSION};
@@ -91,11 +90,6 @@ fn wire_color_scheme_to_core(s: WireColorScheme) -> ColorScheme {
 }
 
 use crate::WireRecordingBackend;
-
-/// DNS-SD service type. Clients (iOS/web/etc.) browse for this and
-/// filter the matched services' TXT records by `app_id` to find the
-/// right server.
-pub const SERVICE_TYPE: &str = "_idealyst-dev._tcp.local.";
 
 /// Tick between polls. Bounds the worst-case forwarding latency.
 /// 20ms is well under human-perceptible delay for interaction
@@ -196,14 +190,13 @@ impl SessionTable {
 /// the supplied recorder. Blocks forever; returns only on a fatal
 /// socket error.
 ///
-/// `app_id` is what clients filter on via the mDNS TXT record to
-/// find the right server. Multiple dev-servers can run on the same
-/// machine — each advertises with its own id and ephemeral port.
-///
 /// Pass `addr` of `"0.0.0.0:0"` to let the OS assign a port (and
 /// listen on every interface, so a phone on LAN can connect). The
-/// actual bound port goes into the mDNS advertisement, so clients
-/// don't need to know it ahead of time.
+/// caller is responsible for telling clients where the bound port
+/// lives — the dev-server publishes it via the `port_mirror` arg /
+/// `IDEALYST_RUNTIME_SERVER_PORT_FILE` env var, and the CLI bakes
+/// `IDEALYST_DEV_ENDPOINT=ws://host:port` into the wrapper builds at
+/// `idealyst dev` time.
 ///
 /// `recorder` is retained as a "primary" mirror for single-process
 /// (no-sidecar) mode — that's the only path that runs the user code
@@ -213,9 +206,8 @@ impl SessionTable {
 pub fn serve(
     addr: impl ToSocketAddrs,
     recorder: WireRecordingBackend,
-    app_id: &str,
 ) -> std::io::Result<()> {
-    serve_with_tick_and_port(addr, recorder, app_id, || {}, None, None, None)
+    serve_with_tick_and_port(addr, recorder, || {}, None, None, None)
 }
 
 /// Default `SessionMode` for the legacy wrappers (`serve`,
@@ -235,10 +227,9 @@ const LEGACY_DEFAULT_MODE: SessionMode = SessionMode::PerClient;
 pub fn serve_with_port_mirror(
     addr: impl ToSocketAddrs,
     recorder: WireRecordingBackend,
-    app_id: &str,
     port_mirror: std::sync::Arc<std::sync::Mutex<Option<u16>>>,
 ) -> std::io::Result<()> {
-    serve_with_tick_and_port(addr, recorder, app_id, || {}, Some(port_mirror), None, None)
+    serve_with_tick_and_port(addr, recorder, || {}, Some(port_mirror), None, None)
 }
 
 /// Same as [`serve_with_port_mirror`] but also forwards every
@@ -249,14 +240,12 @@ pub fn serve_with_port_mirror(
 pub fn serve_with_sidecar(
     addr: impl ToSocketAddrs,
     recorder: WireRecordingBackend,
-    app_id: &str,
     port_mirror: std::sync::Arc<std::sync::Mutex<Option<u16>>>,
     sidecar_slot: crate::SidecarSlot,
 ) -> std::io::Result<()> {
     serve_with_tick_and_port(
         addr,
         recorder,
-        app_id,
         || {},
         Some(port_mirror),
         Some(sidecar_slot),
@@ -276,7 +265,6 @@ pub fn serve_with_sidecar(
 pub fn serve_with_sidecar_and_tracker(
     addr: impl ToSocketAddrs,
     recorder: WireRecordingBackend,
-    app_id: &str,
     port_mirror: std::sync::Arc<std::sync::Mutex<Option<u16>>>,
     sidecar_slot: crate::SidecarSlot,
     tracker: crate::SessionTracker,
@@ -285,7 +273,6 @@ pub fn serve_with_sidecar_and_tracker(
     serve_with_tick_and_port_and_mode(
         addr,
         recorder,
-        app_id,
         || {},
         Some(port_mirror),
         Some(sidecar_slot),
@@ -299,13 +286,12 @@ pub fn serve_with_sidecar_and_tracker(
 pub fn serve_with_tick<F>(
     addr: impl ToSocketAddrs,
     recorder: WireRecordingBackend,
-    app_id: &str,
     on_tick: F,
 ) -> std::io::Result<()>
 where
     F: FnMut(),
 {
-    serve_with_tick_and_port(addr, recorder, app_id, on_tick, None, None, None)
+    serve_with_tick_and_port(addr, recorder, on_tick, None, None, None)
 }
 
 /// Public entry. Forwards to [`serve_with_tick_and_port_and_mode`]
@@ -314,7 +300,6 @@ where
 pub fn serve_with_tick_and_port<F>(
     addr: impl ToSocketAddrs,
     recorder: WireRecordingBackend,
-    app_id: &str,
     on_tick: F,
     port_mirror: Option<std::sync::Arc<std::sync::Mutex<Option<u16>>>>,
     sidecar_slot: Option<crate::SidecarSlot>,
@@ -326,7 +311,6 @@ where
     serve_with_tick_and_port_and_mode(
         addr,
         recorder,
-        app_id,
         on_tick,
         port_mirror,
         sidecar_slot,
@@ -340,7 +324,6 @@ where
 pub fn serve_with_tick_and_port_and_mode<F>(
     addr: impl ToSocketAddrs,
     recorder: WireRecordingBackend,
-    app_id: &str,
     mut on_tick: F,
     port_mirror: Option<std::sync::Arc<std::sync::Mutex<Option<u16>>>>,
     sidecar_slot: Option<crate::SidecarSlot>,
@@ -361,21 +344,6 @@ where
             }
         }
     }
-
-    // Hold the mDNS handle for the life of the server. Drop unregisters.
-    let _mdns = match bound {
-        Some(a) => match advertise_mdns(app_id, a.port()) {
-            Ok(h) => Some(h),
-            Err(e) => {
-                eprintln!(
-                    "[dev-server] mDNS advertise failed (clients won't auto-discover): {}",
-                    e
-                );
-                None
-            }
-        },
-        None => None,
-    };
 
     let mut clients: Vec<ClientConn> = Vec::new();
     let mut sessions = SessionTable::new();
@@ -1055,50 +1023,9 @@ where
 pub fn serve_with_robot_bridge(
     addr: impl ToSocketAddrs,
     recorder: WireRecordingBackend,
-    app_id: &str,
     bridge: runtime_core::robot::bridge::BridgeHandle,
 ) -> std::io::Result<()> {
-    serve_with_tick(addr, recorder, app_id, move || bridge.poll())
-}
-
-/// RAII wrapper around the mDNS service registration so the
-/// advertisement goes away when `serve` returns.
-struct MdnsHandle {
-    daemon: ServiceDaemon,
-    fullname: String,
-}
-
-impl Drop for MdnsHandle {
-    fn drop(&mut self) {
-        let _ = self.daemon.unregister(&self.fullname);
-        let _ = self.daemon.shutdown();
-    }
-}
-
-fn advertise_mdns(app_id: &str, port: u16) -> Result<MdnsHandle, Box<dyn std::error::Error>> {
-    let daemon = ServiceDaemon::new()?;
-    let pid = std::process::id();
-    let app_id_label = app_id.replace('.', "-");
-    let instance_name = format!("{}-{}", app_id_label, pid);
-    let hostname = format!("idealyst-{}-{}.local.", app_id_label, pid);
-    let proto = PROTOCOL_VERSION.to_string();
-    // TXT carries an `aas_sessions=multi` tag so older clients can detect
-    // session-aware servers — useful when we eventually add per-session
-    // browse UI; harmless for unaware clients (they just ignore it).
-    let txt: [(&str, &str); 3] = [
-        ("app_id", app_id),
-        ("proto", proto.as_str()),
-        ("aas_sessions", "multi"),
-    ];
-    let info = ServiceInfo::new(SERVICE_TYPE, &instance_name, &hostname, "", port, &txt[..])?
-        .enable_addr_auto();
-    let fullname = info.get_fullname().to_string();
-    daemon.register(info)?;
-    eprintln!(
-        "[dev-server] advertised via mDNS as {} ({}:{} on this host)",
-        fullname, hostname, port
-    );
-    Ok(MdnsHandle { daemon, fullname })
+    serve_with_tick(addr, recorder, move || bridge.poll())
 }
 
 #[derive(Debug)]

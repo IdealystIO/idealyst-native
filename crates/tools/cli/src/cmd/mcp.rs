@@ -7,12 +7,13 @@
 //! - The **static catalog** of `#[component]` / `#[idealyst_tool]`
 //!   functions, plus framework primitives / utilities / guides.
 //!   Sourced live from running apps over their Robot bridge's
-//!   `get_catalog` command (discovered via mDNS), or from a project's
-//!   catalog binary at startup when no app is running.
+//!   `get_catalog` command (discovered via `~/.idealyst/apps/`
+//!   registration files), or from a project's catalog binary at
+//!   startup when no app is running.
 //! - The **Robot tools**: `find_element`, `click`, `type_text`,
 //!   `get_snapshot`, and so on. These proxy to the running app's
-//!   Robot bridge over TCP, discovered via mDNS
-//!   (`_idealyst-robot._tcp.local.`).
+//!   Robot bridge over TCP, discovered via the same
+//!   `~/.idealyst/apps/<name>-<pid>.json` files.
 //!
 //! Either side degrades gracefully — when no app is running the
 //! catalog falls back to the in-process catalog (or `--project-root`
@@ -114,20 +115,21 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     let mut opts = mcp_server::ServerOptions::new();
-    // Robot routing is mDNS-only now — no explicit `--bridge` flag.
-    // The CatalogService's discovery thread maintains a live table
-    // of `_idealyst-robot._tcp` advertisements; the resolver picks
-    // the unique live app, or by `app` arg when multiple are
-    // running. Off when `--no-robot` is set.
+    // Robot routing reads `~/.idealyst/apps/<name>-<pid>.json` files
+    // the running app's bridge writes on bind. No explicit `--bridge`
+    // flag; the CatalogService's discovery thread maintains a live
+    // table from that directory and the resolver picks the unique
+    // live app, or by `app` arg when multiple are running. Off when
+    // `--no-robot` is set.
     if !args.no_robot {
-        opts = opts.with_robot_mdns();
+        opts = opts.with_robot_discovery();
     }
 
     // Catalog binary resolution:
     // 1. Explicit `--from-bin` wins.
     // 2. `--project-root <dir>` looks for `<dir>/target/{debug,release}/catalog`.
-    // 3. Neither flag: skip — the catalog is whatever the mDNS-discovered
-    //    apps surface live, falling back to the in-process catalog.
+    // 3. Neither flag: skip — the catalog is whatever the discovered
+    //    live apps surface, falling back to the in-process catalog.
     let catalog_bin = args.from_bin.or_else(|| {
         let root = args.project_root.as_ref()?;
         find_catalog_binary(root)

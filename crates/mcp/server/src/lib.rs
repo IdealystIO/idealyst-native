@@ -29,11 +29,11 @@ use rmcp::ServiceExt;
 #[derive(Default)]
 pub struct ServerOptions {
     /// When true, the server's Robot tools (find_element, click, ...)
-    /// are advertised. Routing is mDNS-only — the server's
-    /// `DiscoveryTable` finds live apps via
-    /// `_idealyst-robot._tcp.local.` and the resolver picks one per
-    /// call. When false the Robot tools are omitted from the tool
-    /// list entirely.
+    /// are advertised. Routing is file-discovery only — the server's
+    /// `DiscoveryTable` scans `~/.idealyst/apps/<name>-<pid>.json`
+    /// registration files written by the running app's Robot bridge,
+    /// and the resolver picks one per call. When false the Robot
+    /// tools are omitted from the tool list entirely.
     robot_enabled: bool,
     /// Command factory for the subprocess catalog extractor. When
     /// set, the server invokes the command at startup (and on each
@@ -50,11 +50,20 @@ impl ServerOptions {
         Self::default()
     }
 
-    /// Enable Robot tools. Routing is mDNS-only (no explicit
-    /// bridge address — the running app advertises itself).
-    pub fn with_robot_mdns(mut self) -> Self {
+    /// Enable Robot tools. Routing reads `~/.idealyst/apps/`
+    /// registration files written by the running app's bridge —
+    /// no explicit bridge address needed.
+    pub fn with_robot_discovery(mut self) -> Self {
         self.robot_enabled = true;
         self
+    }
+
+    /// Deprecated alias for [`Self::with_robot_discovery`] kept so
+    /// out-of-tree consumers don't break across the discovery
+    /// transport change.
+    #[deprecated(note = "renamed to with_robot_discovery; mDNS no longer used")]
+    pub fn with_robot_mdns(self) -> Self {
+        self.with_robot_discovery()
     }
 
     pub fn with_subprocess_catalog<F>(mut self, factory: F) -> Self
@@ -79,18 +88,17 @@ pub async fn run_stdio_with_full_options(opts: ServerOptions) -> Result<()> {
     init_tracing();
     tracing::info!(
         "starting MCP server (robot={}, subprocess={}, watch_paths={})",
-        if opts.robot_enabled { "mdns" } else { "disabled" },
+        if opts.robot_enabled { "discovery" } else { "disabled" },
         if opts.subprocess.is_some() { "yes" } else { "no" },
         opts.watch_paths.len(),
     );
 
     let svc = CatalogService::new();
-    // When robot is disabled, we just don't expose the Robot tools.
-    // The CatalogService unconditionally instantiates them today
-    // (rmcp's `#[tool]` is a compile-time attribute), so "disabled"
-    // means every Robot call returns "no app running" via the
-    // mDNS-empty path. Acceptable surface for now; a follow-up could
-    // gate the tools at type level.
+    // The CatalogService unconditionally instantiates the Robot tools
+    // today (rmcp's `#[tool]` is a compile-time attribute), so
+    // "disabled" means every Robot call returns "no app running" via
+    // the empty-table path. Acceptable surface for now; a follow-up
+    // could gate the tools at type level.
     let _ = opts.robot_enabled;
 
     // Pre-serve subprocess load: do this BEFORE binding to stdio so
@@ -126,12 +134,11 @@ pub async fn run_stdio_with_full_options(opts: ServerOptions) -> Result<()> {
 }
 
 /// Convenience wrapper: catalog-only, optionally with Robot tools
-/// enabled (mDNS-driven). The legacy `robot_addr: Option<&str>` shape
-/// is gone — discovery is mDNS-only now.
+/// enabled. Discovery scans `~/.idealyst/apps/` for live registrations.
 pub async fn run_stdio_with_options(enable_robot: bool) -> Result<()> {
     let mut opts = ServerOptions::new();
     if enable_robot {
-        opts = opts.with_robot_mdns();
+        opts = opts.with_robot_discovery();
     }
     run_stdio_with_full_options(opts).await
 }

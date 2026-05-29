@@ -1,43 +1,51 @@
-//! mDNS-based discovery of running Idealyst apps.
+//! Filesystem-based discovery of running Idealyst apps.
 //!
-//! The server browses `_idealyst-robot._tcp.local.` on a background
-//! thread and maintains an in-memory map of currently-live apps
-//! keyed by their `app` TXT-record value. When an app's mDNS service
-//! is removed (graceful shutdown or TTL expiry), the map entry goes
-//! with it — no stale `(name, addr)` pairs surviving past app exit.
+//! The Robot bridge inside each running app writes
+//! `~/.idealyst/apps/<name>-<pid>.json` on bind (and removes it via
+//! RAII on graceful shutdown). The MCP server scans that directory
+//! to populate an in-memory map of currently-live apps keyed by app
+//! name.
 //!
-//! This complements (rather than replaces) `~/.idealyst/registry.json`.
-//! The registry stays as the long-form record carrying catalog-bin
-//! paths and survives mDNS-hostile network environments (corporate
-//! VPN, blocked multicast). The MCP server consults mDNS first and
-//! the registry second.
+//! Replaces the old mDNS / `_idealyst-robot._tcp.local.` discovery —
+//! the file-based path avoids multicast firewall headaches on
+//! corporate / VPN networks and produces deterministic results
+//! across rerun cycles.
+//!
+//! Liveness check: each scan does `kill(pid, 0)` (a no-op syscall
+//! that fails with ESRCH when the process is gone) to filter ghost
+//! entries that a crash left behind without RAII running. Stale files
+//! are deleted at scan time.
+//!
+//! The module name (`mdns_discovery`) and the `mdns` field name on
+//! [`crate::catalog_service::CatalogService`] are kept for now to
+//! keep the diff focused; the surface is identical from the caller's
+//! perspective.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-/// Service type advertised by the running app's bridge — must match
-/// `runtime_core::robot::bridge::MDNS_SERVICE_TYPE`.
-pub const SERVICE_TYPE: &str = "_idealyst-robot._tcp.local.";
-
-/// One live app as discovered via mDNS.
+/// One live app as discovered via the per-process registration file.
 #[derive(Debug, Clone)]
 pub struct DiscoveredApp {
-    /// `app` TXT-record value — the `runtime_core::AppIdentity::name`.
+    /// `name` field from the JSON — the
+    /// [`runtime_core::robot::bridge::AppIdentity::name`].
     pub name: String,
-    /// `bundle_id` TXT-record value, if any.
+    /// `bundle_id` from the JSON, if any.
     pub bundle_id: Option<String>,
-    /// `project_root` TXT-record value, if any. May be empty when
-    /// the path was too long to fit in the TXT record (see
-    /// `runtime_core::robot::bridge`'s advertising code).
+    /// `project_root` from the JSON, if any.
     pub project_root: Option<String>,
-    /// `catalog_bin` TXT-record value, if any. The server uses this
-    /// as a fallback when the bridge's `get_catalog` command isn't
-    /// available (e.g. older app versions).
+    /// Catalog-bin path — populated out-of-band today (the bridge JSON
+    /// doesn't carry it). Future revision can either embed it in the
+    /// registration file or have the MCP server query the bridge's
+    /// `get_identity` command for it.
     pub catalog_bin: Option<String>,
-    /// `pid` TXT-record value, parsed.
+    /// `pid` from the JSON.
     pub pid: u32,
-    /// Bridge socket address — `<ip>:<port>` where the Robot bridge
-    /// is listening.
+    /// `<host>:<port>` where the Robot bridge is listening. Always
+    /// `127.0.0.1:<port>` — the bridge binds `0.0.0.0` but the MCP
+    /// server runs on the same machine.
     pub bridge_addr: String,
 }
 
@@ -49,8 +57,8 @@ pub struct DiscoveryTable {
 }
 
 impl DiscoveryTable {
-    /// Look up a service by its `app` TXT key. Returns a snapshot —
-    /// safe to use even if the entry vanishes mid-call.
+    /// Look up a service by name. Returns a snapshot — safe to use
+    /// even if the entry vanishes mid-call.
     pub fn get(&self, name: &str) -> Option<DiscoveredApp> {
         self.inner.lock().ok()?.get(name).cloned()
     }
@@ -67,128 +75,122 @@ impl DiscoveryTable {
     }
 }
 
-/// Start a background thread that browses for `_idealyst-robot._tcp`
-/// and keeps the [`DiscoveryTable`] up to date. Returns the table
-/// immediately; the thread runs for the lifetime of the process.
+/// Start a background thread that periodically scans
+/// `~/.idealyst/apps/` for live registration files and keeps the
+/// [`DiscoveryTable`] up to date. Returns the table immediately;
+/// the thread runs for the lifetime of the process.
 ///
-/// Browser failure (daemon init error, no network) returns an empty
-/// table that simply never populates. Callers consult the registry
-/// as fallback in that case.
+/// If the home dir or apps directory doesn't exist yet the scanner
+/// just keeps polling — apps that launch later get picked up on
+/// the next pass.
 pub fn start() -> DiscoveryTable {
     let table = DiscoveryTable::default();
     let table_for_thread = table.clone();
 
     std::thread::Builder::new()
-        .name("idealyst-mdns-browser".into())
-        .spawn(move || run_browser(table_for_thread))
+        .name("idealyst-apps-scanner".into())
+        .spawn(move || run_scanner(table_for_thread))
         .ok();
 
     table
 }
 
-fn run_browser(table: DiscoveryTable) {
-    let daemon = match mdns_sd::ServiceDaemon::new() {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::warn!("mDNS daemon init failed ({}); discovery limited to registry", e);
-            return;
-        }
-    };
-    let receiver = match daemon.browse(SERVICE_TYPE) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!("mDNS browse failed ({}); discovery limited to registry", e);
-            return;
-        }
-    };
+/// 1s scan cadence: fast enough that newly-launched apps show up
+/// in the MCP server's `list_apps` within one tick, cheap enough to
+/// not matter — each scan is a `readdir` + small-JSON parse per
+/// entry.
+const SCAN_INTERVAL: Duration = Duration::from_secs(1);
 
-    // Browser events are pushed onto the receiver; we just drain
-    // them and react. The crate handles re-querying / TTL / removals.
-    while let Ok(event) = receiver.recv() {
-        match event {
-            mdns_sd::ServiceEvent::ServiceResolved(info) => {
-                if let Some(app) = parse_service(&info) {
-                    if let Ok(mut guard) = table.inner.lock() {
-                        guard.insert(app.name.clone(), app);
-                    }
-                }
-            }
-            mdns_sd::ServiceEvent::ServiceRemoved(_type, fullname) => {
-                // The fullname is `<instance>.<service-type>`. We
-                // keyed the table by `app` (from TXT), not the
-                // instance name — so we have to walk the table to
-                // find the matching entry. Cheap; the table is tiny.
-                if let Ok(mut guard) = table.inner.lock() {
-                    guard.retain(|_, v| !fullname.starts_with(&format!("{}-{}", v.name.replace('.', "-"), v.pid)));
-                }
-            }
-            _ => {}
+fn run_scanner(table: DiscoveryTable) {
+    loop {
+        if let Some(dir) = apps_dir() {
+            rescan_into(&dir, &table);
         }
+        std::thread::sleep(SCAN_INTERVAL);
     }
 }
 
-fn parse_service(info: &mdns_sd::ServiceInfo) -> Option<DiscoveredApp> {
-    // mdns-sd's TXT iterator hands back `(key, value)` pairs as
-    // borrowed slices/strs. The values can contain arbitrary bytes
-    // but for our records they're all UTF-8 strings the framework
-    // emitted.
-    let mut name: Option<String> = None;
-    let mut bundle_id: Option<String> = None;
-    let mut project_root: Option<String> = None;
-    let mut catalog_bin: Option<String> = None;
-    let mut pid: u32 = 0;
-    for prop in info.get_properties().iter() {
-        let k = prop.key();
-        let v = prop.val_str();
-        match k {
-            "app" => {
-                if !v.is_empty() {
-                    name = Some(v.to_string());
-                }
-            }
-            "bundle_id" => {
-                if !v.is_empty() {
-                    bundle_id = Some(v.to_string());
-                }
-            }
-            "project_root" => {
-                if !v.is_empty() {
-                    project_root = Some(v.to_string());
-                }
-            }
-            "catalog_bin" => {
-                if !v.is_empty() {
-                    catalog_bin = Some(v.to_string());
-                }
-            }
-            "pid" => {
-                if let Ok(n) = v.parse::<u32>() {
-                    pid = n;
-                }
-            }
-            _ => {}
+fn rescan_into(dir: &Path, table: &DiscoveryTable) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut found: HashMap<String, DiscoveredApp> = HashMap::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
         }
+        let Some(app) = parse_registration_file(&path) else {
+            continue;
+        };
+        // Liveness check — drop stale files left by crashed processes
+        // so the MCP server doesn't try to dial dead ports. ESRCH on
+        // `kill(pid, 0)` means the process is gone; EPERM means it's
+        // alive (just not ours to signal).
+        if !pid_is_live(app.pid) {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+        found.insert(app.name.clone(), app);
     }
-    let name = name?;
-    // Pick the first reachable address. The bridge binds 0.0.0.0,
-    // so any resolved address should work. Prefer IPv4 for the
-    // typical dev setup (Android emulator's NAT routes IPv4 from
-    // the host).
-    let addr = info
-        .get_addresses()
-        .iter()
-        .find(|a| a.is_ipv4())
-        .copied()
-        .or_else(|| info.get_addresses().iter().next().copied())?;
-    let port = info.get_port();
-    let bridge_addr = format!("{}:{}", addr, port);
+    if let Ok(mut guard) = table.inner.lock() {
+        *guard = found;
+    }
+}
 
+fn parse_registration_file(path: &Path) -> Option<DiscoveredApp> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let name = v.get("name")?.as_str()?.to_string();
+    let pid = v.get("pid")?.as_u64()? as u32;
+    let port = v.get("port")?.as_u64()? as u16;
+    let bundle_id = v
+        .get("bundle_id")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    let project_root = v
+        .get("project_root")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    let catalog_bin = v
+        .get("catalog_bin")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
     Some(DiscoveredApp {
         name,
         bundle_id,
         project_root,
         catalog_bin,
         pid,
-        bridge_addr,
+        bridge_addr: format!("127.0.0.1:{port}"),
     })
+}
+
+/// `kill(pid, 0)` — succeeds if the process is alive (or alive but
+/// not signalable by us → EPERM); fails with ESRCH when gone.
+#[cfg(unix)]
+fn pid_is_live(pid: u32) -> bool {
+    // SAFETY: `kill` with sig 0 is a no-op signal check on POSIX.
+    let rc = unsafe { libc::kill(pid as i32, 0) };
+    if rc == 0 {
+        return true;
+    }
+    let err = std::io::Error::last_os_error();
+    matches!(err.raw_os_error(), Some(libc::EPERM))
+}
+
+#[cfg(not(unix))]
+fn pid_is_live(_pid: u32) -> bool {
+    // Windows: punt for now; treat every registration as live and
+    // rely on the bridge's RAII Drop to clean up on graceful exit.
+    // Real liveness check would use `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`
+    // + `GetExitCodeProcess`.
+    true
+}
+
+fn apps_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)?;
+    Some(home.join(".idealyst").join("apps"))
 }

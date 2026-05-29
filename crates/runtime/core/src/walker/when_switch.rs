@@ -92,23 +92,34 @@ fn build_when_closure<B: Backend + 'static>(
     let compute = cond.compute.clone();
     let _e = Effect::new(move || {
         let active = (compute)();
+        let hydrating = backend_for_effect.borrow().is_hydrating();
 
         // Drop the previous branch's scope before building the new one,
-        // freeing its signals + effects atomically.
-        *branch_scope_for_effect.borrow_mut() = None;
-        backend_for_effect
-            .borrow_mut()
-            .clear_children(&placeholder_for_effect);
+        // freeing its signals + effects atomically. Skipped on the first
+        // fire during hydration: there is no previous scope (it's None),
+        // and we MUST NOT clear the SSR arm children — the build below
+        // walks through them via the hydration cursor and adopts.
+        if !hydrating {
+            *branch_scope_for_effect.borrow_mut() = None;
+            backend_for_effect
+                .borrow_mut()
+                .clear_children(&placeholder_for_effect);
+        }
 
         // Build inside a fresh nested scope. `untrack` keeps inner setup
         // reads from subscribing to *this* outer effect — inner effects
-        // subscribe themselves when they run.
+        // subscribe themselves when they run. Under hydration the
+        // walker's `create_*` adopt the anchor's SSR children; under
+        // a normal mount they build fresh and we `insert` below.
         let mut new_scope = Box::new(reactive::Scope::new());
         untrack(|| {
             reactive::with_scope(&mut new_scope, || {
                 let branch = if active { then() } else { otherwise() };
                 let child_node = super::build(&backend_for_effect, 0, branch);
                 let mut placeholder_mut = placeholder_for_effect.clone();
+                // `insert` is a same-parent move under hydration (the
+                // adopted node is already an anchor child) — keeping
+                // the call shape identical between paths.
                 backend_for_effect
                     .borrow_mut()
                     .insert(&mut placeholder_mut, child_node);
@@ -253,6 +264,43 @@ fn build_switch_closure<B: Backend + 'static>(
     let arms: Rc<Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Element>)>> = Rc::new(arms);
     let default: Rc<dyn Fn() -> Element> = default.into();
 
+    // Hydration: build the active arm INLINE so the walker descends
+    // through the SSR arm's nodes and adopts them (the cursor advances
+    // past the anchor subtree naturally). Without this, the deferred
+    // microtask below runs AFTER the walker has already continued past
+    // the switch — by which point the cursor is parked on the SSR
+    // arm's first child, the next sibling tries to adopt it and tag-
+    // mismatches, and the microtask itself then `clear_children`s the
+    // SSR DOM and rebuilds from scratch. With it, branch_scope and
+    // last_key are seeded so the Effect's first scheduled microtask
+    // recognises "same key already mounted" and no-ops; subsequent
+    // re-keys (theme toggle etc.) take the normal deferred path.
+    if backend.borrow().is_hydrating() {
+        let new_key = (compute)();
+        let mut new_scope = Box::new(reactive::Scope::new());
+        untrack(|| {
+            reactive::with_scope(&mut new_scope, || {
+                let branch = arms
+                    .iter()
+                    .find(|(pat, _)| pat == &new_key)
+                    .map(|(_, builder)| builder())
+                    .unwrap_or_else(|| (default)());
+                // Walk the arm: each `create_*` calls `hydrate_next`,
+                // adopting the SSR DOM under the anchor. `super::build`
+                // returns the arm's root node — for adopted SSR, that
+                // node is already a child of the anchor, so the explicit
+                // `insert` below is a same-parent `append_child` (move
+                // to end). Harmless for a single-child arm; matches the
+                // deferred path's call shape.
+                let child_node = super::build(&backend, 0, branch);
+                let mut placeholder_mut = placeholder.clone();
+                backend.borrow_mut().insert(&mut placeholder_mut, child_node);
+            });
+        });
+        *branch_scope.borrow_mut() = Some(new_scope);
+        *last_key.borrow_mut() = Some(new_key);
+    }
+
     let _e = Effect::new(move || {
         let new_key = (compute)();
 
@@ -284,6 +332,15 @@ fn build_switch_closure<B: Backend + 'static>(
                 if same_as_last {
                     return;
                 }
+            }
+
+            // Buffered first fire during hydration: the inline build
+            // above already mounted the arm against the SSR DOM, so the
+            // wipe-and-rebuild below would discard adopted nodes. After
+            // `finish()` clears `hydrating`, subsequent re-keys reach
+            // the normal path.
+            if backend_for_microtask.borrow().is_hydrating() {
+                return;
             }
 
             // Diagnostic timing for the Switch re-key path. With

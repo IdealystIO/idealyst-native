@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use build_ios::{parse_manifest, FrameworkSource, Manifest};
+use build_ios::{font_preload_tags, inject_into_head, parse_manifest, FrameworkSource, Manifest};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
@@ -137,6 +137,8 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     )?;
     wasm_bindgen_build(&original_wasm, &wrapper_pkg, &manifest.lib_name)
         .with_context(|| "wasm-bindgen")?;
+    neutralize_command_export_wrappers(&wrapper_pkg, &manifest.lib_name)
+        .with_context(|| "wasm-bindgen command_export neutralize")?;
     run_wasm_split(&original_wasm, &wrapper_pkg, &manifest.lib_name)
         .with_context(|| "wasm-split-cli post-build")?;
     if opts.release {
@@ -151,6 +153,15 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             format!("sync {} → {}", wrapper_pkg.display(), staged_pkg.display())
         })?;
         strip_wasm_pack_metadata(&staged_pkg);
+        // Rewrite the staged `index.html` to preload the project's
+        // declared fonts. Has to run BEFORE `gzip_bundle` (which
+        // overwrites `index.html` with gzipped bytes) so the gzipped
+        // copy carries the preload tags. No-op when the user hasn't
+        // declared `[package.metadata.idealyst.app.web].preload_fonts`.
+        inject_font_preloads_into_staged_index(
+            &staged.join("index.html"),
+            &manifest.app.web.preload_fonts,
+        )?;
         if opts.gzip {
             gzip_bundle(&staged).with_context(|| format!("gzip bundle at {}", staged.display()))?;
         }
@@ -216,6 +227,26 @@ pub fn stage_bundle(project_dir: &Path, out_dir: &Path) -> Result<PathBuf> {
     }
 
     fs::canonicalize(out_dir).with_context(|| format!("canonicalize {}", out_dir.display()))
+}
+
+/// Read `index_path`, splice `<link rel="preload">` tags for every
+/// font in `paths` right before `</head>`, write it back. No-op when
+/// `paths` is empty — most projects don't declare preloads.
+///
+/// Mirrors the dev-http path: both call the same `font_preload_tags`
+/// + `inject_into_head` helpers so the dev loop and the deployed
+/// bundle preload the same set from the same TOML list.
+fn inject_font_preloads_into_staged_index(index_path: &Path, paths: &[String]) -> Result<()> {
+    let snippet = font_preload_tags(paths);
+    if snippet.is_empty() {
+        return Ok(());
+    }
+    let html = fs::read_to_string(index_path)
+        .with_context(|| format!("read {}", index_path.display()))?;
+    let rewritten = inject_into_head(html, &snippet);
+    fs::write(index_path, rewritten)
+        .with_context(|| format!("write {}", index_path.display()))?;
+    Ok(())
 }
 
 /// Drop wasm-pack housekeeping files from a staged `pkg/`. They're
@@ -940,6 +971,34 @@ fn wasm_opt_pkg(pkg_dir: &Path) -> Result<()> {
 /// Skips silently when the wasm has no `#[wasm_split]` annotations
 /// (wasm-split-cli will emit just `main.wasm` with no chunks; we
 /// detect that and leave the pkg dir alone).
+/// Strip wasm-bindgen 0.2.122's `*.command_export` wrappers from the
+/// bindgened wasm in place — without this, every JS↔wasm round trip
+/// (string marshal, closure invoke) re-runs `__wasm_call_ctors`, which
+/// re-executes every `inventory::submit!`, double-submitting items into
+/// `inventory`'s global linked list and eventually trapping with
+/// `RuntimeError: memory access out of bounds` somewhere in the next
+/// list traversal. See [`wasm_split_cli::neutralize_command_export_wrappers`]
+/// for the underlying patch (and regression tests). Runs between
+/// `wasm-bindgen` and `wasm-split`; `wasm-split`'s reachability walker
+/// drops the now-orphaned wrapper functions for free.
+fn neutralize_command_export_wrappers(pkg_dir: &Path, lib_name: &str) -> Result<()> {
+    let bindgened_path = pkg_dir.join(format!("{lib_name}_bg.wasm"));
+    let bindgened = fs::read(&bindgened_path)
+        .with_context(|| format!("read {}", bindgened_path.display()))?;
+    let before_len = bindgened.len();
+    let patched = wasm_split_cli::neutralize_command_export_wrappers(&bindgened)
+        .with_context(|| "walrus: rewrite *.command_export exports → bare helpers")?;
+    fs::write(&bindgened_path, &patched)
+        .with_context(|| format!("write {}", bindgened_path.display()))?;
+    eprintln!(
+        "[build-web] command_export neutralized ({} → {} bytes) in {}",
+        before_len,
+        patched.len(),
+        bindgened_path.display(),
+    );
+    Ok(())
+}
+
 fn run_wasm_split(original_wasm: &Path, pkg_dir: &Path, lib_name: &str) -> Result<()> {
     let bindgened_wasm = pkg_dir.join(format!("{lib_name}_bg.wasm"));
     if !bindgened_wasm.is_file() {
@@ -1159,6 +1218,7 @@ mod regression_tests {
                 },
                 targets: Vec::new(),
                 server_bin: None,
+                web: Default::default(),
             },
         }
     }

@@ -232,6 +232,18 @@ pub struct MockBackendConfig {
     /// parent (via `remove_child`) instead of nesting them under a
     /// `create_reactive_anchor`. Lets tests verify the anchorless path.
     pub supports_child_splice: bool,
+    /// Controls `Backend::renders_lazy_chunks()`. `None` keeps the
+    /// trait default (`true`). `Some(false)` makes the walker keep
+    /// `Element::Lazy` at its placeholder, which is the SSR contract
+    /// (server can't paint a lazy body without diverging from the
+    /// client's placeholder). See `tests/walker/lazy.rs`.
+    pub renders_lazy_chunks: Option<bool>,
+    /// Controls `Backend::is_hydrating()`. `false` (default) keeps
+    /// the trait default; `true` makes the walker take the hydration
+    /// branches in `walker/when_switch.rs` (inline arm build, no
+    /// clear_children of the SSR DOM under a reactive anchor). Tests
+    /// in `tests/walker/hydration.rs` exercise these branches.
+    pub hydrating: bool,
 }
 
 impl Default for MockBackendConfig {
@@ -239,6 +251,8 @@ impl Default for MockBackendConfig {
         Self {
             supports_batched_repeat: false,
             supports_child_splice: false,
+            renders_lazy_chunks: None,
+            hydrating: false,
         }
     }
 }
@@ -544,6 +558,16 @@ impl Backend for MockBackend {
 
     fn supports_batched_repeat(&self) -> bool {
         self.config.supports_batched_repeat
+    }
+
+    fn renders_lazy_chunks(&self) -> bool {
+        // Trait default is `true`; tests opt out via `MockBackendConfig`
+        // to assert the SSR-style placeholder-only path.
+        self.config.renders_lazy_chunks.unwrap_or(true)
+    }
+
+    fn is_hydrating(&self) -> bool {
+        self.config.hydrating
     }
 
     /// Hand back a fixed class name so the walker's batched-Repeat

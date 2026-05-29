@@ -5,7 +5,7 @@
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
-use crate::pages::common::{code_panel, page_header, page_section};
+use crate::pages::common::{CodePanel, PageHeader, PageSection};
 use crate::routes::CONCEPTS_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
@@ -36,24 +36,24 @@ pub fn page() -> Element {
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Server functions",
-                "Define server logic — including database queries — directly inside \
+            PageHeader(
+                title = "Server functions",
+                blurb = "Define server logic — including database queries — directly inside \
                  your app, as if the client were running it. The compiler splits the \
                  paths based on the build target: the server runs the body, the client \
                  turns the call site into a typed network request, and the matching \
-                 server-side handler is registered automatically."
-            ) }
-            { page_section(pitch_ref, vec![pitch()]) }
-            { page_section(how_it_works_ref, vec![how_macro_splits()]) }
-            { page_section(wire_ref, vec![wire_protocol()]) }
-            { page_section(project_ref, vec![project_layout()]) }
-            { page_section(extractors_ref, vec![extractors()]) }
-            { page_section(batching_ref, vec![batching()]) }
-            { page_section(cancellation_ref, vec![cancellation()]) }
-            { page_section(reactive_ref, vec![reactive_integration()]) }
-            { page_section(cli_ref, vec![cli_flow()]) }
-            { page_section(next_ref, vec![where_next()]) }
+                 server-side handler is registered automatically.",
+            )
+            PageSection(handle = pitch_ref) { pitch() }
+            PageSection(handle = how_it_works_ref) { how_macro_splits() }
+            PageSection(handle = wire_ref) { wire_protocol() }
+            PageSection(handle = project_ref) { project_layout() }
+            PageSection(handle = extractors_ref) { extractors() }
+            PageSection(handle = batching_ref) { batching() }
+            PageSection(handle = cancellation_ref) { cancellation() }
+            PageSection(handle = reactive_ref) { reactive_integration() }
+            PageSection(handle = cli_ref) { cli_flow() }
+            PageSection(handle = next_ref) { where_next() }
         }
     };
     layout_with_toc(content, toc)
@@ -86,7 +86,7 @@ fn pitch() -> Element {
                 in your UI component, on the same `await` you'd use for a local async \
                 fn \u{2014} reads as if the client itself were running that body.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "Under the hood, the `#[server]` macro splits the \
                 function based on the build target. On the SERVER build, the body \
@@ -126,8 +126,8 @@ fn how_macro_splits() -> Element {
                 async fn into two cfg-gated halves and keys off the `server` cargo \
                 feature to decide which half each build sees.".to_string())
         },
-        code_panel(server_snippet),
-        code_panel(client_snippet),
+        ui! { CodePanel(src = server_snippet) },
+        ui! { CodePanel(src = client_snippet) },
         ui! {
             Typography(content = "Both halves see the same source file. Only one ends \
                 up compiled into each artifact \u{2014} the server-only body (and any \
@@ -156,7 +156,7 @@ fn wire_protocol() -> Element {
                 framework picks single vs batch automatically based on how many calls \
                 you fire in the same tick.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "Status codes are reserved for dispatcher-level \
                 failures \u{2014} 404 for unknown path, 400 for malformed args. A \
@@ -191,7 +191,7 @@ fn project_layout() -> Element {
                 `--features server` (the body runs, with access to your DB / state / \
                 imports), once without (the body is replaced with the RPC stub).".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "Server-only deps (Diesel, Redis, tokio, anything that \
                 has no business in a wasm bundle) are declared `optional = true` and \
@@ -200,7 +200,7 @@ fn project_layout() -> Element {
                 inside those bodies never reach the client compilation. Import shape \
                 matters too:".to_string())
         },
-        code_panel(cfg_snippet),
+        ui! { CodePanel(src = cfg_snippet) },
     ];
     ui! { Stack(gap = StackGap::Md) { children } }
 }
@@ -230,13 +230,13 @@ fn extractors() -> Element {
                 startup and read with `use_state::<T>` \u{2014} the registry is \
                 `TypeId`-keyed, so install one of each type:".to_string())
         },
-        code_panel(state_snippet),
+        ui! { CodePanel(src = state_snippet) },
         ui! {
             Typography(content = "Per-request data (headers today; authenticated user / \
                 trace id / extracted query params later) is set by the dispatcher into \
                 a `tokio::task_local!` scope before invoking the handler:".to_string())
         },
-        code_panel(header_snippet),
+        ui! { CodePanel(src = header_snippet) },
         ui! {
             Typography(content = "Both extractors are server-only \u{2014} they don't \
                 exist in the client build, so importing them inside a `#[server]` body \
@@ -264,7 +264,7 @@ fn batching() -> Element {
                 yields once for siblings to enqueue, then drains the queue into one \
                 `POST /_srv/_batch`.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "On a typical app-load fan-out \u{2014} \
                 `use_query(get_user)` + `use_query(list_todos)` + \
@@ -298,7 +298,7 @@ fn cancellation() -> Element {
                 system's `ResourceCancel` token to the HTTP transport's cancel \
                 primitive, all the way down to the per-platform stack.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "Cancellation interop with batching: if a cancellable \
                 call is still queued when its token fires, the flusher removes it from \
@@ -335,7 +335,7 @@ fn reactive_integration() -> Element {
                 that fold their response into local state \u{2014} the workhorse \
                 pattern for any mutation that updates a list / map / record.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "Each reducer exposes loading / error state via its \
                 own `AsyncStatus<E>` signal, so UI bindings get spinners + error \
@@ -363,7 +363,7 @@ fn cli_flow() -> Element {
                 server`, and watches your source for changes. Every edit triggers a \
                 fresh wasm build + a server restart.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "The server bin serves both the API (at `/_srv/*`) \
                 AND the wasm bundle (at `/` and `/pkg/*`) on one port. Open the URL it \

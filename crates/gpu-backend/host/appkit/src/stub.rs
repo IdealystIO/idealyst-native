@@ -55,6 +55,6 @@ where
 }
 
 #[cfg(feature = "runtime-server")]
-pub fn run_aas(_app_id: &str, _opts: RunOptions) -> Result<(), RunError> {
+pub fn run_aas(_url: &str, _opts: RunOptions) -> Result<(), RunError> {
     Err(RunError::NotMacos)
 }

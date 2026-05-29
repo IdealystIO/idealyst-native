@@ -7,14 +7,14 @@
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
-use crate::pages::common::{code_panel, page_header, page_section};
+use crate::pages::common::{CodePanel, PageHeader, PageSection};
 use crate::routes::QUICKSTART_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Element {
     // One `Ref<ViewHandle>` per section. The same handle is stored
     // in the `TocEntry` (so the spy can read its `absolute_frame`)
-    // and passed to `page_section(...)` (which binds it to the
+    // and passed to `PageSection` (which binds it to the
     // section's outer `View`). `Ref<H>` is `Copy`, so both reads
     // share the same slot.
     let standard: Ref<ViewHandle> = Ref::new();
@@ -45,24 +45,24 @@ pub fn page() -> Element {
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Why Rust",
-                "The standard answer is memory safety, no garbage collector, and native \
+            PageHeader(
+                title = "Why Rust",
+                blurb = "The standard answer is memory safety, no garbage collector, and native \
                  compilation. That's true, and reason enough. But the deeper reason \
                  idealyst is written in Rust is that the language's shape fits UI \
-                 authoring in ways most languages don't."
-            ) }
-            { page_section(standard, vec![standard_story()]) }
-            { page_section(pivot_ref, vec![pivot()]) }
-            { page_section(expressions, vec![expressions_section()]) }
-            { page_section(pattern, vec![pattern_matching_section()]) }
-            { page_section(enums, vec![enums_section()]) }
-            { page_section(macros, vec![macros_section()]) }
-            { page_section(closures, vec![closures_section()]) }
-            { page_section(refs, vec![refs_section()]) }
-            { page_section(traits, vec![traits_section()]) }
-            { page_section(zero_cost, vec![zero_cost_section()]) }
-            { page_section(tradeoff, vec![tradeoff_section()]) }
+                 authoring in ways most languages don't.",
+            )
+            PageSection(handle = standard) { standard_story() }
+            PageSection(handle = pivot_ref) { pivot() }
+            PageSection(handle = expressions) { expressions_section() }
+            PageSection(handle = pattern) { pattern_matching_section() }
+            PageSection(handle = enums) { enums_section() }
+            PageSection(handle = macros) { macros_section() }
+            PageSection(handle = closures) { closures_section() }
+            PageSection(handle = refs) { refs_section() }
+            PageSection(handle = traits) { traits_section() }
+            PageSection(handle = zero_cost) { zero_cost_section() }
+            PageSection(handle = tradeoff) { tradeoff_section() }
         }
     };
     layout_with_toc(content, toc)
@@ -82,12 +82,12 @@ fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Element {
         let body = p.to_string();
         // Default kind = `Body` (14 px) — the site-wide paragraph size
         // (concepts, backends, install, server-functions, …). The page
-        // lead blurb gets `BodyLg` via `page_header`; section prose
+        // lead blurb gets `BodyLg` via `PageHeader`; section prose
         // does not, or body copy reads inconsistently large.
         children.push(ui! { Typography(content = body) });
     }
     if let Some(src) = code {
-        children.push(code_panel(src));
+        children.push(ui! { CodePanel(src = src) });
     }
     // `Lg` (16 px): comfortable gap between the H2 heading, body
     // paragraphs, and the code panel within a single section.

@@ -40,13 +40,18 @@ thread_local! {
     static HOST_VIEW: RefCell<Option<Retained<NSView>>> = const { RefCell::new(None) };
 }
 
-/// Discover the dev-server, spawn the runtime-server worker, and stash the
-/// shell handle in the main-thread-local [`SHELL`] slot. Returns
-/// the shell handle for the caller to additionally retain if it
-/// wants to drive layout, send outbound events, etc.
+/// Connect to the dev-server at `url`, spawn the runtime-server
+/// worker, and stash the shell handle in the main-thread-local
+/// [`SHELL`] slot. Returns the shell handle for the caller to
+/// additionally retain if it wants to drive layout, send outbound
+/// events, etc.
 ///
 /// Must be called on the main thread (the shell holds the backend
 /// by `Rc<RefCell<...>>` and the drain timer is main-thread-only).
+///
+/// `url` is `ws://host:port` — the CLI bakes this into the spawned
+/// macOS binary via the `IDEALYST_DEV_ENDPOINT` env var; the wrapper
+/// reads it via [`runtime_server_shell_native::endpoint_or_panic`].
 ///
 /// `device_label` is an optional human label the dev-server logs
 /// next to the platform tag — useful when multiple desktop clients
@@ -58,7 +63,7 @@ thread_local! {
 /// `viewport_size` (in `RuntimeServerShellOptions.viewport`) is used.
 pub fn spawn_runtime_server_shell(
     backend: MacosBackend,
-    app_id: impl Into<String>,
+    url: impl Into<String>,
     device_label: Option<String>,
     viewport_size: Option<(f32, f32)>,
     host_root: Option<Retained<NSView>>,
@@ -66,7 +71,7 @@ pub fn spawn_runtime_server_shell(
     let viewport = viewport_size.map(|(w, h)| WireViewport { width: w, height: h });
     let shell = Rc::new(RuntimeServerShell::spawn_with_options(
         backend,
-        app_id.into(),
+        url.into(),
         RuntimeServerShellOptions {
             // `WirePlatform::Macos` doesn't exist yet on the shared
             // platform enum; use `Other` so the server's session-

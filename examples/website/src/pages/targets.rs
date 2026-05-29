@@ -3,7 +3,7 @@
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
-use crate::pages::common::{page_header, page_section};
+use crate::pages::common::{PageHeader, PageSection};
 use crate::routes::BACKENDS_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
@@ -32,20 +32,20 @@ pub fn page() -> Element {
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Every target",
-                "The full list of platforms idealyst runs on, plus the path to teach \
-                 it about a new one. If you can drive it from code, you can ship to it."
-            ) }
-            { page_section(phones_ref, vec![phones()]) }
-            { page_section(desktops_ref, vec![desktops()]) }
-            { page_section(browser_ref, vec![browser()]) }
-            { page_section(native_gpu_ref, vec![native_gpu()]) }
-            { page_section(embedded_ref, vec![embedded()]) }
-            { page_section(tty_ref, vec![tty()]) }
-            { page_section(tv_ref, vec![tv()]) }
-            { page_section(extending_ref, vec![extending()]) }
-            { page_section(status_ref, vec![status_link()]) }
+            PageHeader(
+                title = "Every target",
+                blurb = "The full list of platforms idealyst runs on, plus the path to teach \
+                 it about a new one. If you can drive it from code, you can ship to it.",
+            )
+            PageSection(handle = phones_ref) { phones() }
+            PageSection(handle = desktops_ref) { desktops() }
+            PageSection(handle = browser_ref) { browser() }
+            PageSection(handle = native_gpu_ref) { native_gpu() }
+            PageSection(handle = embedded_ref) { embedded() }
+            PageSection(handle = tty_ref) { tty() }
+            PageSection(handle = tv_ref) { tv() }
+            PageSection(handle = extending_ref) { extending() }
+            PageSection(handle = status_ref) { status_link() }
         }
     };
     layout_with_toc(content, toc)

@@ -109,6 +109,7 @@ members = [
     "crates/tools/build/sim",
     "crates/tools/build/web",
     "crates/tools/build/macos",
+    "crates/tools/build/ssr",
     "crates/tools/build/terminal",
     "crates/tools/dev-tui",
     "crates/tools/run/android",
@@ -135,6 +136,7 @@ members = [
     "examples/mcp-demo",
     "examples/fiddle",
     "examples/website",
+    "examples/tutorial",
     "examples/hydration-demo",
     "examples/toolbar-demo",
     "examples/menu-demo",
@@ -188,6 +190,7 @@ run-roku = { path = "crates/tools/run/roku" }
 build-sim = { path = "crates/tools/build/sim" }
 build-web = { path = "crates/tools/build/web" }
 build-macos = { path = "crates/tools/build/macos" }
+build-ssr = { path = "crates/tools/build/ssr" }
 run-macos = { path = "crates/tools/run/macos" }
 build-terminal = { path = "crates/tools/build/terminal" }
 run-terminal = { path = "crates/tools/run/terminal" }

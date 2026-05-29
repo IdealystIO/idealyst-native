@@ -191,6 +191,51 @@ Caching: the framework's thread-local seen-set keeps the backend from
 re-emitting the same rule. (A hand-rolled `embed_asset!` font with no
 bundle path is the one case that still falls back to a `blob:` URL.)
 
+#### Preloading fonts for the first paint
+
+The `@font-face` rule isn't injected until wasm boots and the framework
+walks the tree — by which time the first paint has already happened in
+the fallback font, so when the real font arrives there's a visible
+re-paint. The standard web fix is `<link rel="preload" as="font">` in
+the static `<head>`: the browser starts fetching the font in parallel
+with the wasm download, and by the time the runtime `@font-face` rule
+appears, the font is already cached.
+
+The framework doesn't auto-discover which fonts to preload (only the
+project knows which weights are above the fold and which are rare).
+Declare them in `Cargo.toml`:
+
+```toml
+[package.metadata.idealyst.app.web]
+preload_fonts = [
+    "fonts/Inter-Regular.ttf",
+    "fonts/Inter-SemiBold.ttf",
+    "fonts/Inter-Bold.ttf",
+]
+```
+
+Both the build path (`idealyst build --web`'s `stage_bundle`) and the
+dev server (`idealyst dev --web`'s `dev-http`) read this list and
+splice one `<link rel="preload" as="font" crossorigin>` tag per entry
+into the served HTML, so the dev loop and the deployed bundle preload
+the same set. The `crossorigin` attribute is required for the preload
+to dedupe with the framework's later `@font-face` fetch — without it
+the browser issues two requests for the same font.
+
+Trade-offs to keep in mind:
+- **Preload only the weights actually rendered on the landing
+  screen.** Each preload starts a parallel fetch competing with the
+  wasm download; over-preloading rarer weights (Thin, ExtraLight, Black)
+  for the marketing site you spend bandwidth that delays the wasm boot.
+- **Empty list is fine.** Leaving `preload_fonts` unset means the
+  runtime `@font-face` swap-in handles everything — there's a brief
+  re-paint when the font arrives, which on a fast connection is barely
+  perceptible. The choice is yours.
+- **Source `index.html` stays untouched.** The injection happens in
+  the staged bundle / served response. If you eject to a static bundle
+  and edit `index.html` by hand, that's where the preload tags get
+  baked in permanently; until then nothing in your repo carries them.
+
 ### iOS (`backend-ios-mobile` + `backend-ios-core`)
 
 At `register_asset` the backend hands the bytes to CoreText via

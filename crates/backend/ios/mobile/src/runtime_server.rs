@@ -47,13 +47,14 @@ thread_local! {
 /// # Safety
 /// - Must be called on the main thread.
 /// - `root_view` must be a non-null, valid `UIView *`.
-/// - `app_id_utf8` must be a non-null pointer to a NUL-terminated
-///   UTF-8 string. It must match the dev-server's mDNS TXT record's
-///   `app_id` field — typically the iOS bundle id.
+/// - `endpoint_utf8` must be a non-null pointer to a NUL-terminated
+///   UTF-8 string of the form `ws://host:port`. The Swift host reads
+///   it from the Info.plist `IdealystDevEndpoint` key the CLI bakes
+///   in at `idealyst dev` time.
 #[no_mangle]
 pub unsafe extern "C" fn ios_main(
     root_view: *mut std::ffi::c_void,
-    app_id_utf8: *const c_char,
+    endpoint_utf8: *const c_char,
 ) {
     // Wrap the whole body in `catch_unwind` — this is an
     // `extern "C"` boundary into Swift/UIKit code that is not built
@@ -68,16 +69,23 @@ pub unsafe extern "C" fn ios_main(
         // SAFETY: contract requires main-thread invocation.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
 
-        if app_id_utf8.is_null() {
-            eprintln!("[backend-ios::aas] ios_main called with null app_id; aborting");
+        if endpoint_utf8.is_null() {
+            eprintln!("[backend-ios::aas] ios_main called with null endpoint; aborting");
             return;
         }
-        let app_id = unsafe { CStr::from_ptr(app_id_utf8) }
+        let endpoint = unsafe { CStr::from_ptr(endpoint_utf8) }
             .to_string_lossy()
             .into_owned();
+        if endpoint.is_empty() {
+            eprintln!(
+                "[backend-ios::aas] ios_main called with empty IDEALYST_DEV_ENDPOINT; aborting. \
+                 Rebuild via `idealyst dev` to bake the dev-server URL into the wrapper."
+            );
+            return;
+        }
         eprintln!(
-            "[backend-ios::aas] starting; discovering dev-server app_id={:?}",
-            app_id
+            "[backend-ios::aas] starting; connecting to dev-server at {:?}",
+            endpoint
         );
 
         let view: Retained<UIView> = match unsafe {
@@ -99,7 +107,7 @@ pub unsafe extern "C" fn ios_main(
 
         let shell = Rc::new(RuntimeServerShell::spawn_with_options(
             backend,
-            app_id,
+            endpoint,
             RuntimeServerShellOptions {
                 platform: WirePlatform::Ios,
                 device_label: None,

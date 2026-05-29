@@ -1,28 +1,54 @@
-//! Small helpers reused by every page: the page header block, the
-//! syntax-highlighted code panel, the placeholder block used by
-//! stubbed-out screens.
+//! Shared page chrome — `PageHeader`, `PageSection`, `CodePanel`,
+//! `DemoShowcase`, `PlaceholderBlock`. Each is a `#[component]` so its
+//! tag and props struct wire into `ui!` dispatch automatically (the
+//! macro emits `pub type Foo = FooProps` + the `BuildElement` impl).
 
-use runtime_core::{switch, ui, Color, IntoElement, Element, Ref, StyleApplication, Tokenized, ViewHandle};
-use idea_ui::{Stack, Typography, StackGap};
+use runtime_core::{
+    component, switch, ui, Color, Element, IntoElement, Ref, StyleApplication, Tokenized,
+    ViewHandle,
+};
+use idea_ui::{typography_kind, Stack, StackGap, Typography};
 
-use crate::styles::{CodePanel, CodeText, PlaceholderBox, SectionWrap};
+use crate::styles::{
+    CodePanel as CodePanelStyle,
+    CodeText, PlaceholderBox, SectionWrap, ShowcaseCard, ShowcaseCode, ShowcaseDemo,
+};
 
-/// Page title block — every page calls this at the top. The wrapper
-/// must be a flex-column container (here, `Stack`) so the H1 and the
-/// blurb stack vertically instead of flowing as sibling inline spans.
-/// A bare `View` with no flex props stays `display: block` and the
-/// Typography children inherit HTML's default inline span behavior \u{2014}
-/// the title and blurb end up on the same line.
-pub fn page_header(title: &str, blurb: &str) -> Element {
-    let title_text = title.to_string();
-    let blurb_text = blurb.to_string();
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H1) },
-        ui! { Typography(content = blurb_text, kind = idea_ui::typography_kind::BodyLg, muted = true) },
-    ];
-    // `Md` not `Sm`: the H1 + lead-body pair is the page's most
-    // important hierarchy moment, deserves a comfortable gap.
-    ui! { Stack(gap = StackGap::Md) { children } }
+// =============================================================================
+// PageHeader — H1 + lead paragraph at the top of every page.
+// =============================================================================
+
+#[derive(Default)]
+pub struct PageHeaderProps {
+    pub title: String,
+    pub blurb: String,
+}
+
+/// Page title block. The wrapper is a flex-column `Stack` so the H1 and
+/// the lead stack vertically; a bare `View` with no flex props stays
+/// `display: block` and the Typography children would flow inline.
+#[component]
+pub fn PageHeader(props: &PageHeaderProps) -> Element {
+    let title = props.title.clone();
+    let blurb = props.blurb.clone();
+    // `Md` not `Sm`: the H1 + lead-body pair is the page's most important
+    // hierarchy moment, deserves a comfortable gap.
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Typography(content = title, kind = typography_kind::H1)
+            Typography(content = blurb, kind = typography_kind::BodyLg, muted = true)
+        }
+    }
+}
+
+// =============================================================================
+// PageSection — TOC-anchored container that binds a `Ref<ViewHandle>`.
+// =============================================================================
+
+#[derive(Default)]
+pub struct PageSectionProps {
+    pub handle: Ref<ViewHandle>,
+    pub children: Vec<Element>,
 }
 
 /// Wrap a section's children in a `View` bound to `handle`. The site's
@@ -31,27 +57,25 @@ pub fn page_header(title: &str, blurb: &str) -> Element {
 /// and to compute the click-to-scroll target. Pairs with
 /// `shell::layout_with_toc(...)` and the matching `TocEntry::handle`.
 ///
-/// One handle per section; the page allocates them up-front (via
-/// `Ref::<ViewHandle>::new()`), stores them in both the `TocEntry`
-/// list and the corresponding `page_section(handle, ...)` call.
-/// `Ref<H>` is `Copy`, so the same handle threads through both
-/// without ceremony.
-pub fn page_section(handle: Ref<ViewHandle>, children: Vec<Element>) -> Element {
-    let wrap_style = SectionWrap();
-    ui! { View(style = wrap_style) { children }.bind(handle) }
+/// `Ref<H>` is `Copy`, so the same handle threads through both the
+/// `TocEntry` list and this section's `handle` prop without ceremony.
+#[component]
+pub fn PageSection(props: PageSectionProps) -> Element {
+    let style = SectionWrap();
+    let handle = props.handle;
+    let children = props.children;
+    ui! { View(style = style) { children }.bind(handle) }
 }
 
 // =============================================================================
 // Code panel — theme-aware syntax highlighting
 // =============================================================================
 //
-// `idea-codeblock` stamps the per-span color into the External
-// primitive's payload at construction time \u{2014} the colors don't
-// re-resolve on theme change. To keep code readable in both light
-// and dark modes, we wrap the codeblock in a `runtime_core::switch`
-// keyed on the active theme's background luminance. When the theme
-// swaps, the switch re-runs `highlight(...)` with a different
-// palette and rebuilds the codeblock subtree.
+// `idea-codeblock` stamps the per-span color into the External primitive's
+// payload at construction time — the colors don't re-resolve on theme
+// change. So we wrap the codeblock in a `runtime_core::switch` keyed on
+// the active theme's background luminance: a theme swap re-runs
+// `highlight(..)` with a different palette and rebuilds the codeblock.
 
 #[derive(Copy, Clone)]
 struct Palette {
@@ -61,9 +85,9 @@ struct Palette {
     accent: &'static str,
 }
 
-/// Light-theme syntax palette \u{2014} dark ink, muted warm comments,
-/// teal strings, deep violet keywords. Tuned for `color-surface-alt`
-/// in light mode.
+/// Light-theme syntax palette — dark ink, muted warm comments, teal
+/// strings, deep violet keywords. Tuned for `color-surface-alt` in
+/// light mode.
 const LIGHT_PALETTE: Palette = Palette {
     ink: "#1f2328",
     comment: "#8a8270",
@@ -71,8 +95,8 @@ const LIGHT_PALETTE: Palette = Palette {
     accent: "#5a4fcf",
 };
 
-/// Dark-theme syntax palette \u{2014} light ink, brighter accents.
-/// Tuned for `color-surface-alt` in dark mode.
+/// Dark-theme syntax palette — light ink, brighter accents. Tuned for
+/// `color-surface-alt` in dark mode.
 const DARK_PALETTE: Palette = Palette {
     ink: "#e8eaf0",
     comment: "#9099a8",
@@ -80,12 +104,11 @@ const DARK_PALETTE: Palette = Palette {
     accent: "#c4b5fd",
 };
 
-/// Heuristic: read the current `color-background` token and decide
-/// whether we're in a dark theme. Idea-ui's light themes start with
-/// near-white backgrounds; dark themes start with near-black. The
-/// luminance check is robust against minor palette tweaks on either
-/// side as long as the backgrounds remain roughly in the standard
-/// light/dark zones.
+/// Read the current `color-background` token and decide whether we're in
+/// a dark theme. Idea-ui's light themes start with near-white
+/// backgrounds; dark themes start with near-black. The luminance check
+/// is robust against minor palette tweaks on either side as long as the
+/// backgrounds remain roughly in the standard light/dark zones.
 fn theme_is_dark() -> bool {
     let bg: Color =
         Tokenized::<Color>::token("color-background", Color("#ffffff".into())).resolve();
@@ -105,10 +128,10 @@ fn is_dark_color(s: &str) -> bool {
     luma < 128.0
 }
 
-/// Tiny three-tone Rust-ish tokenizer. Recognizes line comments,
-/// strings, identifiers (with a `match` against the standard keyword
-/// list), and lumps the rest as default ink. Not a real parser; just
-/// enough to make a code snippet readable.
+/// Tiny three-tone Rust-ish tokenizer. Recognizes line comments, strings,
+/// identifiers (with a `match` against the standard keyword list), and
+/// lumps the rest as default ink. Not a real parser; just enough to make
+/// a code snippet readable.
 fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
     let keywords = [
         "fn", "let", "pub", "use", "mod", "struct", "enum", "impl", "trait", "for", "in", "if",
@@ -135,7 +158,6 @@ fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
     while i < bytes.len() {
         let b = bytes[i];
 
-        // Line comment
         if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
             flush_ident(&mut buf, &mut out, &palette);
             let mut j = i;
@@ -146,7 +168,6 @@ fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
             i = j;
             continue;
         }
-        // String literal
         if b == b'"' {
             flush_ident(&mut buf, &mut out, &palette);
             let mut j = i + 1;
@@ -165,14 +186,12 @@ fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
             i = j;
             continue;
         }
-        // Identifier
         if b.is_ascii_alphabetic() || b == b'_' {
             buf.push(b as char);
             i += 1;
             continue;
         }
         flush_ident(&mut buf, &mut out, &palette);
-        // Lump everything non-ident as INK so layout stays exact.
         let mut j = i;
         while j < bytes.len() {
             let c = bytes[j];
@@ -191,39 +210,109 @@ fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
     out
 }
 
-/// Read-only code panel with light syntax tinting. The panel
-/// background + border come from theme tokens; the syntax palette
-/// swaps reactively when the active theme changes (via a `switch`
-/// keyed on the background's luminance).
+/// The theme-aware highlighted code block, without any surrounding chrome.
+/// The syntax palette swaps reactively when the active theme changes (via
+/// a `switch` keyed on the background's luminance). Callers supply the
+/// surrounding surface (`CodePanel` for standalone code, `DemoShowcase`
+/// for the showcase card's code region).
 ///
-/// On non-web targets, `idea-codeblock` falls back to a "External
-/// CodeBlockProps not supported" placeholder \u{2014} the surrounding
-/// card chrome still renders.
-pub fn code_panel(src: &str) -> Element {
-    let panel_style = CodePanel();
+/// On non-web targets, `idea-codeblock` falls back to a placeholder — the
+/// surrounding chrome still renders.
+fn code_block(src: &str) -> Element {
     let src_owned = src.to_string();
-    let dynamic = switch(
-        theme_is_dark,
-        move |&is_dark| {
-            let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
-            let spans = highlight(&src_owned, palette);
-            let code_style = move || StyleApplication::new(CodeText::sheet());
-            idea_codeblock::code_block(spans)
-                .with_style(code_style)
-                .into_element()
-        },
-    );
+    switch(theme_is_dark, move |&is_dark| {
+        let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
+        let spans = highlight(&src_owned, palette);
+        let code_style = move || StyleApplication::new(CodeText::sheet());
+        idea_codeblock::code_block(spans)
+            .with_style(code_style)
+            .into_element()
+    })
+}
+
+// =============================================================================
+// CodePanel — read-only standalone code block on its own surface.
+// =============================================================================
+
+#[derive(Default)]
+pub struct CodePanelProps {
+    pub src: String,
+}
+
+/// Standalone code panel on a `color-surface-alt` surface — used for
+/// freestanding snippets (quickstart, concepts, …). Demo sections use
+/// [`DemoShowcase`] instead, which owns its code region's surface itself.
+#[component]
+pub fn CodePanel(props: &CodePanelProps) -> Element {
+    let panel_style = CodePanelStyle();
+    let dynamic = code_block(&props.src);
     ui! { View(style = panel_style) { dynamic } }
 }
 
-/// "Coming soon" surface used by every placeholder page. Keeps the
-/// nav structure visible while signalling each route still needs
-/// its real content authored.
-pub fn placeholder_block(text: &str) -> Element {
-    let style = PlaceholderBox();
-    let label = text.to_string();
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = label, muted = true) },
-    ];
-    ui! { View(style = style) { children } }
+// =============================================================================
+// DemoShowcase — live preview + source, stacked in a single card.
+// =============================================================================
+
+#[derive(Default)]
+pub struct DemoShowcaseProps {
+    pub source: String,
+    /// The interactive preview content (running widget + controls). Sits
+    /// on the clean `color-surface` top half of the card.
+    pub children: Vec<Element>,
 }
+
+/// A live demo and its source, stacked inside one card with a clear color
+/// split — the reusable building block for every code-backed demo section.
+/// Children fill the top demo region; `source` renders below in the tinted
+/// code region.
+///
+/// The card is two color regions: a clean `color-surface` preview area on
+/// top and a tinted `color-surface-alt` code area below, divided by a
+/// hairline border (see `ShowcaseCard` / `ShowcaseDemo` / `ShowcaseCode`).
+/// Demo-on-top / code-below stacks rather than going side by side because
+/// the body column isn't wide enough for two readable panes.
+#[component]
+pub fn DemoShowcase(props: DemoShowcaseProps) -> Element {
+    let card_style = ShowcaseCard();
+    let demo_style = ShowcaseDemo();
+    let code_style = ShowcaseCode();
+    let preview = props.children;
+    let code = code_block(&props.source);
+    ui! {
+        View(style = card_style) {
+            View(style = demo_style) { preview }
+            View(style = code_style) { code }
+        }
+    }
+}
+
+// =============================================================================
+// PlaceholderBlock — "coming soon" surface for stub pages.
+// =============================================================================
+
+#[derive(Default)]
+pub struct PlaceholderBlockProps {
+    pub text: String,
+}
+
+/// "Coming soon" surface used by every placeholder page. Keeps the nav
+/// structure visible while signalling each route still needs its real
+/// content authored.
+#[component]
+pub fn PlaceholderBlock(props: &PlaceholderBlockProps) -> Element {
+    let style = PlaceholderBox();
+    let label = props.text.clone();
+    ui! {
+        View(style = style) {
+            Typography(content = label, muted = true)
+        }
+    }
+}
+
+// =============================================================================
+// Backward-compat shims — thin wrappers around the components above so
+// page files compile while their call sites migrate one component at a
+// time. Each shim disappears once all of its callers have been
+// converted.
+// =============================================================================
+

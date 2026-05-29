@@ -3,7 +3,7 @@
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
-use crate::pages::common::{code_panel, page_header, page_section};
+use crate::pages::common::{CodePanel, PageHeader, PageSection};
 use crate::routes::QUICKSTART_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
@@ -26,18 +26,18 @@ pub fn page() -> Element {
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Install the CLI",
-                "The `idealyst` CLI is the entry point for scaffolding projects, \
+            PageHeader(
+                title = "Install the CLI",
+                blurb = "The `idealyst` CLI is the entry point for scaffolding projects, \
                  running the dev server, building per-platform releases, and \
-                 diagnosing your toolchain. It's installed from source via cargo."
-            ) }
-            { page_section(prereqs, vec![prerequisites()]) }
-            { page_section(install_ref, vec![install()]) }
-            { page_section(verify_ref, vec![verify()]) }
-            { page_section(per_platform_ref, vec![per_platform()]) }
-            { page_section(doctor_ref, vec![doctor()]) }
-            { page_section(next_ref, vec![next_steps()]) }
+                 diagnosing your toolchain. It's installed from source via cargo.",
+            )
+            PageSection(handle = prereqs) { prerequisites() }
+            PageSection(handle = install_ref) { install() }
+            PageSection(handle = verify_ref) { verify() }
+            PageSection(handle = per_platform_ref) { per_platform() }
+            PageSection(handle = doctor_ref) { doctor() }
+            PageSection(handle = next_ref) { next_steps() }
         }
     };
     layout_with_toc(content, toc)
@@ -57,7 +57,7 @@ fn prerequisites() -> Element {
         ui! {
             Typography(content = "If you don't have Rust yet, install it via rustup:".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
     ];
     ui! { Stack(gap = StackGap::Md) { children } }
 }
@@ -75,11 +75,11 @@ fn install() -> Element {
                 and drop the `idealyst` binary into `~/.cargo/bin/` (which is on your PATH if \
                 you set up Rust through rustup):".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "To pin to a specific revision instead of master:".to_string())
         },
-        code_panel(pin_snippet),
+        ui! { CodePanel(src = pin_snippet) },
         ui! {
             Typography(content = "Pass `--force` if you're upgrading over an existing copy of the CLI.".to_string())
         },
@@ -95,7 +95,7 @@ fn verify() -> Element {
             Typography(content = "Confirm the binary is on your PATH and prints the \
                 subcommand list:".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "You should see `new`, `init`, `dev`, `build`, `run`, \
                 `doctor`, and a few others.".to_string())
@@ -143,7 +143,7 @@ fn doctor() -> Element {
                 each enabled target's toolchain and reports what's missing, with \
                 pointers to the install steps for each.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
     ];
     ui! { Stack(gap = StackGap::Md) { children } }
 }

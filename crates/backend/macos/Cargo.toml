@@ -36,8 +36,8 @@ runtime-layout = { workspace = true }
 # Cross-Apple substrate (NSLog, scheduler, CoreText font registry,
 # color parsing). Shared with backend-ios-core; same Phase 0 lift.
 backend-apple-core = { workspace = true }
-# Only used when `runtime-server` is on. Pulls tungstenite + mdns-sd +
-# the worker-thread `RuntimeServerShell` from the shared native-shell crate
+# Only used when `runtime-server` is on. Pulls tungstenite + the
+# worker-thread `RuntimeServerShell` from the shared native-shell crate
 # (also consumed by iOS, Android).
 runtime-server-shell-native = { workspace = true, optional = true }
 

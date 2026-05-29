@@ -14,10 +14,10 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 # Optional runtime-server-client glue. When enabled, this crate pulls in
-# `dev-client` (native transport) and exposes Rust-level
-# `aas::{attach, drain, detach}` helpers the consuming staticlib
-# crate wires into JNI exports. Without this feature the crate is a
-# plain native backend (zero extra binary cost).
+# `runtime-server-shell-native` (native transport) and exposes
+# `runtime_server::{attach_with_url, drain, detach}` helpers the
+# consuming staticlib crate wires into JNI exports. Without this
+# feature the crate is a plain native backend (zero extra binary cost).
 runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-native/runtime-server"]
 # Compile in this backend's render-thread `RenderLoopDriver`. The
 # driver itself lives in `backend-android-core` (shared with TV);
@@ -55,6 +55,5 @@ android_logger = "0.13"
 ndk-sys = "0.6"
 # runtime-server-client wire transport + worker thread. Pulled in only when
 # the `runtime-server` feature is on. The shared crate carries
-# tungstenite + mdns-sd + the RuntimeServerShell worker for every native
-# target.
+# tungstenite + the RuntimeServerShell worker for every native target.
 runtime-server-shell-native = { workspace = true, optional = true }

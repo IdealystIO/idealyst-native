@@ -1,9 +1,9 @@
 //! Android-side runtime-server shell glue.
 //!
 //! Mirrors `backend-ios::aas` but bridges to the Android UI thread
-//! instead of UIKit's main queue. The cross-platform pieces — mDNS
-//! discovery, WebSocket connect/reconnect, wire replay — live in
-//! `dev-client::RuntimeServerShell`; this module supplies only the Android-
+//! instead of UIKit's main queue. The cross-platform pieces —
+//! WebSocket connect/reconnect, wire replay — live in
+//! `RuntimeServerShell`; this module supplies only the Android-
 //! specific parts:
 //!
 //! - Building an [`AndroidBackend`] from JNI-supplied `Context` +
@@ -16,7 +16,10 @@
 //! `run-android --aas`) supplies the JNI exports themselves — their
 //! symbols need to bake in the user's bundle id (`Java_<pkg>_…`)
 //! which we can't predict from here. Each exported function is a
-//! thin trampoline into one of the three entry points below.
+//! thin trampoline into one of the entry points below.
+//!
+//! The dev-server URL comes from the manifest's `IdealystRuntimeServerUrl`
+//! meta-data entry, which the CLI bakes in at `idealyst dev` time.
 
 #![cfg(all(target_os = "android", feature = "runtime-server"))]
 
@@ -91,17 +94,6 @@ thread_local! {
     static SHELL: RefCell<Option<RuntimeServerShell<AndroidBackend>>> = const { RefCell::new(None) };
 }
 
-/// Stand up an runtime-server shell against a fresh [`AndroidBackend`] over the
-/// Java-supplied `Context` + parent `ViewGroup`. Idempotent: any
-/// previously installed shell is torn down before the new one stands
-/// up. Spawns the background WebSocket worker that browses Bonjour
-/// for a dev-server matching `app_id` and ferries wire frames onto
-/// the UI thread's drain channel.
-///
-/// Called from the consuming staticlib's
-/// `Java_<pkg>_NativeBridge_attachRuntimeServer` JNI entry — that entry's
-/// only job is to decode the `app_id_utf8` JString and delegate
-/// here.
 /// Install a one-time panic hook that routes Rust panics to logcat
 /// via `log::error!`. Without this, panics print to stderr (fd 2),
 /// which Android closes for app processes — so the panic message is
@@ -121,60 +113,21 @@ fn install_panic_hook_once() {
     });
 }
 
-pub fn attach<'l>(
-    env: &mut JNIEnv<'l>,
-    context: JObject<'l>,
-    root: JObject<'l>,
-    app_id: &str,
-) {
-    install_panic_hook_once();
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // Promote both refs to globals so they survive past this
-        // JNI call. Without globals, JNI tears down local refs as
-        // soon as the frame unwinds.
-        let context_global = env
-            .new_global_ref(&context)
-            .expect("new_global_ref(context)");
-        let root_global = env
-            .new_global_ref(&root)
-            .expect("new_global_ref(root)");
-
-        // Tear down any prior shell. Drops the previous worker
-        // thread's outbound channel — the worker eventually notices
-        // and exits when it next tries to send.
-        SHELL.with(|slot| slot.borrow_mut().take());
-
-        let viewport = sample_viewport(env, &root);
-        let backend = AndroidBackend::new(context_global, root_global);
-        let shell = RuntimeServerShell::spawn_with_options(
-            backend,
-            app_id.to_string(),
-            RuntimeServerShellOptions {
-                platform: WirePlatform::Android,
-                // Future: surface `Build.MODEL` from the Kotlin side
-                // through the JNI bridge and forward here.
-                device_label: None,
-                viewport,
-            },
-        );
-        SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
-
-        log::info!(
-            "[runtime-server-android] attach complete, browsing for app_id={:?}",
-            app_id,
-        );
-    }));
-}
-
-/// Same as [`attach`] but skips Bonjour discovery and points the
-/// worker at a fixed WebSocket URL. The CLI uses this in concert
-/// with `adb reverse` to make an Android-Studio-emulator client
-/// reach the host: the emulator can't see the host's mDNS
-/// advertisements (it lives behind QEMU's user-mode NAT), but
-/// `adb reverse tcp:<port> tcp:<port>` makes the host's port
-/// available at `127.0.0.1:<port>` inside the emulator, and that's
-/// what the CLI bakes into Info.plist-style manifest meta-data
-/// (`IdealystRuntimeServerUrl`) for the Java side to pass here.
+/// Stand up a runtime-server shell against a fresh [`AndroidBackend`]
+/// over the Java-supplied `Context` + parent `ViewGroup`. Idempotent:
+/// any previously installed shell is torn down before the new one
+/// stands up. Spawns the background WebSocket worker that connects to
+/// the dev-server at `url` and ferries wire frames onto the UI
+/// thread's drain channel.
+///
+/// `url` is `ws://host:port` baked into the manifest's
+/// `IdealystRuntimeServerUrl` meta-data entry by `idealyst dev`.
+/// For the Android emulator the CLI sets up `adb reverse` and bakes
+/// `ws://127.0.0.1:<port>`; for physical devices on the same Wi-Fi
+/// it's `ws://<lan-ip>:<port>`.
+///
+/// Called from the consuming staticlib's
+/// `Java_<pkg>_NativeBridge_attachRuntimeServerUrl` JNI entry.
 pub fn attach_with_url<'l>(
     env: &mut JNIEnv<'l>,
     context: JObject<'l>,
@@ -194,7 +147,7 @@ pub fn attach_with_url<'l>(
 
         let viewport = sample_viewport(env, &root);
         let backend = AndroidBackend::new(context_global, root_global);
-        let shell = RuntimeServerShell::spawn_with_url_and_options(
+        let shell = RuntimeServerShell::spawn_with_options(
             backend,
             url.to_string(),
             RuntimeServerShellOptions {
@@ -206,7 +159,7 @@ pub fn attach_with_url<'l>(
         SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
 
         log::info!(
-            "[runtime-server-android] attach_with_url complete, connecting to {:?}",
+            "[runtime-server-android] attach complete, connecting to {:?}",
             url,
         );
     }));

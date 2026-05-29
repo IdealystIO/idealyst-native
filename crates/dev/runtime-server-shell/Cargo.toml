@@ -4,16 +4,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Native-target transport + discovery + worker shell for the runtime-server
-# dev-client. Pulls `tungstenite` (sync blocking WebSocket) and
-# `mdns-sd` (multicast DNS-SD discovery). These crates compile on
-# every non-wasm target — iOS, Android, desktop — so this crate
-# is the shared native runtime-server-shell impl that backends pick up via
-# their `runtime-server` feature.
+# Native-target transport + worker shell for the runtime-server
+# dev-client. Pulls `tungstenite` (sync blocking WebSocket). Compiles
+# on every non-wasm target — iOS, Android, desktop — so this crate
+# is the shared native runtime-server-shell impl that backends pick up
+# via their `runtime-server` feature.
+#
+# The dev-server URL is baked into the wrapper build via
+# `IDEALYST_DEV_ENDPOINT` (set by the CLI at `idealyst dev` time); the
+# shell does not discover anything itself.
 #
 # Web targets have their own runtime-server-shell implementation living in
-# `backend-web` (it uses `web_sys::WebSocket` and reads the page's
-# origin for discovery).
+# `backend-web` (it uses `web_sys::WebSocket` and reads the page-
+# injected `window.IDEALYST_RUNTIME_SERVER_URL`).
 
 [lib]
 path = "src/lib.rs"
@@ -24,7 +27,7 @@ default = []
 # pure metadata declaration — the platform deps are gated behind
 # `dep:` activations in the feature list. Backends activate it via
 # their own `runtime-server` feature.
-runtime-server = ["dep:tungstenite", "dep:mdns-sd", "dev-client/dev-hot-reload"]
+runtime-server = ["dep:tungstenite", "dev-client/dev-hot-reload"]
 
 [dependencies]
 runtime-core = { workspace = true }
@@ -35,8 +38,3 @@ serde_json = "1"
 # Sync blocking transport. Acceptable on native because each
 # backend dedicates a worker thread to the dev-client read loop.
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
-
-# Pure-Rust mDNS / DNS-SD ("Bonjour") for locating the dev-server
-# on the LAN. Cross-platform across native targets; iOS still needs
-# `NSBonjourServices` in Info.plist to permit multicast.
-mdns-sd = { version = "0.10", default-features = false, optional = true }

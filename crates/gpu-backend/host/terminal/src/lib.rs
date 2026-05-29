@@ -415,9 +415,10 @@ where
 
 /// Runtime-server variant of [`run`]. Same crossterm boot + frame
 /// loop, but instead of mounting a local `app()` it spawns a
-/// `RuntimeServerShell<TerminalBackend>` that connects to a dev-
-/// host (mDNS-discovered by `app_id`) and applies the streamed
-/// wire commands into the terminal grid every frame.
+/// `RuntimeServerShell<TerminalBackend>` that connects to the dev-
+/// host at `url` (CLI-baked via the `IDEALYST_DEV_ENDPOINT` env
+/// var) and applies the streamed wire commands into the terminal
+/// grid every frame.
 ///
 /// The shell is ticked once per frame (inside the existing render
 /// loop) which: (a) applies pending inbound commands, (b) sends
@@ -428,11 +429,11 @@ where
 /// `page_ref.frame()` sees real bounds, not the mobile-portrait
 /// fallback.
 #[cfg(feature = "runtime-server")]
-pub fn run_runtime_server(app_id: String, opts: RunOptions) -> Result<(), RunError> {
+pub fn run_runtime_server(url: String, opts: RunOptions) -> Result<(), RunError> {
     let mut stdout = io::stdout();
     // Same posture as `run`: redirect stderr to the project's
     // terminal log so the runtime-server shell's connect /
-    // disconnect / mDNS chatter doesn't corrupt the cell grid.
+    // disconnect chatter doesn't corrupt the cell grid.
     let _stderr = stderr_redirect::StderrRedirect::install(&default_log_path());
     enable_raw_mode()?;
     execute!(
@@ -476,7 +477,7 @@ pub fn run_runtime_server(app_id: String, opts: RunOptions) -> Result<(), RunErr
     // would render past the right edge before it ever reached us.
     let shell = runtime_server_shell_native::RuntimeServerShell::<TerminalBackend>::spawn_with_shared_backend(
         backend.clone(),
-        app_id,
+        url,
         runtime_server_shell_native::RuntimeServerShellOptions {
             platform: runtime_server_shell_native::WirePlatform::Other,
             device_label: Some(format!("terminal ({}×{})", cols, rows)),

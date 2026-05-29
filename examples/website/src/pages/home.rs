@@ -14,7 +14,7 @@ use idea_ui::{Tabs, Typography, Tab};
 use crate::components::simulator::{
     Simulator, simulator_placeholder, SimulatorProps, SimulatorSkin,
 };
-use crate::pages::common::code_panel;
+use crate::pages::common::CodePanel;
 use crate::routes::{
     AGENTIC_ROUTE, BACKENDS_ROUTE, CONCEPTS_ROUTE, INSTALL_ROUTE, QUICKSTART_ROUTE, TARGETS_ROUTE,
     WHY_RUST_ROUTE,
@@ -224,7 +224,7 @@ fn quickstart_section() -> Element {
                 muted = true,
             )
         },
-        code_panel(install_snippet),
+        ui! { CodePanel(src = install_snippet) },
     ];
 
     ui! { View(style = section_style) { children } }

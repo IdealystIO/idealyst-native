@@ -446,6 +446,10 @@ impl NavigatorInstance {
     /// Mount + append a screen with a known URL. Internal helper —
     /// callers that should also `pushState` do so themselves.
     fn mount_internal(&mut self, name: &'static str, params: Box<dyn Any>, url: String) {
+        // HYDRATION: enter the outlet so the screen build adopts the
+        // server's screen DOM rather than rebuilding it. No-op off
+        // hydration (later push/pop navigations build fresh).
+        backend_web::hydrate_enter(self.mount_point());
         let result = (self.mount_screen)(name, params);
         let node = result.node;
         let scope_id = result.scope_id;
@@ -655,6 +659,32 @@ fn set_class_present(elem: &web_sys::Element, class: &str, present: bool) {
     let _ = elem.set_attribute("class", &next);
 }
 
+/// Build one frame `<div>` under `parent`, adopting the server node by
+/// `match_class` during hydration (else create fresh + set `set_class` +
+/// append). Match-by-class is parent-relative — order-independent, unlike
+/// the linear cursor, which can't follow the frame's skeleton-then-fill
+/// build order.
+fn frame_div(
+    b: &WebBackend,
+    doc: &web_sys::Document,
+    parent: &Node,
+    match_class: &str,
+    set_class: &str,
+) -> web_sys::Element {
+    // Use the BACKEND METHOD (not the global-handle free fn): the frame is
+    // built inside `create_navigator`'s `borrow_mut`, so a global-handle
+    // `try_borrow` would fail and silently skip adoption.
+    if let Some(adopted) = b.hydrate_adopt_child_of(parent, match_class) {
+        return adopted.unchecked_into();
+    }
+    let d = doc
+        .create_element("div")
+        .expect("create_element drawer frame div failed");
+    let _ = d.set_attribute("class", set_class);
+    let _ = parent.append_child(&d);
+    d
+}
+
 /// Create the navigator container, mount the initial / deep-linked
 /// stack, install the dispatcher on the control plane, and wire up
 /// the global popstate handler.
@@ -682,13 +712,23 @@ where
         .expect("window")
         .document()
         .expect("document");
-    let container = doc
-        .create_element("div")
-        .expect("create_element nav container failed");
-    // No `.ui-default` — see view.rs. The `.ui-nav-root` rule
-    // sets `position: relative` on the container; layout chrome
-    // (when present) stacks via normal block flow inside.
-    set_class_present(&container, "ui-nav-root", true);
+    // HYDRATION: adopt the server `.ui-nav-root` so the navigator's `root`
+    // IS `#app`'s existing child — `finish` then sees `root_in_mount` and
+    // keeps the server DOM instead of clear+append. Frame + content adopt
+    // below via the match/enter helpers.
+    let container: web_sys::Element = match b.hydrate_adopt_container("ui-nav-root") {
+        Some(adopted) => adopted.unchecked_into(),
+        None => {
+            let c = doc
+                .create_element("div")
+                .expect("create_element nav container failed");
+            // No `.ui-default` — see view.rs. The `.ui-nav-root` rule
+            // sets `position: relative` on the container; layout chrome
+            // (when present) stacks via normal block flow inside.
+            set_class_present(&c, "ui-nav-root", true);
+            c
+        }
+    };
 
     let nav_id = NEXT_NAVIGATOR_ID.with(|c| {
         let v = c.get();
@@ -1074,56 +1114,42 @@ pub fn create_drawer(
         .document()
         .expect("document");
 
+    // Frame divs adopt the server node (by `ui-nav-drawer-*` class) during
+    // hydration, else create fresh + append. See `frame_div`.
+
     // --- TOP slot (optional) ---
     let top_div = if build_top.is_some() {
-        let d = doc.create_element("div").expect("create_element drawer top failed");
-        let _ = d.set_attribute("class", "ui-nav-drawer-top");
-        let _ = container.append_child(&d).expect("append drawer top");
-        Some(d)
+        Some(frame_div(b, &doc, &container, "ui-nav-drawer-top", "ui-nav-drawer-top"))
     } else {
         None
     };
 
     // --- MIDDLE row (always — contains body outlet) ---
-    let middle_div = doc
-        .create_element("div")
-        .expect("create_element drawer middle failed");
-    let _ = middle_div.set_attribute("class", "ui-nav-drawer-middle");
-    let _ = container.append_child(&middle_div).expect("append drawer middle");
+    let middle_div = frame_div(b, &doc, &container, "ui-nav-drawer-middle", "ui-nav-drawer-middle");
+    let middle_node: Node = middle_div.clone().unchecked_into();
 
     // Sidebar (leading) — created only if there's a builder; gives
     // the middle row a clean two-or-three-cell layout when no
     // sidebar is configured.
     let sidebar_div = if build_content.is_some() {
-        let d = doc.create_element("div").expect("create_element drawer sidebar failed");
-        let _ = d.set_attribute("class", "ui-nav-drawer-sidebar");
-        let _ = middle_div.append_child(&d).expect("append drawer sidebar");
-        Some(d)
+        Some(frame_div(b, &doc, &middle_node, "ui-nav-drawer-sidebar", "ui-nav-drawer-sidebar"))
     } else {
         None
     };
 
-    // Body outlet — always present. In `bottom_in_scroll` mode
-    // it's the scroll context; otherwise overflow:hidden and each
-    // screen's own `ScrollView` provides scrolling.
-    let body_div = doc
-        .create_element("div")
-        .expect("create_element drawer body failed");
+    // Body outlet — always present. Adoption matches the base
+    // `ui-nav-drawer-body` token (server node may also carry `-scrolls`).
     let body_class = if bottom_in_scroll {
         "ui-nav-drawer-body ui-nav-drawer-body-scrolls"
     } else {
         "ui-nav-drawer-body"
     };
-    let _ = body_div.set_attribute("class", body_class);
-    let _ = middle_div.append_child(&body_div).expect("append drawer body");
+    let body_div = frame_div(b, &doc, &middle_node, "ui-nav-drawer-body", body_class);
     let body_node: Node = body_div.unchecked_into();
 
     // Trailing slot (optional).
     let trailing_div = if build_trailing.is_some() {
-        let d = doc.create_element("div").expect("create_element drawer trailing failed");
-        let _ = d.set_attribute("class", "ui-nav-drawer-trailing");
-        let _ = middle_div.append_child(&d).expect("append drawer trailing");
-        Some(d)
+        Some(frame_div(b, &doc, &middle_node, "ui-nav-drawer-trailing", "ui-nav-drawer-trailing"))
     } else {
         None
     };
@@ -1141,18 +1167,9 @@ pub fn create_drawer(
     // In `bottom_pinned` mode (legacy), the footer is a sibling
     // of `.ui-nav-drawer-middle` and stays pinned at the viewport
     // bottom regardless of scroll.
-    let bottom_div = if let Some(_) = &build_bottom {
-        let d = doc.create_element("div").expect("create_element drawer bottom failed");
-        let _ = d.set_attribute("class", "ui-nav-drawer-bottom");
-        if bottom_in_scroll {
-            // Goes inside body so it scrolls with content.
-            let _ = body_node.append_child(&d).expect("append drawer bottom (in scroll)");
-        } else {
-            // Goes outside the middle row so it pins to the
-            // viewport bottom.
-            let _ = container.append_child(&d).expect("append drawer bottom (pinned)");
-        }
-        Some(d)
+    let bottom_div = if build_bottom.is_some() {
+        let parent: &Node = if bottom_in_scroll { &body_node } else { &container };
+        Some(frame_div(b, &doc, parent, "ui-nav-drawer-bottom", "ui-nav-drawer-bottom"))
     } else {
         None
     };
@@ -1186,28 +1203,43 @@ pub fn create_drawer(
         let build_bottom = build_bottom;
         let build_trailing = build_trailing;
         runtime_core::schedule_microtask(move || {
+            // HYDRATION: enter each slot's region before building its
+            // content so the builder adopts the server content instead of
+            // appending a fresh duplicate. Order-independent (each slot
+            // re-enters its own region). No-op off hydration.
             if let (Some(parent), Some(builder)) =
                 (sidebar_div.map(|d| -> Node { d.unchecked_into() }), build_content)
             {
+                backend_web::hydrate_enter(&parent);
                 let _ = parent.append_child(&builder());
             }
             if let (Some(parent), Some(builder)) =
                 (top_div.map(|d| -> Node { d.unchecked_into() }), build_top)
             {
+                backend_web::hydrate_enter(&parent);
                 let _ = parent.append_child(&builder());
             }
             if let (Some(parent), Some(builder)) =
                 (bottom_div.map(|d| -> Node { d.unchecked_into() }), build_bottom)
             {
+                backend_web::hydrate_enter(&parent);
                 let _ = parent.append_child(&builder());
             }
             if let (Some(parent), Some(builder)) =
                 (trailing_div.map(|d| -> Node { d.unchecked_into() }), build_trailing)
             {
+                backend_web::hydrate_enter(&parent);
                 let _ = parent.append_child(&builder());
             }
         });
     }
+
+    // HYDRATION: frame adopted; deferred slot/screen builds re-enter their
+    // regions when drained. Suspend the cursor (via the backend METHOD —
+    // we're inside `create_navigator`'s borrow) so the walker's throwaway
+    // initial-screen build (discarded in local mode) builds fresh without
+    // corrupting adoption.
+    b.hydrate_suspend_cursor();
 
     container
 }

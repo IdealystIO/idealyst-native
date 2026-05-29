@@ -15,7 +15,7 @@ Implementation: `runtime_core::style` plus `runtime_macros::stylesheet`.
 ### `StyleRules`
 
 `StyleRules` is the bag of resolved style properties — concrete
-values, no theme tokens, no closures. Every field is `Option<T>`
+values, no style tokens, no closures. Every field is `Option<T>`
 because not setting a property is meaningful (vs setting it to a
 "default" value), and because `StyleRules::merge` works by overlaying
 `Some`s on top of `None`s.
@@ -37,28 +37,32 @@ problem.
 
 ### `StyleSheet`
 
-A `StyleSheet` is **a closure over the active theme**:
+A `StyleSheet` is **a set of rule-producing closures**, each keyed off
+the active variant selection:
 
 ```rust
+type RulesFn = Box<dyn Fn(&VariantSet) -> StyleRules>;
+
 pub struct StyleSheet {
-    base: Box<dyn Fn(&dyn Any) -> StyleRules>,
+    base: RulesFn,
     variants: BTreeMap<VariantAxis, VariantAxisDef>,
     compounds: Vec<CompoundVariant>,
 }
 ```
 
-- `base`: the unconditional rules. Reads the theme, returns
-  `StyleRules`.
+- `base`: the unconditional rules. Returns `StyleRules`.
 - `variants`: per-axis overlay closures. Each axis (`size`, `kind`,
   `parity`, …) has one closure per declared value.
 - `compounds`: overlay closures triggered when *all* `(axis, value)`
   pairs in `when` are simultaneously active.
 
-The theme is type-erased at the `StyleSheet` level — the closure
-internally downcasts to the app's typed theme. This means
-`StyleSheet` itself is a single concrete type that can be held in a
-`Rc<StyleSheet>`, even though different stylesheets target different
-themes.
+There is no theme parameter. Closures take `&VariantSet`, never a
+theme reference. Theme-dependent values (colors, spacings, radii) enter
+through **named tokens** (`Tokenized::Token { name, fallback }`), not by
+reading a theme struct inside the closure — see [Themes](#themes)
+below. This keeps `StyleSheet` a single concrete type holdable in an
+`Rc<StyleSheet>`, with the theme decoupled entirely from the sheet's
+shape.
 
 ### `StyleApplication`
 
@@ -85,7 +89,7 @@ pub fn resolve(app: &StyleApplication) -> Rc<StyleRules>
 
 Walks the layers and produces concrete rules:
 
-1. `base(theme)` runs and produces the unconditional rules.
+1. `base` runs and produces the unconditional rules.
 2. For each active variant `(axis, value)`, the axis's `value` closure
    runs and the result is **merged** into the accumulator.
 3. For each compound variant whose `when` clause is fully active,
@@ -109,27 +113,43 @@ Cache entries with no live strong refs are opportunistically swept.
 
 ```rust
 stylesheet! {
-    PerfRow<MyTheme> {
-        base |theme| {
+    pub PerfRow<()> {
+        base(_theme) {
             padding: 8.0,
-            background: theme.colors.surface.clone(),
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
         }
-        variants {
-            parity: Parity {
-                #default Even => |theme| { background: theme.colors.surface.clone() },
-                Odd          => |theme| { background: theme.colors.surface_alt.clone() },
+        variant parity {
+            #[default]
+            even(_theme) {
+                background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            }
+            odd(_theme) {
+                background: Tokenized::token("color-surface-alt", Color("#f3f4f6".into())),
             }
         }
     }
 }
 ```
 
+A few things about the grammar:
+
+- The `<()>` slot and the `(_theme)` bindings are **vestigial** —
+  parsed for backward-compatibility but ignored. Closures don't receive
+  a theme; reading `theme.*` inside a body is a compile error
+  (`check_no_theme_refs`). Write `(_theme)` (or any `_`-prefixed name)
+  and pull theme values from tokens instead.
+- `Tokenized::token("name", fallback)` references a style token; a bare
+  literal (`padding: 8.0`, `background: "#fff"`) becomes
+  `Tokenized::Literal` via `From`.
+
 It produces:
 
-1. A `pub fn PerfRow() -> PerfRowBuilder` constructor.
-2. A typed variant enum `PerfRowParity { Even, Odd }` (plus
-   `as_variant_str` etc.) per declared axis.
-3. A builder with a method per axis: `PerfRow().parity(Parity::Odd)`.
+1. A `pub fn PerfRow() -> PerfRow` builder constructor, plus a
+   `pub fn perf_row_style() -> Rc<StyleSheet>` (snake_case + `_style`)
+   that returns the cached sheet.
+2. A typed variant enum `PerfRowParity { Even, Odd }` per declared axis,
+   with a `Default` impl picking the `#[default]` arm.
+3. A builder with a method per axis: `PerfRow().parity(PerfRowParity::Odd)`.
 4. The underlying `Rc<StyleSheet>` cached in a thread-local so
    repeated calls return the same `Rc` and the resolution cache
    stays hot.
@@ -140,7 +160,7 @@ static values, enum values, and `Signal<T>`:
 
 ```rust
 let scale = signal!(1.0_f32);
-PerfRow().parity(Parity::Odd).override_padding(scale)
+PerfRow().parity(PerfRowParity::Odd).override_padding(scale)
 ```
 
 When the builder produces its `StyleApplication`, signal reads inside
@@ -150,36 +170,82 @@ changes, with no additional ceremony.
 
 ---
 
-## Themes
+## Style tokens
 
-A theme is any `'static` struct. The framework doesn't dictate its
-shape — stylesheets downcast to the typed reference inside their
-closures.
+A **style token** is a named value that stylesheets read by name —
+`Tokenized::token("color-accent", fallback)`. Its job is cheap runtime
+restyling: each token name owns a `Signal<TokenValue>`, so calling
+`update_tokens(["color-accent"])` re-applies style only on the
+components that read `color-accent`, with no stylesheet recomputation
+anywhere else. A token behaves like a signal scoped to "every node
+using this style value."
+
+A **theme** sits one level up: a named collection of style-token values
+(light, dark, a brand palette). Assembling tokens into a theme is a
+separate concern from the token mechanism — the framework core only
+holds the flat `(name → value)` table; a component library curates
+which tokens exist and what each theme sets them to (see the closing
+note).
+
+A token reference is a `Tokenized<T>`:
 
 ```rust
-struct MyTheme {
-    colors: ColorPalette,
-    spacing: Spacing,
+pub enum Tokenized<T> {
+    Literal(T),
+    Token { name: &'static str, fallback: T },
 }
-
-install_theme(light_theme());                    // call once at startup
-set_theme(dark_theme());                         // swap; everything re-applies
 ```
 
-`install_theme` stores the theme in a thread-local `Signal<Rc<dyn
-Any>>`. `set_theme` updates that signal, which:
+- `Tokenized::token("color-accent", fallback)` (or `Tokenized::Token {
+  name, fallback }`) references a token by name. The `fallback` is used
+  on backends with no runtime-variable system, before the token is
+  installed, or if the installed value is the wrong variant.
+- A plain value (`8.0`, `"#fff"`) is `Tokenized::Literal` via `From`.
 
-1. Clears the resolution cache (old entries reference the old theme
-   pointer and would never be reused).
-2. Queues every currently-registered `(stylesheet, theme)` pair for
-   `Backend::unregister_stylesheet`. The framework drains the queue
-   on the next style-effect run, when the backend is in scope.
-3. Sets the new theme — every styled `Effect` that read the theme
-   re-fires and re-resolves.
+The token *table* is installed once at startup and swapped reactively:
 
-Theme changes propagate through the existing reactivity system. No
-re-render, no diff. The set of styled effects subscribed to the
-theme is exactly the set that needs to re-apply, by construction.
+```rust
+install_tokens(&[
+    TokenEntry { name: "color-accent",  value: TokenValue::Color(Color("#5b6cff".into())) },
+    TokenEntry { name: "color-surface", value: TokenValue::Color(Color("#ffffff".into())) },
+    TokenEntry { name: "spacing-md",    value: TokenValue::Length(Length::Px(12.0)) },
+]);
+
+// later — e.g. a light → dark swap. Only nodes that read these
+// token names re-apply:
+update_tokens(&[
+    TokenEntry { name: "color-surface", value: TokenValue::Color(Color("#111317".into())) },
+]);
+```
+
+`TokenValue` is `Color`, `Length`, or `Number(f32)` — the variant must
+match the `Tokenized<T>` reading it (a mismatch warns in debug and
+falls back).
+
+Mechanically, each token name owns a thread-local `Signal<TokenValue>`
+in a registry. `Tokenized::<T>::resolve()` (called inside the
+apply-style `Effect`) reads that signal, so the effect subscribes
+**only** to the tokens it actually reads. `install_tokens` seeds the
+registry; `update_tokens` calls `.set(..)` on the named entries (inside
+a `batch`, so an effect reading several changed tokens re-runs once)
+and clears the resolution cache.
+
+Token updates propagate through the existing reactivity system. No
+re-render, no diff. The set of styled effects subscribed to a changed
+token is exactly the set that needs to re-apply, by construction.
+
+> **Web vs native.** On web, tokens become CSS custom properties —
+> `var(--color-accent, #5b6cff)` — so a theme swap is one variable
+> write per token, no class regeneration. On native backends (iOS,
+> Android) there's no variable system, so `resolve()` yields the
+> concrete value and the swap re-applies the affected nodes directly.
+> The observable result is identical.
+
+> **Building a typed theme on top.** Nothing stops a component library
+> from offering a typed `Theme` struct as ergonomic sugar — `idea-ui`
+> does exactly this. But that's a user-land convenience that *emits*
+> token entries; the framework core only knows about the flat
+> `(name → TokenValue)` table.
 
 ---
 
@@ -250,6 +316,76 @@ widget. The choice is purely about where the state tracking lives.
 
 ---
 
+## Responsive breakpoints
+
+A `breakpoint` block adds rules that apply only once the viewport is at
+least a given width. You write the narrowest layout in `base`, then add
+or change properties in `breakpoint` blocks as the screen widens; the
+framework merges the blocks whose width threshold the current viewport
+has crossed. The activation source is viewport width, and the merge
+runs through the same apply-style effect that handles interaction
+states. A stylesheet declares them with `breakpoint` blocks:
+
+```rust
+stylesheet! {
+    pub Panel<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,   // narrow / mobile
+            padding: 12.0,
+        }
+        breakpoint md(_t) {
+            flex_direction: FlexDirection::Row,      // ≥ 768 dp
+            padding: 20.0,
+        }
+        breakpoint lg(_t) { padding: 32.0 }          // ≥ 1024 dp
+    }
+}
+```
+
+The model is **mobile-first and min-width only**:
+
+- `base` is the `Xs` layout (the narrowest case). `xs` is therefore not
+  a valid block name — it *is* the base.
+- Valid blocks are `sm`, `md`, `lg`, `xl`. Each is a lower bound; at a
+  given width every overlay whose threshold is `≤` the width applies,
+  lowest first, so wider breakpoints win on conflicting properties
+  (matching how stacked `@media (min-width)` rules cascade).
+- There is intentionally **no `max-width`, no orientation, and no other
+  media features.** Authors widen a narrow base rather than narrowing a
+  wide one.
+
+Thresholds come from [`runtime_core::breakpoints`] — Tailwind-style
+defaults (`sm` 640, `md` 768, `lg` 1024, `xl` 1280 dp), overridable
+once at startup via `install_breakpoints`.
+
+Both backends key off the *same* thresholds, so a `breakpoint md` block
+activates at exactly the same width everywhere:
+
+- **Web** emits `@media (min-width: 768px) { .ui-… { … } }`. A static /
+  SSR first paint is already responsive — no JS needed to pick the
+  bucket.
+- **Native** merges the active bucket's overlay reactively. The
+  framework reads `current_breakpoint()` (a memo over `viewport_size()`
+  that re-fires only when the *bucket* changes), and the apply-style
+  effect re-resolves with the new overlay merged in.
+
+For imperative layout switches that don't fit the overlay model, read
+the bucket directly:
+
+```rust
+match current_breakpoint().get() {
+    Breakpoint::Xs | Breakpoint::Sm => { /* stacked */ }
+    _                               => { /* side-by-side */ }
+}
+```
+
+Prefer declarative `breakpoint` blocks where you can — they keep web
+and native in lockstep and survive SSR. The signal is the escape hatch.
+See [`breakpoint.rs`](../crates/runtime/core/src/breakpoint.rs) for the
+bucket definitions and thresholds.
+
+---
+
 ## Backend caching
 
 Backends typically want to cache work that maps from `StyleRules`
@@ -279,28 +415,34 @@ default no-op impl and just handle each `apply_style` call directly.
 
 ## Two design choices worth understanding
 
-### Stylesheets as closures, not tokens
+### Why style tokens
 
-Many systems define a "token enum" — `Color::Accent` — and look up
-the concrete value at the call site against the active theme. We
-don't. A stylesheet's `base(|theme| { background: theme.colors.accent })`
-returns a `Color` immediately; the theme is just a normal Rust
-struct, accessed with normal field syntax.
+An earlier design had stylesheet closures read a typed theme struct
+(`base(|theme| { background: theme.colors.accent })`). The framework
+moved to style tokens (`Tokenized::token("color-accent", …)`) for two
+concrete reasons: the struct approach made every `StyleSheet` generic
+over a specific theme type, and a struct field read can't compile to a
+CSS custom property the way a token name can.
 
-What this buys:
+What the token model buys:
 
-- **No special property language.** Whatever color, size, or
-  computation rule you can express in Rust against `&Theme` is
-  fair game in a stylesheet. There's no need for a "computed
-  token" feature.
-- **Type-checked theme access.** Forgetting to add a field to your
-  theme is a compile error, not a runtime "unknown token."
-- **Per-property indirection is at the same cost as direct access.**
-  No HashMap lookup, no key parsing, no token registry.
+- **Theme decoupled from sheet shape.** `StyleSheet` is one concrete
+  type whose closures take `&VariantSet`. The theme is a flat
+  `(name → TokenValue)` table installed separately — no generic theme
+  parameter threading through every sheet.
+- **Cheap web theme swaps.** Tokens map to CSS custom properties, so a
+  light→dark swap is one `var(--…)` write per changed token. No class
+  regeneration, no per-element restyle.
+- **Reactive at token granularity.** Each token is its own signal;
+  `update_tokens(["color-surface"])` wakes exactly the nodes that read
+  `color-surface` and nothing else.
 
-The cost is that the theme type is fixed at stylesheet declaration
-time. We type-erase via `&dyn Any` and downcast inside the closure
-— the downcast happens once per resolution, not once per property.
+The cost is indirection: a token is a name + fallback rather than a
+type-checked field, so a typo is a runtime "unknown token → fallback"
+(warned in debug) rather than a compile error. Component libraries that
+want compile-time-checked theme access layer a typed façade on top
+(see `idea-ui`) that emits token entries — the safety lives in the
+library, the flat table lives in core.
 
 ### Variants vs overrides
 

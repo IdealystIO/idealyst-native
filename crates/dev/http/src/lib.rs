@@ -82,6 +82,22 @@ pub struct AasContext {
     pub aas_url: Arc<std::sync::Mutex<Option<String>>>,
 }
 
+/// Project-relative font paths the dev launcher reads from
+/// `[package.metadata.idealyst.app.web].preload_fonts` (parsed by
+/// `build-ios`'s manifest reader). The HTTP server splices one
+/// `<link rel="preload" as="font" crossorigin>` tag per path right
+/// before `</head>` on every served HTML response — same set the
+/// deployed bundle ships (build-web's `stage_bundle` injects the same
+/// tags into the staged `index.html`), so the dev loop's first paint
+/// matches production.
+///
+/// Empty `Vec` is fine — the injection helper no-ops, so callers can
+/// pass this through unconditionally without checking.
+#[derive(Clone, Default)]
+pub struct PreloadContext {
+    pub font_paths: Vec<String>,
+}
+
 /// Inlined into the `<body>` of every served HTML response when
 /// reload is active. Holds an `EventSource` open against
 /// [`RELOAD_SSE_URL`]; reloads the page when the generation in the
@@ -108,6 +124,7 @@ pub fn serve_static(
     root: &Path,
     reload: Option<ReloadContext>,
     aas: Option<AasContext>,
+    preload: Option<PreloadContext>,
 ) -> Result<()> {
     let addr = format!("{host}:{port}");
     let server = Server::http(&addr)
@@ -123,6 +140,13 @@ pub fn serve_static(
     if aas.is_some() {
         extras.push("aas-url");
     }
+    if preload
+        .as_ref()
+        .map(|p| !p.font_paths.is_empty())
+        .unwrap_or(false)
+    {
+        extras.push("font-preload");
+    }
     eprintln!(
         "[dev-http] serving {} on http://{}{}",
         root.display(),
@@ -135,7 +159,13 @@ pub fn serve_static(
     );
 
     for request in server.incoming_requests() {
-        if let Err(e) = handle(&root, reload.as_ref(), aas.as_ref(), request) {
+        if let Err(e) = handle(
+            &root,
+            reload.as_ref(),
+            aas.as_ref(),
+            preload.as_ref(),
+            request,
+        ) {
             eprintln!("[dev-http] request error: {e}");
         }
     }
@@ -147,6 +177,7 @@ fn handle(
     root: &Path,
     reload: Option<&ReloadContext>,
     aas: Option<&AasContext>,
+    preload: Option<&PreloadContext>,
     request: Request,
 ) -> Result<()> {
     // GET / HEAD only. Anything else (POST, PUT, …) isn't meaningful
@@ -208,12 +239,12 @@ fn handle(
         Some(path) if path.is_dir() => {
             let index = path.join("index.html");
             if index.is_file() {
-                respond_with_file(request, &index, reload, aas)
+                respond_with_file(request, &index, reload, aas, preload)
             } else {
                 not_found(request)
             }
         }
-        Some(path) if path.is_file() => respond_with_file(request, &path, reload, aas),
+        Some(path) if path.is_file() => respond_with_file(request, &path, reload, aas, preload),
         _ if wants_html => {
             // SPA fallback. Unknown route, but the browser is asking
             // for HTML — serve the root index so a client-side router
@@ -221,7 +252,7 @@ fn handle(
             // images) bypass this branch and get a real 404.
             let index = root.join("index.html");
             if index.is_file() {
-                respond_with_file(request, &index, reload, aas)
+                respond_with_file(request, &index, reload, aas, preload)
             } else {
                 not_found(request)
             }
@@ -329,15 +360,19 @@ fn respond_with_file(
     path: &Path,
     reload: Option<&ReloadContext>,
     aas: Option<&AasContext>,
+    preload: Option<&PreloadContext>,
 ) -> Result<()> {
     let ct = content_type(path);
     let is_html = matches!(ct, "text/html; charset=utf-8");
 
     // HTML responses get script tags injected (livereload + runtime-server
-    // URL). Everything else streams straight from disk — wasm
-    // bundles can be large (hello-web's release wasm is ~13 MB),
+    // URL + font preloads). Everything else streams straight from disk —
+    // wasm bundles can be large (hello-web's release wasm is ~13 MB),
     // and `Response::from_file` sets up chunked transfer for us.
-    let needs_injection = is_html && (reload.is_some() || aas.is_some());
+    let preload_active = preload
+        .map(|p| !p.font_paths.is_empty())
+        .unwrap_or(false);
+    let needs_injection = is_html && (reload.is_some() || aas.is_some() || preload_active);
     if needs_injection {
         let mut body = String::new();
         fs::File::open(path)
@@ -349,6 +384,12 @@ fn respond_with_file(
         }
         if reload.is_some() {
             body = inject_reload_script(body);
+        }
+        if let Some(ctx) = preload {
+            // Same helpers `build-web`'s `stage_bundle` calls — same tag
+            // set lands in the response as ships in the deployed bundle.
+            let snippet = build_ios::font_preload_tags(&ctx.font_paths);
+            body = build_ios::inject_into_head(body, &snippet);
         }
         let response = Response::from_string(body)
             .with_header(header("Content-Type", ct))

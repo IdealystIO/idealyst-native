@@ -7,7 +7,7 @@
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
-use crate::pages::common::{code_panel, page_header, page_section};
+use crate::pages::common::{CodePanel, PageHeader, PageSection};
 use crate::routes::CODE_SPLITTING_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
@@ -28,18 +28,18 @@ pub fn page() -> Element {
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Server-side rendering",
-                "Render the app to fully-styled HTML on the server for a fast, \
+            PageHeader(
+                title = "Server-side rendering",
+                blurb = "Render the app to fully-styled HTML on the server for a fast, \
                  crawlable first paint \u{2014} then let the WASM bundle adopt that exact \
                  DOM and bring it to life, instead of throwing it away and re-rendering. \
-                 The page you're reading is served this way."
-            ) }
-            { page_section(render_ref, vec![render_on_server()]) }
-            { page_section(firstpaint_ref, vec![first_paint()]) }
-            { page_section(hydrate_ref, vec![hydration()]) }
-            { page_section(serve_ref, vec![serving()]) }
-            { page_section(status_ref, vec![status()]) }
+                 The page you're reading is served this way.",
+            )
+            PageSection(handle = render_ref) { render_on_server() }
+            PageSection(handle = firstpaint_ref) { first_paint() }
+            PageSection(handle = hydrate_ref) { hydration() }
+            PageSection(handle = serve_ref) { serving() }
+            PageSection(handle = status_ref) { status() }
         }
     };
     layout_with_toc(content, toc)
@@ -60,7 +60,7 @@ fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Element {
         children.push(ui! { Typography(content = body) });
     }
     if let Some(src) = code {
-        children.push(code_panel(src));
+        children.push(ui! { CodePanel(src = src) });
     }
     ui! { Stack(gap = StackGap::Lg) { children } }
 }

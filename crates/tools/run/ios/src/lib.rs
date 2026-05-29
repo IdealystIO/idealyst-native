@@ -72,21 +72,31 @@ const IOS_AAS_SHELL_LIB: &str = "backend_ios";
 /// Whether the iOS process runs the user's app locally or acts as a
 /// thin client connected to an runtime-server dev-host.
 ///
-/// runtime-server no longer carries a URL — the iOS app discovers its
-/// dev-server via Bonjour (`_idealyst-dev._tcp.`), filtering on the
-/// project's bundle id (which we plumb through as `IdealystAppId`
-/// in Info.plist). That means the dev-server can pick an ephemeral
-/// port, restart, or move to a new machine on the same Wi-Fi
-/// without the client needing a new build.
+/// runtime-server carries the dev-server URL (`ws://host:port`) which
+/// the CLI bakes into `Info.plist` as `IdealystDevEndpoint`. The
+/// Swift glue reads that key and passes it to `ios_main`; if the
+/// dev-server later restarts on a different port the wrapper has to
+/// be rebuilt via `idealyst dev`.
 #[derive(Clone, Debug)]
 pub enum RunMode {
     Local,
-    RuntimeServer,
+    /// `endpoint`: full `ws://host:port` URL. Empty string means
+    /// "no endpoint baked" — useful for one-shot installs of an
+    /// AAS binary that will be wired up out-of-band. The wrapper
+    /// won't connect to anything in that case.
+    RuntimeServer { endpoint: String },
 }
 
 impl RunMode {
     fn is_runtime_server(&self) -> bool {
-        matches!(self, RunMode::RuntimeServer)
+        matches!(self, RunMode::RuntimeServer { .. })
+    }
+
+    fn endpoint(&self) -> &str {
+        match self {
+            RunMode::Local => "",
+            RunMode::RuntimeServer { endpoint } => endpoint.as_str(),
+        }
     }
 }
 
@@ -337,45 +347,25 @@ fn xcrun_sdk_path(sdk: &str) -> Result<PathBuf> {
 // ---------------------------------------------------------------------------
 
 fn render_info_plist(manifest: &Manifest, executable_name: &str, mode: &RunMode) -> Result<String> {
-    // The Robot bridge advertises `_idealyst-robot._tcp` so the MCP
-    // server can discover this app via Bonjour. iOS 14+ requires the
-    // service type be listed in `NSBonjourServices` AND a
-    // `NSLocalNetworkUsageDescription` string be present, otherwise
-    // the OS silently drops the advertisement and prompts the user
-    // for permission on first network use. Both go into every dev
-    // build (Local + runtime-server modes); release builds get nothing extra.
-    //
-    // runtime-server mode additionally advertises `_idealyst-dev._tcp` for the
-    // dev-server discovery flow + the `IdealystAppId` key for the
-    // dev-server's TXT-record match.
-    let robot_bonjour = "<string>_idealyst-robot._tcp</string>";
-    let local_network_usage =
-        "<key>NSLocalNetworkUsageDescription</key>\n    \
-         <string>Allows this Idealyst dev build to be discovered by Claude / IDE tooling on your local network for live inspection and hot-reload.</string>";
+    // No more network-discovery advertisement: the Robot bridge writes
+    // a per-process `~/.idealyst/apps/<name>-<pid>.json` registration
+    // file the MCP server scans, and the dev-server URL is baked into
+    // `IdealystDevEndpoint` for the runtime-server client. iOS no
+    // longer needs `NSBonjourServices` / `NSLocalNetworkUsageDescription`
+    // — every previously broadcast-driven flow now goes through
+    // file-based discovery.
 
     let extra_entries = match mode {
-        RunMode::Local => format!(
-            "<key>NSBonjourServices</key>\n    \
-             <array>\n        \
-                 {robot}\n    \
-             </array>\n    \
-             {usage}",
-            robot = robot_bonjour,
-            usage = local_network_usage,
-        ),
-        RunMode::RuntimeServer => format!(
-            "<key>NSBonjourServices</key>\n    \
-             <array>\n        \
-                 <string>_idealyst-dev._tcp</string>\n        \
-                 {robot}\n    \
-             </array>\n    \
-             {usage}\n    \
-             <key>IdealystAppId</key>\n    <string>{app_id}</string>",
-            robot = robot_bonjour,
-            usage = local_network_usage,
-            app_id = xml_escape(manifest.app.require_bundle_id()?),
+        RunMode::Local => String::new(),
+        RunMode::RuntimeServer { .. } => format!(
+            "<key>IdealystDevEndpoint</key>\n    <string>{endpoint}</string>",
+            endpoint = xml_escape(mode.endpoint()),
         ),
     };
+    // Resolve bundle id eagerly so misconfigured manifests fail before
+    // we render the plist (used to gate-keep IdealystAppId; now just
+    // a sanity check).
+    let _ = manifest.app.require_bundle_id()?;
     Ok(INFO_PLIST_TMPL
         .replace("{{APP_NAME}}", &xml_escape(&manifest.app.name))
         .replace("{{BUNDLE_ID}}", &xml_escape(manifest.app.require_bundle_id()?))
@@ -393,12 +383,10 @@ fn render_info_plist(manifest: &Manifest, executable_name: &str, mode: &RunMode)
 fn render_view_controller(manifest: &Manifest, mode: &RunMode) -> String {
     let template = match mode {
         RunMode::Local => VIEW_CONTROLLER_LOCAL_SWIFT,
-        RunMode::RuntimeServer => VIEW_CONTROLLER_AAS_SWIFT,
+        RunMode::RuntimeServer { .. } => VIEW_CONTROLLER_AAS_SWIFT,
     };
-    // runtime-server no longer needs a baked-in URL — the Swift glue browses
-    // Bonjour for `_idealyst-dev._tcp.` and matches `app_id` from
-    // Info.plist (= the project's bundle id, written by
-    // `render_info_plist`).
+    // Splash substitution only — the runtime-server URL travels via
+    // Info.plist's `IdealystDevEndpoint`, set by `render_info_plist`.
     template
         .replace("{{SPLASH_BG}}", &swift_escape(&manifest.app.splash.background))
         .replace("{{SPLASH_TITLE}}", &swift_escape(&manifest.app.splash.title))

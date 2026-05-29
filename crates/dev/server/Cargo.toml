@@ -79,13 +79,6 @@ tungstenite = { version = "0.24", default-features = false, features = ["handsha
 # File-watch + debounce for the auto-rebuild loop. Used only on the
 # dev side; never ships into an app binary.
 notify-debouncer-mini = { version = "0.4", default-features = false }
-# Pure-Rust mDNS / DNS-SD ("Bonjour") so the dev-server can advertise
-# itself on the local network. Cross-platform (Mac/Linux/Windows).
-# Clients (iOS app, browser tools) browse for `_idealyst-dev._tcp`
-# and pick the entry whose TXT record matches their app_id — that's
-# how a freshly launched / restarted dev-server is found without
-# hard-coding host:port into the app binary.
-mdns-sd = { version = "0.10", default-features = false }
 
 [dev-dependencies]
 # Used by the `dump_wire` example to pretty-print the captured

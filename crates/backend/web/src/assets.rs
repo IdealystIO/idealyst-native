@@ -183,6 +183,24 @@ impl WebBackend {
             };
             // Shared with the SSR backend so a face resolves identically.
             let rule = css::font_face_css(family_name, face, url);
+            // Cross-backend + SSR dedup: at most ONE `@font-face` per rule
+            // may exist in the document. A second one for the same URL
+            // makes the browser fetch the font AGAIN — the bug we hit when
+            // a lazy chunk's `mount_chunk` backend re-registered the
+            // theme's typefaces (its per-backend `font_face_rule_indices`
+            // is fresh, so only this thread-local set catches it). If the
+            // rule is already present (SSR `<head>`, the main page, or an
+            // earlier chunk), skip injecting it.
+            let newly = crate::FONT_FACES_PRESENT.with(|s| s.borrow_mut().insert(rule.clone()));
+            if !newly {
+                continue;
+            }
+            // Hydration: the SSR `<head>` already carries this exact rule
+            // (we just marked it present above), so DON'T inject a
+            // duplicate — the server's rule styles the live page.
+            if self.hydrating {
+                continue;
+            }
             if let Some(idx) = insert_at_rule(self, &rule) {
                 rule_indices.push(idx);
             }

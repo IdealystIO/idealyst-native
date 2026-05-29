@@ -7,20 +7,20 @@
 //!    so we inherit SPA fallback, no-cache headers, and correct
 //!    MIME types.
 //!
-//! 2. **runtime-server discovery bridge.** Browses the local network for an
-//!    runtime-server dev-server matching a given `app_id` and feeds the
-//!    resulting `ws://...` URL into [`dev_http::AasContext`]. The
-//!    HTTP layer then (a) inlines a `<script>window.IDEALYST_RUNTIME_SERVER_URL
-//!    = "..."</script>` into every served HTML response and
-//!    (b) exposes the same value via `/__idealyst/aas_url`. Wasm
-//!    bundles pick it up synchronously at boot, no async fetch
-//!    dance required.
+//! 2. **runtime-server URL injection.** Reads the dev-server's bound
+//!    port from a port-file sentinel the dev-host writes
+//!    (`--port-file`), constructs `ws://localhost:<port>`, and feeds
+//!    it into [`dev_http::AasContext`]. The HTTP layer then (a)
+//!    inlines a `<script>window.IDEALYST_RUNTIME_SERVER_URL = "..."</script>`
+//!    into every served HTML response and (b) exposes the same value
+//!    via `/__idealyst/aas_url`. Wasm bundles pick it up synchronously
+//!    at boot, no async fetch dance required.
 //!
 //! Replaces the old `serve.py` — that script only did the static
 //! side, so users had to bake the runtime-server URL into the wasm at build
 //! time. This binary closes the loop: a dev-server that restarts
-//! on a fresh ephemeral port is transparently picked up by a page
-//! refresh.
+//! on a fresh port is transparently picked up by a page refresh
+//! (the port file gets rewritten by the new host on bind).
 //!
 //! Usage:
 //!
@@ -28,7 +28,7 @@
 //! web-dev-host \
 //!     --addr 0.0.0.0:8080 \
 //!     --root examples/hello-world/pkg \
-//!     --app-id hot-reload-demo
+//!     --port-file /path/to/host-port
 //! ```
 //!
 //! Arguments are positional/long-named only; deliberately no clap
@@ -37,49 +37,42 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use dev_http::{serve_static, AasContext};
-use mdns_sd::{ServiceDaemon, ServiceEvent};
-
-/// DNS-SD service type the runtime-server dev-server publishes itself under.
-/// Mirrors the constant in `dev-server/src/transport.rs`. Kept in
-/// sync by convention rather than a shared crate to avoid this
-/// binary having to pull in the whole `wire` + `dev-server`
-/// dependency tree.
-const AAS_SERVICE_TYPE: &str = "_idealyst-dev._tcp.local.";
 
 struct Args {
     addr: String,
     host: String,
     port: u16,
     root: PathBuf,
-    app_id: String,
+    port_file: PathBuf,
 }
 
 fn main() -> Result<()> {
     let args = parse_args()?;
     eprintln!(
-        "[web-dev-host] root={} addr={} app_id={:?}",
+        "[web-dev-host] root={} addr={} port-file={}",
         args.root.display(),
         args.addr,
-        args.app_id
+        args.port_file.display(),
     );
 
     let aas_url: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    spawn_mdns_browser(args.app_id.clone(), aas_url.clone());
+    spawn_port_file_watcher(args.port_file.clone(), aas_url.clone());
 
     let ctx = AasContext {
         aas_url: aas_url.clone(),
     };
 
-    serve_static(&args.host, args.port, &args.root, None, Some(ctx))
+    serve_static(&args.host, args.port, &args.root, None, Some(ctx), None)
 }
 
 fn parse_args() -> Result<Args> {
     let mut addr = String::from("0.0.0.0:8080");
     let mut root = PathBuf::from(".");
-    let mut app_id: Option<String> = None;
+    let mut port_file: Option<PathBuf> = None;
 
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -99,12 +92,11 @@ fn parse_args() -> Result<Args> {
                 );
                 i += 2;
             }
-            "--app-id" => {
-                app_id = Some(
+            "--port-file" => {
+                port_file = Some(PathBuf::from(
                     raw.get(i + 1)
-                        .ok_or_else(|| anyhow!("--app-id requires a value"))?
-                        .clone(),
-                );
+                        .ok_or_else(|| anyhow!("--port-file requires a value"))?,
+                ));
                 i += 2;
             }
             "-h" | "--help" => {
@@ -117,8 +109,8 @@ fn parse_args() -> Result<Args> {
         }
     }
 
-    let app_id = app_id.ok_or_else(|| {
-        anyhow!("missing required --app-id <id> (matches the dev-server's mDNS TXT app_id)")
+    let port_file = port_file.ok_or_else(|| {
+        anyhow!("missing required --port-file <path> (the dev-host writes its bound port here)")
     })?;
 
     let (host, port) = parse_addr(&addr)?;
@@ -127,7 +119,7 @@ fn parse_args() -> Result<Args> {
         host,
         port,
         root,
-        app_id,
+        port_file,
     })
 }
 
@@ -143,96 +135,45 @@ fn parse_addr(addr: &str) -> Result<(String, u16)> {
 
 fn print_usage() {
     eprintln!(
-        "Usage: web-dev-host --app-id <id> [--addr <host:port>] [--root <dir>]\n\
+        "Usage: web-dev-host --port-file <path> [--addr <host:port>] [--root <dir>]\n\
          \n\
-         Static-file dev-host that auto-discovers an runtime-server dev-server with\n\
-         the matching `app_id` via Bonjour and exposes its URL to served\n\
-         pages via `window.IDEALYST_RUNTIME_SERVER_URL` + `/__idealyst/aas_url`.\n\
+         Static-file dev-host that reads the runtime-server dev-server's bound port\n\
+         from a sentinel file and exposes `ws://localhost:<port>` to served pages\n\
+         via `window.IDEALYST_RUNTIME_SERVER_URL` + `/__idealyst/aas_url`.\n\
          \n\
          Options:\n\
-         \x20 --app-id <id>       runtime-server app_id to look for (required)\n\
+         \x20 --port-file <path>  Path to the dev-host port sentinel (required)\n\
          \x20 --addr <host:port>  HTTP bind address (default 0.0.0.0:8080)\n\
          \x20 --root <dir>        Static root directory (default current dir)"
     );
 }
 
-/// Long-lived mDNS browser thread. Watches `_idealyst-dev._tcp.`
-/// for services whose TXT record's `app_id` matches ours. Writes
-/// the resolved `ws://...` URL into the shared mutex; clears it
-/// when the matching service disappears.
-///
-/// Keeping the daemon alive (vs. building one per discover() call)
-/// matters here — we want the running daemon to *immediately*
-/// notice when the runtime-server server restarts on a fresh port, so a page
-/// refresh after a dev-server hot-reload sees the new URL.
-fn spawn_mdns_browser(app_id: String, out: Arc<Mutex<Option<String>>>) {
+/// Background thread that watches `port_file` for changes and pushes
+/// `ws://localhost:<port>` into the shared mutex. The dev-host
+/// rewrites the file on every bind (including post-restart respawns),
+/// so re-polling gives us live URL updates without restarting the
+/// web-host. mtime-based — cheap enough to poll every 250ms.
+fn spawn_port_file_watcher(port_file: PathBuf, out: Arc<Mutex<Option<String>>>) {
     thread::spawn(move || {
-        let daemon = match ServiceDaemon::new() {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("[web-dev-host] mDNS daemon init failed: {e}");
-                return;
-            }
-        };
-        let receiver = match daemon.browse(AAS_SERVICE_TYPE) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("[web-dev-host] mDNS browse failed: {e}");
-                return;
-            }
-        };
-        eprintln!(
-            "[web-dev-host] mDNS browsing {} for app_id={:?}",
-            AAS_SERVICE_TYPE, app_id
-        );
-        for event in receiver.iter() {
-            match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    if !txt_matches(&info, &app_id) {
-                        continue;
-                    }
-                    let host_url = pick_url(&info);
-                    if let Some(url) = host_url {
-                        eprintln!("[web-dev-host] discovered runtime-server at {url}");
-                        if let Ok(mut g) = out.lock() {
-                            *g = Some(url);
-                        }
-                    }
+        let mut last_mtime: Option<std::time::SystemTime> = None;
+        loop {
+            let mtime = std::fs::metadata(&port_file)
+                .ok()
+                .and_then(|m| m.modified().ok());
+            if mtime != last_mtime {
+                last_mtime = mtime;
+                let new_url = std::fs::read_to_string(&port_file)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u16>().ok())
+                    .map(|p| format!("ws://127.0.0.1:{p}"));
+                if let Some(url) = new_url.as_ref() {
+                    eprintln!("[web-dev-host] dev-server at {url}");
                 }
-                ServiceEvent::ServiceRemoved(_, name) => {
-                    eprintln!("[web-dev-host] runtime-server service {name} disappeared");
-                    if let Ok(mut g) = out.lock() {
-                        *g = None;
-                    }
+                if let Ok(mut g) = out.lock() {
+                    *g = new_url;
                 }
-                _ => {}
             }
+            thread::sleep(Duration::from_millis(250));
         }
-        eprintln!("[web-dev-host] mDNS browse loop exited");
     });
-}
-
-fn txt_matches(info: &mdns_sd::ServiceInfo, expected_app_id: &str) -> bool {
-    for prop in info.get_properties().iter() {
-        if prop.key().eq_ignore_ascii_case("app_id") && prop.val_str() == expected_app_id {
-            return true;
-        }
-    }
-    false
-}
-
-/// Pick the best address from a discovered service and format it as
-/// a `ws://host:port` URL. Prefer IPv4 — tungstenite handles those
-/// cleanly and dev LANs are almost always v4. Fall back to v6 with
-/// the URL-required bracket form if no v4 is advertised.
-fn pick_url(info: &mdns_sd::ServiceInfo) -> Option<String> {
-    let port = info.get_port();
-    let addrs = info.get_addresses();
-    if let Some(v4) = addrs.iter().find(|a| a.is_ipv4()) {
-        Some(format!("ws://{v4}:{port}"))
-    } else if let Some(v6) = addrs.iter().next() {
-        Some(format!("ws://[{v6}]:{port}"))
-    } else {
-        None
-    }
 }

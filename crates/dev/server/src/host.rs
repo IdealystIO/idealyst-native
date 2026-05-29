@@ -19,7 +19,9 @@
 //!
 //! The host is the long-lived dev-side process that:
 //! - Listens for runtime-server client WebSockets (one per attached device /
-//!   browser tab) and advertises itself via mDNS.
+//!   browser tab) and writes its bound port to
+//!   `IDEALYST_RUNTIME_SERVER_PORT_FILE` so the CLI parent can bake
+//!   `IDEALYST_DEV_ENDPOINT=ws://host:port` into platform wrappers.
 //! - Spawns the *sidecar* child process and mirrors its outbound
 //!   wire commands into one [`WireRecordingBackend`] per session.
 //! - Watches the user-source tree and either ships a subsecond
@@ -58,17 +60,10 @@ pub use subsecond_types::JumpTable;
 pub struct HostConfig {
     /// `addr:port` to bind the WebSocket listener. The host accepts
     /// `0.0.0.0:0` and lets the OS pick a free port; the chosen port
-    /// is then published over mDNS (so clients discover the host
-    /// without anyone coordinating a fixed number) and, if
-    /// `IDEALYST_RUNTIME_SERVER_PORT_FILE` is set, written there too so the CLI
-    /// parent doesn't have to trust mDNS browse caching across
-    /// restarts.
+    /// is written to `IDEALYST_RUNTIME_SERVER_PORT_FILE` so the CLI
+    /// parent can pick it up and bake `IDEALYST_DEV_ENDPOINT=ws://host:port`
+    /// into platform wrappers at build time.
     pub bind_addr: String,
-    /// mDNS-published service identifier. Clients filter the
-    /// `_idealyst-dev._tcp` browse stream by this id to pick the
-    /// right dev-server when multiple projects' hosts are running
-    /// on the same network.
-    pub app_id: String,
     /// Absolute path to the prebuilt sidecar binary. The host spawns
     /// this on startup and respawns it via cargo on hot-patch
     /// failure (see `sidecar_manifest` + `cargo_target` below).
@@ -126,7 +121,6 @@ pub fn run(
 ) -> std::io::Result<()> {
     let HostConfig {
         bind_addr,
-        app_id,
         sidecar_path,
         sidecar_manifest,
         cargo_target,
@@ -169,12 +163,11 @@ pub fn run(
     // the signal handler can't catch — SIGKILL, force-quit from
     // Activity Monitor, panic-induced abort, system reboot mid-
     // session — we reparent to launchd (pid 1) and would otherwise
-    // run forever, squatting on our WebSocket port and answering
-    // mDNS browses for the project's bundle id. Future
-    // `idealyst dev` runs then have their terminal client connect
-    // to *us* (stale captures, no longer watching files) instead
-    // of the live host, manifesting as "hot-reload silently does
-    // nothing."
+    // run forever, squatting on our WebSocket port. Future
+    // `idealyst dev` runs would then collide on the port-file
+    // sentinel, and any stale baked endpoint would land on a host
+    // that's no longer watching files — manifesting as "hot-reload
+    // silently does nothing."
     //
     // Poll `getppid()` every 500ms; if it ever returns 1 (or 0 on
     // weird kernels), the parent is gone — kill the sidecar and
@@ -355,13 +348,12 @@ pub fn run(
 
     let session_mode = SessionMode::from_env();
     eprintln!(
-        "[runtime-server-host] starting (advertising app_id={} via mDNS, session mode = {:?})",
-        app_id, session_mode,
+        "[runtime-server-host] starting (session mode = {:?})",
+        session_mode,
     );
     serve_with_sidecar_and_tracker(
         bind_addr,
         recorder,
-        &app_id,
         port_mirror,
         sidecar_slot,
         session_tracker,

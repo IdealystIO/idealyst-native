@@ -79,7 +79,6 @@ fn spin_up_server(
         let _ = serve_with_sidecar_and_tracker(
             addr_for_thread,
             recorder,
-            "session-test",
             port_mirror,
             sidecar_slot,
             tracker,

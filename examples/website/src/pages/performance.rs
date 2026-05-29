@@ -9,7 +9,7 @@
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
-use crate::pages::common::{code_panel, page_header, page_section};
+use crate::pages::common::{CodePanel, PageHeader, PageSection};
 use crate::routes::CONCEPTS_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
@@ -30,19 +30,19 @@ pub fn page() -> Element {
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
-            { page_header(
-                "High performance",
-                "Native-class speed isn't a tuning pass bolted on at the end \u{2014} it \
+            PageHeader(
+                title = "High performance",
+                blurb = "Native-class speed isn't a tuning pass bolted on at the end \u{2014} it \
                  falls out of the architecture. No virtual DOM, no diffing, no bundled \
                  runtime interpreting your component tree. And we keep the claim honest \
                  with a reproducible head-to-head benchmark against the frameworks you'd \
-                 actually compare us to."
-            ) }
-            { page_section(why_ref, vec![why_fast()]) }
-            { page_section(grain_ref, vec![fine_grained()]) }
-            { page_section(measure_ref, vec![how_measured()]) }
-            { page_section(against_ref, vec![compared_against()]) }
-            { page_section(reproduce_ref, vec![reproduce()]) }
+                 actually compare us to.",
+            )
+            PageSection(handle = why_ref) { why_fast() }
+            PageSection(handle = grain_ref) { fine_grained() }
+            PageSection(handle = measure_ref) { how_measured() }
+            PageSection(handle = against_ref) { compared_against() }
+            PageSection(handle = reproduce_ref) { reproduce() }
         }
     };
     layout_with_toc(content, toc)
@@ -63,7 +63,7 @@ fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Element {
         children.push(ui! { Typography(content = body) });
     }
     if let Some(src) = code {
-        children.push(code_panel(src));
+        children.push(ui! { CodePanel(src = src) });
     }
     ui! { Stack(gap = StackGap::Lg) { children } }
 }
@@ -205,7 +205,7 @@ fn reproduce() -> Element {
             the repo under `benchmark/`. Clone it, run one command, and measure on your \
             own machine.".to_string())
     };
-    let code = code_panel(snippet);
+    let code = ui! { CodePanel(src = snippet) };
     let para_2 = ui! {
         Typography(content = "If you want to add your own framework to the comparison, the \
             contract is small: build the same screen, expose `setRows(n)` honoring the \

@@ -8,7 +8,7 @@
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
-use crate::pages::common::{code_panel, page_header, page_section};
+use crate::pages::common::{CodePanel, PageHeader, PageSection};
 use crate::routes::{BACKENDS_ROUTE, TARGETS_ROUTE};
 use crate::shell::{layout_with_toc, TocEntry};
 
@@ -29,18 +29,18 @@ pub fn page() -> Element {
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Truly cross-platform",
-                "The same Rust code renders natively on phones, desktops, the browser, \
+            PageHeader(
+                title = "Truly cross-platform",
+                blurb = "The same Rust code renders natively on phones, desktops, the browser, \
                  a GPU surface, and the terminal. Not a shared abstraction painted on \
                  top of each platform \u{2014} the platform's own toolkit, driven \
-                 directly, with behavior that converges no matter where it runs."
-            ) }
-            { page_section(one_tree_ref, vec![one_tree()]) }
-            { page_section(native_ref, vec![native_widgets()]) }
-            { page_section(converge_ref, vec![convergent_behavior()]) }
-            { page_section(seam_ref, vec![backend_seam()]) }
-            { page_section(targets_ref, vec![see_targets()]) }
+                 directly, with behavior that converges no matter where it runs.",
+            )
+            PageSection(handle = one_tree_ref) { one_tree() }
+            PageSection(handle = native_ref) { native_widgets() }
+            PageSection(handle = converge_ref) { convergent_behavior() }
+            PageSection(handle = seam_ref) { backend_seam() }
+            PageSection(handle = targets_ref) { see_targets() }
         }
     };
     layout_with_toc(content, toc)
@@ -61,7 +61,7 @@ fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Element {
         children.push(ui! { Typography(content = body) });
     }
     if let Some(src) = code {
-        children.push(code_panel(src));
+        children.push(ui! { CodePanel(src = src) });
     }
     ui! { Stack(gap = StackGap::Lg) { children } }
 }

@@ -48,7 +48,7 @@ where
 /// for the full per-frame behavior — only the window profile
 /// (size + title) differs here.
 #[cfg(feature = "runtime-server")]
-pub fn run_runtime_server(skin: Rc<dyn Painter>, app_id: String) -> Result<(), RunError> {
+pub fn run_runtime_server(skin: Rc<dyn Painter>, url: String) -> Result<(), RunError> {
     host_winit::run_runtime_server(
         DeviceProfile {
             logical_size: (WIDTH, HEIGHT),
@@ -57,6 +57,6 @@ pub fn run_runtime_server(skin: Rc<dyn Painter>, app_id: String) -> Result<(), R
             color_scheme: ColorScheme::Auto,
         },
         skin,
-        app_id,
+        url,
     )
 }

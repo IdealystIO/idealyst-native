@@ -6,11 +6,69 @@
 //! "closure invoked after being dropped" panic.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use runtime_core::scheduling::{ScheduleHandle, Scheduler};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
+
+thread_local! {
+    /// SSR-hydration microtask buffer. `None` normally (dispatch via
+    /// `Promise.then`). While hydrating, microtasks buffer here and
+    /// `mount` drains them synchronously inside the adoption window, so
+    /// the navigator SDK's deferred chrome/screen builds adopt the
+    /// server's DOM. Set by [`begin_hydration_buffering`], cleared by
+    /// [`end_hydration_buffering`].
+    static HYDRATION_BUFFER: RefCell<Option<VecDeque<Box<dyn FnOnce() + 'static>>>> =
+        const { RefCell::new(None) };
+}
+
+/// Begin buffering microtasks for the hydration window (called by
+/// `WebBackend::hydrate` before `mount`).
+pub(crate) fn begin_hydration_buffering() {
+    HYDRATION_BUFFER.with(|b| {
+        let mut slot = b.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(VecDeque::new());
+        }
+    });
+}
+
+/// Stop buffering (called by `WebBackend::finish`). Any still-buffered
+/// tasks flush via the normal async path so none are dropped.
+pub(crate) fn end_hydration_buffering() {
+    let leftover = HYDRATION_BUFFER.with(|b| b.borrow_mut().take());
+    if let Some(tasks) = leftover {
+        for task in tasks {
+            dispatch_via_promise(task);
+        }
+    }
+}
+
+fn drain_hydration_buffer() {
+    loop {
+        let next =
+            HYDRATION_BUFFER.with(|b| b.borrow_mut().as_mut().and_then(|q| q.pop_front()));
+        match next {
+            Some(task) => task(),
+            None => break,
+        }
+    }
+}
+
+fn dispatch_via_promise(f: Box<dyn FnOnce() + 'static>) {
+    let mut once: Option<Box<dyn FnOnce() + 'static>> = Some(f);
+    let cb: Closure<dyn FnMut(wasm_bindgen::JsValue)> =
+        Closure::new(move |_: wasm_bindgen::JsValue| {
+            if let Some(g) = once.take() {
+                g();
+            }
+        });
+    let promise = js_sys::Promise::resolve(&wasm_bindgen::JsValue::UNDEFINED);
+    let _ = promise.then(&cb);
+    cb.forget();
+}
 
 /// Register this backend's scheduler with `runtime-core`. Idempotent —
 /// first install wins.
@@ -22,16 +80,20 @@ struct WebScheduler;
 
 impl Scheduler for WebScheduler {
     fn schedule_microtask(&self, f: Box<dyn FnOnce() + 'static>) {
-        let mut once: Option<Box<dyn FnOnce() + 'static>> = Some(f);
-        let cb: Closure<dyn FnMut(wasm_bindgen::JsValue)> =
-            Closure::new(move |_: wasm_bindgen::JsValue| {
-                if let Some(g) = once.take() {
-                    g();
+        let buffering = HYDRATION_BUFFER.with(|b| b.borrow().is_some());
+        if buffering {
+            HYDRATION_BUFFER.with(|b| {
+                if let Some(q) = b.borrow_mut().as_mut() {
+                    q.push_back(f);
                 }
             });
-        let promise = js_sys::Promise::resolve(&wasm_bindgen::JsValue::UNDEFINED);
-        let _ = promise.then(&cb);
-        cb.forget();
+            return;
+        }
+        dispatch_via_promise(f);
+    }
+
+    fn drain_buffered_microtasks(&self) {
+        drain_hydration_buffer();
     }
 
     fn after_animation_frame(

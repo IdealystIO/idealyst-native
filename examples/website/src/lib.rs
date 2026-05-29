@@ -31,10 +31,9 @@ mod typeface;
 
 use routes::{
     AGENTIC_ROUTE, BACKENDS_ROUTE, CODE_SPLITTING_ROUTE, CONCEPTS_ROUTE, CROSS_PLATFORM_ROUTE,
-    DEMO_ANIMATIONS_ROUTE, DEMO_COMPONENTS_ROUTE, DEMO_COUNTER_ROUTE, DEMO_NAVIGATION_ROUTE,
-    FEATURES_ROUTE, FURTHER_READING_ROUTE, HOME_ROUTE, INSTALL_ROUTE, PERFORMANCE_ROUTE,
-    QUICKSTART_ROUTE, SERVER_FUNCTIONS_ROUTE, SSR_ROUTE, TARGETS_ROUTE, TYPE_SAFETY_ROUTE,
-    WHY_RUST_ROUTE,
+    DEMO_ROUTE, FEATURES_ROUTE, FURTHER_READING_ROUTE, HOME_ROUTE, INSTALL_ROUTE,
+    PERFORMANCE_ROUTE, QUICKSTART_ROUTE, ROADMAP_ROUTE, SERVER_FUNCTIONS_ROUTE, SSR_ROUTE,
+    TARGETS_ROUTE, TYPE_SAFETY_ROUTE, WHY_RUST_ROUTE,
 };
 
 #[component]
@@ -97,14 +96,12 @@ pub fn app() -> Element {
         .screen(QUICKSTART_ROUTE, move |_| pages::quickstart::page())
         .screen(CONCEPTS_ROUTE, move |_| pages::concepts::page())
         .screen(WHY_RUST_ROUTE, move |_| pages::why_rust::page())
-        .screen(DEMO_COUNTER_ROUTE, move |_| pages::demo_counter::page())
-        .screen(DEMO_COMPONENTS_ROUTE, move |_| pages::demo_components::page())
-        .screen(DEMO_ANIMATIONS_ROUTE, move |_| pages::demo_animations::page())
-        .screen(DEMO_NAVIGATION_ROUTE, move |_| pages::demo_navigation::page())
+        .screen(DEMO_ROUTE, move |_| pages::demo::page())
         .screen(BACKENDS_ROUTE, move |_| pages::backends::page())
         .screen(SERVER_FUNCTIONS_ROUTE, move |_| pages::server_functions::page())
         .screen(CODE_SPLITTING_ROUTE, move |_| pages::code_splitting::page())
         .screen(AGENTIC_ROUTE, move |_| pages::agentic::page())
+        .screen(ROADMAP_ROUTE, move |_| pages::roadmap::page())
         .screen(FURTHER_READING_ROUTE, move |_| pages::further_reading::page())
         .screen(TARGETS_ROUTE, move |_| pages::targets::page())
         .drawer_width(260.0)
@@ -189,7 +186,20 @@ pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
     drawer_navigator::register(backend);
 }
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))]
+#[cfg(all(not(feature = "ssr"), not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos"))))]
 pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
     drawer_navigator::register(backend);
+}
+
+/// SSR build path. The CLI's `idealyst dev --ssr` / `--static` wrapper
+/// calls this once per request to install the SDK chrome handlers
+/// `backend-ssr` invokes when it renders a navigator / external. Gated
+/// by the `ssr` cargo feature so non-SSR builds don't pay the
+/// `backend-ssr` dep cost. Separate symbol name (not
+/// `register_extensions`) so it coexists with the per-platform impls
+/// above without a cfg-collision on the wrapper's host triple.
+#[cfg(feature = "ssr")]
+pub fn register_ssr_extensions(backend: &mut backend_ssr::SsrBackend) {
+    drawer_navigator::chrome::register(backend);
+    idea_codeblock::register(backend);
 }

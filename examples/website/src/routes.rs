@@ -24,15 +24,13 @@ pub const QUICKSTART_ROUTE: Route<()> = Route::<()>::new("quickstart", "/quickst
 pub const CONCEPTS_ROUTE: Route<()> = Route::<()>::new("concepts", "/concepts");
 pub const WHY_RUST_ROUTE: Route<()> = Route::<()>::new("why-rust", "/why-rust");
 
-// ---- Demos ----
-pub const DEMO_COUNTER_ROUTE: Route<()> = Route::<()>::new("demo-counter", "/demos/counter");
-pub const DEMO_COMPONENTS_ROUTE: Route<()> = Route::<()>::new("demo-components", "/demos/components");
-pub const DEMO_ANIMATIONS_ROUTE: Route<()> = Route::<()>::new("demo-animations", "/demos/animations");
-pub const DEMO_NAVIGATION_ROUTE: Route<()> = Route::<()>::new("demo-navigation", "/demos/navigation");
+// ---- Demo ----
+pub const DEMO_ROUTE: Route<()> = Route::<()>::new("demo", "/demo");
 
 // ---- Reference ----
 pub const BACKENDS_ROUTE: Route<()> = Route::<()>::new("backends", "/backends");
 pub const AGENTIC_ROUTE: Route<()> = Route::<()>::new("agentic", "/agentic");
+pub const ROADMAP_ROUTE: Route<()> = Route::<()>::new("roadmap", "/roadmap");
 pub const FURTHER_READING_ROUTE: Route<()> = Route::<()>::new("further-reading", "/further-reading");
 
 // ---- Tangent pages (reachable from inline links, not in sidebar) ----
@@ -90,7 +88,10 @@ pub fn label_for_route(name: &str) -> &'static str {
 pub const SECTIONS: &[IndexSection] = &[
     IndexSection {
         title: "",
-        entries: &[IndexEntry { route: &HOME_ROUTE, label: "Home" }],
+        entries: &[
+            IndexEntry { route: &HOME_ROUTE, label: "Home" },
+            IndexEntry { route: &DEMO_ROUTE, label: "Demo" },
+        ],
     },
     IndexSection {
         title: "Features",
@@ -114,19 +115,11 @@ pub const SECTIONS: &[IndexSection] = &[
         ],
     },
     IndexSection {
-        title: "Demos",
-        entries: &[
-            IndexEntry { route: &DEMO_COUNTER_ROUTE, label: "Counter" },
-            IndexEntry { route: &DEMO_COMPONENTS_ROUTE, label: "Components" },
-            IndexEntry { route: &DEMO_ANIMATIONS_ROUTE, label: "Animations" },
-            IndexEntry { route: &DEMO_NAVIGATION_ROUTE, label: "Navigation" },
-        ],
-    },
-    IndexSection {
         title: "Reference",
         entries: &[
             IndexEntry { route: &BACKENDS_ROUTE, label: "Backends" },
             IndexEntry { route: &AGENTIC_ROUTE, label: "Robot & MCP" },
+            IndexEntry { route: &ROADMAP_ROUTE, label: "Roadmap" },
             IndexEntry { route: &FURTHER_READING_ROUTE, label: "Further reading" },
         ],
     },

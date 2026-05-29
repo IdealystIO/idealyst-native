@@ -1,0 +1,44 @@
+[package]
+name = "tutorial"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Idealyst tutorial — a step-by-step teacher for the framework's core concepts (reactivity, stylesheets, media queries), built with idealyst-native itself."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+drawer-navigator = { workspace = true }
+# Theme-aware syntax-highlighted code panels (External primitive on web,
+# placeholder on native). The lessons lean on readable code blocks.
+idea-codeblock = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
+backend-terminal = { workspace = true }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[package.metadata.idealyst.app]
+name      = "Idealyst Tutorial"
+bundle_id = "ai.truday.idealyst.tutorial"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]
+
+[package.metadata.idealyst.app.splash]
+duration_ms = 0

@@ -103,7 +103,14 @@ pub const NAVIGATOR_LAYOUT_CSS: &str = concat!(
 /// the remaining track. Properties here mirror the pre-responsive sidebar
 /// defaults so a wide viewport renders exactly as before.
 const NAVIGATOR_PINNED_RULES: &str = concat!(
-    ".ui-nav-drawer-sidebar{position:static;transform:none;flex:0 0 auto;width:auto;\
+    // Fixed track width (NOT `width:auto`): a content-sized sidebar
+    // reflows whenever its text's intrinsic width changes — most visibly
+    // when a web font swaps in over the fallback, growing the whole
+    // sidebar and shifting the body. A static width pins the track so the
+    // font swap only reflows text *inside* it; no layout jump. `16rem`
+    // (~256px) is the conventional docs-sidebar width; apps style the
+    // inner content to fill it.
+    ".ui-nav-drawer-sidebar{position:static;transform:none;flex:0 0 auto;width:16rem;\
        z-index:auto;box-shadow:none;transition:none;}",
     ".ui-nav-drawer-body{width:auto;}",
 );
@@ -231,6 +238,59 @@ pub fn hash_class_name(content_key: &str) -> String {
 /// `content_key`). The matching rule body is [`rules_to_css`].
 pub fn style_class_name(rules: &StyleRules) -> String {
     hash_class_name(&rules.content_key())
+}
+
+/// Stable single-letter tag for an interaction-state bit, used only as a
+/// disambiguator inside [`variant_class_key`] (NOT a CSS selector — that's
+/// [`state_pseudo`]). Kept separate from the pseudo so the cache key stays
+/// compact and never changes if the CSS pseudo spelling does.
+fn state_key_tag(state: runtime_core::StateBits) -> &'static str {
+    use runtime_core::StateBits;
+    match state {
+        StateBits::HOVERED => "h",
+        StateBits::PRESSED => "p",
+        StateBits::FOCUSED => "f",
+        StateBits::DISABLED => "d",
+        _ => "?",
+    }
+}
+
+/// Canonical combined class/cache key for a styled element carrying
+/// interaction-state and/or breakpoint overlays. **SINGLE SOURCE OF
+/// TRUTH** — every CSS backend (web + SSR) MUST build the key through
+/// this, so the same `(base, states, breakpoints)` mints the IDENTICAL
+/// `ui-<hash>` class on both. Without it the server-rendered class and
+/// the client-computed class diverge for any stateful/responsive style
+/// (e.g. a hover button), and SSR→web hydration can't reuse the server's
+/// styling — the adopted node's class gets swapped, re-painting it.
+///
+/// `base_key` is the caller's already-computed `base.content_key()`
+/// (the web backend computes it once for its fast-path caches, so it's
+/// passed in rather than recomputed here). Overlays are appended in a
+/// fixed order: every state overlay (`;<tag>:<overlay-key>`), then every
+/// breakpoint overlay (`;@<axis>:<overlay-key>`). Callers pass overlays
+/// in the walker's stable order, so the key is deterministic.
+pub fn variant_class_key(
+    base_key: &str,
+    overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
+    breakpoint_overlays: &[(runtime_core::Breakpoint, std::rc::Rc<StyleRules>)],
+) -> String {
+    let mut key = String::with_capacity(base_key.len() + 64);
+    key.push_str(base_key);
+    for (bit, overlay) in overlays {
+        key.push(';');
+        key.push_str(state_key_tag(*bit));
+        key.push(':');
+        key.push_str(&overlay.content_key());
+    }
+    for (bp, overlay) in breakpoint_overlays {
+        key.push(';');
+        key.push('@');
+        key.push_str(bp.axis_name().unwrap_or("__bp_xs"));
+        key.push(':');
+        key.push_str(&overlay.content_key());
+    }
+    key
 }
 
 /// The CSS pseudo-class suffix for an interaction-state bit, so a state
@@ -379,6 +439,12 @@ pub fn font_face_css(
     s.push_str(style);
     s.push_str(";font-weight:");
     s.push_str(weight);
+    // No `font-display` declared — uses the browser default (`auto`,
+    // ~`block` with a 3s timeout). When the framework's runtime
+    // `register_typeface` injects this rule after wasm boot, the page
+    // text is already painted in the fallback; the browser then fetches
+    // the font and the swap-in looks like a smooth re-flow rather than
+    // the abrupt flip `font-display: swap` produces. Pre-SSR behavior.
     s.push_str(";src:url(\"");
     s.push_str(url);
     s.push_str("\")");
@@ -940,6 +1006,59 @@ mod tests {
         assert_eq!(
             breakpoint_media_query(Breakpoint::Xl).as_deref(),
             Some("@media (min-width: 1280px)")
+        );
+    }
+
+    /// REGRESSION: SSR and web must mint the IDENTICAL class for a
+    /// stateful/responsive style. The bug was two independent key
+    /// builders — web used `;<tag>:` for state overlays, SSR used
+    /// `|<bits>:` — so the same hover button got different `ui-<hash>`
+    /// classes server vs client and hydration couldn't reuse the
+    /// server's styling. Both backends now route through
+    /// `variant_class_key`; this pins its canonical shape so neither can
+    /// drift back.
+    #[test]
+    fn variant_class_key_is_canonical_and_deterministic() {
+        use runtime_core::{Breakpoint, StateBits, StyleRules};
+        use std::rc::Rc;
+
+        let base_key = "fg=T:color-text;fs=L:1234";
+        let overlay = Rc::new(StyleRules::default());
+
+        // State overlays use the shared `;<tag>:` form — NOT SSR's old
+        // `|<bits>:` form. `;h:` for HOVERED specifically.
+        let with_hover =
+            variant_class_key(base_key, &[(StateBits::HOVERED, overlay.clone())], &[]);
+        assert!(
+            with_hover.starts_with(base_key),
+            "key must begin with the base content key, got {with_hover}"
+        );
+        assert!(
+            with_hover.contains(";h:"),
+            "HOVERED overlay must use the canonical `;h:` tag, got {with_hover}"
+        );
+        assert!(
+            !with_hover.contains('|'),
+            "must NOT use the old SSR `|<bits>:` form (the divergence bug), got {with_hover}"
+        );
+
+        // Deterministic: same inputs → same key (so the hash matches
+        // across the SSR render and the web rebuild).
+        let again =
+            variant_class_key(base_key, &[(StateBits::HOVERED, overlay.clone())], &[]);
+        assert_eq!(with_hover, again);
+
+        // Distinct state bits → distinct keys (so a base shared across
+        // hover vs focus styling still gets distinct classes).
+        let with_focus =
+            variant_class_key(base_key, &[(StateBits::FOCUSED, overlay.clone())], &[]);
+        assert_ne!(with_hover, with_focus);
+
+        // Breakpoint overlays append the `;@<axis>:` form.
+        let with_bp = variant_class_key(base_key, &[], &[(Breakpoint::Md, overlay.clone())]);
+        assert!(
+            with_bp.contains(";@"),
+            "breakpoint overlay must use the `;@<axis>:` form, got {with_bp}"
         );
     }
 

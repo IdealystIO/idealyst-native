@@ -68,6 +68,12 @@ pub trait Scheduler: Send + Sync {
     /// Recurring. Run `f` every animation frame; the handle's `Drop`
     /// stops the loop.
     fn raf_loop(&self, f: Box<dyn FnMut() + 'static>) -> Box<dyn ScheduleHandle>;
+
+    /// Synchronously run every microtask the scheduler has *buffered*
+    /// (rather than dispatched), draining until empty. Default no-op;
+    /// only the web backend buffers, during the SSR hydration window —
+    /// see [`drain_buffered_microtasks`].
+    fn drain_buffered_microtasks(&self) {}
 }
 
 /// Opaque handle returned by cancellable scheduler methods. Its
@@ -139,6 +145,18 @@ pub fn schedule_microtask<F: FnOnce() + 'static>(f: F) {
     }
     panic_if_web_without_scheduler("schedule_microtask");
     f();
+}
+
+/// Synchronously drain microtasks the installed scheduler buffered (see
+/// [`Scheduler::drain_buffered_microtasks`]). No-op without a scheduler
+/// or when none are buffered. Called by [`mount`](crate::mount) during
+/// SSR hydration to run the navigator SDK's deferred chrome/screen builds
+/// *inside* the adoption window — so they adopt the server's DOM instead
+/// of firing post-`finish` and rebuilding fresh.
+pub fn drain_buffered_microtasks() {
+    if let Some(s) = SCHEDULER.get() {
+        s.drain_buffered_microtasks();
+    }
 }
 
 /// A scheduled one-shot callback. Cancels the pending dispatch on

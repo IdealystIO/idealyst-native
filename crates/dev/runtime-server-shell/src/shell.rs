@@ -5,18 +5,17 @@
 //! genuinely platform-specific concerns (the `ios_main` C entry,
 //! `dispatch_async_f` main-thread scheduling, iOS-specific layout
 //! pass) with a much larger pile of platform-agnostic logic
-//! (mDNS discovery, WebSocket connect/reconnect, inbound channel
-//! drain, message dispatch). This module is the platform-agnostic
-//! pile, lifted into the shared `dev-client` crate so iOS, Android,
-//! and desktop hosts can all consume it.
+//! (WebSocket connect/reconnect, inbound channel drain, message
+//! dispatch). This module is the platform-agnostic pile, lifted into
+//! the shared `runtime-server-shell-native` crate so iOS, Android, and
+//! desktop hosts can all consume it.
 //!
 //! The split between this and the platform shell:
 //!
-//! - **Here:** spawn the WebSocket worker thread, browse Bonjour
-//!   for a matching `app_id`, open the connection, ferry frames
-//!   onto an `mpsc::Receiver<DevToApp>`, and provide a `drain()`
-//!   method that pulls them off and applies them through an
-//!   [`RuntimeServerClient`]`<B>`.
+//! - **Here:** spawn the WebSocket worker thread against a CLI-baked
+//!   URL, open the connection, ferry frames onto an
+//!   `mpsc::Receiver<DevToApp>`, and provide a `drain()` method that
+//!   pulls them off and applies them through an [`RuntimeServerClient`]`<B>`.
 //! - **Platform shell:** create the backend, set up its host view,
 //!   schedule a periodic `drain()` call on whatever the platform's
 //!   "main thread" or render thread is, and run any post-batch
@@ -24,6 +23,16 @@
 //!
 //! The shell owns the `RuntimeServerShell` and holds it across periodic
 //! ticks. Each tick consumes whatever the worker has shipped over.
+//!
+//! ## Endpoint resolution
+//!
+//! The shell does NOT discover the dev-server itself — discovery was
+//! historically mDNS / Bonjour, which was unreliable across networks
+//! and required platform-specific permissions (iOS `NSBonjourServices`,
+//! Android `MulticastLock`). Instead the CLI bakes the endpoint URL
+//! into the wrapper build via `IDEALYST_DEV_ENDPOINT=ws://host:port`
+//! and the wrapper passes the resolved URL straight into
+//! [`RuntimeServerShell::spawn`]. See [`resolve_endpoint`].
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -35,7 +44,35 @@ use wire::{AppToDev, DevToApp};
 
 use dev_client::{RuntimeServerClient, OutboundSender};
 
-use crate::discover_blocking;
+/// Env var the wrapper-template build-script / CLI sets to point the
+/// runtime-server client at a dev-server URL. Format: `ws://host:port`.
+/// Read at *wrapper-build* time on iOS / Android (baked into the app
+/// binary), at *runtime* on macOS / terminal / wgpu (set by the CLI
+/// on the spawned child). See [`resolve_endpoint`].
+pub const ENDPOINT_ENV: &str = "IDEALYST_DEV_ENDPOINT";
+
+/// Read [`ENDPOINT_ENV`] at runtime. Returns `None` when unset — the
+/// platform wrapper should handle that case with an explicit panic /
+/// log so the failure is loud rather than "app silently never
+/// connects." Most wrappers bake the value at build time and reach for
+/// [`endpoint_or_panic`] instead.
+pub fn resolve_endpoint() -> Option<String> {
+    std::env::var(ENDPOINT_ENV).ok().filter(|s| !s.is_empty())
+}
+
+/// Like [`resolve_endpoint`] but panics with a clear message when the
+/// env var is missing. Use from wrapper-template main / FFI entry
+/// points where there's no sensible recovery — the only fix is to
+/// rebuild via `idealyst dev`, which sets the env var.
+pub fn endpoint_or_panic() -> String {
+    resolve_endpoint().unwrap_or_else(|| {
+        panic!(
+            "{ENDPOINT_ENV} is not set — this build was launched outside of \
+             `idealyst dev`. Rebuild via `idealyst dev` (which bakes the \
+             dev-server URL into the wrapper) to use runtime-server mode."
+        )
+    })
+}
 
 /// Bundle of state the platform shell holds across drain ticks. Wrap
 /// in `Rc<...>` (or a thread-local) so the periodic callback can
@@ -56,11 +93,10 @@ pub struct RuntimeServerShell<B: Backend + 'static> {
     last_reported_viewport: RefCell<Option<wire::WireViewport>>,
 }
 
-/// Optional knobs for [`RuntimeServerShell::spawn_with_options`] /
-/// [`RuntimeServerShell::spawn_with_url_and_options`]. Session assignment is
-/// entirely server-side — these options are about how the client
-/// describes *itself* to the server (used by logs and the future
-/// session-picker dev tool).
+/// Optional knobs for [`RuntimeServerShell::spawn_with_options`].
+/// Session assignment is entirely server-side — these options are
+/// about how the client describes *itself* to the server (used by
+/// logs and the future session-picker dev tool).
 #[derive(Default, Clone, Debug)]
 pub struct RuntimeServerShellOptions {
     /// Platform this client runs on. Sent in `AppToDev::Hello.identity`
@@ -101,51 +137,25 @@ enum SpawnBackend<B: Backend> {
 impl<B: Backend + 'static> RuntimeServerShell<B> {
     /// Build the shell, install an outbound channel that survives
     /// reconnects, and spawn the background WebSocket worker that
-    /// discovers the dev-server via Bonjour.
+    /// connects to `url` (`ws://host:port`).
     ///
     /// The returned shell isn't `Send` (the `Rc<RefCell<RuntimeServerClient>>`
     /// is `!Send`), reflecting the architectural assumption that
     /// `drain()` is always invoked on the platform's render /
     /// main thread. The worker thread runs the blocking transport
     /// and communicates only over channels.
-    pub fn spawn(backend: B, app_id: String) -> Self {
-        Self::spawn_inner(SpawnBackend::ByValue(backend), Target::Discover(app_id), RuntimeServerShellOptions::default())
+    pub fn spawn(backend: B, url: String) -> Self {
+        Self::spawn_inner(SpawnBackend::ByValue(backend), url, RuntimeServerShellOptions::default())
     }
 
-    /// Same as [`spawn`] but lets the caller opt into a shared session
-    /// (or pass other future options). For per-device isolated sessions
-    /// (the default), use [`Self::spawn`].
+    /// Same as [`spawn`] but lets the caller pass [`RuntimeServerShellOptions`]
+    /// (platform tag, device label, initial viewport).
     pub fn spawn_with_options(
-        backend: B,
-        app_id: String,
-        options: RuntimeServerShellOptions,
-    ) -> Self {
-        Self::spawn_inner(SpawnBackend::ByValue(backend), Target::Discover(app_id), options)
-    }
-
-    /// Same as [`spawn`] but skips Bonjour discovery and connects
-    /// directly to a fixed WebSocket URL. Used for platforms whose
-    /// network stack can't see the host's mDNS broadcasts — most
-    /// commonly the Android Studio emulator, where the CLI sets up
-    /// an `adb reverse` tunnel and passes the post-tunnel URL
-    /// (`ws://127.0.0.1:<port>`) here.
-    ///
-    /// On disconnect the worker reconnects to the same URL — there's
-    /// no rediscovery loop because we never browsed in the first
-    /// place. If the dev-server restarted on a new port, that's a
-    /// configuration mismatch the caller has to detect and re-spawn
-    /// the shell with the updated URL.
-    pub fn spawn_with_url(backend: B, url: String) -> Self {
-        Self::spawn_inner(SpawnBackend::ByValue(backend), Target::Url(url), RuntimeServerShellOptions::default())
-    }
-
-    /// As [`spawn_with_url`] but accepting [`RuntimeServerShellOptions`].
-    pub fn spawn_with_url_and_options(
         backend: B,
         url: String,
         options: RuntimeServerShellOptions,
     ) -> Self {
-        Self::spawn_inner(SpawnBackend::ByValue(backend), Target::Url(url), options)
+        Self::spawn_inner(SpawnBackend::ByValue(backend), url, options)
     }
 
     /// Spawn around a pre-shared backend handle. Used by the wgpu
@@ -157,17 +167,17 @@ impl<B: Backend + 'static> RuntimeServerShell<B> {
     /// which wraps internally.
     pub fn spawn_with_shared_backend(
         backend: Rc<RefCell<B>>,
-        app_id: String,
+        url: String,
         options: RuntimeServerShellOptions,
     ) -> Self {
         Self::spawn_inner(
             SpawnBackend::Shared(backend),
-            Target::Discover(app_id),
+            url,
             options,
         )
     }
 
-    fn spawn_inner(backend: SpawnBackend<B>, target: Target, options: RuntimeServerShellOptions) -> Self {
+    fn spawn_inner(backend: SpawnBackend<B>, url: String, options: RuntimeServerShellOptions) -> Self {
         let outbound = OutboundSender::new();
         let (inbound_tx, inbound_rx) = mpsc::channel::<DevToApp>();
         let (outbound_tx, outbound_rx) = mpsc::channel::<AppToDev>();
@@ -186,7 +196,7 @@ impl<B: Backend + 'static> RuntimeServerShell<B> {
         let initial_viewport = options.viewport.clone();
         let options_for_worker = options;
         std::thread::spawn(move || {
-            ws_worker_loop(target, inbound_tx, outbound_rx, options_for_worker);
+            ws_worker_loop(url, inbound_tx, outbound_rx, options_for_worker);
         });
 
         Self {
@@ -366,40 +376,21 @@ fn apply_dev_msg<B: Backend>(client: &mut RuntimeServerClient<B>, msg: DevToApp)
     }
 }
 
-/// How the worker thread should locate the dev-server. `Discover`
-/// is the LAN-friendly default; `Url` is the override the CLI uses
-/// when the platform's network can't see Bonjour (Android emulator).
-enum Target {
-    Discover(String),
-    Url(String),
-}
-
-/// Background-thread worker. Either browses Bonjour for the matching
-/// `app_id` or connects directly to a fixed URL, opens the
-/// WebSocket, sends a Hello, then pumps frames between socket and
-/// channels. On disconnect, the discover path loops back to
-/// `discover_blocking` so a dev-server that restarted on a fresh
-/// port is picked up transparently; the url path reconnects to the
-/// same address.
+/// Background-thread worker. Connects to the supplied URL, sends a
+/// Hello, then pumps frames between socket and channels. On
+/// disconnect reconnects to the same URL — works for both the dev-
+/// server hot-reloading on a stable port (preserved across host
+/// respawns via `IDEALYST_RUNTIME_SERVER_BIND_PORT`) and the rare
+/// case where the dev-server moved (manual restart on a new port,
+/// which requires the wrapper to be rebuilt anyway).
 fn ws_worker_loop(
-    target: Target,
+    url: String,
     inbound_tx: mpsc::Sender<DevToApp>,
     outbound_rx: mpsc::Receiver<AppToDev>,
     options: RuntimeServerShellOptions,
 ) {
-    match &target {
-        Target::Discover(app_id) => {
-            eprintln!("[runtime-server-shell] worker starting; browsing for app_id={:?}", app_id);
-        }
-        Target::Url(url) => {
-            eprintln!("[runtime-server-shell] worker starting; direct url={:?}", url);
-        }
-    }
+    eprintln!("[runtime-server-shell] worker starting; url={:?}", url);
     loop {
-        let url = match &target {
-            Target::Discover(app_id) => discover_blocking(app_id, Duration::from_secs(3)),
-            Target::Url(u) => u.clone(),
-        };
         eprintln!("[runtime-server-shell] connecting to {}", url);
         let (mut ws, _) = match tungstenite::connect(&url) {
             Ok(p) => p,
@@ -431,7 +422,7 @@ fn ws_worker_loop(
         eprintln!("[runtime-server-shell] connected");
 
         let _ = run_ws_session(&mut ws, &inbound_tx, &outbound_rx);
-        eprintln!("[runtime-server-shell] disconnected; rediscovering");
+        eprintln!("[runtime-server-shell] disconnected; reconnecting");
         std::thread::sleep(Duration::from_millis(500));
     }
 }

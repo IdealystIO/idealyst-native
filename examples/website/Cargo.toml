@@ -33,6 +33,21 @@ render-api = { workspace = true }
 ios-sim = { workspace = true }
 android-sim = { workspace = true }
 
+# SSR build target. Optional dep so wasm/native builds don't pull the
+# tiny_http machinery into their dep graph; the `ssr` feature flips it
+# on and `register_ssr_extensions` (gated by the same feature in
+# `lib.rs`) becomes visible to the CLI-generated SSR wrapper binary
+# (and to `examples/serve.rs`, which compiles examples with all
+# regular features active).
+backend-ssr = { workspace = true, features = ["serve"], optional = true }
+
+[features]
+# Turn on the SSR build path. Activates the optional `backend-ssr`
+# dep + the matching `register_ssr_extensions` impl in `lib.rs`. The
+# CLI's `idealyst dev --ssr` / `--static` SSR wrapper sets this
+# (`features = ["ssr"]` on its path-dep on the user crate).
+ssr = ["dep:backend-ssr"]
+
 # Web target — wasm + DOM. The marketing site's primary surface.
 #
 # `web-sys` is pulled in directly (alongside the framework's own
@@ -40,11 +55,6 @@ android-sim = { workspace = true }
 # and keep its background in sync with the active theme. The
 # framework owns `#app` and below; everything outside that subtree
 # is the host page's responsibility.
-[dev-dependencies]
-# SSR demos: examples/ssr.rs writes each route to a file; examples/serve.rs
-# runs the HTTP server (needs the `serve` feature). The drawer chrome
-# handler is registered via drawer_navigator::chrome::register.
-backend-ssr = { workspace = true, features = ["serve"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # `async-driver` brings in `install_async_executor` + `install_render_loop`
@@ -98,3 +108,22 @@ targets   = ["web", "ios", "android"]
 
 [package.metadata.idealyst.app.splash]
 duration_ms = 0
+
+# Preload the Inter weights the marketing site renders above the fold.
+# The build (`stage_bundle`) injects `<link rel="preload" as="font" crossorigin>`
+# tags into the staged `index.html`, and the dev server (`dev-http`) does
+# the same at request time — same set in both, so the dev loop and the
+# deployed bundle hit the network the same way.
+#
+# Explicit list rather than "every font in the project" because the
+# tradeoff is real: each preload starts a parallel fetch competing with
+# the wasm download. Listing the weights actually used on the landing
+# screen keeps wasm fetch unbloated; rarer weights (Thin/ExtraLight/Black)
+# resolve later through the runtime `@font-face` swap-in, which is fine.
+[package.metadata.idealyst.app.web]
+preload_fonts = [
+    "fonts/Inter-Regular.ttf",
+    "fonts/Inter-Medium.ttf",
+    "fonts/Inter-SemiBold.ttf",
+    "fonts/Inter-Bold.ttf",
+]

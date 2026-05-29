@@ -6,7 +6,7 @@
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
-use crate::pages::common::{code_panel, page_header, page_section};
+use crate::pages::common::{CodePanel, PageHeader, PageSection};
 use crate::routes::{SERVER_FUNCTIONS_ROUTE, WHY_RUST_ROUTE};
 use crate::shell::{layout_with_toc, TocEntry};
 
@@ -29,20 +29,20 @@ pub fn page() -> Element {
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Absolute type safety",
-                "The same type system that makes Rust safe makes idealyst apps hard to \
+            PageHeader(
+                title = "Absolute type safety",
+                blurb = "The same type system that makes Rust safe makes idealyst apps hard to \
                  get wrong. The function signature is the contract \u{2014} across the \
                  network, across the component boundary, across a theme switch. Whole \
                  categories of UI bug stop being runtime surprises and start being \
-                 compile errors."
-            ) }
-            { page_section(contract_ref, vec![contract()]) }
-            { page_section(invalid_ref, vec![invalid_states()]) }
-            { page_section(exhaustive_ref, vec![exhaustiveness()]) }
-            { page_section(refs_ref, vec![refs()]) }
-            { page_section(styles_ref, vec![styles()]) }
-            { page_section(next_ref, vec![where_next()]) }
+                 compile errors.",
+            )
+            PageSection(handle = contract_ref) { contract() }
+            PageSection(handle = invalid_ref) { invalid_states() }
+            PageSection(handle = exhaustive_ref) { exhaustiveness() }
+            PageSection(handle = refs_ref) { refs() }
+            PageSection(handle = styles_ref) { styles() }
+            PageSection(handle = next_ref) { where_next() }
         }
     };
     layout_with_toc(content, toc)
@@ -63,7 +63,7 @@ fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Element {
         children.push(ui! { Typography(content = body) });
     }
     if let Some(src) = code {
-        children.push(code_panel(src));
+        children.push(ui! { CodePanel(src = src) });
     }
     ui! { Stack(gap = StackGap::Lg) { children } }
 }

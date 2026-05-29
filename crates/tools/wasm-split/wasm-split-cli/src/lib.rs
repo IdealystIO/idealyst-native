@@ -20,6 +20,162 @@ use wasmparser::{
 
 pub const MAKE_LOAD_JS: &str = include_str!("./__wasm_split.js");
 
+/// Patch a wasm-bindgen-generated module to neutralize the
+/// `*.command_export` wrappers that 0.2.122 emits around its internal
+/// helpers (`__wbindgen_malloc/realloc/free/exn_store/destroy_closure`,
+/// `__externref_table_alloc/dealloc`).
+///
+/// # The bug
+///
+/// wasm-bindgen 0.2.122 wraps each helper export in a thin function
+/// whose body is `call __wasm_call_ctors; <forward args>; call <bare>`
+/// and re-exports it under the same name with a `_command_export`
+/// suffix. The generated JS calls the **suffixed** export on every
+/// JS↔wasm round trip (every string marshal, every closure invoke).
+/// `__wasm_call_ctors` runs every module ctor again — including every
+/// `inventory::submit!` — which double-submits items into
+/// `inventory`'s global linked list. The list then has a cycle (or a
+/// pointer into freed memory), and the next traversal traps with
+/// `RuntimeError: memory access out of bounds`. The trap surfaces in
+/// whichever frame is on the stack when the corrupted list is read,
+/// so it looks like a different bug every time (walker OOB, signal
+/// arena OOB, etc.).
+///
+/// The wrapper around `main` / `host_reserve` *does* legitimately need
+/// to call `__wasm_call_ctors` (first-invocation init), so we leave
+/// unsuffixed exports alone.
+///
+/// # The fix
+///
+/// For each export whose name ends in `_command_export`, look up the
+/// bare function by its internal name (the wasm-bindgen helper's
+/// real symbol from the `name` section) and rewrite the export to
+/// point at it. JS keeps calling `wasm.<bare>_command_export(a, b)`
+/// but the call now lands in the bare implementation directly, no
+/// ctor re-run. The wrapper function becomes unreachable; `wasm-split`'s
+/// reachability walker (or any downstream gc pass) will drop it.
+///
+/// Signature-safety: the wrapper forwards its args verbatim and
+/// returns the bare function's result, so the two have identical
+/// wasm function types and the remap is type-safe at the JS call
+/// site — `wasm-bindgen`'s JS doesn't observe the change.
+pub fn neutralize_command_export_wrappers(bindgened: &[u8]) -> Result<Vec<u8>> {
+    let mut module =
+        Module::from_buffer(bindgened).context("walrus: parse bindgened wasm")?;
+
+    // --- Pass A: gut each helper wrapper's body ---
+    //
+    // The export remap below redirects `wasm.__wbindgen_X_command_export`
+    // call sites in the generated JS to the bare helper. But the
+    // wasm-bindgen externref-closure shim invokes some wrappers
+    // *internally* (`call_indirect` through the function table, or a
+    // direct `call <wrapper_fid>` baked into another wasm function), so
+    // simply moving the export off the wrapper doesn't stop the ctor
+    // re-run on those paths. Stripping the `call __wasm_call_ctors`
+    // instruction from the wrapper's body neutralizes the bug for all
+    // caller paths — direct, indirect, or via the export.
+    //
+    // We touch only wrappers whose export name ends in
+    // `_command_export` (or that are unexported). The `main` and
+    // `host_reserve` wrappers are exported under their bare names —
+    // they're the legitimate one-time-init entrypoints called from
+    // `__wbindgen_start`, and `__wasm_call_ctors` MUST run on first
+    // invocation. Stripping their ctor call would mean ctors never run.
+
+    let ctors_fid: Option<FunctionId> = module
+        .funcs
+        .iter()
+        .find(|f| f.name.as_deref() == Some("__wasm_call_ctors"))
+        .map(|f| f.id());
+
+    // Map FunctionId → its export name (if exported). Used to spare the
+    // legitimate-init wrappers (`main`, `host_reserve`).
+    let exported_func_names: HashMap<FunctionId, String> = module
+        .exports
+        .iter()
+        .filter_map(|e| match e.item {
+            ExportItem::Function(fid) => Some((fid, e.name.clone())),
+            _ => None,
+        })
+        .collect();
+
+    // Plan: which wrapper FunctionIds to gut?
+    let mut to_gut: Vec<FunctionId> = Vec::new();
+    if ctors_fid.is_some() {
+        for func in module.funcs.iter() {
+            let Some(name) = &func.name else { continue };
+            if !name.ends_with(".command_export") {
+                continue;
+            }
+            match exported_func_names.get(&func.id()) {
+                // Exported with `_command_export` suffix — a JS-side
+                // helper wrapper. Gut it.
+                Some(export_name) if export_name.ends_with("_command_export") => {
+                    to_gut.push(func.id());
+                }
+                // Not exported — purely internal wrapper still reached
+                // via `call_indirect`. Gut it.
+                None => to_gut.push(func.id()),
+                // Exported under a bare name (`main`, `host_reserve`) —
+                // legitimate one-time-init. LEAVE ALONE.
+                Some(_) => {}
+            }
+        }
+    }
+
+    if let Some(ctors_fid) = ctors_fid {
+        for wrapper_fid in to_gut {
+            let func = module.funcs.get_mut(wrapper_fid);
+            if let FunctionKind::Local(local_func) = &mut func.kind {
+                let entry = local_func.entry_block();
+                let block = local_func.block_mut(entry);
+                // The wrapper body is shaped as: `call __wasm_call_ctors;
+                // <forward args>; call <bare>; end`. Strip the leading
+                // call to ctors and leave the forward intact.
+                let strip = matches!(
+                    block.instrs.first(),
+                    Some((ir::Instr::Call(call), _)) if call.func == ctors_fid
+                );
+                if strip {
+                    block.instrs.remove(0);
+                }
+            }
+        }
+    }
+
+    // --- Pass B: remap `_command_export`-suffixed EXPORTS to bare ---
+    //
+    // Belt-and-suspenders on top of Pass A: by pointing the helper
+    // exports at the bare functions directly, JS↔wasm round trips skip
+    // the (now-empty-ish) wrapper indirection entirely. Functionally
+    // redundant after Pass A, but it keeps the export table honest and
+    // gives downstream DCE a cleaner reachability picture.
+
+    let by_internal_name: HashMap<String, FunctionId> = module
+        .funcs
+        .iter()
+        .filter_map(|f| f.name.as_ref().map(|n| (n.clone(), f.id())))
+        .collect();
+
+    let mut remaps: Vec<(ExportId, FunctionId)> = Vec::new();
+    for export in module.exports.iter() {
+        if !matches!(export.item, ExportItem::Function(_)) {
+            continue;
+        }
+        let Some(bare_name) = export.name.strip_suffix("_command_export") else {
+            continue;
+        };
+        if let Some(&bare_fid) = by_internal_name.get(bare_name) {
+            remaps.push((export.id(), bare_fid));
+        }
+    }
+    for (export_id, new_fid) in remaps {
+        module.exports.get_mut(export_id).item = ExportItem::Function(new_fid);
+    }
+
+    Ok(module.emit_wasm())
+}
+
 /// A parsed wasm module with additional metadata and functionality for splitting and patching.
 ///
 /// This struct assumes that relocations will be present in incoming wasm binary.
@@ -1743,5 +1899,135 @@ mod tests {
         }
         // First free slot after s0..s49 is s50.
         assert_eq!(produced[0], "s50");
+    }
+
+    // ---- Regression tests for `neutralize_command_export_wrappers` ----
+    //
+    // The bug surfaces only end-to-end (browser, real wasm-bindgen
+    // JS shim, an inventory linked list to corrupt), so we can't
+    // exercise it cheaply here. The closest reachable check: build a
+    // walrus module that mirrors the wasm-bindgen-0.2.122 wrapper
+    // shape (a bare helper, a `*.command_export` wrapper that calls
+    // `__wasm_call_ctors` then forwards, and a suffixed export
+    // pointing at the wrapper), then run the patch and assert the
+    // export now points at the bare helper instead.
+
+    use walrus::ValType;
+
+    /// Construct a minimal module shaped like a wasm-bindgen 0.2.122
+    /// wrapper for `__wbindgen_malloc`. Returns the emitted bytes.
+    fn build_wrapper_fixture(export_name: &str) -> Vec<u8> {
+        let mut module = Module::with_config(ModuleConfig::new());
+
+        // `__wasm_call_ctors`: () -> () — empty body. The wrapper calls
+        // this; that call is what re-runs every module ctor and
+        // corrupts inventory on every JS↔wasm round trip.
+        let mut ctors_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        ctors_builder.func_body();
+        let ctors_fid = ctors_builder.finish(vec![], &mut module.funcs);
+        module.funcs.get_mut(ctors_fid).name = Some("__wasm_call_ctors".to_string());
+
+        // Bare `__wbindgen_malloc`: (i32, i32) -> i32 — returns 0.
+        let mut bare_builder = FunctionBuilder::new(
+            &mut module.types,
+            &[ValType::I32, ValType::I32],
+            &[ValType::I32],
+        );
+        bare_builder.func_body().i32_const(0);
+        let bare_arg0 = module.locals.add(ValType::I32);
+        let bare_arg1 = module.locals.add(ValType::I32);
+        let bare_fid =
+            bare_builder.finish(vec![bare_arg0, bare_arg1], &mut module.funcs);
+        module.funcs.get_mut(bare_fid).name = Some("__wbindgen_malloc".to_string());
+
+        // Wrapper `__wbindgen_malloc.command_export`: calls ctors
+        // first, then forwards args to the bare helper.
+        let mut wrapper_builder = FunctionBuilder::new(
+            &mut module.types,
+            &[ValType::I32, ValType::I32],
+            &[ValType::I32],
+        );
+        let wrap_arg0 = module.locals.add(ValType::I32);
+        let wrap_arg1 = module.locals.add(ValType::I32);
+        wrapper_builder
+            .func_body()
+            .call(ctors_fid)
+            .local_get(wrap_arg0)
+            .local_get(wrap_arg1)
+            .call(bare_fid);
+        let wrapper_fid =
+            wrapper_builder.finish(vec![wrap_arg0, wrap_arg1], &mut module.funcs);
+        module.funcs.get_mut(wrapper_fid).name =
+            Some("__wbindgen_malloc.command_export".to_string());
+
+        // Export the wrapper under the caller-chosen name.
+        module.exports.add(export_name, wrapper_fid);
+
+        module.emit_wasm()
+    }
+
+    /// Read back the function `name` that a given export resolves to.
+    fn export_target_name(bytes: &[u8], export_name: &str) -> Option<String> {
+        let module = Module::from_buffer(bytes).expect("re-parse wasm");
+        let export = module.exports.iter().find(|e| e.name == export_name)?;
+        let ExportItem::Function(fid) = export.item else {
+            return None;
+        };
+        module.funcs.get(fid).name.clone()
+    }
+
+    /// Pre-fix, the suffixed export points at the wrapper (which would
+    /// re-run `__wasm_call_ctors` on every call — the bug). Post-fix,
+    /// the export points at the bare helper directly. This pair of
+    /// assertions IS the regression check — without the patch, the
+    /// post-fix assertion fails.
+    #[test]
+    fn neutralize_command_export_remaps_suffixed_export_to_bare() {
+        let pre = build_wrapper_fixture("__wbindgen_malloc_command_export");
+
+        // Pre-fix: the export points at the ctor-calling wrapper.
+        // This is the *buggy* state — we assert it explicitly to prove
+        // the fixture genuinely reproduces the wasm-bindgen 0.2.122
+        // shape (otherwise the post-fix assertion would be vacuous).
+        assert_eq!(
+            export_target_name(&pre, "__wbindgen_malloc_command_export"),
+            Some("__wbindgen_malloc.command_export".to_string()),
+            "fixture mis-set: the suffixed export must initially point \
+             at the ctor-calling wrapper, otherwise the post-fix check \
+             below is vacuous"
+        );
+
+        // Post-fix: the export points at the bare helper.
+        let post = neutralize_command_export_wrappers(&pre)
+            .expect("neutralize_command_export_wrappers");
+        assert_eq!(
+            export_target_name(&post, "__wbindgen_malloc_command_export"),
+            Some("__wbindgen_malloc".to_string()),
+            "regression: the suffixed export must be remapped to the bare \
+             helper after the pass — otherwise JS↔wasm round trips will \
+             re-run `__wasm_call_ctors` and corrupt inventory state"
+        );
+    }
+
+    /// The `main` and `host_reserve` wrappers are exported under their
+    /// bare names (no `_command_export` suffix) and legitimately need
+    /// the ctor call on first invocation. The pass must NOT touch them.
+    #[test]
+    fn neutralize_command_export_leaves_unsuffixed_exports_alone() {
+        // Same wrapper-shape, but the export is `main` (no suffix).
+        let bytes = build_wrapper_fixture("main");
+
+        let patched = neutralize_command_export_wrappers(&bytes)
+            .expect("neutralize_command_export_wrappers");
+
+        // The export must still point at the wrapper. Unsuffixed exports
+        // are the legitimate one-time-init entry points (`main`,
+        // `host_reserve`) — touching them would skip the ctors.
+        assert_eq!(
+            export_target_name(&patched, "main"),
+            Some("__wbindgen_malloc.command_export".to_string()),
+            "the pass must leave unsuffixed exports alone (they're the \
+             legitimate one-time-init entry points like `main`)"
+        );
     }
 }

@@ -30,10 +30,6 @@ ctrlc = { version = "3", features = ["termination"] }
 # `dev-reload` for the watch+wasm-pack loop. The CLI is the wiring.
 dev-http = { workspace = true }
 dev-reload = { workspace = true }
-# mDNS browsing for `idealyst dev --aas --web`: the CLI fills the
-# `AasContext.aas_url` in-process, no separate `web-dev-host`
-# subprocess. Same crate the dev-server uses for advertising.
-mdns-sd = { version = "0.10", default-features = false }
 # Platform-specific build orchestration. Each platform's pipeline
 # is its own crate so the CLI's `build` and `run` commands stay thin.
 build-ios = { workspace = true }
@@ -46,6 +42,7 @@ run-roku = { workspace = true }
 build-sim = { workspace = true }
 build-web = { workspace = true }
 build-macos = { workspace = true }
+build-ssr = { workspace = true }
 run-macos = { workspace = true }
 build-terminal = { workspace = true }
 run-terminal = { workspace = true }

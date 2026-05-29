@@ -102,7 +102,16 @@ pub(super) fn build<B: Backend + 'static>(
     // wrapper template enables async-driver unconditionally; this
     // gate is purely so the framework itself still compiles in
     // minimal configurations (the audit + ports may not enable it).
+    // SSR (headless) keeps the placeholder: a one-shot server render
+    // can't paint lazy content (GPU canvas, etc.), and on the native SSR
+    // binary the loader would resolve synchronously on first poll and
+    // swap the body in — making the server HTML diverge from the client's
+    // placeholder, which hydration must then remount. `renders_lazy_chunks()`
+    // is `false` only on SSR, so skipping the loader there leaves the
+    // `.placeholder(…)` as the server's output; the live client hydrates
+    // that placeholder and then loads the real chunk.
     #[cfg(feature = "async-driver")]
+    if backend.borrow().renders_lazy_chunks()
     {
         let backend_for_async = backend.clone();
         let container = n.clone();

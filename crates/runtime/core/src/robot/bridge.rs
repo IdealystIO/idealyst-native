@@ -7,9 +7,21 @@
 //! Wire protocol:
 //!   request:  {"id":N, "cmd":"...", "args":{...}}
 //!   response: {"id":N, "ok":...} or {"id":N, "err":"..."}
+//!
+//! Discovery: the bridge does NOT advertise itself on the network.
+//! Instead, after binding it writes a JSON registration file the MCP
+//! server can read:
+//!
+//! - `IDEALYST_BRIDGE_PORT_FILE`: project-scoped path the CLI passes
+//!   in (typically `<project>/.idealyst/bridge.port`). Used by the MCP
+//!   server when running in the same project's cwd.
+//! - `~/.idealyst/apps/<name>-<pid>.json`: a per-process entry written
+//!   whenever the bridge starts, removed on graceful shutdown. Used by
+//!   the MCP server to enumerate every live Idealyst app on the host.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -52,8 +64,8 @@ impl BridgeHandle {
 }
 
 /// Project-identifying metadata captured by [`set_app_identity`].
-/// The bridge writes these into the mDNS TXT record so the MCP
-/// server can route Robot calls by app — without env-var plumbing.
+/// The bridge writes these into the per-process registration JSON the
+/// MCP server reads to route Robot calls by app.
 #[derive(Debug, Clone, Default)]
 pub struct AppIdentity {
     /// Short package name (e.g. `mcp_test_app`). Falls back to
@@ -83,10 +95,12 @@ thread_local! {
     static AUTO_POLLED_BRIDGE: std::cell::RefCell<Option<BridgeHandle>> =
         const { std::cell::RefCell::new(None) };
 
-    /// mDNS advertiser kept alive for the process lifetime. Dropping
-    /// it unregisters the service from the local-network browse.
+    /// Per-process registration file written next to other live apps
+    /// (`~/.idealyst/apps/<name>-<pid>.json`). Held in a thread-local
+    /// so the `Drop` impl removes the file on graceful shutdown — the
+    /// MCP server's directory scan won't see ghost apps after exit.
     #[cfg(not(target_arch = "wasm32"))]
-    static MDNS_ADVERTISER: std::cell::RefCell<Option<MdnsAdvertiser>> =
+    static APP_REGISTRATION: std::cell::RefCell<Option<AppRegistrationFile>> =
         const { std::cell::RefCell::new(None) };
 
     /// The currently-scheduled poll task. Held to keep the
@@ -142,92 +156,112 @@ fn current_identity() -> AppIdentity {
     })
 }
 
-/// mDNS advertiser handle — held in a thread-local so the daemon
-/// outlives `mount()`. Dropping it unregisters the service.
+/// JSON shape the bridge writes on bind. Kept inline (rather than via
+/// `serde_derive`) so `runtime-core` doesn't pull `serde_derive` into
+/// every host build; the document is tiny and stable.
 #[cfg(not(target_arch = "wasm32"))]
-struct MdnsAdvertiser {
-    #[allow(dead_code)]
-    daemon: mdns_sd::ServiceDaemon,
-    #[allow(dead_code)]
-    fullname: String,
+fn bridge_registration_json(port: u16, identity: &AppIdentity) -> String {
+    let pid = std::process::id();
+    let bundle = identity
+        .bundle_id
+        .as_deref()
+        .and_then(|s| serde_json::to_string(s).ok())
+        .unwrap_or_else(|| "null".into());
+    let root = identity
+        .project_root
+        .as_deref()
+        .and_then(|s| serde_json::to_string(s).ok())
+        .unwrap_or_else(|| "null".into());
+    let name = serde_json::to_string(&identity.name).unwrap_or_else(|_| "\"app\"".into());
+    format!(
+        "{{\"port\":{port},\"pid\":{pid},\"name\":{name},\"bundle_id\":{bundle},\"project_root\":{root},\"proto\":1}}",
+    )
 }
 
-/// Service type for the Robot bridge mDNS advertisement.
-/// `_idealyst-robot._tcp.local.` — generic so the MCP server browses
-/// one thing; per-app routing is via the TXT record's `app` key.
+/// `~/.idealyst/apps/<name>-<pid>.json` — per-process registration the
+/// MCP server scans to discover live apps. RAII: dropped on graceful
+/// shutdown so the directory doesn't accumulate ghosts.
 #[cfg(not(target_arch = "wasm32"))]
-pub const MDNS_SERVICE_TYPE: &str = "_idealyst-robot._tcp.local.";
+struct AppRegistrationFile {
+    path: PathBuf,
+}
 
-/// Advertise the bound bridge port via mDNS. Best-effort: any
-/// failure (daemon init, registration error) is logged and the
-/// bridge keeps running — the registry-file fallback still works
-/// on hosts where mDNS is unavailable (corporate VPN, etc.).
 #[cfg(not(target_arch = "wasm32"))]
-fn advertise_mdns(port: u16, identity: &AppIdentity) {
-    let pid = std::process::id();
-    // DNS-SD labels can't contain `.` or whitespace. The bundle id is
-    // reverse-DNS so we strip it to hyphens; the package name is
-    // already snake_case (CARGO_PKG_NAME conventions).
+impl Drop for AppRegistrationFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Write `~/.idealyst/apps/<name>-<pid>.json` with the bound port +
+/// identity, and stash the handle in a thread-local so its `Drop`
+/// removes the file on graceful shutdown.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_app_registration(port: u16, identity: &AppIdentity) {
+    let Some(dir) = apps_registry_dir() else {
+        return;
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "[robot-bridge] could not create {}: {}",
+            dir.display(),
+            e
+        );
+        return;
+    }
     let name_label = identity.name.replace('.', "-").replace(' ', "-");
-    let instance_name = format!("{}-{}", name_label, pid);
-    let hostname = format!("idealyst-{}-{}.local.", name_label, pid);
-
-    let pid_s = pid.to_string();
-    let proto = "1".to_string();
-    let bundle_id_s = identity.bundle_id.clone().unwrap_or_default();
-    let project_root_s = identity.project_root.clone().unwrap_or_default();
-
-    let txt: [(&str, &str); 5] = [
-        ("app", identity.name.as_str()),
-        ("bundle_id", bundle_id_s.as_str()),
-        ("project_root", project_root_s.as_str()),
-        ("pid", pid_s.as_str()),
-        ("proto", proto.as_str()),
-    ];
-    // Note: TXT records have a per-record size cap (~255 bytes is
-    // safe). Long `project_root` paths on iOS/Android sandboxes
-    // could overshoot; if that becomes a problem in the wild, drop
-    // `project_root` from the record and have the MCP server ask
-    // the bridge via the `get_identity` command instead.
-
-    let daemon = match mdns_sd::ServiceDaemon::new() {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!(
-                "[robot-bridge] mDNS daemon init failed: {} — \
-                 discovery unavailable; direct TCP still works \
-                 if the caller knows the port",
-                e
-            );
-            return;
-        }
-    };
-    let info = match mdns_sd::ServiceInfo::new(
-        MDNS_SERVICE_TYPE,
-        &instance_name,
-        &hostname,
-        "",
-        port,
-        &txt[..],
-    ) {
-        Ok(i) => i.enable_addr_auto(),
-        Err(e) => {
-            eprintln!("[robot-bridge] mDNS ServiceInfo build failed: {}", e);
-            return;
-        }
-    };
-    let fullname = info.get_fullname().to_string();
-    if let Err(e) = daemon.register(info) {
-        eprintln!("[robot-bridge] mDNS register failed: {}", e);
+    let pid = std::process::id();
+    let path = dir.join(format!("{name_label}-{pid}.json"));
+    let body = bridge_registration_json(port, identity);
+    if let Err(e) = std::fs::write(&path, body.as_bytes()) {
+        eprintln!(
+            "[robot-bridge] could not write {}: {}",
+            path.display(),
+            e
+        );
         return;
     }
     eprintln!(
-        "[robot-bridge] advertised via mDNS as {} (port {}, app={})",
-        fullname, port, identity.name,
+        "[robot-bridge] registered live app at {} (port {}, app={})",
+        path.display(),
+        port,
+        identity.name,
     );
-    MDNS_ADVERTISER.with(|slot| {
-        *slot.borrow_mut() = Some(MdnsAdvertiser { daemon, fullname });
+    APP_REGISTRATION.with(|slot| {
+        *slot.borrow_mut() = Some(AppRegistrationFile { path });
     });
+}
+
+/// Write the per-project port-file `IDEALYST_BRIDGE_PORT_FILE` points
+/// at. Lets a project-scoped MCP server (e.g. cwd-anchored) find the
+/// bridge without scanning the home-dir registry. Best-effort.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_project_port_file(port: u16, identity: &AppIdentity) {
+    let Ok(path) = std::env::var("IDEALYST_BRIDGE_PORT_FILE") else {
+        return;
+    };
+    let path = PathBuf::from(path);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let body = bridge_registration_json(port, identity);
+    if let Err(e) = std::fs::write(&path, body.as_bytes()) {
+        eprintln!(
+            "[robot-bridge] could not write {}: {}",
+            path.display(),
+            e
+        );
+    }
+}
+
+/// `~/.idealyst/apps/`. Returns `None` if the home dir is undiscoverable
+/// — registration silently no-ops in that case.
+#[cfg(not(target_arch = "wasm32"))]
+fn apps_registry_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)?;
+    Some(home.join(".idealyst").join("apps"))
 }
 
 /// Auto-polling variant of [`start`]: spawns the TCP listener AND
@@ -243,11 +277,19 @@ fn advertise_mdns(port: u16, identity: &AppIdentity) {
 /// 2. `default_port` arg if non-zero → bind it. Conflict → ephemeral.
 /// 3. Else → ephemeral (bind port 0; OS picks).
 ///
-/// When `IDEALYST_BRIDGE_PORT_FILE` is set, the bridge writes a JSON
-/// document `{port, project_root, pid}` to that path after binding.
-/// `mcp-server` reads this file to discover the bridge and verifies
-/// `project_root` matches its own cwd — so a Claude session in
-/// project A can't accidentally drive project B's app.
+/// After binding, the bridge writes two files so the MCP server can
+/// discover it without any network broadcast:
+///
+/// - `~/.idealyst/apps/<name>-<pid>.json` — always written; removed
+///   on graceful shutdown via RAII. The MCP server scans this dir to
+///   enumerate every live app on the host.
+/// - `$IDEALYST_BRIDGE_PORT_FILE` if set — same JSON, written wherever
+///   the CLI pointed via env var. Used by project-scoped MCP flows
+///   (cwd-anchored) that don't need the full directory scan.
+///
+/// Both files contain `{port, pid, name, bundle_id, project_root,
+/// proto}` so the MCP server can verify the project before issuing
+/// Robot calls.
 ///
 /// Requires the platform scheduler to be installed (typically done
 /// by the host before `mount()` — `backend_ios::install_scheduler`,
@@ -287,14 +329,15 @@ pub fn start_auto_polling(default_port: u16) {
                 return;
             }
         };
-        // mDNS advertisement — non-wasm only. Failure here is
-        // non-fatal (logged inside `advertise_mdns`); the bridge
-        // still serves direct TCP requests if the caller already
-        // knows the port.
+        // Write discovery files so the MCP server can find us.
+        // Non-wasm only — `~/.idealyst/apps/` doesn't exist in the
+        // browser sandbox, and the MCP server doesn't run there
+        // anyway.
         #[cfg(not(target_arch = "wasm32"))]
         {
             let identity = current_identity();
-            advertise_mdns(bound_port, &identity);
+            write_app_registration(bound_port, &identity);
+            write_project_port_file(bound_port, &identity);
         }
         *slot.borrow_mut() = Some(handle);
     });
@@ -754,4 +797,99 @@ fn opt_str_json(s: Option<&str>) -> String {
 
 fn opt_string_json(s: Option<&str>) -> String {
     opt_str_json(s)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    //! Regression coverage for the file-based discovery write path
+    //! that replaced mDNS advertising. The MCP server's
+    //! `~/.idealyst/apps/` scanner depends on the exact JSON shape
+    //! `bridge_registration_json` produces.
+
+    use super::*;
+
+    #[test]
+    fn registration_json_carries_port_pid_name_and_optionals() {
+        let identity = AppIdentity {
+            name: "demo".to_string(),
+            bundle_id: Some("com.example.demo".to_string()),
+            project_root: Some("/tmp/demo".to_string()),
+        };
+        let json = bridge_registration_json(42, &identity);
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("bridge registration JSON must round-trip");
+        assert_eq!(parsed["port"].as_u64(), Some(42));
+        assert_eq!(parsed["name"].as_str(), Some("demo"));
+        assert_eq!(parsed["bundle_id"].as_str(), Some("com.example.demo"));
+        assert_eq!(parsed["project_root"].as_str(), Some("/tmp/demo"));
+        assert_eq!(parsed["proto"].as_u64(), Some(1));
+        assert!(parsed["pid"].as_u64().is_some(), "pid must be numeric");
+    }
+
+    #[test]
+    fn registration_json_null_optionals_when_unset() {
+        let identity = AppIdentity {
+            name: "demo".to_string(),
+            bundle_id: None,
+            project_root: None,
+        };
+        let json = bridge_registration_json(9000, &identity);
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("bridge registration JSON must round-trip");
+        assert!(parsed["bundle_id"].is_null());
+        assert!(parsed["project_root"].is_null());
+    }
+
+    #[test]
+    fn write_project_port_file_writes_when_env_var_is_set() {
+        // Use a sandboxed temp path. `tempfile` isn't a dep of
+        // runtime-core (kept minimal); roll our own under
+        // `std::env::temp_dir`.
+        let dir = std::env::temp_dir().join(format!(
+            "idealyst-bridge-port-test-{}",
+            std::process::id(),
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("bridge.port");
+        let _ = std::fs::remove_file(&path);
+        // Scope the env var so a concurrent test isn't poisoned.
+        std::env::set_var("IDEALYST_BRIDGE_PORT_FILE", &path);
+        write_project_port_file(
+            12345,
+            &AppIdentity {
+                name: "demo".to_string(),
+                bundle_id: None,
+                project_root: None,
+            },
+        );
+        std::env::remove_var("IDEALYST_BRIDGE_PORT_FILE");
+
+        let raw = std::fs::read_to_string(&path)
+            .expect("write_project_port_file must have written the path");
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed["port"].as_u64(), Some(12345));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn write_project_port_file_no_op_when_env_var_unset() {
+        // Make absolutely sure the var isn't set from a prior test or
+        // a parallel runner.
+        std::env::remove_var("IDEALYST_BRIDGE_PORT_FILE");
+        write_project_port_file(
+            12345,
+            &AppIdentity {
+                name: "demo".to_string(),
+                bundle_id: None,
+                project_root: None,
+            },
+        );
+        // No assertion needed: the function should just return
+        // without panicking when there's no env var to point at.
+    }
 }

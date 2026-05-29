@@ -3,7 +3,7 @@
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
-use crate::pages::common::{page_header, page_section};
+use crate::pages::common::{PageHeader, PageSection};
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Element {
@@ -19,15 +19,15 @@ pub fn page() -> Element {
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Backends",
-                "What's implemented per target, what's in progress, what's planned. \
+            PageHeader(
+                title = "Backends",
+                blurb = "What's implemented per target, what's in progress, what's planned. \
                  The Backend trait is the framework's only seam to the platform; \
-                 this page is the per-platform status of that seam."
-            ) }
-            { page_section(matrix_ref, vec![matrix()]) }
-            { page_section(coverage_ref, vec![coverage()]) }
-            { page_section(roadmap_ref, vec![roadmap()]) }
+                 this page is the per-platform status of that seam.",
+            )
+            PageSection(handle = matrix_ref) { matrix() }
+            PageSection(handle = coverage_ref) { coverage() }
+            PageSection(handle = roadmap_ref) { roadmap() }
         }
     };
     layout_with_toc(content, toc)

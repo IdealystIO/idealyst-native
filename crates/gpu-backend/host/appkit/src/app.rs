@@ -243,18 +243,18 @@ where
 /// window exactly like local-render mode, but instead of mounting
 /// the user's `app()` function it spawns a
 /// [`backend_macos::runtime_server::spawn_runtime_server_shell`] worker that connects to
-/// the dev-server (mDNS-discovered via `app_id`) and streams the
-/// sidecar's render commands onto the AppKit run loop.
+/// the dev-server at `url` and streams the sidecar's render commands
+/// onto the AppKit run loop.
 ///
 /// The user crate is NOT a dependency of the wrapper in runtime-server mode —
 /// the sidecar process owns it. The wrapper's `main()` only needs
-/// to know the `app_id` (typically the bundle id from
-/// `[package.metadata.idealyst.app]`) so this host can find the
-/// matching dev-server.
+/// to know the dev-server URL, which the CLI bakes in via the
+/// `IDEALYST_DEV_ENDPOINT` env var the wrapper resolves at startup
+/// with [`runtime_server_shell_native::endpoint_or_panic`].
 ///
 /// Returns only when the user quits the application.
 #[cfg(feature = "runtime-server")]
-pub fn run_aas(app_id: &str, opts: RunOptions) -> Result<(), RunError> {
+pub fn run_aas(url: &str, opts: RunOptions) -> Result<(), RunError> {
     let Some(mtm) = MainThreadMarker::new() else {
         return Err(RunError::NotMainThread);
     };
@@ -344,7 +344,7 @@ pub fn run_aas(app_id: &str, opts: RunOptions) -> Result<(), RunError> {
     // desktop window.
     let _shell = backend_macos::runtime_server::spawn_runtime_server_shell(
         backend,
-        app_id,
+        url,
         None,
         Some((opts.width as f32, opts.height as f32)),
         Some(host_root.clone()),

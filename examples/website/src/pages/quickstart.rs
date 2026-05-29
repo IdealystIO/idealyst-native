@@ -3,7 +3,7 @@
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
-use crate::pages::common::{code_panel, page_header, page_section};
+use crate::pages::common::{CodePanel, PageHeader, PageSection};
 use crate::routes::CONCEPTS_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
@@ -26,17 +26,17 @@ pub fn page() -> Element {
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Quickstart",
-                "Scaffold a new project, edit one file, and watch it run on web, \
-                 iOS, and Android with hot-reload."
-            ) }
-            { page_section(scaffold_ref, vec![scaffold()]) }
-            { page_section(layout_ref, vec![layout_section()]) }
-            { page_section(run_web_ref, vec![run_web()]) }
-            { page_section(run_native_ref, vec![run_native()]) }
-            { page_section(edit_ref, vec![edit_and_reload()]) }
-            { page_section(next_ref, vec![next()]) }
+            PageHeader(
+                title = "Quickstart",
+                blurb = "Scaffold a new project, edit one file, and watch it run on web, \
+                 iOS, and Android with hot-reload.",
+            )
+            PageSection(handle = scaffold_ref) { scaffold() }
+            PageSection(handle = layout_ref) { layout_section() }
+            PageSection(handle = run_web_ref) { run_web() }
+            PageSection(handle = run_native_ref) { run_native() }
+            PageSection(handle = edit_ref) { edit_and_reload() }
+            PageSection(handle = next_ref) { next() }
         }
     };
     layout_with_toc(content, toc)
@@ -53,7 +53,7 @@ fn scaffold() -> Element {
                 platform-agnostic Rust crate; there are no iOS or Android project \
                 files in your directory.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
     ];
     ui! { Stack(gap = StackGap::Md) { children } }
 }
@@ -76,7 +76,7 @@ fn layout_section() -> Element {
                 per-target wrapper under `target/idealyst/<platform>/`, builds it, and \
                 launches it \u{2014} the wrapper is ephemeral and you don't edit it.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(
                 content = "Exporting the per-target wrapper as an editable Xcode / \
@@ -100,7 +100,7 @@ fn run_web() -> Element {
                 browser \u{2014} all in one step. Edit a source file and the running \
                 app reflects the change without losing state.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
     ];
     ui! { Stack(gap = StackGap::Md) { children } }
 }
@@ -115,7 +115,7 @@ fn run_native() -> Element {
                 produces the platform binary, generates the Xcode / Gradle wrapper as \
                 needed, and launches the app on a simulator (or a connected device).".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "Same hot-reload behavior \u{2014} edits to `src/` show \
                 up live on the device while the app keeps running.".to_string())
@@ -145,7 +145,7 @@ fn edit_and_reload() -> Element {
                 counter. Save and the running app updates in place \u{2014} on web, in \
                 the iOS simulator, and on the Android device, all at the same time.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
     ];
     ui! { Stack(gap = StackGap::Md) { children } }
 }

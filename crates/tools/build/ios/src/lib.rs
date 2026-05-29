@@ -38,8 +38,10 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 pub mod source;
+pub mod web_html;
 
 pub use source::{FrameworkSource, GitDefaults, GitRef, require_workspace_root};
+pub use web_html::{font_preload_tags, inject_into_head};
 
 #[derive(Clone, Debug)]
 pub struct BuildOptions {
@@ -127,6 +129,40 @@ pub struct AppMetadata {
     /// ```
     /// Leave unset for client-only projects.
     pub server_bin: Option<String>,
+    /// Web-target-specific knobs. Always present — empty defaults if
+    /// the user didn't declare a `[package.metadata.idealyst.app.web]`
+    /// block.
+    pub web: WebMetadata,
+}
+
+/// Web-target-specific config from `[package.metadata.idealyst.app.web]`.
+///
+/// Lives under `app.web` (not at the top level) so this is the place
+/// every future web-only knob lands — keeps the namespace tidy and the
+/// non-web `AppMetadata` fields focused on cross-platform identity.
+#[derive(Debug, Clone, Default)]
+pub struct WebMetadata {
+    /// Project-relative paths to font files that should ship as
+    /// `<link rel="preload" as="font" crossorigin>` tags in the
+    /// staged `index.html`. Declared in TOML as:
+    /// ```toml
+    /// [package.metadata.idealyst.app.web]
+    /// preload_fonts = ["fonts/Inter-Regular.ttf", "fonts/Inter-Bold.ttf"]
+    /// ```
+    /// Why declarative rather than auto-discovered: the framework
+    /// stays out of the "which fonts matter for first paint" question
+    /// — only the project author knows which weights / styles are
+    /// above-the-fold. Preloading every face the project ships costs
+    /// bandwidth for files the page may never reference; preloading
+    /// nothing leaves the runtime `@font-face` injection as the only
+    /// signal to the browser and the font fetch only starts AFTER wasm
+    /// boots. This list is the seam in between.
+    ///
+    /// Paths are resolved relative to the project root; the build /
+    /// dev paths prefix them with `/` to form the URL. Leave empty to
+    /// preload nothing (the default — keeps existing projects on
+    /// today's behavior).
+    pub preload_fonts: Vec<String>,
 }
 
 impl AppMetadata {
@@ -339,6 +375,14 @@ struct RawAppMetadata {
     targets: Option<Vec<String>>,
     #[serde(default)]
     server_bin: Option<String>,
+    #[serde(default)]
+    web: Option<RawWebMetadata>,
+}
+
+#[derive(Default, Deserialize)]
+struct RawWebMetadata {
+    #[serde(default)]
+    preload_fonts: Option<Vec<String>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -427,6 +471,13 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         None => Vec::new(),
     };
 
+    let web = WebMetadata {
+        preload_fonts: app_raw
+            .web
+            .and_then(|w| w.preload_fonts)
+            .unwrap_or_default(),
+    };
+
     let app = AppMetadata {
         name: app_name,
         bundle_id,
@@ -434,6 +485,7 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         splash,
         targets,
         server_bin: app_raw.server_bin,
+        web,
     };
 
     Ok(Manifest {
@@ -694,6 +746,7 @@ mod regression_tests {
                 },
                 targets: Vec::new(),
                 server_bin: None,
+                web: WebMetadata::default(),
             },
         }
     }

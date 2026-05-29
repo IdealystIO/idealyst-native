@@ -65,14 +65,14 @@ pub struct RunOptions {
     /// runtime-server mode requires `Workspace`.
     pub source: FrameworkSource,
     /// runtime-server-mode only: the dev-server's WebSocket port on the host
-    /// Mac, learned via mDNS by the CLI before this call. When set,
-    /// we (a) run `adb reverse tcp:<port> tcp:<port>` so the
-    /// emulator's localhost reaches the host's port, and (b) bake
-    /// `ws://127.0.0.1:<port>` into the APK's manifest as
-    /// `IdealystRuntimeServerUrl`. The Java side prefers the override when
-    /// present and falls back to Bonjour otherwise — that fallback
-    /// is the right shape for physical devices on the same Wi-Fi
-    /// as the dev Mac, which the emulator's QEMU NAT prevents.
+    /// Mac, resolved from `IDEALYST_RUNTIME_SERVER_PORT_FILE` by the CLI
+    /// before this call. When set, we (a) run
+    /// `adb reverse tcp:<port> tcp:<port>` so the emulator's localhost
+    /// reaches the host's port, and (b) bake `ws://127.0.0.1:<port>`
+    /// into the APK's manifest as `IdealystRuntimeServerUrl`. The
+    /// Java side reads that value at boot and connects directly;
+    /// missing meta-data is treated as a build error (there's no
+    /// fallback discovery).
     pub runtime_server_port: Option<u16>,
     /// Cargo features to enable on the build. `idealyst dev` passes
     /// `runtime-core/dev` here so the Robot bridge auto-starts.
@@ -82,9 +82,9 @@ pub struct RunOptions {
 /// Mirrors `run-ios::RunMode` — same trade-offs (local self-contained
 /// process vs. dev-host wire client). runtime-server mode swaps both the
 /// generated cdylib (`backend-android` with the `runtime-server` feature)
-/// and the Java glue (manifest gains multicast permission +
-/// IdealystAppId; MainActivity acquires a MulticastLock, calls
-/// `attachRuntimeServer`, runs a `Handler` tick into `drainRuntimeServer`).
+/// and the Java glue (manifest carries `IdealystRuntimeServerUrl`,
+/// MainActivity calls `attachRuntimeServerUrl`, runs a `Handler` tick
+/// into `drainRuntimeServer`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RunMode {
     #[default]

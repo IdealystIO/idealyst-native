@@ -276,13 +276,13 @@ pub(crate) enum AppEvent {
 /// so the sidecar's `page_ref.frame()` reads track the actual
 /// window size.
 ///
-/// `app_id` is what the sidecar's mDNS TXT record advertises —
-/// typically the bundle id from `[package.metadata.idealyst.app]`.
+/// `url` is the dev-server WebSocket URL the CLI bakes into the
+/// wrapper at `idealyst dev` time via `IDEALYST_DEV_ENDPOINT`.
 #[cfg(feature = "runtime-server")]
 pub fn run_runtime_server(
     profile: DeviceProfile,
     skin: Rc<dyn Painter>,
-    app_id: String,
+    url: String,
 ) -> Result<(), RunError> {
     let event_loop: EventLoop<AppEvent> = EventLoop::with_user_event()
         .build()
@@ -296,7 +296,7 @@ pub fn run_runtime_server(
     }));
     crate::scheduler::install(proxy);
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App::new_runtime_server(profile, skin, app_id);
+    let mut app = App::new_runtime_server(profile, skin, url);
     event_loop
         .run_app(&mut app)
         .map_err(|e| RunError::EventLoop(e.to_string()))
@@ -383,7 +383,7 @@ impl ViewportScale {
 struct App {
     profile: DeviceProfile,
     /// Consumed on first `resumed`. None afterward. Mutually
-    /// exclusive with `runtime_server_app_id`: local-mount mode
+    /// exclusive with `runtime_server_url`: local-mount mode
     /// supplies a `build_ui` closure, runtime-server mode supplies
     /// an app id and the shell is wired up post-resume.
     build_ui: Option<Box<dyn FnOnce() -> Element>>,
@@ -394,7 +394,7 @@ struct App {
     /// stay in sync. The shell tick is driven from
     /// `RedrawRequested` further down. None in local-mount mode.
     #[cfg(feature = "runtime-server")]
-    runtime_server_app_id: Option<String>,
+    runtime_server_url: Option<String>,
     #[cfg(feature = "runtime-server")]
     runtime_server_shell: Option<std::rc::Rc<runtime_server_shell_native::RuntimeServerShell<render_wgpu::WgpuBackend>>>,
     gpu: Option<Gpu>,
@@ -456,7 +456,7 @@ impl App {
             last_pointer: (0.0, 0.0),
             last_size: None,
             #[cfg(feature = "runtime-server")]
-            runtime_server_app_id: None,
+            runtime_server_url: None,
             #[cfg(feature = "runtime-server")]
             runtime_server_shell: None,
             #[cfg(target_os = "macos")]
@@ -476,7 +476,7 @@ impl App {
     fn new_runtime_server(
         profile: DeviceProfile,
         skin: Rc<dyn Painter>,
-        app_id: String,
+        url: String,
     ) -> Self {
         let host = Host::new(skin, profile.color_scheme);
         let logical = (profile.logical_size.0 as f32, profile.logical_size.1 as f32);
@@ -491,7 +491,7 @@ impl App {
             modifiers: KeyModifiers::default(),
             last_pointer: (0.0, 0.0),
             last_size: None,
-            runtime_server_app_id: Some(app_id),
+            runtime_server_url: Some(url),
             runtime_server_shell: None,
             #[cfg(target_os = "macos")]
             _aspect_lock: None,
@@ -833,7 +833,7 @@ impl ApplicationHandler<AppEvent> for App {
         // later and are applied through `shell.tick(...)` from
         // `RedrawRequested` below. No local `app()` mount.
         #[cfg(feature = "runtime-server")]
-        if let Some(app_id) = self.runtime_server_app_id.take() {
+        if let Some(url) = self.runtime_server_url.take() {
             let backend = self.host.backend().clone();
             let initial_viewport = Some(runtime_server_shell_native::WireViewport {
                 width: self.profile.logical_size.0 as f32,
@@ -842,7 +842,7 @@ impl ApplicationHandler<AppEvent> for App {
             let shell = std::rc::Rc::new(
                 runtime_server_shell_native::RuntimeServerShell::<render_wgpu::WgpuBackend>::spawn_with_shared_backend(
                     backend,
-                    app_id,
+                    url,
                     runtime_server_shell_native::RuntimeServerShellOptions {
                         platform: runtime_server_shell_native::WirePlatform::Other,
                         device_label: Some(format!(

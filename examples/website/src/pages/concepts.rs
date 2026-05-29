@@ -3,7 +3,7 @@
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
-use crate::pages::common::{code_panel, page_header, page_section};
+use crate::pages::common::{CodePanel, PageHeader, PageSection};
 use crate::routes::{BACKENDS_ROUTE, WHY_RUST_ROUTE};
 use crate::shell::{layout_with_toc, TocEntry};
 
@@ -30,21 +30,21 @@ pub fn page() -> Element {
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Core concepts",
-                "The ideas you need to hold in your head to read or write idealyst \
+            PageHeader(
+                title = "Core concepts",
+                blurb = "The ideas you need to hold in your head to read or write idealyst \
                  code: the app/host split, Element, signals, the `ui!` macro, the \
                  builder/Element distinction, the Backend trait, and the path to \
-                 building your own component library and theme system on top."
-            ) }
-            { page_section(app_vs_host_ref, vec![app_vs_host()]) }
-            { page_section(primitives_ref, vec![primitives()]) }
-            { page_section(reactivity_ref, vec![reactivity()]) }
-            { page_section(ui_macro_ref, vec![ui_macro()]) }
-            { page_section(builders_ref, vec![builders()]) }
-            { page_section(backend_ref, vec![backend_trait()]) }
-            { page_section(building_ref, vec![building_your_own()]) }
-            { page_section(next_ref, vec![where_next()]) }
+                 building your own component library and theme system on top.",
+            )
+            PageSection(handle = app_vs_host_ref) { app_vs_host() }
+            PageSection(handle = primitives_ref) { primitives() }
+            PageSection(handle = reactivity_ref) { reactivity() }
+            PageSection(handle = ui_macro_ref) { ui_macro() }
+            PageSection(handle = builders_ref) { builders() }
+            PageSection(handle = backend_ref) { backend_trait() }
+            PageSection(handle = building_ref) { building_your_own() }
+            PageSection(handle = next_ref) { where_next() }
         }
     };
     layout_with_toc(content, toc)
@@ -86,7 +86,7 @@ fn primitives() -> Element {
                 update its props, attach these children\" \u{2014} the backend translates \
                 that into a UIKit view, a DOM element, a wgpu draw call, whatever it owns.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "Components are functions that return a `Element` \
                 tree. `#[component] fn Welcome(props: &Props) -> Element` is the \
@@ -115,7 +115,7 @@ fn reactivity() -> Element {
                 every subscriber once \u{2014} no re-render passes, no diffing, no \
                 reconciler.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "Effects, derived signals, and batched writes are all \
                 exposed (see `framework_core::reactive`). The model is fine-grained: only \
@@ -151,7 +151,7 @@ fn ui_macro() -> Element {
                 and `Element` constructors. Both forms compile to the same code; the \
                 macro is opt-in (but recommended) sugar.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "The same author surface includes `#[component]` (turn \
                 a function into a memoizable component), `stylesheet!` (typed \
@@ -184,7 +184,7 @@ fn builders() -> Element {
                 `ButtonHandle`, etc.). The wrapper exists so you can chain configuration \
                 before committing to the final value.".to_string())
         },
-        code_panel(chain),
+        ui! { CodePanel(src = chain) },
         ui! {
             Typography(content = "Each method takes `self` and returns `Self`, so the \
                 chain accumulates state. At the end of the chain you still have a \
@@ -195,7 +195,7 @@ fn builders() -> Element {
                 inserted at every leaf so the framework's tree sees `Element` values. \
                 Outside `ui!`, you call it yourself.".to_string())
         },
-        code_panel(unwrap),
+        ui! { CodePanel(src = unwrap) },
         ui! {
             Typography(content = "If you forget the unwrap and try to use the builder \
                 where a `Element` is expected, the compiler tells you exactly that: \
@@ -232,7 +232,7 @@ fn backend_trait() -> Element {
                 there. Web is `<div>`s and DOM mutations; iOS is `UIView` + `addSubview`; \
                 Android is `android.view.View` + `addView`; wgpu is GPU draw calls.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "Adding a new platform is implementing a trait, not \
                 forking the framework. Most backends fit in a single crate of moderate \
@@ -257,27 +257,30 @@ fn building_your_own() -> Element {
                                      }\n    \
                                  }\n\
                              }";
-    let theme_snippet = "// 1. Define a theme trait \u{2014} the surface your library reads from.\n\
-                         pub trait MyTheme: 'static {\n    \
-                             fn accent(&self) -> Color;\n    \
-                             fn radius_sharp(&self) -> f32;\n    \
-                             fn brand_font(&self) -> FontFamily;\n\
+    let theme_snippet = "// 1. A theme is a struct that produces a flat token table.\n\
+                         //    `ThemeTokens::tokens()` returns the (name, value) pairs.\n\
+                         impl ThemeTokens for MyTheme {\n    \
+                             fn tokens(&self) -> Vec<TokenEntry> {\n        \
+                                 vec![\n            \
+                                     TokenEntry { name: \"color-accent\", value: TokenValue::Color(self.accent.clone()) },\n            \
+                                     TokenEntry { name: \"radius-md\", value: TokenValue::Length(self.radius) },\n        \
+                                 ]\n    \
+                             }\n\
                          }\n\
                          \n\
-                         // 2. Stylesheets close over your theme type. The closure receives\n\
-                         //    a typed reference to your concrete `MyTheme`-implementing struct.\n\
+                         // 2. Stylesheets reference values by token NAME \u{2014} not by reading\n\
+                         //    a theme struct. The `<()>` / `(_t)` slots are vestigial.\n\
                          stylesheet! {\n    \
-                             pub MyButton<MyThemeRef> {\n        \
-                                 base(t) {\n            \
-                                     background: t.accent(),\n            \
-                                     border_radius: t.radius_sharp(),\n            \
-                                     font_family: t.brand_font(),\n        \
+                             pub MyButton<()> {\n        \
+                                 base(_t) {\n            \
+                                     background: Tokenized::token(\"color-accent\", Color(\"#5b6cff\".into())),\n            \
+                                     border_radius: Tokenized::token(\"radius-md\", Length::Px(8.0)),\n        \
                                  }\n    \
                              }\n\
                          }\n\
                          \n\
-                         // 3. The app installs a concrete implementation at bootstrap.\n\
-                         install_theme(MyConcreteTheme::default());";
+                         // 3. Install at bootstrap; swap any time with set_theme(..).\n\
+                         install_theme(MyTheme::default());";
     let children: Vec<Element> = vec![
         ui! { Typography(content = "Building your own".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {
@@ -293,7 +296,7 @@ fn building_your_own() -> Element {
                 `Element`. There's nothing privileged about idea-ui's components versus \
                 yours \u{2014} they all go through the same path.".to_string())
         },
-        code_panel(component_snippet),
+        ui! { CodePanel(src = component_snippet) },
         ui! {
             Typography(content = "Bundle a crate full of these, export them, and your \
                 library's consumers `use my_lib::my_button` like any other Rust function. \
@@ -303,20 +306,22 @@ fn building_your_own() -> Element {
         },
         ui! { Typography(content = "Custom theme systems".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
-            Typography(content = "A theme is a trait, not a struct. Your library defines \
-                the trait \u{2014} which colors / sizes / weights / radii it reads from \
-                \u{2014} and downstream apps implement the trait on their own concrete \
-                type. The framework's stylesheet system handles the rest: token reads \
-                are reactive, dark/light swaps re-fire every dependent rule, and the \
-                same component code adapts to whatever theme is currently installed.".to_string())
+            Typography(content = "A theme is a collection of style tokens. Your library \
+                defines a struct that implements `ThemeTokens` \u{2014} its `tokens()` method \
+                returns the `(name, value)` table to install \u{2014} and stylesheets \
+                reference those values by token name via `Tokenized::token(\"\u{2026}\", \
+                fallback)`, never by reading the struct in their bodies. Token reads are \
+                reactive: a dark/light swap (`set_theme(..)`) updates the tokens and \
+                re-applies exactly the rules that read a changed one, so the same component \
+                code adapts to whatever theme is currently installed.".to_string())
         },
-        code_panel(theme_snippet),
+        ui! { CodePanel(src = theme_snippet) },
         ui! {
-            Typography(content = "The pattern is straight from `idea-ui`. Its `IdeaTheme` \
-                trait is what every shipped component reads; `light_theme()` / \
-                `dark_theme()` are concrete implementations the app installs. Apps that \
-                want more fields than the built-ins implement `IdeaTheme` on their own \
-                struct \u{2014} same path, just extended.".to_string())
+            Typography(content = "The pattern is straight from `idea-ui`. Its theme structs \
+                implement `ThemeTokens`; `light_theme()` / `dark_theme()` are ready-made \
+                instances the app installs, and every shipped stylesheet references the \
+                resulting tokens by name. Apps that want to retheme implement \
+                `ThemeTokens` on their own struct \u{2014} same path, just more tokens.".to_string())
         },
         ui! {
             Typography(content = "Read idea-ui's source as the canonical reference. It's \

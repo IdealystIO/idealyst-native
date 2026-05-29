@@ -3,7 +3,7 @@
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
-use crate::pages::common::{code_panel, page_header, page_section};
+use crate::pages::common::{CodePanel, PageHeader, PageSection};
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Element {
@@ -23,18 +23,18 @@ pub fn page() -> Element {
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Robot & MCP",
-                "First-class automation and agentic control baked into the framework \
+            PageHeader(
+                title = "Robot & MCP",
+                blurb = "First-class automation and agentic control baked into the framework \
                  itself \u{2014} not bolted on after. One introspection registry \
                  drives E2E test harnesses, IDE tooling, and an MCP server an LLM \
-                 can use as a tool surface."
-            ) }
-            { page_section(registry_ref, vec![registry()]) }
-            { page_section(e2e_ref, vec![e2e_tests()]) }
-            { page_section(methods_ref, vec![methods_macro()]) }
-            { page_section(mcp_ref, vec![mcp_server()]) }
-            { page_section(build_ref, vec![build_profile()]) }
+                 can use as a tool surface.",
+            )
+            PageSection(handle = registry_ref) { registry() }
+            PageSection(handle = e2e_ref) { e2e_tests() }
+            PageSection(handle = methods_ref) { methods_macro() }
+            PageSection(handle = mcp_ref) { mcp_server() }
+            PageSection(handle = build_ref) { build_profile() }
         }
     };
     layout_with_toc(content, toc)
@@ -72,7 +72,7 @@ fn e2e_tests() -> Element {
                 and Android \u{2014} no separate platform runner per target, no \
                 Detox-on-iOS-and-Espresso-on-Android split.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
     ];
     ui! { Stack(gap = StackGap::Md) { children } }
 }
@@ -102,7 +102,7 @@ fn methods_macro() -> Element {
                 exposes named methods that the registry registers as JSON-callable. \
                 External automation can invoke them by name without per-app glue.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "The component's `cart.add(...)`, `cart.clear()`, and \
                 `cart.total()` are now callable from a Robot test, an IDE inspector, \
@@ -128,7 +128,7 @@ fn mcp_server() -> Element {
                 config and an LLM can drive a running iOS / Android / web app directly: \
                 fill out forms, navigate, assert state, call exposed component methods.".to_string())
         },
-        code_panel(snippet),
+        ui! { CodePanel(src = snippet) },
         ui! {
             Typography(content = "The framework's component catalog (every primitive, \
                 every props struct, every theme token) ships alongside the live registry, \

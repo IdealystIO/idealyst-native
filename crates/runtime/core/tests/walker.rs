@@ -36,3 +36,12 @@ mod ui_for_flattening;
 mod ui_iteration_and_branches;
 #[path = "walker/component_dispatch.rs"]
 mod component_dispatch;
+// Gated on `async-driver` because the spawn_async block in
+// `walker/lazy.rs` is only compiled in then — without it the chunk
+// path is a no-op regardless of `Backend::renders_lazy_chunks()`, so
+// the test couldn't distinguish the gate's two branches.
+#[cfg(feature = "async-driver")]
+#[path = "walker/lazy.rs"]
+mod lazy;
+#[path = "walker/hydration.rs"]
+mod hydration;

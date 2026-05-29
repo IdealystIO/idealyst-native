@@ -53,14 +53,24 @@ fn dev_user_features_other() -> Vec<String> {
 }
 
 /// Compute the env vars the dev launcher sets on the spawned app.
-/// mDNS discovery handles app→server routing now, so the only thing
-/// we still pass is the optional pinned bridge port (rare — most
-/// users let the bridge pick ephemeral).
+///
+/// - `IDEALYST_BRIDGE_PORT` (optional): pins the Robot bridge to a
+///   specific port instead of letting it pick ephemeral.
+/// - `IDEALYST_BRIDGE_PORT_FILE`: where the bridge writes its bound
+///   port + identity JSON. Project-scoped MCP servers (cwd-anchored)
+///   read this; the bridge ALSO writes `~/.idealyst/apps/<name>-<pid>.json`
+///   for host-wide MCP discovery.
+/// - `IDEALYST_DEV_ENDPOINT` (runtime-server mode only): the
+///   `ws://host:port` URL the wrapper connects to. Set for platforms
+///   whose process the CLI spawns directly (macOS / terminal / wgpu
+///   sim / web-host); iOS / Android bake the URL into their build
+///   manifests instead.
 fn dev_env_vars(
     project_dir: &Path,
     args: &Args,
     _app_name: &str,
     _catalog_bin: Option<&Path>,
+    endpoint: Option<&str>,
 ) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let dev_cfg = crate::dev_config::DevConfig::load(project_dir).unwrap_or_default();
@@ -68,7 +78,47 @@ fn dev_env_vars(
     if let Some(p) = pinned {
         out.push(("IDEALYST_BRIDGE_PORT".to_string(), p.to_string()));
     }
+    out.push((
+        "IDEALYST_BRIDGE_PORT_FILE".to_string(),
+        bridge_port_file(project_dir).to_string_lossy().into_owned(),
+    ));
+    if let Some(endpoint) = endpoint {
+        out.push(("IDEALYST_DEV_ENDPOINT".to_string(), endpoint.to_string()));
+    }
     out
+}
+
+/// `<project>/.idealyst/bridge.port` — the per-project location the
+/// running app's Robot bridge writes its bound port JSON to. Read by
+/// project-scoped MCP servers (which run with cwd == project root).
+fn bridge_port_file(project_dir: &Path) -> PathBuf {
+    project_dir.join(".idealyst").join("bridge.port")
+}
+
+/// Resolve a stable LAN IP for this host. Used when baking
+/// `IDEALYST_DEV_ENDPOINT` for builds that will run on a separate
+/// device (currently only iOS, when device builds are wired up).
+/// Falls back to `127.0.0.1` when no non-loopback interface is found —
+/// fine for sim / emulator paths which the CLI handles separately
+/// via `localhost` / `10.0.2.2`.
+#[allow(dead_code)] // Wired when iOS device builds land; sim/emulator use loopback today.
+fn resolve_lan_ip() -> String {
+    // UDP-connect trick: bind 0.0.0.0:0, "connect" to a routable
+    // address (no packets sent — UDP connect is just a routing-table
+    // lookup), then read `local_addr()`. Picks whatever interface
+    // the OS would route external traffic out of, which is what a
+    // device on the same Wi-Fi reaches us at.
+    if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if sock.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = sock.local_addr() {
+                let ip = addr.ip().to_string();
+                if !ip.starts_with("127.") {
+                    return ip;
+                }
+            }
+        }
+    }
+    "127.0.0.1".to_string()
 }
 
 /// Project name = `[package].name` from the user's Cargo.toml. Used
@@ -93,10 +143,10 @@ fn project_app_name(project_dir: &Path) -> String {
         .unwrap_or_else(|| "app".to_string())
 }
 
-/// Registry-cleanup hook from the pre-mDNS era — no-op now that
-/// discovery runs through Bonjour. Kept as a function (rather than
-/// deleting at all call sites) so the diff stays focused; can be
-/// inlined / removed in a follow-up.
+/// Legacy registry-cleanup hook from before discovery moved to the
+/// per-process `~/.idealyst/apps/<name>-<pid>.json` files (whose
+/// RAII drop handles cleanup). Kept as a no-op so the call sites
+/// don't all need to disappear in this diff.
 fn pre_launch_clear_registry(_project_dir: &Path) {}
 
 #[derive(clap::Args, Debug)]
@@ -152,9 +202,34 @@ pub struct Args {
     #[arg(long)]
     pub all: bool,
 
+    /// Serve the project as a server-side-rendered site with hydration
+    /// at `--ssr-port` (default 8081). Builds a native SSR binary that
+    /// renders `app()` per request, emitting the boot `<script>` so the
+    /// live web bundle adopts the server DOM. Requires the wasm bundle
+    /// to be staged (build automatically; suppressed with `--no-build`).
+    /// Can stack with `--web` (static-file server on `--port`) and
+    /// `--static` (no-hydration variant on `--static-port`).
+    #[arg(long)]
+    pub ssr: bool,
+
+    /// Serve the project as pure server-side-rendered HTML (no
+    /// hydration, no `<script>`) at `--static-port` (default 8082).
+    /// Useful for SEO / unfurls / static previews — the page is exactly
+    /// what the server paints, with no client takeover.
+    #[arg(long = "static")]
+    pub static_only: bool,
+
     /// HTTP port for the web target's static-file server.
     #[arg(long, default_value_t = 8080)]
     pub port: u16,
+
+    /// HTTP port for the `--ssr` SSR-with-hydration server.
+    #[arg(long, default_value_t = 8081)]
+    pub ssr_port: u16,
+
+    /// HTTP port for the `--static` SSR-without-hydration server.
+    #[arg(long, default_value_t = 8082)]
+    pub static_port: u16,
 
     /// Interface for the web target's static-file server.
     /// `0.0.0.0` to expose to the LAN.
@@ -283,12 +358,14 @@ pub fn run(args: Args) -> Result<()> {
     // to restart it.
     //
     // We point the host at a sentinel file via
-    // `IDEALYST_RUNTIME_SERVER_PORT_FILE`; it writes its bound port there so
-    // platform launchers (Android in particular) can pick the
-    // current port up reliably even when stale mDNS records linger.
-    if !args.local {
+    // `IDEALYST_RUNTIME_SERVER_PORT_FILE`; it writes its bound port
+    // there as soon as `TcpListener::bind` succeeds. The CLI waits
+    // (below) for the file to appear, then bakes
+    // `IDEALYST_DEV_ENDPOINT=ws://host:port` into every platform
+    // launch — no in-app discovery needed.
+    let runtime_server_port: Option<u16> = if !args.local {
         let host_binary = build_runtime_server_host(&dir)?;
-        let port_file = aas_port_file(&dir);
+        let port_file = runtime_server_port_file(&dir);
         // Clear any stale value from a previous session before
         // letting the host overwrite it — keeps reads from picking
         // up the previous run's number during the bind window.
@@ -341,12 +418,32 @@ pub fn run(args: Args) -> Result<()> {
             })?;
         crate::dlog!(
             "dev",
-            "runtime-server host running ({}), mDNS-advertised; port file {}",
+            "runtime-server host running ({}); port file {}",
             host_binary.display(),
             port_file.display(),
         );
         children.lock().unwrap().push(child);
-    }
+
+        // Block until the host writes its bound port. Every platform
+        // launcher needs this to bake `IDEALYST_DEV_ENDPOINT`. 10s is
+        // generous — `TcpListener::bind` returns synchronously, so
+        // the port lands as soon as the host's runtime is up.
+        match read_host_port_file(&port_file, std::time::Duration::from_secs(10)) {
+            Some(port) => {
+                crate::dlog!("dev", "runtime-server bound port = {}", port);
+                Some(port)
+            }
+            None => {
+                anyhow::bail!(
+                    "runtime-server host never wrote its port to {} \
+                     within 10s — the host process likely crashed at startup",
+                    port_file.display(),
+                );
+            }
+        }
+    } else {
+        None
+    };
 
     // Spawn one worker thread per active target. We pre-build the
     // per-target context outside the thread so a setup error
@@ -369,7 +466,7 @@ pub fn run(args: Args) -> Result<()> {
             let target = *target;
             let children_for_worker = children.clone();
             std::thread::spawn(move || {
-                if let Err(e) = launch_target(target, &dir, &args_clone, children_for_worker) {
+                if let Err(e) = launch_target(target, &dir, &args_clone, children_for_worker, runtime_server_port) {
                     crate::dlog!(&format!("dev {}", target), "launch failed: {e:#}");
                 }
             });
@@ -379,7 +476,7 @@ pub fn run(args: Args) -> Result<()> {
         // through to crossterm, not our handler — but when the app
         // exits, control returns here and we drop into the children-
         // kill loop below.
-        if let Err(e) = launch_target(Target::Terminal, &dir, &args, children.clone()) {
+        if let Err(e) = launch_target(Target::Terminal, &dir, &args, children.clone(), runtime_server_port) {
             crate::dlog!("dev terminal", "launch failed: {e:#}");
         }
         // Clean up sibling targets.
@@ -399,8 +496,37 @@ pub fn run(args: Args) -> Result<()> {
         let target = *target;
         let children_for_worker = children.clone();
         let worker = std::thread::spawn(move || {
-            if let Err(e) = launch_target(target, &dir, &args_clone, children_for_worker) {
+            if let Err(e) = launch_target(target, &dir, &args_clone, children_for_worker, runtime_server_port) {
                 crate::dlog!(&format!("dev {}", target), "launch failed: {e:#}");
+            }
+        });
+        workers.push(worker);
+    }
+
+    // Spawn SSR workers — one per requested SSR variant. They live
+    // alongside the per-target workers but aren't a "platform" in the
+    // Target enum sense (they're independent HTTP servers, each with
+    // its own port). Each calls `launch_ssr` which builds the SSR
+    // wrapper binary and spawns it; the spawned process is registered
+    // with `children` so the Ctrl-C handler tears it down.
+    if args.ssr {
+        let dir = dir.clone();
+        let args_clone = args.shallow_clone();
+        let children_for_worker = children.clone();
+        let worker = std::thread::spawn(move || {
+            if let Err(e) = launch_ssr(&dir, &args_clone, false, children_for_worker) {
+                crate::dlog!("dev ssr", "launch failed: {e:#}");
+            }
+        });
+        workers.push(worker);
+    }
+    if args.static_only {
+        let dir = dir.clone();
+        let args_clone = args.shallow_clone();
+        let children_for_worker = children.clone();
+        let worker = std::thread::spawn(move || {
+            if let Err(e) = launch_ssr(&dir, &args_clone, true, children_for_worker) {
+                crate::dlog!("dev static", "launch failed: {e:#}");
             }
         });
         workers.push(worker);
@@ -462,9 +588,13 @@ pub fn run(args: Args) -> Result<()> {
 ///   [`all_targets_for_host`]). Combines with any explicit
 ///   `--web` / `--ios` / `--android` / `--macos` flags as a union.
 /// - Otherwise, if any per-platform flag is set, take that union.
+/// - Otherwise, if `--ssr` / `--static` is set, return no platform
+///   targets — the SSR/static HTTP server is the whole intent and
+///   silently launching the manifest's mobile / web targets would
+///   spawn emulators the user wasn't asking for.
 /// - Otherwise, fall back to the manifest's declared `targets`.
-/// - If everything is empty, error — the user has to declare
-///   somewhere what they want.
+/// - If everything is empty (and SSR/static aren't set), error — the
+///   user has to declare somewhere what they want.
 ///
 /// Roku is intentionally excluded from `--all` because it has no
 /// dev-mode pipeline yet (see [`launch_target`]); spawning it would
@@ -492,6 +622,14 @@ fn resolve_targets(args: &Args, manifest_targets: &[Target]) -> Result<Vec<Targe
 
     if !from_flags.is_empty() {
         return Ok(dedup_preserve_order(from_flags));
+    }
+    // `--ssr` / `--static` are pseudo-targets (their own HTTP servers,
+    // independent of the platform target dispatch). If the user passed
+    // ONLY those flags, they want just the SSR/static server — falling
+    // through to the manifest's declared targets would silently launch
+    // emulators they didn't ask for.
+    if args.ssr || args.static_only {
+        return Ok(Vec::new());
     }
     if !manifest_targets.is_empty() {
         return Ok(dedup_preserve_order(manifest_targets.to_vec()));
@@ -551,21 +689,27 @@ fn build_runtime_server_host(dir: &Path) -> Result<PathBuf> {
 /// SIGINT — launchers that produce a `Child` (currently macOS in
 /// background mode) push it here so the binary gets killed when
 /// the dev session ends.
+///
+/// `runtime_server_port` is `Some(port)` in runtime-server mode (the
+/// CLI has already waited for the host's port-file to land); each
+/// per-platform launcher uses it to bake `IDEALYST_DEV_ENDPOINT` into
+/// the wrapper build / spawn env.
 fn launch_target(
     target: Target,
     dir: &Path,
     args: &Args,
     children: Arc<Mutex<Vec<Child>>>,
+    runtime_server_port: Option<u16>,
 ) -> Result<()> {
     match target {
-        Target::Web => launch_web(dir, args),
-        Target::Ios => launch_ios(dir, args),
-        Target::Android => launch_android(dir, args),
+        Target::Web => launch_web(dir, args, runtime_server_port),
+        Target::Ios => launch_ios(dir, args, runtime_server_port),
+        Target::Android => launch_android(dir, args, runtime_server_port),
         Target::Roku => anyhow::bail!(
             "Roku has no dev-mode story yet; use `idealyst build roku` for the package"
         ),
-        Target::Macos => launch_macos(dir, args, children),
-        Target::Terminal => launch_terminal(dir, args),
+        Target::Macos => launch_macos(dir, args, children, runtime_server_port),
+        Target::Terminal => launch_terminal(dir, args, runtime_server_port),
     }
 }
 
@@ -577,7 +721,7 @@ fn launch_target(
 /// connects to the dev-host over WebSocket like the other native
 /// runtime-server clients. In local mode it mounts `app()` in
 /// process — same shape as the macOS local path.
-fn launch_terminal(dir: &Path, args: &Args) -> Result<()> {
+fn launch_terminal(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Result<()> {
     let mode = if args.local {
         run_terminal::RunMode::Local
     } else {
@@ -589,6 +733,10 @@ fn launch_terminal(dir: &Path, args: &Args) -> Result<()> {
         mode,
     );
     let source = crate::framework_source::resolve(dir)?;
+    // Terminal runs on the host machine, so loopback is always the right
+    // address. Empty when in local mode.
+    let endpoint = runtime_server_port.map(|p| format!("ws://127.0.0.1:{p}"));
+    let env_vars = dev_env_vars(dir, args, &project_app_name(dir), None, endpoint.as_deref());
     let artifact = run_terminal::run(
         dir,
         run_terminal::RunOptions {
@@ -596,7 +744,7 @@ fn launch_terminal(dir: &Path, args: &Args) -> Result<()> {
             mode,
             source,
             user_features: dev_user_features_other(),
-            env_vars: Vec::new(),
+            env_vars,
         },
     )
     .context("terminal dev launch failed")?;
@@ -608,7 +756,7 @@ fn launch_terminal(dir: &Path, args: &Args) -> Result<()> {
 ///
 /// - runtime-server mode (default): build the wasm bundle with the
 ///   `dev-hot-reload` feature, then start `web-dev-host` which serves
-///   the bundle + discovers the runtime-server server via Bonjour +
+///   the bundle + reads the dev-server's port-file sentinel +
 ///   injects `window.IDEALYST_RUNTIME_SERVER_URL` into served HTML.
 ///   Source changes apply as hot-patches; the page survives saves.
 /// - `--local` mode: build the wasm bundle without `dev-hot-reload`,
@@ -616,8 +764,8 @@ fn launch_terminal(dir: &Path, args: &Args) -> Result<()> {
 ///   A file watcher rebuilds the bundle on source change and bumps
 ///   the generation counter so the browser reloads (full page
 ///   reload — state does not survive saves).
-fn launch_web(dir: &Path, args: &Args) -> Result<()> {
-    use dev_http::{serve_static, AasContext, ReloadContext};
+fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Result<()> {
+    use dev_http::{serve_static, AasContext, PreloadContext, ReloadContext};
 
     let source = crate::framework_source::resolve(dir)?;
 
@@ -632,12 +780,20 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
         return launch_web_with_server_bin(dir, args, &source, &server_bin);
     }
 
+    // `[package.metadata.idealyst.app.web].preload_fonts` from the
+    // manifest. dev-http splices these into served HTML so the dev
+    // loop matches what `build-web`'s `stage_bundle` ships in the
+    // deployed bundle. Empty list = no preload tags, default behavior.
+    let preload_ctx = (!manifest.app.web.preload_fonts.is_empty()).then(|| PreloadContext {
+        font_paths: manifest.app.web.preload_fonts.clone(),
+    });
+
     if !args.local {
         // ── 1. wasm shim that connects to the runtime-server host ────────────
         if !args.no_build {
             crate::dlog!(
                 "dev web",
-                "building wasm shim with aas + runtime-core/hot-reload…"
+                "building wasm shim with runtime-server + runtime-core/hot-reload…"
             );
             dev_reload::build_once(
                 dir,
@@ -645,15 +801,15 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
                     source: source.clone(),
                     // Two features flipped on for the wasm build:
                     //
-                    // 1. `aas` (bare feature) — wrapper-local;
-                    //    switches the generated `start()` from local
-                    //    `mount(app)` to a `WireBackend` +
-                    //    `connect_web` against `window.IDEALYST_RUNTIME_SERVER_URL`.
-                    //    Without this the browser would render
-                    //    locally and never open the WebSocket, so
-                    //    the runtime-server sidecar would log
-                    //    `notifying 0 session(s) to re-render` on
-                    //    every hot-patch.
+                    // 1. `runtime-server` (bare feature) — wrapper-
+                    //    local; switches the generated `start()` from
+                    //    local `mount(app)` to a `WireBackend` +
+                    //    `connect_web` against the URL injected as
+                    //    `window.IDEALYST_RUNTIME_SERVER_URL`. Without
+                    //    this the browser would render locally and
+                    //    never open the WebSocket, so the runtime-
+                    //    server sidecar would log `notifying 0
+                    //    session(s) to re-render` on every hot-patch.
                     //
                     // 2. `runtime-core/hot-reload` (cross-crate) —
                     //    flips the `#[component]` macro into its
@@ -666,32 +822,26 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
                     //    user crate must compile with the same
                     //    flavor as the runtime-server sidecar.
                     features: vec![
-                        // Wrapper-local feature that flips `start()` to
-                        // WireBackend + connect_web mode. Named `aas` in
-                        // the wrapper template; this string MUST match
-                        // the template's declaration or the
+                        // Wrapper-local feature; MUST match the
+                        // template's declaration or the
                         // `user_feature_forwards` filter would emit
                         // `runtime-server = ["<user>/runtime-server"]`
                         // and require every user crate to declare an
                         // unused `runtime-server` feature.
-                        "aas".to_string(),
+                        "runtime-server".to_string(),
                         "runtime-core/hot-reload".to_string(),
                     ],
                 },
             )
-            .context("web build failed (aas + runtime-core/hot-reload)")?;
-
-            // TODO(lazy-primitive): wasm-split-cli post-build step.
-            // Splits the wasm-pack output into base + chunks, emits
-            // chunks into <project>/pkg/. Coming up next.
+            .context("web build failed (runtime-server + runtime-core/hot-reload)")?;
         }
 
-        // ── 2. mDNS browser thread fills `AasContext.aas_url` so
-        //       the HTTP layer can inject `window.IDEALYST_RUNTIME_SERVER_URL`
-        //       into served pages.
-        let app_id = parse_manifest(dir)?.app.require_bundle_id()?.to_string();
-        let aas_url = Arc::new(Mutex::new(None));
-        spawn_aas_browser(app_id, aas_url.clone());
+        // The dev-server lives on this machine, so the browser always
+        // reaches it at loopback. The CLI has the port (resolved
+        // synchronously above before any platform launch); inject it
+        // into the served HTML as `window.IDEALYST_RUNTIME_SERVER_URL`.
+        let url = runtime_server_port.map(|p| format!("ws://127.0.0.1:{p}"));
+        let aas_url = Arc::new(Mutex::new(url));
 
         let ctx = AasContext { aas_url };
         crate::dlog!(
@@ -704,7 +854,7 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
         // (which blocks forever) and TCP-polls until the bind lands
         // so we don't beat the server to the punch.
         spawn_browser_opener(&args.host, args.port);
-        serve_static(&args.host, args.port, dir, None, Some(ctx))?;
+        serve_static(&args.host, args.port, dir, None, Some(ctx), preload_ctx)?;
         Ok(())
     } else {
         // ── Local-render mode: livereload-driven hot-reload. ───────
@@ -741,8 +891,98 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
             args.host, args.port
         );
         spawn_browser_opener(&args.host, args.port);
-        serve_static(&args.host, args.port, dir, Some(ctx), None)?;
+        serve_static(&args.host, args.port, dir, Some(ctx), None, preload_ctx)?;
         Ok(())
+    }
+}
+
+/// SSR launcher — builds the wasm bundle (so the SSR server can serve
+/// it for hydration / serve fonts alongside), then builds the SSR
+/// wrapper binary (via `build-ssr`) and spawns it. `static_only=true`
+/// passes `--static` to the spawned binary, suppressing the boot
+/// `<script>`. The wrapper binary itself reads the same args the
+/// website's `examples/serve.rs` does, so the CLI just translates the
+/// flag set; the wrapper handles the actual SSR loop.
+///
+/// Stays on the local-mode wasm bundle (no `aas`/`hot-reload`
+/// features). Runtime-server-bridged hydration is conceptually out of
+/// scope here — `--ssr` is for "render the site server-side and let
+/// the in-page wasm hydrate it"; the runtime-server sidecar is a
+/// different mode that doesn't pair naturally with per-request SSR.
+fn launch_ssr(
+    dir: &Path,
+    args: &Args,
+    static_only: bool,
+    children: Arc<Mutex<Vec<Child>>>,
+) -> Result<()> {
+    let label = if static_only { "dev static" } else { "dev ssr" };
+    let port = if static_only { args.static_port } else { args.ssr_port };
+    let addr = format!("{}:{}", args.host, port);
+
+    let source = crate::framework_source::resolve(dir)?;
+
+    // Stage the bundle at `<project>/dist/web`. SSR (hydrate) needs
+    // `/pkg/<lib>.js` so the page can boot; `--static` doesn't need
+    // the JS but still needs the fonts in `<project>/dist/web/fonts/`
+    // for the first paint to use the real typeface. One build covers
+    // both — same flags as `idealyst build --web` (local-mode bundle,
+    // no `aas` / `hot-reload`).
+    let bundle_dir = dir.join("dist").join("web");
+    if !args.no_build {
+        crate::dlog!(label, "building wasm bundle (for hydration / fonts)…");
+        let _ = build_web::build(
+            dir,
+            build_web::BuildOptions {
+                release: false,
+                source: source.clone(),
+                user_features: Vec::new(),
+                bundle_out_dir: Some(bundle_dir.clone()),
+                gzip: false,
+                strip_panics: false,
+            },
+        )
+        .with_context(|| "wasm build for SSR mode failed")?;
+    }
+
+    // Build the native SSR wrapper binary.
+    crate::dlog!(label, "building SSR wrapper binary…");
+    let artifact = build_ssr::build(
+        dir,
+        build_ssr::BuildOptions {
+            release: false,
+            source: source.clone(),
+            user_features: Vec::new(),
+        },
+    )
+    .with_context(|| "SSR wrapper build failed")?;
+
+    // Spawn the binary. It blocks accepting connections; tracking it
+    // in `children` ensures Ctrl-C tears it down with the rest.
+    let mut cmd = Command::new(&artifact.binary);
+    cmd.arg("--addr").arg(&addr);
+    cmd.arg("--static-dir").arg(&bundle_dir);
+    if static_only {
+        cmd.arg("--static");
+    }
+    crate::dlog!(
+        label,
+        "{} HTTP at http://{}",
+        if static_only { "SSR (static)" } else { "SSR + hydration" },
+        addr,
+    );
+    let child = cmd
+        .spawn()
+        .with_context(|| format!("spawn SSR binary {}", artifact.binary.display()))?;
+    children.lock().unwrap().push(child);
+
+    // The worker thread blocks here until the process is killed (by
+    // the Ctrl-C handler walking `children`). We wait by polling — the
+    // `Child` itself is owned by `children` now and we can't take a
+    // reference back out cleanly through the Mutex without a more
+    // involved structure. Sleep-loop is fine; the loop exits when the
+    // process dies and the dev process winds down.
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(60));
     }
 }
 
@@ -941,11 +1181,18 @@ fn open_url_in_browser(url: &str) {
 /// reload on source change, the iOS app re-renders automatically.
 /// `--local` does a one-shot build + run; the user restarts when they
 /// want a new build.
-fn launch_ios(dir: &Path, args: &Args) -> Result<()> {
+fn launch_ios(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Result<()> {
     let mode = if args.local {
         run_ios::RunMode::Local
     } else {
-        run_ios::RunMode::RuntimeServer
+        // iOS simulator shares the host's localhost, so loopback is
+        // the right address; the CLI bakes the URL into Info.plist's
+        // `IdealystDevEndpoint`. (Physical device builds would use
+        // `resolve_lan_ip()` here, but those aren't wired yet.)
+        let endpoint = runtime_server_port
+            .map(|p| format!("ws://127.0.0.1:{p}"))
+            .unwrap_or_default();
+        run_ios::RunMode::RuntimeServer { endpoint }
     };
     crate::dlog!("dev ios", "building + launching simulator (mode: {:?})…", mode);
     let source = crate::framework_source::resolve(dir)?;
@@ -972,45 +1219,31 @@ fn launch_ios(dir: &Path, args: &Args) -> Result<()> {
 /// + Java glue + APK via `run-android`, installs to a connected
 /// emulator (booting one if none is online), launches the app.
 ///
-/// runtime-server mode swaps the cdylib (backend-android with `runtime-server`) and
-/// the Java sources (MainActivity reads `IdealystAppId` from manifest
-/// meta-data, acquires a MulticastLock so mDNS browse works on
-/// Wi-Fi, runs a `Handler` tick into `drainRuntimeServer`). Local mode keeps
-/// the in-process mount path.
-fn launch_android(dir: &Path, args: &Args) -> Result<()> {
+/// runtime-server mode swaps the cdylib (backend-android with
+/// `runtime-server`) and the Java sources (MainActivity reads
+/// `IdealystRuntimeServerUrl` from manifest meta-data and runs a
+/// `Handler` tick into `drainRuntimeServer`). Local mode keeps the
+/// in-process mount path.
+///
+/// The Android emulator's QEMU NAT can't reach the host's
+/// `0.0.0.0:<port>` directly, but `adb reverse tcp:<port> tcp:<port>`
+/// forwards the host port into the emulator's loopback. The CLI
+/// sets that up inside `run-android` and bakes
+/// `ws://127.0.0.1:<port>` into the APK manifest. Physical devices
+/// over USB pick up the same tunnel for free.
+fn launch_android(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Result<()> {
     let mode = if args.local {
         run_android::RunMode::Local
     } else {
         run_android::RunMode::RuntimeServer
     };
 
-    // In runtime-server mode the Android emulator's QEMU NAT prevents Bonjour
-    // from seeing the host's mDNS broadcasts, so we discover the
-    // host's port *on the Mac side* and pass it through to
-    // `run-android`, which sets up `adb reverse tcp:<port>` and
-    // bakes the override URL into the APK manifest. Physical
-    // devices on the same Wi-Fi go through the same code path
-    // safely — adb reverse over USB works the same way, and the
-    // resulting `ws://127.0.0.1:<port>` URL hits the host's port
-    // either via the USB tunnel (device) or via QEMU's localhost
-    // forwarding (emulator).
-    //
-    // We read the port from the sentinel file the host writes
-    // (path supplied via `IDEALYST_RUNTIME_SERVER_PORT_FILE` in `run`).
-    // Sidesteps macOS's mDNS cache, which often holds onto stale
-    // entries from previously-killed hosts.
-    let aas_port = if !args.local {
-        read_host_port_file(&aas_port_file(dir), std::time::Duration::from_secs(10))
-    } else {
-        None
-    };
-
     crate::dlog!(
         "dev android",
         "building + launching emulator (mode: {:?}{}…",
         mode,
-        match aas_port {
-            Some(p) => format!(", aas_port={p})"),
+        match runtime_server_port {
+            Some(p) => format!(", port={p})"),
             None => ")".to_string(),
         }
     );
@@ -1021,7 +1254,7 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
             release: false,
             avd: None,
             mode,
-            runtime_server_port: aas_port,
+            runtime_server_port,
             source,
             user_features: dev_user_features_other(),
         },
@@ -1041,7 +1274,7 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
 /// (we're already on macOS) and no runtime-server shell yet — the macOS
 /// backend's first iteration is local-render only (see
 /// `docs/macos-backend-plan.md`).
-fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>) -> Result<()> {
+fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, runtime_server_port: Option<u16>) -> Result<()> {
     let mode = if args.local {
         run_macos::RunMode::Local
     } else {
@@ -1081,6 +1314,11 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>) -> Re
     // Now launch. The launcher pipes `IDEALYST_CATALOG_BIN` etc. to
     // the spawned app so its bridge auto-start can register the
     // catalog binary in the registry alongside the bridge address.
+    // macOS app runs on this host; loopback always reaches the
+    // dev-server. Pass the endpoint as an env var the wrapper reads
+    // via `runtime_server_shell_native::endpoint_or_panic()`.
+    let endpoint = runtime_server_port.map(|p| format!("ws://127.0.0.1:{p}"));
+    let env_vars = dev_env_vars(dir, args, &app_name, Some(&built.binary), endpoint.as_deref());
     let artifact = run_macos::run(
         dir,
         run_macos::RunOptions {
@@ -1089,7 +1327,7 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>) -> Re
             source,
             background: true,
             user_features: dev_user_features_macos(),
-            env_vars: dev_env_vars(dir, args, &app_name, Some(&built.binary)),
+            env_vars,
         },
     )
     .context("macOS dev launch failed")?;
@@ -1139,10 +1377,10 @@ fn write_catalog_path(project_dir: &Path, binary: &Path) {
 /// wrapper crate's Cargo.toml so it's automatically scoped per
 /// project and gets wiped along with `target/idealyst/` when the
 /// user runs `cargo clean`.
-fn aas_port_file(project_dir: &Path) -> PathBuf {
+fn runtime_server_port_file(project_dir: &Path) -> PathBuf {
     // Mirror `build-runtime-server`'s wrapper dir layout. The wrapper itself
-    // lives at `target/idealyst/<project>/aas/host/`; we drop the
-    // sentinel one level up so it's discoverable even if the wrapper
+    // lives at `target/idealyst/<project>/runtime-server/host/`; we drop
+    // the sentinel one level up so it's discoverable even if the wrapper
     // gets regenerated mid-session.
     // Resolve project name from the project dir's basename — same
     // shape `build-runtime-server::build` uses to compute the wrapper path.
@@ -1164,98 +1402,41 @@ fn aas_port_file(project_dir: &Path) -> PathBuf {
         .join("host-port")
 }
 
-/// Poll the runtime-server host's port sentinel file. The host writes its
-/// bound port there once `TcpListener::bind` succeeds; we read it
-/// here and feed it to `run-android` for the `adb reverse` tunnel
-/// and the manifest's `IdealystRuntimeServerUrl` override.
+/// Poll the runtime-server host's port sentinel file. The host writes
+/// its bound port there once `TcpListener::bind` succeeds; the CLI
+/// reads it once before launching any platform and bakes the result
+/// into every wrapper's `IDEALYST_DEV_ENDPOINT`.
 ///
-/// Returns `None` on timeout. Caller falls back to the in-app
-/// Bonjour path, which works for physical devices on the same Wi-Fi
-/// as the dev Mac (just not for the QEMU-NAT emulator).
+/// Returns `None` on timeout — caller bails with a clear error since
+/// there's no fallback discovery path.
 fn read_host_port_file(path: &Path, timeout: std::time::Duration) -> Option<u16> {
     use std::time::Instant;
-    eprintln!("[dev android] reading host port from {}", path.display());
+    eprintln!("[dev] reading host port from {}", path.display());
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if let Ok(s) = std::fs::read_to_string(path) {
             if let Ok(p) = s.trim().parse::<u16>() {
-                eprintln!("[dev android] host bound port = {p}");
+                eprintln!("[dev] host bound port = {p}");
                 return Some(p);
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     eprintln!(
-        "[dev android] no port written to {} within {:?}; \
-         falling back to in-app Bonjour",
+        "[dev] no port written to {} within {:?}",
         path.display(),
         timeout
     );
     None
 }
 
-/// Long-lived mDNS browser thread shared by the web launcher's runtime-server
-/// mode. Writes the discovered `ws://...` URL into `out`; the HTTP
-/// layer (via `AasContext`) reads it on every served page.
-fn spawn_aas_browser(app_id: String, out: Arc<Mutex<Option<String>>>) {
-    use mdns_sd::{ServiceDaemon, ServiceEvent};
-    std::thread::spawn(move || {
-        let Ok(daemon) = ServiceDaemon::new() else {
-            eprintln!("[dev web] mDNS daemon init failed");
-            return;
-        };
-        let Ok(receiver) = daemon.browse("_idealyst-dev._tcp.local.") else {
-            eprintln!("[dev web] mDNS browse failed");
-            return;
-        };
-        eprintln!(
-            "[dev web] mDNS browsing for runtime-server dev-server with app_id={:?}",
-            app_id
-        );
-        for event in receiver.iter() {
-            match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    let matches = info.get_properties().iter().any(|p| {
-                        p.key().eq_ignore_ascii_case("app_id") && p.val_str() == app_id
-                    });
-                    if !matches {
-                        continue;
-                    }
-                    let url = info
-                        .get_addresses()
-                        .iter()
-                        .find(|a| a.is_ipv4())
-                        .map(|a| format!("ws://{}:{}", a, info.get_port()));
-                    if let Some(u) = url {
-                        eprintln!("[dev web] discovered runtime-server at {u}");
-                        if let Ok(mut g) = out.lock() {
-                            *g = Some(u);
-                        }
-                    }
-                }
-                ServiceEvent::ServiceRemoved(_, _) => {
-                    if let Ok(mut g) = out.lock() {
-                        *g = None;
-                    }
-                }
-                _ => {}
-            }
-        }
-    });
-}
-
 /// Install the global Ctrl-C handler. Walks the shared `children`
-/// list and kills each child before exiting. Also drops the launched
-/// project's registry entry so the MCP server doesn't see ghost
-/// apps after the dev session ends. macOS detached-spawn case isn't
-/// tracked in `children` (the dev process forgot about it), so the
-/// registry deregistration uses `project_root` as the key — the
-/// dev launcher records that here on registration.
+/// list and kills each child before exiting. Per-process app
+/// registrations clean themselves up via RAII on the bridge side; no
+/// extra teardown pass needed here.
 fn install_ctrlc_handler(children: Arc<Mutex<Vec<Child>>>) -> Result<()> {
     ctrlc::set_handler(move || {
         eprintln!("\n[dev] received Ctrl-C — stopping…");
-        // mDNS service-removed events fire when each child exits;
-        // no registry-cleanup pass needed.
         if let Ok(mut guard) = children.lock() {
             for mut child in guard.drain(..) {
                 let _ = child.kill();
@@ -1269,9 +1450,9 @@ fn install_ctrlc_handler(children: Arc<Mutex<Vec<Child>>>) -> Result<()> {
 }
 
 fn track_project_root(_dir: &Path) {
-    // No-op now that mDNS replaces the registry — there's nothing
-    // to clean up on Ctrl-C. Kept as a function so the call sites
-    // don't all need to disappear in this diff.
+    // No-op: bridge.rs writes `~/.idealyst/apps/<name>-<pid>.json` on
+    // start and removes it via RAII on graceful shutdown, so there's
+    // no separate registry for the CLI to clean up.
 }
 
 impl Args {
@@ -1290,7 +1471,11 @@ impl Args {
             macos: self.macos,
             terminal: self.terminal,
             all: self.all,
+            ssr: self.ssr,
+            static_only: self.static_only,
             port: self.port,
+            ssr_port: self.ssr_port,
+            static_port: self.static_port,
             host: self.host.clone(),
             no_build: self.no_build,
             bridge_port: self.bridge_port,

@@ -1,0 +1,12 @@
+[package]
+name = "build-ssr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SSR build orchestration: generates an ephemeral binary wrapper around a user's app crate that calls backend_ssr::serve(...) and runs it. Same wrapper-crate pattern as build-web / build-ios / build-macos."
+
+[dependencies]
+anyhow = "1"
+# `parse_manifest`, `FrameworkSource`, `Manifest` — shared with the
+# other build helpers so the schema lives in one place.
+build-ios = { workspace = true }

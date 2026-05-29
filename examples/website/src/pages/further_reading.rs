@@ -3,7 +3,7 @@
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};
 
-use crate::pages::common::{page_header, page_section};
+use crate::pages::common::{PageHeader, PageSection};
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Element {
@@ -21,16 +21,16 @@ pub fn page() -> Element {
 
     let content = ui! {
         Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Further reading",
-                "Where to go for the long answers \u{2014} design docs, per-crate \
+            PageHeader(
+                title = "Further reading",
+                blurb = "Where to go for the long answers \u{2014} design docs, per-crate \
                  READMEs, the GitHub repository, and the projects that inspired \
-                 this one."
-            ) }
-            { page_section(source_ref, vec![source_section()]) }
-            { page_section(docs_ref, vec![docs_section()]) }
-            { page_section(crates_ref, vec![crate_readmes()]) }
-            { page_section(ack_ref, vec![acknowledgements()]) }
+                 this one.",
+            )
+            PageSection(handle = source_ref) { source_section() }
+            PageSection(handle = docs_ref) { docs_section() }
+            PageSection(handle = crates_ref) { crate_readmes() }
+            PageSection(handle = ack_ref) { acknowledgements() }
         }
     };
     layout_with_toc(content, toc)

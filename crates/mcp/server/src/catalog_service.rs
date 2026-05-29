@@ -50,10 +50,11 @@ pub struct CatalogService {
     /// catalog tools fan out across every registered app without
     /// re-spawning the extractor on every call.
     catalog_cache: Arc<CatalogCache>,
-    /// Live mDNS-discovered app table. Background thread maintains
-    /// this; tools consult it before falling back to the on-disk
-    /// registry. Empty (and harmlessly so) when mDNS is unavailable
-    /// — every catalog tool still works via the legacy path.
+    /// Live discovered-app table. Background thread polls
+    /// `~/.idealyst/apps/<name>-<pid>.json` registration files the
+    /// running app's Robot bridge writes on bind; tools consult this
+    /// before falling back to the on-disk catalog. Empty (and
+    /// harmlessly so) when no app is running.
     mdns: crate::mdns_discovery::DiscoveryTable,
     // `#[tool_handler]` reads this through the trait impl, not via
     // a direct field access — the dead-code analyzer can't see it.
@@ -98,8 +99,9 @@ pub(crate) struct RobotResolver {
 
 impl RobotResolver {
     /// Resolve a Robot bridge for the named app (or the only-live app
-    /// when `app` is omitted). Discovery is mDNS-only — the bridge's
-    /// own Bonjour advertisement is the single source of truth for
+    /// when `app` is omitted). Discovery scans the per-process
+    /// `~/.idealyst/apps/<name>-<pid>.json` registration files the
+    /// bridge writes on bind — that's the single source of truth for
     /// "what's running." Caches the resulting `RobotBridge` so
     /// subsequent calls reuse the same TCP connection state.
     pub async fn resolve(
@@ -127,7 +129,7 @@ impl RobotResolver {
             (None, 1) => live.into_iter().next().unwrap(),
             (None, 0) => {
                 return Err(McpError::invalid_params(
-                    "no apps discovered via mDNS — run `idealyst dev` \
+                    "no live apps discovered — run `idealyst dev` \
                      in a project first"
                         .to_string(),
                     None,
@@ -683,7 +685,7 @@ impl CatalogService {
         self.robot_call("invoke_method", app.as_deref(), body).await
     }
 
-    #[tool(description = "List every running idealyst app — discovered via mDNS (`_idealyst-robot._tcp`). Each entry includes name, bundle_id, project_root, bridge_addr, and pid. Entries are removed automatically when the app exits (no stale rows).")]
+    #[tool(description = "List every running idealyst app — discovered via per-process registration files at `~/.idealyst/apps/<name>-<pid>.json` that the running app's Robot bridge writes on bind. Each entry includes name, bundle_id, project_root, bridge_addr, and pid. Entries are removed automatically when the app exits (RAII cleanup on graceful shutdown; stale ones get pruned at scan time when `kill(pid, 0)` reports the process is gone).")]
     async fn list_apps(&self) -> Result<CallToolResult, McpError> {
         let live = self.mdns.snapshot();
         let json: Vec<serde_json::Value> = live

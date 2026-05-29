@@ -380,6 +380,16 @@ impl Backend for SsrBackend {
         runtime_core::Platform::Web
     }
 
+    /// Headless render: keep `Element::Lazy` at its placeholder rather
+    /// than resolving the chunk. The server can't paint lazy content (GPU
+    /// canvas, etc.), and resolving it (the native loader resolves on
+    /// first poll) would ship a body the client renders as a placeholder —
+    /// a hydration mismatch. The live client loads the real chunk after
+    /// adopting the matching placeholder.
+    fn renders_lazy_chunks(&self) -> bool {
+        false
+    }
+
     fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
         nref(HtmlNode::new("div"))
     }
@@ -552,23 +562,13 @@ impl Backend for SsrBackend {
         breakpoint_overlays: &[(runtime_core::Breakpoint, Rc<StyleRules>)],
     ) {
         // Key the class by base + every state overlay + every breakpoint
-        // overlay, so a base shared with different hover/responsive styling
-        // still gets distinct classes (mirrors the web backend's combined-key
-        // scheme, including the `@bp_*` tags).
-        let mut combined = base.content_key();
-        for (state, overlay) in overlays {
-            combined.push('|');
-            combined.push_str(&state.0.to_string());
-            combined.push(':');
-            combined.push_str(&overlay.content_key());
-        }
-        for (bp, overlay) in breakpoint_overlays {
-            combined.push(';');
-            combined.push('@');
-            combined.push_str(bp.axis_name().unwrap_or("__bp_xs"));
-            combined.push(':');
-            combined.push_str(&overlay.content_key());
-        }
+        // overlay through `css::variant_class_key` — the SINGLE SOURCE
+        // shared with the web backend. Building the key here independently
+        // (as this used to) drifted from web's scheme (`|<bits>:` vs
+        // `;<tag>:`), so the SAME stateful style minted DIFFERENT classes
+        // on server vs client and hydration couldn't reuse the server's
+        // styling. Sharing the builder guarantees byte-identical classes.
+        let combined = css::variant_class_key(&base.content_key(), overlays, breakpoint_overlays);
         let class = css::hash_class_name(&combined);
         self.style_rules
             .entry(class.clone())
@@ -907,6 +907,43 @@ pub struct RenderedPage {
     pub head_css: String,
 }
 
+/// Font URLs from the `@font-face` rules in `head_css`, in order, deduped.
+/// `src:url("…")` only appears in `@font-face` (class rules use
+/// `background[-image]:url(…)`), so a scan for that marker reliably yields
+/// just the font files to preload.
+fn font_src_urls(head_css: &str) -> Vec<&str> {
+    const MARK: &str = "src:url(\"";
+    let mut urls: Vec<&str> = Vec::new();
+    let mut rest = head_css;
+    while let Some(i) = rest.find(MARK) {
+        rest = &rest[i + MARK.len()..];
+        match rest.find('"') {
+            Some(end) => {
+                let url = &rest[..end];
+                if !urls.contains(&url) {
+                    urls.push(url);
+                }
+                rest = &rest[end..];
+            }
+            None => break,
+        }
+    }
+    urls
+}
+
+/// MIME type for a font preload `<link type="…">`, by URL extension.
+/// `None` for unknown extensions (the preload still works without it).
+fn font_mime_type(url: &str) -> Option<&'static str> {
+    let ext = url.rsplit('.').next()?;
+    Some(match ext.to_ascii_lowercase().as_str() {
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        _ => return None,
+    })
+}
+
 fn push_meta_name(out: &mut String, name: &str, content: &str) {
     out.push_str("<meta name=\"");
     out.push_str(name);
@@ -947,6 +984,27 @@ pub fn render_document(page: &RenderedPage, bundle_module: Option<&str>) -> Stri
     doc.push_str(
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
     );
+    // Preload the fonts the page links, BEFORE the stylesheet that
+    // references them, so the browser fetches them at top priority right
+    // away. With `font-display:swap` this shrinks (ideally to zero on a
+    // warm/fast connection) the window where text shows in the fallback
+    // before the web font arrives — no "default font flash." Extracted
+    // from the `@font-face` rules in `head_css` (`src:url("…")` only
+    // appears there). `crossorigin` is mandatory: fonts are CORS-fetched
+    // even same-origin, and the preload must match or it's ignored +
+    // refetched (which is also why the bundle no longer re-injects its
+    // own `@font-face` on hydration — see `backend-web` typeface dedup).
+    for url in font_src_urls(&page.head_css) {
+        doc.push_str("<link rel=\"preload\" as=\"font\" crossorigin");
+        if let Some(ty) = font_mime_type(url) {
+            doc.push_str(" type=\"");
+            doc.push_str(ty);
+            doc.push('"');
+        }
+        doc.push_str(" href=\"");
+        escape_attr(url, &mut doc);
+        doc.push_str("\">");
+    }
     // Baseline so a navigator app-shell works: no body margin, and the
     // mount is a fixed-viewport-height flex column. The navigator's body
     // is a ScrollView, so content scrolls inside it (sidebar stays put)
@@ -1290,6 +1348,65 @@ mod tests {
         let doc = render_document(&page, None);
         assert!(doc.contains(r#"<div id="app" data-ssr-viewport="1280x800"><div>hi</div></div>"#));
         assert!(!doc.contains("<script"), "no bundle => no script, got: {doc}");
+    }
+
+    /// `font_src_urls` extracts ONLY `@font-face` `src:url(…)` — never a
+    /// class rule's `background-image:url(…)` — so we preload fonts and
+    /// nothing else.
+    #[test]
+    fn font_src_urls_extracts_only_font_face_srcs() {
+        let css = "@font-face{font-weight:400;src:url(\"/fonts/A.ttf\") format(\"truetype\");}\
+                   @font-face{font-weight:700;src:url(\"/fonts/B.ttf\");}\
+                   .c{background-image:url(\"/img/x.png\")}";
+        assert_eq!(font_src_urls(css), vec!["/fonts/A.ttf", "/fonts/B.ttf"]);
+    }
+
+    /// `render_document` preloads each linked font (with `crossorigin` +
+    /// type, before the stylesheet) so the web font is ready by first
+    /// paint — but does NOT preload non-font URLs (background images).
+    /// REGRESSION GUARD: the preload must carry `crossorigin` or it's
+    /// ignored and the font is fetched twice (the bug we hit).
+    #[test]
+    fn render_document_preloads_fonts_not_other_urls() {
+        let page = RenderedPage {
+            html: "<div>hi</div>".into(),
+            metadata: Default::default(),
+            head_css: "@font-face{font-family:\"Inter\";font-weight:400;font-display:swap;\
+                       src:url(\"/fonts/Inter-Regular.ttf\") format(\"truetype\");}\
+                       .x{background-image:url(\"/img/bg.png\")}"
+                .into(),
+        };
+        let doc = render_document(&page, Some("/pkg/app.js"));
+        assert!(
+            doc.contains(
+                r#"<link rel="preload" as="font" crossorigin type="font/ttf" href="/fonts/Inter-Regular.ttf">"#
+            ),
+            "font preload (with crossorigin) missing; got: {doc}"
+        );
+        assert_eq!(
+            doc.matches("rel=\"preload\"").count(),
+            1,
+            "exactly one preload — the font, not the background image"
+        );
+    }
+
+    /// REGRESSION GUARD: SSR must NEVER render the body of an
+    /// `Element::Lazy`. On native targets the chunk's loader resolves
+    /// synchronously on first poll (the chunk's `async fn` is just a
+    /// regular fn compiled into the binary) — so if the trait default
+    /// (`true`) wins through, the server emits the chunk's body. The
+    /// client then hydrates that body against its own client-side
+    /// placeholder, the tag-classes diverge, and the whole subtree
+    /// remounts (cratering things like the home page's wgpu Simulator).
+    /// The fix is this override returning `false`; this test pins it.
+    #[test]
+    fn renders_lazy_chunks_returns_false() {
+        let b = SsrBackend::new();
+        assert!(
+            !b.renders_lazy_chunks(),
+            "SSR must keep Element::Lazy at the placeholder (server can't paint \
+             a lazy body; the live client loads the chunk after hydrating)"
+        );
     }
 
     /// Theme tokens delivered via `install_tokens` are emitted as a

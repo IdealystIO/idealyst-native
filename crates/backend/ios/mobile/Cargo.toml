@@ -38,8 +38,8 @@ backend-apple-core = { workspace = true }
 # Shared iOS/tvOS helpers (style + render loop driver). Same crate
 # is consumed by `backend-ios-tv`.
 backend-ios-core = { workspace = true }
-# Only used when `runtime-server` is on. Pulls tungstenite + mdns-sd +
-# the worker-thread `RuntimeServerShell` from the shared native-shell crate
+# Only used when `runtime-server` is on. Pulls tungstenite + the
+# worker-thread `RuntimeServerShell` from the shared native-shell crate
 # (also consumed by Android, TV, desktop runtime-server hosts).
 runtime-server-shell-native = { workspace = true, optional = true }
 

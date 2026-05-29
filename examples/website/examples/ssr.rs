@@ -23,6 +23,7 @@ fn main() {
         ("quickstart", "/quickstart"),
         ("concepts", "/concepts"),
         ("why-rust", "/why-rust"),
+        ("demo", "/demo"),
         ("backends", "/backends"),
         ("targets", "/targets"),
     ];

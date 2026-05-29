@@ -38,10 +38,10 @@ pub struct Args {
     #[arg(long)]
     pub release: bool,
 
-    /// iOS / Android only: build the runtime-server-client variant
-    /// and have it discover a running dev-host over the local
-    /// network. Default is local-render (the app renders its own
-    /// tree). `--aas` accepted as a deprecated alias.
+    /// Build the runtime-server-client variant and connect to an
+    /// already-running dev-host. Requires `--runtime-server-port`
+    /// (the dev-host's bound port). Default is local-render (the app
+    /// renders its own tree). `--aas` accepted as a deprecated alias.
     #[arg(long, alias = "aas")]
     pub runtime_server: bool,
 
@@ -55,10 +55,11 @@ pub struct Args {
     #[arg(long)]
     pub password: Option<String>,
 
-    /// Android `--runtime-server` only: explicit dev-server port to
-    /// connect to. Required for emulator targets; physical devices
-    /// auto-discover over the local network. `--aas-port` accepted
-    /// as a deprecated alias.
+    /// `--runtime-server` only: the dev-host's bound port. The
+    /// wrapper is built with `IDEALYST_DEV_ENDPOINT=ws://127.0.0.1:<port>`
+    /// for spawned platforms (sim/emulator/macOS/terminal) or the
+    /// LAN-IP-baked equivalent for device builds. `--aas-port`
+    /// accepted as a deprecated alias.
     #[arg(long, alias = "aas-port")]
     pub runtime_server_port: Option<u16>,
 
@@ -76,6 +77,16 @@ pub struct Args {
     pub skin: SimPainter,
 }
 
+fn loopback_endpoint(args: &Args) -> anyhow::Result<String> {
+    let port = args.runtime_server_port.ok_or_else(|| {
+        anyhow::anyhow!(
+            "--runtime-server requires --runtime-server-port <PORT> in `idealyst run`. \
+             Start a dev-host first (`idealyst dev`) and pass its bound port here."
+        )
+    })?;
+    Ok(format!("ws://127.0.0.1:{port}"))
+}
+
 pub fn run(mut args: Args) -> anyhow::Result<()> {
     // Canonicalize the project dir so framework-source detection
     // can walk ancestors reliably. Without this, `.` (the default)
@@ -88,7 +99,9 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
     match args.platform {
         Platform::Ios => {
             let mode = if args.runtime_server {
-                run_ios::RunMode::RuntimeServer
+                run_ios::RunMode::RuntimeServer {
+                    endpoint: loopback_endpoint(&args)?,
+                }
             } else {
                 run_ios::RunMode::Local
             };
@@ -107,10 +120,8 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                 run_ios::RunMode::Local => {
                     eprintln!("[idealyst run ios] launched");
                 }
-                run_ios::RunMode::RuntimeServer => {
-                    eprintln!(
-                        "[idealyst run ios --aas] launched (discovering host via Bonjour)"
-                    );
+                run_ios::RunMode::RuntimeServer { endpoint } => {
+                    eprintln!("[idealyst run ios --runtime-server] launched (endpoint {endpoint})");
                 }
             }
             eprintln!("  app:       {}", artifact.app_bundle.display());
@@ -179,6 +190,15 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
             } else {
                 run_android::RunMode::Local
             };
+            // `idealyst run android --runtime-server` requires the
+            // dev-host's port explicitly. We don't pre-discover; the
+            // user runs `idealyst dev` separately or passes the port
+            // they noted from a prior dev session.
+            let port = if args.runtime_server {
+                Some(loopback_endpoint(&args).map(|_| args.runtime_server_port.unwrap())?)
+            } else {
+                None
+            };
             let source = crate::framework_source::resolve(&args.dir)?;
             let artifact = run_android::run(
                 &args.dir,
@@ -186,15 +206,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     release: args.release,
                     avd: None,
                     mode,
-                    // `idealyst run android --aas` doesn't pre-browse
-                    // Bonjour the way `idealyst dev --aas --android`
-                    // does. Without `--aas-port`, falls through to
-                    // the in-app Bonjour path (works for physical
-                    // devices but not the QEMU-NAT emulator). Pass
-                    // `--aas-port` to point the APK at an explicit
-                    // host (the same port the dev-server prints on
-                    // startup).
-                    runtime_server_port: args.runtime_server_port,
+                    runtime_server_port: port,
                     source,
                     user_features: Vec::new(),
                 },
@@ -206,7 +218,8 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                 }
                 run_android::RunMode::RuntimeServer => {
                     eprintln!(
-                        "[idealyst run android --aas] launched (discovering host via Bonjour)"
+                        "[idealyst run android --runtime-server] launched (port {})",
+                        port.unwrap(),
                     );
                 }
             }
@@ -230,6 +243,11 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
             } else {
                 build_sim::BuildMode::Local
             };
+            let endpoint = if args.runtime_server {
+                Some(loopback_endpoint(&args)?)
+            } else {
+                None
+            };
             let artifact = build_sim::build(
                 &args.dir,
                 build_sim::BuildOptions {
@@ -250,7 +268,11 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
             // Foreground the sim binary — exits when the user closes
             // the window. Inherit stdio so framework logs surface
             // alongside the CLI's.
-            let status = std::process::Command::new(&artifact.binary)
+            let mut cmd = std::process::Command::new(&artifact.binary);
+            if let Some(endpoint) = endpoint {
+                cmd.env("IDEALYST_DEV_ENDPOINT", endpoint);
+            }
+            let status = cmd
                 .status()
                 .with_context(|| format!("spawn sim binary {}", artifact.binary.display()))?;
             if !status.success() {
@@ -264,6 +286,13 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
             } else {
                 run_macos::RunMode::Local
             };
+            let mut env_vars: Vec<(String, String)> = Vec::new();
+            if args.runtime_server {
+                env_vars.push((
+                    "IDEALYST_DEV_ENDPOINT".to_string(),
+                    loopback_endpoint(&args)?,
+                ));
+            }
             let source = crate::framework_source::resolve(&args.dir)?;
             let artifact = run_macos::run(
                 &args.dir,
@@ -276,7 +305,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     // terminal still tears it down cleanly.
                     background: false,
                     user_features: Vec::new(),
-                    env_vars: Vec::new(),
+                    env_vars,
                 },
             )?;
             eprintln!();
@@ -290,6 +319,13 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
             } else {
                 run_terminal::RunMode::Local
             };
+            let mut env_vars: Vec<(String, String)> = Vec::new();
+            if args.runtime_server {
+                env_vars.push((
+                    "IDEALYST_DEV_ENDPOINT".to_string(),
+                    loopback_endpoint(&args)?,
+                ));
+            }
             let source = crate::framework_source::resolve(&args.dir)?;
             let artifact = run_terminal::run(
                 &args.dir,
@@ -298,7 +334,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     mode,
                     source,
                     user_features: Vec::new(),
-                    env_vars: Vec::new(),
+                    env_vars,
                 },
             )?;
             eprintln!();

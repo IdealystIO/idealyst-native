@@ -8,16 +8,10 @@ import android.content.Context;
 import android.view.ViewGroup;
 
 public class NativeBridge {
-    /// Stand up the runtime-server client and discover the dev-host via Bonjour.
-    /// Used when the device can see the host's mDNS broadcasts (most
-    /// physical devices on the same Wi-Fi as the dev machine).
-    public static native void attachRuntimeServer(Context context, ViewGroup root, String appId);
-
-    /// Direct-URL variant for the Android Studio emulator, whose
-    /// QEMU user-mode network doesn't forward mDNS multicast. The
-    /// CLI sets up `adb reverse` and bakes the resulting URL into
-    /// Info.plist-style manifest meta-data (`IdealystRuntimeServerUrl`);
-    /// MainActivity reads that value and calls this instead.
+    /// Stand up the runtime-server client against the dev-server URL the
+    /// CLI baked into the manifest's `IdealystRuntimeServerUrl` meta-data
+    /// entry. The Activity reads that value from the manifest and passes
+    /// it here. mDNS / Bonjour is no longer used.
     public static native void attachRuntimeServerUrl(Context context, ViewGroup root, String url);
 
     /// Drain the worker's pending messages and apply them through
