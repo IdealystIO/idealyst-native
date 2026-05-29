@@ -20,9 +20,7 @@ use crate::{DynamicPtrEntry, DynamicRule, DynamicSlot, PregenEntry, WebBackend};
 use runtime_core::StyleRules;
 // CSS conversion lives in the shared, platform-neutral `css` crate so
 // the web backend and the SSR backend emit byte-identical declarations.
-use css::{length_css, rules_to_css};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use css::{hash_class_name, rules_to_css};
 use wasm_bindgen::JsCast;
 
 // ---------------------------------------------------------------------------
@@ -82,10 +80,9 @@ impl WebBackend {
             // selector loses to any author class rule that
             // explicitly sets `box-sizing`, so opting out per
             // element is still possible.
-            let _ = sheet.insert_rule_with_index(
-                "*, *::before, *::after { box-sizing: border-box; }",
-                0,
-            );
+            // Shared with the SSR backend (which emits the same reset in
+            // `<head>`) so both first-paints have border-box semantics.
+            let _ = sheet.insert_rule_with_index(css::BOX_SIZING_RESET, 0);
 
             // Index 1 — `<button>` element reset.
             //
@@ -96,17 +93,7 @@ impl WebBackend {
             // through any class rule that doesn't explicitly zero
             // out `border`. Authors that want the border back just
             // set `border_width: 1.0` in their stylesheet.
-            let button_reset = ":where(button) { \
-                                all: unset; \
-                                box-sizing: border-box; \
-                                cursor: pointer; \
-                                font: inherit; \
-                                color: inherit; \
-                                display: inline-flex; \
-                                align-items: center; \
-                                justify-content: center; \
-                                }";
-            let _ = sheet.insert_rule_with_index(button_reset, 1);
+            let _ = sheet.insert_rule_with_index(css::BUTTON_RESET, 1);
         }
         self.style_element.as_ref().unwrap().clone()
     }
@@ -237,16 +224,10 @@ impl WebBackend {
         &mut self,
         tokens: &[runtime_core::TokenEntry],
     ) {
-        use runtime_core::TokenValue;
-        // Format helpers — one match per variant, kept inline so we
-        // never allocate a temp Vec for the value-to-string step.
-        fn token_value_css(v: &TokenValue) -> String {
-            match v {
-                TokenValue::Color(c) => c.0.clone(),
-                TokenValue::Length(l) => length_css(*l),
-                TokenValue::Number(n) => n.to_string(),
-            }
-        }
+        // Token value → CSS string via the shared `css` crate, so web's
+        // `:root` setProperty values and the SSR backend's `:root { … }`
+        // block resolve a token identically (single source of truth).
+        use css::token_value_css;
 
         if let Some(idx) = self.theme_root_rule_index {
             // Update path: reach into the existing :root rule and
@@ -277,19 +258,14 @@ impl WebBackend {
             self.theme_root_rule_index = None;
         }
 
-        // Insert path: emit a single `:root { ... }` rule. We bypass
-        // `insert_rule` (which prepends `.` for class selectors) and
-        // call the CSSOM directly, then track the index.
-        let mut rule = String::with_capacity(tokens.len() * 32 + 16);
-        rule.push_str(":root { ");
-        for entry in tokens {
-            rule.push_str("--");
-            rule.push_str(entry.name);
-            rule.push_str(": ");
-            rule.push_str(&token_value_css(&entry.value));
-            rule.push_str("; ");
+        // Insert path: emit a single `:root { ... }` rule via the shared
+        // `css` crate (same string the SSR backend ships). We bypass
+        // `insert_rule` (which prepends `.` for class selectors) and call
+        // the CSSOM directly, then track the index.
+        let rule = css::tokens_to_root_css(tokens);
+        if rule.is_empty() {
+            return; // no tokens → nothing to insert
         }
-        rule.push('}');
         let sheet = self.sheet();
         let end = sheet.css_rules().map(|r| r.length()).unwrap_or(0);
         let idx = sheet
@@ -790,31 +766,6 @@ impl WebBackend {
 // ---------------------------------------------------------------------------
 // CSS value converters — free functions, no backend state.
 // ---------------------------------------------------------------------------
-
-/// Derive a deterministic class name from a content key. Same content
-/// always produces the same name across sessions. 16 hex chars from
-/// std DefaultHasher.
-pub(crate) fn hash_class_name(content_key: &str) -> String {
-    let mut h = DefaultHasher::new();
-    content_key.hash(&mut h);
-    let n = h.finish();
-    // Manual hex encoding to skip `format!` / `Debug` machinery. 16
-    // hex chars = 8 bytes of hash.
-    let mut s = String::with_capacity(19);
-    s.push_str("ui-");
-    push_u64_hex(&mut s, n);
-    s
-}
-
-/// Writes the 16-char lowercase hex representation of `n` to `out`.
-fn push_u64_hex(out: &mut String, n: u64) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for shift in (0..16).rev() {
-        let nibble = ((n >> (shift * 4)) & 0xf) as usize;
-        out.push(HEX[nibble] as char);
-    }
-}
-
 
 /// Resolve a `runtime_core::Color` (a CSS-string wrapper) to a
 /// concrete sRGB `[r, g, b, a]` in `0..=1`, used to seed the per-node

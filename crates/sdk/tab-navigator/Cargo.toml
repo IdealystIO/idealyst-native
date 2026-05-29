@@ -16,6 +16,12 @@ license.workspace = true
 [dependencies]
 runtime-core = { workspace = true }
 
+# Only the SSR integration test needs backend-ssr (to register the
+# generic `chrome` handler on a concrete SsrBackend). The handler is
+# backend-neutral, so the library has no backend-ssr dep and no cfg.
+[dev-dependencies]
+backend-ssr = { workspace = true }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
 web-navigator-helpers = { workspace = true }

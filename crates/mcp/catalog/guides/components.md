@@ -6,7 +6,7 @@ tags = ["components", "core"]
 
 # Authoring Components
 
-`#[component]` turns a free function into a reusable composable. The macro handles three things at once: it rewrites the body for reactivity, generates a sibling `name!` invocation macro you can use inside `ui!`/`jsx!`, and registers a [[ComponentEntry]] in the MCP catalog so AI/tooling can discover it.
+`#[component]` turns a free function into a reusable composable. The macro handles three things at once: it rewrites the body for reactivity, generates the dispatch glue `ui!`/`jsx!` use (a `Name` tag alias plus a `BuildElement` impl on its props — no per-component `macro_rules!`), and registers a [[ComponentEntry]] in the MCP catalog so AI/tooling can discover it.
 
 ## A minimal component
 
@@ -31,7 +31,7 @@ ui! {
 }
 ```
 
-Dispatch is transform-free: the call site `Greeting` resolves to the verbatim `Greeting!` invocation macro — no case conversion. The function name, its invocation macro, and the `ui!`/`jsx!` call site are all the same PascalCase identifier ([[ui_naming_convention]]). `#[component]` suppresses the `non_snake_case` lint so PascalCase fns don't warn.
+Dispatch is transform-free: the call site `Greeting` resolves to the verbatim `Greeting` props-type alias `#[component]` emits — no case conversion. The function name, that tag-alias type, and the `ui!`/`jsx!` call site are all the same PascalCase identifier ([[ui_naming_convention]]). `#[component]` suppresses the `non_snake_case` lint so PascalCase fns don't warn.
 
 ## Props structs and `IdealystSchema`
 
@@ -62,7 +62,7 @@ The MCP catalog inlines the schema's per-field docs/constraints into the compone
 
 ### Prop coercion — never write `.into()` at the call site
 
-The invocation macro coerces every prop value into its field type via `.into()`. So you pass the bare value and the macro does the conversion:
+The DSL coerces every prop value into its field type via `.into()` (it builds the props struct literal for you). So you pass the bare value and dispatch does the conversion:
 
 ```rust
 ui! {

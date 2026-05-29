@@ -1,31 +1,37 @@
-//! Generates the per-component invocation `macro_rules!` that authors call
-//! at the call site, e.g. `counter!(label = "x", value = score)`.
+//! Generates the per-component dispatch glue that `ui! { Foo(...) }`
+//! targets — an `impl runtime_core::BuildElement for FooProps`.
 //!
-//! When `#[component]` declares no defaults, the generated macro is a
-//! trivial wrapper that constructs the props struct and calls the function:
+//! `ui!` lowers a tag `Foo` to a plain struct literal plus a UFCS call:
 //!
 //! ```ignore
-//! macro_rules! counter {
-//!     ($($name:ident = $value:expr),* $(,)?) => {
-//!         counter(&CounterProps { $($name: $value),* })
-//!     };
-//! }
+//! ::runtime_core::BuildElement::build(
+//!     FooProps { label: ("x").into(), ..<FooProps as BuildElement>::defaults() }
+//! )
 //! ```
 //!
-//! When defaults are declared (`#[component(default(step = 1))]`), the
-//! generated macro performs TT-munching: a chain of `@__step_i` arms,
-//! one per default, each forwarding to a `@__find_NAME` helper that
-//! walks the user-provided ident list. If the user provided the field,
-//! the default is skipped; otherwise it's filled in.
+//! so the only thing `#[component]` has to emit is the trait impl that
+//! ties `FooProps` to the component function. This replaces the old
+//! per-component `macro_rules!`: dispatch now resolves across crate
+//! boundaries by ordinary path rules (no `#[macro_export]` /
+//! `#[macro_use]` ordering), and the call site is a real struct literal,
+//! so rust-analyzer gives field completion / hover / go-to-def on props.
+//!
+//! - `build(self)` absorbs the `fn foo(props: &FooProps)` vs `fn
+//!   foo(props: FooProps)` split, so the macro never has to know which.
+//! - `defaults()` is only overridden when `#[component(default(field =
+//!   expr, …))]` declares defaults; otherwise the trait's provided impl
+//!   (`Self::default()`) is used.
+//! - A no-argument component gets a generated empty marker `FooProps {}`
+//!   so it dispatches through the same path as every other tag.
 
-use proc_macro2::{Span, TokenStream as TokenStream2};
+use proc_macro2::{TokenStream as TokenStream2};
 use quote::quote;
-use syn::{Ident, ItemFn};
+use syn::{Ident, ItemFn, Visibility};
 
-use crate::component_attr::{ComponentAttr, DefaultEntry};
+use crate::component_attr::ComponentAttr;
 
-/// Describes the props parameter shape so the invocation macro can pick
-/// between `func(&Type { ... })` and `func(Type { ... })`.
+/// Describes the props parameter shape so the generated `build` can pick
+/// between `func(&self)` and `func(self)`.
 struct PropsType {
     /// Tokens naming the type (e.g. `CardProps`).
     path: TokenStream2,
@@ -35,198 +41,101 @@ struct PropsType {
     by_ref: bool,
 }
 
-/// Generates a `macro_rules!` invocation macro for a component, or an
-/// empty token stream if the function signature doesn't fit the expected
-/// shape (one parameter typed as `&SomeProps` or `SomeProps`).
-pub(crate) fn generate_invocation_macro(item_fn: &ItemFn, attr: &ComponentAttr) -> TokenStream2 {
+/// Generates `impl BuildElement for <Props>` for a component, or an empty
+/// token stream if the signature doesn't fit the expected shape (zero
+/// params, or one param typed as `&SomeProps` / `SomeProps`).
+pub(crate) fn generate_build_impl(item_fn: &ItemFn, attr: &ComponentAttr) -> TokenStream2 {
     let fn_name = &item_fn.sig.ident;
+    let vis = &item_fn.vis;
 
-    // The invocation macro is named after the fn ident DIRECTLY — no
-    // case transform. `ui!` resolves a `Name(...)` call site by emitting
-    // `Name!(...)` verbatim, so the macro name must equal the fn name.
-    // Components are therefore PascalCase fns (`fn Typography`) whose
-    // macro is `Typography!`; the macro BODY calls the real `fn_name`.
-    let macro_name = fn_name;
+    // Propagate the component's own doc comment onto the generated tag
+    // alias (and the no-arg marker struct), so hovering a `ui!` tag shows
+    // the component's docs instead of a bare `type Foo = FooProps`. The
+    // props themselves are real struct fields, so they hover individually
+    // at the call site, and go-to-def on the tag lands on the props type.
+    let docs: Vec<&syn::Attribute> = item_fn
+        .attrs
+        .iter()
+        .filter(|a| a.path().is_ident("doc"))
+        .collect();
 
-    // No props: emit a thin invocation macro that just calls the fn.
-    // Lets `ui!` write `Summary()` (which lowers to `summary!()`) for
-    // components that take no arguments.
+    // No props: synthesize an empty marker struct named after the tag so
+    // `ui! { Foo() }` dispatches through the same `BuildElement::build`
+    // path. Lowercase fns can't be `ui!` tags (the parser only treats
+    // uppercase-first idents as components), but generating the marker
+    // regardless is harmless and keeps the rule uniform.
     if item_fn.sig.inputs.is_empty() {
-        return emit_no_args_macro(&macro_name, fn_name);
+        return emit_no_args_impl(vis, fn_name, &docs);
     }
 
     let Some(props_type) = props_type_from_sig(&item_fn.sig) else {
         return TokenStream2::new();
     };
-    let defaults = &attr.defaults;
     let path = &props_type.path;
     let amp = if props_type.by_ref { quote!(&) } else { quote!() };
 
-    if defaults.is_empty() {
-        return emit_trivial_macro(&macro_name, fn_name, &amp, path);
-    }
-    emit_tt_munching_macro(&macro_name, fn_name, &amp, path, defaults)
-}
+    // Only override `defaults()` when the author declared defaults; the
+    // trait's provided impl (`Self::default()`) covers the common case.
+    let defaults_method = if attr.defaults.is_empty() {
+        quote!()
+    } else {
+        let fills = attr.defaults.iter().map(|d| {
+            let name = &d.name;
+            let expr = &d.expr;
+            quote! { #name: (#expr).into(), }
+        });
+        quote! {
+            fn defaults() -> Self {
+                Self {
+                    #(#fills)*
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+    };
 
-/// Zero-prop invocation macro: `name!()` (or `name!(children = ...)`
-/// if the component accepts children, though no-arg components
-/// can't, by definition — we accept the form for parser uniformity).
-fn emit_no_args_macro(macro_name: &Ident, fn_name: &Ident) -> TokenStream2 {
     quote! {
-        #[allow(unused_macros)]
-        macro_rules! #macro_name {
-            () => { #fn_name() };
-            // Accept (and ignore) a `children = …` clause so the
-            // ui! emitter's user-component path doesn't error on
-            // child-bearing call sites — though a no-prop component
-            // wouldn't have any use for them.
-            (children = $children:expr $(,)?) => { #fn_name() };
+        // Tag alias: `ui! { Foo(...) }` uses the tag as the type name, so
+        // this bridges `Foo` to its real props struct. The component fn
+        // (`fn Foo`, value namespace) and this alias (type namespace)
+        // coexist; existing `use …::Foo` imports resolve here. The
+        // component's doc comment rides along so hovering the tag is useful.
+        #(#docs)*
+        #[allow(non_camel_case_types)]
+        #vis type #fn_name = #path;
+
+        #[automatically_derived]
+        impl ::runtime_core::BuildElement for #path {
+            fn build(self) -> ::runtime_core::Element {
+                #fn_name(#amp self)
+            }
+            #defaults_method
         }
     }
 }
 
-/// Fast path: no defaults, straight pass-through macro.
-fn emit_trivial_macro(
-    macro_name: &Ident,
+/// No-arg component: emit an empty marker struct named after the tag
+/// (matching the component's visibility) plus its `BuildElement` impl. The
+/// struct is braced-empty so `ui!`'s `Foo { ..defaults() }` struct-update
+/// syntax is valid, and braced structs have no value-namespace
+/// constructor, so the marker struct and the `fn Foo` coexist.
+fn emit_no_args_impl(
+    vis: &Visibility,
     fn_name: &Ident,
-    amp: &TokenStream2,
-    path: &TokenStream2,
+    docs: &[&syn::Attribute],
 ) -> TokenStream2 {
     quote! {
-        #[allow(unused_macros)]
-        macro_rules! #macro_name {
-            ($($name:ident = $value:expr),* $(,)?) => {
-                #fn_name(#amp #path {
-                    $($name: ($value).into()),*
-                })
-            };
-        }
-    }
-}
+        #(#docs)*
+        #[doc(hidden)]
+        #[derive(::core::default::Default)]
+        #[allow(non_camel_case_types)]
+        #vis struct #fn_name {}
 
-/// Defaults path: emit a chained-step macro that walks each declared
-/// default and decides whether to insert it.
-///
-/// Structure: for each default `NAME = EXPR` at index `i`:
-///   `@__step_i [user_idents …] [user_fields …] [fill …]`
-///       → forwards to `@__find_NAME [remaining = user_idents …]`
-///   `@__find_NAME` has 3 arms: head matches NAME (skip), head doesn't
-///   match (chop and recurse), remaining empty (insert default into fill).
-/// The chain ends at `@__done`, which emits the struct literal.
-fn emit_tt_munching_macro(
-    macro_name: &Ident,
-    fn_name: &Ident,
-    amp: &TokenStream2,
-    path: &TokenStream2,
-    defaults: &[DefaultEntry],
-) -> TokenStream2 {
-    let n = defaults.len();
-    let mut helper_arms: Vec<TokenStream2> = Vec::with_capacity(n * 4);
-
-    for (i, d) in defaults.iter().enumerate() {
-        let name = &d.name;
-        let expr = &d.expr;
-        let find_label = Ident::new(&format!("__find_{}", name), Span::call_site());
-        let this_step = Ident::new(&format!("__step_{}", i), Span::call_site());
-        let next_step = if i + 1 < n {
-            Ident::new(&format!("__step_{}", i + 1), Span::call_site())
-        } else {
-            Ident::new("__done", Span::call_site())
-        };
-
-        // Step entry: kick off the search by forwarding to @__find_NAME.
-        helper_arms.push(quote! {
-            (@#this_step
-                user_idents   [ $($u:ident)* ]
-                user_fields   [ $($uf:tt)* ]
-                fill          [ $($f:tt)* ]
-            ) => {
-                #macro_name!(@#find_label
-                    remaining     [ $($u)* ]
-                    user_idents   [ $($u)* ]
-                    user_fields   [ $($uf)* ]
-                    fill          [ $($f)* ]
-                )
-            };
-        });
-
-        // Found: head of remaining is literally NAME. Skip the default.
-        helper_arms.push(quote! {
-            (@#find_label
-                remaining     [ #name $($_rest:ident)* ]
-                user_idents   [ $($u:ident)* ]
-                user_fields   [ $($uf:tt)* ]
-                fill          [ $($f:tt)* ]
-            ) => {
-                #macro_name!(@#next_step
-                    user_idents   [ $($u)* ]
-                    user_fields   [ $($uf)* ]
-                    fill          [ $($f)* ]
-                )
-            };
-        });
-
-        // Not the head: chop one off and keep searching.
-        helper_arms.push(quote! {
-            (@#find_label
-                remaining     [ $_other:ident $($rest:ident)* ]
-                user_idents   [ $($u:ident)* ]
-                user_fields   [ $($uf:tt)* ]
-                fill          [ $($f:tt)* ]
-            ) => {
-                #macro_name!(@#find_label
-                    remaining     [ $($rest)* ]
-                    user_idents   [ $($u)* ]
-                    user_fields   [ $($uf)* ]
-                    fill          [ $($f)* ]
-                )
-            };
-        });
-
-        // Exhausted: user didn't provide it. Fill the default into fill.
-        helper_arms.push(quote! {
-            (@#find_label
-                remaining     [ ]
-                user_idents   [ $($u:ident)* ]
-                user_fields   [ $($uf:tt)* ]
-                fill          [ $($f:tt)* ]
-            ) => {
-                #macro_name!(@#next_step
-                    user_idents   [ $($u)* ]
-                    user_fields   [ $($uf)* ]
-                    fill          [ $($f)* #name: (#expr).into(), ]
-                )
-            };
-        });
-    }
-
-    let first_step = Ident::new("__step_0", Span::call_site());
-
-    quote! {
-        #[allow(unused_macros)]
-        macro_rules! #macro_name {
-            // Public entry.
-            ($($name:ident = $value:expr),* $(,)?) => {
-                #macro_name!(@#first_step
-                    user_idents   [ $($name)* ]
-                    user_fields   [ $($name: ($value).into(),)* ]
-                    fill          [ ]
-                )
-            };
-
-            #(#helper_arms)*
-
-            // Terminal: emit the struct literal by calling the real fn.
-            (@__done
-                user_idents   [ $($_u:ident)* ]
-                user_fields   [ $($uf:tt)* ]
-                fill          [ $($f:tt)* ]
-            ) => {
-                #fn_name(#amp #path {
-                    $($uf)*
-                    $($f)*
-                })
-            };
+        #[automatically_derived]
+        impl ::runtime_core::BuildElement for #fn_name {
+            fn build(self) -> ::runtime_core::Element {
+                #fn_name()
+            }
         }
     }
 }

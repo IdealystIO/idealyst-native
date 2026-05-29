@@ -42,7 +42,7 @@ pub(crate) fn create_reactive_anchor(b: &mut WebBackend) -> Node {
         .doc
         .create_element("div")
         .expect("create_element failed");
-    let _ = el.set_attribute("style", "display: contents");
+    let _ = el.set_attribute("style", css::REACTIVE_ANCHOR_STYLE);
     el.unchecked_into::<Node>()
 }
 

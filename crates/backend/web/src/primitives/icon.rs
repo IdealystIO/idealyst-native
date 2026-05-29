@@ -36,7 +36,7 @@ pub(crate) fn create(b: &mut WebBackend, data: &IconData, color: Option<&Color>)
     let _ = svg.set_attribute("fill", "none");
     // Prevent the SVG from capturing pointer events on transparent
     // regions — pass through to parent pressable/button.
-    let _ = svg.set_attribute("style", "display:inline-block;vertical-align:middle;");
+    let _ = svg.set_attribute("style", css::ICON_INLINE_STYLE);
 
     let fill_rule_str = match data.fill_rule {
         FillRule::NonZero => "nonzero",

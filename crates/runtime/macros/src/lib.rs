@@ -160,7 +160,11 @@ pub fn text_fmt(input: TokenStream) -> TokenStream {
 
 /// `#[component]` — annotates a component function. Rewrites its body for
 /// reactivity (cloning parameter-rooted paths into reactive closures) and
-/// emits a sibling `name!` invocation macro.
+/// emits the dispatch glue `ui!`/`jsx!` target: a `pub type Name =
+/// NameProps` tag alias plus an `impl runtime_core::BuildElement for
+/// NameProps` (a no-arg component gets an empty marker struct instead).
+/// This replaced the old per-component `macro_rules!` — see
+/// [`invocation_macro`].
 ///
 /// Optional attribute arguments:
 /// - `default(field = expr, …)` — declare per-field defaults the
@@ -198,7 +202,7 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     #[cfg(feature = "debug-stats")]
     wrap_component_body_for_debug(&mut item_fn);
 
-    let invocation = invocation_macro::generate_invocation_macro(&item_fn, &attr);
+    let invocation = invocation_macro::generate_build_impl(&item_fn, &attr);
 
     // When the `mcp` feature is on, emit an inventory submission so the
     // component is discoverable through `mcp-catalog`'s catalog. The

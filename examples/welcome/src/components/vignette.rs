@@ -25,6 +25,7 @@ pub const VIGNETTE_CORNER_BRIGHT: (f32, f32, f32, f32) = (1.0, 0.85, 0.50, 0.06)
 /// = glow hugs the perimeter more tightly.
 const VIGNETTE_BAND_PCT: f32 = 28.0;
 
+#[derive(Default)]
 pub struct VignetteProps {
     pub refs: WelcomeRefs,
 }

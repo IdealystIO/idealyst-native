@@ -17,6 +17,7 @@ pub const SUBTITLE_ENTER_Y: f32 = 10.0;
 pub const SUBTITLE_SIZE_PX: f32 = 18.0;
 pub const COLOR_SUBTITLE_LIGHT: &str = "#a89a7d";
 
+#[derive(Default)]
 pub struct SubtitleProps {
     pub refs: WelcomeRefs,
 }

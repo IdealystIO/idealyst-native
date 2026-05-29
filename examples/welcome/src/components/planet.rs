@@ -69,6 +69,7 @@ pub const PLANET_SCALE_FRONT: f32 = 1.55;
 /// lower-half arc at t=0 would pop on at non-zero alpha.
 pub const PLANET_FADE_IN_MS: f64 = 1500.0;
 
+#[derive(Default)]
 pub struct PlanetProps {
     pub idx: usize,
     pub refs: WelcomeRefs,

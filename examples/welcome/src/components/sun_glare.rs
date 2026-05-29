@@ -41,6 +41,7 @@ pub const SUN_CORE_BRIGHT: (f32, f32, f32, f32) = (1.0, 0.99, 0.90, 1.00);
 pub const SUN_CORONA_DIM: (f32, f32, f32, f32) = (1.0, 0.78, 0.36, 0.70);
 pub const SUN_CORONA_BRIGHT: (f32, f32, f32, f32) = (1.0, 0.85, 0.50, 0.95);
 
+#[derive(Default)]
 pub struct SunGlareProps {
     pub refs: WelcomeRefs,
 }

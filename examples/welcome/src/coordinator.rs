@@ -45,7 +45,7 @@ use crate::constants::{
 /// cascade from its wrapper's transform — the color AV writes
 /// through a `TextHandle` of its own. `Copy` so components can pass
 /// it through props by value without lifetime threading.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct WelcomeRefs {
     pub welcome: Ref<ViewHandle>,
     pub welcome_text: Ref<TextHandle>,

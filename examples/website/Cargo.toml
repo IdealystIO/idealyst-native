@@ -40,6 +40,12 @@ android-sim = { workspace = true }
 # and keep its background in sync with the active theme. The
 # framework owns `#app` and below; everything outside that subtree
 # is the host page's responsibility.
+[dev-dependencies]
+# SSR demos: examples/ssr.rs writes each route to a file; examples/serve.rs
+# runs the HTTP server (needs the `serve` feature). The drawer chrome
+# handler is registered via drawer_navigator::chrome::register.
+backend-ssr = { workspace = true, features = ["serve"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # `async-driver` brings in `install_async_executor` + `install_render_loop`
 # which the embedded `Simulator` component depends on \u{2014} `host_web::mount`

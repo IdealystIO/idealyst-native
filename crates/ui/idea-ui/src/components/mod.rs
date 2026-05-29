@@ -17,8 +17,9 @@ use runtime_core::{text, Element, IntoElement, IntoStyleSource, Reactive};
 /// Shared by the components with an optional text prop (Switch/Field
 /// `label`, Alert `body`). Coercion is uniform: a call-site
 /// `label = Some("x".to_string())` or `label = None` lands here via the
-/// invocation macro's `.into()` (blanket `From<Option<String>>`), and a
-/// `Signal<Option<String>>` / `rx!(Some(...))` arrives `Dynamic`.
+/// `ui!`/`jsx!` dispatch's per-field `.into()` (blanket
+/// `From<Option<String>>`), and a `Signal<Option<String>>` /
+/// `rx!(Some(...))` arrives `Dynamic`.
 pub(crate) fn optional_reactive_text(
     content: Reactive<Option<String>>,
     style: impl IntoStyleSource,

@@ -1,8 +1,9 @@
 //! `jsx!` proc-macro — a JSX-flavored variant of `ui!`.
 //!
 //! Designed to feel familiar to React developers. Same emission backend as
-//! `ui!` (per-component `name!` macros, primitive free functions, ChildList
-//! passthrough), but with angle-bracket syntax and a couple of JSX-isms.
+//! `ui!` (`BuildElement` struct-literal dispatch for components, primitive
+//! free functions, ChildList passthrough), but with angle-bracket syntax
+//! and a couple of JSX-isms.
 //!
 //! Grammar (informal):
 //!
@@ -36,7 +37,7 @@
 //!
 //! The emitter is shared with `ui!` wherever possible — primitive
 //! dispatch (`Text`/`Button`/`View`/`When`) and user-component dispatch
-//! (`name!(...)`) both go through the existing logic.
+//! (`BuildElement::build(Foo { … })`) both go through the existing logic.
 
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{quote, ToTokens};
@@ -450,10 +451,10 @@ fn emit_fragment_as_vec(children: &[JsxNode]) -> TokenStream2 {
     }
 }
 
-/// Returns the tokens for a prop value verbatim (no `.into()`). Used by
-/// primitives (Text content / Button label) AND user components — the
-/// invocation macro applies the uniform `.into()` coercion for the
-/// latter, so emitting a literal `.into()` here would double-convert.
+/// Returns the tokens for a prop value verbatim (no `.into()`). The
+/// caller adds coercion where needed — `emit_user` wraps each field as
+/// `(value).into()` in the props struct literal; primitives coerce in
+/// their own emitters.
 fn emit_attr_value_raw(value: &PropValue) -> TokenStream2 {
     match value {
         PropValue::Str(s) => quote! { #s },
@@ -473,8 +474,8 @@ fn emit_element(
     let is_primitive = matches!(name_str.as_str(), "Text" | "Button" | "View" | "When");
 
     // Same trick as `ui!`: pull `style` out of the prop list for primitives
-    // and emit `.with_style(...)`. User components pass `style = ...` to
-    // their generated invocation macro like any other prop.
+    // and emit `.with_style(...)`. User components pass `style = ...` as an
+    // ordinary field in their props struct literal.
     let (style_value, other_props): (Option<&PropValue>, Vec<&Prop>) = if is_primitive {
         let mut style = None;
         let mut rest = Vec::with_capacity(props.len());
@@ -586,33 +587,39 @@ fn emit_when(props: &[&Prop], _children: Option<&[JsxNode]>) -> TokenStream2 {
 }
 
 fn emit_user(name: &Ident, props: &[Prop], children: Option<&[JsxNode]>) -> TokenStream2 {
-    // Dispatch to the component's real `Name!` macro by its PascalCase
-    // name directly — no `pascal_to_snake` (parity with `ui!`).
-    let macro_name = name;
-    // Pass values verbatim — the invocation macro applies the uniform
-    // `.into()` coercion (parity with `ui!`). A literal `.into()` here
-    // would double-convert.
-    let prop_assignments = props.iter().map(|p| {
+    // Tag `Foo` dispatches via the `BuildElement` trait — a plain struct
+    // literal plus a UFCS `build` call, no per-component macro (parity
+    // with `ui!`; see `ui::emit_user` for the rationale). The tag is used
+    // as the type name (a `pub type Foo = FooProps` alias bridges to the
+    // real props), so `use …::Foo` imports keep working unchanged.
+    let props_ty = name;
+
+    let field_assignments = props.iter().map(|p| {
         let n = &p.name;
         let v = emit_attr_value_raw(&p.value);
-        quote! { #n = #v }
+        quote! { #n: (#v).into(), }
     });
 
-    if let Some(kids) = children {
+    let children_field = children.map(|kids| {
         let parts = kids.iter().map(emit_node);
         quote! {
-            #macro_name!(
-                #(#prop_assignments,)*
-                children = {
-                    let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                        = ::std::vec::Vec::new();
-                    #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
-                    __c
-                }
-            )
+            children: {
+                let mut __c: ::std::vec::Vec<::runtime_core::Element>
+                    = ::std::vec::Vec::new();
+                #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
+                __c
+            },
         }
-    } else {
-        quote! { #macro_name!( #(#prop_assignments),* ) }
+    });
+
+    quote! {
+        ::runtime_core::BuildElement::build(
+            #props_ty {
+                #(#field_assignments)*
+                #children_field
+                ..<#props_ty as ::runtime_core::BuildElement>::defaults()
+            }
+        )
     }
 }
 
@@ -764,13 +771,12 @@ mod tests {
     #[test]
     fn user_component_self_closing() {
         let out = parse_and_emit(quote! { <Counter label="x" value={score} /> });
-        assert!(out.contains("Counter !"));
-        // Values pass VERBATIM — the invocation macro applies the
-        // uniform `.into()` coercion, so jsx! must not add its own.
-        assert!(out.contains("\"x\""));
-        assert!(!out.contains("\"x\" . into ()"));
-        // Braced expr passes through verbatim too.
-        assert!(!out.contains("score . into"));
+        // Struct-literal + BuildElement::build dispatch (parity with ui!).
+        assert!(out.contains("Counter {"), "got: {out}");
+        assert!(out.contains("BuildElement :: build"), "got: {out}");
+        // Each field is coerced via `.into()` (literal and braced expr).
+        assert!(out.contains("(\"x\") . into ()"), "got: {out}");
+        assert!(out.contains("(score) . into ()"), "got: {out}");
     }
 
     #[test]
@@ -780,9 +786,9 @@ mod tests {
                 <Counter value={s} />
             </Card>
         });
-        assert!(out.contains("Card !"));
-        assert!(out.contains("children ="));
-        assert!(out.contains("Counter !"));
+        assert!(out.contains("Card {"), "got: {out}");
+        assert!(out.contains("children :"), "got: {out}");
+        assert!(out.contains("Counter {"), "got: {out}");
     }
 
     #[test]
@@ -799,8 +805,8 @@ mod tests {
         let out = parse_and_emit(quote! {
             <Counter value={s} ref={r} />
         });
-        assert!(out.contains("Counter !"));
-        assert!(out.contains(". bind (r)"));
+        assert!(out.contains("Counter {"), "got: {out}");
+        assert!(out.contains(". bind (r)"), "got: {out}");
     }
 
     #[test]
@@ -993,8 +999,9 @@ mod tests {
                 </>
             </Card>
         });
-        assert!(out.contains("Card !"));
-        let counter_count = out.matches("Counter !").count();
-        assert_eq!(counter_count, 2);
+        assert!(out.contains("Card {"), "got: {out}");
+        assert!(out.contains("(s) . into ()"), "got: {out}");
+        assert!(out.contains("(t) . into ()"), "got: {out}");
+        assert_eq!(out.matches("Counter {").count(), 2, "got: {out}");
     }
 }

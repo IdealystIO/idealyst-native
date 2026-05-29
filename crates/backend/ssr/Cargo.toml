@@ -4,9 +4,18 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# `serve` pulls in a tiny blocking HTTP server (`backend_ssr::serve`)
+# that renders each route per request. Off by default so the library
+# stays a lean, dependency-light renderer.
+serve = ["dep:tiny_http"]
+
 [dependencies]
 runtime-core = { workspace = true }
 css = { workspace = true }
+# Only with the `serve` feature. Same minimal HTTP lib the static dev
+# server (`dev-http`) uses.
+tiny_http = { version = "0.12", optional = true }
 # NOTE: backend-ssr stays SDK-free. Navigator SDKs depend on backend-ssr
 # (for their SSR handlers), so a dev-dep back on a nav SDK would create a
 # crate cycle + duplicate `backend-ssr`. Navigator render-at-path + chrome

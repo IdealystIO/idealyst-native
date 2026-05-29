@@ -34,3 +34,5 @@ mod scroll_view_on_scroll;
 mod ui_for_flattening;
 #[path = "walker/ui_iteration_and_branches.rs"]
 mod ui_iteration_and_branches;
+#[path = "walker/component_dispatch.rs"]
+mod component_dispatch;

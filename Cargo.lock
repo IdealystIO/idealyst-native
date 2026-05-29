@@ -594,6 +594,7 @@ version = "0.0.1"
 dependencies = [
  "css",
  "runtime-core",
+ "tiny_http",
 ]
 
 [[package]]
@@ -1523,6 +1524,7 @@ dependencies = [
  "backend-ssr",
  "backend-terminal",
  "backend-web",
+ "css",
  "ios-navigator-helpers",
  "jni 0.21.1",
  "runtime-core",
@@ -5848,6 +5850,7 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-macos",
+ "backend-ssr",
  "backend-web",
  "ios-navigator-helpers",
  "jni 0.21.1",
@@ -6937,6 +6940,7 @@ name = "web-navigator-helpers"
 version = "0.0.1"
 dependencies = [
  "backend-web",
+ "css",
  "runtime-core",
  "wasm-bindgen",
  "web-sys",
@@ -6979,6 +6983,7 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-macos",
+ "backend-ssr",
  "backend-terminal",
  "backend-web",
  "drawer-navigator",

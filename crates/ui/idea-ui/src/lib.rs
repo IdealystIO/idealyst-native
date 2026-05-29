@@ -77,8 +77,12 @@ mod theme_runtime;
 // install_idea_theme, IntentTag` keep compiling.
 pub use idea_theme::theme::{
     dark_theme, idea_color, idea_header, install_idea_theme, light_theme, set_idea_theme, Colors,
-    IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing, Typography,
+    IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing,
 };
+// NB: `idea_theme::theme::Typography` (the typography *theme* struct) is
+// intentionally NOT re-exported at this crate root — the root `Typography`
+// name is the component tag alias (below). Reach the theme struct via
+// `idea_theme::theme::Typography` if you need it for theme construction.
 pub use idea_theme::{
     active_theme, install_theme, install_themes, set_theme, ThemeTokens, TokenEntry, TokenValue,
     Tokenized,
@@ -113,6 +117,14 @@ pub use components::switch::{switch, SwitchProps};
 pub use components::tabs::{tabs, Tab, TabsProps};
 pub use components::tag::{tag, TagProps};
 pub use components::typography::{typography, TypographyProps};
+
+// Component tag aliases (`Typography`, `Btn`, `Card`, …). `ui! { Foo(...) }`
+// uses the tag as the type name (dispatch is `BuildElement::build(Foo { … })`),
+// so each tag must name a type. `invocations.rs` defines them as
+// `pub use FooProps as Foo` re-exports next to each component's
+// `BuildElement` impl; this surfaces them all at the crate root, so
+// existing `use idea_ui::{Typography, Card, …}` imports keep working.
+pub use invocations::*;
 
 // The trait surface + built-in modifier ZSTs come from idea-theme.
 // Re-exported at the crate root so apps can write

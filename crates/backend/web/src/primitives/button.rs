@@ -29,7 +29,7 @@ pub(crate) fn create(
     // If icons are present, build structured content; otherwise plain text.
     if leading_icon.is_some() || trailing_icon.is_some() {
         // Use inline-flex layout for icon + text alignment.
-        let _ = button.set_attribute("style", "display:inline-flex;align-items:center;gap:0.4em;");
+        let _ = button.set_attribute("style", css::BUTTON_CONTENT_STYLE);
         if let Some(icon_data) = leading_icon {
             let svg_node = super::icon::create(b, icon_data, None);
             let _ = button.append_child(&svg_node);

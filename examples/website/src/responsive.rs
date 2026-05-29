@@ -126,8 +126,14 @@ thread_local! {
 /// the collapse breakpoint.
 pub fn sidebar_collapsed() -> Signal<bool> {
     COLLAPSED_MEMO.with(|cell| {
+        // Root-anchor this thread-lifetime cached memo so it isn't owned
+        // by whatever transient scope first touches it (e.g. an SSR
+        // deferred chrome build) — otherwise the cached signal id dangles
+        // when that scope drops and its slot recycles.
         *cell.get_or_init(|| {
-            memo(|| sidebar_collapsed_at(runtime_core::viewport_size().get().width))
+            runtime_core::unscope(|| {
+                memo(|| sidebar_collapsed_at(runtime_core::viewport_size().get().width))
+            })
         })
     })
 }

@@ -951,6 +951,21 @@ impl<T> Clone for Signal<T> {
     fn clone(&self) -> Self { *self }
 }
 
+impl<T> Default for Signal<T> {
+    /// A *detached* signal: a sentinel id that points to no arena slot, so
+    /// constructing it allocates nothing. This exists so a component whose
+    /// props include a required `Signal` can still derive `Default` and be
+    /// dispatched by `ui!` (which builds props via `..Default::default()`,
+    /// evaluating that base on every render — hence it must be allocation
+    /// free). The real signal is always supplied as a prop and overwrites
+    /// this before use; if a required `Signal` prop is *omitted*, reading
+    /// the detached signal panics with the standard "signal used after its
+    /// scope was dropped" message rather than silently misbehaving.
+    fn default() -> Self {
+        Self { id: SignalId(u32::MAX), _phantom: PhantomData }
+    }
+}
+
 impl<T> Signal<T> {
     /// Stable identifier for this signal's arena slot. Used by the
     /// `bind!` macro and the Roku backend to wire reactive bindings:
@@ -1624,6 +1639,18 @@ pub struct Ref<H> {
 impl<H> Copy for Ref<H> {}
 impl<H> Clone for Ref<H> {
     fn clone(&self) -> Self { *self }
+}
+
+impl<H> Default for Ref<H> {
+    /// A *detached* ref: a sentinel id that aliases no arena slot, so it
+    /// allocates nothing (unlike [`Ref::new`]). This lets a component with
+    /// a required `Ref` prop derive `Default` for `ui!` dispatch (whose
+    /// `..Default::default()` base is evaluated every render). `fill`/`clear`
+    /// are no-ops on it; the real ref supplied as a prop overwrites it
+    /// before mount, which is the normal path.
+    fn default() -> Self {
+        Self { id: RefId(u32::MAX), _phantom: PhantomData }
+    }
 }
 
 impl<H: 'static> Ref<H> {

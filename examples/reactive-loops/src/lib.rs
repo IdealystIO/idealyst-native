@@ -56,7 +56,7 @@ const LEGEND: &[&str] = &["This", "is", "a", "flat", "list", "of", "siblings"];
 /// that's what makes it survive a full-list rebuild: `Signal` is a
 /// `Copy` handle, so cloning a `Row` out of `items.get()` copies the
 /// HANDLE (same underlying signal), not a fresh signal.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct Row {
     id: u32,
     label: String,
@@ -64,8 +64,9 @@ struct Row {
 }
 
 // ---------------------------------------------------------------------------
-// Leaf components (defined first so their invocation macros are in scope
-// for the composite components below).
+// Leaf components. Their props derive `Default` so `ui!` can dispatch them
+// (props are built via `..Default::default()`); required handle props like
+// `Signal`/`Ref` are supplied at each call site and overwrite the default.
 // ---------------------------------------------------------------------------
 
 #[component]
@@ -81,6 +82,7 @@ fn Header() -> Element {
     }
 }
 
+#[derive(Default)]
 struct ItemRowProps {
     row: Row,
     items: Signal<Vec<Row>>,
@@ -114,6 +116,7 @@ fn ItemRow(props: &ItemRowProps) -> Element {
     }
 }
 
+#[derive(Default)]
 struct GridCellProps {
     index: usize,
 }
@@ -145,6 +148,7 @@ fn Legend() -> Element {
 // Composite sections (use the leaf components above).
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
 struct DynamicListProps {
     items: Signal<Vec<Row>>,
     next_id: Signal<u32>,
@@ -195,6 +199,7 @@ fn DynamicList(props: &DynamicListProps) -> Element {
     }
 }
 
+#[derive(Default)]
 struct CountGridProps {
     /// The cell count — a `Reactive<usize>`, not a stored signal. The
     /// caller derives it from the list (`rx!(items.get().len())`), so
@@ -244,6 +249,7 @@ fn CountGrid(props: &CountGridProps) -> Element {
 // label itself is the key.
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
 struct EphemeralRowProps {
     label: String,
     /// The backing list, so the row can remove ITSELF (by label) — used
@@ -273,6 +279,7 @@ fn EphemeralRow(props: &EphemeralRowProps) -> Element {
     }
 }
 
+#[derive(Default)]
 struct EphemeralListProps {
     labels: Signal<Vec<String>>,
 }

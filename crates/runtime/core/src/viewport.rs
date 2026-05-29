@@ -64,7 +64,15 @@ thread_local! {
 }
 
 fn viewport_signal() -> Signal<ViewportSize> {
-    VIEWPORT.with(|cell| *cell.get_or_init(|| Signal::new(ViewportSize::ZERO)))
+    // Root-anchor the signal: this is a thread-lifetime global, so it
+    // must NOT be adopted by whatever render scope happens to be active
+    // on first access. Otherwise — when first access lands in a
+    // transient scope (e.g. an SSR deferred chrome build) — the cached
+    // id dangles when that scope drops and its slot recycles, and the
+    // next read type-mismatches. (Same contract as the token registry.)
+    VIEWPORT.with(|cell| {
+        *cell.get_or_init(|| crate::reactive::unscope(|| Signal::new(ViewportSize::ZERO)))
+    })
 }
 
 /// The reactive viewport-size signal. Read via `.get()` inside an
@@ -148,5 +156,38 @@ mod tests {
         // regardless of whether earlier tests on this thread already
         // wrote to the signal.
         assert_eq!(a.get(), b.get());
+    }
+
+    /// Regression: the viewport signal must survive when its first access
+    /// happens inside a transient render scope that then drops (the SSR
+    /// deferred-chrome-build case). Runs on a fresh thread so the
+    /// thread-local cache starts uninitialized and the first touch is the
+    /// one inside the scope. Before root-anchoring, the transient scope
+    /// owned the signal, freed its slot on drop, the arena recycled the
+    /// slot to a different-typed signal, and the next read panicked with
+    /// "signal type mismatch".
+    #[test]
+    fn viewport_signal_survives_first_access_in_transient_scope() {
+        std::thread::spawn(|| {
+            use crate::reactive::{with_scope, Scope, Signal};
+            let id = {
+                let mut scope = Scope::new();
+                with_scope(&mut scope, || viewport_size().id())
+            };
+            // Churn the arena so any freed slot gets recycled.
+            {
+                let mut churn = Scope::new();
+                with_scope(&mut churn, || {
+                    for _ in 0..64 {
+                        let _ = Signal::new(0u8);
+                    }
+                });
+            }
+            // Cache intact (same id) AND slot still holds a ViewportSize.
+            assert_eq!(viewport_size().id(), id);
+            assert_eq!(viewport_size().get(), ViewportSize::ZERO);
+        })
+        .join()
+        .expect("viewport signal survives transient-scope first access");
     }
 }

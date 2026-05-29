@@ -72,6 +72,6 @@ fn main() {
     for path in ["/", "/about"] {
         let page = render_path_with(path, |b| stack_navigator::chrome::register(b), app);
         println!("\n================  GET {path}  ================");
-        println!("{}", render_document(&page, "/pkg/app.js"));
+        println!("{}", render_document(&page, None));
     }
 }

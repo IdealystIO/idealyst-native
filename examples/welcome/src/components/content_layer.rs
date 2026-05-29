@@ -13,6 +13,7 @@ use crate::components::welcome_phrase::{WelcomePhrase, WelcomePhraseProps};
 use crate::coordinator::WelcomeRefs;
 use crate::style_helpers::{px, static_sheet};
 
+#[derive(Default)]
 pub struct ContentLayerProps {
     pub refs: WelcomeRefs,
 }

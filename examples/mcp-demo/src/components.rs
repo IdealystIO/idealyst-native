@@ -85,7 +85,7 @@ pub fn AppShell() -> Element {
 /// Props for [`LabeledBadge`]. With `#[derive(IdealystSchema)]`
 /// every field shows up in the catalog as a `PropFieldSpec` with
 /// docs + optional `#[schema(constraint = "...")]` hints.
-#[derive(Debug, IdealystSchema)]
+#[derive(Debug, Default, IdealystSchema)]
 pub struct LabeledBadgeProps {
     /// Visible label text.
     pub label: String,

@@ -16,6 +16,10 @@ license.workspace = true
 
 [dependencies]
 runtime-core = { workspace = true }
+# Single source of truth for the navigator layout stylesheet, shared
+# with the generic SSR chrome handlers so the server's first paint
+# matches the live web layout byte-for-byte.
+css = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }

@@ -28,6 +28,7 @@ pub const HEADLINE_SIZE_PX: f32 = 56.0;
 pub const COLOR_HEADLINE_DARK: &str = "#0a0c11";
 pub const COLOR_HEADLINE_LIGHT: &str = "#f4ead8";
 
+#[derive(Default)]
 pub struct WelcomePhraseProps {
     pub refs: WelcomeRefs,
 }

@@ -1534,22 +1534,15 @@ fn ensure_navigator_css(_b: &mut WebBackend) {
         // The new mode's `min-height: 100%` ensures short screens
         // still fill the viewport vertically so the footer sits at
         // the bottom of the visible area (not floating mid-screen).
-        let css = ".ui-nav-root{position:relative;width:100%;height:100%;}\
-                   .ui-nav-screen{position:absolute!important;inset:0!important;width:100%;height:100%;}\
-                   .ui-nav-drawer-root{display:flex;flex-direction:column;width:100%;height:100%;}\
-                   .ui-nav-drawer-top{flex:0 0 auto;width:100%;}\
-                   .ui-nav-drawer-bottom{flex:0 0 auto;width:100%;}\
-                   .ui-nav-drawer-middle{flex:1 1 auto;display:flex;flex-direction:row;width:100%;min-height:0;}\
-                   .ui-nav-drawer-sidebar{flex:0 0 auto;height:100%;overflow-y:auto;}\
-                   .ui-nav-drawer-trailing{flex:0 0 auto;height:100%;overflow-y:auto;}\
-                   .ui-nav-drawer-body{flex:1 1 auto;position:relative;height:100%;overflow:hidden;}\
-                   .ui-nav-drawer-body-scrolls{flex:1 1 auto;position:relative;height:100%;overflow-y:auto;display:flex;flex-direction:column;}\
-                   .ui-nav-drawer-body-scrolls>*{flex-shrink:0;}";
+        // Single source of truth — the same sheet the generic SSR chrome
+        // handlers ship via `Backend::register_raw_css`, so the live web
+        // layout and the server's first paint are identical.
+        let sheet = css::NAVIGATOR_LAYOUT_CSS;
         let Some(win) = web_sys::window() else { return };
         let Some(doc) = win.document() else { return };
         if let Some(head) = doc.head() {
             if let Ok(style) = doc.create_element("style") {
-                style.set_text_content(Some(css));
+                style.set_text_content(Some(sheet));
                 let _ = head.append_child(&style);
             }
         }

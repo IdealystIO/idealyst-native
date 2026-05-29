@@ -32,10 +32,7 @@
 //! [`Typeface`]: runtime_core::Typeface
 //! [`@font-face`]: https://developer.mozilla.org/en-US/docs/Web/CSS/@font-face
 
-use runtime_core::{
-    AssetId, AssetSource, AssetTag, FontStyle, FontWeight, SystemFallback, TypefaceFace,
-    TypefaceId,
-};
+use runtime_core::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
 use js_sys::{Array, Uint8Array};
 use wasm_bindgen::JsValue;
 
@@ -184,7 +181,8 @@ impl WebBackend {
                 );
                 continue;
             };
-            let rule = build_font_face_rule(family_name, face, url);
+            // Shared with the SSR backend so a face resolves identically.
+            let rule = css::font_face_css(family_name, face, url);
             if let Some(idx) = insert_at_rule(self, &rule) {
                 rule_indices.push(idx);
             }
@@ -202,71 +200,6 @@ impl WebBackend {
         for idx in indices {
             self.delete_rule(idx);
         }
-    }
-}
-
-/// Format one `@font-face { ... }` rule for a single weight/style.
-fn build_font_face_rule(family_name: &str, face: &TypefaceFace, url: &str) -> String {
-    let format_hint = format_hint_from_source(&face.source);
-    let weight = font_weight_css(face.weight);
-    let style = match face.style {
-        FontStyle::Normal => "normal",
-        FontStyle::Italic => "italic",
-    };
-    let mut s = String::with_capacity(family_name.len() + url.len() + 96);
-    s.push_str("@font-face { font-family: \"");
-    s.push_str(family_name);
-    s.push_str("\"; font-style: ");
-    s.push_str(style);
-    s.push_str("; font-weight: ");
-    s.push_str(weight);
-    s.push_str("; src: url(\"");
-    s.push_str(url);
-    s.push_str("\")");
-    if let Some(format) = format_hint {
-        s.push_str(" format(\"");
-        s.push_str(format);
-        s.push_str("\")");
-    }
-    s.push_str("; }");
-    s
-}
-
-/// `@font-face` `format()` hint derived from the source path's
-/// extension. Browsers tolerate a missing hint but emit a faster path
-/// when it's present.
-fn format_hint_from_source(source: &AssetSource) -> Option<&'static str> {
-    let path = match source {
-        AssetSource::Bundled { path } => *path,
-        AssetSource::BundledEmbedded { path, .. } => *path,
-        AssetSource::Remote { url } => *url,
-        AssetSource::Embedded { extension, .. } => extension,
-    };
-    let ext = path.rsplit('.').next()?;
-    Some(match ext.to_ascii_lowercase().as_str() {
-        "ttf" => "truetype",
-        "otf" => "opentype",
-        "woff" => "woff",
-        "woff2" => "woff2",
-        "eot" => "embedded-opentype",
-        "svg" => "svg",
-        _ => return None,
-    })
-}
-
-/// CSS numeric weight matching `runtime_core::style::FontWeight`'s
-/// ladder.
-fn font_weight_css(w: FontWeight) -> &'static str {
-    match w {
-        FontWeight::Thin => "100",
-        FontWeight::ExtraLight => "200",
-        FontWeight::Light => "300",
-        FontWeight::Normal => "400",
-        FontWeight::Medium => "500",
-        FontWeight::SemiBold => "600",
-        FontWeight::Bold => "700",
-        FontWeight::ExtraBold => "800",
-        FontWeight::Black => "900",
     }
 }
 

@@ -16,6 +16,10 @@ license.workspace = true
 
 [dependencies]
 runtime-core = { workspace = true }
+# Backend-neutral (runtime-core only). The generic `chrome` handler
+# stamps the shared `ui-nav-*` classes + ships `NAVIGATOR_LAYOUT_CSS`,
+# the single source of truth shared with the live web navigator.
+css = { workspace = true }
 
 # Only the SSR integration tests need backend-ssr (to register the
 # generic `chrome` handler on a concrete SsrBackend). The handler is

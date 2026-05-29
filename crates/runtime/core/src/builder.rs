@@ -797,3 +797,48 @@ impl<H> IntoElement for Bound<H> {
 impl<H> IntoElement for Bindable<H> {
     fn into_element(self) -> Element { self.primitive }
 }
+
+// =============================================================================
+// BuildElement — component dispatch target for the `ui!`/`jsx!` macros.
+// =============================================================================
+
+/// Bridges a component's props struct to its `Element`-producing function.
+///
+/// `ui! { Foo(a = x) }` lowers to a plain struct literal plus a UFCS call:
+///
+/// ```ignore
+/// ::runtime_core::BuildElement::build(
+///     FooProps { a: (x).into(), ..<FooProps as ::runtime_core::BuildElement>::defaults() }
+/// )
+/// ```
+///
+/// This replaces the old per-component `macro_rules!` invocation macros.
+/// Because dispatch now goes through a normal trait impl on the props
+/// struct (not an exported macro), it resolves across crate boundaries by
+/// ordinary path rules — no `#[macro_export]`, no `#[macro_use]` ordering
+/// — and the call site is a real struct literal, so rust-analyzer gives
+/// field completion, hover, and go-to-def on every prop.
+///
+/// `#[component]` generates the impl automatically; hand-written
+/// components (e.g. idea-ui's) provide it directly. `build` absorbs the
+/// `fn foo(props: &FooProps)` vs `fn foo(props: FooProps)` distinction so
+/// the macro never has to know which a component uses.
+///
+/// `defaults` supplies the struct-update base for omitted props. The
+/// provided impl forwards to `Default`, so a component with no declared
+/// defaults needs only `fn build`. A `#[component(default(field = expr,
+/// …))]` declaration overrides `defaults` to bake those values in (the
+/// type's `Default` stays authoritative for the remaining fields).
+///
+/// `Default` is a supertrait because `ui!` always emits the struct-update
+/// base `..Props::defaults()` — every component's props must therefore be
+/// `Default`, which also makes "omit a prop to take its default" work
+/// uniformly (the JSX-style ergonomics the hand-written idea-ui macros
+/// already relied on).
+pub trait BuildElement: Default {
+    fn build(self) -> Element;
+
+    fn defaults() -> Self {
+        Self::default()
+    }
+}

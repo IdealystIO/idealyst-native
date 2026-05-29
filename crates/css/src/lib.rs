@@ -14,6 +14,284 @@
 
 use runtime_core::StyleRules;
 
+// ---------------------------------------------------------------------------
+// Navigator chrome layout — single source of truth
+// ---------------------------------------------------------------------------
+
+/// Class names stamped on navigator chrome nodes. Both the live web
+/// backend (`web-navigator-helpers`, via `set_attribute("class", …)`)
+/// and the generic SSR chrome handlers (`Backend::attach_html_class`)
+/// stamp these exact strings, so the first-paint DOM structure is
+/// identical and [`NAVIGATOR_LAYOUT_CSS`] styles both the same way.
+pub mod nav_class {
+    /// Stack/drawer navigator container (always paired with a kind class).
+    pub const ROOT: &str = "ui-nav-root";
+    /// A single mounted screen inside a stack navigator (full-bleed).
+    pub const SCREEN: &str = "ui-nav-screen";
+    /// Drawer navigator container (paired with [`ROOT`]).
+    pub const DRAWER_ROOT: &str = "ui-nav-drawer-root";
+    /// Optional top slot wrapper.
+    pub const DRAWER_TOP: &str = "ui-nav-drawer-top";
+    /// Optional bottom slot wrapper.
+    pub const DRAWER_BOTTOM: &str = "ui-nav-drawer-bottom";
+    /// The row holding sidebar + body outlet + trailing.
+    pub const DRAWER_MIDDLE: &str = "ui-nav-drawer-middle";
+    /// Leading (sidebar) slot wrapper.
+    pub const DRAWER_SIDEBAR: &str = "ui-nav-drawer-sidebar";
+    /// Trailing slot wrapper.
+    pub const DRAWER_TRAILING: &str = "ui-nav-drawer-trailing";
+    /// Body outlet (screens mount here).
+    pub const DRAWER_BODY: &str = "ui-nav-drawer-body";
+    /// Body outlet in `bottom_in_scroll` mode (body is the scroll context).
+    pub const DRAWER_BODY_SCROLLS: &str = "ui-nav-drawer-body-scrolls";
+}
+
+/// The canonical navigator layout stylesheet — the **single definition**
+/// of how navigator chrome lays out. The web backend injects it into
+/// `<head>` at navigator-init time; the SSR backend ships it in the
+/// rendered document `<head>`. One definition guarantees the server's
+/// first paint matches the live web layout exactly (no style-flash on
+/// hydration).
+///
+/// See [`nav_class`] for the class names and the layout diagram in
+/// `web-navigator-helpers`'s `ensure_navigator_css`. Scrolling here is
+/// expressed as `overflow-y: auto` on the chrome wrappers (a layout
+/// concern owned by the navigator), distinct from the framework's
+/// `ScrollView` primitive.
+pub const NAVIGATOR_LAYOUT_CSS: &str = concat!(
+    ".ui-nav-root{position:relative;width:100%;height:100%;}",
+    ".ui-nav-screen{position:absolute!important;inset:0!important;width:100%;height:100%;}",
+    ".ui-nav-drawer-root{display:flex;flex-direction:column;width:100%;height:100%;}",
+    ".ui-nav-drawer-top{flex:0 0 auto;width:100%;}",
+    ".ui-nav-drawer-bottom{flex:0 0 auto;width:100%;}",
+    ".ui-nav-drawer-middle{flex:1 1 auto;display:flex;flex-direction:row;width:100%;min-height:0;}",
+    ".ui-nav-drawer-sidebar{flex:0 0 auto;height:100%;overflow-y:auto;}",
+    ".ui-nav-drawer-trailing{flex:0 0 auto;height:100%;overflow-y:auto;}",
+    ".ui-nav-drawer-body{flex:1 1 auto;position:relative;height:100%;overflow:hidden;}",
+    ".ui-nav-drawer-body-scrolls{flex:1 1 auto;position:relative;height:100%;overflow-y:auto;display:flex;flex-direction:column;}",
+    ".ui-nav-drawer-body-scrolls>*{flex-shrink:0;}",
+);
+
+// ---------------------------------------------------------------------------
+// Base reset + per-primitive default styles — single source of truth
+// shared by the web backend (applied at create/init time) and the SSR
+// backend (emitted in `<head>` / set inline on the same nodes), so the
+// SSR first paint inherits the same primitive defaults the live app has.
+// ---------------------------------------------------------------------------
+
+/// Universal `box-sizing: border-box`. The framework's box model is
+/// React-Native-style — padding/border live INSIDE the declared
+/// width/height. Without this the browser's default `content-box` adds
+/// padding OUTSIDE the size, so e.g. a 100%-height sidebar with padding
+/// ends up taller than the viewport and overflows/scrolls. Specificity 0,
+/// so any author class rule that sets `box-sizing` still wins.
+pub const BOX_SIZING_RESET: &str = "*, *::before, *::after { box-sizing: border-box; }";
+
+/// `<button>` element reset. `:where(button)` is specificity 0 so author
+/// `apply_style` classes win; this just strips the browser's chunky
+/// default chrome and restores a pointer cursor + flex centering.
+pub const BUTTON_RESET: &str = ":where(button) { all: unset; box-sizing: border-box; \
+    cursor: pointer; font: inherit; color: inherit; display: inline-flex; \
+    align-items: center; justify-content: center; }";
+
+/// The full base reset stylesheet ([`BOX_SIZING_RESET`] + [`BUTTON_RESET`]).
+/// The SSR backend emits this once in `<head>`; the web backend inserts
+/// the two rules at sheet indices 0/1.
+pub fn base_reset_css() -> String {
+    format!("{BOX_SIZING_RESET}{BUTTON_RESET}")
+}
+
+/// Default inline style for a `Link` primitive's `<a>`: strip the
+/// browser's blue/underlined anchor defaults so the wrapping content's
+/// styling shows through (authors override via their own style).
+pub const LINK_RESET_STYLE: &str = "color: inherit; text-decoration: none; display: inline-flex;";
+
+/// Default inline style for a `Button`'s content box (icon + label row).
+pub const BUTTON_CONTENT_STYLE: &str = "display:inline-flex;align-items:center;gap:0.4em;";
+
+/// Default inline style for an `Icon`'s inline element.
+pub const ICON_INLINE_STYLE: &str = "display:inline-block;vertical-align:middle;";
+
+/// Default inline style for a `Pressable` (bare clickable `<div>`): a
+/// hand cursor. `cursor` isn't in the framework's styled-property model,
+/// so it's set inline at create time on both backends.
+pub const PRESSABLE_CURSOR_STYLE: &str = "cursor: pointer;";
+
+/// Inline style for a reactive `when`/`switch`/`each` anchor placeholder:
+/// `display: contents` makes it **layout-transparent** so the branch's
+/// children inherit the surrounding flex/sizing context (and form their
+/// containing block from the real parent, not the anchor). Without it an
+/// opaque `<div>` collapses widths, breaks `flex:1`/`width:100%`, and —
+/// critically — gives a `position: sticky` child a too-short containing
+/// block so it stops sticking. Both backends stamp this on anchors.
+pub const REACTIVE_ANCHOR_STYLE: &str = "display: contents";
+
+/// Mint the deterministic class name for a resolved style — `"ui-"` plus
+/// the 16-char hex of a `DefaultHasher` over `content_key`. **Single
+/// source of truth shared by the web backend and SSR**, so a given style
+/// gets the *same* class name on both: the SSR first paint stamps the
+/// identical `class="ui-…"` the live web backend would, and ships a
+/// matching `.ui-…{…}` rule — structurally identical to the WASM render,
+/// not approximated with inline styles.
+pub fn hash_class_name(content_key: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    content_key.hash(&mut h);
+    let n = h.finish();
+    let mut s = String::with_capacity(19);
+    s.push_str("ui-");
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for shift in (0..16).rev() {
+        let nibble = ((n >> (shift * 4)) & 0xf) as usize;
+        s.push(HEX[nibble] as char);
+    }
+    s
+}
+
+/// The class name for a resolved `StyleRules` (`hash_class_name` over its
+/// `content_key`). The matching rule body is [`rules_to_css`].
+pub fn style_class_name(rules: &StyleRules) -> String {
+    hash_class_name(&rules.content_key())
+}
+
+/// The CSS pseudo-class suffix for an interaction-state bit, so a state
+/// overlay becomes `.ui-<hash><pseudo> { … }`. Shared by the web backend
+/// (`apply_styled_states`) and SSR so hover/press/focus/disabled styles
+/// resolve identically. `None` for unsupported / empty bits.
+pub fn state_pseudo(state: runtime_core::StateBits) -> Option<&'static str> {
+    use runtime_core::StateBits;
+    match state {
+        StateBits::HOVERED => Some(":hover"),
+        StateBits::PRESSED => Some(":active"),
+        StateBits::FOCUSED => Some(":focus"),
+        StateBits::DISABLED => Some(":disabled"),
+        _ => None,
+    }
+}
+
+/// Format a single theme token value as a CSS value string. Shared by
+/// the web backend (`setProperty` on `:root`) and the SSR backend
+/// (`:root { … }` in the document head) so a token resolves identically
+/// across both — single source of truth, like [`NAVIGATOR_LAYOUT_CSS`].
+pub fn token_value_css(v: &runtime_core::TokenValue) -> String {
+    use runtime_core::TokenValue;
+    match v {
+        TokenValue::Color(c) => c.0.clone(),
+        TokenValue::Length(l) => length_css(*l),
+        TokenValue::Number(n) => n.to_string(),
+    }
+}
+
+/// Serialize a theme's tokens into a `:root { --name: value; … }` rule.
+/// Empty string when there are no tokens (so the caller can skip an
+/// empty `<style>`). The SSR backend emits this in `<head>` so the
+/// server's first paint resolves `var(--token, fallback)` to the real
+/// theme value — matching the live web build, which installs the same
+/// variables at runtime via `install_tokens`.
+pub fn tokens_to_root_css(tokens: &[runtime_core::TokenEntry]) -> String {
+    if tokens.is_empty() {
+        return String::new();
+    }
+    let mut out = String::with_capacity(tokens.len() * 32 + 16);
+    out.push_str(":root{");
+    for entry in tokens {
+        out.push_str("--");
+        out.push_str(entry.name);
+        out.push(':');
+        out.push_str(&token_value_css(&entry.value));
+        out.push(';');
+    }
+    out.push('}');
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Assets + @font-face — single source of truth shared by web + SSR
+// ---------------------------------------------------------------------------
+
+/// Path prefix under which non-font `Bundled` assets are served — the
+/// CLI build stages each declared asset at `{ASSET_ROUTE}/{path}`. Fonts
+/// are the exception: they're served root-absolute (`/{path}`) so
+/// `@font-face { src: url(...) }` resolves regardless of the SPA route.
+pub const ASSET_ROUTE: &str = "assets";
+
+/// Resolve the served-file URL for an asset, shared by the web backend
+/// (`@font-face`/`<img>` links) and the SSR backend. Returns `None` for
+/// `Embedded` sources — those need a runtime blob URL (web-only); a
+/// headless server has no served path for them.
+pub fn asset_url(
+    kind: runtime_core::assets::AssetTag,
+    source: &runtime_core::assets::AssetSource,
+) -> Option<String> {
+    use runtime_core::assets::{AssetSource, AssetTag};
+    match source {
+        // Fonts link root-absolute so the URL is stable under any SPA
+        // route; other bundled assets live under the asset route.
+        AssetSource::Bundled { path } | AssetSource::BundledEmbedded { path, .. }
+            if kind == AssetTag::Font =>
+        {
+            Some(format!("/{path}"))
+        }
+        AssetSource::Bundled { path } | AssetSource::BundledEmbedded { path, .. } => {
+            Some(format!("{ASSET_ROUTE}/{path}"))
+        }
+        AssetSource::Remote { url } => Some((*url).to_string()),
+        AssetSource::Embedded { .. } => None,
+    }
+}
+
+/// Format one `@font-face { … }` rule for a single weight/style face,
+/// linking the served `url`. Used by both the web backend (injected at
+/// `register_typeface`) and the SSR backend (emitted in `<head>`), so a
+/// face resolves identically across the two.
+pub fn font_face_css(
+    family_name: &str,
+    face: &runtime_core::assets::TypefaceFace,
+    url: &str,
+) -> String {
+    let weight = font_weight_css(face.weight);
+    let style = font_style_css(face.style);
+    let format_hint = font_format_hint(&face.source);
+    let mut s = String::with_capacity(family_name.len() + url.len() + 96);
+    s.push_str("@font-face{font-family:\"");
+    s.push_str(family_name);
+    s.push_str("\";font-style:");
+    s.push_str(style);
+    s.push_str(";font-weight:");
+    s.push_str(weight);
+    s.push_str(";src:url(\"");
+    s.push_str(url);
+    s.push_str("\")");
+    if let Some(format) = format_hint {
+        s.push_str(" format(\"");
+        s.push_str(format);
+        s.push_str("\")");
+    }
+    s.push_str(";}");
+    s
+}
+
+/// `@font-face` `format()` hint from an asset source's file extension.
+pub fn font_format_hint(source: &runtime_core::assets::AssetSource) -> Option<&'static str> {
+    use runtime_core::assets::AssetSource;
+    let path = match source {
+        AssetSource::Bundled { path } => *path,
+        AssetSource::BundledEmbedded { path, .. } => *path,
+        AssetSource::Remote { url } => *url,
+        AssetSource::Embedded { extension, .. } => extension,
+    };
+    let ext = path.rsplit('.').next()?;
+    Some(match ext.to_ascii_lowercase().as_str() {
+        "ttf" => "truetype",
+        "otf" => "opentype",
+        "woff" => "woff",
+        "woff2" => "woff2",
+        "eot" => "embedded-opentype",
+        "svg" => "svg",
+        _ => return None,
+    })
+}
+
 /// Render a `Length` as a CSS value string.
 pub fn length_css(l: runtime_core::Length) -> String {
     use runtime_core::Length;
@@ -494,4 +772,69 @@ fn collect_transitions(rules: &StyleRules) -> Vec<String> {
     tr!(border_bottom_color_transition, "border-bottom-color");
     tr!(border_left_color_transition, "border-left-color");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_core::{Color, Length, TokenEntry, TokenValue};
+
+    #[test]
+    fn tokens_to_root_css_emits_root_block() {
+        let tokens = vec![
+            TokenEntry { name: "color-text", value: TokenValue::Color(Color("#1a1a1f".into())) },
+            TokenEntry { name: "spacing-md", value: TokenValue::Length(Length::Px(16.0)) },
+            TokenEntry { name: "opacity-soft", value: TokenValue::Number(0.5) },
+        ];
+        let css = tokens_to_root_css(&tokens);
+        assert_eq!(
+            css,
+            ":root{--color-text:#1a1a1f;--spacing-md:16px;--opacity-soft:0.5;}"
+        );
+    }
+
+    #[test]
+    fn tokens_to_root_css_empty_is_blank() {
+        assert_eq!(tokens_to_root_css(&[]), "");
+    }
+
+    #[test]
+    fn asset_url_routes_by_kind() {
+        use runtime_core::assets::{AssetSource, AssetTag};
+        // Fonts link root-absolute; other bundled assets under the route.
+        assert_eq!(
+            asset_url(AssetTag::Font, &AssetSource::Bundled { path: "fonts/Inter-Regular.ttf" }),
+            Some("/fonts/Inter-Regular.ttf".into())
+        );
+        assert_eq!(
+            asset_url(AssetTag::Image, &AssetSource::Bundled { path: "images/logo.png" }),
+            Some("assets/images/logo.png".into())
+        );
+        assert_eq!(
+            asset_url(AssetTag::Image, &AssetSource::Remote { url: "https://cdn/x.png" }),
+            Some("https://cdn/x.png".into())
+        );
+        // Embedded has no served URL on a headless server.
+        assert_eq!(
+            asset_url(AssetTag::Font, &AssetSource::Embedded { bytes: &[], extension: "ttf" }),
+            None
+        );
+    }
+
+    #[test]
+    fn font_face_css_links_served_url() {
+        use runtime_core::assets::{AssetId, AssetSource, TypefaceFace};
+        use runtime_core::{FontStyle, FontWeight};
+        let face = TypefaceFace {
+            weight: FontWeight::Bold,
+            style: FontStyle::Normal,
+            asset: AssetId(1),
+            source: AssetSource::Bundled { path: "fonts/Inter-Bold.ttf" },
+        };
+        assert_eq!(
+            font_face_css("Inter", &face, "/fonts/Inter-Bold.ttf"),
+            "@font-face{font-family:\"Inter\";font-style:normal;font-weight:700;\
+             src:url(\"/fonts/Inter-Bold.ttf\") format(\"truetype\");}"
+        );
+    }
 }

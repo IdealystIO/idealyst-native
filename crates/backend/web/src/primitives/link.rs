@@ -46,10 +46,9 @@ pub(crate) fn create(b: &mut WebBackend, config: LinkConfig) -> Node {
     // web-sys feature. The framework applies its own classes on top
     // via `apply_style`; this inline reset is below those in
     // specificity terms when stylesheets target via class.
-    let _ = anchor.set_attribute(
-        "style",
-        "color: inherit; text-decoration: none; display: inline-flex;",
-    );
+    // Shared with the SSR backend's `create_link` so both render the
+    // same de-defaulted anchor.
+    let _ = anchor.set_attribute("style", css::LINK_RESET_STYLE);
 
     // External link: open in a new tab via the browser's native
     // anchor navigation. No JS click interception — a real

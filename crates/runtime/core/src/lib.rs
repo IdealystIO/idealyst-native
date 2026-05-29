@@ -87,8 +87,8 @@ pub use handles::{
     TextOps, ViewHandle, ViewOps,
 };
 pub use builder::{
-    button, each_keyed, pressable, switch, text, view, when, Bindable, Bound, ChildList,
-    IntoDisabledSource, IntoElement, ReactiveForEach, ReactiveListKeyed, StaticForEach,
+    button, each_keyed, pressable, switch, text, view, when, Bindable, Bound, BuildElement,
+    ChildList, IntoDisabledSource, IntoElement, ReactiveForEach, ReactiveListKeyed, StaticForEach,
 };
 pub use derive::{Action, Derived, IntoAction, IntoDerived};
 pub use identity::{
@@ -136,6 +136,24 @@ pub use reactive::{
     unregister_signal_js_notifier, untrack, with_inject, ArenaStats, Effect, Ref, Signal,
     Trackable,
 };
+
+/// Run `f` with the reactive scope-ownership stack emptied: signals and
+/// memos created inside are **not** adopted by the surrounding render
+/// scope — they live for the thread's lifetime (the same contract the
+/// token registry relies on).
+///
+/// Use for **global caches**: a thread-lifetime registry or a lazily
+/// cached memo (`thread_local OnceCell<Signal<_>>`) whose first access
+/// might land in a *transient* scope (e.g. an SSR deferred chrome build,
+/// or any backend that builds subtrees in short-lived scopes). Without
+/// this, the cached signal id dangles when that first-touch scope drops
+/// and its arena slot is recycled — a later read then type-mismatches.
+///
+/// Sibling to [`untrack`] (which disables dependency *tracking*); this
+/// disables scope *ownership*.
+pub fn unscope<R>(f: impl FnOnce() -> R) -> R {
+    reactive::unscope(f)
+}
 #[cfg(feature = "async-driver")]
 pub use resource::{resource, Resource, ResourceCancel, ResourceState};
 #[cfg(feature = "async-driver")]

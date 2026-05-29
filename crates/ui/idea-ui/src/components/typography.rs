@@ -22,8 +22,8 @@ pub struct TypographyProps {
     /// Text content. `Reactive<String>` so it can carry live text: a
     /// string literal / `String` is static, a `Signal<String>` or
     /// `rx!(…)` re-renders the text in place when its signals change —
-    /// no parent rebuild. The invocation macro coerces all of these via
-    /// `.into()`, so call sites are unchanged for the static case.
+    /// no parent rebuild. The `ui!`/`jsx!` dispatch coerces all of these
+    /// via `.into()`, so call sites are unchanged for the static case.
     pub content: Reactive<String>,
     pub kind: TypographyKindRef,
     /// Optional intent-colored text. When `Some`, overrides `muted`.

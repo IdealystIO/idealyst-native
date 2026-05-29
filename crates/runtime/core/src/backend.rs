@@ -343,6 +343,17 @@ pub trait Backend {
     /// itself is the mount target.
     #[allow(unused_variables)]
     fn attach_html_id(&self, node: &Self::Node, id: &str) {}
+
+    /// Stamp a layout class name on `node`, paired with
+    /// [`register_raw_css`](Backend::register_raw_css) which ships the
+    /// matching rules. Used for navigator chrome: the SSR backend stamps
+    /// the same `ui-nav-*` classes the live web navigator does (see
+    /// `css::nav_class`) so the server's first paint matches the client.
+    ///
+    /// Default no-op — only document-backed backends (web, SSR) need it;
+    /// native backends lay out chrome via their own primitives.
+    #[allow(unused_variables)]
+    fn attach_html_class(&self, node: &Self::Node, class: &str) {}
     fn create_text(
         &mut self,
         content: &str,
@@ -2059,6 +2070,19 @@ pub trait Backend {
     /// `NSUserActivity` / App Indexing where that representation is added.
     #[allow(unused_variables)]
     fn set_page_metadata(&mut self, meta: &crate::PageMetadata) {
+        // default: no-op
+    }
+
+    /// Register a raw CSS stylesheet to ship once, paired with
+    /// [`attach_html_class`](Backend::attach_html_class). The SSR backend
+    /// accumulates these and emits them in the document `<head>`; the web
+    /// backend injects a `<style>` element. Backends are free to dedupe
+    /// identical sheets (navigator chrome registers the same layout sheet
+    /// on every navigator).
+    ///
+    /// Default no-op — native backends don't have a stylesheet concept.
+    #[allow(unused_variables)]
+    fn register_raw_css(&mut self, css: &str) {
         // default: no-op
     }
 

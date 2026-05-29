@@ -170,9 +170,15 @@ pub fn current_breakpoint() -> Signal<Breakpoint> {
     MEMO.with(|cell| {
         *cell.get_or_init(|| {
             let table = breakpoints();
-            memo(move || {
-                let ViewportSize { width, .. } = runtime_core::viewport_size().get();
-                table.classify(width)
+            // Root-anchor this thread-lifetime cached memo so it isn't
+            // owned by whatever transient scope first touches it (e.g. an
+            // SSR deferred chrome build) — otherwise the cached signal id
+            // dangles when that scope drops and its slot recycles.
+            runtime_core::unscope(move || {
+                memo(move || {
+                    let ViewportSize { width, .. } = runtime_core::viewport_size().get();
+                    table.classify(width)
+                })
             })
         })
     })

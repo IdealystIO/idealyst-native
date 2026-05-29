@@ -36,7 +36,7 @@ ui! {
 
 The `#[component]` macro:
 - Rewrites the body for reactivity (signals capture into closures correctly).
-- Emits a sibling `Greeting!` invocation macro (same PascalCase name — dispatch is transform-free) for use inside `ui!`.
+- Emits the dispatch glue for use inside `ui!`: a `Greeting` props-type alias (same PascalCase name — dispatch is transform-free) plus a `BuildElement` impl.
 - Registers a [[ComponentEntry]] into the MCP catalog so AI/tooling can discover it.
 
 ## 3. Style — orthogonal to structure

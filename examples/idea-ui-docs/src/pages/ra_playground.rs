@@ -5,18 +5,35 @@
 //! Delete this file (and its `pub mod ra_playground;` line in `mod.rs`)
 //! once you've finished evaluating.
 //!
-//! FIRST, reload the proc-macro server so the recovery change is live:
+//! FIRST, reload the proc-macro server so the latest macro is live:
 //!   Command Palette → "rust-analyzer: Restart server"
 //! (the `ui!`/`jsx!` proc-macros are rebuilt on restart — without this you
 //! are still testing the OLD macro.)
+//!
+//! Components now dispatch through a plain struct literal
+//! (`BuildElement::build(Typography { content: …, ..defaults() })`), not a
+//! per-component macro — so field completion and go-to-def should work
+//! natively.
 
 use runtime_core::{Element, Signal, component, signal, ui};
 use idea_ui::{Stack, StackGap, Typography};
 
-#[component]
-fn Test123() -> Element {
+// Props must derive `Default` (the dispatch base is `..Default::default()`).
+// `#[component(default(count = 10))]` overrides the *omitted* value for one
+// field: leave `count` off the call site and it comes in as 10, not i32's
+// own default of 0. Other fields fall back to their type default.
+#[derive(Default)]
+struct Test123Props {
+    label: String,
+    count: i32,
+}
+
+/// Renders `label: count` as a Typography line. `count` defaults to 10
+/// when omitted. (Hover the `Test123` tag in `page()` — this doc shows.)
+#[component(default(count = 10))]
+fn Test123(props: &Test123Props) -> Element {
     ui! {
-        Typography(content = "a user component".to_string())
+        Typography(content = format!("{}: {}", props.label, props.count))
     }
 }
 
@@ -26,20 +43,32 @@ pub fn page() -> Element {
 
     ui! {
         Stack(gap = StackGap::Xl) {
-            Test123()
+            // ── TEST 5 — DECLARED DEFAULT + field completion ─────────────
+            // `count` is omitted, so it comes in as 10 (the
+            // `#[component(default(count = 10))]` value), not 0. Renders
+            // "hi: 10". Also: inside the parens, completion offers the real
+            // `Test123Props` fields (`label`, `count`) — and go-to-def on
+            // `Test123` lands on the generated `pub type Test123 = Test123Props`.
+            Test123(label = "hi".to_string())
             // ── TEST 1 — go-to-def on a USER COMPONENT ───────────────────
-            // Put the cursor on `Typography` and "Go to Definition".
-            // Expected: jumps to idea_ui's Typography. User components
-            // dispatch to a real `Typography!` macro, so once the block
-            // expands cleanly (the Layer-1 fix) this should resolve.
+            // Cursor on `Typography` → "Go to Definition". Expected: jumps
+            // to the `pub type Typography = TypographyProps` alias (one hop
+            // from the props struct). The tag is a real type now, not a macro.
             Typography(content = "Hello".to_string())
 
+            // ── TEST 1b — FIELD-NAME COMPLETION (the headline win) ───────
+            // Inside the parens below, after a comma, type a letter and ask
+            // for completion: expected the real `TypographyProps` fields
+            // (`content`, `kind`, `tone`, `align`, `muted`, …). This is the
+            // struct-literal payoff — the prop list is a real struct now.
+            Typography(content = "type a field name here".to_string())
+
             // ── TEST 2 — go-to-def on a PRIMITIVE ────────────────────────
-            // Cursor on `Text` → "Go to Definition".
-            // Expected (today): "no definition available". There is no
-            // `Text` symbol — the macro emits a hardcoded `runtime_core::text`
-            // with a call-site span. This is the gap the PascalCase-alias
-            // (Layer-2) change would close. Note whether it fails.
+            // Cursor on `Text` → "Go to Definition". Primitives still emit a
+            // hardcoded `runtime_core::text` (call-site span, no `Text`
+            // symbol), so this may still say "no definition available" — the
+            // component-dispatch change didn't touch primitives. Note whether
+            // it differs from the user-component case in TEST 1.
             Text { "a bare primitive" }
 
             // ── TEST 3 — completion / hover on an EXPRESSION ─────────────
