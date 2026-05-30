@@ -45,3 +45,5 @@ mod component_dispatch;
 mod lazy;
 #[path = "walker/hydration.rs"]
 mod hydration;
+#[path = "walker/stack_depth.rs"]
+mod stack_depth;

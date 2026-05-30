@@ -57,6 +57,17 @@ pub struct Args {
     #[arg(long, alias = "aas")]
     pub runtime_server: bool,
 
+    /// Build the native SSR server binary. Renders `app()` per request
+    /// and (in hydration mode) emits the boot `<script>` so the live
+    /// web bundle adopts the server DOM. The produced binary takes
+    /// `--addr <host:port>` / `--static` / `--static-dir <path>` /
+    /// `--bundle <url>` at run time. For hydration to work, the wasm
+    /// bundle must be staged alongside — pair with `--web` (or run
+    /// `idealyst build --web` separately) so `dist/web` contains the
+    /// `pkg/` directory the binary serves.
+    #[arg(long)]
+    pub ssr: bool,
+
     /// Build with the release profile.
     #[arg(long)]
     pub release: bool,
@@ -103,16 +114,23 @@ pub fn run(args: Args) -> Result<()> {
     // platform set — it's an extra build that happens alongside the
     // platforms (or alone if no platforms are selected).
     let mut targets = collect_targets(&args, &manifest.app.targets);
-    if targets.is_empty() && !args.runtime_server {
+    if targets.is_empty() && !args.runtime_server && !args.ssr {
         anyhow::bail!(
-            "no targets to build: pass `--web` / `--ios` / `--android` / `--roku` / `--aas`, \
-             or add `targets = [...]` to `[package.metadata.idealyst.app]`"
+            "no targets to build: pass `--web` / `--ios` / `--android` / `--roku` / `--aas` / \
+             `--ssr`, or add `targets = [...]` to `[package.metadata.idealyst.app]`"
         );
     }
     // De-dup while preserving the order the user (or manifest) gave.
     let mut seen: std::collections::HashSet<Target> = std::collections::HashSet::new();
     targets.retain(|t| seen.insert(*t));
 
+    let mut extras: Vec<&str> = Vec::new();
+    if args.runtime_server {
+        extras.push("aas host");
+    }
+    if args.ssr {
+        extras.push("ssr binary");
+    }
     eprintln!(
         "[build] {} targets: {}{}",
         if args.release { "release" } else { "debug" },
@@ -121,10 +139,10 @@ pub fn run(args: Args) -> Result<()> {
             .map(|t| t.as_str())
             .collect::<Vec<_>>()
             .join(", "),
-        if args.runtime_server {
-            " (+ aas host)"
+        if extras.is_empty() {
+            String::new()
         } else {
-            ""
+            format!(" (+ {})", extras.join(", "))
         },
     );
 
@@ -134,6 +152,10 @@ pub fn run(args: Args) -> Result<()> {
 
     if args.runtime_server {
         build_runtime_server_host(&dir, &args)?;
+    }
+
+    if args.ssr {
+        build_ssr_binary(&dir, &args, targets.contains(&Target::Web))?;
     }
 
     Ok(())
