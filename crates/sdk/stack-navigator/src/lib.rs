@@ -84,6 +84,20 @@ pub struct StackScreenOptions {
     pub header_background: Option<Rc<dyn Fn() -> Color>>,
     pub header_tint: Option<Rc<dyn Fn() -> Color>>,
     pub title_color: Option<Rc<dyn Fn() -> Color>>,
+    /// React Navigation-style `unmountOnBlur`. When `Some(true)`,
+    /// this screen's reactive scope is dropped (its effects /
+    /// AnimatedValue subscribers / scheduled work) when a new
+    /// screen is pushed on top of it; pop-back rebuilds from
+    /// initial state. When `Some(false)` (or `None`, which is the
+    /// default), the screen stays mounted below the new one and
+    /// pop-back resumes its existing state — matching native
+    /// UINavigationController / Android Fragment-back-stack
+    /// behavior.
+    ///
+    /// Pair with [`runtime_core::primitives::navigator::use_focus`]
+    /// for finer-grained "still mounted but pause work" semantics
+    /// (e.g. pause a wgpu host without dropping the whole scope).
+    pub unmount_on_blur: Option<bool>,
 }
 
 impl StackScreenOptions {
@@ -103,6 +117,7 @@ pub trait StackScreenExt: Sized {
     fn header_background<F: Fn() -> Color + 'static>(self, f: F) -> Self;
     fn header_tint<F: Fn() -> Color + 'static>(self, f: F) -> Self;
     fn title_color<F: Fn() -> Color + 'static>(self, f: F) -> Self;
+    fn unmount_on_blur(self, unmount: bool) -> Self;
 }
 
 impl StackScreenExt for Screen {
@@ -126,6 +141,9 @@ impl StackScreenExt for Screen {
     }
     fn title_color<F: Fn() -> Color + 'static>(self, f: F) -> Self {
         with_stack_options(self, |o| o.title_color = Some(Rc::new(f)))
+    }
+    fn unmount_on_blur(self, unmount: bool) -> Self {
+        with_stack_options(self, |o| o.unmount_on_blur = Some(unmount))
     }
 }
 

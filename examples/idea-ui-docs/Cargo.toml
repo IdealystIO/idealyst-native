@@ -11,13 +11,28 @@ description = "Self-referencing documentation app for idea-ui"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# No-op feature consumed by the auto-generated web wrapper under
+# `target/idealyst/<app>/web/wrapper/`. The wrapper template's
+# `runtime-server` feature forwards to `<app>/runtime-server`, so
+# this crate needs to define it (even though there's nothing here
+# that gates on it). See `cli::cmd::dev` comments.
+runtime-server = []
+
 [dependencies]
 runtime-core = { workspace = true }
 idea-ui = { workspace = true, features = ["docs"] }
-stack-navigator = { workspace = true }
+drawer-navigator = { workspace = true }
+# Theme-aware syntax-highlighted code panels for the snippet blocks
+# in every component page.
+idea-codeblock = { workspace = true }
+# Real HTML <table> on web via Element::External; flex fallback on
+# native. Powers PropsTable on every component page.
+table = { workspace = true }
 
 # Web-only deps. The cross-platform `app()` tree never references
-# these; the wasm-bindgen entry in `src/web.rs` is gated to wasm32.
+# these; the wasm-bindgen entry in the CLI-generated wrapper is gated
+# to wasm32.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
 wasm-bindgen = "0.2"

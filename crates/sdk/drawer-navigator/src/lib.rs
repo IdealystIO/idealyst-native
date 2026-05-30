@@ -342,6 +342,20 @@ pub struct DrawerScreenOptions {
     pub header_background: Option<Rc<dyn Fn() -> Color>>,
     pub header_tint: Option<Rc<dyn Fn() -> Color>>,
     pub title_color: Option<Rc<dyn Fn() -> Color>>,
+    /// Per-screen override of the navigator's [`DrawerPresentation::mount_policy`].
+    /// `None` defers to the navigator-global policy (the default —
+    /// matches existing behavior). `Some(MountPolicy::LazyDisposing)`
+    /// makes this one screen drop its scope (and stop background
+    /// work — animation ticks, render loops, polled effects) when
+    /// the user navigates away, even when the rest of the screens
+    /// stay cached. `Some(MountPolicy::LazyPersistent)` keeps it
+    /// mounted (React Navigation Stack default) even when the
+    /// navigator-global says LazyDisposing.
+    ///
+    /// Pair with the per-screen focus signal (`use_focus()`) for
+    /// app-defined pause/resume of embedded work that should stay
+    /// mounted but go idle while not focused.
+    pub mount_policy: Option<MountPolicy>,
 }
 
 impl DrawerScreenOptions {
@@ -383,6 +397,11 @@ impl DrawerScreenOptions {
         self.title_color = Some(Rc::new(f));
         self
     }
+
+    pub fn mount_policy(mut self, policy: MountPolicy) -> Self {
+        self.mount_policy = Some(policy);
+        self
+    }
 }
 
 /// Extension trait adding drawer-specific builder methods to
@@ -397,6 +416,7 @@ pub trait DrawerScreenExt: Sized {
     fn header_background<F: Fn() -> Color + 'static>(self, f: F) -> Self;
     fn header_tint<F: Fn() -> Color + 'static>(self, f: F) -> Self;
     fn title_color<F: Fn() -> Color + 'static>(self, f: F) -> Self;
+    fn mount_policy(self, policy: MountPolicy) -> Self;
 }
 
 impl DrawerScreenExt for Screen {
@@ -420,6 +440,9 @@ impl DrawerScreenExt for Screen {
     }
     fn title_color<F: Fn() -> Color + 'static>(self, f: F) -> Self {
         with_drawer_options(self, |o| o.title_color = Some(Rc::new(f)))
+    }
+    fn mount_policy(self, policy: MountPolicy) -> Self {
+        with_drawer_options(self, |o| o.mount_policy = Some(policy))
     }
 }
 

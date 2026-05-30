@@ -337,7 +337,7 @@ docs! {
 
         code(rust, r##"
             stylesheet! {
-                pub Btn<()> {
+                pub Button<()> {
                     base(_) {
                         background: Tokenized::token("primary", Color::from("#3b82f6")),
                     }
@@ -424,7 +424,7 @@ docs! {
              ".)"],
             ["Write ", code("stylesheet!"),
              " blocks for each styled surface (",
-             code("Card"), ", ", code("Btn"), ", ", code("Heading"),
+             code("Card"), ", ", code("Button"), ", ", code("Heading"),
              ", ...). Reference token names directly via ",
              code("Tokenized::token(\"name\", fallback)"), "."],
             ["Attach stylesheets to primitives at the call site via the ",

@@ -84,22 +84,51 @@ impl WebHostHandle {
         inner.config.height = clamped.1;
         inner.surface.configure(&inner.device, &inner.config);
     }
+
+    /// Pause the embedded app: drop its reactive scope so all of its
+    /// effects, `AnimatedValue` subscribers, and per-frame work
+    /// stop firing. Pair with [`resume`].
+    ///
+    /// Web today doesn't auto-detect visibility (a future
+    /// `IntersectionObserver`-driven hook can flip this on its own),
+    /// so callers must wire it themselves — typically inside a
+    /// reactive effect bound to `use_focus()`.
+    pub fn pause(&self) {
+        self.inner.borrow_mut().host.unmount();
+        runtime_core::session::clear();
+    }
+
+    /// Re-mount the embedded app from its cached `build_ui`.
+    /// Idempotent. Pair with [`pause`].
+    pub fn resume(&self) {
+        let mut inner = self.inner.borrow_mut();
+        if inner.host.is_mounted() {
+            return;
+        }
+        let build_ui = inner.build_ui.clone();
+        inner.host.mount(move || (&*build_ui)());
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.inner.borrow().host.is_mounted()
+    }
 }
 
 /// Mount the wgpu render backend behind a framework `Graphics`
 /// surface. This is the only entry point — call from the surface's
 /// `on_ready`, hand the returned handle to the surrounding state so
 /// `on_resize` / `on_lost` can `.resize(...)` / drop it.
-pub async fn mount<F>(
+pub async fn mount(
     surface_handle: GraphicsSurface,
     size: (u32, u32),
     profile: DeviceProfile,
     skin: Rc<dyn Painter>,
-    build_ui: F,
-) -> Result<WebHostHandle, MountError>
-where
-    F: FnOnce() -> Element + 'static,
-{
+    // `Rc<dyn Fn>` matches the iOS host's signature (which uses it
+    // for unmount/remount on visibility-gated frame skips). Web
+    // doesn't unmount yet — calls it once below — but the umbrella
+    // crate's signature is shared.
+    build_ui: Rc<dyn Fn() -> Element + 'static>,
+) -> Result<WebHostHandle, MountError> {
     // 1. Extract the canvas. Keep a clone — the surface gets
     //    consumed by `create_surface` below; we need the canvas
     //    later to attach event listeners and read its bounding
@@ -182,7 +211,10 @@ where
         profile.logical_size.1 as f32,
     );
     host.set_viewport(logical.0, logical.1);
-    host.mount(build_ui);
+    {
+        let build_ui = build_ui.clone();
+        host.mount(move || (&*build_ui)());
+    }
 
     // 3a. Fonts. With `embed-font-bytes` off for web, `face!` fonts
     //     aren't baked into the wasm — they're served files at the
@@ -226,6 +258,7 @@ where
         host,
         logical,
         canvas: canvas.clone(),
+        build_ui,
     }));
 
     // 4. Per-frame loop. The closure borrows the inner mut; pointer
@@ -305,6 +338,9 @@ struct HostInner {
     /// stays accurate even as the page reflows (a sidebar opening,
     /// a window resize, etc.).
     canvas: web_sys::HtmlCanvasElement,
+    /// Re-callable embedded-app builder. Cached so [`WebHostHandle::resume`]
+    /// can re-mount after a [`pause`].
+    build_ui: Rc<dyn Fn() -> Element + 'static>,
 }
 
 /// One installed JS event listener. Drop = `removeEventListener` +

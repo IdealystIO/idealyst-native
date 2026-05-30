@@ -317,6 +317,7 @@ fn drawer_options_to_android(
         header_background: opts.header_background.clone(),
         header_tint: opts.header_tint.clone(),
         title_color: opts.title_color.clone(),
+        mount_policy: opts.mount_policy.map(mount_policy_to_helpers),
     }
 }
 

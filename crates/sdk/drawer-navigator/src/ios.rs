@@ -83,6 +83,7 @@ fn translate_options(opts: &DrawerScreenOptions) -> IosScreenOptions {
         header_background: opts.header_background.clone(),
         header_tint: opts.header_tint.clone(),
         title_color: opts.title_color.clone(),
+        mount_policy: opts.mount_policy.map(mount_policy_to_helpers),
     }
 }
 
@@ -332,53 +333,70 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
                         return;
                     };
 
-                // If the user's sidebar root is a View, fold the
-                // top + bottom safe-area sides into IT directly.
-                // The framework converts safe-area sides into extra
-                // padding INSIDE the marked view — so the view's
-                // own background (typically the SidebarBody's white
-                // surface color) keeps filling edge-to-edge, while
-                // the brand row / nav links sit below the dynamic
-                // island and above the home indicator.
+                // Match the web drawer's architecture:
                 //
-                // Putting the safe-area on a wrapper would leave a
-                // transparent gap at the top: the wrapper has no
-                // background, so the inset showed the page through.
-                let mut sidebar_primitive = sidebar_primitive;
-                if let runtime_core::Element::View {
-                    safe_area_sides, ..
-                } = &mut sidebar_primitive
-                {
-                    *safe_area_sides |= runtime_core::SafeAreaSides::TOP
-                        | runtime_core::SafeAreaSides::BOTTOM;
-                }
-
-                // Wrap so the sidebar's outermost Taffy node has an
-                // explicit width matching the configured drawer
-                // width, and so the panel itself scrolls when the
-                // author's nav-link list overflows the viewport
-                // height. The user-supplied sidebar root typically
-                // has `width: auto`; without the width pin Taffy
-                // lays it out at viewport width while the iOS UIView
-                // is simultaneously pinned to `drawer_width` via Auto
-                // Layout, so the inner nav links overflow past the
-                // visible clip. Wrapping in `scroll_view` (instead
-                // of plain `view`) lets the iOS backend mount a
-                // UIScrollView whose `contentSize` sync picks up
-                // the sidebar's intrinsic height after Taffy lays
-                // it out — same mechanism the drawer body's screen
-                // host uses.
-                // ScrollView height stays `Auto` so the iOS backend's
-                // contentSize sync can pick up the inner sidebar's
-                // intrinsic height (which exceeds the viewport when
-                // the nav-link list is long). The Auto Layout pin
-                // installed by `drawer_attach_sidebar` constrains
-                // the UIScrollView's frame to viewport-tall via
-                // top/bottom anchors; the scroll view's own
-                // `contentSize` then drives the scrollable extent.
-                // If we pinned height to `100%` here Taffy would
-                // clamp the inner sidebar to viewport height and
-                // contentSize == bounds, no scroll.
+                //   web (drawer-navigator/web.rs + web-navigator-helpers):
+                //     <div class="ui-nav-drawer-sidebar"        ← scroll container
+                //          style="flex:0 0 auto; height:100%; overflow-y:auto;
+                //                 width: drawer_width">
+                //       <SidebarBody …>                         ← author's view
+                //         …children…
+                //       </SidebarBody>
+                //     </div>
+                //
+                // The `.ui-nav-drawer-sidebar` div carries the
+                // scroll + viewport-sized chrome; the author's
+                // `SidebarBody` sits inside it as ordinary flow
+                // content. The SidebarBody's own padding and
+                // background stay where the author put them and
+                // operate inside the scroll container, so the
+                // scrollbar tracks the right edge of the scroll
+                // container (= the panel edge) — the UX the web
+                // drawer ships.
+                //
+                // iOS mirror: a `scroll_view` with `width =
+                // drawer_width` and `height = 100%` plays the role
+                // of `.ui-nav-drawer-sidebar`. The author's sidebar
+                // primitive renders inside it unchanged.
+                //
+                // Safe-area handling lives on the author's `View`
+                // (mutated in place below), not the scroll_view —
+                // safe-area is a no-op on web (browsers handle
+                // chrome themselves), so an author with a
+                // cross-target sidebar doesn't have to opt in
+                // anywhere. On iOS the framework turns it into
+                // top/bottom padding INSIDE the SidebarBody, which
+                // then scrolls with the rest of the content.
+                // Safe-area handling: let UIScrollView's
+                // `contentInsetAdjustmentBehavior:.automatic` inset
+                // the content for the device's status bar / dynamic
+                // island / home indicator. The author's SidebarBody
+                // padding (the framework's `padding_*` rules)
+                // remains the visual padding inside the safe-area
+                // zone. Adding `.safe_area(TOP | BOTTOM)` here would
+                // SUM the author padding with the device inset
+                // (Taffy writes `author + safe_area_extra` into the
+                // node's `padding` Rect), pushing the brand row
+                // ~75 pt below the top edge on a notched device —
+                // far more than the 16 pt of breathing room the
+                // author asked for.
+                let sidebar_primitive = sidebar_primitive;
+                // The scroll view carries the theme background, not
+                // just the author's `SidebarBody`. When Taffy clamps
+                // SidebarBody to the scroll view's height (its
+                // `min_height: Percent(100)` pins to viewport),
+                // overflowing children — the dark-mode toggle pinned
+                // at the bottom — render OUTSIDE SidebarBody's
+                // frame but INSIDE the scroll view's content area.
+                // Without a background here those children sit on a
+                // transparent scroll view, so the dimmed body page
+                // (scrim) shows through behind them. Painting
+                // `color-surface` on the scroll view itself keeps
+                // the panel's surface color continuous across the
+                // overflow region. The author's SidebarBody still
+                // paints the same color over the same area; both
+                // sit on the same token so a theme swap repaints
+                // them together.
                 let sized_sidebar: runtime_core::Element =
                     runtime_core::primitives::scroll_view::scroll_view(vec![sidebar_primitive])
                         .with_style(std::rc::Rc::new(
@@ -386,6 +404,38 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
                                 runtime_core::StyleRules {
                                     width: Some(
                                         runtime_core::Length::Px(drawer_width).into(),
+                                    ),
+                                    height: Some(
+                                        runtime_core::Length::pct(100.0).into(),
+                                    ),
+                                    background: Some(
+                                        runtime_core::Tokenized::<runtime_core::Color>::token(
+                                            "color-surface",
+                                            runtime_core::Color("#ffffff".into()),
+                                        )
+                                        .into(),
+                                    ),
+                                    // Match the website's SidebarBody
+                                    // transition (250 ms EaseInOut on
+                                    // background). Without this the
+                                    // scroll view's background snaps
+                                    // to the new theme color while the
+                                    // author's SidebarBody crossfades —
+                                    // showing as a one-frame flicker
+                                    // along the safe-area inset zone
+                                    // because the two layers swap
+                                    // colors at different rates. Idea-
+                                    // UI's themes default to 250 ms
+                                    // EaseInOut so this matches the
+                                    // common case; authors with custom
+                                    // theme transitions can re-tune
+                                    // via the existing color-surface
+                                    // token timing in their theme.
+                                    background_transition: Some(
+                                        runtime_core::Transition::new(
+                                            250,
+                                            runtime_core::Easing::EaseInOut,
+                                        ),
                                     ),
                                     ..Default::default()
                                 },

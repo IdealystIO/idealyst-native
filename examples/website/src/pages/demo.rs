@@ -15,7 +15,7 @@ use std::time::Duration;
 use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo, TweenTo};
 use runtime_core::{node_ref, signal, text_fmt, ui, Element, Ref, ViewHandle};
 use idea_ui::{
-    Alert, Badge, Btn, Card, Divider, Field, Stack, Switch, Tag, Typography, StackAxis, StackGap,
+    Alert, Badge, Button, Card, Divider, Field, Stack, Switch, Tag, Typography, StackAxis, StackGap,
 };
 
 use crate::pages::common::{DemoShowcase, PageHeader, PageSection};
@@ -87,9 +87,9 @@ fn reactive_state() -> Element {
     let reset: Rc<dyn Fn()> = Rc::new(move || count.set(0));
 
     let buttons: Vec<Element> = vec![
-        ui! { Btn(label = "\u{2212}".to_string(), on_click = decrement, tone = idea_ui::tone::Neutral, variant = idea_ui::variant::Soft) },
-        ui! { Btn(label = "Reset".to_string(), on_click = reset, tone = idea_ui::tone::Neutral, variant = idea_ui::variant::Ghost) },
-        ui! { Btn(label = "+".to_string(), on_click = increment, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled) },
+        ui! { Button(label = "\u{2212}".to_string(), on_click = decrement, tone = idea_ui::tone::Neutral, variant = idea_ui::variant::Soft) },
+        ui! { Button(label = "Reset".to_string(), on_click = reset, tone = idea_ui::tone::Neutral, variant = idea_ui::variant::Ghost) },
+        ui! { Button(label = "+".to_string(), on_click = increment, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled) },
     ];
     // `text_fmt!` builds a reactive `TextSource`; `bind!(signal)` marks
     // the arg the framework subscribes to. The text node re-resolves on
@@ -153,7 +153,7 @@ fn fade_demo() -> Element {
         ui! { view(style = row_style) { stage_children } },
         ui! {
             Stack(gap = StackGap::Md, axis = StackAxis::Row) {
-                Btn(label = "Toggle".to_string(), on_click = on_toggle, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled)
+                Button(label = "Toggle".to_string(), on_click = on_toggle, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled)
             }
         },
     ];
@@ -217,7 +217,7 @@ fn spring_vs_tween_demo() -> Element {
         ui! { Stack(gap = StackGap::Sm) { spring_row } },
         ui! {
             Stack(gap = StackGap::Md, axis = StackAxis::Row) {
-                Btn(label = "Move".to_string(), on_click = on_move, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled)
+                Button(label = "Move".to_string(), on_click = on_move, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled)
             }
         },
     ];
@@ -271,8 +271,8 @@ fn entrance_demo() -> Element {
                    translate_y.animate(SpringTo::new(0.0).stiffness(170.0).damping(22.0));";
 
     let buttons: Vec<Element> = vec![
-        ui! { Btn(label = "Enter".to_string(), on_click = on_enter, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled) },
-        ui! { Btn(label = "Reset".to_string(), on_click = on_reset, tone = idea_ui::tone::Neutral, variant = idea_ui::variant::Ghost) },
+        ui! { Button(label = "Enter".to_string(), on_click = on_enter, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled) },
+        ui! { Button(label = "Reset".to_string(), on_click = on_reset, tone = idea_ui::tone::Neutral, variant = idea_ui::variant::Ghost) },
     ];
     let preview: Vec<Element> = vec![
         ui! { view(style = row_style) { view(style = stage_style) {}.bind(stage_ref) } },
@@ -326,7 +326,7 @@ fn color_demo() -> Element {
         ui! { view(style = row_style) { view(style = stage_style) {}.bind(stage_ref) } },
         ui! {
             Stack(gap = StackGap::Md, axis = StackAxis::Row) {
-                Btn(label = "Next color".to_string(), on_click = on_next, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled)
+                Button(label = "Next color".to_string(), on_click = on_next, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled)
             }
         },
     ];
@@ -363,7 +363,7 @@ fn intents() -> Element {
         let label = name.to_string();
         let noop: Rc<dyn Fn()> = Rc::new(|| {});
         let row: Vec<Element> = vec![
-            ui! { Btn(label = label.clone(), on_click = noop.clone(), tone = make_tone(), variant = idea_ui::variant::Filled) },
+            ui! { Button(label = label.clone(), on_click = noop.clone(), tone = make_tone(), variant = idea_ui::variant::Filled) },
             ui! { Badge(label = label.clone(), tone = make_tone(), variant = idea_ui::variant::Soft) },
             ui! { Tag(label = label, tone = make_tone(), variant = idea_ui::variant::Outlined) },
         ];
@@ -394,7 +394,7 @@ fn button_kinds() -> Element {
     for (name, make_variant) in kinds {
         let label = name.to_string();
         let noop: Rc<dyn Fn()> = Rc::new(|| {});
-        buttons.push(ui! { Btn(label = label, on_click = noop, tone = idea_ui::tone::Primary, variant = make_variant()) });
+        buttons.push(ui! { Button(label = label, on_click = noop, tone = idea_ui::tone::Primary, variant = make_variant()) });
     }
     let card_children: Vec<Element> = vec![
         ui! { Stack(gap = StackGap::Md, axis = StackAxis::Row) { buttons } },

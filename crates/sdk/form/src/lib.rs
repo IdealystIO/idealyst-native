@@ -10,7 +10,7 @@
 //!
 //! ```ignore
 //! use form::prelude::*;       // brings in `Form!`, `form`, `FormProps`
-//! use idea_ui::prelude::*;    // Btn, TextInput, …
+//! use idea_ui::prelude::*;    // Button, TextInput, …
 //!
 //! // App bootstrap (one line per third-party SDK):
 //! let mut backend = WebBackend::new("#app");
@@ -29,7 +29,7 @@
 //! ui! {
 //!     Form(on_submit = Some(on_submit.clone())) {
 //!         TextInput(value = name.clone())
-//!         Btn(label = "Save", on_press = on_submit.clone())
+//!         Button(label = "Save", on_click = on_submit.clone())
 //!     }
 //! }
 //! ```

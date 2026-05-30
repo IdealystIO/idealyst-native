@@ -586,7 +586,7 @@ docs! {
               identity, the ", code("Backend"), " trait. Your app code talks \
               mostly to this crate."],
             [code("idea-ui"), " — Optional component library on top of \
-              runtime-core. Heading, Card, Stack, Btn, themed colors, \
+              runtime-core. Heading, Card, Stack, Button, themed colors, \
               breakpoints. Use it, replace bits of it, or skip it."],
             [code("dev-hot"), " — Diff-and-patch for hot reload. Compares \
               two ", code("Element"), " trees by their identity hashes and \

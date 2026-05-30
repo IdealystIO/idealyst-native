@@ -183,6 +183,15 @@ pub const BUTTON_RESET: &str = ":where(button) { all: unset; box-sizing: border-
 /// The full base reset stylesheet ([`BOX_SIZING_RESET`] + [`BUTTON_RESET`]).
 /// The SSR backend emits this once in `<head>`; the web backend inserts
 /// the two rules at sheet indices 0/1.
+///
+/// Host-surface theming (body background, scrollbar) is **not** part of
+/// the reset — it's owned by the theme SDK and routed through
+/// `Backend::set_app_background` / `Backend::set_scrollbar_theme`, which
+/// each backend applies however native (DOM rules on web/SSR, UIWindow
+/// background on iOS, etc.). Keeping the reset theme-agnostic means a
+/// vanilla framework user with no theme SDK still gets a sensible
+/// `box-sizing` + `<button>` baseline without inheriting opinions about
+/// color tokens that may not exist.
 pub fn base_reset_css() -> String {
     format!("{BOX_SIZING_RESET}{BUTTON_RESET}")
 }
@@ -933,6 +942,10 @@ fn collect_transitions(rules: &StyleRules) -> Vec<String> {
     tr!(transform_transition, "transform");
     tr!(width_transition, "width");
     tr!(height_transition, "height");
+    tr!(max_width_transition, "max-width");
+    tr!(max_height_transition, "max-height");
+    tr!(min_width_transition, "min-width");
+    tr!(min_height_transition, "min-height");
     tr!(top_transition, "top");
     tr!(right_transition, "right");
     tr!(bottom_transition, "bottom");

@@ -2166,6 +2166,38 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Theme the **host surface** behind the framework's rendered tree —
+    /// `<html>`/`<body>` on web, `UIWindow` on iOS, the Activity's decor
+    /// view on Android, the wgpu clear color on wgpu/macOS, the terminal
+    /// background where settable. The argument is a [`Tokenized<Color>`]
+    /// so backends that have a CSS-variable surface (web/SSR) can wire
+    /// the host surface to `var(--<name>)` — automatically reactive on
+    /// theme swap via the `:root` setProperty path, no second call
+    /// needed. Native backends apply `color.value()` directly and the
+    /// theme SDK calls this again on swap so they re-resolve.
+    ///
+    /// Default no-op for backends with no controllable host surface or
+    /// that haven't wired this up yet — the theme SDK degrades silently.
+    #[allow(unused_variables)]
+    fn set_app_background(&mut self, color: &crate::Tokenized<crate::Color>) {
+        // default: no-op
+    }
+
+    /// Theme the platform scrollbar where the backend can. Token-based
+    /// for the same reason as [`set_app_background`](Backend::set_app_background)
+    /// — web stays reactive without re-call. Default no-op for the many
+    /// backends with no programmable scrollbar chrome (iOS exposes only
+    /// `UIScrollViewIndicatorStyle::{white, black, default}`, terminal
+    /// has none, wgpu paints its own).
+    #[allow(unused_variables)]
+    fn set_scrollbar_theme(
+        &mut self,
+        thumb: &crate::Tokenized<crate::Color>,
+        track: &crate::Tokenized<crate::Color>,
+    ) {
+        // default: no-op
+    }
+
     fn finish(&mut self, root: Self::Node);
 
     /// Drive a fresh layout pass over the backend's registered view

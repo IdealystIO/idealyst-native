@@ -527,6 +527,87 @@ pub fn current_screen_state<T: Any>() -> Option<Rc<T>> {
 }
 
 // ---------------------------------------------------------------------------
+// Per-screen route name stack — pushed by the walker at mount time
+// so author code inside a screen build can ask "what route am I?"
+// without plumbing the name through every component.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static SCREEN_ROUTE: RefCell<Vec<&'static str>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// RAII guard pushed around each screen build alongside
+/// [`ScreenStateGuard`]. SDK handlers don't construct these directly;
+/// the framework's `mount_screen` does.
+pub struct ScreenRouteGuard;
+
+impl ScreenRouteGuard {
+    pub fn push(name: &'static str) -> Self {
+        SCREEN_ROUTE.with(|s| s.borrow_mut().push(name));
+        ScreenRouteGuard
+    }
+}
+
+impl Drop for ScreenRouteGuard {
+    fn drop(&mut self) {
+        SCREEN_ROUTE.with(|s| {
+            let _ = s.borrow_mut().pop();
+        });
+    }
+}
+
+/// Return the route name being built right now. `None` when called
+/// outside a screen build. Author code uses this together with
+/// [`ambient_navigator`] (and its `nav_state.active_route`) to derive
+/// a per-screen focus signal — see [`use_focus`].
+pub fn current_screen_route() -> Option<&'static str> {
+    SCREEN_ROUTE.with(|s| s.borrow().last().copied())
+}
+
+/// Returns a function `() -> bool` that reads as `true` whenever the
+/// current screen is the navigator's active route. Call inside a
+/// screen render to wire focus-driven behavior (pause/resume an
+/// embedded `host_wgpu::IosHostHandle`, mute a video, stop a poll,
+/// rebind a keyboard shortcut, etc.).
+///
+/// The returned closure is reactive — read it inside an `effect!`
+/// block (or any reactive context) and the effect re-runs whenever
+/// focus changes:
+///
+/// ```ignore
+/// use runtime_core::primitives::navigator::use_focus;
+///
+/// let is_focused = use_focus();
+/// effect!(move || {
+///     if is_focused() {
+///         handle.resume();
+///     } else {
+///         handle.pause();
+///     }
+/// });
+/// ```
+///
+/// Returns `|| false` when called outside a screen build (no ambient
+/// navigator or no current route). Authors who need to distinguish
+/// "no navigator" from "not focused" can check
+/// [`current_screen_route`] / [`ambient_navigator`] directly.
+pub fn use_focus() -> impl Fn() -> bool + 'static {
+    let route = current_screen_route();
+    // Capture the `active_route` signal at use-time. The signal is
+    // an `Rc`, so the clone is cheap and keeps the source alive even
+    // if the NavigatorControl itself is later dropped — that means
+    // the returned closure stays callable for the rest of the
+    // enclosing scope's lifetime.
+    let active_route = ambient_navigator()
+        .and_then(|n| n.nav_state.borrow().as_ref().map(|s| s.active_route));
+    move || match (route, active_route) {
+        (Some(r), Some(sig)) => sig.get() == r,
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Headless initial-path override (server-side rendering).
 //
 // A backend rendering headlessly at a specific URL (the SSR backend

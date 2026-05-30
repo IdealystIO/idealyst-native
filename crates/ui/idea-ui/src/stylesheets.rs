@@ -1613,3 +1613,334 @@ stylesheet! {
         }
     }
 }
+
+// =============================================================================
+// Table — themed wrapper over the `table` SDK.
+//
+// `Table` is the outer surface (rounded corners + hairline border +
+// surface bg) applied to the `<table>` itself; `TableHeadCell` and
+// `TableBodyCell` are applied to `<th>` and `<td>` (padding + row
+// divider). Border-bottom on each cell + `border-collapse: collapse`
+// on the table merges into one continuous row boundary per row.
+// =============================================================================
+
+stylesheet! {
+    pub Table<IdeaThemeRef> {
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_top_width: 1.0,
+            border_right_width: 1.0,
+            border_bottom_width: 1.0,
+            border_left_width: 1.0,
+            border_top_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_right_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_left_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_top_left_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_top_right_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_bottom_left_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_bottom_right_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_top_color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub TableHeadCell<IdeaThemeRef> {
+        base(_t) {
+            background: Tokenized::token("color-surface-alt", Color("#f4f5f9".into())),
+            padding_vertical: Tokenized::token("spacing-md", Length::Px(12.0)),
+            padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            border_bottom_width: 1.0,
+            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_bottom_color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub TableBodyCell<IdeaThemeRef> {
+        base(_t) {
+            padding_vertical: Tokenized::token("spacing-md", Length::Px(12.0)),
+            padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            border_bottom_width: 1.0,
+            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+        }
+        transitions {
+            border_bottom_color: 250ms EaseInOut,
+        }
+    }
+}
+
+// Text styling applied to the `text` node INSIDE each cell. The cell
+// stylesheets above handle the table-cell concerns (padding +
+// border); these handle typography. Splitting keeps the cell's
+// `display: table-cell` intact while letting the inner text inherit
+// the theme's font + color tokens.
+stylesheet! {
+    pub TableHeadText<IdeaThemeRef> {
+        base(_t) {
+            font_size: 11.0,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: 0.8,
+            text_transform: TextTransform::Uppercase,
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            text_align: TextAlign::Left,
+        }
+        transitions {
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub TableBodyText<IdeaThemeRef> {
+        base(_t) {
+            font_size: 14.0,
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            text_align: TextAlign::Left,
+        }
+        transitions {
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+// Inner wrapper for `TableCell { … }` rich-children blocks. A `<div
+// display: flex>` placed directly inside a `<td>` expands to the
+// cell's full width (a quirk of flex containers under `display:
+// table-cell`). Setting `justify_content: FlexStart` keeps flex-grow
+// children (Tags, Buttons) at their natural width, sitting left-
+// aligned inside the cell instead of stretching across it. Authors
+// who want stretched children can override at the call site.
+stylesheet! {
+    pub TableCellInner<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::FlexStart,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+        }
+    }
+}
+
+// =============================================================================
+// Collapsible / Accordion
+//
+// `CollapsibleContainer` is the outer surface — rounded corners +
+// hairline border, matching Card/Table. `CollapsibleHeader` is the
+// always-visible Pressable that toggles open/closed. `CollapsibleBody`
+// is the revealed content area (mounted/unmounted by the framework's
+// `presence` primitive with a fade-and-slide animation).
+//
+// `AccordionContainer` is similar but groups multiple Collapsibles
+// with shared dividers — the outer border is the group's, individual
+// items don't redraw it.
+// =============================================================================
+
+stylesheet! {
+    pub CollapsibleContainer<IdeaThemeRef> {
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_top_width: 1.0,
+            border_right_width: 1.0,
+            border_bottom_width: 1.0,
+            border_left_width: 1.0,
+            border_top_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_right_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_left_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_top_left_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_top_right_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_bottom_left_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_bottom_right_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            flex_direction: FlexDirection::Column,
+            overflow: runtime_core::Overflow::Hidden,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_top_color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub CollapsibleHeader<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            padding_vertical: Tokenized::token("spacing-md", Length::Px(12.0)),
+            padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: 14.0,
+            font_weight: FontWeight::SemiBold,
+            text_align: TextAlign::Left,
+        }
+        state hovered(_t) {
+            background: Tokenized::token("color-surface-alt", Color("#f4f5f9".into())),
+        }
+        transitions {
+            background: 150ms EaseOut,
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub CollapsibleChevron<IdeaThemeRef> {
+        base(_t) {
+            font_size: 13.0,
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+        }
+        transitions {
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+// Snap-mode body: state changes apply instantly. Cheap, predictable,
+// no perceived animation. Pick this via `CollapsibleTransition::Snap`
+// when the disclosure should feel like a single click → done.
+stylesheet! {
+    pub CollapsibleBody<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            border_top_width: 1.0,
+            border_top_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            overflow: runtime_core::Overflow::Hidden,
+        }
+        variant open {
+            #[default]
+            closed(_t) {
+                max_height: Length::Px(0.0),
+                padding_top: Length::Px(0.0),
+                padding_bottom: Length::Px(0.0),
+                border_top_width: 0.0,
+            }
+            shown(_t) {
+                max_height: Length::Px(2000.0),
+                padding_top: Tokenized::token("spacing-md", Length::Px(12.0)),
+                padding_bottom: Tokenized::token("spacing-md", Length::Px(12.0)),
+                border_top_width: 1.0,
+            }
+        }
+        transitions {
+            border_top_color: 250ms EaseInOut,
+        }
+    }
+}
+
+// Smooth-mode body: animates `max_height` + `opacity` so opening
+// reveals the content over time.
+//
+// **The `max_height` cap matters for perceived smoothness.** CSS
+// can't transition `height: auto`, so the framework can't know
+// content's natural height — instead the variant grows max-height to
+// a fixed cap. The visible portion of the transition is
+// `content-height / cap` of the total duration (content beyond the
+// cap clips during the transition then stretches to fit at the end).
+//
+// Default cap is the constant `SMOOTH_MAX_HEIGHT_DEFAULT_PX` in the
+// `collapsible` component module. Authors with taller content tune
+// it via `Collapsible.max_height(px)` — a smaller cap relative to
+// content height means more of the transition duration is visible
+// motion. Authors with shorter content (a few text lines, a small
+// form) can leave the default.
+stylesheet! {
+    pub CollapsibleBodySmooth<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            border_top_width: 1.0,
+            border_top_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            overflow: runtime_core::Overflow::Hidden,
+        }
+        variant open {
+            #[default]
+            closed(_t) {
+                max_height: Length::Px(0.0),
+                padding_top: Length::Px(0.0),
+                padding_bottom: Length::Px(0.0),
+                opacity: 0.0,
+                border_top_width: 0.0,
+            }
+            shown(_t) {
+                // The shown max-height is overridden per-instance
+                // via `app.overrides.max_height` (see
+                // `collapsible_body` in `components/collapsible.rs`)
+                // so authors can tune. The literal here is a
+                // fallback when the override isn't set; small enough
+                // that the default still feels smooth on typical
+                // disclosure content (~50–200px), large enough that
+                // it doesn't clip a paragraph.
+                max_height: Length::Px(400.0),
+                padding_top: Tokenized::token("spacing-md", Length::Px(12.0)),
+                padding_bottom: Tokenized::token("spacing-md", Length::Px(12.0)),
+                opacity: 1.0,
+                border_top_width: 1.0,
+            }
+        }
+        transitions {
+            border_top_color: 250ms EaseInOut,
+            max_height: 240ms EaseOut,
+            opacity: 200ms EaseOut,
+            padding_top: 240ms EaseOut,
+            padding_bottom: 240ms EaseOut,
+        }
+    }
+}
+
+// Accordion item — same header/body shape as a Collapsible, but
+// without the per-item border/radius (the Accordion container owns
+// those, and items just contribute internal dividers).
+stylesheet! {
+    pub AccordionContainer<IdeaThemeRef> {
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_top_width: 1.0,
+            border_right_width: 1.0,
+            border_bottom_width: 1.0,
+            border_left_width: 1.0,
+            border_top_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_right_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_left_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_top_left_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_top_right_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_bottom_left_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_bottom_right_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            flex_direction: FlexDirection::Column,
+            overflow: runtime_core::Overflow::Hidden,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_top_color: 250ms EaseInOut,
+        }
+    }
+}
+
+// Per-item divider — top border on items 1..N so the first item has
+// no top border and the rest separate cleanly.
+stylesheet! {
+    pub AccordionItemSeparator<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            border_top_width: 1.0,
+            border_top_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+        }
+        transitions {
+            border_top_color: 250ms EaseInOut,
+        }
+    }
+}

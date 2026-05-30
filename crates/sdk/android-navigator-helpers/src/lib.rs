@@ -187,6 +187,13 @@ pub struct AndroidScreenOptions {
     pub header_background: Option<Rc<dyn Fn() -> runtime_core::Color>>,
     pub header_tint: Option<Rc<dyn Fn() -> runtime_core::Color>>,
     pub title_color: Option<Rc<dyn Fn() -> runtime_core::Color>>,
+    /// Per-screen override of the navigator's global mount policy
+    /// (`AndroidDrawerCallbacks::mount_policy` / `AndroidTabCallbacks`).
+    /// `None` defers to the navigator-global default. Mirrors
+    /// `IosScreenOptions::mount_policy` so a single
+    /// `DrawerScreenExt::mount_policy(...)` declaration works on
+    /// both mobile backends.
+    pub mount_policy: Option<MountPolicy>,
 }
 
 // =============================================================================

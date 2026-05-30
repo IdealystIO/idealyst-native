@@ -1,0 +1,51 @@
+[package]
+name = "table"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Third-party `Table` SDK — one crate, cfg-gated per-backend impl
+# modules (same single-crate shape as the `form` SDK).
+#
+# # Why this is an SDK and not a core primitive
+#
+# A real HTML `<table>` is irreplaceable for cross-row column
+# alignment on web: the browser's table layout algorithm sizes
+# every column to fit the widest cell in that column, then applies
+# that width to every row. Reproducing that with flex requires
+# per-column pre-computed widths or `display: grid`, neither of
+# which the framework's stylesheet vocabulary exposes today.
+#
+# Native platforms have no comparable structure (UITableView is a
+# vertical list, not a multi-column grid; Android RecyclerView is
+# the same; macOS has NSTableView but it's row-keyed not
+# cross-column). So `Table` is a web-first SDK on
+# `Element::External` (with children):
+#   * web    → real `<table>`/`<thead>`/`<tbody>`/`<tr>`/`<th>`/`<td>`
+#              hierarchy. Browser's `table-layout: auto` handles
+#              column alignment for free.
+#   * native → flex passthrough (column proportions still controlled
+#              by per-cell styles, same as the docs' hand-rolled
+#              table — no column-fits-widest behavior, but the
+#              author-supplied flex weights still apply).
+description = "Cross-platform table SDK on Element::External — real <table> on web."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Element",
+    "Node",
+    "Window",
+    "HtmlTableElement",
+    "HtmlTableRowElement",
+    "HtmlTableCellElement",
+    "HtmlTableSectionElement",
+] }
+wasm-bindgen = "0.2"

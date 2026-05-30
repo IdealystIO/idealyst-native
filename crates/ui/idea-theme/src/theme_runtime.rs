@@ -36,7 +36,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::{install_tokens, update_tokens, Effect, Signal};
+use runtime_core::{install_tokens, update_tokens, Color, Effect, Signal};
 
 pub use runtime_core::{TokenEntry, TokenValue, Tokenized};
 
@@ -86,6 +86,7 @@ pub fn install_theme<T: ThemeTokens + 'static>(theme: T) {
     let sig = Signal::new(rc);
     ACTIVE_THEME.with(|t| *t.borrow_mut() = Some(sig));
     install_tokens(&tokens);
+    apply_host_surface_from_tokens(&tokens);
 }
 
 /// Swap the active theme. Forwards the new tokens to
@@ -109,6 +110,51 @@ pub fn set_theme<T: ThemeTokens + 'static>(theme: T) {
     });
 
     update_tokens(&tokens);
+    apply_host_surface_from_tokens(&tokens);
+}
+
+/// Token name for the host-surface background — body/UIWindow/clear color.
+/// Same name across every idea-theme variant so the web backend's
+/// `var(--color-background)` reference auto-resolves on swap.
+const HOST_BG_TOKEN: &str = "color-background";
+
+/// Token name for the platform scrollbar thumb. Track is fixed
+/// `transparent` (literal) so the underlying surface color shows through;
+/// most apps don't want a separately-themed track. Tighter contrast on
+/// hover comes from the web backend's `::-webkit-scrollbar-thumb:hover`
+/// rule reading `--color-text-muted`, but that's web-only chrome.
+const SCROLLBAR_THUMB_TOKEN: &str = "color-border-strong";
+
+/// Look up the host-surface background + scrollbar thumb in `tokens`
+/// (by well-known name) and route them through
+/// [`runtime_core::set_app_background`] / [`runtime_core::set_scrollbar_theme`].
+/// Called from both [`install_theme`] and [`set_theme`] so native
+/// backends (which apply the resolved value directly and have no
+/// `var(--…)` indirection) repaint on every swap. The web backend uses
+/// the token NAME — its rule is `body { background: var(--color-background); }`
+/// — and would actually be fine with a single install-time call, but
+/// re-calling on swap is cheap (rule delete+reinsert at the same index)
+/// and keeps the cross-backend code path uniform.
+fn apply_host_surface_from_tokens(tokens: &[TokenEntry]) {
+    if let Some(fallback) = lookup_color(tokens, HOST_BG_TOKEN) {
+        runtime_core::set_app_background(Tokenized::Token {
+            name: HOST_BG_TOKEN,
+            fallback,
+        });
+    }
+    if let Some(fallback) = lookup_color(tokens, SCROLLBAR_THUMB_TOKEN) {
+        runtime_core::set_scrollbar_theme(
+            Tokenized::Token { name: SCROLLBAR_THUMB_TOKEN, fallback },
+            Tokenized::Literal(Color("transparent".into())),
+        );
+    }
+}
+
+fn lookup_color(tokens: &[TokenEntry], name: &str) -> Option<Color> {
+    tokens.iter().find(|t| t.name == name).and_then(|t| match &t.value {
+        TokenValue::Color(c) => Some(c.clone()),
+        _ => None,
+    })
 }
 
 /// Install a multi-variant theme system with the active variant

@@ -33,16 +33,23 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// A screen retained across switches under a persistent `MountPolicy`.
-/// The view stays in the body's subview list and is toggled visible
-/// via `setHidden:` rather than torn down. The cached
-/// [`IosScreenOptions`] lets re-Selects re-apply the header
+/// A screen tracked across switches. For persistent policies the view
+/// stays in the body's subview list and is toggled via `setHidden:`;
+/// for `LazyDisposing` the view is removed and the scope released on
+/// blur (this entry is dropped from the map at that point). The
+/// cached [`IosScreenOptions`] lets re-Selects re-apply the header
 /// configuration without re-mounting.
+///
+/// `effective_policy` is per-screen (the screen's own override if
+/// declared via `DrawerScreenOptions::mount_policy`, else the
+/// navigator-global default). Stored here so `select_screen` knows
+/// what to do with the *previous* screen on the next transition
+/// without re-deriving from incoming options each time.
 pub(crate) struct MountedScreen {
     pub(crate) view: Retained<UIView>,
-    #[allow(dead_code)]
     pub(crate) scope_id: u64,
     pub(crate) options: IosScreenOptions,
+    pub(crate) effective_policy: MountPolicy,
 }
 
 /// Per-instance state for tab and drawer navigators.
@@ -155,15 +162,25 @@ pub(crate) fn create_tab(
 }
 
 /// Shared screen-switch logic for tab and drawer navigators. Honors
-/// `MountPolicy`:
+/// Mount or re-show the screen named `name`, applying per-screen
+/// `MountPolicy` to both the outgoing screen (looked up from the
+/// `mounted` map) and the incoming one (read from its returned
+/// `IosScreenOptions::mount_policy`, falling back to
+/// `nav_global_policy`).
 ///
-/// - `LazyDisposing`: tear down the previous screen entirely (release
-///   scope + remove view), then mount the new one fresh.
-/// - `LazyPersistent` / `EagerPersistent`: keep the previous screen
-///   in the subview tree but hide it; mount the new screen on first
-///   visit and cache it; subsequent visits just unhide.
+/// Outgoing transitions:
+/// - cached `LazyDisposing`: release its scope, removeFromSuperview,
+///   drop the cache entry.
+/// - cached `LazyPersistent` / `EagerPersistent`: `setHidden:true`,
+///   keep the entry for the next revisit.
+///
+/// Incoming transitions:
+/// - cache hit: unhide.
+/// - cache miss: call `mount_fn`, attach the new view, cache the
+///   entry (record `effective_policy` so the next transition knows
+///   what to do with this screen on blur).
 fn select_screen(
-    policy: MountPolicy,
+    nav_global_policy: MountPolicy,
     body: &Retained<UIView>,
     mounted: &Rc<RefCell<HashMap<&'static str, MountedScreen>>>,
     current_route: &Rc<RefCell<Option<&'static str>>>,
@@ -173,84 +190,79 @@ fn select_screen(
     name: &'static str,
     params: Box<dyn std::any::Any>,
 ) -> IosScreenOptions {
-    match policy {
-        MountPolicy::LazyDisposing => {
-            if let Some(old_scope) = current_scope.borrow_mut().take() {
-                release_fn(old_scope);
-            }
-            for sub in body.subviews().iter() {
-                unsafe { sub.removeFromSuperview() };
-            }
-            let result = mount_fn(name, params);
-            attach_screen(body, result.node.as_view());
-            // Force a synchronous Taffy layout + UIKit Auto Layout
-            // pass so the new screen's content has computed frames
-            // before the next render cycle. Without this the screen
-            // is added with zero-frame views and the user sees a
-            // brief white flash until the next layout pass runs.
-            backend_ios::with_backend(|b| b.run_layout());
-            unsafe {
-                let _: () = msg_send![body.as_ref(), layoutIfNeeded];
-            }
-            sync_scroll_content_size(body, result.node.as_view());
-            *current_scope.borrow_mut() = Some(result.scope_id);
-            *current_route.borrow_mut() = Some(name);
-            result
-                .options
-                .downcast_ref::<IosScreenOptions>()
-                .cloned()
-                .unwrap_or_default()
-        }
-        MountPolicy::LazyPersistent | MountPolicy::EagerPersistent => {
-            if let Some(prev) = *current_route.borrow() {
-                if let Some(m) = mounted.borrow().get(prev) {
-                    let _: () = unsafe { msg_send![m.view.as_ref(), setHidden: true] };
+    // Handle the outgoing screen per its own cached policy.
+    if let Some(prev) = current_route.borrow().clone() {
+        if prev != name {
+            let entry = mounted.borrow_mut().remove(prev);
+            if let Some(m) = entry {
+                match m.effective_policy {
+                    MountPolicy::LazyDisposing => {
+                        // Disposing: release the scope + view; drop
+                        // the cache entry. Next time this route is
+                        // shown it'll mount fresh.
+                        release_fn(m.scope_id);
+                        unsafe { m.view.removeFromSuperview() };
+                    }
+                    MountPolicy::LazyPersistent | MountPolicy::EagerPersistent => {
+                        // Persistent: hide + re-insert the entry.
+                        let _: () =
+                            unsafe { msg_send![m.view.as_ref(), setHidden: true] };
+                        mounted.borrow_mut().insert(prev, m);
+                    }
                 }
             }
-            let mut map = mounted.borrow_mut();
-            let options = if let Some(m) = map.get(name) {
-                let _: () = unsafe { msg_send![m.view.as_ref(), setHidden: false] };
-                *current_scope.borrow_mut() = Some(m.scope_id);
-                m.options.clone()
-            } else {
-                let result = mount_fn(name, params);
-                let view: Retained<UIView> = unsafe {
-                    Retained::retain(
-                        result.node.as_view() as *const UIView as *mut UIView,
-                    )
-                    .unwrap()
-                };
-                attach_screen(body, &view);
-                // Same rationale as the LazyDisposing branch: force a
-                // synchronous Taffy + Auto Layout pass so the new
-                // screen has computed frames before the next render
-                // frame. Without this the user sees a white flash.
-                backend_ios::with_backend(|b| b.run_layout());
-                unsafe {
-                    let _: () = msg_send![body.as_ref(), layoutIfNeeded];
-                }
-                sync_scroll_content_size(body, &view);
-                *current_scope.borrow_mut() = Some(result.scope_id);
-                let options = result
-                    .options
-                    .downcast_ref::<IosScreenOptions>()
-                    .cloned()
-                    .unwrap_or_default();
-                let options_for_cache = options.clone();
-                map.insert(
-                    name,
-                    MountedScreen {
-                        view,
-                        scope_id: result.scope_id,
-                        options: options_for_cache,
-                    },
-                );
-                options
-            };
-            *current_route.borrow_mut() = Some(name);
-            options
         }
     }
+
+    // Cache hit on the incoming screen → unhide + re-apply options.
+    {
+        let map = mounted.borrow();
+        if let Some(m) = map.get(name) {
+            let _: () = unsafe { msg_send![m.view.as_ref(), setHidden: false] };
+            *current_scope.borrow_mut() = Some(m.scope_id);
+            *current_route.borrow_mut() = Some(name);
+            return m.options.clone();
+        }
+    }
+
+    // Cache miss → mount fresh and decide caching based on this
+    // screen's effective policy.
+    let result = mount_fn(name, params);
+    let view: Retained<UIView> = unsafe {
+        Retained::retain(result.node.as_view() as *const UIView as *mut UIView).unwrap()
+    };
+    attach_screen(body, &view);
+    // Force a synchronous Taffy + Auto Layout pass so the new screen
+    // has computed frames before the next render cycle; otherwise
+    // the user sees a brief white flash until the next layout pass
+    // runs.
+    backend_ios::with_backend(|b| b.run_layout());
+    unsafe {
+        let _: () = msg_send![body.as_ref(), layoutIfNeeded];
+    }
+    sync_scroll_content_size(body, &view);
+    let options = result
+        .options
+        .downcast_ref::<IosScreenOptions>()
+        .cloned()
+        .unwrap_or_default();
+    let effective_policy = options.mount_policy.unwrap_or(nav_global_policy);
+    *current_scope.borrow_mut() = Some(result.scope_id);
+    *current_route.borrow_mut() = Some(name);
+    // Cache regardless of policy. Disposing screens stay cached
+    // *while* they are the active screen — the dispose runs on the
+    // next outgoing transition (above). Persistent screens stay
+    // cached across transitions.
+    mounted.borrow_mut().insert(
+        name,
+        MountedScreen {
+            view,
+            scope_id: result.scope_id,
+            options: options.clone(),
+            effective_policy,
+        },
+    );
+    options
 }
 
 pub(crate) fn tab_attach_initial(
@@ -280,6 +292,7 @@ pub(crate) fn tab_attach_initial(
                 view,
                 scope_id,
                 options: IosScreenOptions::default(),
+                effective_policy: entry.mount_policy,
             },
         );
     }
@@ -847,12 +860,14 @@ pub(crate) fn drawer_attach_initial(
     ) {
         let initial_name = entry.active_route_sig.get();
         *entry.current_route.borrow_mut() = Some(initial_name);
+        let effective_policy = options.mount_policy.unwrap_or(entry.mount_policy);
         entry.mounted.borrow_mut().insert(
             initial_name,
             MountedScreen {
                 view,
                 scope_id,
                 options: options.clone(),
+                effective_policy,
             },
         );
     }

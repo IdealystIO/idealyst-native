@@ -201,6 +201,45 @@ impl StringCallbackTarget {
 // =========================================================================
 // MetalView — UIView subclass backed by CAMetalLayer
 // =========================================================================
+//
+// Lifecycle methods drive the framework's `Graphics` primitive
+// callbacks:
+//
+//   layoutSubviews
+//     ├─ first call with non-zero bounds → on_ready (once per surface)
+//     └─ subsequent calls with new size  → on_resize
+//
+//   willMoveToSuperview(nil) → on_lost
+//
+// State lives on the subclass's ivars rather than in capturing
+// closures, so the three callbacks stay reachable past
+// `create_graphics`'s return without leaking the slot the way the
+// previous `performSelector:withDelay:0` shape required (see the
+// `mem::forget` keepalive in
+// `examples/website/src/components/simulator.rs`).
+
+use std::cell::Cell;
+use runtime_core::primitives::graphics::{
+    GraphicsSurface, OnLost, OnReady, OnReadyEvent, OnResize, OnResizeEvent,
+};
+use objc2_foundation::CGRect;
+
+pub(crate) struct MetalViewIvars {
+    pub(crate) on_ready: RefCell<Option<OnReady>>,
+    pub(crate) on_resize: RefCell<Option<OnResize>>,
+    pub(crate) on_lost: RefCell<Option<OnLost>>,
+    pub(crate) surface: RefCell<Option<GraphicsSurface>>,
+    /// Physical-pixel size last reported via `on_ready` / `on_resize`.
+    /// `(0, 0)` is the sentinel "haven't reported yet" — the first
+    /// `layoutSubviews` past zero bounds fires `on_ready` and
+    /// transitions out of that state.
+    pub(crate) last_size: Cell<(u32, u32)>,
+    /// `true` once `on_ready` has been delivered for the current
+    /// surface. Cleared by `willMoveToSuperview:nil` so a re-add
+    /// could re-fire (matches the trait's "Mount → on_ready → on_lost
+    /// → on_ready → … → unmount" contract).
+    pub(crate) ready_fired: Cell<bool>,
+}
 
 declare_class!(
     pub(crate) struct MetalView;
@@ -212,7 +251,7 @@ declare_class!(
     }
 
     impl DeclaredClass for MetalView {
-        type Ivars = ();
+        type Ivars = MetalViewIvars;
     }
 
     unsafe impl MetalView {
@@ -224,14 +263,102 @@ declare_class!(
         fn layer_class() -> &'static objc2::runtime::AnyClass {
             objc2::class!(CAMetalLayer)
         }
+
+        /// UIKit calls this whenever the view needs to lay out its
+        /// subviews (after `setBounds:` / `setFrame:`, on screen
+        /// rotation, when the parent's autoresizing kicks in, …).
+        /// We use it to detect the first non-zero bounds (fire
+        /// `on_ready`) and any subsequent size change (`on_resize`).
+        #[method(layoutSubviews)]
+        fn layout_subviews(&self) {
+            let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+            let frame: CGRect = unsafe { msg_send![self, frame] };
+            let scale: CGFloat = unsafe { msg_send![self, contentScaleFactor] };
+            let w = (frame.size.width * scale).max(0.0) as u32;
+            let h = (frame.size.height * scale).max(0.0) as u32;
+            if w == 0 || h == 0 {
+                // Still zero-sized — pre-layout call. Wait.
+                return;
+            }
+            let new_size = (w, h);
+            let prev_size = self.ivars().last_size.get();
+            if !self.ivars().ready_fired.get() {
+                // First viable bounds — fire on_ready.
+                let surface = match self.ivars().surface.borrow().clone() {
+                    Some(s) => s,
+                    None => return, // no surface installed yet (shouldn't happen)
+                };
+                let mut handler = self.ivars().on_ready.borrow_mut();
+                if let Some(cb) = handler.as_mut() {
+                    cb(OnReadyEvent {
+                        surface,
+                        size: new_size,
+                    });
+                }
+                self.ivars().ready_fired.set(true);
+                self.ivars().last_size.set(new_size);
+                return;
+            }
+            if new_size == prev_size {
+                return;
+            }
+            // Bounds changed after on_ready — fire on_resize.
+            let mut handler = self.ivars().on_resize.borrow_mut();
+            if let Some(cb) = handler.as_mut() {
+                cb(OnResizeEvent { size: new_size });
+            }
+            self.ivars().last_size.set(new_size);
+        }
+
+        /// Called whenever the view is about to be re-parented —
+        /// `newSuperview` is `nil` when the view is being removed.
+        /// Fires `on_lost` in that case so the author can drop wgpu
+        /// objects holding a borrow on this view's CAMetalLayer
+        /// surface; clears `ready_fired` so a subsequent add re-fires
+        /// `on_ready`.
+        #[method(willMoveToSuperview:)]
+        fn will_move_to_superview(&self, new_superview: *const objc2_ui_kit::UIView) {
+            let _: () = unsafe {
+                msg_send![super(self), willMoveToSuperview: new_superview]
+            };
+            if new_superview.is_null() && self.ivars().ready_fired.get() {
+                if let Some(cb) = self.ivars().on_lost.borrow_mut().as_mut() {
+                    cb();
+                }
+                self.ivars().ready_fired.set(false);
+                self.ivars().last_size.set((0, 0));
+            }
+        }
     }
 );
 
 impl MetalView {
     pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
-        let this = this.set_ivars(());
+        let this = this.set_ivars(MetalViewIvars {
+            on_ready: RefCell::new(None),
+            on_resize: RefCell::new(None),
+            on_lost: RefCell::new(None),
+            surface: RefCell::new(None),
+            last_size: Cell::new((0, 0)),
+            ready_fired: Cell::new(false),
+        });
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// Install the three framework-supplied callbacks. Called once
+    /// from `imp::graphics::create_graphics` after the view is built.
+    pub(crate) fn install_callbacks(
+        &self,
+        on_ready: OnReady,
+        on_resize: OnResize,
+        on_lost: OnLost,
+        surface: GraphicsSurface,
+    ) {
+        *self.ivars().on_ready.borrow_mut() = Some(on_ready);
+        *self.ivars().on_resize.borrow_mut() = Some(on_resize);
+        *self.ivars().on_lost.borrow_mut() = Some(on_lost);
+        *self.ivars().surface.borrow_mut() = Some(surface);
     }
 }
 

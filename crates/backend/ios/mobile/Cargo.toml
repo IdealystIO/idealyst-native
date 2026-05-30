@@ -12,7 +12,7 @@ name = "backend_ios"
 crate-type = ["staticlib", "rlib"]
 
 [features]
-debug-stats = ["runtime-core/debug-stats"]
+debug-stats = ["runtime-core/debug-stats", "backend-ios-core/debug-stats"]
 # Optional: compile in the runtime-server-client entry point + main-thread
 # scheduler so the iOS app can run as a thin client of an runtime-server
 # dev-server (instead of mounting the user's tree locally). When

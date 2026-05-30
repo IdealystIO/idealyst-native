@@ -39,3 +39,15 @@ runtime-core = { workspace = true, features = ["async-driver"] }
 wgpu = { version = "29", default-features = false, features = ["metal", "wgsl"] }
 raw-window-handle = "0.6"
 log = "0.4"
+# `objc2` + `objc2-foundation` are used by the per-frame visibility
+# check (`view.window != nil` + recursive `!isHidden`) — without the
+# check, the wgpu render loop keeps submitting Metal frames for a
+# MetalView that has been hidden by a `LazyPersistent` navigator (the
+# home screen behind a pushed page in the website demo). See
+# [[project_navigator_ext_architecture]] for the broader
+# persistent-screen story.
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSObject"] }
+# Routes our visibility-transition diagnostics through NSLog so they
+# surface in `simctl log stream`. `log::warn!` is not wired up on iOS.
+backend-ios-core = { workspace = true }

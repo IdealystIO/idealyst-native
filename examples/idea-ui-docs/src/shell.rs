@@ -1,53 +1,79 @@
-//! The persistent shell: sidebar with route links + a theme
-//! toggle + the outlet for the active page. Wired into Navigator
-//! via `.layout(...)`.
+//! Persistent shell (drawer sidebar) + the per-page chrome primitives
+//! every component page is built from: `CodePanel`, `PropsTable`,
+//! `DemoSurface`, `Demo`, `Callout`, `ComponentPage`.
 //!
-//! Navigator's layout closure runs once per push/pop but the
-//! enclosing scope stays mounted across navigation, so signal
-//! reads inside (the dark-mode flag, the active route) re-fire
-//! their dependent effects without rebuilding the chrome.
+//! Each of these is a real `#[component]` so it dispatches inside
+//! `ui!` like any other tag (e.g. `Demo(preview = ..., controls = ...)`)
+//! and pages compose them through the macro.
 
 use std::rc::Rc;
 
-use runtime_core::{ui, ChildList, Element, Signal, StyleApplication, VariantEnum};
-// NOTE: LayoutProps is gone — the stack-navigator SDK no longer has
-// a `.layout(...)` API. This shell module's old `web_layout` function
-// has been deleted alongside; the helper components below
-// (`sidebar`, `nav_link`) remain in case they're useful for a
-// drawer-navigator-based rewrite of this example.
-use idea_ui::{Typography, Card, dark_theme, Divider, light_theme, set_idea_theme, Stack, Switch, IdeaThemeRef, StackGap};
+use runtime_core::{
+    component, derived, switch, ui, Color, Element, IntoElement, StyleApplication, Tokenized,
+};
+use drawer_navigator::SlotProps;
+use idea_ui::{
+    dark_theme, light_theme, set_idea_theme, typography_kind, Card, Spacer, Stack, StackGap,
+    Switch, Table, TableCell, TableRow, Typography,
+};
 
-use crate::routes::INDEX;
-use crate::styles::{Content, NavLink, PageRoot, Sidebar, SidebarHeader};
+use crate::routes::SECTIONS;
+use crate::styles::{
+    Callout as CalloutBox, CodePanel as CodePanelBox, CodeText, ControlsBox, DemoRow,
+    DemoSurface as DemoSurfaceBox, NavLink, NavLinkActive, PagePad, PreviewBox, PreviewSlot,
+    ScreenScroll, SidebarBody, SidebarFooter, SidebarHeader, SidebarSection,
+};
 
-/// Build the docs app's layout. Receives the navigator's
-/// `LayoutProps` (active-route signal + outlet primitive) and
-/// returns the full chrome with the outlet embedded.
-///
-/// Web-only. On native (UIKit / Android), the platform's own
-/// `UINavigationController` / `FragmentManager` provides the
-/// chrome — a persistent sidebar fights the platform idiom there.
-/// Build the sidebar: brand header, list of nav links, theme
-/// toggle at the bottom. Pulled out so the layout closure stays
-/// shallow.
-#[cfg(target_arch = "wasm32")]
-fn sidebar(
-    active_route: Signal<&'static str>,
-    is_dark: Signal<bool>,
-    container_style: crate::styles::Sidebar,
-) -> Element {
+// =============================================================================
+// Layout wrapper — every page calls `shell::layout(...)` to render
+// inside the page-background scroll surface.
+// =============================================================================
+
+pub fn layout(content: Element) -> Element {
+    let style = ScreenScroll();
+    ui! { view(style = style) { content } }
+}
+
+// =============================================================================
+// Sidebar — runs once at navigator init; survives screen swaps.
+// =============================================================================
+
+pub fn sidebar(slot: SlotProps, is_dark: runtime_core::Signal<bool>) -> Element {
+    let body_style = SidebarBody();
     let header_style = SidebarHeader();
+    let footer_style = SidebarFooter();
+
     let header_children: Vec<Element> = vec![
-        ui! { Typography(content = "idea-ui".to_string(), kind = idea_ui::typography_kind::H2) },
-        ui! { Typography(content = "Component reference".to_string(), muted = true) },
+        ui! { Typography(content = "idea-ui".to_string(), kind = typography_kind::H3) },
+        ui! {
+            Typography(
+                content = "Component reference, theming, and extension guide.".to_string(),
+                muted = true,
+            )
+        },
     ];
 
-    let mut links: Vec<Element> = Vec::with_capacity(INDEX.len());
-    for entry in INDEX {
-        links.push(nav_link(entry.name, entry.label, active_route));
-    }
+    let active_route = slot.active_route;
 
-    let on_dark_change: Rc<dyn Fn(bool)> = Rc::new(move |dark| {
+    ui! {
+        view(style = body_style) {
+            view(style = header_style) { header_children }
+            for section in SECTIONS {
+                (!section.title.is_empty()).then(|| ui! {
+                    text(style = SidebarSection()) { section.title.to_string() }
+                })
+                for entry in section.entries {
+                    nav_link(entry.route, entry.label, active_route)
+                }
+            }
+            Spacer()
+            theme_toggle(footer_style, is_dark)
+        }
+    }
+}
+
+fn theme_toggle(footer_style: SidebarFooter, is_dark: runtime_core::Signal<bool>) -> Element {
+    let on_change: Rc<dyn Fn(bool)> = Rc::new(move |dark| {
         is_dark.set(dark);
         if dark {
             set_idea_theme(dark_theme());
@@ -56,192 +82,397 @@ fn sidebar(
         }
     });
 
-    // Compose the sidebar: brand header → links list → spacer
-    // (handled by margin-top: auto on the theme switch row) →
-    // theme switch.
-    let theme_row_children: Vec<Element> = vec![
-        ui! { Typography(content = "Theme".to_string(), kind = idea_ui::typography_kind::Caption) },
-        ui! {
-            Switch(
-                label = Some("Dark mode".to_string()),
-                value = is_dark,
-                on_change = on_dark_change
-            )
-        },
-    ];
+    let row_children: Vec<Element> = vec![ui! {
+        Switch(
+            label = Some("Dark mode".to_string()),
+            value = is_dark,
+            on_change = on_change,
+        )
+    }];
 
-    let mut children: Vec<Element> = Vec::new();
-    children.push(ui! { view(style = header_style) { header_children } });
-    for l in links {
-        ChildList::append_to(l, &mut children);
-    }
-    // Divider before the theme toggle so it visually anchors to
-    // the bottom of the sidebar without us needing a Spacer.
-    children.push(ui! { Divider() });
-    children.push(ui! { Stack(gap = StackGap::Xs) { theme_row_children } });
+    ui! { view(style = footer_style) { row_children } }
+}
+
+fn nav_link(
+    route: &'static runtime_core::Route<()>,
+    label: &'static str,
+    active_route: runtime_core::Signal<&'static str>,
+) -> Element {
+    let route_for_match: &'static str = route.name();
+    let style = NavLink().active(derived(move || {
+        if active_route.get() == route_for_match {
+            NavLinkActive::On
+        } else {
+            NavLinkActive::Off
+        }
+    }));
+    let label_text = label.to_string();
 
     ui! {
-        view(style = container_style) { children }
+        link(route = route, params = ()) {
+            text(style = style) { label_text }
+        }
     }
 }
 
-/// A nav link. Reads `active_route` so the highlight updates
-/// reactively whenever the navigator pushes/pops without
-/// rebuilding the whole sidebar.
-#[cfg(target_arch = "wasm32")]
-fn nav_link(
-    name: &'static str,
-    label: &'static str,
-    active_route: Signal<&'static str>,
-) -> Element {
-    let label_text = label.to_string();
-    // The on_click side-navigates by calling history.pushState
-    // through the Navigator. Since we don't have a `Ref` to the
-    // NavigatorHandle here (the layout doesn't receive it), we use
-    // a `Link` primitive instead — it finds the ambient navigator
-    // automatically and emits a real `<a href>` on web so
-    // middle-click "open in new tab" works.
-    //
-    // Wrap the styled label inside the Link's children block. The
-    // active-variant flip happens through the style closure
-    // reading `active_route`.
-    let route_for_match: &str = name;
-    let style = move || {
-        let variant = if active_route.get() == route_for_match {
-            "on"
+// =============================================================================
+// CodePanel — theme-aware syntax-highlighted code block. Lifted from
+// the tutorial.
+// =============================================================================
+
+#[derive(Default)]
+pub struct CodePanelProps {
+    pub src: String,
+}
+
+#[derive(Copy, Clone)]
+struct Palette {
+    ink: &'static str,
+    comment: &'static str,
+    string: &'static str,
+    accent: &'static str,
+}
+
+const LIGHT_PALETTE: Palette = Palette {
+    ink: "#1f2328",
+    comment: "#8a8270",
+    string: "#1f6e5f",
+    accent: "#5a4fcf",
+};
+
+const DARK_PALETTE: Palette = Palette {
+    ink: "#e8eaf0",
+    comment: "#9099a8",
+    string: "#5eead4",
+    accent: "#c4b5fd",
+};
+
+fn theme_is_dark() -> bool {
+    let bg: Color =
+        Tokenized::<Color>::token("color-background", Color("#ffffff".into())).resolve();
+    is_dark_color(&bg.0)
+}
+
+fn is_dark_color(s: &str) -> bool {
+    let hex = s.trim_start_matches('#');
+    if hex.len() < 6 {
+        return false;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(255) as f32;
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(255) as f32;
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(255) as f32;
+    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    luma < 128.0
+}
+
+fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
+    let keywords = [
+        "fn", "let", "pub", "use", "mod", "struct", "enum", "impl", "trait", "for", "in", "if",
+        "else", "match", "return", "move", "self", "Self", "async", "await", "true", "false",
+        "as", "where", "type", "const", "static", "dyn",
+    ];
+
+    let mut out: Vec<(String, Color)> = Vec::new();
+    let mut buf = String::new();
+    let bytes = src.as_bytes();
+    let mut i = 0;
+
+    let flush_ident = |buf: &mut String, out: &mut Vec<(String, Color)>, palette: &Palette| {
+        if buf.is_empty() {
+            return;
+        }
+        let color = if keywords.contains(&buf.as_str()) {
+            palette.accent
         } else {
-            "off"
+            palette.ink
         };
-        StyleApplication::new(NavLink::sheet()).with("active", variant.to_string())
+        out.push((std::mem::take(buf), Color(color.into())));
     };
 
-    // Find the right Route to point to.
-    use crate::routes::{
-        ACTIONS_ROUTE, FEEDBACK_ROUTE, INPUTS_ROUTE, LAYOUT_ROUTE, OVERLAYS_ROUTE, OVERVIEW_ROUTE,
-        STATEFUL_ROUTE, THEMES_ROUTE, TYPOGRAPHY_ROUTE,
-    };
-    let _ = (
-        ACTIONS_ROUTE,
-        FEEDBACK_ROUTE,
-        INPUTS_ROUTE,
-        LAYOUT_ROUTE,
-        OVERLAYS_ROUTE,
-        OVERVIEW_ROUTE,
-        STATEFUL_ROUTE,
-        THEMES_ROUTE,
-        TYPOGRAPHY_ROUTE,
-    );
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            flush_ident(&mut buf, &mut out, &palette);
+            let mut j = i;
+            while j < bytes.len() && bytes[j] != b'\n' {
+                j += 1;
+            }
+            out.push((src[i..j].to_string(), Color(palette.comment.into())));
+            i = j;
+            continue;
+        }
+        if b == b'"' {
+            flush_ident(&mut buf, &mut out, &palette);
+            let mut j = i + 1;
+            while j < bytes.len() {
+                if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                    j += 2;
+                    continue;
+                }
+                if bytes[j] == b'"' {
+                    j += 1;
+                    break;
+                }
+                j += 1;
+            }
+            out.push((src[i..j].to_string(), Color(palette.string.into())));
+            i = j;
+            continue;
+        }
+        if b.is_ascii_alphabetic() || b == b'_' {
+            buf.push(b as char);
+            i += 1;
+            continue;
+        }
+        flush_ident(&mut buf, &mut out, &palette);
+        let mut j = i;
+        while j < bytes.len() {
+            let c = bytes[j];
+            if c == b'/' && j + 1 < bytes.len() && bytes[j + 1] == b'/' {
+                break;
+            }
+            if c == b'"' || c.is_ascii_alphabetic() || c == b'_' {
+                break;
+            }
+            j += 1;
+        }
+        out.push((src[i..j].to_string(), Color(palette.ink.into())));
+        i = j;
+    }
+    flush_ident(&mut buf, &mut out, &palette);
+    out
+}
 
-    // Match each route by name. (Route<P> isn't Copy on its own;
-    // these consts are.)
-    match name {
-        "overview" => ui! {
-            link(route = &OVERVIEW_ROUTE, params = ()) {
-                text(style = style) { label_text }
-            }
-        },
-        "themes" => ui! {
-            link(route = &THEMES_ROUTE, params = ()) {
-                text(style = style) { label_text }
-            }
-        },
-        "layout" => ui! {
-            link(route = &LAYOUT_ROUTE, params = ()) {
-                text(style = style) { label_text }
-            }
-        },
-        "typography" => ui! {
-            link(route = &TYPOGRAPHY_ROUTE, params = ()) {
-                text(style = style) { label_text }
-            }
-        },
-        "actions" => ui! {
-            link(route = &ACTIONS_ROUTE, params = ()) {
-                text(style = style) { label_text }
-            }
-        },
-        "inputs" => ui! {
-            link(route = &INPUTS_ROUTE, params = ()) {
-                text(style = style) { label_text }
-            }
-        },
-        "feedback" => ui! {
-            link(route = &FEEDBACK_ROUTE, params = ()) {
-                text(style = style) { label_text }
-            }
-        },
-        "overlays" => ui! {
-            link(route = &OVERLAYS_ROUTE, params = ()) {
-                text(style = style) { label_text }
-            }
-        },
-        "stateful" => ui! {
-            link(route = &STATEFUL_ROUTE, params = ()) {
-                text(style = style) { label_text }
-            }
-        },
-        _ => ui! { text { label_text } },
+#[component]
+pub fn CodePanel(props: &CodePanelProps) -> Element {
+    let panel_style = CodePanelBox();
+    let src = props.src.clone();
+    let dynamic = switch(theme_is_dark, move |&is_dark| {
+        let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
+        let spans = highlight(&src, palette);
+        let code_style = move || StyleApplication::new(CodeText::sheet());
+        idea_codeblock::code_block(spans)
+            .with_style(code_style)
+            .into_element()
+    });
+    ui! { view(style = panel_style) { dynamic } }
+}
+
+// =============================================================================
+// Callout — tinted block: short label + body children.
+// =============================================================================
+
+#[derive(Default)]
+pub struct CalloutProps {
+    pub label: String,
+    pub children: Vec<Element>,
+}
+
+#[component]
+pub fn Callout(props: CalloutProps) -> Element {
+    let style = CalloutBox();
+    let label = props.label;
+    let children = props.children;
+    ui! {
+        view(style = style) {
+            Typography(content = label, kind = typography_kind::Overline)
+            children
+        }
     }
 }
 
 // =============================================================================
-// Per-page surface helpers — small wrappers reused by every page
+// DemoSurface — a single-purpose preview panel (no controls). Used
+// when a static preview is enough.
 // =============================================================================
 
-/// Container for a single component demo: title + description +
-/// preview/controls row. Pages compose multiple of these per
-/// page.
-pub fn demo_card(
-    title: &str,
-    description: &str,
-    preview: Element,
-    controls: Element,
-) -> Element {
-    use crate::styles::{ControlsBox, DemoCard, DemoRow, PreviewBox};
-    let title_text = title.to_string();
-    let desc_text = description.to_string();
-    let card_style = DemoCard();
+#[derive(Default)]
+pub struct DemoSurfaceProps {
+    pub children: Vec<Element>,
+}
+
+#[component]
+pub fn DemoSurface(props: DemoSurfaceProps) -> Element {
+    let style = DemoSurfaceBox();
+    let children = props.children;
+    ui! {
+        view(style = style) { children }
+    }
+}
+
+// =============================================================================
+// Demo — preview + controls in a side-by-side wrapping row. Used for
+// interactive component pages where `DocControls::render_controls`
+// emits the right panel.
+// =============================================================================
+
+#[derive(Default)]
+pub struct DemoProps {
+    pub preview: Option<Element>,
+    pub controls: Option<Element>,
+}
+
+#[component]
+pub fn Demo(props: DemoProps) -> Element {
+    let preview = props
+        .preview
+        .unwrap_or_else(|| ui! { view {} });
+    let controls = props
+        .controls
+        .unwrap_or_else(|| ui! { view {} });
     let row_style = DemoRow();
     let preview_style = PreviewBox();
     let controls_style = ControlsBox();
-
-    let preview_box = ui! {
-        view(style = preview_style) { preview }
-    };
-    let controls_box = ui! {
-        view(style = controls_style) { controls }
-    };
-    let row = ui! {
-        view(style = row_style) {
-            preview_box
-            controls_box
-        }
-    };
-
-    let body_node = if desc_text.is_empty() {
-        ui! { view {} }
-    } else {
-        ui! { Typography(content = desc_text, muted = true) }
-    };
-
+    let preview_slot = PreviewSlot();
     ui! {
-        view(style = card_style) {
-            Typography(content = title_text, kind = idea_ui::typography_kind::H2)
-            body_node
-            row
+        view(style = row_style) {
+            view(style = preview_style) {
+                view(style = preview_slot) { preview }
+            }
+            view(style = controls_style) { controls }
         }
     }
 }
 
-/// Page title block — every page calls this at the top.
-pub fn page_header(title: &str, description: &str) -> Element {
-    let title_text = title.to_string();
-    let desc_text = description.to_string();
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H1) },
-        ui! { Typography(content = desc_text, muted = true) },
-    ];
-    ui! {
-        Stack(gap = StackGap::Sm) { children }
+// =============================================================================
+// PropsTable — every component page documents its props with this.
+// One header row + one row per prop, all rendered as flex rows so
+// columns line up.
+// =============================================================================
+
+pub struct Prop {
+    pub name: &'static str,
+    pub ty: &'static str,
+    pub desc: &'static str,
+}
+
+#[derive(Default)]
+pub struct PropsTableProps {
+    pub rows: Vec<Prop>,
+}
+
+#[component]
+pub fn PropsTable(props: PropsTableProps) -> Element {
+    // Uses idea-ui's themed `Table` / `TableRow` / `TableCell`
+    // components, which layer on the cross-platform `table` SDK
+    // (real HTML `<table>` on web) and read header/body cell tokens
+    // straight from the active theme. No local cell stylesheets
+    // needed — the docs app is the consumer, not the designer.
+    let mut rows: Vec<Element> = Vec::with_capacity(props.rows.len() + 1);
+    rows.push(ui! {
+        TableRow {
+            TableCell(header = true, text = Some("Prop".to_string()))
+            TableCell(header = true, text = Some("Type".to_string()))
+            TableCell(header = true, text = Some("Description".to_string()))
+        }
+    });
+    for p in props.rows {
+        let name = p.name.to_string();
+        let ty = p.ty.to_string();
+        let desc = p.desc.to_string();
+        rows.push(ui! {
+            TableRow {
+                TableCell(text = Some(name))
+                TableCell(text = Some(ty))
+                TableCell(text = Some(desc))
+            }
+        });
     }
+    ui! { Table { rows } }
+}
+
+// =============================================================================
+// Section — a labelled block inside a page. Useful for grouping
+// "Examples", "Variants", "Props" under a sub-heading.
+// =============================================================================
+
+#[derive(Default)]
+pub struct SectionProps {
+    pub title: String,
+    pub children: Vec<Element>,
+}
+
+#[component]
+pub fn Section(props: SectionProps) -> Element {
+    let title = props.title;
+    let children = props.children;
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Typography(content = title, kind = typography_kind::H2)
+            children
+        }
+    }
+}
+
+// =============================================================================
+// ComponentPage — top-level frame for every page in the docs. Renders
+// the title block and supplied body inside the padded reading column.
+// =============================================================================
+
+#[derive(Default)]
+pub struct ComponentPageProps {
+    pub title: String,
+    pub lead: String,
+    pub children: Vec<Element>,
+}
+
+#[component]
+pub fn ComponentPage(props: ComponentPageProps) -> Element {
+    let pad = PagePad();
+    let title = props.title;
+    let lead = props.lead;
+    let children = props.children;
+    ui! {
+        view(style = pad) {
+            Stack(gap = StackGap::Sm) {
+                Typography(content = title, kind = typography_kind::H1)
+                Typography(content = lead, kind = typography_kind::BodyLg, muted = true)
+            }
+            children
+        }
+    }
+}
+
+// =============================================================================
+// Convenience: paragraph helper. Most pages render a lot of body text
+// — a tiny wrapper saves the `kind = …` boilerplate.
+// =============================================================================
+
+#[derive(Default)]
+pub struct PProps {
+    pub content: String,
+}
+
+#[component]
+pub fn P(props: PProps) -> Element {
+    let content = props.content;
+    ui! { Typography(content = content) }
+}
+
+#[derive(Default)]
+pub struct H2Props {
+    pub content: String,
+}
+
+#[component]
+pub fn H2(props: H2Props) -> Element {
+    let content = props.content;
+    ui! { Typography(content = content, kind = typography_kind::H2) }
+}
+
+#[derive(Default)]
+pub struct H3Props {
+    pub content: String,
+}
+
+#[component]
+pub fn H3(props: H3Props) -> Element {
+    let content = props.content;
+    ui! { Typography(content = content, kind = typography_kind::H3) }
+}
+
+// Silence the `Card`-import unused-warning if a page doesn't use it.
+#[allow(dead_code)]
+fn _force_card_import() -> Element {
+    ui! { Card {} }
 }

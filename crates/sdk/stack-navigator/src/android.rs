@@ -158,6 +158,12 @@ fn stack_options_to_android(opts: Option<Box<StackScreenOptions>>) -> AndroidScr
         header_background: opts.header_background.clone(),
         header_tint: opts.header_tint.clone(),
         title_color: opts.title_color.clone(),
+        // `unmount_on_blur` is a stack-only knob; AndroidScreenOptions
+        // shares its mount_policy with drawer/tab. The Android stack
+        // helper today doesn't honor unmount-on-push semantics — the
+        // field rides here for surface symmetry and is wired through
+        // for follow-up when the helper grows a remount-on-pop path.
+        mount_policy: None,
     }
 }
 

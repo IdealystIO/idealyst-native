@@ -33,6 +33,13 @@ fn to_snake(s: &str) -> String {
 /// return `None`, signalling that the caller should dispatch to user-
 /// component code (`emit_user`).
 pub(crate) fn canonical_primitive(name: &str) -> Option<&'static str> {
+    // `button` is special: idea-ui exposes a `Button` component that
+    // should win when authors write `Button` in `ui!`. Only the
+    // lowercase form routes to the primitive; PascalCase falls through
+    // to user-component dispatch.
+    if name == "Button" {
+        return None;
+    }
     let snake = to_snake(name);
     match snake.as_str() {
         "text" => Some("text"),
@@ -88,5 +95,13 @@ mod tests {
         assert_eq!(canonical_primitive("MyComponent"), None);
         assert_eq!(canonical_primitive("Pressable"), None);
         assert_eq!(canonical_primitive("DrawerNavigator"), None);
+    }
+
+    #[test]
+    fn pascal_button_routes_to_user_component() {
+        // `Button` (PascalCase) is idea-ui's component; only lowercase
+        // `button` is the primitive. See `canonical_primitive`.
+        assert_eq!(canonical_primitive("Button"), None);
+        assert_eq!(canonical_primitive("button"), Some("button"));
     }
 }

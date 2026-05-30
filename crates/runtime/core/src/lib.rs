@@ -176,12 +176,13 @@ pub use logging::{install_logger, is_logger_installed, log, LogLevel, Logger, St
 
 pub use style::{
     derived, install_tokens, pregenerate, reset_for_ssg_render, resolve as resolve_style,
-    take_pending_token_updates, update_tokens, AlignContent, AlignItems, AlignSelf, Color,
-    Derive, Easing, FlexDirection, FlexWrap, FontFamily, FontStyle, FontWeight, Gradient,
-    GradientKind, GradientStop, IntoOverrideSource, IntoVariantSource, JustifyContent, Length, RadialExtent,
-    Overflow, Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign,
-    TextTransform, TokenEntry, TokenValue, Tokenized, Transform, Transition, VariantAxis,
-    VariantEnum, VariantSet, VariantValue,
+    set_app_background, set_scrollbar_theme, take_pending_token_updates, update_tokens,
+    AlignContent, AlignItems, AlignSelf, Color, Derive, Easing, FlexDirection, FlexWrap,
+    FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop,
+    IntoOverrideSource, IntoVariantSource, JustifyContent, Length, RadialExtent, Overflow,
+    Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign, TextTransform,
+    TokenEntry, TokenValue, Tokenized, Transform, Transition, VariantAxis, VariantEnum,
+    VariantSet, VariantValue,
 };
 
 pub use runtime_macros::{

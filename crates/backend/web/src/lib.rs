@@ -544,6 +544,19 @@ pub struct WebBackend {
     /// each token in place — the rule itself is never deleted, so no
     /// other rule indices shift and no minted class re-emits.
     pub(crate) theme_root_rule_index: Option<u32>,
+    /// Indices of the `html,body { background: var(--…); … }` rule
+    /// (`Some(idx)` once `set_app_background` has been called). Stored
+    /// so re-calls with a different token swap the rule's body in place
+    /// — we DELETE + re-insert at the same index rather than
+    /// `setProperty`-mutating, because the rule's `background` value
+    /// is the `var(--…)` reference itself (not the resolved color),
+    /// and only the reference changes when the SDK re-targets.
+    pub(crate) app_bg_rule_index: Option<u32>,
+    /// Indices of the scrollbar rules — one entry per
+    /// `BODY_SCROLLBAR_RULE_COUNT` rule inserted by
+    /// `set_scrollbar_theme`. Same delete-and-reinsert-in-place
+    /// pattern as `app_bg_rule_index`.
+    pub(crate) scrollbar_rule_indices: Vec<u32>,
     /// Per-portal state, keyed by the `data-portal-id` attribute
     /// stamped on the portal root. Holds the wasm-bindgen `Closure`
     /// handles wired to dismiss / reposition / focus-trap events so
@@ -1013,6 +1026,8 @@ impl WebBackend {
             dynamic_by_ptr: HashMap::new(),
             free_rule_indices: Vec::new(),
             theme_root_rule_index: None,
+            app_bg_rule_index: None,
+            scrollbar_rule_indices: Vec::new(),
             portal_instances: HashMap::new(),
             next_portal_id: 0,
             asset_urls: HashMap::new(),
@@ -2646,6 +2661,18 @@ impl Backend for WebBackend {
         // the :root rule already exists and either inserts or
         // setProperty's.
         self.impl_install_theme_variables(tokens)
+    }
+
+    fn set_app_background(&mut self, color: &runtime_core::Tokenized<runtime_core::Color>) {
+        self.impl_set_app_background(color)
+    }
+
+    fn set_scrollbar_theme(
+        &mut self,
+        thumb: &runtime_core::Tokenized<runtime_core::Color>,
+        track: &runtime_core::Tokenized<runtime_core::Color>,
+    ) {
+        self.impl_set_scrollbar_theme(thumb, track)
     }
 
     fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {

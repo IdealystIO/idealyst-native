@@ -80,6 +80,7 @@ pub(super) fn build<B: Backend + 'static>(
             let _ambient_guard =
                 primitives::navigator::AmbientNavGuard::push(control_strong);
             let _state_guard = primitives::navigator::shared::ScreenStateGuard::push(state);
+            let _route_guard = primitives::navigator::shared::ScreenRouteGuard::push(name);
             let screen_id = crate::Identity::node(
                 nav_identity,
                 0,

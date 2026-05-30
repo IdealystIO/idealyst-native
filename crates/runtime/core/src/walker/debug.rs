@@ -59,6 +59,7 @@ pub(super) fn debug_kind_of(node: &Element) -> debug::PrimitiveKind {
         Element::Portal { .. } => PrimitiveKind::Portal,
         Element::External { .. } => PrimitiveKind::External,
         Element::Presence { .. } => PrimitiveKind::Presence,
+        Element::Lazy { .. } => PrimitiveKind::Lazy,
         // Repeat is expanded into siblings by `insert_children`
         // and never reaches the build walker as a standalone
         // subtree, so this arm is dead in practice. Tag as View

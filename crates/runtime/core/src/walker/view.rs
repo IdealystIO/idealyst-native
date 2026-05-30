@@ -388,6 +388,8 @@ fn enqueue_primitive<B: Backend + 'static>(
                         let backend_for_update_tokens = backend.clone();
                         let backend_for_asset = backend.clone();
                         let backend_for_typeface = backend.clone();
+                        let backend_for_app_bg = backend.clone();
+                        let backend_for_scrollbar = backend.clone();
                         style::ensure_registered_with(
                             &app.sheet,
                             |rules| {
@@ -424,6 +426,16 @@ fn enqueue_primitive<B: Backend + 'static>(
                                         faces,
                                         fallback,
                                     );
+                            },
+                            |c| {
+                                backend_for_app_bg
+                                    .borrow_mut()
+                                    .set_app_background(c);
+                            },
+                            |thumb, track| {
+                                backend_for_scrollbar
+                                    .borrow_mut()
+                                    .set_scrollbar_theme(thumb, track);
                             },
                         );
                     }

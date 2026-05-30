@@ -20,6 +20,11 @@
 #[cfg(any(target_os = "ios", target_os = "tvos"))]
 pub mod font;
 
+// Phase-record indirection — see `phase_record.rs`. Cross-target so
+// non-iOS hosts that consume `apply_style_to_view` (the macOS bridge)
+// link the same scope-guard type without needing their own copy.
+pub mod phase_record;
+
 #[cfg(any(target_os = "ios", target_os = "tvos"))]
 pub mod style;
 

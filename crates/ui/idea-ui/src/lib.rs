@@ -34,14 +34,15 @@
 //!             Typography(content = "Hello, idea-ui".to_string(), kind = TypographyKind::H1)
 //!             Card {
 //!                 Typography(content = format!("Count: {}", count.get()))
-//!                 // `Btn` is idea-ui's styled clickable. `Button` (capital B)
-//!                 // is the framework's `<button>` primitive — useful when
-//!                 // you need a native button without the idea-ui styling.
-//!                 Btn(
+//!                 // PascalCase `Button` is idea-ui's themed clickable;
+//!                 // lowercase `button` is the framework's raw `<button>`
+//!                 // primitive (use it when you want native chrome with
+//!                 // no idea-ui styling).
+//!                 Button(
 //!                     label = "Increment".to_string(),
 //!                     on_click = std::rc::Rc::new(move || count.update(|n| *n += 1)),
-//!                     intent = IntentTag::Primary,
-//!                     kind = ButtonKind::Solid,
+//!                     tone = tone::Primary,
+//!                     variant = variant::Filled,
 //!                 )
 //!             }
 //!         }
@@ -72,8 +73,8 @@ mod theme_runtime;
 // `idea_ui::theme::*` / `idea_ui::intent::*` paths unchanged.
 
 // Convenience re-exports at the crate root — mirror the API surface
-// that existed before the split so apps using `use idea_ui::Btn,
-// install_idea_theme, IntentTag` keep compiling.
+// that existed before the split so apps using `use idea_ui::Button,
+// install_idea_theme, …` keep compiling.
 pub use idea_theme::theme::{
     dark_theme, idea_color, idea_header, install_idea_theme, light_theme, set_idea_theme, Colors,
     IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing,
@@ -105,6 +106,10 @@ pub use components::badge::{Badge, BadgeProps};
 pub use components::button::{Button, ButtonProps};
 pub use components::card::{Card, CardPadding, CardProps};
 pub use components::center::{Center, CenterProps};
+pub use components::collapsible::{
+    Accordion, AccordionExpand, AccordionItem, AccordionProps, Collapsible, CollapsibleProps,
+    CollapsibleTransition,
+};
 pub use components::divider::{Divider, DividerAxis, DividerProps};
 pub use components::field::{Field, FieldProps, FieldSize};
 pub use components::icon_button::{IconButton, IconButtonProps, IconButtonSize};
@@ -118,15 +123,17 @@ pub use components::stack::{
     Stack, StackAlign, StackAxis, StackGap, StackJustify, StackPadding, StackProps,
 };
 pub use components::switch::{Switch, SwitchProps};
+pub use components::table::{Table, TableCell, TableCellProps, TableProps, TableRow, TableRowProps};
 pub use components::tabs::{Tab, Tabs, TabsProps};
 pub use components::tag::{Tag, TagProps};
 pub use components::typography::{Typography, TypographyProps};
 
-// `Btn` alias for the styled button. The framework's `Button` primitive is
-// matched by literal name in the `ui!` macro and would collide with idea-ui's
-// styled `Button` tag if both lived at the call site under the same name.
-// Existing call sites (`ui! { Btn(...) }`) keep working through this alias.
-pub use components::button::Button as Btn;
+// Historical note: an earlier `Btn` alias for `Button` existed because the
+// `ui!` macro routed PascalCase `Button` straight to the framework's native
+// `<button>` primitive. Primitives are now snake_case (`button`) and the
+// `ui!` macro deliberately doesn't recognize PascalCase `Button` as a
+// primitive, so `ui! { Button(...) }` dispatches to this component directly
+// — no alias needed.
 
 // The trait surface + built-in modifier ZSTs come from idea-theme.
 // Re-exported at the crate root so apps can write

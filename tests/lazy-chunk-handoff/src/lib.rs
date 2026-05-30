@@ -23,7 +23,7 @@
 //!   increments the displayed count. No console errors.
 
 use idea_ui::{
-    install_idea_theme, light_theme, tone, variant, Btn, Stack, StackGap, Typography,
+    install_idea_theme, light_theme, tone, variant, Button, Stack, StackGap, Typography,
 };
 use runtime_core::{lazy, rx, signal, ui, Element, IntoElement, Signal};
 use std::rc::Rc;
@@ -34,7 +34,7 @@ pub fn app() -> Element {
     // The lazy block. `lazy!` v1 doesn't support captures across the
     // boundary, so every signal / closure the chunk uses is created
     // inside the block. The chunk still depends on the main bundle for
-    // the Btn/Typography/Stack vtables, the `Signal::new` allocator
+    // the Button/Typography/Stack vtables, the `Signal::new` allocator
     // path, the panic infrastructure, and the reactive scheduler — all
     // the things data-pruning could plausibly damage.
     let chunk = lazy! {
@@ -48,7 +48,7 @@ pub fn app() -> Element {
                         kind = idea_ui::typography_kind::H3,
                     )
                     Typography(content = rx!(format!("count = {}", count.get())))
-                    Btn(
+                    Button(
                         label = "Increment (chunk handler)".to_string(),
                         tone = tone::Primary,
                         variant = variant::Soft,

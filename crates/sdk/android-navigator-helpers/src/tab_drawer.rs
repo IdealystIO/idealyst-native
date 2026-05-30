@@ -31,7 +31,7 @@
 
 use crate::{
     node_key, AndroidDrawerCallbacks, AndroidNavCallbacks, AndroidScreenOptions, AndroidTabCallbacks,
-    DrawerCmd, DrawerSide,
+    DrawerCmd, DrawerSide, MountPolicy,
 };
 use backend_android_core::helpers::apply_default_layout_params;
 use backend_android::{with_jni_env, AndroidBackend, HeaderButtonCallback};
@@ -77,27 +77,52 @@ enum DrawerKind {
     },
 }
 
+/// A screen tracked across switches. Mirrors iOS's `MountedScreen`:
+/// for persistent policies the view + toolbar stay attached to `body`
+/// and visibility flips via `setVisibility(GONE)`; for `LazyDisposing`
+/// the entry is dropped from the map on blur and the view +
+/// scope are released. `effective_policy` is the per-screen
+/// override (read from `AndroidScreenOptions::mount_policy`) or the
+/// navigator-global fallback.
+pub(crate) struct MountedScreen {
+    pub(crate) view: GlobalRef,
+    pub(crate) toolbar: Option<GlobalRef>,
+    pub(crate) scope_id: u64,
+    pub(crate) options: AndroidScreenOptions,
+    pub(crate) effective_policy: MountPolicy,
+}
+
 /// Per-instance state for a tab or drawer navigator. The `body` is a
-/// `FrameLayout`/`LinearLayout` that holds exactly one screen child.
-/// `outer` is the framework-visible navigator node — for tabs this is
-/// the same as `body`; for drawer this is the
+/// `FrameLayout`/`LinearLayout` that holds one or more cached screen
+/// subtrees (one per LazyPersistent/EagerPersistent route ever
+/// visited; one for the active LazyDisposing route). `outer` is the
+/// framework-visible navigator node — for tabs this is the same as
+/// `body`; for drawer this is the
 /// `RustExactFrameLayout`/`RustDrawerLayout` chain.
 pub(crate) struct TabDrawerInstance {
     /// The framework-visible navigator container.
     #[allow(dead_code)]
     outer: GlobalRef,
-    /// The FrameLayout/LinearLayout that holds the active screen.
+    /// The FrameLayout/LinearLayout that holds the active screen
+    /// (and cached persistent screens hidden via `View.GONE`).
     body: GlobalRef,
     /// Activity context for building per-screen Toolbars on swap.
     context: GlobalRef,
-    /// The Toolbar widget currently displayed at the top of `body`, if
-    /// the active screen has one. Persisted so the
-    /// `apply_*_style` hooks can update its background / text color /
-    /// nav-icon tint via JNI without rebuilding the bar.
-    toolbar: Option<GlobalRef>,
-    /// Currently-mounted screen's view + scope id. `None` only between
-    /// creation and the first `attach_initial` call.
-    current: Option<(GlobalRef, u64)>,
+    /// Cached screens keyed by route name. Disposing screens stay in
+    /// the cache only while they are the active screen; they are
+    /// removed (view + scope released) on the next blur.
+    mounted: HashMap<&'static str, MountedScreen>,
+    /// The currently-active route. Used by [`swap_body`] to look up
+    /// the leaving screen's cached `effective_policy` so it knows
+    /// whether to hide (Persistent) or dispose (LazyDisposing).
+    current_route: Option<&'static str>,
+    /// Navigator-global default policy. Per-screen
+    /// `AndroidScreenOptions::mount_policy` overrides this when set.
+    nav_global_policy: MountPolicy,
+    /// `nav_state.active_route` signal, snapshot of the navigator's
+    /// active route name. Used by `attach_initial` to key the first
+    /// mounted screen in the cache (before `swap_body` has run).
+    active_route_sig: runtime_core::Signal<&'static str>,
     /// Release the previous scope on swap.
     release_screen: Rc<dyn Fn(u64)>,
     /// Mount the next screen on `Select`.
@@ -127,9 +152,18 @@ pub(crate) fn create_tab(
     callbacks: AndroidTabCallbacks,
     control: Rc<NavigatorControl>,
 ) -> GlobalRef {
+    let mount_policy = callbacks.mount_policy;
     let AndroidTabCallbacks { navigator, .. } = callbacks;
     let body = make_frame_layout(backend);
-    install_instance(backend, navigator, control, body.clone(), body, DrawerKind::Tab)
+    install_instance(
+        backend,
+        navigator,
+        control,
+        body.clone(),
+        body,
+        DrawerKind::Tab,
+        mount_policy,
+    )
 }
 
 // =============================================================================
@@ -143,6 +177,7 @@ pub(crate) fn create_drawer(
     callbacks: AndroidDrawerCallbacks,
     control: Rc<NavigatorControl>,
 ) -> GlobalRef {
+    let mount_policy = callbacks.mount_policy;
     let AndroidDrawerCallbacks {
         navigator,
         is_open,
@@ -278,6 +313,7 @@ pub(crate) fn create_drawer(
             listener_ptr,
             swipe_to_open,
         },
+        mount_policy,
     )
 }
 
@@ -332,15 +368,19 @@ fn install_instance(
     outer: GlobalRef,
     body: GlobalRef,
     kind: DrawerKind,
+    nav_global_policy: MountPolicy,
 ) -> GlobalRef {
     let is_drawer = matches!(kind, DrawerKind::Drawer { .. });
     let context = backend.with_jni(|_env, ctx| ctx.clone());
+    let active_route_sig = callbacks.nav_state.active_route;
     let instance = Rc::new(RefCell::new(TabDrawerInstance {
         outer: outer.clone(),
         body,
         context,
-        toolbar: None,
-        current: None,
+        mounted: HashMap::new(),
+        current_route: None,
+        nav_global_policy,
+        active_route_sig,
         release_screen: callbacks.release_screen.clone(),
         mount_screen: callbacks.mount_screen.clone(),
         kind,
@@ -418,62 +458,124 @@ fn install_instance(
     outer
 }
 
-/// Mount a new screen, addView to the body, release the previous scope.
+/// Swap the active screen. Mirrors iOS's `select_screen`:
+///
+/// - The outgoing screen's cached `effective_policy` decides whether
+///   it's hidden (Persistent) or torn down (LazyDisposing).
+/// - A cache hit on the incoming route reuses the cached subtree
+///   (setVisibility(VISIBLE)); a miss mounts fresh and caches with
+///   its own effective_policy (per-screen override or
+///   navigator-global fallback).
 fn swap_body(
     instance: &Rc<RefCell<TabDrawerInstance>>,
     name: &'static str,
     params: Box<dyn Any>,
 ) {
-    let result = {
+    // Snapshot what we need outside the borrow window.
+    let (body, context, is_drawer, prev_route, nav_global_policy) = {
         let inst = instance.borrow();
+        (
+            inst.body.clone(),
+            inst.context.clone(),
+            matches!(inst.kind, DrawerKind::Drawer { .. }),
+            inst.current_route,
+            inst.nav_global_policy,
+        )
+    };
+
+    // Step 1: Hide or dispose the outgoing screen per its own
+    // effective_policy.
+    if let Some(prev) = prev_route {
+        if prev != name {
+            let prev_entry = instance.borrow_mut().mounted.remove(prev);
+            if let Some(m) = prev_entry {
+                match m.effective_policy {
+                    MountPolicy::LazyDisposing => {
+                        // Disposing: remove view + toolbar from body
+                        // and release the reactive scope.
+                        with_jni_env(|env| {
+                            let _ = env.call_method(
+                                body.as_obj(),
+                                "removeView",
+                                "(Landroid/view/View;)V",
+                                &[JValue::Object(&m.view.as_obj())],
+                            );
+                            if let Some(tb) = &m.toolbar {
+                                let _ = env.call_method(
+                                    body.as_obj(),
+                                    "removeView",
+                                    "(Landroid/view/View;)V",
+                                    &[JValue::Object(&tb.as_obj())],
+                                );
+                            }
+                        });
+                        let release = instance.borrow().release_screen.clone();
+                        release(m.scope_id);
+                    }
+                    MountPolicy::LazyPersistent | MountPolicy::EagerPersistent => {
+                        // Persistent: hide via `setVisibility(GONE)`
+                        // and keep the entry alive.
+                        with_jni_env(|env| {
+                            set_visibility_gone(env, &m.view);
+                            if let Some(tb) = &m.toolbar {
+                                set_visibility_gone(env, tb);
+                            }
+                        });
+                        instance.borrow_mut().mounted.insert(prev, m);
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 2: Cache hit on the incoming route → unhide + done.
+    if instance.borrow().mounted.contains_key(name) {
+        let inst = instance.borrow();
+        let m = inst.mounted.get(name).expect("just checked contains_key");
+        with_jni_env(|env| {
+            set_visibility_visible(env, &m.view);
+            if let Some(tb) = &m.toolbar {
+                set_visibility_visible(env, tb);
+            }
+        });
+        drop(inst);
+        instance.borrow_mut().current_route = Some(name);
+        return;
+    }
+
+    // Step 3: Cache miss → mount fresh, attach to body, cache.
+    let result = {
         // mount_screen re-enters the build walker which calls
-        // backend.borrow_mut(). Safe here because dispatcher callbacks
-        // fire outside any active borrow window (Kotlin event handler
-        // → JNI → Rust).
-        (inst.mount_screen)(name, params)
+        // backend.borrow_mut(). Safe here because dispatcher
+        // callbacks fire outside any active borrow window (Kotlin
+        // event handler → JNI → Rust).
+        let mount = instance.borrow().mount_screen.clone();
+        mount(name, params)
     };
     let new_view = result.node;
     let new_scope = result.scope_id;
-    // The SDK handler's `mount_2arg` closure pre-translated the typed
-    // `DrawerScreenOptions` into `AndroidScreenOptions` (and injected
-    // the auto-hamburger via the SDK's options-translator). Recover it
-    // here so the swap path rebuilds the per-screen Toolbar with the
-    // new screen's title + nav icon.
     let new_options = result
         .options
         .downcast::<AndroidScreenOptions>()
         .map(|b| *b)
         .unwrap_or_default();
-    let (body, context, is_drawer, old_scope) = {
-        let mut inst = instance.borrow_mut();
-        let old = inst.current.take().map(|(_, s)| s);
-        let is_drawer = matches!(inst.kind, DrawerKind::Drawer { .. });
-        // Old toolbar is about to be removed from the view tree by
-        // `body.removeAllViews()`. Drop the global ref so the apply_*
-        // style hooks don't write to a detached widget.
-        inst.toolbar = None;
-        (inst.body.clone(), inst.context.clone(), is_drawer, old)
-    };
+    let effective_policy = new_options.mount_policy.unwrap_or(nav_global_policy);
     // Run Taffy synchronously BEFORE the new view enters the visible
-    // tree. The new screen's Taffy nodes (created during mount_screen)
-    // need `compute(root, vw, vh)` so each sub-view's LayoutParams
-    // (leftMargin / topMargin / width / height) reflect the intended
-    // frame. Without this, `body.addView(new_view)` makes Android
-    // measure-and-layout the new subtree with default LPs (MATCH_PARENT
-    // × WRAP_CONTENT, no margins) and the user sees one frame of
-    // wrong positions before the deferred handler-posted layout pass
-    // overwrites them. Running synchronously here means the LPs are
-    // already correct on the first frame after addView.
+    // tree. The new screen's Taffy nodes need `compute(root, vw, vh)`
+    // so each sub-view's LayoutParams reflect the intended frame.
+    // Without this, the user sees one frame of wrong positions
+    // before the deferred handler-posted layout pass overwrites them.
     backend_android::run_layout_now();
     let new_toolbar = with_jni_env(|env| {
-        let _ = env.call_method(body.as_obj(), "removeAllViews", "()V", &[]);
+        // Build a new toolbar for this screen (drawer only; tabs
+        // don't have per-screen chrome).
         let tb = if is_drawer {
             attach_toolbar_to_body(env, &context, &body, &new_options)
         } else {
             None
         };
-        // Defensive detach — see the legacy backend implementation
-        // for the rationale.
+        // Defensive detach in case mount_screen returned a view that
+        // already has a parent (e.g. from a stale cache or re-entry).
         let parent_check = env
             .call_method(new_view.as_obj(), "getParent", "()Landroid/view/ViewParent;", &[])
             .ok();
@@ -501,15 +603,28 @@ fn swap_body(
         }
         tb
     });
-    if let Some(scope) = old_scope {
-        let release = instance.borrow().release_screen.clone();
-        release(scope);
-    }
     {
         let mut inst = instance.borrow_mut();
-        inst.toolbar = new_toolbar;
-        inst.current = Some((new_view, new_scope));
+        inst.current_route = Some(name);
+        inst.mounted.insert(
+            name,
+            MountedScreen {
+                view: new_view,
+                toolbar: new_toolbar,
+                scope_id: new_scope,
+                options: new_options,
+                effective_policy,
+            },
+        );
     }
+}
+
+fn set_visibility_gone(env: &mut jni::JNIEnv, view: &GlobalRef) {
+    let _ = env.call_method(view.as_obj(), "setVisibility", "(I)V", &[JValue::Int(8)]);
+}
+
+fn set_visibility_visible(env: &mut jni::JNIEnv, view: &GlobalRef) {
+    let _ = env.call_method(view.as_obj(), "setVisibility", "(I)V", &[JValue::Int(0)]);
 }
 
 /// Invoke a no-arg method on the `RustDrawerLayout` (open/close/toggle).
@@ -624,8 +739,27 @@ pub(crate) fn attach_initial(
         let map = m.borrow();
         if let Some(entry) = map.get(&key) {
             let mut inst = entry.instance.borrow_mut();
-            inst.toolbar = new_toolbar;
-            inst.current = Some((screen, scope_id));
+            // The initial screen's route name comes from the
+            // active_route signal the framework wired into the
+            // NavState at navigator creation time. Per-screen
+            // mount_policy overrides ride in on subsequent
+            // swap_body mounts; the initial mount uses whatever
+            // override the options carry (or the navigator-global
+            // default).
+            let initial_name = inst.active_route_sig.get();
+            let effective_policy =
+                options.mount_policy.unwrap_or(inst.nav_global_policy);
+            inst.current_route = Some(initial_name);
+            inst.mounted.insert(
+                initial_name,
+                MountedScreen {
+                    view: screen,
+                    toolbar: new_toolbar,
+                    scope_id,
+                    options: options.clone(),
+                    effective_policy,
+                },
+            );
         }
     });
     true
@@ -829,8 +963,9 @@ fn lookup_toolbar(navigator: &GlobalRef) -> Option<GlobalRef> {
     TAB_DRAWER_INSTANCES.with(|m| -> Option<GlobalRef> {
         let map = m.borrow();
         let entry = map.get(&node_key(navigator))?;
-        let tb = entry.instance.borrow().toolbar.clone();
-        tb
+        let inst = entry.instance.borrow();
+        let active = inst.current_route?;
+        inst.mounted.get(active)?.toolbar.clone()
     })
 }
 
@@ -843,10 +978,18 @@ pub(crate) fn release(node: &GlobalRef) -> bool {
     let Some(entry) = TAB_DRAWER_INSTANCES.with(|m| m.borrow_mut().remove(&key)) else {
         return false;
     };
-    if let Some((_view, scope)) = entry.instance.borrow_mut().current.take() {
-        let release = entry.instance.borrow().release_screen.clone();
+    // Release every cached screen's scope (persistent screens were
+    // hidden but still live; disposing screens were already
+    // released when blurred and never made it into the cache).
+    let scopes_to_release: Vec<u64> = {
+        let inst = entry.instance.borrow();
+        inst.mounted.values().map(|m| m.scope_id).collect()
+    };
+    let release = entry.instance.borrow().release_screen.clone();
+    for scope in scopes_to_release {
         release(scope);
     }
+    entry.instance.borrow_mut().mounted.clear();
     let listener_ptr = match entry.instance.borrow().kind {
         DrawerKind::Drawer { listener_ptr, .. } => listener_ptr,
         DrawerKind::Tab => 0,

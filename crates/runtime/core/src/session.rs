@@ -94,6 +94,31 @@ thread_local! {
 /// dropped. This is the only way to recover; preserving the
 /// old typed value would be a memory leak that author code
 /// can't observe.
+/// Drop every entry in the current session-thread's registry.
+///
+/// Intended for hosts that mount-then-unmount an embedded app
+/// (e.g. `render_wgpu::Host::unmount` for a navigator-hidden
+/// preview): the embedded app's `session::animated(...)` AVs
+/// otherwise outlive the unmount — they're keyed in the global
+/// REGISTRY by `&'static str`, so dropping the reactive scope
+/// drops the scope's clones but leaves the registry's clone
+/// holding the AV's `Inner`, which keeps its `TickRegistration`
+/// live and so the animation clock keeps ticking it forever.
+/// Calling this on unmount drops the registry's clone, which (if
+/// it was the last clone) drops the `Inner` and unregisters the
+/// tick.
+///
+/// **Scope is the entire thread.** This wipes every keyed entry,
+/// not just the embedded app's. In practice `session::animated`
+/// is rarely used outside embedded apps (welcome-style demos);
+/// outer apps tend to drive their reactive state through plain
+/// `Signal` / `Effect` / non-session AVs. If a use case ever
+/// needs partitioned registries (one per Host), that becomes a
+/// real refactor; `clear()` is the pragmatic interim.
+pub fn clear() {
+    REGISTRY.with(|r| r.borrow_mut().clear());
+}
+
 pub fn get_or_init<T: 'static + Clone>(
     key: &'static str,
     init: impl FnOnce() -> T,

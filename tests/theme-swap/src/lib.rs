@@ -9,7 +9,7 @@
 //! `:root` variables to the web backend.
 //!
 //! This app gives that machinery a workout we can eyeball: themed
-//! components (Badge / Alert / Card / Btn all subscribe to several
+//! components (Badge / Alert / Card / Button all subscribe to several
 //! tokens) and a toggle button that swaps the whole token set. The
 //! "swaps so far" counter is a reactive sanity check — if it stops
 //! incrementing, the on_click closure or its signal got pruned out.
@@ -23,7 +23,7 @@
 
 use idea_ui::{
     dark_theme, install_idea_theme, light_theme, set_idea_theme, tone, variant, Alert, Badge,
-    Btn, Card, Stack, StackGap, Typography,
+    Button, Card, Stack, StackGap, Typography,
 };
 use runtime_core::{rx, signal, ui, Element, Signal};
 use std::rc::Rc;
@@ -59,7 +59,7 @@ pub fn app() -> Element {
                         swap_count.get(),
                     )),
                 )
-                Btn(
+                Button(
                     label = "Toggle theme".to_string(),
                     on_click = toggle,
                     tone = tone::Primary,

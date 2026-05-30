@@ -211,6 +211,21 @@ pub struct SsrBackend {
     /// `<pre>`+spans) instead of an empty host — matching web so
     /// hydration adopts them.
     external_handlers: runtime_core::ExternalRegistry<SsrBackend>,
+    /// Host-surface background captured from [`Backend::set_app_background`].
+    /// Emitted in `<head>` as `html, body { background: …; }` so the SSR
+    /// first paint matches what the web backend installs at runtime. For a
+    /// `Tokenized::Token` we emit `var(--<name>)` (live-reactive after
+    /// hydration via the `:root` setProperty path); for `Tokenized::Literal`
+    /// we emit the resolved color value.
+    app_bg: Option<runtime_core::Tokenized<runtime_core::Color>>,
+    /// Scrollbar (thumb, track) captured from [`Backend::set_scrollbar_theme`].
+    /// Emitted in `<head>` as `scrollbar-color` + `::-webkit-scrollbar-*`
+    /// rules — same shape the web backend installs at runtime so the SSR
+    /// first paint matches.
+    scrollbar: Option<(
+        runtime_core::Tokenized<runtime_core::Color>,
+        runtime_core::Tokenized<runtime_core::Color>,
+    )>,
 }
 
 impl SsrBackend {
@@ -234,14 +249,32 @@ impl SsrBackend {
     /// 2. `@font-face` rules (real fonts on first paint);
     /// 3. the theme's `:root` token variables (so `var(--token, …)`
     ///    resolves to the real theme value, matching web);
-    /// 4. registered stylesheets (navigator layout, etc.);
-    /// 5. the content-keyed per-node style classes (`apply_style`);
-    /// 6. responsive `@media (min-width: …)` breakpoint overlays — LAST,
+    /// 4. host-surface theming (body background, scrollbar) — emitted
+    ///    AFTER the `:root` block so any `var(--…)` references resolve;
+    /// 5. registered stylesheets (navigator layout, etc.);
+    /// 6. the content-keyed per-node style classes (`apply_style`);
+    /// 7. responsive `@media (min-width: …)` breakpoint overlays — LAST,
     ///    so a matching media query overrides the base class rule above it.
     pub fn head_css(&self) -> String {
         let mut out = css::base_reset_css();
         out.push_str(&self.font_faces.concat());
         out.push_str(&css::tokens_to_root_css(&self.tokens));
+        if let Some(color) = &self.app_bg {
+            out.push_str(&format!(
+                "html, body {{ background: {}; }}",
+                color_css_value(color),
+            ));
+        }
+        if let Some((thumb, track)) = &self.scrollbar {
+            let thumb_v = color_css_value(thumb);
+            let track_v = color_css_value(track);
+            out.push_str(&format!(
+                "html {{ scrollbar-color: {thumb_v} {track_v}; }}\
+                 ::-webkit-scrollbar {{ width: 10px; height: 10px; }}\
+                 ::-webkit-scrollbar-track {{ background: {track_v}; }}\
+                 ::-webkit-scrollbar-thumb {{ background: {thumb_v}; border-radius: 5px; }}",
+            ));
+        }
         out.push_str(&self.raw_css.concat());
         for (class, body) in &self.style_rules {
             out.push('.');
@@ -254,6 +287,18 @@ impl SsrBackend {
             out.push_str(rule);
         }
         out
+    }
+}
+
+/// Render a `Tokenized<Color>` to its CSS value form: `var(--<name>)`
+/// for a token reference (so live-reactive after hydration via `:root`
+/// setProperty), the raw color string for a literal. Shared by SSR's
+/// host-surface rules so the emitted CSS matches what the web backend
+/// installs at runtime.
+fn color_css_value(color: &runtime_core::Tokenized<runtime_core::Color>) -> String {
+    match color.name() {
+        Some(name) => format!("var(--{name})"),
+        None => color.value().0.clone(),
     }
 }
 
@@ -865,6 +910,18 @@ impl Backend for SsrBackend {
         if !self.raw_css.iter().any(|c| c == css) {
             self.raw_css.push(css.to_string());
         }
+    }
+
+    fn set_app_background(&mut self, color: &runtime_core::Tokenized<runtime_core::Color>) {
+        self.app_bg = Some(color.clone());
+    }
+
+    fn set_scrollbar_theme(
+        &mut self,
+        thumb: &runtime_core::Tokenized<runtime_core::Color>,
+        track: &runtime_core::Tokenized<runtime_core::Color>,
+    ) {
+        self.scrollbar = Some((thumb.clone(), track.clone()));
     }
 
     fn register_asset(
@@ -1589,6 +1646,61 @@ mod tests {
         let head = b.head_css();
         assert!(head.contains("--color-text:#000000;"), "update should apply, got: {head}");
         assert!(head.contains("--spacing-md:16px;"), "unchanged token should persist, got: {head}");
+    }
+
+    /// `set_app_background` + `set_scrollbar_theme` must emit the
+    /// matching `<head>` CSS in `head_css`, and a `Tokenized::Token`
+    /// must become `var(--<name>)` (not the resolved value) so the
+    /// SSR-rendered page stays live-reactive to `update_tokens` swaps
+    /// after hydration — matching what the web backend installs at
+    /// runtime via `impl_set_app_background` /
+    /// `impl_set_scrollbar_theme`. A `Tokenized::Literal` emits the
+    /// raw color string verbatim.
+    #[test]
+    fn set_app_background_and_scrollbar_theme_emit_var_for_tokens() {
+        use runtime_core::Tokenized;
+        let mut b = SsrBackend::new();
+        b.set_app_background(&Tokenized::Token {
+            name: "color-background",
+            fallback: Color("#0f1115".into()),
+        });
+        b.set_scrollbar_theme(
+            &Tokenized::Token {
+                name: "color-border-strong",
+                fallback: Color("#525868".into()),
+            },
+            &Tokenized::Literal(Color("transparent".into())),
+        );
+        let head = b.head_css();
+        // Token reference → var(--…), so :root setProperty on swap
+        // automatically repaints the body without a second SSR pass.
+        assert!(
+            head.contains("html, body { background: var(--color-background); }"),
+            "expected body rule with var(--color-background), got: {head}"
+        );
+        // Scrollbar uses the same indirection for the thumb token;
+        // the literal track stays as the raw `transparent` string.
+        assert!(
+            head.contains("scrollbar-color: var(--color-border-strong) transparent"),
+            "expected scrollbar-color w/ var + literal, got: {head}"
+        );
+        assert!(
+            head.contains("::-webkit-scrollbar-thumb { background: var(--color-border-strong)"),
+            "expected webkit thumb to use var(--…), got: {head}"
+        );
+
+        // Literal-only call must NOT emit `var(--…)` — it should bake
+        // the resolved color string in. Re-call replaces, not appends.
+        b.set_app_background(&Tokenized::Literal(Color("#abcdef".into())));
+        let head = b.head_css();
+        assert!(
+            head.contains("html, body { background: #abcdef; }"),
+            "literal must bake the color value, got: {head}"
+        );
+        assert!(
+            !head.contains("html, body { background: var("),
+            "re-call must replace, not append, got: {head}"
+        );
     }
 
     /// A registered typeface emits `@font-face` rules in `head_css`,

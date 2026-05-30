@@ -51,6 +51,13 @@ fn translate_options(opts: &StackScreenOptions) -> IosScreenOptions {
         header_background: opts.header_background.clone(),
         header_tint: opts.header_tint.clone(),
         title_color: opts.title_color.clone(),
+        // `unmount_on_blur` is currently a no-op on the iOS stack:
+        // releasing the scope on push leaves UIKit's cached VC
+        // showing stale rendered output, and there's no natural
+        // remount hook on pop. The field is plumbed for API
+        // consistency with drawer/tab; honoring it requires a
+        // remount-on-pop strategy that's deferred to follow-up.
+        mount_policy: None,
     }
 }
 

@@ -6,6 +6,7 @@ pub(crate) mod handles;
 pub(crate) mod icon;
 pub(crate) mod image;
 pub(crate) mod portal;
+pub(crate) mod phase_timer;
 pub(crate) mod sticky;
 pub(crate) mod text_inset;
 pub(crate) mod touch;
@@ -116,6 +117,26 @@ pub struct IosBackend {
     /// `UINavigationController`'s top VC view, which only gets added
     /// on UIKit's first layout pass, after our `finish()` returns).
     pub(crate) view_to_layout: HashMap<usize, (Retained<UIView>, runtime_layout::LayoutNode)>,
+    /// Last-applied Taffy frame per view, keyed by the same view
+    /// pointer that keys `view_to_layout`. `apply_frames` consults
+    /// this and skips the `setBounds:` / `setCenter:` / gradient /
+    /// corner-radius / transform-percent sync trio when the new
+    /// frame matches — every persistent hidden screen
+    /// (LazyPersistent mount policy keeps them around for
+    /// re-Selects) goes through the apply loop on every relayout,
+    /// and their frames don't change, so writing the same bounds
+    /// every pass burns N obj-c message sends per stale view per
+    /// pass. Cumulative cost grew ~2–3 ms per navigation in
+    /// profiling, dwarfing every other phase by round 4.
+    pub(crate) applied_frames: HashMap<usize, (f32, f32, f32, f32)>,
+    /// Viewport size at the last layout pass. When this changes
+    /// (device rotation, window resize) every persistent root needs
+    /// `mark_dirty` before the dirty-skip in `run_layout_pass_global`
+    /// can safely opt out of computing clean roots — otherwise a
+    /// rotation would leave hidden screens cached at the old
+    /// dimensions and they'd render with stale sizes the moment the
+    /// user navigates back.
+    pub(crate) last_viewport: Option<(f32, f32)>,
     /// Per-view cached animation state. Mirrors the web backend's
     /// `animated_states` map; see [`animated`] for the routing
     /// from [`AnimProp`](runtime_core::animation::AnimProp) to
@@ -331,6 +352,51 @@ thread_local! {
     /// thread for hundreds of ms on a large screen.
     static LAYOUT_PASS_QUEUED: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
+
+    /// Whether the current runloop turn has already executed a
+    /// synchronous full-tree layout pass via `Backend::insert`'s
+    /// window-attached fast-path. The first insert into a live parent
+    /// still syncs (so `switch` / `when` toggles paint without flicker),
+    /// but every subsequent insert in the same turn falls through to the
+    /// coalesced `schedule_layout_pass()` instead — otherwise a fresh
+    /// screen mount with N children does N full-tree layouts in a row.
+    /// Cleared on the next libdispatch turn.
+    static SYNC_LAYOUT_DONE_THIS_TURN: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Mark "a sync layout already ran this runloop turn" and arm a
+/// libdispatch callback to clear the flag at the start of the next
+/// turn. Idempotent — repeated calls in the same turn re-arm nothing.
+fn arm_sync_layout_done_reset() {
+    if SYNC_LAYOUT_DONE_THIS_TURN.with(|c| c.replace(true)) {
+        return; // already armed
+    }
+    extern "C" {
+        static _dispatch_main_q: std::ffi::c_void;
+        fn dispatch_async_f(
+            queue: *const std::ffi::c_void,
+            context: *mut std::ffi::c_void,
+            work: extern "C" fn(*mut std::ffi::c_void),
+        );
+    }
+    extern "C" fn reset(_ctx: *mut std::ffi::c_void) {
+        SYNC_LAYOUT_DONE_THIS_TURN.with(|c| c.set(false));
+    }
+    unsafe {
+        dispatch_async_f(
+            &_dispatch_main_q as *const _ as *const std::ffi::c_void,
+            std::ptr::null_mut(),
+            reset,
+        );
+    }
+}
+
+/// True iff a sync layout has already run this turn — caller should
+/// fall through to the deferred path instead of triggering another
+/// full-tree layout.
+fn sync_layout_already_done_this_turn() -> bool {
+    SYNC_LAYOUT_DONE_THIS_TURN.with(|c| c.get())
 }
 
 pub fn schedule_layout_pass() {
@@ -434,6 +500,7 @@ fn promote_pending_sticky_recursive(
 
 impl IosBackend {
     pub fn new(mtm: MainThreadMarker) -> Self {
+        phase_timer::install_core_bridge();
         Self {
             mtm,
             host_root: None,
@@ -445,6 +512,8 @@ impl IosBackend {
             portal_instances: HashMap::new(),
             layout: runtime_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
+            applied_frames: HashMap::new(),
+            last_viewport: None,
             animated_states: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
@@ -1663,7 +1732,11 @@ impl Backend for IosBackend {
         //   one-tick deferred layout shows a visible flicker (blank
         //   between `clear_children` and the next-tick paint).
         let parent_window: *const NSObject = unsafe { msg_send![parent_view, window] };
-        if !parent_window.is_null() {
+        if !parent_window.is_null() && !sync_layout_already_done_this_turn() {
+            // First window-attached insert this runloop turn — sync so
+            // a `switch`/`when` toggle paints without flicker. Arm the
+            // reset so subsequent inserts in the same turn coalesce.
+            arm_sync_layout_done_reset();
             self.run_layout_pass_global();
         } else {
             schedule_layout_pass();
@@ -2478,6 +2551,7 @@ impl IosBackend {
     /// the initial render and from `schedule_layout_pass()` whenever
     /// new views land after that (navigation pushes, drawer mounts).
     pub(crate) fn run_layout_pass_global(&mut self) {
+        let _t = phase_timer::PhaseTimer::start("run_layout_pass_global");
         let (vw, vh) = self.viewport_size();
         backend_ios_core::ios_log(&format!(
             "[layout] run_layout_pass viewport=({:.1}, {:.1}) registered_views={}",
@@ -2491,34 +2565,50 @@ impl IosBackend {
         // Find every Taffy root. The framework root is one; each screen
         // mounted via `mount_screen_in_vc` (which bypasses
         // `Backend::insert`) is another.
-        let roots: Vec<runtime_layout::LayoutNode> = self
-            .view_to_layout
-            .values()
-            .map(|(_, n)| *n)
-            .filter(|n| self.layout.is_root(*n))
-            .collect();
+        let roots: Vec<runtime_layout::LayoutNode> = {
+            let _t = phase_timer::PhaseTimer::start("collect_roots");
+            self
+                .view_to_layout
+                .values()
+                .map(|(_, n)| *n)
+                .filter(|n| self.layout.is_root(*n))
+                .collect()
+        };
 
-        backend_ios_core::ios_log(&format!("[layout] {} taffy roots to compute", roots.len()));
-        for root_node in &roots {
-            self.layout.compute(*root_node, vw, vh);
-            let f = self.layout.frame_of(*root_node);
-            backend_ios_core::ios_log(&format!(
-                "[layout] root {:?} → frame ({:.1},{:.1}) {:.1}×{:.1}  style: {}",
-                root_node, f.x, f.y, f.width, f.height,
-                self.layout.debug_style(*root_node),
-            ));
-            if f.height > 500.0 {
-                let children = self.layout.children_of(*root_node);
-                for (i, c) in children.iter().enumerate() {
-                    let cf = self.layout.frame_of(*c);
-                    backend_ios_core::ios_log(&format!(
-                        "[layout]    child[{}] → ({:.1},{:.1}) {:.1}×{:.1}  style: {}",
-                        i, cf.x, cf.y, cf.width, cf.height,
-                        self.layout.debug_style(*c),
-                    ));
+        // If the viewport changed since the last pass, mark every
+        // root dirty so the skip-clean fast path doesn't lock hidden
+        // screens at stale dimensions.
+        let viewport_changed = self.last_viewport != Some((vw, vh));
+        if viewport_changed {
+            for root_node in &roots {
+                self.layout.mark_dirty(*root_node);
+            }
+            self.last_viewport = Some((vw, vh));
+        }
+
+        let mut computed_count = 0usize;
+        let mut skipped_count = 0usize;
+        {
+            let _t = phase_timer::PhaseTimer::start("taffy_compute_all_roots");
+            for root_node in &roots {
+                if !self.layout.is_dirty(*root_node) {
+                    // Skip persistent hidden screens whose subtree
+                    // hasn't been touched since the last pass. Taffy's
+                    // mark_dirty propagation guarantees a dirty child
+                    // anywhere in the subtree marks this root dirty,
+                    // so a clean root is genuinely a no-op for compute.
+                    skipped_count += 1;
+                    continue;
                 }
+                let _t_one = phase_timer::PhaseTimer::start("taffy_compute_one_root");
+                self.layout.compute(*root_node, vw, vh);
+                computed_count += 1;
             }
         }
+        backend_ios_core::ios_log(&format!(
+            "[layout] {} taffy roots — computed {} skipped {}",
+            roots.len(), computed_count, skipped_count
+        ));
 
         // Iterate every registered view directly. Recursing via
         // `UIView.subviews` misses subtrees that aren't yet attached
@@ -2535,8 +2625,32 @@ impl IosBackend {
         // observed failure mode here was width collapsing to 0.
         // Bounds + center are stable regardless of transform.
         let mut applied = 0usize;
+        {
+        let _t = phase_timer::PhaseTimer::start("apply_frames_loop");
+        // Track which views we actually touched this pass so the
+        // applied-frames cache can drop entries for views that have
+        // been removed (Backend::clear_children, screen unmounts,
+        // etc.). Without this the cache would grow with every nav
+        // that disposes a screen.
+        let mut still_present: std::collections::HashSet<usize> =
+            std::collections::HashSet::with_capacity(self.view_to_layout.len());
         for (key, (view, layout_node)) in self.view_to_layout.iter() {
+            still_present.insert(*key);
             let frame = self.layout.frame_of(*layout_node);
+            // Compare against the last frame we wrote for this
+            // view. If it hasn't moved, skip the obj-c message
+            // sends entirely — most relayouts only touch a small
+            // fraction of the tree (the screen we just swapped, an
+            // animated property's host view), but `apply_frames`
+            // walks every registered view including persistent
+            // hidden screens. For an idle pass that's hundreds of
+            // unchanged views taking ~16 µs each = several ms of
+            // wasted writes.
+            let frame_key = (frame.x, frame.y, frame.width, frame.height);
+            if self.applied_frames.get(key) == Some(&frame_key) {
+                applied += 1;
+                continue;
+            }
             // Preserve bounds.origin. For a regular UIView the
             // origin is always (0, 0), but for a UIScrollView
             // `bounds.origin` IS `contentOffset` — overwriting it
@@ -2607,7 +2721,13 @@ impl IosBackend {
                 frame.width,
                 frame.height,
             );
+            self.applied_frames.insert(*key, frame_key);
             applied += 1;
+        }
+        // Drop cache entries for views that aren't registered
+        // anymore. Cheap iteration over a small map (entries only
+        // grow with view count; never more than `view_to_layout`).
+        self.applied_frames.retain(|k, _| still_present.contains(k));
         }
         backend_ios_core::ios_log(&format!("[layout] apply_frames done: applied={}", applied));
 
@@ -2617,6 +2737,7 @@ impl IosBackend {
         // scroll view doesn't know how tall its content is and
         // gestures don't scroll (or only bounce, when
         // `alwaysBounceVertical` is on).
+        let _t_sync = phase_timer::PhaseTimer::start("scroll_contentsize_sync");
         for view_ptr in self.scroll_views.iter().copied() {
             let Some((_view_ref, scroll_layout)) = self.view_to_layout.values()
                 .find(|(v, _)| (&**v as *const UIView as usize) == view_ptr)
@@ -2626,14 +2747,53 @@ impl IosBackend {
             };
             let _ = scroll_layout; // currently not used; reserved for future per-axis adjustments
 
-            // Bounding box of all direct Taffy children of the scroll view.
-            let children = self.layout.children_of(scroll_layout);
+            // Bounding box across the scroll view's Taffy descendants.
+            // We have to look past the direct children: author
+            // sidebars frequently set `min_height: Percent(100)` on
+            // their outermost container, which Taffy clamps to the
+            // scroll view's bounds — overflowing grandchildren (a
+            // Spacer-pushed footer, a Dark-mode toggle pinned at
+            // the end of a tall list) sit past the direct child's
+            // reported frame and won't drive `contentSize` if we
+            // stop there. UIKit projects a deep subview's frame
+            // into the scroll view's content coordinate space by
+            // walking the chain of superview origins; we do the
+            // same by accumulating the running origin while
+            // descending.
+            //
+            // Perf note: this runs at the end of every layout pass
+            // for every framework-created UIScrollView. The walk is
+            // unconditional — a "skip if this node doesn't extend
+            // the running max" pruning sounds tempting but breaks
+            // the case the deep walk exists for: a 260×852 parent
+            // clamped to the scroll view's bounds with a single
+            // narrow descendant sitting at y = 900, which extends
+            // the bbox on the height axis but not the width axis,
+            // so a both-axis-must-extend gate would skip it. The
+            // O(N) cost stays bounded by the tree size — author
+            // scroll views inside the website are tens of nodes,
+            // not thousands.
             let mut max_x = 0.0_f32;
             let mut max_y = 0.0_f32;
-            for c in children {
-                let f = self.layout.frame_of(c);
-                max_x = max_x.max(f.x + f.width);
-                max_y = max_y.max(f.y + f.height);
+            let mut stack: Vec<(runtime_layout::LayoutNode, f32, f32)> = Vec::new();
+            for c in self.layout.children_of(scroll_layout) {
+                stack.push((c, 0.0_f32, 0.0_f32));
+            }
+            while let Some((node, origin_x, origin_y)) = stack.pop() {
+                let f = self.layout.frame_of(node);
+                let nx = origin_x + f.x;
+                let ny = origin_y + f.y;
+                let right = nx + f.width;
+                let bottom = ny + f.height;
+                if right > max_x {
+                    max_x = right;
+                }
+                if bottom > max_y {
+                    max_y = bottom;
+                }
+                for child in self.layout.children_of(node) {
+                    stack.push((child, nx, ny));
+                }
             }
             let scroll_view: Retained<UIScrollView> = unsafe {
                 let ptr = view_ptr as *mut UIScrollView;
@@ -2671,11 +2831,21 @@ impl IosBackend {
         // place — most visibly when the user scrolls a freshly-
         // mounted screen for the first time. Cheap walk; the
         // registry is tiny by construction.
-        sticky::refresh_layout_positions(
-            &mut self.sticky_registry,
-            &self.layout,
-            &self.view_to_layout,
-        );
+        {
+            let _t = phase_timer::PhaseTimer::start("sticky_refresh");
+            sticky::refresh_layout_positions(
+                &mut self.sticky_registry,
+                &self.layout,
+                &self.view_to_layout,
+            );
+        }
+        // Make sure the scroll-content sync timer drops before we
+        // dump — without this the timer scope would still hold the
+        // duration when `take_and_dump` runs and the value would
+        // round to zero.
+        drop(_t_sync);
+        drop(_t);
+        phase_timer::take_and_dump("layout pass");
     }
 
     /// Return the viewport size for layout. Tries host_root.bounds

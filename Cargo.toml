@@ -80,6 +80,7 @@ members = [
     "crates/sdk/svg",
     "crates/sdk/toolbar",
     "crates/sdk/form",
+    "crates/sdk/table",
     "crates/sdk/menu",
 
     # SDK — utility (non-primitive) crates.
@@ -254,6 +255,7 @@ video = { path = "crates/sdk/video" }
 svg = { path = "crates/sdk/svg" }
 toolbar = { path = "crates/sdk/toolbar" }
 form = { path = "crates/sdk/form" }
+table = { path = "crates/sdk/table" }
 menu = { path = "crates/sdk/menu" }
 net = { path = "crates/sdk/net" }
 server = { path = "crates/sdk/server" }

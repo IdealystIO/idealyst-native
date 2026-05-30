@@ -188,6 +188,11 @@ pub struct IosScreenOptions {
     pub header_background: Option<Rc<dyn Fn() -> Color>>,
     pub header_tint: Option<Rc<dyn Fn() -> Color>>,
     pub title_color: Option<Rc<dyn Fn() -> Color>>,
+    /// Per-screen override of the navigator's [`IosNavCallbacks::mount_policy`].
+    /// `None` defers to the navigator-global default. When the SDK's
+    /// per-screen `mount_policy` builder is used, the platform handler
+    /// fills this so `select_screen` can branch on it for cache-vs-dispose.
+    pub mount_policy: Option<MountPolicy>,
 }
 
 /// Drawer-specific commands ridden across the substrate's

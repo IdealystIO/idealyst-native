@@ -285,6 +285,87 @@ impl WebBackend {
         self.theme_root_rule_index = Some(idx);
     }
 
+    /// Install or replace the `html, body { background: var(--…) }`
+    /// rule that themes the host surface behind the framework's tree.
+    /// Token-based: writes `var(--<name>)` for a `Tokenized::Token` so
+    /// later `update_tokens` calls (which mutate `:root` in place)
+    /// auto-repaint without a second call here. `Tokenized::Literal`
+    /// gets the raw color value baked in.
+    ///
+    /// Re-call swaps the rule body — DELETE + re-insert at the same
+    /// index rather than `setProperty`, because the value we're
+    /// changing IS the `var()` reference (not the resolved color),
+    /// and only the reference changes when the SDK re-targets.
+    pub(crate) fn impl_set_app_background(&mut self, color: &runtime_core::Tokenized<runtime_core::Color>) {
+        let value = match color.name() {
+            Some(name) => format!("var(--{name})"),
+            None => color.value().0.clone(),
+        };
+        let rule = format!("html, body {{ background: {value}; }}");
+        let sheet = self.sheet();
+        if let Some(idx) = self.app_bg_rule_index {
+            let _ = sheet.delete_rule(idx);
+            let new_idx = sheet
+                .insert_rule_with_index(&rule, idx)
+                .expect("re-insert app-bg rule");
+            self.app_bg_rule_index = Some(new_idx);
+        } else {
+            let end = sheet.css_rules().map(|r| r.length()).unwrap_or(0);
+            let idx = sheet
+                .insert_rule_with_index(&rule, end)
+                .expect("insert app-bg rule (append)");
+            self.app_bg_rule_index = Some(idx);
+        }
+    }
+
+    /// Install or replace the platform scrollbar theme rules.
+    /// `scrollbar-color` covers Firefox / Chromium / Safari 18+; the
+    /// `::-webkit-scrollbar` rules below it are the fallback for older
+    /// Webkit (which ignores `scrollbar-color` once any
+    /// `::-webkit-scrollbar` rule is present, so the two don't fight).
+    ///
+    /// `track` typically wants to be a transparent literal — register
+    /// a token with value `transparent` if you want a track that
+    /// follows the theme indirectly.
+    pub(crate) fn impl_set_scrollbar_theme(
+        &mut self,
+        thumb: &runtime_core::Tokenized<runtime_core::Color>,
+        track: &runtime_core::Tokenized<runtime_core::Color>,
+    ) {
+        let thumb_v = match thumb.name() {
+            Some(n) => format!("var(--{n})"),
+            None => thumb.value().0.clone(),
+        };
+        let track_v = match track.name() {
+            Some(n) => format!("var(--{n})"),
+            None => track.value().0.clone(),
+        };
+        let rules = [
+            format!("html {{ scrollbar-color: {thumb_v} {track_v}; }}"),
+            "::-webkit-scrollbar { width: 10px; height: 10px; }".to_string(),
+            format!("::-webkit-scrollbar-track {{ background: {track_v}; }}"),
+            format!(
+                "::-webkit-scrollbar-thumb {{ background: {thumb_v}; border-radius: 5px; }}"
+            ),
+        ];
+        let sheet = self.sheet();
+        // Drop any prior rules so re-targeting (different tokens) is
+        // clean. Indices are tracked in insertion order; delete back
+        // to front so each delete affects only the tail.
+        for idx in self.scrollbar_rule_indices.drain(..).rev() {
+            let _ = sheet.delete_rule(idx);
+        }
+        let mut indices = Vec::with_capacity(rules.len());
+        for rule in &rules {
+            let end = sheet.css_rules().map(|r| r.length()).unwrap_or(0);
+            let idx = sheet
+                .insert_rule_with_index(rule, end)
+                .expect("insert scrollbar rule (append)");
+            indices.push(idx);
+        }
+        self.scrollbar_rule_indices = indices;
+    }
+
     pub(crate) fn impl_unregister_stylesheet(&mut self, rules: &[std::rc::Rc<StyleRules>]) {
         for r in rules {
             // Always drop the pointer-keyed entry — the Rc is going

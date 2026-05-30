@@ -794,8 +794,10 @@ mod tests {
 
     #[test]
     fn ref_attr_emits_bind_call() {
+        // Use lowercase `button` — PascalCase `Button` is reserved for
+        // idea-ui's themed component and routes to user dispatch.
         let out = parse_and_emit(quote! {
-            <Button label="Click" on_click={f} ref={my_ref} />
+            <button label="Click" on_click={f} ref={my_ref} />
         });
         assert!(out.contains(":: runtime_core :: button"));
         assert!(out.contains(". bind (my_ref)"));

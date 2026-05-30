@@ -6,6 +6,7 @@ use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker, NSObj
 use objc2_ui_kit::{UIColor, UIView};
 use std::rc::Rc;
 use block2::ConcreteBlock;
+use crate::phase_record;
 
 /// Opaque wrapper for CoreGraphics' `CGColorRef` so `msg_send!`'s
 /// debug-mode encoding check sees `^{CGColor=}` instead of `^v`.
@@ -416,6 +417,7 @@ pub fn sync_gradient_sublayer(view: &UIView) {
 }
 
 pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
+    let _t = phase_record::scope("apply_style_to_view");
     // Background color -- skip for Metal-backed views
     let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
     let is_metal_view: bool = unsafe {
@@ -796,21 +798,34 @@ unsafe impl Encode for UIEdgeInsetsPayload {
     );
 }
 
+/// Memoized class lookup so the obj-c-runtime probe runs once for
+/// the whole process instead of allocating a `CString` and querying
+/// `objc_lookUpClass` on every `apply_style` call (hot path: fires
+/// once per styled view during screen mount, and screen mount is
+/// what the website does for every nav-link tap).
+static IDEALYST_LABEL_CLASS: std::sync::OnceLock<Option<usize>> =
+    std::sync::OnceLock::new();
+
+fn idealyst_label_class() -> Option<&'static objc2::runtime::AnyClass> {
+    let raw = *IDEALYST_LABEL_CLASS.get_or_init(|| {
+        let name = std::ffi::CString::new("IdealystLabel").ok()?;
+        let p = unsafe { objc2::ffi::objc_lookUpClass(name.as_ptr()) };
+        if p.is_null() {
+            None
+        } else {
+            Some(p as usize)
+        }
+    });
+    raw.map(|p| unsafe { &*(p as *const objc2::runtime::AnyClass) })
+}
+
 fn apply_text_insets_if_label(
     view: &UIView,
     style: &runtime_core::StyleRules,
 ) {
-    // ObjC class lookup. Returns null if the class isn't registered
-    // (e.g. running under a host that doesn't include
-    // `backend-ios-mobile`'s `IdealystLabel` declaration), in which
-    // case there's nothing for us to do.
-    let cls_name = std::ffi::CString::new("IdealystLabel").unwrap();
-    let cls_ptr = unsafe { objc2::ffi::objc_lookUpClass(cls_name.as_ptr()) };
-    if cls_ptr.is_null() {
+    let Some(cls_ref) = idealyst_label_class() else {
         return;
-    }
-    let cls_ref: &objc2::runtime::AnyClass =
-        unsafe { &*(cls_ptr as *const objc2::runtime::AnyClass) };
+    };
     let is_match: bool = unsafe { msg_send![view, isKindOfClass: cls_ref] };
     if !is_match {
         return;
@@ -844,7 +859,29 @@ fn is_border_id(s: &str) -> bool {
     matches!(s, BORDER_ID_TOP | BORDER_ID_RIGHT | BORDER_ID_BOTTOM | BORDER_ID_LEFT)
 }
 
+/// Sentinel value we write into `UIView.tag` whenever
+/// `install_border_side` installs at least one border subview. The
+/// next `apply_style` consult flips back to the slow path (walk
+/// subviews, check accessibility identifiers, removeFromSuperview)
+/// only when this tag is present — for the vast majority of styled
+/// views the author never asked for a border, so the previous
+/// unconditional walk burned a `view.subviews()` allocation and an
+/// N-pass identifier compare for every node every time the style
+/// effect fired (5 k microseconds across the 100-view trees the
+/// website ships). The value is arbitrary but distinctive enough to
+/// not collide with author-set tag values in real apps.
+const BORDER_TAG_MARKER: isize = 0x0BDE_7A60;
+
 fn remove_border_subviews(view: &UIView) {
+    let tag: isize = unsafe { msg_send![view, tag] };
+    if tag != BORDER_TAG_MARKER {
+        // Fast path: we've never installed border subviews on this
+        // view, so there's nothing to tear down. Saves an
+        // `NSArray *subviews` alloc and an O(N_children) identifier
+        // walk per `apply_style` call.
+        return;
+    }
+    let _t = phase_record::scope("remove_border_subviews");
     let subviews = view.subviews();
     for sub in subviews.iter() {
         let id_obj: Option<Retained<NSString>> = unsafe {
@@ -858,6 +895,10 @@ fn remove_border_subviews(view: &UIView) {
             unsafe { sub.removeFromSuperview() };
         }
     }
+    // Clear the marker — if the next `apply_style` re-installs
+    // borders it'll set it again, otherwise subsequent calls
+    // short-circuit via the fast path above.
+    let _: () = unsafe { msg_send![view, setTag: 0isize] };
 }
 
 fn install_border_side(
@@ -867,6 +908,7 @@ fn install_border_side(
     color: &Color,
     _parent_bounds: CGRect,
 ) {
+    let _t = phase_record::scope("install_border_side");
     // apply_style runs on the main thread per framework contract.
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
     let bar = unsafe { UIView::new(mtm) };
@@ -886,6 +928,12 @@ fn install_border_side(
         msg_send![&bar, setTranslatesAutoresizingMaskIntoConstraints: false]
     };
     unsafe { view.addSubview(&bar) };
+    // Mark the parent so the next `remove_border_subviews` knows it
+    // can't take the fast path. Setting the tag once per
+    // `install_border_side` is cheap (a single message send);
+    // toggling it via author-set tag values is the corner case the
+    // sentinel constant is picked to avoid.
+    let _: () = unsafe { msg_send![view, setTag: BORDER_TAG_MARKER] };
     unsafe {
         let p_top: Retained<NSObject> = msg_send_id![view, topAnchor];
         let p_bot: Retained<NSObject> = msg_send_id![view, bottomAnchor];

@@ -98,9 +98,12 @@ pub struct HostHandle {
 impl HostHandle {
     /// No-op on unsupported targets. The handle can't be constructed
     /// because [`mount`] returns `Err` before reaching the `Ok` arm,
-    /// so this method is unreachable in practice; it exists to keep
-    /// the consumer-facing API symmetric across targets.
+    /// so these methods are unreachable in practice; they exist to
+    /// keep the consumer-facing API symmetric across targets.
     pub fn resize(&self, _size: (u32, u32)) {}
+    pub fn pause(&self) {}
+    pub fn resume(&self) {}
+    pub fn is_running(&self) -> bool { false }
 }
 
 // ---------------------------------------------------------------------------
@@ -122,16 +125,17 @@ impl HostHandle {
 /// primitive's `on_ready` callback and stash the returned handle so
 /// `on_resize` can call [`HostHandle::resize`] and `on_lost` can
 /// drop it.
-pub async fn mount<F>(
+pub async fn mount(
     surface: GraphicsSurface,
     size: (u32, u32),
     profile: DeviceProfile,
     painter: Rc<dyn Painter>,
-    build_ui: F,
-) -> Result<HostHandle, MountError>
-where
-    F: FnOnce() -> Element + 'static,
-{
+    // `Rc<dyn Fn>` instead of `FnOnce` so per-host visibility gates
+    // can unmount/remount the embedded reactive scope without losing
+    // the build closure. Hosts that don't need this (web today) just
+    // call it once.
+    build_ui: Rc<dyn Fn() -> Element + 'static>,
+) -> Result<HostHandle, MountError> {
     #[cfg(target_arch = "wasm32")]
     {
         host_web::mount(surface, size, profile, painter, build_ui).await

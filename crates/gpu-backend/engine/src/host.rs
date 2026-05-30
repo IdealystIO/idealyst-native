@@ -539,6 +539,35 @@ impl Host {
         self._owner = Some(fw_mount(self.backend.clone(), build_ui));
     }
 
+    /// Drop the mounted reactive scope. All effects, AnimatedValue
+    /// subscribers, and scheduled tasks created inside `build_ui`
+    /// unregister via their `on_cleanup` callbacks, which is what
+    /// stops the global animation clock from ticking this host's
+    /// animations every frame.
+    ///
+    /// Idempotent (no-op if already unmounted). After unmount, the
+    /// host's wgpu surface / renderer / device stay alive, so a
+    /// subsequent `mount(...)` re-establishes the scene without
+    /// paying the wgpu init cost.
+    ///
+    /// **Does NOT clear `session::REGISTRY`.** Embedded apps that
+    /// use `session::animated(key, …)` keep their AVs in the
+    /// thread-global registry by design — that's the whole point
+    /// (hot-patch state survival). If you want a fresh-restart
+    /// semantics where unmount followed by a future mount resets
+    /// those AVs to their initial values, call
+    /// [`runtime_core::session::clear`] yourself after `unmount`.
+    /// The platform host handles (e.g. `IosHostHandle::pause`)
+    /// document their chosen semantics.
+    pub fn unmount(&mut self) {
+        self._owner = None;
+    }
+
+    /// True iff a build_ui has been mounted (and not since unmounted).
+    pub fn is_mounted(&self) -> bool {
+        self._owner.is_some()
+    }
+
     // ---------------- Read-only accessors used by the renderer ---
 
     pub fn backend(&self) -> &Rc<RefCell<WgpuBackend>> { &self.backend }

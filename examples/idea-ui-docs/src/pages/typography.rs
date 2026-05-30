@@ -1,96 +1,20 @@
 //! Typography — the unified text component.
-//!
-//! Demo layout: a static gallery showing every `TypographyKind` at
-//! its native size, plus one interactive demo where every prop is
-//! twiddleable through the auto-generated controls panel.
 
 use runtime_core::{ui, Element};
 use idea_ui::doc_controls::DocControls;
-use idea_ui::{Typography, Card, Stack, TypographyKindRef, TypographyProps, StackGap};
+use idea_ui::{
+    tone, typography_kind, Stack, StackGap, ToneRef, Typography, TypographyKindRef,
+    TypographyProps,
+};
 
-use crate::shell::{demo_card, page_header};
+use crate::shell::{
+    self, Callout, CodePanel, ComponentPage, Demo, DemoSurface, H2, P, Prop, PropsTable, Section,
+};
 
 pub fn page() -> Element {
-    ui! {
-        Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Typography",
-                "Every kind of text on a page is a `Typography` component. Pick a `kind` for \
-                 the size + weight + spacing; pick a `tone` for the color; pick an `align` for \
-                 horizontal alignment."
-            ) }
-
-            { variant_gallery() }
-            { interactive_demo() }
-            { tone_gallery() }
-        }
-    }
-}
-
-// =============================================================================
-// Static gallery — every kind shown at its native scale
-// =============================================================================
-
-fn variant_gallery() -> Element {
-    let rows: Vec<Element> = vec![
-        variant_row("Display", "The quick brown fox", idea_ui::typography_kind::Display.into()),
-        variant_row("H1", "The quick brown fox", idea_ui::typography_kind::H1.into()),
-        variant_row("H2", "The quick brown fox", idea_ui::typography_kind::H2.into()),
-        variant_row("H3", "The quick brown fox", idea_ui::typography_kind::H3.into()),
-        variant_row("BodyXl", "The quick brown fox jumps over the lazy dog.", idea_ui::typography_kind::BodyXl.into()),
-        variant_row("BodyLg", "The quick brown fox jumps over the lazy dog.", idea_ui::typography_kind::BodyLg.into()),
-        variant_row("Body", "The quick brown fox jumps over the lazy dog.", idea_ui::typography_kind::Body.into()),
-        variant_row("BodySm", "The quick brown fox jumps over the lazy dog.", idea_ui::typography_kind::BodySm.into()),
-        variant_row("Caption", "Helper text under a control", idea_ui::typography_kind::Caption.into()),
-        variant_row("Overline", "Section label", idea_ui::typography_kind::Overline.into()),
-    ];
-
-    let label = ui! {
-        Typography(content = "Variant gallery".to_string(), kind = idea_ui::typography_kind::H2)
-    };
-    let blurb = ui! {
-        Typography(
-            content = "Every `TypographyKind` rendered at its native size. The size scale \
-                       is theme-tokenized (`typography-{kind}-size`); apps can retune by \
-                       overriding individual fields on the `Typography` theme struct.".to_string(),
-            muted = true,
-        )
-    };
-    let mut children: Vec<Element> = Vec::with_capacity(rows.len() + 2);
-    children.push(label);
-    children.push(blurb);
-    for r in rows {
-        children.push(r);
-    }
-    ui! {
-        Card { children }
-    }
-}
-
-fn variant_row(name: &str, sample: &str, kind: TypographyKindRef) -> Element {
-    let name_text = name.to_string();
-    // Render the kind name in muted Overline so it doesn't fight the
-    // sample line above it.
-    let label = ui! {
-        Typography(content = name_text, kind = idea_ui::typography_kind::Overline, muted = true)
-    };
-    let sample_line = ui! {
-        Typography(content = sample.to_string(), kind = kind)
-    };
-    let children: Vec<Element> = vec![label, sample_line];
-    ui! {
-        Stack(gap = StackGap::Xs) { children }
-    }
-}
-
-// =============================================================================
-// Interactive demo — auto-generated controls for every Typography prop
-// =============================================================================
-
-fn interactive_demo() -> Element {
     let state = TypographyProps::init_state();
     state.content.set(
-        "Twiddle the controls to see the variant, tone, and align axes live.".to_string(),
+        "Twiddle the controls to see kind, tone, and align live.".to_string(),
     );
     let preview = TypographyProps::reactive_preview(&state, |props| {
         let content = props.content;
@@ -102,21 +26,116 @@ fn interactive_demo() -> Element {
         }
     });
     let controls = TypographyProps::render_controls(&state);
-    demo_card(
-        "Interactive",
-        "Every Typography prop wired to a control. The `DocControls` derive walks the props \
-         struct, builds a Signal per field, and rebuilds the preview tree on every signal flip.",
-        preview,
-        controls,
-    )
+
+    shell::layout(ui! {
+        ComponentPage(
+            title = "Typography".to_string(),
+            lead = "Every textual surface on a page is a Typography. Pick a `kind` for the \
+                size + weight + spacing; pick a `tone` for the color; pick an `align` for \
+                horizontal alignment.".to_string(),
+        ) {
+            H2(content = "Live demo".to_string())
+            Demo(preview = preview, controls = controls)
+
+            Section(title = "Kind gallery".to_string()) {
+                P(content = "Every TypographyKind rendered at its native scale. The size scale \
+                    is theme-tokenized (`typography-{kind}-size`); apps retune by overriding \
+                    individual fields on the Typography theme struct.".to_string())
+                DemoSurface {
+                    kind_gallery()
+                }
+            }
+
+            Section(title = "Tone gallery".to_string()) {
+                P(content = "Each tone reads a different theme color token. `muted = true` is \
+                    a shorthand for `tone = None` + the muted text token.".to_string())
+                DemoSurface {
+                    tone_gallery()
+                }
+            }
+
+            Section(title = "Props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop {
+                        name: "content",
+                        ty: "Reactive<String>",
+                        desc: "Text content. Accepts a literal, String, Signal<String>, or rx!(...) computed binding.",
+                    },
+                    Prop {
+                        name: "kind",
+                        ty: "TypographyKindRef",
+                        desc: "Display / H1..H3 / BodyXl..BodySm / Caption / Overline. Defaults to Body.",
+                    },
+                    Prop {
+                        name: "tone",
+                        ty: "Option<ToneRef>",
+                        desc: "Optional semantic color. When Some, overrides the muted flag.",
+                    },
+                    Prop {
+                        name: "muted",
+                        ty: "bool",
+                        desc: "When true and tone is None, use the theme's muted text color.",
+                    },
+                    Prop {
+                        name: "align",
+                        ty: "TextAlign",
+                        desc: "Left (default) / Center / Right / Justify. Skipped from auto-controls (framework enum without VariantEnum).",
+                    },
+                ])
+            }
+
+            Section(title = "Reactive text".to_string()) {
+                P(content = "Typography's `content` is `Reactive<String>` — a literal is static, \
+                    a Signal updates the rendered node in place, and `rx!(...)` updates on every \
+                    read signal change. No parent rebuild.".to_string())
+                CodePanel(src = r##"// Static — String coerces to Reactive::Static.
+Typography(content = "Welcome".to_string())
+
+// Live — Signal<String> updates the rendered text in place.
+let name = signal!("World".to_string());
+Typography(content = name)
+
+// Computed — rx! tracks every read signal and re-derives.
+Typography(content = rx!(format!("{} clicks", count.get())))"##.to_string())
+            }
+
+            Callout(label = "Picking the right kind".to_string()) {
+                P(content = "Use H1 / H2 / H3 for headings. Use Body* for paragraphs (Body is \
+                    the default; BodyLg for lead paragraphs, BodySm for tight UI text). Use \
+                    Caption for muted helper text under controls. Use Overline for SECTION-style \
+                    labels above grouped content.".to_string())
+            }
+        }
+    })
 }
 
-// =============================================================================
-// Tone gallery — one Body sample per tone
-// =============================================================================
+fn kind_gallery() -> Element {
+    let rows: Vec<Element> = vec![
+        kind_row("Display",  "The quick brown fox", typography_kind::Display.into()),
+        kind_row("H1",       "The quick brown fox", typography_kind::H1.into()),
+        kind_row("H2",       "The quick brown fox", typography_kind::H2.into()),
+        kind_row("H3",       "The quick brown fox", typography_kind::H3.into()),
+        kind_row("BodyXl",   "The quick brown fox jumps over the lazy dog.", typography_kind::BodyXl.into()),
+        kind_row("BodyLg",   "The quick brown fox jumps over the lazy dog.", typography_kind::BodyLg.into()),
+        kind_row("Body",     "The quick brown fox jumps over the lazy dog.", typography_kind::Body.into()),
+        kind_row("BodySm",   "The quick brown fox jumps over the lazy dog.", typography_kind::BodySm.into()),
+        kind_row("Caption",  "Helper text under a control",                  typography_kind::Caption.into()),
+        kind_row("Overline", "Section label",                                typography_kind::Overline.into()),
+    ];
+    ui! { Stack(gap = StackGap::Md) { rows } }
+}
+
+fn kind_row(name: &str, sample: &str, kind: TypographyKindRef) -> Element {
+    let name_text = name.to_string();
+    let label = ui! {
+        Typography(content = name_text, kind = typography_kind::Overline, muted = true)
+    };
+    let sample_line = ui! { Typography(content = sample.to_string(), kind = kind) };
+    let children: Vec<Element> = vec![label, sample_line];
+    ui! { Stack(gap = StackGap::Xs) { children } }
+}
 
 fn tone_gallery() -> Element {
-    use idea_ui::ToneRef;
     enum ToneCell {
         Default,
         Muted,
@@ -124,45 +143,21 @@ fn tone_gallery() -> Element {
     }
     let tones: Vec<(&'static str, ToneCell)> = vec![
         ("Default", ToneCell::Default),
-        ("Muted", ToneCell::Muted),
-        ("Primary", ToneCell::Color(idea_ui::tone::Primary.into())),
-        ("Danger", ToneCell::Color(idea_ui::tone::Danger.into())),
-        ("Success", ToneCell::Color(idea_ui::tone::Success.into())),
-        ("Warning", ToneCell::Color(idea_ui::tone::Warning.into())),
-        ("Info", ToneCell::Color(idea_ui::tone::Info.into())),
+        ("Muted",   ToneCell::Muted),
+        ("Primary", ToneCell::Color(tone::Primary.into())),
+        ("Danger",  ToneCell::Color(tone::Danger.into())),
+        ("Success", ToneCell::Color(tone::Success.into())),
+        ("Warning", ToneCell::Color(tone::Warning.into())),
+        ("Info",    ToneCell::Color(tone::Info.into())),
     ];
     let mut rows: Vec<Element> = Vec::with_capacity(tones.len());
     for (label, cell) in tones {
         let sample = format!("{} — readable on both light and dark surfaces.", label);
         rows.push(match cell {
-            ToneCell::Default => ui! {
-                Typography(content = sample)
-            },
-            ToneCell::Muted => ui! {
-                Typography(content = sample, muted = true)
-            },
-            ToneCell::Color(t) => ui! {
-                Typography(content = sample, tone = Some(t))
-            },
+            ToneCell::Default => ui! { Typography(content = sample) },
+            ToneCell::Muted => ui! { Typography(content = sample, muted = true) },
+            ToneCell::Color(t) => ui! { Typography(content = sample, tone = Some(t)) },
         });
     }
-    let label = ui! {
-        Typography(content = "Tone gallery".to_string(), kind = idea_ui::typography_kind::H2)
-    };
-    let blurb = ui! {
-        Typography(
-            content = "Each tone reads a different theme color token. `Inverse` is omitted \
-                       here because it's white-on-dark — visible only against a dark surface.".to_string(),
-            muted = true,
-        )
-    };
-    let mut children: Vec<Element> = Vec::with_capacity(rows.len() + 2);
-    children.push(label);
-    children.push(blurb);
-    for r in rows {
-        children.push(r);
-    }
-    ui! {
-        Card { children }
-    }
+    ui! { Stack(gap = StackGap::Sm) { rows } }
 }

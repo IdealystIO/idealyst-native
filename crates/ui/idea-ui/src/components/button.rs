@@ -3,7 +3,7 @@
 //!
 //! ```ignore
 //! ui! {
-//!     Btn(
+//!     Button(
 //!         label = "Save",
 //!         on_click = on_save,
 //!         tone = tone::Primary,

@@ -1,58 +1,18 @@
-//! Stateful — Tabs and Avatar.
+//! Stateful — Tabs, Collapsible, Accordion.
 
 use std::rc::Rc;
 
 use runtime_core::{signal, ui, Element};
-use idea_ui::doc_controls::DocControls;
-use idea_ui::{Avatar, Typography, Card, Stack, Tabs, AvatarProps, StackGap, Tab};
+use idea_ui::{
+    typography_kind, Accordion, AccordionExpand, AccordionItem, Collapsible,
+    CollapsibleTransition, Stack, StackGap, Tab, Tabs, Typography,
+};
 
-use crate::shell::{demo_card, page_header};
+use crate::shell::{
+    self, Callout, CodePanel, ComponentPage, DemoSurface, H2, P, Prop, PropsTable, Section,
+};
 
-pub fn page() -> Element {
-    ui! {
-        Stack(gap = StackGap::Xl) {
-            { page_header(
-                "Stateful",
-                "Components whose appearance is driven by host-owned signals or runtime data."
-            ) }
-
-            { avatar_demo() }
-            { tabs_demo() }
-        }
-    }
-}
-
-fn avatar_demo() -> Element {
-    let state = AvatarProps::init_state();
-    state.initials.set("AB".to_string());
-
-    let preview = AvatarProps::reactive_preview(&state, |props| {
-        let initials = props.initials;
-        let color = props.color;
-        let size = props.size;
-        ui! {
-            Avatar(initials = initials, color = color, size = size)
-        }
-    });
-    let controls = AvatarProps::render_controls(&state);
-    demo_card(
-        "Avatar",
-        "Circular user-identity element. Renders an image when `src` is set, otherwise \
-         falls back to initials on a `color`-tinted background — the color is a separate \
-         axis from Intent because avatars don't represent semantic actions.",
-        preview,
-        controls,
-    )
-}
-
-fn tabs_demo() -> Element {
-    // `Tabs` is intentionally minimal: it owns the strip and the
-    // active-index signal, nothing else. Panel switching is wired
-    // by the caller via `runtime_core::switch`, keyed off the
-    // same signal. This keeps `Tabs` composable with any panel
-    // content the framework knows how to render — including future
-    // navigator-routed integrations — without baking a panel slot
-    // into the component's surface.
+pub fn tabs() -> Element {
     let active = signal!(0usize);
     let on_change: Rc<dyn Fn(usize)> = Rc::new(move |idx| active.set(idx));
 
@@ -61,54 +21,426 @@ fn tabs_demo() -> Element {
         |idx: &usize| match idx {
             0 => ui! {
                 Stack(gap = StackGap::Sm) {
-                    Typography(content = "Overview".to_string(), kind = idea_ui::typography_kind::H3)
-                    Typography(content = "High-level summary of the active project. The Overview \
-                                      tab is mounted whenever the active index is 0; switching \
-                                      tabs disposes this subtree and mounts a fresh one for the \
-                                      newly-active panel.".to_string(),
+                    Typography(content = "Overview".to_string(), kind = typography_kind::H3)
+                    Typography(content = "The Overview tab is mounted whenever the active \
+                                      index is 0; switching tabs disposes this subtree and \
+                                      mounts a fresh one for the newly-active panel.".to_string(),
                          muted = true)
                 }
             },
             1 => ui! {
                 Stack(gap = StackGap::Sm) {
-                    Typography(content = "Activity".to_string(), kind = idea_ui::typography_kind::H3)
-                    Typography(content = "Recent events would render here. Because the panel is \
-                                      rebuilt from scratch on every tab change, any signal \
-                                      subscriptions inside it are released when the user \
-                                      switches away — no stale effects accumulate.".to_string(),
+                    Typography(content = "Activity".to_string(), kind = typography_kind::H3)
+                    Typography(content = "Because the panel is rebuilt from scratch on every \
+                                      tab change, signal subscriptions inside it release when \
+                                      the user switches away — no stale effects accumulate.".to_string(),
                          muted = true)
                 }
             },
             _ => ui! {
                 Stack(gap = StackGap::Sm) {
-                    Typography(content = "Settings".to_string(), kind = idea_ui::typography_kind::H3)
-                    Typography(content = "Per-project configuration would render here. The strip \
-                                      doesn't dictate panel layout — each branch can return \
-                                      whatever primitive tree makes sense for that view.".to_string(),
+                    Typography(content = "Settings".to_string(), kind = typography_kind::H3)
+                    Typography(content = "Per-project configuration. The strip doesn't dictate \
+                                      panel layout — each branch returns whatever primitive \
+                                      tree makes sense for that view.".to_string(),
                          muted = true)
                 }
             },
         },
     );
 
+    shell::layout(ui! {
+        ComponentPage(
+            title = "Tabs".to_string(),
+            lead = "Clickable tab strip with reactive active highlighting. Owns the strip, \
+                not the panel — content swap is wired by the caller via runtime_core::switch.".to_string(),
+        ) {
+            H2(content = "Live demo".to_string())
+            DemoSurface {
+                Tabs(
+                    active = active,
+                    on_change = on_change,
+                    tabs = vec![
+                        Tab::new("Overview"),
+                        Tab::new("Activity"),
+                        Tab::new("Settings"),
+                    ]
+                )
+                panel
+            }
+
+            Section(title = "Why panel swap is the caller's job".to_string()) {
+                P(content = "Tabs is intentionally minimal — it owns the strip and the active \
+                    index, nothing else. The visual highlight stays in lockstep with whatever \
+                    the caller treats as the source of truth (a local Signal, a route's \
+                    active-index, anything). The strip never decides what \"active\" means, so \
+                    it composes cleanly with content the framework doesn't know how to lay \
+                    out — including future navigator integrations.".to_string())
+            }
+
+            Section(title = "Recipe".to_string()) {
+                CodePanel(src = r##"let active = signal!(0_usize);
+let on_change: Rc<dyn Fn(usize)> = Rc::new(move |idx| active.set(idx));
+
+let panel = runtime_core::switch(
+    move || active.get(),
+    |idx: &usize| match idx {
+        0 => ui! { /* Overview content */ },
+        1 => ui! { /* Activity content */ },
+        _ => ui! { /* Settings content */ },
+    },
+);
+
+ui! {
+    Tabs(
+        active = active,
+        on_change = on_change,
+        tabs = vec![
+            Tab::new("Overview"),
+            Tab::new("Activity"),
+            Tab::new("Settings"),
+        ],
+    )
+    panel
+}"##.to_string())
+            }
+
+            Section(title = "Props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "tabs",      ty: "Vec<Tab>",         desc: "Tabs in left-to-right order. Position in the vec is the tab's index." },
+                    Prop { name: "active",    ty: "Signal<usize>",    desc: "Currently-active tab index. Drives the strip highlight and is also the caller's source of truth for panel swap." },
+                    Prop { name: "on_change", ty: "Rc<dyn Fn(usize)>",desc: "Fires when the user taps a tab; receives the new index." },
+                ])
+            }
+
+            Callout(label = "Tabs vs Segmented Control".to_string()) {
+                P(content = "Use Tabs when each option opens a distinct content surface. For \
+                    flipping a single value with three or four options (View mode: list / \
+                    grid / cards), a segmented control would be more conventional — that's a \
+                    follow-up component.".to_string())
+            }
+        }
+    })
+}
+
+// =============================================================================
+// Collapsible & Accordion
+// =============================================================================
+
+pub fn collapsible() -> Element {
+    shell::layout(ui! {
+        ComponentPage(
+            title = "Collapsible & Accordion".to_string(),
+            lead = "Disclosure widgets: `Collapsible` for a single expand/collapse \
+                section, `Accordion` for a coordinated group where only one item is \
+                open at a time. Both are controlled — the host owns the open-state \
+                signal so external triggers (an Expand-all button, URL params) can \
+                drive them.".to_string(),
+        ) {
+            H2(content = "Collapsible".to_string())
+            P(content = "Click the header to toggle. The body always stays mounted; \
+                visibility flows through stylesheet variants selected by the \
+                `transition` prop (`Smooth` is default; `Snap` skips animation).".to_string())
+            Section(title = "Smooth (default)".to_string()) {
+                collapsible_demo_smooth()
+            }
+            Section(title = "Snap".to_string()) {
+                collapsible_demo_snap()
+            }
+            CodePanel(src = r##"let open = signal!(false);
+let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| open.set(v));
+
+ui! {
+    Collapsible(
+        title = "Advanced settings".into(),
+        value = open,
+        on_change = on_change,
+    ) {
+        Stack(gap = StackGap::Md) {
+            Field(label = Some("API key".into()), value = key, on_change = on_key)
+            Switch(label = Some("Beta features".into()), value = beta, on_change = on_beta)
+        }
+    }
+}"##.to_string())
+
+            Section(title = "Accordion — single-open (default)".to_string()) {
+                P(content = "Multiple items, only one open at a time. Opening an item \
+                    closes any other; clicking the open item closes it. The host owns the \
+                    open-state vec (one bool per item); the Accordion writes to it on \
+                    click and the host can read or mutate it directly for external \
+                    triggers.".to_string())
+                accordion_demo_single()
+                CodePanel(src = r##"let open = signal!(vec![true, false, false]);  // first item open
+
+ui! {
+    Accordion(
+        expand = AccordionExpand::Single,
+        open = open,
+        items = vec![
+            AccordionItem { title: "Shipping".into(), body: ui!{ /* ... */ } },
+            AccordionItem { title: "Returns".into(),  body: ui!{ /* ... */ } },
+            AccordionItem { title: "Support".into(),  body: ui!{ /* ... */ } },
+        ],
+    )
+}"##.to_string())
+            }
+
+            Section(title = "Accordion — multi-open".to_string()) {
+                P(content = "Same component, `expand = AccordionExpand::Multi`. Each item \
+                    is independent; clicking toggles just that one without touching \
+                    the others.".to_string())
+                accordion_demo_multi()
+                CodePanel(src = r##"let open = signal!(vec![false; 3]);
+
+ui! {
+    Accordion(
+        expand = AccordionExpand::Multi,
+        open = open,
+        items = vec![
+            AccordionItem { title: "Push".into(),  body: ui!{ /* ... */ } },
+            AccordionItem { title: "Email".into(), body: ui!{ /* ... */ } },
+            AccordionItem { title: "SMS".into(),   body: ui!{ /* ... */ } },
+        ],
+    )
+}"##.to_string())
+            }
+
+            Section(title = "Collapsible props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop {
+                        name: "title",
+                        ty: "Reactive<String>",
+                        desc: "Header text. Static literal, Signal<String>, or rx!(...) all work.",
+                    },
+                    Prop {
+                        name: "value",
+                        ty: "Signal<bool>",
+                        desc: "Controlled open state. The host owns this — pass `signal!(false)` for a default-closed Collapsible.",
+                    },
+                    Prop {
+                        name: "on_change",
+                        ty: "Rc<dyn Fn(bool)>",
+                        desc: "Fires on header click with the requested new state. Wire to `Rc::new(move |v| value.set(v))` for standard toggle behavior.",
+                    },
+                    Prop {
+                        name: "transition",
+                        ty: "CollapsibleTransition",
+                        desc: "Smooth (default) — animates max-height + opacity + padding over ~240ms. Snap — no animation, state changes apply in one frame.",
+                    },
+                    Prop {
+                        name: "max_height",
+                        ty: "f32",
+                        desc: "Smooth-only max-height cap (px). Default 400. Visible portion of the open animation is content-height / max_height of the duration — tune closer to actual content height for the smoothest feel.",
+                    },
+                    Prop {
+                        name: "children",
+                        ty: "Vec<Element>",
+                        desc: "Body contents. Always mounted; visibility flows through the stylesheet variant axis selected by `transition`.",
+                    },
+                ])
+            }
+
+            Section(title = "Accordion props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop {
+                        name: "items",
+                        ty: "Vec<AccordionItem>",
+                        desc: "Items in order. Each is { title: Reactive<String>, body: Element }.",
+                    },
+                    Prop {
+                        name: "expand",
+                        ty: "AccordionExpand",
+                        desc: "Single (only one open at a time) or Multi (any subset). Default: Single.",
+                    },
+                    Prop {
+                        name: "transition",
+                        ty: "CollapsibleTransition",
+                        desc: "Per-item open/close animation. Same vocabulary as Collapsible.",
+                    },
+                    Prop {
+                        name: "max_height",
+                        ty: "f32",
+                        desc: "Forwarded to each item's Collapsible. See Collapsible.max_height.",
+                    },
+                    Prop {
+                        name: "open",
+                        ty: "Signal<Vec<bool>>",
+                        desc: "Per-item open state, parallel to items (open[i] == true ⇔ item i is expanded). Auto-resized to match items.len() on first interaction; pass signal!(vec![false; N]) for a default-closed Accordion.",
+                    },
+                    Prop {
+                        name: "on_change",
+                        ty: "Option<Rc<dyn Fn(usize, bool)>>",
+                        desc: "Optional notification callback. Fires AFTER the Accordion has already mutated `open` in response to a click. Use for analytics, persistence — the state change is the Accordion's job, this is observation.",
+                    },
+                ])
+            }
+
+            Callout(label = "Transition extensibility".to_string()) {
+                P(content = "`CollapsibleTransition` is the extensibility seam — \
+                    `Smooth` animates max-height + opacity + padding via the framework's \
+                    transition primitives, `Snap` skips animation. New flavors land here \
+                    by adding stylesheet variants in idea-ui; the component picks the \
+                    right one per the prop. Apps that want reduced-motion can wire \
+                    `prefers-reduced-motion` to `CollapsibleTransition::Snap` themselves.".to_string())
+            }
+        }
+    })
+}
+
+fn collapsible_demo_smooth() -> Element {
+    let open = signal!(false);
+    let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| open.set(v));
     ui! {
-        Card {
-            Typography(content = "Tabs".to_string(), kind = idea_ui::typography_kind::H2)
-            Typography(content = "Controlled by a `Signal<usize>` indexing the active tab. \
-                              Tap a tab to swap the panel below — panel content is wired \
-                              by the caller via `runtime_core::switch`, keyed off the same \
-                              signal that drives the strip's highlight.".to_string(),
-                 muted = true)
-            Tabs(
-                active = active,
+        DemoSurface {
+            Collapsible(
+                title = "Smooth — click to expand".to_string(),
+                value = open,
                 on_change = on_change,
-                tabs = vec![
-                    Tab::new("Overview"),
-                    Tab::new("Activity"),
-                    Tab::new("Settings"),
+                transition = CollapsibleTransition::Smooth,
+            ) {
+                Stack(gap = StackGap::Sm) {
+                    Typography(
+                        content = "Max-height, opacity, and padding all animate over \
+                            ~240ms. The body grows into place rather than snapping.".to_string(),
+                    )
+                    Typography(
+                        content = "Content taller than ~2000px animates smoothly to the \
+                            cap, then snaps the remainder — fine for typical disclosure \
+                            content.".to_string(),
+                        muted = true,
+                    )
+                }
+            }
+        }
+    }
+}
+
+fn collapsible_demo_snap() -> Element {
+    let open = signal!(false);
+    let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| open.set(v));
+    ui! {
+        DemoSurface {
+            Collapsible(
+                title = "Snap — click to expand".to_string(),
+                value = open,
+                on_change = on_change,
+                transition = CollapsibleTransition::Snap,
+            ) {
+                Stack(gap = StackGap::Sm) {
+                    Typography(
+                        content = "No animation — the body appears in one frame. Cheap, \
+                            predictable, and the right call for reduced-motion users.".to_string(),
+                    )
+                }
+            }
+        }
+    }
+}
+
+fn accordion_demo_single() -> Element {
+    let open = signal!(vec![true, false, false]);
+    ui! {
+        DemoSurface {
+            Accordion(
+                expand = AccordionExpand::Single,
+                open = open,
+                items = vec![
+                    AccordionItem {
+                        title: "Shipping".into(),
+                        body: ui! {
+                            Stack(gap = StackGap::Sm) {
+                                Typography(content = "Free shipping on orders over $50.".to_string())
+                                Typography(
+                                    content = "Standard delivery: 3–5 business days. \
+                                        Expedited options available at checkout.".to_string(),
+                                    muted = true,
+                                )
+                            }
+                        },
+                    },
+                    AccordionItem {
+                        title: "Returns".into(),
+                        body: ui! {
+                            Stack(gap = StackGap::Sm) {
+                                Typography(content = "30-day return window from delivery date.".to_string())
+                                Typography(
+                                    content = "Items must be unused and in original \
+                                        packaging. Refunds process within 5 business \
+                                        days of receipt.".to_string(),
+                                    muted = true,
+                                )
+                            }
+                        },
+                    },
+                    AccordionItem {
+                        title: "Support".into(),
+                        body: ui! {
+                            Stack(gap = StackGap::Sm) {
+                                Typography(content = "Reach us by email or chat.".to_string())
+                                Typography(
+                                    content = "Average first-response time: under 4 hours \
+                                        during business hours, under 24 hours \
+                                        otherwise.".to_string(),
+                                    muted = true,
+                                )
+                            }
+                        },
+                    },
                 ]
             )
-            panel
+        }
+    }
+}
+
+fn accordion_demo_multi() -> Element {
+    let open = signal!(vec![false; 3]);
+    ui! {
+        DemoSurface {
+            Accordion(
+                expand = AccordionExpand::Multi,
+                open = open,
+                items = vec![
+                    AccordionItem {
+                        title: "Push notifications".into(),
+                        body: ui! {
+                            Stack(gap = StackGap::Sm) {
+                                Typography(content = "Real-time alerts on your device.".to_string())
+                                Typography(
+                                    content = "Independent of other notification channels — \
+                                        any combination is fine.".to_string(),
+                                    muted = true,
+                                )
+                            }
+                        },
+                    },
+                    AccordionItem {
+                        title: "Email notifications".into(),
+                        body: ui! {
+                            Stack(gap = StackGap::Sm) {
+                                Typography(content = "Digest delivered daily or instantly.".to_string())
+                                Typography(
+                                    content = "Both can be on at the same time — try opening \
+                                        Push too. The Accordion only enforces single-open in \
+                                        Single mode.".to_string(),
+                                    muted = true,
+                                )
+                            }
+                        },
+                    },
+                    AccordionItem {
+                        title: "SMS notifications".into(),
+                        body: ui! {
+                            Stack(gap = StackGap::Sm) {
+                                Typography(content = "Text messages for critical alerts only.".to_string())
+                                Typography(
+                                    content = "Stays open independently of the other items.".to_string(),
+                                    muted = true,
+                                )
+                            }
+                        },
+                    },
+                ]
+            )
         }
     }
 }

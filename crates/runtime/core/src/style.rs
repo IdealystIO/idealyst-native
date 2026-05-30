@@ -850,6 +850,10 @@ pub struct StyleRules {
     pub transform_transition: Option<Transition>,
     pub width_transition: Option<Transition>,
     pub height_transition: Option<Transition>,
+    pub max_width_transition: Option<Transition>,
+    pub max_height_transition: Option<Transition>,
+    pub min_width_transition: Option<Transition>,
+    pub min_height_transition: Option<Transition>,
     pub top_transition: Option<Transition>,
     pub right_transition: Option<Transition>,
     pub bottom_transition: Option<Transition>,
@@ -908,6 +912,8 @@ impl StyleRules {
             background_transition, color_transition, caret_color_transition,
             opacity_transition,
             transform_transition, width_transition, height_transition,
+            max_width_transition, max_height_transition,
+            min_width_transition, min_height_transition,
             top_transition, right_transition, bottom_transition, left_transition,
             padding_top_transition, padding_right_transition,
             padding_bottom_transition, padding_left_transition,
@@ -1087,6 +1093,10 @@ impl StyleRules {
         tr!("ttr", transform_transition);
         tr!("tw", width_transition);
         tr!("th", height_transition);
+        tr!("tmaxw", max_width_transition);
+        tr!("tmaxh", max_height_transition);
+        tr!("tminw", min_width_transition);
+        tr!("tminh", min_height_transition);
         tr!("ttt", top_transition);
         tr!("trt", right_transition);
         tr!("tbt", bottom_transition);
@@ -1899,6 +1909,19 @@ thread_local! {
     static PENDING_TOKEN_UPDATES: RefCell<Vec<Vec<TokenEntry>>> =
         RefCell::new(Vec::new());
 
+    /// Latest host-surface background queued for `Backend::set_app_background`.
+    /// `set_app_background` pushes; `ensure_registered_with` flushes.
+    /// Single slot (latest wins) because the host has exactly one
+    /// background and re-applying intermediate values would just churn.
+    static PENDING_APP_BG: RefCell<Option<Tokenized<Color>>> =
+        const { RefCell::new(None) };
+
+    /// Latest scrollbar theme (thumb, track) queued for
+    /// `Backend::set_scrollbar_theme`. Same single-slot rule as
+    /// [`PENDING_APP_BG`].
+    static PENDING_SCROLLBAR: RefCell<Option<(Tokenized<Color>, Tokenized<Color>)>> =
+        const { RefCell::new(None) };
+
     /// Typefaces already registered with the backend this session.
     /// Drives the dedup in [`ensure_typefaces_registered_with`]: the
     /// framework calls `register_asset` + `register_typeface` once
@@ -2185,6 +2208,29 @@ pub fn take_pending_token_updates() -> Vec<Vec<TokenEntry>> {
     PENDING_TOKEN_UPDATES.with(|p| std::mem::take(&mut *p.borrow_mut()))
 }
 
+/// Theme the host surface behind the framework's rendered tree
+/// (`<body>` on web, `UIWindow` on iOS, etc.). Routes through
+/// [`Backend::set_app_background`] on the next walker pass. The
+/// argument is a [`Tokenized<Color>`] so backends with a CSS-variable
+/// surface can wire the host to `var(--<name>)` and stay reactive
+/// across `update_tokens` calls without a second invocation here.
+///
+/// Single-slot: a second call before the next flush replaces the
+/// first. The theme SDK calls this at `install_theme` time and on
+/// `set_theme` swap (so non-web backends, which apply the resolved
+/// value directly, re-resolve).
+pub fn set_app_background(color: Tokenized<Color>) {
+    PENDING_APP_BG.with(|p| *p.borrow_mut() = Some(color));
+}
+
+/// Theme the platform scrollbar where the backend supports it.
+/// Same single-slot, next-flush semantics as [`set_app_background`].
+/// Default no-op on most backends — only web/SSR honor it today.
+pub fn set_scrollbar_theme(thumb: Tokenized<Color>, track: Tokenized<Color>) {
+    PENDING_SCROLLBAR.with(|p| *p.borrow_mut() = Some((thumb, track)));
+}
+
+
 /// Ensures the backend has been asked to pre-generate state for this
 /// stylesheet against the active theme. Calls `register` with the
 /// resolved rules exactly once per `(sheet, theme)` pair.
@@ -2298,7 +2344,7 @@ pub fn is_registered(sheet: &Rc<StyleSheet>) -> bool {
 
 /// - Sweeps registrations whose `Weak<StyleSheet>` no longer upgrades
 ///   into the pending-unregister queue.
-pub fn ensure_registered_with<R, U, I, UPD, RA, RT>(
+pub fn ensure_registered_with<R, U, I, UPD, RA, RT, SAB, SST>(
     sheet: &Rc<StyleSheet>,
     register: R,
     unregister: U,
@@ -2306,6 +2352,8 @@ pub fn ensure_registered_with<R, U, I, UPD, RA, RT>(
     update_tokens: UPD,
     register_asset: RA,
     register_typeface: RT,
+    set_app_background: SAB,
+    set_scrollbar_theme: SST,
 ) where
     R: FnOnce(&[Rc<StyleRules>]),
     U: Fn(&[Rc<StyleRules>]),
@@ -2318,6 +2366,8 @@ pub fn ensure_registered_with<R, U, I, UPD, RA, RT>(
         &'static [crate::assets::TypefaceFace],
         crate::assets::SystemFallback,
     ),
+    SAB: FnOnce(&Tokenized<Color>),
+    SST: FnOnce(&Tokenized<Color>, &Tokenized<Color>),
 {
     // Flush pending tokens first — backends that emit `var(--…)` need
     // the variables installed before any rule that references them
@@ -2334,6 +2384,18 @@ pub fn ensure_registered_with<R, U, I, UPD, RA, RT>(
     let mut update_tokens = update_tokens;
     for upd in &pending_updates {
         update_tokens(upd);
+    }
+
+    // Flush queued host-surface settings. Same "the backend's in
+    // scope now — sync queued user state to it" intent as the token
+    // flush above; placed AFTER tokens so a backend that emits
+    // `body { background: var(--<name>); }` can rely on the var
+    // already being defined on `:root` when the body rule installs.
+    if let Some(c) = PENDING_APP_BG.with(|p| p.borrow_mut().take()) {
+        set_app_background(&c);
+    }
+    if let Some((thumb, track)) = PENDING_SCROLLBAR.with(|p| p.borrow_mut().take()) {
+        set_scrollbar_theme(&thumb, &track);
     }
 
     let sheet_ptr = Rc::as_ptr(sheet);

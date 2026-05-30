@@ -21,3 +21,8 @@ docs = ["dep:idea-ui-docs-derive"]
 runtime-core = { workspace = true }
 idea-theme = { workspace = true }
 idea-ui-docs-derive = { workspace = true, optional = true }
+# Themed `Table` component layers on the cross-platform `table` SDK
+# (real HTML `<table>` on web, flex passthrough on native). idea-ui
+# wraps it the same way it wraps `activity_indicator` (as `Spinner`)
+# and `toggle` (as `Switch`).
+table = { workspace = true }

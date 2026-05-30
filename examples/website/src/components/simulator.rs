@@ -279,7 +279,33 @@ pub fn Simulator(props: SimulatorProps) -> Element {
     let slot: shared::Slot<host_wgpu::HostHandle> = shared::new();
     let slot_ready = slot.clone();
     let slot_resize = slot.clone();
+    let slot_focus = slot.clone();
     let slot_lost = slot;
+
+    // Pause the embedded wgpu app when the user navigates away from
+    // this screen, resume when they return. `use_focus()` reads the
+    // current screen's route at build time + the navigator's
+    // active-route signal; the effect re-fires whenever focus flips.
+    // No-op on targets where the host couldn't mount (stub
+    // HostHandle's pause/resume are empty).
+    let is_focused = runtime_core::primitives::navigator::use_focus();
+    let focus_effect = runtime_core::Effect::new(move || {
+        let focused = is_focused();
+        shared::with_ref(&slot_focus, |handle| {
+            if let Some(h) = handle {
+                if focused { h.resume() } else { h.pause() }
+            }
+        });
+    });
+    // The Effect handle disposes its subscription on drop. The
+    // surrounding screen scope is what should own its lifetime, but
+    // there's no scope binding to attach to here — the component
+    // returns an Element tree, not a scope handle. `mem::forget`
+    // leaks the handle, which is the framework's standard pattern
+    // for "I want this effect to live as long as the current
+    // screen". The screen's eventual drop reclaims the underlying
+    // reactive state via `release_screen`.
+    std::mem::forget(focus_effect);
 
     let graphics = runtime_core::primitives::graphics::graphics(move |event: OnReadyEvent| {
         let slot = slot_ready.clone();
@@ -298,31 +324,8 @@ pub fn Simulator(props: SimulatorProps) -> Element {
         // Either way the `request_adapter` / `request_device`
         // futures resolve on the main thread without blocking.
         spawn_async(async move {
-            let build_ui = build_ui.clone();
-            match host_wgpu::mount(surface, size, profile, painter, move || (&*build_ui)()).await {
-                Ok(handle) => {
-                    shared::fill(&slot, handle);
-                    // KEEPALIVE: leak a clone of the slot so the
-                    // host handle survives past this on_ready
-                    // closure's drop. The iOS `Graphics` primitive
-                    // takes `on_ready` by `FnMut` and consumes it
-                    // via `Option::take()` after firing
-                    // (`backend-ios-mobile/src/imp/graphics.rs:71`),
-                    // and the matching `_on_resize`/`_on_lost`
-                    // params are `_`-prefixed = dropped at create
-                    // time. So every captured `Rc` of the slot
-                    // gets dropped right after mount completes,
-                    // dragging the host's render-loop guard with
-                    // it and invalidating the NSTimer before the
-                    // first frame fires. The proper fix is to wire
-                    // those callbacks on the iOS side; this leak
-                    // is the minimum that keeps the preview alive
-                    // until that lands. One leaked `Rc` per
-                    // `Simulator` mount; the page's `lazy!`
-                    // boundary already caps this to one per
-                    // visit.
-                    std::mem::forget(slot.clone());
-                }
+            match host_wgpu::mount(surface, size, profile, painter, build_ui).await {
+                Ok(handle) => shared::fill(&slot, handle),
                 Err(err) => {
                     // On wasm this goes to the browser console via
                     // the runtime's panic-hook routing; on native

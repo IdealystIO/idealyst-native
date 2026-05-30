@@ -507,6 +507,17 @@ impl LayoutTree {
         let _ = self.tree.mark_dirty(node.0);
     }
 
+    /// True iff Taffy has marked this node (or any of its descendants
+    /// via `mark_dirty` propagation) as needing recomputation. Backends
+    /// use this to skip `compute()` on hidden persistent roots whose
+    /// subtree hasn't been touched since the last layout pass — a
+    /// stack navigator that keeps N screens mounted otherwise pays
+    /// N × per-root layout cost on every refresh, even though only
+    /// one root is active.
+    pub fn is_dirty(&self, node: LayoutNode) -> bool {
+        self.tree.dirty(node.0).unwrap_or(true)
+    }
+
     /// Mark a node as a scroll container on the given axis. Maps to
     /// Taffy's `overflow.x` / `overflow.y` = `Overflow::Scroll`, which
     /// (a) gives the node a definite main-axis size from its parent's

@@ -19,7 +19,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use raw_window_handle::HasWindowHandle;
+use objc2::msg_send;
+use objc2_foundation::NSObject;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use render_api::DeviceProfile;
 use render_wgpu::{Host, Painter, Renderer};
 use runtime_core::driver::{render_loop, RenderLoop};
@@ -90,29 +92,87 @@ impl IosHostHandle {
         inner.config.height = size.1.max(1);
         inner.surface.configure(&inner.device, &inner.config);
     }
+
+    /// Pause the embedded app: drop its reactive scope AND clear
+    /// the thread's `session::REGISTRY`. Pair with [`resume`] for
+    /// React Navigation-style `unmountOnBlur` semantics — the
+    /// next `resume` rebuilds the embedded tree from initial
+    /// state, with no leftover AV ticks running invisibly.
+    ///
+    /// Call this from a user-land effect bound to whatever
+    /// "screen is no longer focused" signal you have (e.g. a
+    /// `nav_state.active_route` comparison). The wgpu device,
+    /// surface, and renderer stay alive — only the embedded
+    /// `build_ui` tree drops — so a subsequent `resume()` re-mounts
+    /// fresh without paying the wgpu init cost.
+    ///
+    /// The host does NOT pause itself based on `UIView.isHidden`;
+    /// that would be a policy decision the host shouldn't make
+    /// (some embedded apps legitimately want to keep running in
+    /// the background — a live monitor preview, a benchmark
+    /// visualiser, a game loop). The per-frame GPU encode IS
+    /// skipped when the MetalView is off-screen, but that's an
+    /// invisible-no-op optimization, not a behavior change.
+    ///
+    /// Note: `session::clear` is global to the calling thread —
+    /// if anything outside the embedded app uses
+    /// `session::animated`, those entries are wiped too. In
+    /// practice `session::animated` is a primarily embedded-app
+    /// pattern (hot-patch state survival); the outer iOS backend
+    /// drives its state via plain `Signal`/`Effect`, so the wipe
+    /// is safe.
+    pub fn pause(&self) {
+        self.inner.borrow_mut().host.unmount();
+        runtime_core::session::clear();
+    }
+
+    /// Re-mount the embedded app from its cached `build_ui`. Idempotent
+    /// (no-op if already mounted). Pair with [`pause`].
+    pub fn resume(&self) {
+        let mut inner = self.inner.borrow_mut();
+        if inner.host.is_mounted() {
+            return;
+        }
+        let build_ui = inner.build_ui.clone();
+        inner.host.mount(move || (&*build_ui)());
+    }
+
+    /// True iff the embedded app is currently mounted.
+    pub fn is_running(&self) -> bool {
+        self.inner.borrow().host.is_mounted()
+    }
 }
 
 /// Mount the wgpu render backend behind a framework `Graphics`
 /// surface on iOS. Call from inside the surface's `on_ready`, stash
 /// the returned handle so `on_resize` / `on_lost` can reconfigure or
 /// drop it.
-pub async fn mount<F>(
+///
+/// `build_ui` is an `Rc<dyn Fn>` because the visibility gate may
+/// unmount the embedded reactive scope when the MetalView is hidden
+/// (planet animations stop ticking the global animation clock) and
+/// remount it on the next visible frame.
+pub async fn mount(
     surface_handle: GraphicsSurface,
     size: (u32, u32),
     profile: DeviceProfile,
     skin: Rc<dyn Painter>,
-    build_ui: F,
-) -> Result<IosHostHandle, MountError>
-where
-    F: FnOnce() -> Element + 'static,
-{
+    build_ui: Rc<dyn Fn() -> Element + 'static>,
+) -> Result<IosHostHandle, MountError> {
     // 1. Validate the surface exposes a UiKit handle. The iOS
     //    `Graphics` primitive always provides one (see
     //    `backend-ios-mobile/src/imp/graphics.rs::IosSurfaceProvider`);
     //    a missing handle means the caller wired a non-iOS surface in.
-    surface_handle
+    //    Capture the raw `UIView*` pointer for the per-frame
+    //    visibility check (see `is_view_visible`).
+    let ui_view: *const NSObject = match surface_handle
         .window_handle()
-        .map_err(|_| MountError::NoUiKitHandle)?;
+        .map_err(|_| MountError::NoUiKitHandle)?
+        .as_raw()
+    {
+        RawWindowHandle::UiKit(h) => h.ui_view.as_ptr() as *const NSObject,
+        _ => return Err(MountError::NoUiKitHandle),
+    };
 
     // 2. wgpu init. `wgpu 29` requires explicit `InstanceDescriptor`
     //    fields — see `host-web` for the matching set on the GL path.
@@ -185,7 +245,10 @@ where
         profile.logical_size.1 as f32,
     );
     host.set_viewport(logical.0, logical.1);
-    host.mount(build_ui);
+    {
+        let build_ui = build_ui.clone();
+        host.mount(move || (&*build_ui)());
+    }
 
     // 3a. Drain any pending font URLs the host accumulated during
     //     `mount`. iOS doesn't fetch them; logging the count helps
@@ -208,6 +271,9 @@ where
         renderer,
         host,
         logical,
+        ui_view,
+        build_ui,
+        was_visible: true,
     }));
 
     // 4. Per-frame loop via the framework's render-loop driver.
@@ -239,9 +305,85 @@ struct HostInner {
     /// Logical viewport in CSS px from the `DeviceProfile`. Fed to
     /// the renderer every frame.
     logical: (f32, f32),
+    /// Raw `UIView*` for the MetalView this host renders into.
+    /// Checked each frame via `is_view_visible` so we can skip the
+    /// (expensive) Metal command-buffer encode when the view is
+    /// hidden behind a navigator's persistent-but-not-visible
+    /// screen. The view outlives this Host: the framework's
+    /// `Graphics` ivars (on_ready/on_resize/on_lost) hold the
+    /// `Slot<HostHandle>` that owns this `HostInner`, so as long as
+    /// `HostInner` exists, the ivars exist, so the view exists.
+    /// Therefore the raw pointer is safe to dereference for the
+    /// lifetime of the Host.
+    ui_view: *const NSObject,
+    /// Re-callable embedded-app builder. Cached so a hidden→visible
+    /// transition can remount the welcome (or any other) subtree
+    /// without bouncing the wgpu device/surface.
+    build_ui: Rc<dyn Fn() -> Element + 'static>,
+    /// Visibility state on the previous frame. Used to detect
+    /// transitions: visible→hidden triggers `host.unmount()`,
+    /// hidden→visible triggers `host.mount(build_ui.clone())`.
+    was_visible: bool,
+}
+
+/// Walk the UIView chain checking `window != nil` and that no
+/// ancestor is hidden / fully-transparent. Used to early-exit
+/// `draw_frame` when the embedded preview is mounted but not
+/// actually visible (e.g. the home screen behind a pushed page in a
+/// stack navigator).
+unsafe fn is_view_visible(view: *const NSObject) -> bool {
+    if view.is_null() {
+        return false;
+    }
+    // Detached from any window means nothing renders to screen.
+    let window: *const NSObject = msg_send![view, window];
+    if window.is_null() {
+        return false;
+    }
+    let mut cur = view;
+    loop {
+        let hidden: bool = msg_send![cur, isHidden];
+        if hidden {
+            return false;
+        }
+        // `alpha` is a CGFloat — `f64` on 64-bit platforms, which is
+        // what every iOS device (and the simulator) runs.
+        let alpha: f64 = msg_send![cur, alpha];
+        if alpha <= 0.0 {
+            return false;
+        }
+        let parent: *const NSObject = msg_send![cur, superview];
+        if parent.is_null() {
+            break;
+        }
+        cur = parent;
+    }
+    true
 }
 
 fn draw_frame(inner: &mut HostInner) {
+    // Visibility gate: skip the GPU encode + present when the
+    // MetalView is hidden behind a navigator's persistent screen
+    // (`isHidden:true` on an ancestor, off-window, etc.). This is
+    // an invisible-no-op optimization — frames that wouldn't paint
+    // anyway don't pay the Metal command-buffer + present cost.
+    //
+    // Notably we do NOT auto-unmount the embedded scope here, even
+    // though that would also pause any `AnimatedValue` ticks driven
+    // by the global animation clock. Whether a hidden embedded app
+    // should *keep running in the background* (e.g. a live monitor
+    // preview, a benchmark visualiser ticking over) or freeze is a
+    // policy decision that belongs to the caller — pair the
+    // navigator's focus signal with [`IosHostHandle::pause`] /
+    // [`resume`] to wire it up. The default is "keep running"
+    // (matches React Navigation's Stack default).
+    if !unsafe { is_view_visible(inner.ui_view) } {
+        return;
+    }
+    // `was_visible` retained but unused for now — left in place as
+    // documentation of where the transition hook lives in case a
+    // future per-host scheduler wants to observe it.
+    inner.was_visible = true;
     // wgpu 29: `get_current_texture` returns a `CurrentSurfaceTexture`
     // enum. Reconfigure on Outdated/Lost; skip on Timeout/Occluded/
     // Validation — same handling as host-web.
