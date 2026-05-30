@@ -5,13 +5,16 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use backend_ssr::{render_path, render_path_with};
-use runtime_core::primitives::navigator::Screen;
+use backend_ssr::{render_all, render_path, render_path_with};
+use runtime_core::primitives::navigator::{
+    enable_route_collector, take_route_collector, Screen,
+};
 use runtime_core::{set_page_metadata, text, view, PageMetadata, Route};
 use stack_navigator::{Navigator, StackBuilder, StackScreenExt};
 
 const HOME: Route<()> = Route::<()>::new("home", "/");
 const ABOUT: Route<()> = Route::<()>::new("about", "/about");
+const CONTACT: Route<()> = Route::<()>::new("contact", "/contact");
 
 /// The requested URL mounts its own screen, not the hardcoded initial.
 #[test]
@@ -74,4 +77,65 @@ fn stack_ssr_handler_renders_header_chrome() {
 
     assert!(html.contains("About Title"), "expected header chrome title, got: {html}");
     assert!(html.contains("ABOUT BODY"), "expected screen body, got: {html}");
+}
+
+/// SSG nav-hierarchy discovery: with the route collector enabled, a
+/// single `render_path` call publishes every registered screen path
+/// (not just the one the URL matched). This is the hook
+/// `backend_ssr::render_all` drives the crawl from.
+#[test]
+fn route_collector_publishes_every_screen_path_on_mount() {
+    enable_route_collector();
+    let _ = render_path("/", || {
+        Navigator::new(&HOME)
+            .screen(HOME, |_| Screen::new(view(vec![text("home").into()])))
+            .screen(ABOUT, |_| Screen::new(view(vec![text("about").into()])))
+            .screen(CONTACT, |_| Screen::new(view(vec![text("contact").into()])))
+            .into()
+    });
+    let mut found = take_route_collector().expect("collector was enabled");
+    found.sort();
+    assert_eq!(found, vec!["/", "/about", "/contact"]);
+}
+
+/// SSG end-to-end: `render_all` discovers every literal screen path
+/// reachable from the root navigator and produces a `RenderedPage` per
+/// path. Parameterized routes are skipped.
+#[test]
+fn render_all_crawls_every_literal_screen() {
+    const USER: Route<()> = Route::<()>::new("user", "/user/:id");
+    let result = render_all(
+        |_| {},
+        || {
+            Navigator::new(&HOME)
+                .screen(HOME, |_| Screen::new(view(vec![text("HOME").into()])))
+                .screen(ABOUT, |_| Screen::new(view(vec![text("ABOUT").into()])))
+                .screen(CONTACT, |_| Screen::new(view(vec![text("CONTACT").into()])))
+                .screen(USER, |_| Screen::new(view(vec![text("USER").into()])))
+                .into()
+        },
+    );
+
+    let mut paths: Vec<_> = result.pages.keys().cloned().collect();
+    paths.sort();
+    assert_eq!(paths, vec!["/", "/about", "/contact"]);
+    assert_eq!(result.skipped_parameterized, vec!["/user/:id"]);
+
+    assert!(result.pages["/"].html.contains("HOME"));
+    assert!(result.pages["/about"].html.contains("ABOUT"));
+    assert!(result.pages["/contact"].html.contains("CONTACT"));
+}
+
+/// Collector is opt-in. When `enable_route_collector` isn't called,
+/// `take_route_collector` returns None and the framework path stays
+/// zero-allocation.
+#[test]
+fn route_collector_disabled_by_default() {
+    let _ = render_path("/", || {
+        Navigator::new(&HOME)
+            .screen(HOME, |_| Screen::new(view(vec![text("home").into()])))
+            .screen(ABOUT, |_| Screen::new(view(vec![text("about").into()])))
+            .into()
+    });
+    assert!(take_route_collector().is_none());
 }

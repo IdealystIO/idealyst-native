@@ -1024,3 +1024,96 @@ fn font_face_dedup_across_backends_inserts_rule_once() {
          live stylesheets; got {occurrences}. A second one would re-fetch the font."
     );
 }
+
+// ---------------------------------------------------------------------------
+// Pointer-keyed dynamic cache rejects stale entries on content mismatch.
+// ---------------------------------------------------------------------------
+
+/// REGRESSION TEST.
+///
+/// `dynamic_by_ptr` keys by raw `*const StyleRules`. When an
+/// `Rc<StyleRules>` is dropped and its address is recycled by the
+/// allocator for a fresh `Rc` of unrelated content, a naive lookup
+/// returns the previous tenant's class. That's the SSG/hydration
+/// breakage: the codeblock allocated short-lived `Rc::new(color_rules)`
+/// per colored span and dropped them; the address got recycled for a
+/// Stack's flex-column rules; the ptr cache routed flex-column nodes
+/// to the codeblock's green text color (which has no flex), collapsing
+/// every section's vertical stack into inline siblings.
+///
+/// The fix verifies `cached.content_key == base.content_key()` before
+/// using the cached entry and drops the stale row on mismatch. This
+/// test forces the stale state deterministically by injecting a stale
+/// shared entry under a fresh Rc's pointer, then asserts the apply
+/// path emits the correct class.
+#[wasm_bindgen_test]
+fn dynamic_by_ptr_stale_entry_does_not_misroute_class() {
+    use runtime_core::{Backend, Color, FlexDirection, StyleRules, Tokenized};
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let el1 = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el1).unwrap();
+    let node1: web_sys::Node = el1.clone().unchecked_into();
+
+    // Apply COLOR style to node1 — populates `dynamic_by_content` with
+    // the color content_key and `dynamic_by_ptr` with ptr(color_rc).
+    let color_rules = Rc::new(StyleRules {
+        color: Some(Tokenized::Literal(Color("#1f6e5f".into()))),
+        ..Default::default()
+    });
+    backend.apply_styled_states(&node1, &color_rules, &[]);
+    let color_class = el1.class_name();
+    assert!(!color_class.is_empty(), "color apply must set a class");
+
+    // Grab the shared color entry so we can re-inject it under a
+    // different pointer (simulating address recycling).
+    let color_key = color_rules.content_key();
+    let stale_shared = backend
+        .dynamic_by_content
+        .get(&color_key)
+        .expect("color apply must register in dynamic_by_content")
+        .shared
+        .clone();
+
+    // Allocate a FLEX style and pin the stale color entry to its
+    // pointer. Without the fix this would route flex applies to the
+    // color class on the next call.
+    let flex_rules = Rc::new(StyleRules {
+        flex_direction: Some(FlexDirection::Column),
+        ..Default::default()
+    });
+    let flex_ptr = Rc::as_ptr(&flex_rules);
+    backend
+        .dynamic_by_ptr
+        .insert(flex_ptr, stale_shared.clone());
+
+    // Apply flex to node2. Ptr cache hit returns the stale color
+    // entry; the content_key verification must reject it and the
+    // resulting class must encode the flex rules, not the color.
+    let el2 = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el2).unwrap();
+    let node2: web_sys::Node = el2.clone().unchecked_into();
+    backend.apply_styled_states(&node2, &flex_rules, &[]);
+    let flex_class = el2.class_name();
+
+    assert_ne!(
+        flex_class, color_class,
+        "stale ptr cache must not route flex-column style to the color class",
+    );
+    // Stale entry must be evicted so a subsequent apply doesn't trip
+    // the same bug.
+    assert!(
+        !backend.dynamic_by_ptr.contains_key(&flex_ptr)
+            || backend
+                .dynamic_by_ptr
+                .get(&flex_ptr)
+                .map(|s| s.content_key == flex_rules.content_key())
+                .unwrap_or(false),
+        "after content_key mismatch, the ptr entry must be either removed \
+         or replaced with the correct content_key",
+    );
+}

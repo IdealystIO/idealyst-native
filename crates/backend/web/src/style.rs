@@ -491,12 +491,27 @@ impl WebBackend {
                 self.pregen_by_ptr.get(&ptr).cloned()
             };
             if let Some(class_name) = ptr_hit {
-                self.queue_class_apply(node, &class_name);
-                {
-                    let _t = PhaseTimer::start("drop_dynamic_slot");
-                    self.drop_dynamic_slot(id);
+                // Verify the cache entry isn't stale (same
+                // pointer-recycling hazard as `dynamic_by_ptr`). The
+                // pregen map is keyed by content; if the entry there
+                // for THIS style's content_key still resolves to this
+                // class name, the cache is consistent. On mismatch,
+                // drop the stale ptr entry and fall through to the
+                // content-keyed path.
+                let verified = self
+                    .pregen
+                    .get(&base.content_key())
+                    .map(|e| e.name == class_name)
+                    .unwrap_or(false);
+                if verified {
+                    self.queue_class_apply(node, &class_name);
+                    {
+                        let _t = PhaseTimer::start("drop_dynamic_slot");
+                        self.drop_dynamic_slot(id);
+                    }
+                    return;
                 }
-                return;
+                self.pregen_by_ptr.remove(&ptr);
             }
             // Second fast path: pointer-keyed DYNAMIC hit. Same idea,
             // but for content the framework didn't pre-register —
@@ -515,6 +530,22 @@ impl WebBackend {
                 self.dynamic_by_ptr.get(&ptr).cloned()
             };
             if let Some(shared) = dyn_ptr_hit {
+                // Verify the cached entry's content_key matches this
+                // style's. The map keys by raw `*const StyleRules` —
+                // the allocator readily reuses an address after the
+                // original Rc drops, so a stale entry can map the
+                // recycled pointer to an UNRELATED previous style's
+                // class (the codeblock's per-span color Rc was
+                // dropped and its address recycled for a section
+                // Stack's flex-column Rc → flex node got the color
+                // class). Recompute and compare; fall through to the
+                // content-keyed path on mismatch so we either pick
+                // up the correct cached entry by content or mint a
+                // new one. Drop the stale ptr entry so it can't
+                // cause the same mistake again.
+                if shared.content_key != base.content_key() {
+                    self.dynamic_by_ptr.remove(&ptr);
+                } else {
                 // Slot-already-has-this-class short-circuit. When
                 // the SAME row's Effect re-fires but resolves to
                 // the same content as last time (e.g. POINT bump on
@@ -540,6 +571,7 @@ impl WebBackend {
                 }
                 self.queue_class_apply(node, &class_for_queue);
                 return;
+                }
             }
         }
 

@@ -489,17 +489,44 @@ impl Backend for SsrBackend {
 
     fn create_icon(
         &mut self,
-        _data: &runtime_core::primitives::icon::IconData,
-        _color: Option<&runtime_core::Color>,
+        data: &runtime_core::primitives::icon::IconData,
+        color: Option<&runtime_core::Color>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // First paint doesn't need the vector paths drawn; emit a
-        // placeholder span so layout reserves the slot. The live bundle
-        // renders the real inline <svg> on hydration. Same inline default
-        // as the web icon so it sits inline with surrounding text.
-        let mut node = HtmlNode::new("span");
-        node.style = Some(css::ICON_INLINE_STYLE.to_string());
-        nref(node)
+        // Emit the same `<svg>` structure the web backend produces so
+        // `WebBackend::hydrate` can adopt the SSR node by tag-matching
+        // (`svg` == `svg`). The earlier placeholder `<span>` triggered
+        // a tag mismatch on every icon and `primitives::icon::create`
+        // on web doesn't honor the hydration cursor — the fresh `<svg>`
+        // appended next to the stale `<span>`, leaving both in the DOM.
+        let (vw, vh) = data.view_box;
+        let mut svg = HtmlNode::new("svg");
+        svg.attrs
+            .push(("viewBox", format!("0 0 {} {}", vw, vh)));
+        svg.attrs.push(("xmlns", "http://www.w3.org/2000/svg".to_string()));
+        svg.attrs.push(("width", "1em".to_string()));
+        svg.attrs.push(("height", "1em".to_string()));
+        svg.attrs.push(("fill", "none".to_string()));
+        let stroke = color.map(|c| c.0.clone()).unwrap_or_else(|| "currentColor".to_string());
+        svg.attrs.push(("stroke", stroke));
+        svg.attrs.push(("stroke-width", "2".to_string()));
+        svg.attrs.push(("stroke-linecap", "round".to_string()));
+        svg.attrs.push(("stroke-linejoin", "round".to_string()));
+        svg.style = Some(css::ICON_INLINE_STYLE.to_string());
+        let fill_rule = match data.fill_rule {
+            runtime_core::primitives::icon::FillRule::NonZero => "nonzero",
+            runtime_core::primitives::icon::FillRule::EvenOdd => "evenodd",
+        };
+        for path_d in data.paths {
+            let mut path = HtmlNode::new("path");
+            path.attrs.push(("d", (*path_d).to_string()));
+            path.attrs.push(("fill-rule", fill_rule.to_string()));
+            path.attrs.push(("pathLength", "1".to_string()));
+            path.attrs.push(("stroke-dasharray", "1".to_string()));
+            path.attrs.push(("stroke-dashoffset", "0".to_string()));
+            svg.children.push(nref(path));
+        }
+        nref(svg)
     }
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
@@ -1081,6 +1108,76 @@ where
 /// reads `viewport_size()`; a server has no real window, so we pick a
 /// sensible wide default for first paint.
 const SSR_VIEWPORT: runtime_core::ViewportSize = runtime_core::ViewportSize::new(1280.0, 800.0);
+
+/// Result of crawling an app's navigator hierarchy via [`render_all`].
+/// `pages` maps each rendered literal path (e.g. `/`, `/about`) to its
+/// [`RenderedPage`]. `skipped_parameterized` lists any patterns with
+/// `:placeholder` segments that the crawler skipped — those need an
+/// explicit list of param values to be SSG'd (future work).
+pub struct CrawlResult {
+    pub pages: HashMap<String, RenderedPage>,
+    pub skipped_parameterized: Vec<&'static str>,
+}
+
+/// Crawl every route reachable from the app's navigator hierarchy and
+/// render each as an SSG'd page. Drives the SSG export for
+/// `idealyst build --ssg`.
+///
+/// The crawl is hierarchy-driven, not link-driven: it relies on the
+/// route-collector hook in `runtime-core`'s `dispatch_navigator` to
+/// publish every navigator's `RouteEntry.path` set as it mounts. Start
+/// with `/`, render it, drain the collector, queue new literal paths,
+/// repeat. Nested navigators (a drawer with a stack inside) surface
+/// their routes when their parent screen mounts — they fall out of the
+/// same loop.
+///
+/// `setup` and `app` are called per path (once per page rendered), so
+/// they must be `Fn`, not `FnOnce`. Routes whose pattern contains a
+/// `:placeholder` segment can't be SSG'd without param values; they're
+/// returned in `skipped_parameterized` and the caller can warn.
+pub fn render_all<S, F>(setup: S, app: F) -> CrawlResult
+where
+    S: Fn(&mut SsrBackend),
+    F: Fn() -> runtime_core::Element,
+{
+    use runtime_core::primitives::navigator::{enable_route_collector, take_route_collector};
+    use std::collections::{HashSet, VecDeque};
+
+    let mut pages: HashMap<String, RenderedPage> = HashMap::new();
+    let mut skipped: Vec<&'static str> = Vec::new();
+    let mut queue: VecDeque<String> = VecDeque::from(["/".to_string()]);
+    let mut seen: HashSet<String> = HashSet::new();
+    seen.insert("/".to_string());
+
+    while let Some(path) = queue.pop_front() {
+        // Reset session-wide registration dedup before each fresh
+        // backend mount. Without this, the second render onward
+        // short-circuits `register_stylesheet` + `register_typeface`
+        // and the new backend's `head_css` is missing `@font-face` and
+        // any framework-pregenerated stylesheets (= broken first
+        // paint + fallback fonts on every page after `/`).
+        runtime_core::reset_for_ssg_render();
+        enable_route_collector();
+        let page = render_path_with(&path, |b| setup(b), || app());
+        let discovered = take_route_collector().unwrap_or_default();
+        pages.insert(path, page);
+
+        for p in discovered {
+            if p.contains(':') {
+                if !skipped.contains(&p) {
+                    skipped.push(p);
+                }
+                continue;
+            }
+            let ps = p.to_string();
+            if seen.insert(ps.clone()) {
+                queue.push_back(ps);
+            }
+        }
+    }
+
+    CrawlResult { pages, skipped_parameterized: skipped }
+}
 
 /// Like [`render_path`] but runs `setup` against the backend before the
 /// build — the hook where navigator SDKs register their chrome handlers

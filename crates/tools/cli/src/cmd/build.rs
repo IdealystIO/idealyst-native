@@ -68,6 +68,24 @@ pub struct Args {
     #[arg(long)]
     pub ssr: bool,
 
+    /// Static-site generation: crawl every literal route in the app's
+    /// navigator hierarchy and write `<out>/<path>.html` per page (root
+    /// becomes `index.html`). Drops cleanly into S3 / CloudFront /
+    /// nginx with no runtime SSR server. Builds the SSR wrapper binary
+    /// under the hood and invokes it in `--export` mode against
+    /// `dist/web/`. Parameterized routes (`:placeholder` segments) are
+    /// skipped with a warning. Pair with `--web` so the emitted pages
+    /// can hydrate via the wasm bundle; pair with `--ssg-static` to
+    /// suppress the boot script for a pure-static deploy.
+    #[arg(long)]
+    pub ssg: bool,
+
+    /// SSG only: suppress the hydration boot `<script>`. The exported
+    /// HTML is pure server-render — useful for SEO/marketing pages
+    /// where no client takeover is wanted. No effect outside `--ssg`.
+    #[arg(long)]
+    pub ssg_static: bool,
+
     /// Build with the release profile.
     #[arg(long)]
     pub release: bool,
@@ -114,10 +132,10 @@ pub fn run(args: Args) -> Result<()> {
     // platform set — it's an extra build that happens alongside the
     // platforms (or alone if no platforms are selected).
     let mut targets = collect_targets(&args, &manifest.app.targets);
-    if targets.is_empty() && !args.runtime_server && !args.ssr {
+    if targets.is_empty() && !args.runtime_server && !args.ssr && !args.ssg {
         anyhow::bail!(
             "no targets to build: pass `--web` / `--ios` / `--android` / `--roku` / `--aas` / \
-             `--ssr`, or add `targets = [...]` to `[package.metadata.idealyst.app]`"
+             `--ssr` / `--ssg`, or add `targets = [...]` to `[package.metadata.idealyst.app]`"
         );
     }
     // De-dup while preserving the order the user (or manifest) gave.
@@ -130,6 +148,9 @@ pub fn run(args: Args) -> Result<()> {
     }
     if args.ssr {
         extras.push("ssr binary");
+    }
+    if args.ssg {
+        extras.push("ssg export");
     }
     eprintln!(
         "[build] {} targets: {}{}",
@@ -156,6 +177,10 @@ pub fn run(args: Args) -> Result<()> {
 
     if args.ssr {
         build_ssr_binary(&dir, &args, targets.contains(&Target::Web))?;
+    }
+
+    if args.ssg {
+        build_ssg_export(&dir, &args, targets.contains(&Target::Web))?;
     }
 
     Ok(())
@@ -361,6 +386,80 @@ fn build_macos_target(dir: &std::path::Path, args: &Args) -> Result<()> {
         },
     )?;
     eprintln!("[build macos] success → {}", artifact.binary.display(),);
+    Ok(())
+}
+
+fn build_ssr_binary(dir: &std::path::Path, args: &Args, web_built: bool) -> Result<()> {
+    let source = crate::framework_source::resolve(dir)?;
+    let artifact = build_ssr::build(
+        dir,
+        build_ssr::BuildOptions {
+            release: args.release,
+            source,
+            user_features: Vec::new(),
+        },
+    )?;
+    eprintln!(
+        "[build ssr] success → {} (wrapper at {})",
+        artifact.binary.display(),
+        artifact.wrapper_dir.display(),
+    );
+    eprintln!(
+        "  run: {} --addr 0.0.0.0:8081 --static-dir {} [--static]",
+        artifact.binary.display(),
+        dir.join("dist").join("web").display(),
+    );
+    if !web_built {
+        eprintln!(
+            "  ⚠ no `--web` in this build — hydration mode needs the wasm bundle at \
+             `dist/web/pkg/`. Run `idealyst build --web{}` to stage it, or pass `--static` \
+             to the SSR binary for the no-hydration variant.",
+            if args.release { " --release" } else { "" },
+        );
+    }
+    Ok(())
+}
+
+fn build_ssg_export(dir: &std::path::Path, args: &Args, web_built: bool) -> Result<()> {
+    // SSG reuses the SSR wrapper binary — same generator, same dep
+    // graph; the wrapper's `--export <dir>` mode calls `render_all` and
+    // writes per-path `index.html` files into the bundle dir.
+    let source = crate::framework_source::resolve(dir)?;
+    let artifact = build_ssr::build(
+        dir,
+        build_ssr::BuildOptions {
+            release: args.release,
+            source,
+            user_features: Vec::new(),
+        },
+    )?;
+    let out_dir = args
+        .out_dir
+        .clone()
+        .unwrap_or_else(|| dir.join("dist").join(Target::Web.as_str()));
+    std::fs::create_dir_all(&out_dir)
+        .with_context(|| format!("create SSG output dir {}", out_dir.display()))?;
+    eprintln!("[build ssg] crawling navigator hierarchy → {}", out_dir.display());
+    let mut cmd = std::process::Command::new(&artifact.binary);
+    cmd.arg("--export").arg(&out_dir);
+    if args.ssg_static {
+        cmd.arg("--static");
+    }
+    let status = cmd
+        .status()
+        .with_context(|| format!("spawn SSG wrapper {}", artifact.binary.display()))?;
+    if !status.success() {
+        anyhow::bail!("SSG export failed (wrapper exit {})", status);
+    }
+    if !web_built && !args.ssg_static {
+        eprintln!(
+            "  ⚠ no `--web` in this build — emitted pages reference `/pkg/{}.js` for \
+             hydration but the bundle isn't staged. Run `idealyst build --web{}` to stage \
+             it, or re-run with `--ssg-static` for a no-hydration pure-static export.",
+            parse_manifest(dir)?.lib_name,
+            if args.release { " --release" } else { "" },
+        );
+    }
     Ok(())
 }
 

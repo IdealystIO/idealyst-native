@@ -559,6 +559,56 @@ pub fn take_initial_path() -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Route collector — SSG nav-hierarchy discovery
+// ---------------------------------------------------------------------------
+//
+// The SSG driver (in `backend-ssr`) enables this before each
+// `render_path` call. Every `Element::Navigator` the walker dispatches
+// publishes its `RouteEntry.path` set to the collector. After mount,
+// the driver drains discovered paths, queues unrendered literals, and
+// loops — so nested navigators (a drawer with a stack inside) get their
+// routes harvested when the parent screen mounts.
+//
+// Live backends never enable this. The hook is a single `with_collector`
+// check in `dispatch_navigator`; when no collector is set the call is a
+// thread-local borrow + branch, no allocation.
+
+thread_local! {
+    static ROUTE_COLLECTOR: RefCell<Option<Vec<&'static str>>> =
+        const { RefCell::new(None) };
+}
+
+/// Enable the route collector. SSG calls this before each `render_path`
+/// to harvest every navigator's screen paths during mount.
+pub fn enable_route_collector() {
+    ROUTE_COLLECTOR.with(|c| {
+        let mut slot = c.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(Vec::new());
+        }
+    });
+}
+
+/// Disable the collector and return everything pushed since enable.
+/// Returns `None` if the collector wasn't enabled.
+pub fn take_route_collector() -> Option<Vec<&'static str>> {
+    ROUTE_COLLECTOR.with(|c| c.borrow_mut().take())
+}
+
+/// Publish a navigator's screen paths to the collector, if one is
+/// enabled. Called by `dispatch_navigator` at mount time; a no-op when
+/// the collector is off (live backends).
+pub fn record_routes(config: &NavigatorConfig) {
+    ROUTE_COLLECTOR.with(|c| {
+        if let Some(buf) = c.borrow_mut().as_mut() {
+            for entry in config.screens.values() {
+                buf.push(entry.path);
+            }
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // NavState — reactive bundle exposed to layout / chrome
 // ---------------------------------------------------------------------------
 

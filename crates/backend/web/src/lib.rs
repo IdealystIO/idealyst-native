@@ -771,6 +771,30 @@ impl WebBackend {
         }
     }
 
+    /// Like [`hydrate_next`] but on adoption skips the matched node's
+    /// subtree instead of descending into its children. For primitives
+    /// whose contents (icon `<path>`s, etc.) are built internally and
+    /// NOT walked by the framework — without this, the cursor would
+    /// land on a child of the adopted node and the next walker step
+    /// would mismatch against it.
+    pub(crate) fn hydrate_next_skip_subtree(
+        &mut self,
+        tag: &str,
+    ) -> Option<web_sys::Element> {
+        if !self.hydrating || self.hydration_suppress {
+            return None;
+        }
+        let cur = self.hydration_cursor.clone()?;
+        let el: web_sys::Element = cur.dyn_into().ok()?;
+        if el.tag_name().eq_ignore_ascii_case(tag) {
+            self.hydration_cursor = Self::next_preorder_skip_subtree(&el, &self.mount);
+            Some(el)
+        } else {
+            self.hydration_pending_fresh = true;
+            None
+        }
+    }
+
     /// Called by every `create_*` right after it builds a FRESH node.
     /// If a mismatch is pending, this `fresh` node is the root of a
     /// subtree-local remount: record what it replaces (the stale SSR

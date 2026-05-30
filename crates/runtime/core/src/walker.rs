@@ -535,6 +535,11 @@ fn dispatch_external<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Eleme
 fn dispatch_navigator<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::Navigator { type_id, type_name, presentation, config, style, slot_styles, ref_fill, accessibility } = node
     else { unreachable!() };
+    // Publish this navigator's screen paths to the SSG route-collector
+    // (if enabled). Live backends never enable it; the call is a
+    // thread-local check + branch when off. See
+    // `primitives::navigator::shared::record_routes` for the rationale.
+    crate::primitives::navigator::record_routes(&config);
     navigator::build(backend, type_id, type_name, presentation, config, style, slot_styles, ref_fill, accessibility)
 }
 

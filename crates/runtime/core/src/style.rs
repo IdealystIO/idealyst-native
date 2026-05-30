@@ -2245,6 +2245,37 @@ pub fn ensure_typefaces_registered_with<RA, RT>(
     });
 }
 
+/// Reset the framework's session-wide registration dedup so the NEXT
+/// `ensure_registered_with` call republishes everything to a fresh
+/// backend. The SSG driver in `backend-ssr` (`render_all`) calls this
+/// between iterations — each page render uses a fresh `SsrBackend`
+/// instance, but the dedup thread-locals were designed assuming "one
+/// app session = one backend forever," so a second render would
+/// otherwise short-circuit and the new backend would miss every
+/// stylesheet registration + typeface registration.
+///
+/// Cleared:
+/// - `REGISTRATIONS` (stylesheet → backend-side state) so
+///   `register_stylesheet` fires on the next backend.
+/// - `REGISTERED_TYPEFACES` (per-`TypefaceId` dedup) so
+///   `register_asset` + `register_typeface` fire on the next backend
+///   (otherwise the new backend's `head_css` has no `@font-face`).
+/// - `RESOLUTION_CACHE` (memoized `Rc<StyleRules>`) — the cache holds
+///   `Rc`s the OLD backend was supposed to dedup against; the next
+///   `ensure_registered_with` will repopulate with fresh `Rc`s.
+/// - `PENDING_UNREGISTER` + `PENDING_TOKEN_UPDATES` — stale queues
+///   from the previous render that the fresh backend should not see.
+///
+/// Not cleared: `TOKEN_REGISTRY` (token `Signal`s have global lifetime
+/// and the same names resolve to the same signals across renders).
+pub fn reset_for_ssg_render() {
+    REGISTRATIONS.with(|r| r.borrow_mut().clear());
+    REGISTERED_TYPEFACES.with(|s| s.borrow_mut().clear());
+    RESOLUTION_CACHE.with(|c| c.borrow_mut().clear());
+    PENDING_UNREGISTER.with(|p| p.borrow_mut().clear());
+    PENDING_TOKEN_UPDATES.with(|p| p.borrow_mut().clear());
+}
+
 /// Pointer-keyed peek at the registration table — `true` iff a live
 /// registration exists for this exact `StyleSheet` instance (compared
 /// by `Rc` pointer, not content).

@@ -22,6 +22,15 @@ const SVG_NS: &str = "http://www.w3.org/2000/svg";
 
 pub(crate) fn create(b: &mut WebBackend, data: &IconData, color: Option<&Color>) -> Node {
     let (vw, vh) = data.view_box;
+    // Hydration adoption: if the cursor is on a matching `<svg>`, reuse
+    // it. The SSR backend emits the same `<svg viewBox> <path d>` tree,
+    // so the SSR content is correct as-is; we just hand it back and
+    // skip rebuilding the children. `_skip_subtree` advances the
+    // cursor PAST the icon (not into its `<path>` children) because
+    // the framework's walker never enters an icon's internals.
+    if let Some(el) = b.hydrate_next_skip_subtree("svg") {
+        return el.unchecked_into::<Node>();
+    }
     let svg = b
         .doc
         .create_element_ns(Some(SVG_NS), "svg")
@@ -71,7 +80,13 @@ pub(crate) fn create(b: &mut WebBackend, data: &IconData, color: Option<&Color>)
         let _ = svg.append_child(&path);
     }
 
-    svg.unchecked_into::<Node>()
+    let node: Node = svg.unchecked_into();
+    // If we got here during hydration it's because the cursor was on a
+    // non-`<svg>` (or hydration wasn't on at all). Register this fresh
+    // node as a remount root so `insert` swaps it for the stale SSR
+    // node and resumes adoption past it.
+    b.hydrate_note_fresh(&node);
+    node
 }
 
 pub(crate) fn update_color(node: &Node, color: &Color) {
