@@ -83,5 +83,5 @@ pub fn Skeleton(props: &SkeletonProps) -> Element {
         app
     };
 
-    ui! { View(style = style) {} }
+    ui! { view(style = style) {} }
 }

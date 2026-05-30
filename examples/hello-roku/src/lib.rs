@@ -445,25 +445,25 @@ pub fn app() -> Element {
     let popular: Signal<Vec<i32>> = signal!(vec![7, 14, 21, 28, 35, 42, 49, 56, 63, 70]);
 
     ui! {
-        View(style = page_style()) {
-            Text(style = title_style()) { "Reactivity Demo" }
+        view(style = page_style()) {
+            text(style = title_style()) { "Reactivity Demo" }
 
             // ----- Row 1: Trending -----
-            Text(style = row_label_style()) { "Trending" }
+            text(style = row_label_style()) { "Trending" }
             for i in items_count(trending) {
-                Text(style = repeat_row_style()) { item_at(trending, i) }
+                text(style = repeat_row_style()) { item_at(trending, i) }
             }.with_style(repeat_row_container_style()).horizontal(true)
 
             // ----- Row 2: Recently Added -----
-            Text(style = row_label_style()) { "Recently Added" }
+            text(style = row_label_style()) { "Recently Added" }
             for i in items_count(recent) {
-                Text(style = repeat_row_style()) { item_at(recent, i) }
+                text(style = repeat_row_style()) { item_at(recent, i) }
             }.with_style(repeat_row_container_style()).horizontal(true)
 
             // ----- Row 3: Top Picks -----
-            Text(style = row_label_style()) { "Top Picks for You" }
+            text(style = row_label_style()) { "Top Picks for You" }
             for i in items_count(top_picks) {
-                Text(style = repeat_row_style()) { item_at(top_picks, i) }
+                text(style = repeat_row_style()) { item_at(top_picks, i) }
             }.with_style(repeat_row_container_style()).horizontal(true)
 
             // ----- Row 4: Popular -----
@@ -471,13 +471,13 @@ pub fn app() -> Element {
             // viewport, so the BS-side `maybeScrollToFocused`
             // shifts the page vertically when D-pad focus lands
             // on this carousel or the Theme button below.
-            Text(style = row_label_style()) { "Popular Right Now" }
+            text(style = row_label_style()) { "Popular Right Now" }
             for i in items_count(popular) {
-                Text(style = repeat_row_style()) { item_at(popular, i) }
+                text(style = repeat_row_style()) { item_at(popular, i) }
             }.with_style(repeat_row_container_style()).horizontal(true)
 
-            View(style = button_row_style()) {
-                Button(
+            view(style = button_row_style()) {
+                button(
                     label = "Theme",
                     on_click = next_theme(theme) => theme,
                     style = counter_button_style(),

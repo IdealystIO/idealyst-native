@@ -32,8 +32,8 @@ pub fn Subtitle(props: &SubtitleProps) -> Element {
         runtime_core::platform().canonical(),
     );
     ui! {
-        View(style = wrapper) {
-            Text(style = text) { label }
+        view(style = wrapper) {
+            text(style = text) { label }
         }.bind(refs.subtitle)
     }
 }

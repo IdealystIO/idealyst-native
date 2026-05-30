@@ -23,5 +23,5 @@ pub struct SpacerProps;
 #[component]
 pub fn Spacer(_props: &SpacerProps) -> Element {
     let style = SpacerStyle();
-    ui! { View(style = style) {} }
+    ui! { view(style = style) {} }
 }

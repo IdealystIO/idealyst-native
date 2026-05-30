@@ -73,15 +73,15 @@ pub fn Tag(props: &TagProps) -> Element {
                 .with_style(close_style)
                 .into_element();
             ui! {
-                View(style = container_style) {
-                    Text(style = label_style) { label }
+                view(style = container_style) {
+                    text(style = label_style) { label }
                     close
                 }
             }
         }
         None => ui! {
-            View(style = container_style) {
-                Text(style = label_style) { label }
+            view(style = container_style) {
+                text(style = label_style) { label }
             }
         },
     }

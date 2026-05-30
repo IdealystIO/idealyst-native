@@ -68,7 +68,7 @@ pub struct TocEntry {
 pub fn layout(content: Element) -> Element {
     let style = ScreenScroll();
     ui! {
-        View(style = style) { content }
+        view(style = style) { content }
     }
 }
 
@@ -144,9 +144,9 @@ pub fn layout_with_toc(content: Element, entries: Vec<TocEntry>) -> Element {
 
     let body_style = ScreenScroll();
     ui! {
-        View(style = body_style) {
-            View(style = row_style) {
-                View(style = column_style) { content }
+        view(style = body_style) {
+            view(style = row_style) {
+                view(style = column_style) { content }
                 toc
             }
         }
@@ -173,8 +173,8 @@ fn external_link(label: &'static str, url: &'static str) -> Element {
     let label_text = label.to_string();
     let style = move || StyleApplication::new(FooterLink::sheet());
     ui! {
-        Link(external = url) {
-            Text(style = style) { label_text }
+        link(external = url) {
+            text(style = style) { label_text }
         }
     }
 }
@@ -187,8 +187,8 @@ fn internal_link(label: &'static str, route: &'static runtime_core::Route<()>) -
     let label_text = label.to_string();
     let style = move || StyleApplication::new(FooterLink::sheet());
     ui! {
-        Link(route = route, params = ()) {
-            Text(style = style) { label_text }
+        link(route = route, params = ()) {
+            text(style = style) { label_text }
         }
     }
 }
@@ -211,15 +211,15 @@ pub fn footer() -> Element {
     // sources, so each View call site needs its own instance.
 
     let brand = ui! {
-        View(style = FooterBrand()) {
-            Text(style = wordmark_style) { "Idealyst" }
-            Text(style = tagline_style) { "One codebase, native everywhere." }
+        view(style = FooterBrand()) {
+            text(style = wordmark_style) { "Idealyst" }
+            text(style = tagline_style) { "One codebase, native everywhere." }
         }
     };
 
     let project_column = ui! {
-        View(style = FooterColumn()) {
-            Text(style = title_style) { "Project" }
+        view(style = FooterColumn()) {
+            text(style = title_style) { "Project" }
             { external_link("GitHub", GITHUB_URL) }
             { external_link("Issues", GITHUB_ISSUES_URL) }
             { external_link("Discussions", GITHUB_DISCUSSIONS_URL) }
@@ -227,8 +227,8 @@ pub fn footer() -> Element {
     };
 
     let resources_column = ui! {
-        View(style = FooterColumn()) {
-            Text(style = title_style) { "Resources" }
+        view(style = FooterColumn()) {
+            text(style = title_style) { "Resources" }
             { internal_link("Quickstart", &QUICKSTART_ROUTE) }
             { internal_link("Core concepts", &CONCEPTS_ROUTE) }
             { internal_link("Why Rust", &WHY_RUST_ROUTE) }
@@ -237,7 +237,7 @@ pub fn footer() -> Element {
     };
 
     let grid = ui! {
-        View(style = grid_style) {
+        view(style = grid_style) {
             brand
             project_column
             resources_column
@@ -245,13 +245,13 @@ pub fn footer() -> Element {
     };
 
     let bottom = ui! {
-        View(style = bottom_style) {
-            Text(style = copy_style) { "© Idealyst 2026" }
+        view(style = bottom_style) {
+            text(style = copy_style) { "© Idealyst 2026" }
         }
     };
 
     ui! {
-        View(style = footer_style) {
+        view(style = footer_style) {
             grid
             bottom
         }
@@ -289,7 +289,7 @@ pub fn mobile_header(slot: SlotProps) -> Element {
     let button_style = move || StyleApplication::new(MobileHeaderButton::sheet());
 
     // --- menu button (leading) ---
-    let menu_icon: Element = ui! { Text(style = button_style) { "\u{2630}" } };
+    let menu_icon: Element = ui! { text(style = button_style) { "\u{2630}" } };
     let open_drawer = slot.open_drawer.clone();
     let menu_button = pressable(vec![menu_icon], move || open_drawer())
         .into_element();
@@ -299,11 +299,11 @@ pub fn mobile_header(slot: SlotProps) -> Element {
     let title_source = move || label_for_route(active_route.get()).to_string();
     let title_view: Element = text(title_source).with_style(title_style).into_element();
     let title_node = ui! {
-        View(style = title_wrap_style) { title_view }
+        view(style = title_wrap_style) { title_view }
     };
 
     ui! {
-        View(style = header_style) {
+        view(style = header_style) {
             menu_button
             title_node
         }
@@ -324,13 +324,13 @@ fn render_toc(
 
     let mut children: Vec<Element> = Vec::with_capacity(entries.len() + 1);
     children.push(ui! {
-        Text(style = header_style) { "On this page" }
+        text(style = header_style) { "On this page" }
     });
     for (i, entry) in entries.iter().enumerate() {
         children.push(toc_link(i, *entry, active_idx, scroll_y));
     }
 
-    ui! { View(style = panel_style) { children } }
+    ui! { view(style = panel_style) { children } }
 }
 
 /// One TOC link. The style closure reads `active_idx` reactively
@@ -348,7 +348,7 @@ fn toc_link(
         let variant = if active_idx.get() == Some(index) { "on" } else { "off" };
         StyleApplication::new(TocLink::sheet()).with("active", variant.to_string())
     };
-    let children: Vec<Element> = vec![ui! { Text(style = style) { label_text } }];
+    let children: Vec<Element> = vec![ui! { text(style = style) { label_text } }];
 
     let bound = runtime_core::pressable(children, move || {
         // Pin the clicked entry as active right away — the spy
@@ -518,12 +518,12 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Element {
         },
     ];
     let brand_row = ui! {
-        Link(route = &HOME_ROUTE, params = ()) {
-            View(style = SidebarBrandRow()) {
+        link(route = &HOME_ROUTE, params = ()) {
+            view(style = SidebarBrandRow()) {
                 icon(LIGHT_LOGO)
                     .with_style(SidebarLogo())
                     .animate(StrokeAnimation::new(1400, Easing::EaseInOut))
-                View(style = SidebarBrandText()) { brand_text_children }
+                view(style = SidebarBrandText()) { brand_text_children }
             }
         }
     };
@@ -537,11 +537,11 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Element {
     // (e.g. Home) add nothing; and `Spacer` / `theme_toggle` sit inline
     // rather than being pushed onto a vector afterwards.
     ui! {
-        View(style = body_style) {
-            View(style = header_style) { header_children }
+        view(style = body_style) {
+            view(style = header_style) { header_children }
             for section in SECTIONS {
                 (!section.title.is_empty()).then(|| ui! {
-                    Text(style = SidebarSection()) { section.title.to_string() }
+                    text(style = SidebarSection()) { section.title.to_string() }
                 })
                 for entry in section.entries {
                     nav_link(entry.route, entry.label, active_route)
@@ -579,7 +579,7 @@ fn theme_toggle(footer_style: SidebarFooter, is_dark: Signal<bool>) -> Element {
         },
     ];
 
-    ui! { View(style = footer_style) { row_children } }
+    ui! { view(style = footer_style) { row_children } }
 }
 
 /// One sidebar nav link. Routes are matched by name; each emits a
@@ -607,8 +607,8 @@ fn nav_link(
     let label_text = label.to_string();
 
     ui! {
-        Link(route = route, params = ()) {
-            Text(style = style) { label_text }
+        link(route = route, params = ()) {
+            text(style = style) { label_text }
         }
     }
 }

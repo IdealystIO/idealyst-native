@@ -69,7 +69,7 @@ pub fn page() -> Element {
             // symbol), so this may still say "no definition available" — the
             // component-dispatch change didn't touch primitives. Note whether
             // it differs from the user-component case in TEST 1.
-            Text { "a bare primitive" }
+            text { "a bare primitive" }
 
             // ── TEST 3 — completion / hover on an EXPRESSION ─────────────
             // (a) Hover over `count` below: expected type `Signal<i32>`.

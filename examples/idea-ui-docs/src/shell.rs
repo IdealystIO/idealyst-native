@@ -71,7 +71,7 @@ fn sidebar(
     ];
 
     let mut children: Vec<Element> = Vec::new();
-    children.push(ui! { View(style = header_style) { header_children } });
+    children.push(ui! { view(style = header_style) { header_children } });
     for l in links {
         ChildList::append_to(l, &mut children);
     }
@@ -81,7 +81,7 @@ fn sidebar(
     children.push(ui! { Stack(gap = StackGap::Xs) { theme_row_children } });
 
     ui! {
-        View(style = container_style) { children }
+        view(style = container_style) { children }
     }
 }
 
@@ -136,51 +136,51 @@ fn nav_link(
     // these consts are.)
     match name {
         "overview" => ui! {
-            Link(route = &OVERVIEW_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+            link(route = &OVERVIEW_ROUTE, params = ()) {
+                text(style = style) { label_text }
             }
         },
         "themes" => ui! {
-            Link(route = &THEMES_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+            link(route = &THEMES_ROUTE, params = ()) {
+                text(style = style) { label_text }
             }
         },
         "layout" => ui! {
-            Link(route = &LAYOUT_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+            link(route = &LAYOUT_ROUTE, params = ()) {
+                text(style = style) { label_text }
             }
         },
         "typography" => ui! {
-            Link(route = &TYPOGRAPHY_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+            link(route = &TYPOGRAPHY_ROUTE, params = ()) {
+                text(style = style) { label_text }
             }
         },
         "actions" => ui! {
-            Link(route = &ACTIONS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+            link(route = &ACTIONS_ROUTE, params = ()) {
+                text(style = style) { label_text }
             }
         },
         "inputs" => ui! {
-            Link(route = &INPUTS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+            link(route = &INPUTS_ROUTE, params = ()) {
+                text(style = style) { label_text }
             }
         },
         "feedback" => ui! {
-            Link(route = &FEEDBACK_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+            link(route = &FEEDBACK_ROUTE, params = ()) {
+                text(style = style) { label_text }
             }
         },
         "overlays" => ui! {
-            Link(route = &OVERLAYS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+            link(route = &OVERLAYS_ROUTE, params = ()) {
+                text(style = style) { label_text }
             }
         },
         "stateful" => ui! {
-            Link(route = &STATEFUL_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+            link(route = &STATEFUL_ROUTE, params = ()) {
+                text(style = style) { label_text }
             }
         },
-        _ => ui! { Text { label_text } },
+        _ => ui! { text { label_text } },
     }
 }
 
@@ -206,26 +206,26 @@ pub fn demo_card(
     let controls_style = ControlsBox();
 
     let preview_box = ui! {
-        View(style = preview_style) { preview }
+        view(style = preview_style) { preview }
     };
     let controls_box = ui! {
-        View(style = controls_style) { controls }
+        view(style = controls_style) { controls }
     };
     let row = ui! {
-        View(style = row_style) {
+        view(style = row_style) {
             preview_box
             controls_box
         }
     };
 
     let body_node = if desc_text.is_empty() {
-        ui! { View {} }
+        ui! { view {} }
     } else {
         ui! { Typography(content = desc_text, muted = true) }
     };
 
     ui! {
-        View(style = card_style) {
+        view(style = card_style) {
             Typography(content = title_text, kind = idea_ui::typography_kind::H2)
             body_node
             row

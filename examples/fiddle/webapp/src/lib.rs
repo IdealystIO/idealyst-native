@@ -358,13 +358,13 @@ fn app() -> Element {
     let preview = preview_panel(iframe_url);
 
     ui! {
-        View(style = row_style()) {
+        view(style = row_style()) {
             tree
-            View(style = center_style()) {
+            view(style = center_style()) {
                 editor
                 controls
             }
-            View(style = preview_column_style()) {
+            view(style = preview_column_style()) {
                 preview
             }
         }
@@ -414,10 +414,10 @@ fn file_tree_panel(
     );
 
     ui! {
-        View(style = tree_panel_style()) {
-            Text(style = tree_header_style()) { "Files" }
-            ScrollView { body }
-            Text(style = tree_hint_style()) {
+        view(style = tree_panel_style()) {
+            text(style = tree_header_style()) { "Files" }
+            scroll_view { body }
+            text(style = tree_hint_style()) {
                 "Tip: idea-ui components (Stack, Heading, Body, Card, …) \
                  are in scope alongside framework primitives. Reach for \
                  idea-ui when you want styled, opinionated shapes."
@@ -514,7 +514,7 @@ fn render_tree_node(
                 )
             })
             .collect();
-        return ui! { View(style = tree_list_style()) { kids } };
+        return ui! { view(style = tree_list_style()) { kids } };
     }
     if node.is_dir {
         let is_open = expanded.contains(&node.full_path);
@@ -525,7 +525,7 @@ fn render_tree_node(
             .state(TreeRowState::Idle)
             .padding_left(row_indent(depth));
         let mut nodes: Vec<Element> = vec![ui! {
-            Button(
+            button(
                 label = text_fmt!("{}{}", chevron, name),
                 on_click = move || {
                     let path = path_for_click.clone();
@@ -551,7 +551,7 @@ fn render_tree_node(
                 ));
             }
         }
-        return ui! { View(style = tree_list_style()) { nodes } };
+        return ui! { view(style = tree_list_style()) { nodes } };
     }
     // File leaf. The on_click handler does *both* writes
     // synchronously: set the active path, and load that file's
@@ -569,7 +569,7 @@ fn render_tree_node(
         })
         .padding_left(row_indent(depth + 1));
     ui! {
-        Button(
+        button(
             label = node.name.clone(),
             on_click = move || {
                 let path = path_for_click.clone();
@@ -648,7 +648,7 @@ fn editor_panel(
     );
 
     ui! {
-        View(style = editor_stack_style()) {
+        view(style = editor_stack_style()) {
             highlight_layer
             textarea
         }
@@ -671,7 +671,7 @@ fn controls_panel(
     let web_button = button("Web", move || mode_sim.set(false))
         .disabled(move || !mode_sim.get());
     let mode_row = ui! {
-        View(style = mode_row_style()) {
+        view(style = mode_row_style()) {
             sim_button
             web_button
         }
@@ -683,7 +683,7 @@ fn controls_panel(
     // `update_text` on every signal change.
     let status_label = text(move || status.get());
     let status_pane = ui! {
-        ScrollView(style = status_pane_style()) {
+        scroll_view(style = status_pane_style()) {
             status_label
         }
     };
@@ -713,7 +713,7 @@ fn controls_panel(
     let run_button = button("Run", on_run).disabled(move || is_compiling.get());
 
     ui! {
-        View(style = controls_col_style()) {
+        view(style = controls_col_style()) {
             mode_row
             run_button
             status_pane
@@ -726,7 +726,7 @@ fn controls_panel(
 // =============================================================================
 
 fn preview_panel(iframe_url: Signal<String>) -> Element {
-    webview::WebView(webview::WebViewProps {
+    webview::web_view(webview::WebViewProps {
         url: webview::url(move || iframe_url.get()),
         ..Default::default()
     })

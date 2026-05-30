@@ -557,7 +557,7 @@ fn app(initial_rows: usize) -> Element {
     });
 
     ui! {
-        View(style = page_style()) {
+        view(style = page_style()) {
             // Top-level Switch on `mode`. Flipping `mode` swaps
             // the entire subtree atomically. Branches: 0 = row
             // list (rebuild/toggle), 1 = hierarchy tree.
@@ -568,14 +568,14 @@ fn app(initial_rows: usize) -> Element {
                             0u32 => {
                                 let n: usize = count.get();
                                 ui! {
-                                    ScrollView(style = perf_list_style()) {
+                                    scroll_view(style = perf_list_style()) {
                                         for i in 0..n {
-                                            View(style = PerfRow().parity(if i % 2 == 0 {
+                                            view(style = PerfRow().parity(if i % 2 == 0 {
                                                 PerfRowParity::Even
                                             } else {
                                                 PerfRowParity::Odd
                                             })) {
-                                                Text { format!("Row #{}", i) }
+                                                text { format!("Row #{}", i) }
                                             }
                                         }
                                     }
@@ -591,9 +591,9 @@ fn app(initial_rows: usize) -> Element {
                                 let sigs: Vec<Signal<u32>> =
                                     COUNTERS.with(|c| c.borrow().clone());
                                 ui! {
-                                    ScrollView(style = perf_list_style()) {
+                                    scroll_view(style = perf_list_style()) {
                                         for i in 0..n {
-                                            View(style = PerfRow().parity(if i % 2 == 0 {
+                                            view(style = PerfRow().parity(if i % 2 == 0 {
                                                 PerfRowParity::Even
                                             } else {
                                                 PerfRowParity::Odd
@@ -605,10 +605,10 @@ fn app(initial_rows: usize) -> Element {
                                                 // a Rust Effect per row. The
                                                 // `text_fmt!` macro produces a
                                                 // `TextSource` value that drops
-                                                // straight into `Text { … }`'s
+                                                // straight into `text { … }`'s
                                                 // body — same shape as a static
-                                                // `Text { format!(…) }`.
-                                                Text {
+                                                // `text { format!(…) }`.
+                                                text {
                                                     runtime_core::text_fmt!(
                                                         "row {}: c={}",
                                                         i,
@@ -635,7 +635,7 @@ fn app(initial_rows: usize) -> Element {
                                 let points: Vec<Signal<u32>> =
                                     POINT_COLORS.with(|p| p.borrow().clone());
                                 ui! {
-                                    ScrollView(style = perf_list_style()) {
+                                    scroll_view(style = perf_list_style()) {
                                         for i in 0..n {
                                             // Capture per-row signal handle. The
                                             // outer style closure is moved into
@@ -648,7 +648,7 @@ fn app(initial_rows: usize) -> Element {
                                             // the style reactive; the builder
                                             // returns its OWN `StyleSource` and
                                             // would lose the reactive routing.
-                                            View(style = {
+                                            view(style = {
                                                 let pt = points[i];
                                                 let sh = shared_color;
                                                 move || {
@@ -671,7 +671,7 @@ fn app(initial_rows: usize) -> Element {
                                                     .override_background(color)
                                                 }
                                             }) {
-                                                Text { format!("rstyle {}", i) }
+                                                text { format!("rstyle {}", i) }
                                             }
                                         }
                                     }
@@ -689,12 +689,12 @@ fn app(initial_rows: usize) -> Element {
                                 // SHARED bump.
                                 let n: usize = sclass_count.get();
                                 ui! {
-                                    ScrollView(style = perf_list_style()) {
+                                    scroll_view(style = perf_list_style()) {
                                         for i in 0..n {
                                             // Pre-resolve both classes
                                             // (one per signal value)
                                             // at construction.
-                                            View(style = runtime_core::signal_class(
+                                            view(style = runtime_core::signal_class(
                                                 shared_color,
                                                 &[0u32, 1u32],
                                                 |v: u32| {
@@ -709,7 +709,7 @@ fn app(initial_rows: usize) -> Element {
                                                     .override_background(color)
                                                 },
                                             )) {
-                                                Text { format!("sclass {}", i) }
+                                                text { format!("sclass {}", i) }
                                             }
                                         }
                                     }

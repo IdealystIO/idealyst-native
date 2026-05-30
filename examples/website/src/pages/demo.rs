@@ -95,14 +95,14 @@ fn reactive_state() -> Element {
     // the arg the framework subscribes to. The text node re-resolves on
     // every write \u{2014} no surrounding tree rebuild.
     let preview: Vec<Element> = vec![
-        ui! { Text { text_fmt!("Count: {}", bind!(count)) } },
+        ui! { text { text_fmt!("Count: {}", bind!(count)) } },
         ui! { Stack(gap = StackGap::Md, axis = StackAxis::Row) { buttons } },
     ];
 
     let snippet = "let count = signal!(0);\n\
                    ui! {\n    \
-                       Text { text_fmt!(\"Count: {}\", bind!(count)) }\n    \
-                       Button(label = \"+\", on_click = move || count.update(|n| *n += 1))\n\
+                       text { text_fmt!(\"Count: {}\", bind!(count)) }\n    \
+                       button(label = \"+\", on_click = move || count.update(|n| *n += 1))\n\
                    }";
 
     let children: Vec<Element> = vec![
@@ -139,7 +139,7 @@ fn fade_demo() -> Element {
     let stage_style = DemoStage();
     let row_style = DemoStageRow();
     let stage_children: Vec<Element> = vec![
-        ui! { View(style = stage_style) {} .bind(box_ref) },
+        ui! { view(style = stage_style) {} .bind(box_ref) },
     ];
     let snippet = "let opacity = AnimatedValue::new(1.0_f32);\n\
                    opacity.bind(box_ref, AnimProp::Opacity);\n\
@@ -150,7 +150,7 @@ fn fade_demo() -> Element {
                    );";
 
     let preview: Vec<Element> = vec![
-        ui! { View(style = row_style) { stage_children } },
+        ui! { view(style = row_style) { stage_children } },
         ui! {
             Stack(gap = StackGap::Md, axis = StackAxis::Row) {
                 Btn(label = "Toggle".to_string(), on_click = on_toggle, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled)
@@ -198,11 +198,11 @@ fn spring_vs_tween_demo() -> Element {
     let row_style_b = DemoStageRow();
     let tween_row: Vec<Element> = vec![
         ui! { Typography(content = "Tween".to_string(), kind = idea_ui::typography_kind::Overline) },
-        ui! { View(style = row_style_a) { View(style = stage_a) {}.bind(tween_ref) } },
+        ui! { view(style = row_style_a) { view(style = stage_a) {}.bind(tween_ref) } },
     ];
     let spring_row: Vec<Element> = vec![
         ui! { Typography(content = "Spring".to_string(), kind = idea_ui::typography_kind::Overline) },
-        ui! { View(style = row_style_b) { View(style = stage_b) {}.bind(spring_ref) } },
+        ui! { view(style = row_style_b) { view(style = stage_b) {}.bind(spring_ref) } },
     ];
 
     let snippet = "tween_x.animate(\n    \
@@ -275,7 +275,7 @@ fn entrance_demo() -> Element {
         ui! { Btn(label = "Reset".to_string(), on_click = on_reset, tone = idea_ui::tone::Neutral, variant = idea_ui::variant::Ghost) },
     ];
     let preview: Vec<Element> = vec![
-        ui! { View(style = row_style) { View(style = stage_style) {}.bind(stage_ref) } },
+        ui! { view(style = row_style) { view(style = stage_style) {}.bind(stage_ref) } },
         ui! { Stack(gap = StackGap::Md, axis = StackAxis::Row) { buttons } },
     ];
 
@@ -323,7 +323,7 @@ fn color_demo() -> Element {
                    );";
 
     let preview: Vec<Element> = vec![
-        ui! { View(style = row_style) { View(style = stage_style) {}.bind(stage_ref) } },
+        ui! { view(style = row_style) { view(style = stage_style) {}.bind(stage_ref) } },
         ui! {
             Stack(gap = StackGap::Md, axis = StackAxis::Row) {
                 Btn(label = "Next color".to_string(), on_click = on_next, tone = idea_ui::tone::Primary, variant = idea_ui::variant::Filled)

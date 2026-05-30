@@ -82,7 +82,7 @@ pub fn Modal(props: ModalProps) -> Element {
     }
 
     let overlay_children = vec![ui! {
-        View(style = surface_style) { content }
+        view(style = surface_style) { content }
     }];
 
     let on_dismiss_handler: Option<Rc<dyn Fn()>> = on_dismiss;

@@ -74,13 +74,13 @@ pub fn Avatar(props: &AvatarProps) -> Element {
 
     match props.src.clone() {
         Some(src) => ui! {
-            View(style = container_style) {
-                Image(src = src)
+            view(style = container_style) {
+                image(src = src)
             }
         },
         None => ui! {
-            View(style = container_style) {
-                Text(style = text_style) { initials }
+            view(style = container_style) {
+                text(style = text_style) { initials }
             }
         },
     }

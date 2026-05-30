@@ -1282,7 +1282,7 @@ fn sidebar() -> Element {
     // `st` move into the param_form match arm below.
     let run_in_progress = st.run_in_progress.clone();
 
-    // Suite-picker rows. Each row is a Toggle (acting as a radio)
+    // Suite-picker rows. Each row is a toggle (acting as a radio)
     // bound to a per-suite "is selected" derived signal.
     let suite_rows: Vec<Element> = SUITES.iter().map(|s| {
         let suite_name = s.name;
@@ -1300,8 +1300,8 @@ fn sidebar() -> Element {
             });
         }
         ui! {
-            View(style = VariantRow()) {
-                View(style = VariantLabel()) {
+            view(style = VariantRow()) {
+                view(style = VariantLabel()) {
                     {
                         let row_signal = row_signal.clone();
                         toggle(row_signal.clone(), move |new_val| {
@@ -1320,7 +1320,7 @@ fn sidebar() -> Element {
                             }
                         })
                     }
-                    Text { title }
+                    text { title }
                 }
             }
         }
@@ -1359,8 +1359,8 @@ fn sidebar() -> Element {
                                     });
                                 }
                                 ui! {
-                                    View(style = VariantRow()) {
-                                        View(style = VariantLabel()) {
+                                    view(style = VariantRow()) {
+                                        view(style = VariantLabel()) {
                                             {
                                                 let row_signal = row_signal.clone();
                                                 let id_for_write = id;
@@ -1371,13 +1371,13 @@ fn sidebar() -> Element {
                                                     selected_for_write.set(Rc::new(s));
                                                 })
                                             }
-                                            Text { label }
+                                            text { label }
                                         }
                                     }
                                 }
                             })
                             .collect();
-                        ui! { View { { rows } } }
+                        ui! { view { { rows } } }
                     }
                 }
             }
@@ -1402,13 +1402,13 @@ fn sidebar() -> Element {
                                 .expect("param signal missing for active suite")
                                 .clone();
                             ui! {
-                                View(style = ParamRow()) {
-                                    Text(style = ParamLabel()) { p.label }
+                                view(style = ParamRow()) {
+                                    text(style = ParamLabel()) { p.label }
                                     { text_input(sig.clone(), move |v| sig.set(v)).with_style(ParamInput()) }
                                 }
                             }
                         }).collect();
-                        ui! { View { { rows } } }
+                        ui! { view { { rows } } }
                     }
                 }
             }
@@ -1416,16 +1416,16 @@ fn sidebar() -> Element {
     };
 
     ui! {
-        View(style = Sidebar()) {
-            Text(style = SidebarH1()) { "Benchmark" }
-            Text(style = Lede()) {
+        view(style = Sidebar()) {
+            text(style = SidebarH1()) { "Benchmark" }
+            text(style = Lede()) {
                 "Each selected variant is loaded in an iframe in random order, given the suite's params via the URL, and posts results back when done. Sequential — never two iframes running at once."
             }
-            Text(style = SectionH2()) { "Suite" }
+            text(style = SectionH2()) { "Suite" }
             { suite_rows }
-            Text(style = SectionH2()) { "Params" }
+            text(style = SectionH2()) { "Params" }
             { param_form }
-            Text(style = SectionH2()) { "Variants" }
+            text(style = SectionH2()) { "Variants" }
             { variant_form }
             { button("Run", on_run_clicked).with_style(RunButton())
                 .disabled(move || run_in_progress.get()) }
@@ -1445,9 +1445,9 @@ fn frame_header() -> Element {
     // we drop the `move ||` here since `.get()` calls *inside* the
     // body are the reactive subscriptions.
     ui! {
-        View(style = FrameHeader()) {
-            View {
-                Text(style = FrameHeaderStrong()) {
+        view(style = FrameHeader()) {
+            view {
+                text(style = FrameHeaderStrong()) {
                     {
                         match cv_for_label.get() {
                             Some(id) => VARIANTS.iter().find(|v| v.id == id).map(|v| v.label.to_string()).unwrap_or_else(|| id.to_string()),
@@ -1455,11 +1455,11 @@ fn frame_header() -> Element {
                         }
                     }
                 }
-                Text { format!(" · {}", suite_by_name(suite_sig.get()).title) }
+                text { format!(" · {}", suite_by_name(suite_sig.get()).title) }
             }
-            View {
-                Text { status_sig.get() }
-                Text(style = FrameHeaderElapsed()) {
+            view {
+                text { status_sig.get() }
+                text(style = FrameHeaderElapsed()) {
                     {
                         if progress_sig.get() || elapsed_sig.get() > 0.0 {
                             format!(" {:.1}s", elapsed_sig.get())
@@ -1475,10 +1475,10 @@ fn frame_wrap() -> Element {
     let st = state();
     let url_sig = st.iframe_url.clone();
     ui! {
-        View(style = FrameWrap()) {
+        view(style = FrameWrap()) {
             { frame_header() }
             {
-                webview::WebView(webview::WebViewProps {
+                webview::web_view(webview::WebViewProps {
                     url: webview::url(move || url_sig.get()),
                     on_message: Some(std::rc::Rc::new(handle_message)),
                     ..Default::default()
@@ -1514,7 +1514,7 @@ fn results_table() -> Element {
                     let ncols_metrics = ncols(suite);
 
                     let header_cells: Vec<Element> = headers.iter().map(|h| {
-                        ui! { Text(style = TableHeaderCell()) { h.clone() } }
+                        ui! { text(style = TableHeaderCell()) { h.clone() } }
                     }).collect();
 
                     let results = results.clone();
@@ -1552,8 +1552,8 @@ fn results_table() -> Element {
                                             VariantStatus::Error(msg) => (format!("× {}", msg), TableCellKind::Error),
                                         };
                                         let mut cells: Vec<Element> = Vec::with_capacity(ncols_metrics + 2);
-                                        cells.push(ui! { Text(style = TableCell().kind(TableCellKind::Label)) { v.label } });
-                                        cells.push(ui! { Text(style = TableCell().kind(status_kind)) { status_text } });
+                                        cells.push(ui! { text(style = TableCell().kind(TableCellKind::Label)) { v.label } });
+                                        cells.push(ui! { text(style = TableCell().kind(status_kind)) { status_text } });
                                         for i in 0..ncols_metrics {
                                             let cell_val = cols[i];
                                             let text = match cell_val {
@@ -1572,24 +1572,24 @@ fn results_table() -> Element {
                                             } else {
                                                 TableCellKind::Normal
                                             };
-                                            cells.push(ui! { Text(style = TableCell().kind(kind)) { text } });
+                                            cells.push(ui! { text(style = TableCell().kind(kind)) { text } });
                                         }
                                         Some(ui! {
-                                            View(style = TableRow()) {
+                                            view(style = TableRow()) {
                                                 { cells }
                                             }
                                         })
                                     }).collect();
 
-                                    ui! { View { { body_rows } } }
+                                    ui! { view { { body_rows } } }
                                 }
                             }
                         }
                     };
 
                     ui! {
-                        View {
-                            View(style = TableHeaderRow()) {
+                        view {
+                            view(style = TableHeaderRow()) {
                                 { header_cells }
                             }
                             { body }
@@ -1601,7 +1601,7 @@ fn results_table() -> Element {
     };
 
     ui! {
-        ScrollView(style = ResultsWrap()) {
+        scroll_view(style = ResultsWrap()) {
             { table }
         }
     }
@@ -1610,9 +1610,9 @@ fn results_table() -> Element {
 fn app() -> Element {
     install_theme(bench_theme());
     ui! {
-        View(style = Root()) {
+        view(style = Root()) {
             { sidebar() }
-            View(style = Main()) {
+            view(style = Main()) {
                 { frame_wrap() }
                 { results_table() }
             }

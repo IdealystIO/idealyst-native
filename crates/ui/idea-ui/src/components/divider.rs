@@ -15,5 +15,5 @@ pub struct DividerProps {
 pub fn Divider(props: &DividerProps) -> Element {
     let axis = props.axis;
     let style = DividerStyle().axis(axis);
-    ui! { View(style = style) {} }
+    ui! { view(style = style) {} }
 }

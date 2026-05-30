@@ -41,5 +41,5 @@ pub fn Stack(props: StackProps) -> Element {
     for c in props.children {
         ChildList::append_to(c, &mut children);
     }
-    ui! { View(style = style) { children } }
+    ui! { view(style = style) { children } }
 }

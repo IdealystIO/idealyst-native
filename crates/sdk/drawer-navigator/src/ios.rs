@@ -300,6 +300,27 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
                         return;
                     };
 
+                // If the user's sidebar root is a View, fold the
+                // top + bottom safe-area sides into IT directly.
+                // The framework converts safe-area sides into extra
+                // padding INSIDE the marked view — so the view's
+                // own background (typically the SidebarBody's white
+                // surface color) keeps filling edge-to-edge, while
+                // the brand row / nav links sit below the dynamic
+                // island and above the home indicator.
+                //
+                // Putting the safe-area on a wrapper would leave a
+                // transparent gap at the top: the wrapper has no
+                // background, so the inset showed the page through.
+                let mut sidebar_primitive = sidebar_primitive;
+                if let runtime_core::Element::View {
+                    safe_area_sides, ..
+                } = &mut sidebar_primitive
+                {
+                    *safe_area_sides |= runtime_core::SafeAreaSides::TOP
+                        | runtime_core::SafeAreaSides::BOTTOM;
+                }
+
                 // Wrap so the sidebar's outermost Taffy node has an
                 // explicit width matching the configured drawer
                 // width. The user-supplied sidebar root typically has

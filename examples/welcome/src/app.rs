@@ -16,7 +16,7 @@ pub fn app() -> Element {
     let refs = use_welcome();
     let page = page_sheet();
     ui! {
-        View(style = page) {
+        view(style = page) {
             Vignette(refs = refs)
             SunGlare(refs = refs)
             for i in 0..3 {

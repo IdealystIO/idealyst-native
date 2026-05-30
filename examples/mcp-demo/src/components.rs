@@ -61,7 +61,7 @@ pub fn Spacer() -> Element {
 #[component]
 pub fn Card() -> Element {
     ui! {
-        View() {
+        view() {
             IconLabel()
             PrimaryButton()
         }
@@ -74,7 +74,7 @@ pub fn Card() -> Element {
 #[component]
 pub fn AppShell() -> Element {
     ui! {
-        View() {
+        view() {
             Card()
             PrimaryButton()
             Spacer()
@@ -130,7 +130,7 @@ pub mod forms {
     #[component]
     pub fn FormRoot() -> Element {
         ui! {
-            View() {
+            view() {
                 Submit()
             }
         }

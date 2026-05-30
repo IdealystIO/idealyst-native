@@ -125,7 +125,7 @@ docs! {
 
             /// Public constructor. PascalCase so it reads as a primitive
             /// at call sites — `{ MapView(...) }` inside a `ui!` block
-            /// has the visual cadence of `Overlay { }` or `View { }`.
+            /// has the visual cadence of `overlay { }` or `view { }`.
             /// Returns a typed `Bound<...>` so `.bind(ref)` is
             /// type-checked against `Ref<ExternalHandle<MapViewProps>>`.
             #[allow(non_snake_case)]
@@ -177,8 +177,8 @@ docs! {
             use maps::{MapView, MapViewProps};
 
             ui! {
-                View {
-                    Text { "Find me on a map" }
+                view {
+                    text { "Find me on a map" }
                     { MapView(MapViewProps {
                         lat: 37.7749,
                         lon: -122.4194,
@@ -190,12 +190,12 @@ docs! {
         p("The ", code("MapView(...)"), " call returns a ",
           code("Bound<ExternalHandle<MapViewProps>>"),
           ", which slots into the children list the same way ",
-          code("View(...)"), " or ", code("Button(...)"),
+          code("view(...)"), " or ", code("button(...)"),
           " does. ", code(".with_style(...)"), ", ", code(".bind(r)"),
           " and the rest of the standard builder surface all apply."),
         p("The PascalCase name is intentional — it matches the visual \
-           cadence of first-party primitives (", code("Overlay { }"),
-          ", ", code("View { }"), ") inside a ", code("ui!"),
+           cadence of first-party primitives (", code("overlay { }"),
+          ", ", code("view { }"), ") inside a ", code("ui!"),
           " block. The ", code("{ ... }"),
           " interpolation around it tells the macro \"this is an \
            expression, not a tag\" — third-party primitives don't \

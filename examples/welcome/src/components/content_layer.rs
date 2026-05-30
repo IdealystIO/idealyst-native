@@ -23,7 +23,7 @@ pub fn ContentLayer(props: &ContentLayerProps) -> Element {
     let refs = props.refs;
     let sheet = sheet();
     ui! {
-        View(style = sheet) {
+        view(style = sheet) {
             WelcomePhrase(refs = refs)
             Subtitle(refs = refs)
         }

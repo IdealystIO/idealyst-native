@@ -468,10 +468,11 @@ fn emit_element(
     ref_expr: Option<&Expr>,
     children: Option<&[JsxNode]>,
 ) -> TokenStream2 {
-    // Dispatch on the PascalCase tag directly — no `pascal_to_snake`
-    // (parity with `ui!`). Primitives are a fixed PascalCase set.
+    // Primitives are canonicalized to snake_case (parity with `ui!`).
+    // Both `<View>` and `<view>` are accepted during the migration window.
     let name_str = name.to_string();
-    let is_primitive = matches!(name_str.as_str(), "Text" | "Button" | "View" | "When");
+    let canonical = crate::primitives::canonical_primitive(&name_str);
+    let is_primitive = canonical.is_some();
 
     // Same trick as `ui!`: pull `style` out of the prop list for primitives
     // and emit `.with_style(...)`. User components pass `style = ...` as an
@@ -491,11 +492,11 @@ fn emit_element(
         (None, props.iter().collect())
     };
 
-    let inner = match name_str.as_str() {
-        "Text" => emit_text(&other_props, children),
-        "Button" => emit_button(&other_props, children),
-        "View" => emit_view(&other_props, children),
-        "When" => emit_when(&other_props, children),
+    let inner = match canonical {
+        Some("text") => emit_text(&other_props, children),
+        Some("button") => emit_button(&other_props, children),
+        Some("view") => emit_view(&other_props, children),
+        Some("when") => emit_when(&other_props, children),
         _ => emit_user(name, props, children),
     };
 

@@ -165,12 +165,12 @@ pub enum BlockMeta {
 #[derive(Debug, Clone, Copy)]
 pub enum Span {
     /// Plain text.
-    Text(&'static str),
+    text(&'static str),
     /// Inline code. Rendered in a monospace span.
     Code(&'static str),
     /// Cross-reference link. `target` is `"page-slug"` or
     /// `"page-slug#section-slug"`.
-    Link {
+    link {
         target: &'static str,
         text: &'static str,
     },
@@ -639,8 +639,8 @@ impl DocConcept {
             DocConcept::StrokeAnimation => "Stroke animation",
 
             DocConcept::Portal => "Portal",
-            DocConcept::Overlay => "Overlay (composition)",
-            DocConcept::AnchoredOverlay => "AnchoredOverlay (composition)",
+            DocConcept::Overlay => "overlay (composition)",
+            DocConcept::AnchoredOverlay => "anchored_overlay (composition)",
             DocConcept::Presence => "Presence",
 
             DocConcept::AnimatedValue => "AnimatedValue",

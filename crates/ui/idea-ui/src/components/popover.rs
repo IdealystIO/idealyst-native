@@ -89,7 +89,7 @@ pub fn Popover(props: PopoverProps) -> Element {
         ChildList::append_to(c, &mut content);
     }
     let overlay_children = vec![ui! {
-        View(style = surface_style) { content }
+        view(style = surface_style) { content }
     }];
 
     let mut bound = runtime_core::anchored_overlay(target, overlay_children)

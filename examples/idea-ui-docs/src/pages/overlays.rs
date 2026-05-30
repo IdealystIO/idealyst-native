@@ -52,7 +52,7 @@ fn modal_demo() -> Element {
                 tone = idea_ui::tone::Primary,
                 variant = idea_ui::variant::Filled,
             )
-            Presence(
+            presence(
                 present = move || open.get(),
                 enter = PresenceAnim::new(
                     PresenceState::default().opacity(0.0).translate_y(8.0),
@@ -65,7 +65,7 @@ fn modal_demo() -> Element {
                     Easing::EaseIn,
                 ),
             ) {
-                Overlay(
+                overlay(
                     placement = ViewportPlacement::Center,
                     backdrop = BackdropMode::Dismiss,
                     on_dismiss = {
@@ -109,7 +109,7 @@ fn popover_demo() -> Element {
                 variant = idea_ui::variant::Soft,
                 bind_to = Some(trigger),
             )
-            Presence(
+            presence(
                 present = move || open.get(),
                 enter = PresenceAnim::new(
                     PresenceState::default().opacity(0.0).translate_y(-4.0),
@@ -160,7 +160,7 @@ fn drawer_demo() -> Element {
                 tone = idea_ui::tone::Neutral,
                 variant = idea_ui::variant::Soft,
             )
-            Presence(
+            presence(
                 present = move || open.get(),
                 enter = PresenceAnim::new(
                     PresenceState::default().translate_x(360.0),
@@ -173,7 +173,7 @@ fn drawer_demo() -> Element {
                     Easing::EaseIn,
                 ),
             ) {
-                Overlay(
+                overlay(
                     placement = ViewportPlacement::Right,
                     backdrop = BackdropMode::Dismiss,
                     on_dismiss = {

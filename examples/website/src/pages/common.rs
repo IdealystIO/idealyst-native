@@ -64,7 +64,7 @@ pub fn PageSection(props: PageSectionProps) -> Element {
     let style = SectionWrap();
     let handle = props.handle;
     let children = props.children;
-    ui! { View(style = style) { children }.bind(handle) }
+    ui! { view(style = style) { children }.bind(handle) }
 }
 
 // =============================================================================
@@ -246,7 +246,7 @@ pub struct CodePanelProps {
 pub fn CodePanel(props: &CodePanelProps) -> Element {
     let panel_style = CodePanelStyle();
     let dynamic = code_block(&props.src);
-    ui! { View(style = panel_style) { dynamic } }
+    ui! { view(style = panel_style) { dynamic } }
 }
 
 // =============================================================================
@@ -279,9 +279,9 @@ pub fn DemoShowcase(props: DemoShowcaseProps) -> Element {
     let preview = props.children;
     let code = code_block(&props.source);
     ui! {
-        View(style = card_style) {
-            View(style = demo_style) { preview }
-            View(style = code_style) { code }
+        view(style = card_style) {
+            view(style = demo_style) { preview }
+            view(style = code_style) { code }
         }
     }
 }
@@ -303,7 +303,7 @@ pub fn PlaceholderBlock(props: &PlaceholderBlockProps) -> Element {
     let style = PlaceholderBox();
     let label = props.text.clone();
     ui! {
-        View(style = style) {
+        view(style = style) {
             Typography(content = label, muted = true)
         }
     }

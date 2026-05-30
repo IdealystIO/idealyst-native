@@ -115,5 +115,5 @@ pub fn Tabs(props: TabsProps) -> Element {
         children.push(tab_primitive);
     }
 
-    ui! { View(style = container_style) { children } }
+    ui! { view(style = container_style) { children } }
 }

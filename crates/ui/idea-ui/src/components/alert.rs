@@ -73,7 +73,7 @@ pub fn Alert(props: &AlertProps) -> Element {
     let body_style = AlertBody();
     let close_style = TagClose();
 
-    let title_node: Element = ui! { Text(style = title_style) { title } };
+    let title_node: Element = ui! { text(style = title_style) { title } };
     let body_node: Option<Element> =
         crate::components::optional_reactive_text(props.body.clone(), body_style);
 
@@ -90,10 +90,10 @@ pub fn Alert(props: &AlertProps) -> Element {
     if let Some(b) = body_node {
         text_column.push(b);
     }
-    children.push(ui! { View { text_column } });
+    children.push(ui! { view { text_column } });
     if let Some(c) = close_node {
         children.push(c);
     }
 
-    ui! { View(style = container_style) { children } }
+    ui! { view(style = container_style) { children } }
 }

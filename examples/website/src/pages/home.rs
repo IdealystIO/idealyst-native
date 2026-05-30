@@ -27,7 +27,7 @@ use crate::styles::{
 
 pub fn page() -> Element {
     let content = ui! {
-        View {
+        view {
             { hero() }
             { quickstart_section() }
             { pillars_section() }
@@ -49,26 +49,26 @@ fn hero() -> Element {
     let cta_style = HeroCtaRow();
 
     let text_children: Vec<Element> = vec![
-        ui! { Text(style = headline_style) { "One codebase, native everywhere." } },
+        ui! { text(style = headline_style) { "One codebase, native everywhere." } },
         ui! {
-            Text(style = subhead_style) {
+            text(style = subhead_style) {
                 "Idealyst is a reactive UI framework that runs natively on every \
                  target. The platform implementations are extensible by design: use the \
                  ones we ship, or write your own to target anything else."
             }
         },
         ui! {
-            View(style = cta_style) {
-                Link(route = &INSTALL_ROUTE, params = ()) {
-                    Text { "Install the CLI \u{2192}" }
+            view(style = cta_style) {
+                link(route = &INSTALL_ROUTE, params = ()) {
+                    text { "Install the CLI \u{2192}" }
                 }
-                Link(route = &QUICKSTART_ROUTE, params = ()) {
-                    Text { "Quickstart" }
+                link(route = &QUICKSTART_ROUTE, params = ()) {
+                    text { "Quickstart" }
                 }
             }
         },
     ];
-    let text_column = ui! { View(style = text_style) { text_children } };
+    let text_column = ui! { view(style = text_style) { text_children } };
 
     // Live preview: an embedded wgpu simulator running the `welcome`
     // scaffold project, with an iOS/Android skin toggle. The same
@@ -83,9 +83,9 @@ fn hero() -> Element {
     // behind both columns.
     let row_style = crate::responsive::responsive_style(crate::styles::HeroRow::sheet());
     ui! {
-        View(style = hero_style) {
-            View(style = glare_style) {}
-            View(style = row_style) {
+        view(style = hero_style) {
+            view(style = glare_style) {}
+            view(style = row_style) {
                 text_column
                 device_column
             }
@@ -159,7 +159,7 @@ fn hero_simulator() -> Element {
         );
 
         let stage_children: Vec<Element> = vec![tab_strip, dynamic_sim];
-        ui! { View(style = stage_style) { stage_children } }
+        ui! { view(style = stage_style) { stage_children } }
     }
     // While the chunk loads, render the device chassis with an "off"
     // screen inside (from `simulator_placeholder`), plus an empty
@@ -188,7 +188,7 @@ fn hero_simulator() -> Element {
             .into_element();
         let device = simulator_placeholder(None);
         let stage_children: Vec<Element> = vec![tab_band, device];
-        ui! { View(style = crate::styles::SimulatorStage()) { stage_children } }
+        ui! { view(style = crate::styles::SimulatorStage()) { stage_children } }
             .into_element()
     })
     .into_element()
@@ -227,7 +227,7 @@ fn quickstart_section() -> Element {
         ui! { CodePanel(src = install_snippet) },
     ];
 
-    ui! { View(style = section_style) { children } }
+    ui! { view(style = section_style) { children } }
 }
 
 // =============================================================================
@@ -282,10 +282,10 @@ fn pillars_section() -> Element {
 
     let children: Vec<Element> = vec![
         ui! { Typography(content = "What makes it different".to_string(), kind = idea_ui::typography_kind::H2) },
-        ui! { View(style = grid_style) { cards } },
+        ui! { view(style = grid_style) { cards } },
     ];
 
-    ui! { View(style = section_style) { children } }
+    ui! { view(style = section_style) { children } }
 }
 
 fn pillar_card(title: &str, blurb: &str, route: &'static Route<()>) -> Element {
@@ -297,11 +297,11 @@ fn pillar_card(title: &str, blurb: &str, route: &'static Route<()>) -> Element {
         ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H3) },
         ui! { Typography(content = blurb_text, muted = true) },
         ui! {
-            Link(route = route, params = ()) {
-                Text(style = cta_style) { "Read more \u{2192}" }
+            link(route = route, params = ()) {
+                text(style = cta_style) { "Read more \u{2192}" }
             }
         },
     ];
-    ui! { View(style = card_style) { children } }
+    ui! { view(style = card_style) { children } }
 }
 

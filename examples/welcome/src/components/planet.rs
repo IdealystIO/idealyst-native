@@ -81,7 +81,7 @@ pub fn Planet(props: &PlanetProps) -> Element {
     let sheet = sheet(cfg.size_dp, cfg.color);
     let target = props.refs.planets[props.idx];
     ui! {
-        View(style = sheet) {}.bind(target)
+        view(style = sheet) {}.bind(target)
     }
 }
 

@@ -57,10 +57,10 @@ pub fn app() -> Element {
     );
 
     ui! {
-        View {
+        view {
             Typography(content = "SSR in-place hydration prototype".to_string())
             Typography(content = rx!(format!("count = {}", count.get())), muted = true)
-            Button(label = "Increment".to_string(), on_click = inc)
+            button(label = "Increment".to_string(), on_click = inc)
             viewport_branch
         }
     }

@@ -41,5 +41,5 @@ pub fn Spinner(props: &SpinnerProps) -> Element {
         SpinnerSize::Small => ActivityIndicatorSize::Small,
         SpinnerSize::Large => ActivityIndicatorSize::Large,
     };
-    ui! { ActivityIndicator().size(native) }
+    ui! { activity_indicator().size(native) }
 }

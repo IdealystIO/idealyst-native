@@ -114,7 +114,7 @@ docs! {
            records the dependency. The tracked contexts in everyday code are:"),
 
         list(
-            ["Reactive text — ", code("Text { format!(\"count: {}\", count.get()) }"),
+            ["Reactive text — ", code("text { format!(\"count: {}\", count.get()) }"),
              ". The expression is wrapped in an Effect that re-fires on signal change."],
             ["Closure props — ", code("label = move || format!(\"...\", count.get())"),
              ". A closure passed where the framework expected a ",
@@ -511,7 +511,7 @@ docs! {
 
             let id = use_id();  // e.g. "ui-1a3f9c0d8e4b2671"
             ui! {
-                Text(style = label_style) { "Label" }
+                text(style = label_style) { "Label" }
                 // Use `id` to wire ARIA / form labels / unique CSS hooks.
             }
         "##),
@@ -570,7 +570,7 @@ docs! {
             ui! {
                 // Reactive: the macro wraps this in a Derived<bool> Effect.
                 if count.get() > 10 {
-                    Text { "Over ten!" }
+                    text { "Over ten!" }
                 }
             }
         "##),
@@ -633,7 +633,7 @@ docs! {
             let btn: Ref<ButtonHandle> = Ref::new();
 
             ui! {
-                Button(label = "Increment", on_click = on_click).bind(btn)
+                button(label = "Increment", on_click = on_click).bind(btn)
             }
 
             // Later, from any signal-write context:
@@ -921,8 +921,8 @@ docs! {
         code(rust, r##"
             let count = signal!(0);
             ui! {
-                Text { format!("Count: {}", count.get()) }
-                Button(label = "++", on_click = move || count.update(|n| *n += 1))
+                text { format!("Count: {}", count.get()) }
+                button(label = "++", on_click = move || count.update(|n| *n += 1))
             }
         "##),
 
@@ -934,8 +934,8 @@ docs! {
             #[component]
             fn counter(count: Signal<i32>) -> Element {
                 ui! {
-                    Text { format!("Count: {}", count.get()) }
-                    Button(label = "++", on_click = move || count.update(|n| *n += 1))
+                    text { format!("Count: {}", count.get()) }
+                    button(label = "++", on_click = move || count.update(|n| *n += 1))
                 }
             }
 
@@ -944,7 +944,7 @@ docs! {
                 let count = signal!(0);
                 ui! {
                     counter(count = count)
-                    Text { format!("Doubled: {}", count.get() * 2) }
+                    text { format!("Doubled: {}", count.get() * 2) }
                 }
             }
         "##),
@@ -963,9 +963,9 @@ docs! {
         code(rust, r##"
             ui! {
                 if logged_in.get() {
-                    Text { "Welcome back!" }
+                    text { "Welcome back!" }
                 } else {
-                    Button(label = "Log in", on_click = move || logged_in.set(true))
+                    button(label = "Log in", on_click = move || logged_in.set(true))
                 }
             }
         "##),
@@ -978,8 +978,8 @@ docs! {
             let _e = Effect::new(move || doubled.set(count.get() * 2));
 
             ui! {
-                Text { format!("count={}", count.get()) }
-                Text { format!("doubled={}", doubled.get()) }
+                text { format!("count={}", count.get()) }
+                text { format!("doubled={}", doubled.get()) }
             }
         "##),
     },
@@ -998,7 +998,7 @@ docs! {
             fn greeting(name: Signal<String>) -> Element {
                 let greeting_text = format!("Hello, {}", name.get());  // computed ONCE
                 ui! {
-                    Text { greeting_text.clone() }
+                    text { greeting_text.clone() }
                 }
             }
         "##),
@@ -1009,7 +1009,7 @@ docs! {
 
         code(rust, r##"
             ui! {
-                Text { format!("Hello, {}", name.get()) }
+                text { format!("Hello, {}", name.get()) }
             }
         "##),
 
@@ -1021,7 +1021,7 @@ docs! {
             let initial = count.get();    // 0, frozen
             ui! {
                 // Wrong: shows "Initial: 0" forever
-                Text { format!("Initial: {}", initial) }
+                text { format!("Initial: {}", initial) }
             }
         "##),
 

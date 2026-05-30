@@ -39,8 +39,8 @@ pub fn WelcomePhrase(props: &WelcomePhraseProps) -> Element {
     let wrapper = wrapper_sheet();
     let headline = headline_sheet();
     ui! {
-        View(style = wrapper) {
-            Text(style = headline) { "Welcome to Idealyst" }.bind(refs.welcome_text)
+        view(style = wrapper) {
+            text(style = headline) { "Welcome to Idealyst" }.bind(refs.welcome_text)
         }.bind(refs.welcome)
     }
 }

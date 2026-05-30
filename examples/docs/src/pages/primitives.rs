@@ -59,9 +59,9 @@ docs! {
            a View at some level."),
         code(rust, r##"
             ui! {
-                View(style = my_view_style()) {
-                    Text { "hello" }
-                    Text { "world" }
+                view(style = my_view_style()) {
+                    text { "hello" }
+                    text { "world" }
                 }
             }
         "##),
@@ -80,7 +80,7 @@ docs! {
           " flips the axis."),
         code(rust, r##"
             ui! {
-                ScrollView {
+                scroll_view {
                     // ...children scroll vertically
                 }
             }
@@ -123,8 +123,8 @@ docs! {
         p("A run of text."),
         code(rust, r##"
             ui! {
-                Text { "Hello, Idealyst" }
-                Text { format!("Count: {}", count.get()) }
+                text { "Hello, Idealyst" }
+                text { format!("Count: {}", count.get()) }
             }
         "##),
         p("The child can be any expression that produces a string. If the \
@@ -137,7 +137,7 @@ docs! {
         p("A bitmap from a URL."),
         code(rust, r##"
             ui! {
-                Image(src = "https://example.com/avatar.png", alt = "Avatar")
+                image(src = "https://example.com/avatar.png", alt = "Avatar")
             }
         "##),
         p(code("src"), " accepts a string or a closure for reactive URLs. ",
@@ -152,7 +152,7 @@ docs! {
           " on iOS, ", code("VectorDrawable"), " on Android."),
         code(rust, r##"
             ui! {
-                Icon(name = "chevron-right")
+                icon(name = "chevron-right")
             }
         "##),
         p("The icon registry is tree-shakeable — only icons referenced by your \
@@ -191,8 +191,8 @@ docs! {
           " once at bootstrap, then mount via interpolation:"),
         code(rust, r##"
             ui! {
-                View {
-                    { webview::WebView(webview::WebViewProps {
+                view {
+                    { webview::web_view(webview::WebViewProps {
                         url: webview::url("https://example.com"),
                         ..Default::default()
                     }) }
@@ -210,7 +210,7 @@ docs! {
         p("A labeled tappable with native button semantics."),
         code(rust, r##"
             ui! {
-                Button(
+                button(
                     label = "Increment",
                     on_click = move || count.update(|n| *n += 1),
                 )
@@ -232,7 +232,7 @@ docs! {
             let value = signal!(String::new());
 
             ui! {
-                TextInput(
+                text_input(
                     value = value,
                     on_change = move |s| value.set(s),
                     placeholder = "Search...",
@@ -252,7 +252,7 @@ docs! {
             let enabled = signal!(true);
 
             ui! {
-                Toggle(
+                toggle(
                     value = enabled,
                     on_change = move |v| enabled.set(v),
                 )
@@ -266,7 +266,7 @@ docs! {
             let volume = signal!(50.0);
 
             ui! {
-                Slider(
+                slider(
                     value = volume,
                     on_change = move |v| volume.set(v),
                     min = 0.0,
@@ -289,7 +289,7 @@ docs! {
         p("An indeterminate loading spinner. No methods, no value — it just spins."),
         code(rust, r##"
             ui! {
-                ActivityIndicator(size = ActivityIndicatorSize::Medium, color = Some(my_color))
+                activity_indicator(size = ActivityIndicatorSize::Medium, color = Some(my_color))
             }
         "##),
     },
@@ -309,9 +309,9 @@ docs! {
         code(rust, r##"
             ui! {
                 if logged_in.get() {
-                    Text { "Welcome back!" }
+                    text { "Welcome back!" }
                 } else {
-                    Button(label = "Log in", on_click = move || logged_in.set(true))
+                    button(label = "Log in", on_click = move || logged_in.set(true))
                 }
             }
         "##),
@@ -327,9 +327,9 @@ docs! {
         code(rust, r##"
             ui! {
                 Switch(discriminant = mode) {
-                    Arm(pattern = "loading") { ActivityIndicator() }
+                    Arm(pattern = "loading") { activity_indicator() }
                     Arm(pattern = "ready") { Body { /* ... */ } }
-                    Default { Text { "error" } }
+                    Default { text { "error" } }
                 }
             }
         "##),
@@ -350,9 +350,9 @@ docs! {
           code("for"), "."),
         code(rust, r##"
             ui! {
-                View {
+                view {
                     for item in items {
-                        Card { Text { item.title } }
+                        Card { text { item.title } }
                     }
                 }
             }
@@ -375,7 +375,7 @@ docs! {
                     data = signal_of_items,
                     key = |_idx, item| item.id as u64,
                     item_size = fixed_size(72.0),
-                    render_item = |_idx, item| ui! { Card { Text { &item.title } } },
+                    render_item = |_idx, item| ui! { Card { text { &item.title } } },
                 )
             }
         "##),
@@ -417,8 +417,8 @@ docs! {
            a ", code("NavCommand"), " against the closest ambient navigator."),
         code(rust, r##"
             ui! {
-                Link(route = "/profile/:id", params = ProfileParams { id: 42 }) {
-                    Text { "Open profile" }
+                link(route = "/profile/:id", params = ProfileParams { id: 42 }) {
+                    text { "Open profile" }
                 }
             }
         "##),
@@ -454,7 +454,7 @@ docs! {
            the primitive."),
     },
 
-    section(heading = "Overlay (composition)") {
+    section(heading = "overlay (composition)") {
         p(code("overlay()"), " is not a primitive — it's a composition \
            that lowers to ", code("Element::Portal"),
           " with a viewport target plus a backdrop child. Defaults: ",
@@ -466,7 +466,7 @@ docs! {
            dismissal (Escape, back gesture, backdrop tap)."),
     },
 
-    section(heading = "AnchoredOverlay (composition)") {
+    section(heading = "anchored_overlay (composition)") {
         p(code("anchored_overlay()"),
           " is also a composition, lowering to ",
           code("Element::Portal"), " with ",

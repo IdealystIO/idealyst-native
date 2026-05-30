@@ -104,9 +104,9 @@ fn home_page(nav: Ref<StackHandle>) -> Element {
                 muted = true,
             )
         },
-        ui! { Button(label = "Open About".to_string(), on_click = go_about) },
-        ui! { Button(label = "Open Settings".to_string(), on_click = go_settings) },
-        ui! { Button(label = "Open Counter".to_string(), on_click = go_counter) },
+        ui! { button(label = "Open About".to_string(), on_click = go_about) },
+        ui! { button(label = "Open Settings".to_string(), on_click = go_settings) },
+        ui! { button(label = "Open Counter".to_string(), on_click = go_counter) },
     ];
 
     ui! {
@@ -160,8 +160,8 @@ fn counter_page(nav: Ref<StackHandle>, count: Signal<i32>) -> Element {
     let children: Vec<Element> = vec![
         ui! { Typography(content = "Counter".to_string(), kind = idea_ui::typography_kind::H1) },
         label,
-        ui! { Button(label = "+".to_string(), on_click = increment) },
-        ui! { Button(label = "-".to_string(), on_click = decrement) },
+        ui! { button(label = "+".to_string(), on_click = increment) },
+        ui! { button(label = "-".to_string(), on_click = decrement) },
         back_button(nav),
     ];
     ui! {
@@ -176,6 +176,6 @@ fn counter_page(nav: Ref<StackHandle>, count: Signal<i32>) -> Element {
 // for terminal.
 fn back_button(nav: Ref<StackHandle>) -> Element {
     let on_back = move || nav.get().map(|h| h.pop()).unwrap_or_default();
-    ui! { Button(label = "Back".to_string(), on_click = on_back) }
+    ui! { button(label = "Back".to_string(), on_click = on_back) }
 }
 

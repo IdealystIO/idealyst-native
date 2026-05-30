@@ -183,7 +183,7 @@ fn status() -> Element {
             to keep firming up.".to_string())
     };
     let split_cta = ui! {
-        Link(route = &CODE_SPLITTING_ROUTE, params = ()) {
+        link(route = &CODE_SPLITTING_ROUTE, params = ()) {
             Typography(content = "Pairs well with code splitting \u{2192}".to_string())
         }
     };

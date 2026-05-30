@@ -98,9 +98,9 @@ fn fine_grained() -> Element {
     let example = "let count = signal!(0);\n\
                    \n\
                    ui! {\n    \
-                       View {\n        \
-                           Text { \"This never re-runs when count changes\" }\n        \
-                           Text { format!(\"Count: {}\", count.get()) }  // only THIS leaf updates\n    \
+                       view {\n        \
+                           text { \"This never re-runs when count changes\" }\n        \
+                           text { format!(\"Count: {}\", count.get()) }  // only THIS leaf updates\n    \
                        }\n\
                    }\n\
                    \n\
@@ -213,7 +213,7 @@ fn reproduce() -> Element {
             honesty rules, and the full instructions live alongside the code.".to_string())
     };
     let concepts_cta = ui! {
-        Link(route = &CONCEPTS_ROUTE, params = ()) {
+        link(route = &CONCEPTS_ROUTE, params = ()) {
             Typography(content = "How the reactive core works \u{2192}".to_string())
         }
     };

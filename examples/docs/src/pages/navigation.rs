@@ -397,8 +397,8 @@ docs! {
 
         code(rust, r##"
             ui! {
-                Link(route = &PROFILE, params = ProfileParams { id: 42 }) {
-                    Text { "Open profile" }
+                link(route = &PROFILE, params = ProfileParams { id: 42 }) {
+                    text { "Open profile" }
                 }
             }
         "##),
@@ -438,13 +438,13 @@ docs! {
         ),
 
         code(rust, r##"
-            Link(route = &HOME, params = (), kind = NavKind::Reset) {
-                Text { "Sign out" }
+            link(route = &HOME, params = (), kind = NavKind::Reset) {
+                text { "Sign out" }
             }
         "##),
 
         p("The constructor picks a default based on the ambient navigator \
-           kind, so ", code("Link(route = ..., params = ...)"),
+           kind, so ", code("link(route = ..., params = ...)"),
           " (no ", code("kind"), ") does the right thing in any context."),
     },
 

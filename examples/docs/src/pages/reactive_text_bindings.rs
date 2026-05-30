@@ -51,7 +51,7 @@ docs! {
             let id: u32 = 42;
             let global: Signal<u32> = signal!(0);
 
-            Text { text_fmt!("leaf {}: g={}", id, bind!(global)) }
+            text { text_fmt!("leaf {}: g={}", id, bind!(global)) }
         "##),
         p("Args wrapped in ", code("bind!(...)"),
           " are signals — the framework subscribes to them via ",
@@ -71,9 +71,9 @@ docs! {
 
     section(heading = "What it produces") {
         p(code("text_fmt!"), " expands to a ", code("TextSource::JsBinding(...)"),
-          " value — drop it into ", code("Text { ... }"),
+          " value — drop it into ", code("text { ... }"),
           " (or any component arg that takes ", code("IntoTextSource"),
-          " — e.g. ", code("Button(label = text_fmt!(...))"),
+          " — e.g. ", code("button(label = text_fmt!(...))"),
           "). The macro carries a structured payload:"),
         list(
             [code("signal_ids"),

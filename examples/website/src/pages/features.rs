@@ -17,7 +17,7 @@ use crate::styles::{HomeSection, PillarCard, PillarCta, PillarGrid};
 
 pub fn page() -> Element {
     let content = ui! {
-        View {
+        view {
             { intro() }
             { grid() }
         }
@@ -47,7 +47,7 @@ fn intro() -> Element {
             )
         },
     ];
-    ui! { View(style = section_style) { children } }
+    ui! { view(style = section_style) { children } }
 }
 
 // =============================================================================
@@ -130,8 +130,8 @@ fn grid() -> Element {
         cards.push(card(title, blurb, route));
     }
 
-    let children: Vec<Element> = vec![ui! { View(style = grid_style) { cards } }];
-    ui! { View(style = section_style) { children } }
+    let children: Vec<Element> = vec![ui! { view(style = grid_style) { cards } }];
+    ui! { view(style = section_style) { children } }
 }
 
 fn card(title: &str, blurb: &str, route: &'static Route<()>) -> Element {
@@ -143,10 +143,10 @@ fn card(title: &str, blurb: &str, route: &'static Route<()>) -> Element {
         ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H3) },
         ui! { Typography(content = blurb_text, muted = true) },
         ui! {
-            Link(route = route, params = ()) {
-                Text(style = cta_style) { "Read more \u{2192}" }
+            link(route = route, params = ()) {
+                text(style = cta_style) { "Read more \u{2192}" }
             }
         },
     ];
-    ui! { View(style = card_style) { children } }
+    ui! { view(style = card_style) { children } }
 }

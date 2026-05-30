@@ -110,8 +110,8 @@ fn ItemRow(props: &ItemRowProps) -> Element {
         Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
             Typography(content = label)
             Typography(content = rx!(format!("clicked {}×", count.get())), muted = true)
-            Button(label = "+".to_string(), on_click = inc)
-            Button(label = "Remove".to_string(), on_click = remove)
+            button(label = "+".to_string(), on_click = inc)
+            button(label = "Remove".to_string(), on_click = remove)
         }
     }
 }
@@ -184,8 +184,8 @@ fn DynamicList(props: &DynamicListProps) -> Element {
             // memo, so it re-renders on add/remove/per-row clicks.
             Typography(content = rx!(format!("{} row(s), {} total clicks", items.get().len(), total.get())), muted = true)
             Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
-                Button(label = "Add item".to_string(), on_click = add)
-                Button(label = "Clear".to_string(), on_click = clear)
+                button(label = "Add item".to_string(), on_click = add)
+                button(label = "Clear".to_string(), on_click = clear)
             }
             // THE reactive loop. `items: Signal<Vec<Row>>`, so it's
             // reactive by type — each row is an `ItemRow` component, and
@@ -273,8 +273,8 @@ fn EphemeralRow(props: &EphemeralRowProps) -> Element {
         Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
             Typography(content = label)
             Typography(content = rx!(format!("clicked {}×", count.get())), muted = true)
-            Button(label = "+".to_string(), on_click = inc)
-            Button(label = "Remove".to_string(), on_click = remove)
+            button(label = "+".to_string(), on_click = inc)
+            button(label = "Remove".to_string(), on_click = remove)
         }
     }
 }
@@ -298,7 +298,7 @@ fn EphemeralList(props: &EphemeralListProps) -> Element {
         Card(padding = CardPadding::Md) {
             Typography(content = "Render-scope state — PRESERVED by keyed reconciliation".to_string(), kind = typography_kind::H3)
             Typography(content = "Each row's count lives in the COMPONENT, not the data. Click +, then Add row — the existing counts STAY, because a stable `key` lets the reconciler keep each unchanged row's scope (and its signal). Only the new row starts at 0×. Conversely, Remove a row then Add it back: the key left and returned, so it's a NEW row and resets to 0×.".to_string(), muted = true)
-            Button(label = "Add row".to_string(), on_click = add)
+            button(label = "Add row".to_string(), on_click = add)
             Stack(gap = StackGap::Sm) {
                 for label in labels, key = label.clone() {
                     EphemeralRow(label = label, labels = labels)

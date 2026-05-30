@@ -227,8 +227,8 @@ docs! {
 
         code(rust, r##"
             ui! {
-                View(style = Card().size(CardSize::Large).kind(CardKind::Outlined)) {
-                    Text { "..." }
+                view(style = Card().size(CardSize::Large).kind(CardKind::Outlined)) {
+                    text { "..." }
                 }
             }
         "##),
@@ -239,11 +239,11 @@ docs! {
             let size = signal!(CardSize::Medium);
 
             ui! {
-                View(style = Card().size(size)) {
-                    Text { "..." }
+                view(style = Card().size(size)) {
+                    text { "..." }
                 }
 
-                Button(label = "Grow", on_click = move || size.set(CardSize::Large))
+                button(label = "Grow", on_click = move || size.set(CardSize::Large))
             }
         "##),
 

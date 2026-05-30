@@ -52,8 +52,8 @@ pub fn SunGlare(props: &SunGlareProps) -> Element {
     let wrapper = wrapper_sheet();
     let anchor = anchor_sheet();
     ui! {
-        View(style = wrapper) {
-            View(style = anchor) {}.bind(refs.glare)
+        view(style = wrapper) {
+            view(style = anchor) {}.bind(refs.glare)
         }
     }
 }

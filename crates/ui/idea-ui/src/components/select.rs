@@ -118,11 +118,11 @@ pub fn Select(props: SelectProps) -> Element {
                 trigger_ref,
             )
         },
-        || ui! { View {} }.into_element(),
+        || ui! { view {} }.into_element(),
     );
 
     ui! {
-        View {
+        view {
             trigger
             menu
         }
@@ -172,7 +172,7 @@ fn menu_build(
     let menu_style = SelectMenu();
     runtime_core::anchored_overlay(
         AnchorTarget::from(trigger_ref),
-        vec![ui! { View(style = menu_style) { rows } }],
+        vec![ui! { view(style = menu_style) { rows } }],
     )
     .side(ElementSide::Below)
     .align(ElementAlign::Start)

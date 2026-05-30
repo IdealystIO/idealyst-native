@@ -77,9 +77,9 @@ fn one_tree() -> Element {
                    fn app() -> Element {\n    \
                        let count = signal!(0);\n    \
                        ui! {\n        \
-                           View {\n            \
-                               Text { format!(\"Taps: {}\", count.get()) }\n            \
-                               Button(\n                \
+                           view {\n            \
+                               text { format!(\"Taps: {}\", count.get()) }\n            \
+                               button(\n                \
                                    label = \"Tap\".to_string(),\n                \
                                    on_click = move || count.update(|n| *n += 1),\n            \
                                )\n        \
@@ -195,12 +195,12 @@ fn see_targets() -> Element {
             (what's working, in progress, or planned) lives on the Backends page.".to_string())
     };
     let targets_cta = ui! {
-        Link(route = &TARGETS_ROUTE, params = ()) {
+        link(route = &TARGETS_ROUTE, params = ()) {
             Typography(content = "Browse every target \u{2192}".to_string())
         }
     };
     let backends_cta = ui! {
-        Link(route = &BACKENDS_ROUTE, params = ()) {
+        link(route = &BACKENDS_ROUTE, params = ()) {
             Typography(content = "See the Backends matrix \u{2192}".to_string())
         }
     };

@@ -102,7 +102,7 @@ pub fn CardTabs(props: CardTabsProps) -> Element {
     ui! {
         Card {
             tabs_primitive
-            View(style = panel_style) {
+            view(style = panel_style) {
                 panel_primitive
             }
         }

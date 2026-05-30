@@ -384,7 +384,7 @@ fn where_next() -> Element {
                 model is the foundation everything here builds on.".to_string())
         },
         ui! {
-            Link(route = &CONCEPTS_ROUTE, params = ()) {
+            link(route = &CONCEPTS_ROUTE, params = ()) {
                 Typography(content = "Read \u{2192} Core concepts".to_string())
             }
         },

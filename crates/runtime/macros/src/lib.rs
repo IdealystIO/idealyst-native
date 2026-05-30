@@ -31,6 +31,7 @@ mod schema_emit;
 mod tool_emit;
 mod methods_block;
 mod path_analysis;
+mod primitives;
 mod reactivity;
 mod stylesheet;
 mod text_fmt;

@@ -410,7 +410,7 @@ fn app(count_sig: Signal<u64>) -> Element {
     let ss = stage_sheet();
     let bs = ball_sheet();
     ui! {
-        View(style = ss.clone()) {
+        view(style = ss.clone()) {
             match count_sig.get() {
                 _v => {
                     {
@@ -423,9 +423,9 @@ fn app(count_sig: Signal<u64>) -> Element {
                         let bs = bs.clone();
                         let children: Vec<Element> = refs
                             .iter()
-                            .map(|r| ui! { View(style = bs.clone()) {}.bind(*r) })
+                            .map(|r| ui! { view(style = bs.clone()) {}.bind(*r) })
                             .collect();
-                        ui! { View { { children } } }
+                        ui! { view { { children } } }
                     }
                 }
             }

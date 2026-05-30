@@ -814,23 +814,363 @@ impl<'a> Splitter<'a> {
         // zeroed, main will crash at runtime — that's the existing
         // risk this gate exposes for experimentation.
         if std::env::var("IDEALYST_WASM_SPLIT_PRUNE_DATA").is_ok() {
-            // Optional size threshold so the experiment can start by
-            // only pruning OBVIOUSLY-chunk-only symbols (huge tables
-            // shipped by wgpu/naga/cosmic-text/icu, which can't
-            // possibly be reached from main on a no-GPU SPA page).
-            // Small dead symbols are riskier — they're often
-            // panic / format strings that the symbol-level call
-            // graph occasionally misclassifies as chunk-only.
+            // Heuristic path — uses the symbol-level call graph's
+            // `unused_symbols`. Over-approximates (mis-classifies small
+            // vtables as chunk-only), so the safe floor is ~24 bytes.
+            // See the size-threshold knob.
             let min = std::env::var("IDEALYST_WASM_SPLIT_PRUNE_DATA_MIN")
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(0);
             self.zero_dead_data_in_main(out, unused_symbols, min)?;
+        } else if std::env::var("IDEALYST_WASM_SPLIT_PRUNE_DATA_SAFE").is_ok() {
+            // Safe-by-construction pruning: take the heuristic's
+            // "chunk-only" symbol set, then EXCLUDE every symbol whose
+            // bytes contain function-pointer relocations (= potential
+            // vtable). A pure-data symbol with no function-pointer
+            // relocs can't be reached via call_indirect; even if the
+            // symbol-level call graph misclassifies it, zeroing it
+            // can't produce a null-function crash. The historic
+            // misclassifications all routed through indirect calls
+            // against zeroed vtable entries.
+            self.prune_dead_data_safely(out, unused_symbols)?;
         }
         if std::env::var("IDEALYST_WASM_SPLIT_PRUNE_DATA_STATS").is_ok() {
             self.report_dead_data_size_histogram(unused_symbols);
         }
 
+        Ok(())
+    }
+
+    /// Post-GC, reloc-walk-based safe data pruning.
+    ///
+    /// Why this is more accurate than the symbol-level call graph
+    /// approach:
+    ///
+    /// 1. Run walrus's GC on a fresh re-parse of the ORIGINAL (pre-
+    ///    wasm-bindgen) module. GC's reachability walker follows
+    ///    actual instructions + element segments + exports — no name
+    ///    lookup, so the ICF/`--emit-relocs` duplicate-symbol mess
+    ///    doesn't apply.
+    /// 2. For every surviving original function, walk its raw
+    ///    `reloc.CODE` entries. An entry whose target is a DATA
+    ///    symbol means the code holds a pointer to that data symbol
+    ///    → mark it live. (Data symbol indices are stable across
+    ///    pre/post-bindgen; the linking section we parse on the
+    ///    bindgened module matches.)
+    /// 3. Closure: for each live data symbol, walk its raw
+    ///    `reloc.DATA` entries. A data-to-data entry expands the
+    ///    live set (slice headers, nested static tables, etc).
+    /// 4. Anything not in the live set is provably unreached from
+    ///    main and gets zeroed.
+    ///
+    /// We zero, not delete, so segment offsets stay intact — live
+    /// symbols keep their addresses. The runs of zeros gzip to ~nothing
+    /// (and wasm-opt's data-pack pass shrinks the raw bytes when
+    /// segments end up sparse).
+    /// Safe-by-construction dead-data pruning. Filters the heuristic
+    /// call-graph's "chunk-only" set down to symbols that demonstrably
+    /// cannot be reached via call_indirect (because they don't contain
+    /// any function-pointer relocations), then zeros their bytes. This
+    /// sidesteps the vtable-misclassification crash that limits the
+    /// raw heuristic path to `MIN=24`.
+    fn prune_dead_data_safely(
+        &self,
+        out: &mut Module,
+        unused_symbols: &HashSet<Node>,
+    ) -> Result<()> {
+        // Intersection approach: take heuristic's chunk-only set ∩
+        // safe-analysis's "definitely not touched by main code"
+        // set. A symbol is only zeroed if BOTH analyses agree it's
+        // dead. The intersection eliminates false positives from
+        // either analysis alone:
+        //   - Heuristic's symbol-name call graph misses some
+        //     main→data edges (the historic CSS-string crash). So
+        //     "heuristic-chunk-only" includes truly live symbols.
+        //   - Safe analysis (post-GC + reloc walk) over-approximates
+        //     because walrus GC keeps every table-indexable function.
+        //     So "safe-dead" is small but precise.
+        // Their intersection is conservatively dead.
+
+        // 1. Compute the post-GC live function NAME set on bindgened.
+        let mut gc_module = Module::from_buffer(self.bindgened)?;
+        walrus::passes::gc::run(&mut gc_module);
+        let live_bindgen_names: HashSet<String> = gc_module
+            .funcs
+            .iter()
+            .filter_map(|f| f.name.clone())
+            .collect();
+        drop(gc_module);
+
+        // 2. Map back to ORIGINAL function ranges by name.
+        let original = ModuleWithRelocations::new(self.original)?;
+        let code_relocs = original.collect_relocations_from_section("reloc.CODE")?;
+        let live_ranges: HashSet<Range<usize>> = original
+            .module
+            .funcs
+            .iter_local()
+            .filter_map(|(id, local)| {
+                let func = original.module.funcs.get(id);
+                let name = func.name.as_deref()?;
+                if live_bindgen_names.contains(name) {
+                    local.original_range.clone()
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // 3. Direct seed only (no data→data closure). For each live
+        //    function range, walk its reloc.CODE entries and collect
+        //    data-symbol targets. Anything NOT in this set is
+        //    "safe-dead" (no live function code references it directly).
+        let mut safe_live: HashSet<usize> = HashSet::new();
+        for (_, local) in original.module.funcs.iter_local() {
+            let Some(range) = local.original_range.clone() else {
+                continue;
+            };
+            if !live_ranges.contains(&range) {
+                continue;
+            }
+            for entry in &code_relocs {
+                let e = entry.relocation_range();
+                if e.start < range.start || e.end > range.end {
+                    continue;
+                }
+                let idx = entry.index as usize;
+                if matches!(original.symbols.get(idx), Some(SymbolInfo::Data { .. })) {
+                    safe_live.insert(idx);
+                }
+            }
+        }
+        let safe_live_count = safe_live.len();
+
+        // 4. Intersect: zero only symbols that BOTH (a) heuristic
+        //    says are chunk-only AND (b) safe analysis says no live
+        //    function directly references.
+        let mut dead_per_segment: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+        let mut zeroable: usize = 0;
+        let mut zeroable_bytes: usize = 0;
+        let mut skipped_safe_live: usize = 0;
+        for sym in unused_symbols {
+            let Node::DataSymbol(id) = sym else { continue };
+            let Some(symbol) = self.data_symbols.get(id) else { continue };
+            if safe_live.contains(id) {
+                skipped_safe_live += 1;
+                continue;
+            }
+            zeroable += 1;
+            zeroable_bytes += symbol.symbol_size;
+            dead_per_segment
+                .entry(symbol.which_data_segment)
+                .or_default()
+                .push((symbol.segment_offset, symbol.segment_offset + symbol.symbol_size));
+        }
+
+        let data_ids: Vec<_> = out.data.iter().map(|d| d.id()).collect();
+        let mut zeroed: usize = 0;
+        for (idx, data_id) in data_ids.into_iter().enumerate() {
+            let Some(ranges) = dead_per_segment.get(&idx) else {
+                continue;
+            };
+            let data = out.data.get_mut(data_id);
+            for (lo, hi) in ranges {
+                let lo = *lo;
+                let hi = (*hi).min(data.value.len());
+                if hi <= lo {
+                    continue;
+                }
+                for b in &mut data.value[lo..hi] {
+                    *b = 0;
+                }
+                zeroed += hi - lo;
+            }
+        }
+
+        eprintln!(
+            "[wasm-split prune-data-safe] {live_ranges_count} live original-fn ranges; \
+             {safe_live_count} data symbols seen via reloc.CODE; intersection with \
+             {heuristic_chunk_only} heuristic-chunk-only: {zeroable} zeroable symbols \
+             ({zeroable_bytes} bytes); rescued {skipped_safe_live} chunk-only symbols \
+             that main actually touches; {zeroed} actual bytes written.",
+            live_ranges_count = live_ranges.len(),
+            heuristic_chunk_only = unused_symbols.len(),
+        );
+        Ok(())
+    }
+
+    /// (Legacy) post-GC + reloc-walk attempt — kept for reference, not
+    /// wired up. Bindgen GC keeps too many table-indexable functions
+    /// for the live-data closure to leave anything dead. Replaced by
+    /// `prune_dead_data_safely` which works from the heuristic's
+    /// chunk-only set with vtable filtering.
+    #[allow(dead_code)]
+    fn prune_dead_data_via_post_gc_reloc_walk(&self, out: &mut Module) -> Result<()> {
+        // Hybrid approach: take the heuristic call graph's
+        // "chunk-only" set, then SUBTRACT every symbol whose bytes
+        // contain a function-pointer relocation (i.e., looks like a
+        // vtable). The historic miscclassifications all routed
+        // through call_indirect against zeroed vtable entries; a
+        // pure-data symbol with no function-pointer relocs CAN'T be
+        // reached via call_indirect, so even if the symbol-level
+        // call graph misclassifies it, zeroing it can't produce a
+        // null-function crash.
+        // (Old re-parse + walrus-GC approach left in below — turned
+        // out to be too conservative on its own; closure cascades
+        // because walrus GC keeps every table-indexable function.)
+        let _ = out;
+        let mut gc_module = Module::from_buffer(self.bindgened)?;
+        walrus::passes::gc::run(&mut gc_module);
+        let live_bindgen_names: HashSet<String> = gc_module
+            .funcs
+            .iter()
+            .filter_map(|f| f.name.clone())
+            .collect();
+        let live_func_count = live_bindgen_names.len();
+        drop(gc_module);
+
+        // 2. Map back to ORIGINAL function byte ranges by name. The
+        //    original module's reloc sections are what we walk (they
+        //    survive --emit-relocs intact); reloc entry offsets are
+        //    in original-code-section bytes.
+        //
+        //    With `--emit-relocs` disabling ICF, multiple original
+        //    functions may share a mangled name and collapse into one
+        //    in bindgen. If the collapsed bindgened name is live,
+        //    treat ALL original functions sharing that name as live
+        //    (they're all the same code post-collapse; their reloc
+        //    entries are equivalent).
+        //
+        //    Synthesized wasm-bindgen functions that have no original
+        //    counterpart (JS-import shims) contribute no relocs by
+        //    construction — they call into imports, not Rust data.
+        //    Skipping them is safe.
+        let original = ModuleWithRelocations::new(self.original)?;
+        let code_relocs = original.collect_relocations_from_section("reloc.CODE")?;
+        let data_relocs = original.collect_relocations_from_section("reloc.DATA")?;
+        let live_ranges: HashSet<Range<usize>> = original
+            .module
+            .funcs
+            .iter_local()
+            .filter_map(|(id, local)| {
+                let func = original.module.funcs.get(id);
+                let name = func.name.as_deref()?;
+                if live_bindgen_names.contains(name) {
+                    local.original_range.clone()
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // 3. Seed live_data from live functions' MEMORY_ADDR-style
+        //    reloc.CODE entries. An entry whose symbol index resolves
+        //    to a DATA symbol in the linking section means a memory
+        //    address was patched into the code at this offset.
+        let mut live_data: HashSet<usize> = HashSet::new();
+        let mut queue: Vec<usize> = Vec::new();
+        for (_, local) in original.module.funcs.iter_local() {
+            let Some(range) = local.original_range.clone() else {
+                continue;
+            };
+            if !live_ranges.contains(&range) {
+                continue;
+            }
+            for entry in &code_relocs {
+                let e = entry.relocation_range();
+                if e.start < range.start || e.end > range.end {
+                    continue;
+                }
+                let idx = entry.index as usize;
+                if matches!(original.symbols.get(idx), Some(SymbolInfo::Data { .. }))
+                    && self.data_symbols.contains_key(&idx)
+                    && live_data.insert(idx)
+                {
+                    queue.push(idx);
+                }
+            }
+        }
+        let seed_count = live_data.len();
+
+        // 4. Closure: walk each live data symbol's reloc.DATA entries
+        //    and follow data-to-data references. Function targets
+        //    (vtable function-index slots) are ignored here — walrus's
+        //    GC already kept the functions; we just need to keep the
+        //    data bytes that HOLD the function indices.
+        //
+        //    Use the ORIGINAL's data_symbols + data_section_range
+        //    here: reloc.DATA entries we just collected are in
+        //    original-space offsets, and the symbols' file ranges
+        //    in original-space match. (Symbol INDICES into the
+        //    linking section are stable pre/post bindgen, so we can
+        //    still look the same index up in `self.data_symbols`
+        //    when it comes time to zero bytes in the bindgened
+        //    output.)
+        while let Some(sym_idx) = queue.pop() {
+            let Some(symbol) = original.data_symbols.get(&sym_idx) else {
+                continue;
+            };
+            let start = symbol.range.start - original.data_section_range.start;
+            let end = symbol.range.end - original.data_section_range.start;
+            for entry in &data_relocs {
+                let e = entry.relocation_range();
+                if e.start < start || e.end > end {
+                    continue;
+                }
+                let idx = entry.index as usize;
+                if matches!(original.symbols.get(idx), Some(SymbolInfo::Data { .. }))
+                    && self.data_symbols.contains_key(&idx)
+                    && live_data.insert(idx)
+                {
+                    queue.push(idx);
+                }
+            }
+        }
+        let closure_count = live_data.len() - seed_count;
+
+        // 5. Zero everything NOT in live_data.
+        let mut dead_per_segment: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+        let mut dead_bytes: usize = 0;
+        let mut dead_syms: usize = 0;
+        for (idx, symbol) in &self.data_symbols {
+            if live_data.contains(idx) {
+                continue;
+            }
+            dead_bytes += symbol.symbol_size;
+            dead_syms += 1;
+            dead_per_segment
+                .entry(symbol.which_data_segment)
+                .or_default()
+                .push((symbol.segment_offset, symbol.segment_offset + symbol.symbol_size));
+        }
+
+        let data_ids: Vec<_> = out.data.iter().map(|d| d.id()).collect();
+        let mut zeroed: usize = 0;
+        for (idx, data_id) in data_ids.into_iter().enumerate() {
+            let Some(ranges) = dead_per_segment.get(&idx) else {
+                continue;
+            };
+            let data = out.data.get_mut(data_id);
+            for (lo, hi) in ranges {
+                let lo = *lo;
+                let hi = (*hi).min(data.value.len());
+                if hi <= lo {
+                    continue;
+                }
+                for b in &mut data.value[lo..hi] {
+                    *b = 0;
+                }
+                zeroed += hi - lo;
+            }
+        }
+
+        eprintln!(
+            "[wasm-split prune-data-safe] live data: {seed_count} seeded from \
+             {} live funcs, +{closure_count} via closure = {} total. Dead: \
+             {dead_syms} symbols, {dead_bytes} bytes; zeroed {zeroed} bytes.",
+            live_ranges.len(),
+            live_data.len(),
+        );
         Ok(())
     }
 

@@ -39,11 +39,11 @@ pub fn Vignette(props: &VignetteProps) -> Element {
     let left = band_sheet(Edge::Left);
     let right = band_sheet(Edge::Right);
     ui! {
-        View(style = wrapper) {
-            View(style = top) {}.bind(refs.vignette_top)
-            View(style = bottom) {}.bind(refs.vignette_bottom)
-            View(style = left) {}.bind(refs.vignette_left)
-            View(style = right) {}.bind(refs.vignette_right)
+        view(style = wrapper) {
+            view(style = top) {}.bind(refs.vignette_top)
+            view(style = bottom) {}.bind(refs.vignette_bottom)
+            view(style = left) {}.bind(refs.vignette_left)
+            view(style = right) {}.bind(refs.vignette_right)
         }.bind(refs.vignette)
     }
 }

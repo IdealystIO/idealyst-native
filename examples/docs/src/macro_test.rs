@@ -146,13 +146,13 @@ fn paragraph_with_mixed_spans() {
     let block = &signals.blocks[0];
     if let BlockMeta::Paragraph(spans) = block {
         assert_eq!(spans.len(), 7);
-        assert!(matches!(spans[0], Span::Text(t) if t.contains("Make a signal")));
+        assert!(matches!(spans[0], Span::text(t) if t.contains("Make a signal")));
         assert!(matches!(spans[1], Span::Code("signal!(initial)")));
-        assert!(matches!(spans[2], Span::Text(_)));
+        assert!(matches!(spans[2], Span::text(_)));
         assert!(matches!(spans[3], Span::Code(".get()")));
-        assert!(matches!(spans[4], Span::Text(_)));
+        assert!(matches!(spans[4], Span::text(_)));
         assert!(matches!(spans[5], Span::Code(".set(v)")));
-        assert!(matches!(spans[6], Span::Text(_)));
+        assert!(matches!(spans[6], Span::text(_)));
     } else {
         panic!("expected paragraph, got {:?}", block);
     }

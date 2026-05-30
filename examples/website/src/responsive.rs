@@ -68,7 +68,7 @@ pub fn responsive_variant() -> &'static str {
 ///
 /// ```ignore
 /// let hero_style = responsive_style(Hero::sheet());
-/// ui! { View(style = hero_style) { /* … */ } }
+/// ui! { view(style = hero_style) { /* … */ } }
 /// ```
 pub fn responsive_style(
     sheet: Rc<StyleSheet>,

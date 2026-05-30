@@ -102,7 +102,7 @@ fn reactivity() -> Element {
                    \n\
                    // `text_fmt!` builds a reactive text source. `bind!(signal)`\n\
                    // marks the args the framework subscribes to:\n\
-                   ui! { Text { text_fmt!(\"Count: {}\", bind!(count)) } }\n\
+                   ui! { text { text_fmt!(\"Count: {}\", bind!(count)) } }\n\
                    \n\
                    // Update fires every subscribed dependent and nothing else:\n\
                    count.update(|n| *n += 1);";
@@ -128,9 +128,9 @@ fn reactivity() -> Element {
 fn ui_macro() -> Element {
     let snippet = "// `ui!` is sugar over plain function calls.\n\
                    ui! {\n    \
-                       View(style = card) {\n        \
-                           Text { \"Hello\" }\n        \
-                           Button(label = \"OK\", on_click = on_ok)\n    \
+                       view(style = card) {\n        \
+                           text { \"Hello\" }\n        \
+                           button(label = \"OK\", on_click = on_ok)\n    \
                        }\n\
                    }\n\
                    \n\
@@ -253,7 +253,7 @@ fn building_your_own() -> Element {
                                  let style = button_style().intent(props.intent);\n    \
                                  ui! {\n        \
                                      Pressable(on_click = move || (on_click)()) {\n            \
-                                         Text(style = style) { label }\n        \
+                                         text(style = style) { label }\n        \
                                      }\n    \
                                  }\n\
                              }";
@@ -339,7 +339,7 @@ fn where_next() -> Element {
             written in Rust rather than TypeScript or Kotlin \u{2014} read the Why Rust page.".to_string())
     };
     let cta_a = ui! {
-        Link(route = &WHY_RUST_ROUTE, params = ()) {
+        link(route = &WHY_RUST_ROUTE, params = ()) {
             Typography(content = "Why Rust \u{2192}".to_string())
         }
     };
@@ -348,7 +348,7 @@ fn where_next() -> Element {
             primitives are wired on which backends \u{2014} the Backends page has the matrix.".to_string())
     };
     let cta_b = ui! {
-        Link(route = &BACKENDS_ROUTE, params = ()) {
+        link(route = &BACKENDS_ROUTE, params = ()) {
             Typography(content = "Backends \u{2192}".to_string())
         }
     };

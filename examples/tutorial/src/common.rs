@@ -164,7 +164,7 @@ pub fn CodePanel(props: &CodePanelProps) -> Element {
             .with_style(code_style)
             .into_element()
     });
-    ui! { View(style = panel_style) { dynamic } }
+    ui! { view(style = panel_style) { dynamic } }
 }
 
 // =============================================================================
@@ -188,7 +188,7 @@ pub fn Callout(props: CalloutProps) -> Element {
     // beside the label. Wrapping it as `{ children }` would instead be
     // consumed as the preceding component's child block.
     ui! {
-        View(style = style) {
+        view(style = style) {
             Typography(content = label, kind = idea_ui::typography_kind::Overline)
             children
         }
@@ -214,9 +214,9 @@ pub fn DocsLink(props: &DocsLinkProps) -> Element {
     let link_text = format!("{} \u{2197}", props.link_label);
     let summary = props.summary.clone();
     ui! {
-        View(style = style) {
+        view(style = style) {
             Typography(content = summary, muted = true)
-            Link(external = url) { Text(style = link_style) { link_text } }
+            link(external = url) { text(style = link_style) { link_text } }
         }
     }
 }
@@ -233,8 +233,8 @@ pub struct StepNavProps {
 fn step_link(route: &'static Route<()>, label: String) -> Element {
     let style = move || StyleApplication::new(StepNavLink::sheet());
     ui! {
-        Link(route = route, params = ()) {
-            Text(style = style) { label }
+        link(route = route, params = ()) {
+            text(style = style) { label }
         }
     }
 }
@@ -252,7 +252,7 @@ pub fn StepNav(props: &StepNavProps) -> Element {
         None => runtime_core::view(Vec::<Element>::new()).into_element(),
     };
     ui! {
-        View(style = row) {
+        view(style = row) {
             prev_el
             next_el
         }
@@ -281,7 +281,7 @@ pub fn LessonPage(props: LessonPageProps) -> Element {
     let current = props.current;
     let children = props.children;
     ui! {
-        View(style = pad) {
+        view(style = pad) {
             Stack(gap = StackGap::Sm) {
                 Typography(content = title, kind = idea_ui::typography_kind::H1)
                 Typography(content = lead, kind = idea_ui::typography_kind::BodyLg, muted = true)

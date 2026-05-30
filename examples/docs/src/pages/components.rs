@@ -35,9 +35,9 @@ docs! {
                 let count = signal!(props.initial);
 
                 ui! {
-                    View {
-                        Text { format!("Count: {}", count.get()) }
-                        Button(
+                    view {
+                        text { format!("Count: {}", count.get()) }
+                        button(
                             label = "Increment",
                             on_click = move || count.update(|n| *n += 1),
                         )
@@ -176,8 +176,8 @@ docs! {
                 }
 
                 ui! {
-                    View {
-                        Text { format!("Count: {}", value.get()) }
+                    view {
+                        text { format!("Count: {}", value.get()) }
                     }
                 }
             }
@@ -200,7 +200,7 @@ docs! {
                 ui! {
                     counter(initial = 0).bind(handle)
 
-                    Button(
+                    button(
                         label = "Reset",
                         on_click = move || { handle.with(|h| h.reset()); },
                     )
@@ -232,18 +232,18 @@ docs! {
     section(heading = "ui!") {
         code(rust, r##"
             ui! {
-                View(style = card_style()) {
-                    Text { "Hello" }
-                    Button(label = "Click me", on_click = move || println!("click"))
+                view(style = card_style()) {
+                    text { "Hello" }
+                    button(label = "Click me", on_click = move || println!("click"))
 
                     if logged_in.get() {
-                        Text { "Welcome back!" }
+                        text { "Welcome back!" }
                     } else {
-                        Text { "Please log in." }
+                        text { "Please log in." }
                     }
 
                     for item in items.iter() {
-                        Text { item.name.clone() }
+                        text { item.name.clone() }
                     }
                 }
             }
@@ -276,7 +276,7 @@ docs! {
         p("The mechanical differences are minor:"),
         list(
             [code("ui!"), ": parens for props, braces for children. ",
-             code("style = expr"), ", ", code("Text { \"hi\" }"), ", ",
+             code("style = expr"), ", ", code("text { \"hi\" }"), ", ",
              code("Card(kind = Outlined) { Counter() }"), "."],
             [code("jsx!"), ": angle brackets. String attrs are bare (",
              code("label=\"x\""), "), expression attrs are braced (",
@@ -304,9 +304,9 @@ docs! {
                 let count = signal!(props.initial);
 
                 ui! {
-                    View {
-                        Text { format!("Count: {}", count.get()) }
-                        Button(
+                    view {
+                        text { format!("Count: {}", count.get()) }
+                        button(
                             label = "Increment",
                             on_click = move || count.update(|n| *n += 1),
                         )
@@ -362,18 +362,18 @@ docs! {
     section(heading = "The pieces being emitted") {
         p("Looking at the no-macro form, you can see what ", code("ui!"), " does:"),
         list(
-            [code("View { ... }"), " → ", code("view(vec![...])"), ". The ",
+            [code("view { ... }"), " → ", code("view(vec![...])"), ". The ",
              code("view"), " constructor takes a ", code("Vec<Element>"),
              ". The primitive constructors (", code("text"), ", ", code("button"),
              ", etc.) return ", code("Bound<H>"),
              " handles, so each child is coerced to a ", code("Element"), " via ",
              code(".into_element()"), " before joining the vec."],
-            [code("Text { format!(\"...\", count.get()) }"),
+            [code("text { format!(\"...\", count.get()) }"),
              " → because the expression contains ", code(".get()"),
              ", the macro emits a reactive text: ", code("text(move || format!(...))"),
-             ". A static ", code("Text { \"hi\" }"), " emits the non-reactive form: ",
+             ". A static ", code("text { \"hi\" }"), " emits the non-reactive form: ",
              code("text(\"hi\")"), "."],
-            [code("Button(label = \"...\", on_click = ...)"), " → ",
+            [code("button(label = \"...\", on_click = ...)"), " → ",
              code("button(label, on_click)"),
              ". Both arguments go through the framework's coercion traits (",
              code("IntoTextSource"), ", ", code("IntoAction"), ")."],
@@ -389,9 +389,9 @@ docs! {
         code(rust, r##"
             ui! {
                 if count.get() > 0 {
-                    Text { "positive" }
+                    text { "positive" }
                 } else {
-                    Text { "zero or negative" }
+                    text { "zero or negative" }
                 }
             }
         "##),
@@ -416,7 +416,7 @@ docs! {
         code(rust, r##"
             ui! {
                 for item in items {
-                    Text { item.name.clone() }
+                    text { item.name.clone() }
                 }
             }
         "##),
@@ -470,9 +470,9 @@ docs! {
                 }
 
                 ui! {
-                    View {
-                        Text { format!("Count: {}", value.get()) }
-                        Button(label = "++", on_click = move || value.update(|n| *n += 1))
+                    view {
+                        text { format!("Count: {}", value.get()) }
+                        button(label = "++", on_click = move || value.update(|n| *n += 1))
                     }
                 }
             }
@@ -500,7 +500,7 @@ docs! {
             let handle = Ref::<CounterHandle>::new();
             ui! {
                 counter().bind(handle)
-                Button(label = "Reset", on_click = move || { handle.with(|h| h.reset()); })
+                button(label = "Reset", on_click = move || { handle.with(|h| h.reset()); })
             }
         "##),
 

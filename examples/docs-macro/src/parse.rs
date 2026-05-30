@@ -50,9 +50,9 @@ pub enum Block {
 
 #[derive(Clone)]
 pub enum Span_ {
-    Text(LitStr),
+    text(LitStr),
     Code(LitStr),
-    Link { text: LitStr, target: LitStr },
+    link { text: LitStr, target: LitStr },
 }
 
 pub struct Compare {
@@ -410,7 +410,7 @@ fn parse_span(input: ParseStream) -> Result<Span_> {
     // span (`code(...)` or `link(...)`).
     if input.peek(LitStr) {
         let s: LitStr = input.parse()?;
-        return Ok(Span_::Text(s));
+        return Ok(Span_::text(s));
     }
 
     let kw: Ident = input.parse()?;
@@ -434,7 +434,7 @@ fn parse_span(input: ParseStream) -> Result<Span_> {
             }
             args.parse::<Token![=]>()?;
             let target: LitStr = args.parse()?;
-            Ok(Span_::Link { text, target })
+            Ok(Span_::link { text, target })
         }
         other => Err(syn::Error::new(
             kw.span(),

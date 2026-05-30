@@ -19,8 +19,8 @@ pub fn app() -> Element {
     ui! {
         Stack(padding = StackPadding::Lg, gap = StackGap::Md) {
             Title(label = "Hello, fiddle!".to_string())
-            Text { text_fmt!("Tapped {} times", bind!(count)) }
-            Button(
+            text { text_fmt!("Tapped {} times", bind!(count)) }
+            button(
                 label = "Tap me",
                 on_click = move || count.set(count.get() + 1),
             )

@@ -131,8 +131,8 @@ fn edit_and_reload() -> Element {
                    pub fn app() -> Element {\n    \
                        let count = signal!(0);\n    \
                        ui! {\n        \
-                           Text { text_fmt!(\"Count: {}\", bind!(count)) }\n        \
-                           Button(\n            \
+                           text { text_fmt!(\"Count: {}\", bind!(count)) }\n        \
+                           button(\n            \
                                label = \"Increment\",\n            \
                                on_click = move || count.update(|n| *n += 1),\n        \
                            )\n    \
@@ -160,7 +160,7 @@ fn next() -> Element {
             works, the Core concepts page is the next step.".to_string())
     };
     let cta = ui! {
-        Link(route = &CONCEPTS_ROUTE, params = ()) {
+        link(route = &CONCEPTS_ROUTE, params = ()) {
             Typography(content = "Read Core concepts \u{2192}".to_string())
         }
     };

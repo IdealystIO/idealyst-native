@@ -155,7 +155,7 @@ fn next_steps() -> Element {
             run it on all three platforms in a few commands.".to_string())
     };
     let cta = ui! {
-        Link(route = &QUICKSTART_ROUTE, params = ()) {
+        link(route = &QUICKSTART_ROUTE, params = ()) {
             Typography(content = "Go to the Quickstart \u{2192}".to_string())
         }
     };

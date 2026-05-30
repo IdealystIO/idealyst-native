@@ -89,9 +89,9 @@ fn macro_syntax() -> Element {
     let example = "use runtime_core::{lazy, ui};\n\
                    \n\
                    ui! {\n    \
-                       Text { \"always loaded\" }\n    \
+                       text { \"always loaded\" }\n    \
                        { lazy! {\n        \
-                           Text { \"loaded on demand from a separate chunk\" }\n    \
+                           text { \"loaded on demand from a separate chunk\" }\n    \
                        } }\n\
                    }";
     section(
@@ -111,7 +111,7 @@ fn macro_syntax() -> Element {
 
 fn expansion() -> Element {
     let example = "// What you write:\n\
-                   lazy! { Text { \"loaded on demand\" } }\n\
+                   lazy! { text { \"loaded on demand\" } }\n\
                    \n\
                    // What the macro expands to (roughly):\n\
                    {\n    \
@@ -122,7 +122,7 @@ fn expansion() -> Element {
                        #[::runtime_core::__wasm_split::wasm_split(__idealyst_lazy_<hash>)]\n    \
                        async fn __idealyst_lazy_body_<hash>(_: ()) -> Element {\n        \
                            use ::runtime_core::IntoElement as _;\n        \
-                           { ui! { Text { \"loaded on demand\" } } }.into_element()\n    \
+                           { ui! { text { \"loaded on demand\" } } }.into_element()\n    \
                        }\n    \
                        ::runtime_core::primitives::lazy::lazy_split(|| {\n        \
                            Box::pin(__idealyst_lazy_body_<hash>(()))\n    \
@@ -148,8 +148,8 @@ fn expansion() -> Element {
 }
 
 fn placeholder_and_lifecycle() -> Element {
-    let example = "lazy! { Text { \"heavy subtree\" } }\n    \
-                       .placeholder(|| ui! { Text { \"loading\u{2026}\" } })\n    \
+    let example = "lazy! { text { \"heavy subtree\" } }\n    \
+                       .placeholder(|| ui! { text { \"loading\u{2026}\" } })\n    \
                        .on_state(|state| match state {\n        \
                            LazyState::Loading => log::debug!(\"chunk fetch in flight\"),\n        \
                            LazyState::Loaded   => log::debug!(\"chunk fetched\"),\n        \

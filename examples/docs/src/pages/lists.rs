@@ -54,9 +54,9 @@ docs! {
 
             fn message_row(msg: &Message) -> Element {
                 ui! {
-                    View {
-                        Text { msg.author.clone() }
-                        Text { msg.body.clone() }
+                    view {
+                        text { msg.author.clone() }
+                        text { msg.body.clone() }
                     }
                 }
             }
@@ -253,7 +253,7 @@ docs! {
                         h.finish()
                     },
                     item_size = fixed_size(44.0),
-                    render_item = |_, s| ui! { Text { s.clone() } },
+                    render_item = |_, s| ui! { text { s.clone() } },
                 )
             }
         "##),
@@ -280,8 +280,8 @@ docs! {
                         let done = t.done;
                         ui! {
                             Pressable(on_click = move || done.update(|v| *v = !*v)) {
-                                Text { t.title.clone() }
-                                Text { if done.get() { "✔" } else { "" } }
+                                text { t.title.clone() }
+                                text { if done.get() { "✔" } else { "" } }
                             }
                         }
                     },

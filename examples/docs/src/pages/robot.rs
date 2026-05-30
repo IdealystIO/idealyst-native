@@ -63,7 +63,7 @@ docs! {
 
         code(rust, r##"
             ui! {
-                Button(
+                button(
                     label = "Submit",
                     on_click = move || submit(),
                     test_id = "submit-button",

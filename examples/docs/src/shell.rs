@@ -47,7 +47,7 @@ fn drawer_content(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> 
     ];
 
     let mut children: Vec<Element> = Vec::new();
-    children.push(ui! { View(style = header_style) { header_children } });
+    children.push(ui! { view(style = header_style) { header_children } });
 
     for s in SECTIONS {
         children.push(sidebar_section(s, active_route));
@@ -62,7 +62,7 @@ fn drawer_content(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> 
     // indicator — backends call `set_safe_area_insets(...)`; the
     // padding reactively tracks orientation changes and pin/unpin.
     ui! {
-        ScrollView(style = container_style) { children }
+        scroll_view(style = container_style) { children }
             .safe_area(SafeAreaSides::ALL)
     }
 }
@@ -76,13 +76,13 @@ fn sidebar_section(
     let label_text = s.label.to_string();
 
     let mut entries: Vec<Element> = Vec::with_capacity(s.items.len() + 1);
-    entries.push(ui! { Text(style = label_style) { label_text } });
+    entries.push(ui! { text(style = label_style) { label_text } });
     for entry in s.items {
         entries.push(nav_link(entry.name, entry.label, active_route));
     }
 
     ui! {
-        View(style = section_style) { entries }
+        view(style = section_style) { entries }
     }
 }
 
@@ -147,188 +147,188 @@ fn nav_link(
 
     match name {
         "introduction" => ui! {
-            Link(route = &INTRODUCTION_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &INTRODUCTION_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "overview" => ui! {
-            Link(route = &OVERVIEW_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &OVERVIEW_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "quickstart" => ui! {
-            Link(route = &QUICKSTART_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &QUICKSTART_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "components" => ui! {
-            Link(route = &COMPONENTS_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &COMPONENTS_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "reactivity" => ui! {
-            Link(route = &REACTIVITY_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &REACTIVITY_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "ui-dsl" => ui! {
-            Link(route = &UI_DSL_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &UI_DSL_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "primitives" => ui! {
-            Link(route = &PRIMITIVES_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &PRIMITIVES_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "styles" => ui! {
-            Link(route = &STYLES_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &STYLES_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "animation" => ui! {
-            Link(route = &ANIMATION_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &ANIMATION_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "navigation" => ui! {
-            Link(route = &NAVIGATION_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &NAVIGATION_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "macros" => ui! {
-            Link(route = &MACROS_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &MACROS_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "cli" => ui! {
-            Link(route = &CLI_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &CLI_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "platforms" => ui! {
-            Link(route = &PLATFORMS_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &PLATFORMS_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "simulator" => ui! {
-            Link(route = &SIMULATOR_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &SIMULATOR_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "lists" => ui! {
-            Link(route = &LISTS_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &LISTS_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "icons" => ui! {
-            Link(route = &ICONS_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &ICONS_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "refs" => ui! {
-            Link(route = &REFS_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &REFS_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "portal" => ui! {
-            Link(route = &PORTAL_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &PORTAL_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "robot" => ui! {
-            Link(route = &ROBOT_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &ROBOT_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "dev-tools" => ui! {
-            Link(route = &DEV_TOOLS_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &DEV_TOOLS_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "backends" => ui! {
-            Link(route = &BACKENDS_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &BACKENDS_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "writing-a-backend" => ui! {
-            Link(route = &WRITING_A_BACKEND_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &WRITING_A_BACKEND_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "third-party-primitives" => ui! {
-            Link(route = &THIRD_PARTY_PRIMITIVES_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &THIRD_PARTY_PRIMITIVES_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "building-a-theme-system" => ui! {
-            Link(route = &BUILDING_A_THEME_SYSTEM_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &BUILDING_A_THEME_SYSTEM_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "reactive-text-bindings" => ui! {
-            Link(route = &REACTIVE_TEXT_BINDINGS_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &REACTIVE_TEXT_BINDINGS_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
         "wgpu-native-api" => ui! {
-            Link(route = &WGPU_NATIVE_API_ROUTE, params = ()) {
-                View(style = box_style) {
-                    Text(style = text_style) { label_text }
+            link(route = &WGPU_NATIVE_API_ROUTE, params = ()) {
+                view(style = box_style) {
+                    text(style = text_style) { label_text }
                 }
             }
         },
-        _ => ui! { Text { label_text } },
+        _ => ui! { text { label_text } },
     }
 }
 
@@ -361,19 +361,19 @@ pub struct PageTypographyProps {
 }
 
 /// `PageBody { ... }` — the per-page surface every doc screen wraps
-/// its content in. Bakes in the recurring `ScrollView { Stack(gap,
+/// its content in. Bakes in the recurring `scroll_view { Stack(gap,
 /// padding) { ... } }` shape so every page lays out identically
 /// (gap = `Xl`, padding = `Lg`). Pages just drop their `PageHeader`
 /// / `Card` / `Section` children inside.
 ///
 /// Hardcoded by design — the docs site wants a single consistent
 /// page layout. If you need a one-off override, hand-roll the
-/// `ScrollView { Stack(...) { ... } }` instead.
+/// `scroll_view { Stack(...) { ... } }` instead.
 #[component]
 pub fn PageBody(props: PageTypographyProps) -> Element {
     let children = props.children;
     ui! {
-        ScrollView {
+        scroll_view {
             Stack(gap = StackGap::Xl, padding = StackPadding::Lg) {
                 children
             }
@@ -445,8 +445,8 @@ pub fn SectionWithCode(props: SectionWithCodeProps) -> Element {
         Card {
             Typography(content = title, kind = idea_ui::typography_kind::H2)
             Typography(content = body_text, muted = true)
-            View(style = code_style) {
-                Text(style = code_text_style) { code_text }
+            view(style = code_style) {
+                text(style = code_text_style) { code_text }
             }
         }
     }
@@ -466,8 +466,8 @@ pub fn CodeBlock(props: CodeBlockProps) -> Element {
     let code_style = CodeBlockSheet();
     let code_text_style = CodeBlockText();
     ui! {
-        View(style = code_style) {
-            Text(style = code_text_style) { code_text }
+        view(style = code_style) {
+            text(style = code_text_style) { code_text }
         }
     }
 }

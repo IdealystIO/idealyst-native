@@ -81,8 +81,8 @@ docs! {
         code(rust, r##"
             match user.network_state() {
                 NetworkState::Loading      => ui!{ Spinner() },
-                NetworkState::Success(u)   => ui!{ Text(u.name) },
-                NetworkState::Error(e)     => ui!{ Text(format!("{e}")) },
+                NetworkState::Success(u)   => ui!{ text(u.name) },
+                NetworkState::Error(e)     => ui!{ text(format!("{e}")) },
                 NetworkState::Idle         => unreachable!(),  // resource always starts Loading
             }
         "##),
@@ -126,7 +126,7 @@ docs! {
                 });
 
             ui! {
-                Button {
+                button {
                     on_click: { let log = log_event.clone();
                                 move || log.trigger("clicked_cta") },
                 }
@@ -171,7 +171,7 @@ docs! {
             );
 
             ui! {
-                Button {
+                button {
                     on_click: {
                         let create = create.clone();
                         move || create.trigger(CreateTodo { title: "buy milk".into() })
@@ -270,7 +270,7 @@ docs! {
         code(rust, r##"
             match create.status().get() {
                 AsyncStatus::Loading => ui!{ Spinner() },
-                AsyncStatus::Error(e) => ui!{ Text(format!("Couldn't save: {e}")) },
+                AsyncStatus::Error(e) => ui!{ text(format!("Couldn't save: {e}")) },
                 _ => ui!{ /* nothing — the list is up-to-date */ },
             }
         "##),

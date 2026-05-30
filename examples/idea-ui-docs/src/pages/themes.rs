@@ -53,7 +53,7 @@ fn intent_grid() -> Element {
     ui! {
         Card {
             Typography(content = "Built-in intents".to_string(), kind = idea_ui::typography_kind::H2)
-            Typography(content = "Each row pairs a Button (Solid) and a Badge (Soft) for the same \
+            Typography(content = "Each row pairs a button (Solid) and a Badge (Soft) for the same \
                               intent. The intent is shared vocabulary; the kind picks the visual.".to_string(),
                  muted = true)
             Stack(gap = StackGap::Sm) { rows }

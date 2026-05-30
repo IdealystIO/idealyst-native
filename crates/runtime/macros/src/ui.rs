@@ -184,30 +184,76 @@ fn parse_ui_node(input: ParseStream) -> syn::Result<UiNode> {
 /// the two shapes that mark a component invocation. We have to fork the
 /// stream to do the lookahead.
 ///
-/// Also requires the identifier to start with an uppercase ASCII letter
-/// (Rust type/component convention) — that's how we disambiguate
-/// `Foo(args)` (a component invocation with props) from `foo(args)`
-/// (a Rust function call that should be parsed as an expression). The
-/// `ui!` body uses this convention so a `#[method]`-backed reactive
-/// call like `count_label(count)` inside `Text { ... }` falls through
-/// to the expression parser instead of trying to parse `count` as a
-/// prop name.
+/// Treats two identifier shapes as component invocations:
+/// 1. **PascalCase** — any identifier starting with an uppercase ASCII
+///    letter (the user-component convention). `Foo(...)` and `Foo { ... }`
+///    are tag invocations.
+/// 2. **Lowercase framework primitives** — `view`, `text`, `button`,
+///    `text_input`, etc., recognized via `primitives::canonical_primitive`.
+///    To avoid breaking bare-fn-call sites like `icon(LIGHT_LOGO)` that
+///    pre-date the lowercase-tag convention, a lowercase primitive only
+///    counts as a tag invocation if its `(...)` is **empty** or its first
+///    token is `Ident =` (the prop-list shape). Otherwise it falls through
+///    to the expression parser as `runtime_core::icon(LIGHT_LOGO)`.
+///
+/// Everything else (lowercase non-primitive identifiers like
+/// `count_label(count)`) falls through to the expression parser, so an
+/// embedded reactive method call inside `text { ... }` doesn't get
+/// mis-parsed as a tag.
 fn next_is_component_invocation(input: ParseStream) -> bool {
     let fork = input.fork();
     let ident = match fork.parse::<Ident>() {
         Ok(i) => i,
         Err(_) => return false,
     };
-    if !ident
-        .to_string()
+    let name = ident.to_string();
+    let first_upper = name
         .chars()
         .next()
         .map(|c| c.is_ascii_uppercase())
-        .unwrap_or(false)
-    {
+        .unwrap_or(false);
+
+    if first_upper {
+        return fork.peek(syn::token::Paren) || fork.peek(syn::token::Brace);
+    }
+
+    // Lowercase: only treat as tag if it's a known primitive AND the call
+    // shape is unambiguously tag-like (empty parens, `{ children }`, or
+    // parens whose first token is `Ident =`).
+    if crate::primitives::canonical_primitive(&name).is_none() {
         return false;
     }
-    fork.peek(syn::token::Paren) || fork.peek(syn::token::Brace)
+    if fork.peek(syn::token::Brace) {
+        return true;
+    }
+    if !fork.peek(syn::token::Paren) {
+        return false;
+    }
+    // Look inside the parens for the prop-list shape. `step` lets us walk
+    // the cursor without committing the parent stream.
+    fork.step(|cursor| {
+        let (group_cursor, _span, _after) = cursor
+            .group(proc_macro2::Delimiter::Parenthesis)
+            .ok_or_else(|| cursor.error("expected `(`"))?;
+        // Empty `()` → no props → tag form.
+        if group_cursor.eof() {
+            return Ok((true, *cursor));
+        }
+        // First token is an identifier followed by `=` → prop-list shape.
+        let mut walk = group_cursor;
+        if let Some((tt, rest)) = walk.token_tree() {
+            if matches!(tt, proc_macro2::TokenTree::Ident(_)) {
+                walk = rest;
+                if let Some((tt2, _)) = walk.token_tree() {
+                    if matches!(tt2, proc_macro2::TokenTree::Punct(ref p) if p.as_char() == '=') {
+                        return Ok((true, *cursor));
+                    }
+                }
+            }
+        }
+        Ok((false, *cursor))
+    })
+    .unwrap_or(false)
 }
 
 fn parse_component(input: ParseStream) -> syn::Result<UiNode> {
@@ -629,27 +675,24 @@ fn emit_component(
     children: Option<&[UiNode]>,
     chain: &[TokenStream2],
 ) -> TokenStream2 {
-    // Dispatch on the PascalCase tag DIRECTLY — no `pascal_to_snake`
-    // transform. Framework primitives are a fixed, closed set matched by
-    // their PascalCase name; everything else is a user/library
-    // `#[component]`, dispatched to its real `Name!` macro via
-    // `emit_user` (real macro-name resolution → import-renames,
-    // qualified paths, and IDE nav all work).
+    // Framework primitives are a fixed set, canonicalized to snake_case
+    // (`view`, `text`, `text_input`, …) to match the `runtime_core::view(...)`
+    // builder fn names and React's lowercase-intrinsic convention. PascalCase
+    // call sites (`View(...)`) are still accepted during the migration window;
+    // see `primitives::canonical_primitive`. Everything else is a user/library
+    // `#[component]`, dispatched to its real `Name!` macro via `emit_user`
+    // (real macro-name resolution → import-renames, qualified paths, and IDE
+    // nav all work).
     //
     // For primitives, two props attach as method calls rather than
     // constructor args: `style = …` → `.with_style(…)`, and
-    // `disabled = …` → `.disabled(…)` (Button only). `Pressable` is
+    // `disabled = …` → `.disabled(…)` (button only). `Pressable` is
     // deliberately omitted: that tag is owned by idea-ui's styled
     // component; bare-primitive users call `runtime_core::pressable(...)`.
     let name_str = name.to_string();
-    let is_primitive = matches!(
-        name_str.as_str(),
-        "Text" | "Button" | "View" | "When"
-        | "Image" | "Icon" | "TextInput" | "Toggle" | "ScrollView"
-        | "Slider" | "WebView" | "ActivityIndicator"
-        | "FlatList" | "Link" | "Overlay" | "AnchoredOverlay" | "Presence"
-    );
-    let supports_disabled = name_str.as_str() == "Button";
+    let canonical = crate::primitives::canonical_primitive(&name_str);
+    let is_primitive = canonical.is_some();
+    let supports_disabled = canonical == Some("button");
 
     let (style_prop, disabled_prop, other_props): (Vec<&Prop>, Vec<&Prop>, Vec<&Prop>) = if is_primitive {
         let mut style = None;
@@ -682,26 +725,26 @@ fn emit_component(
         })
         .collect();
 
-    let inner = match name_str.as_str() {
-        "Text" => emit_text(&other_props, children),
-        "Button" => emit_button(&other_props, children),
-        "View" => emit_view(&other_props, children),
-        "When" => emit_when(&other_props, children),
-        "Icon" => emit_icon(&other_props, children),
-        "Image" => emit_image(&other_props, children),
-        "TextInput" => emit_text_input(&other_props, children),
-        "Toggle" => emit_toggle(&other_props, children),
-        "ScrollView" => emit_scroll_view(&other_props, children),
-        "Slider" => emit_slider(&other_props, children),
-        "ActivityIndicator" => emit_activity_indicator(&other_props, children),
-        "FlatList" => emit_flat_list(&other_props, children),
-        "Graphics" => emit_graphics(&other_props, children),
-        "Link" => emit_link(&other_props, children),
-        "Overlay" => emit_overlay(&other_props, children),
-        "AnchoredOverlay" => emit_anchored_overlay(&other_props, children),
-        "Presence" => emit_presence(&other_props, children),
-        "DrawerNavigator" => emit_drawer_navigator(&other_props, children),
-        "CardTabs" => emit_card_tabs(&other_props, children),
+    let inner = match (canonical, name_str.as_str()) {
+        (Some("text"), _) => emit_text(&other_props, children),
+        (Some("button"), _) => emit_button(&other_props, children),
+        (Some("view"), _) => emit_view(&other_props, children),
+        (Some("when"), _) => emit_when(&other_props, children),
+        (Some("icon"), _) => emit_icon(&other_props, children),
+        (Some("image"), _) => emit_image(&other_props, children),
+        (Some("text_input"), _) => emit_text_input(&other_props, children),
+        (Some("toggle"), _) => emit_toggle(&other_props, children),
+        (Some("scroll_view"), _) => emit_scroll_view(&other_props, children),
+        (Some("slider"), _) => emit_slider(&other_props, children),
+        (Some("activity_indicator"), _) => emit_activity_indicator(&other_props, children),
+        (Some("flat_list"), _) => emit_flat_list(&other_props, children),
+        (Some("graphics"), _) => emit_graphics(&other_props, children),
+        (Some("link"), _) => emit_link(&other_props, children),
+        (Some("overlay"), _) => emit_overlay(&other_props, children),
+        (Some("anchored_overlay"), _) => emit_anchored_overlay(&other_props, children),
+        (Some("presence"), _) => emit_presence(&other_props, children),
+        (_, "DrawerNavigator") => emit_drawer_navigator(&other_props, children),
+        (_, "CardTabs") => emit_card_tabs(&other_props, children),
         _ => emit_user(name, props, children),
     };
 

@@ -106,7 +106,7 @@ stylesheet! {
             flex_direction: FlexDirection::Column,
             // Fill the rest of the row beside the sidebar; the
             // explicit `height: 100%` ensures the surrounding
-            // ScrollView (in `web_layout`) has a constrained
+            // scroll_view (in `web_layout`) has a constrained
             // height for its overflow-y: auto to engage. The old
             // `max_width: 920` made Content only 920px wide and
             // left the rest of the viewport blank; if you want
@@ -123,7 +123,7 @@ stylesheet! {
 // container). Box concerns (padding, background, border-radius)
 // belong to a wrapping View; glyph concerns (font, color) belong to
 // the inner Text. The author tree is:
-//   Link { View(style = NavLinkBox()) { Text(style = NavLinkText()) { label } } }
+//   link { view(style = NavLinkBox()) { text(style = NavLinkText()) { label } } }
 stylesheet! {
     pub NavLinkBox<IdeaThemeRef> {
         base(_t) {

@@ -211,10 +211,10 @@ fn emit_demo_meta(d: &Demo) -> TokenStream2 {
 
 fn emit_span_meta(span: &Span_) -> TokenStream2 {
     match span {
-        Span_::Text(s) => quote! { crate::meta::Span::Text(#s) },
+        Span_::text(s) => quote! { crate::meta::Span::text(#s) },
         Span_::Code(s) => quote! { crate::meta::Span::Code(#s) },
-        Span_::Link { text, target } => quote! {
-            crate::meta::Span::Link { text: #text, target: #target }
+        Span_::link { text, target } => quote! {
+            crate::meta::Span::link { text: #text, target: #target }
         },
     }
 }
@@ -229,7 +229,7 @@ fn emit_span_meta(span: &Span_) -> TokenStream2 {
 //
 // Shape per page:
 //
-//   ScrollView {
+//   scroll_view {
 //       Stack(gap = StackGap::Xl) {
 //           PageHeader(title, description)
 //           // Per section: a Card containing the section's blocks.
@@ -266,7 +266,7 @@ fn emit_page_fn(page: &DocPage) -> Result<TokenStream2> {
     Ok(quote! {
         pub fn page() -> ::runtime_core::Element {
             ::runtime_core::ui! {
-                ScrollView {
+                scroll_view {
                     Stack(gap = ::idea_ui::StackGap::Xl) {
                         PageHeader(
                             title = #title_lit.to_string(),
@@ -438,13 +438,13 @@ fn spans_to_plain_text(spans: &[Span_]) -> String {
     let mut out = String::new();
     for s in spans {
         match s {
-            Span_::Text(lit) => out.push_str(&lit.value()),
+            Span_::text(lit) => out.push_str(&lit.value()),
             Span_::Code(lit) => {
                 out.push('`');
                 out.push_str(&lit.value());
                 out.push('`');
             }
-            Span_::Link { text, .. } => out.push_str(&text.value()),
+            Span_::link { text, .. } => out.push_str(&text.value()),
         }
     }
     out

@@ -295,10 +295,10 @@ pub fn app() -> Element {
             )
         },
         status_line,
-        ui! { Button(label = "Refresh".to_string(), on_click = on_refresh) },
-        ui! { Button(label = "Add: Buy milk".to_string(), on_click = on_add_milk) },
-        ui! { Button(label = "Add: Walk the dog".to_string(), on_click = on_add_dog) },
-        ui! { Button(label = "Add: Demo idealyst".to_string(), on_click = on_add_demo) },
+        ui! { button(label = "Refresh".to_string(), on_click = on_refresh) },
+        ui! { button(label = "Add: Buy milk".to_string(), on_click = on_add_milk) },
+        ui! { button(label = "Add: Walk the dog".to_string(), on_click = on_add_dog) },
+        ui! { button(label = "Add: Demo idealyst".to_string(), on_click = on_add_demo) },
     ];
 
     // Reactive list. Each row gets a clone of the toggle + delete
@@ -368,8 +368,8 @@ fn todo_row(
     let on_toggle = move || toggle.trigger(id);
     let on_delete = move || delete.trigger(id);
     let children: Vec<Element> = vec![
-        ui! { Button(label = label, on_click = on_toggle) },
-        ui! { Button(label = "delete".to_string(), on_click = on_delete) },
+        ui! { button(label = label, on_click = on_toggle) },
+        ui! { button(label = "delete".to_string(), on_click = on_delete) },
     ];
     ui! { Stack(gap = StackGap::Sm, padding = StackPadding::Md) { children } }
 }

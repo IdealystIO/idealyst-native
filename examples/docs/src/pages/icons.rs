@@ -101,7 +101,7 @@ docs! {
            you the platform's standard tint behavior, hit testing, accessibility, \
            and layout — exactly the \"this is a button\" feel you want — at the cost \
            of a one-time rasterization per icon."),
-        p("Standalone ", code("Icon { ... }"),
+        p("Standalone ", code("icon { ... }"),
           " invocations still go through the vector path. The rasterization is a ",
           code("Button"), "-only adaptation, not a global mode."),
         p("You don't choose between the two. The framework picks based on where the \

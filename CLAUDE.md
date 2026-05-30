@@ -136,6 +136,8 @@ Component bodies should compose their tree with the `ui!` macro. The only accept
 
 `jsx!` is a peer macro and is fine when a file or example is consistently `jsx!`-styled. The rule is: pick one, stay in it, don't mix `ui!`/`jsx!`/manual `Element` construction in the same component without a reason.
 
+**Primitives are lowercase, components are PascalCase.** Inside `ui!`, the framework's leaf primitives (`view`, `text`, `button`, `image`, `icon`, `text_input`, `scroll_view`, `slider`, `toggle`, `link`, `overlay`, `anchored_overlay`, `presence`, `activity_indicator`, `flat_list`, `when`, `graphics`) are snake_case. User-defined components (anything declared with `#[component]`) are PascalCase. This mirrors React's `<div>` vs `<MyButton>` convention and makes "framework leaf" visually distinct from "user component" at every call site. The macro also still accepts the legacy PascalCase forms (`View`, `Text`, …) for back-compat — don't write new call sites that way, and convert legacy PascalCase primitives to lowercase when you touch the file. The framework's own crates (`crates/runtime/core/`, `crates/backend/`, `crates/gpu-backend/`, tests) still use the legacy PascalCase primitives and are NOT to be swept; the convention applies to app/SDK/example code.
+
 ### 9.3 Build children inside the macro, not around it
 
 Do not assemble a `Vec<Element>` outside the macro and splat it in just to populate a parent. Write children inline.

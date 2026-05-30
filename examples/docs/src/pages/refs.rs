@@ -78,8 +78,8 @@ docs! {
                 }
 
                 ui! {
-                    View {
-                        Text { format!("Count: {}", value.get()) }
+                    view {
+                        text { format!("Count: {}", value.get()) }
                     }
                 }
             }
@@ -121,12 +121,12 @@ docs! {
                 ui! {
                     counter(initial = 10).bind(counter_ref)
 
-                    Button(
+                    button(
                         label = "Reset",
                         on_click = move || { counter_ref.with(|h| h.reset()); },
                     )
 
-                    Button(
+                    button(
                         label = "Add 5",
                         on_click = move || { counter_ref.with(|h| h.bump_by(5)); },
                     )
@@ -159,7 +159,7 @@ docs! {
             ui! {
                 counter(initial = 0).bind(target)
 
-                Button(
+                button(
                     label = "Set target to 100",
                     on_click = move || { target.with(|h| h.set_to(100)); },
                 )
@@ -200,9 +200,9 @@ docs! {
             let btn: Ref<ButtonHandle> = Ref::new();
 
             ui! {
-                Button(label = "Original", on_click = on_click).bind(btn)
+                button(label = "Original", on_click = on_click).bind(btn)
 
-                Button(
+                button(
                     label = "Trigger the original",
                     on_click = move || { btn.with(|h| h.click()); },
                 )
@@ -243,9 +243,9 @@ docs! {
             let row: Ref<ViewHandle> = Ref::new();
 
             ui! {
-                View { /* content */ }.bind(row)
+                view { /* content */ }.bind(row)
 
-                Button(label = "Where am I?", on_click = move || {
+                button(label = "Where am I?", on_click = move || {
                     if let Some(rect) = row.with(|h| h.frame()).flatten() {
                         println!("row is at {:?}", rect);
                     }
@@ -276,7 +276,7 @@ docs! {
             let is_open = signal!(false);
 
             ui! {
-                Button(
+                button(
                     label = "Open menu",
                     on_click = move || is_open.update(|v| *v = !*v),
                 )
@@ -348,9 +348,9 @@ docs! {
           "-returning component exposes ", code(".bind(ref)"), ":"),
 
         code(rust, r##"
-            View { ... }.bind(view_ref)
-            Button(label = "...", on_click = ...).bind(button_ref)
-            ScrollView { ... }.bind(scroll_ref)
+            view { ... }.bind(view_ref)
+            button(label = "...", on_click = ...).bind(button_ref)
+            scroll_view { ... }.bind(scroll_ref)
             counter(initial = 0).bind(counter_ref)
             Navigator::new(&HOME).screen(...).bind(nav_ref)
         "##),

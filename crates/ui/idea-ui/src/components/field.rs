@@ -298,7 +298,7 @@ pub fn Field(props: &FieldProps) -> Element {
 
     let input_node: Element = if let Some(p) = placeholder {
         ui! {
-            TextInput(
+            text_input(
                 value = value,
                 on_change = move |v: String| (on_change)(v),
                 placeholder = p,
@@ -307,7 +307,7 @@ pub fn Field(props: &FieldProps) -> Element {
         }
     } else {
         ui! {
-            TextInput(
+            text_input(
                 value = value,
                 on_change = move |v: String| (on_change)(v),
                 style = input_style
@@ -324,5 +324,5 @@ pub fn Field(props: &FieldProps) -> Element {
         children.push(h);
     }
 
-    ui! { View(style = FieldGroup()) { children } }
+    ui! { view(style = FieldGroup()) { children } }
 }

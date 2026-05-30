@@ -395,7 +395,7 @@ docs! {
         p("Anywhere a signal is read inside a tracked context, the framework \
            records the dependency. The tracked contexts you'll meet are:"),
         list(
-            ["The contents of a ", code("Text { format!(\"count: {}\", count.get()) }")],
+            ["The contents of a ", code("text { format!(\"count: {}\", count.get()) }")],
             ["The condition of an ", code("if"), " inside ", code("ui!"),
               " that reads a signal — the branches re-evaluate when the \
               condition changes"],

@@ -121,10 +121,10 @@ docs! {
                 let count = signal!(0);
 
                 ui! {
-                    View {
-                        Text { "Hello, Idealyst" }
-                        Text { format!("Count: {}", count.get()) }
-                        Button(
+                    view {
+                        text { "Hello, Idealyst" }
+                        text { format!("Count: {}", count.get()) }
+                        button(
                             label = "Increment",
                             on_click = move || count.update(|n| *n += 1),
                         )

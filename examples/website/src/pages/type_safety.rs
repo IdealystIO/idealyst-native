@@ -75,7 +75,7 @@ fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Element {
 fn contract() -> Element {
     let example = "// A component's props are a typed struct. The compiler checks\n\
                    // every call site against it \u{2014} no untyped prop bags.\n\
-                   ui! { Button(label = \"Save\".to_string(), on_click = on_save) }\n\
+                   ui! { button(label = \"Save\".to_string(), on_click = on_save) }\n\
                    \n\
                    // A server function's signature is the wire contract. The same\n\
                    // types are checked on the client (the RPC stub) and the server\n\
@@ -208,12 +208,12 @@ fn where_next() -> Element {
             functions page shows the type contract stretched across the network.".to_string())
     };
     let why_cta = ui! {
-        Link(route = &WHY_RUST_ROUTE, params = ()) {
+        link(route = &WHY_RUST_ROUTE, params = ()) {
             Typography(content = "Read \u{2192} Why Rust".to_string())
         }
     };
     let srv_cta = ui! {
-        Link(route = &SERVER_FUNCTIONS_ROUTE, params = ()) {
+        link(route = &SERVER_FUNCTIONS_ROUTE, params = ()) {
             Typography(content = "The signature as a wire contract \u{2192}".to_string())
         }
     };

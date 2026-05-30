@@ -22,7 +22,7 @@ use crate::styles::{
 /// color). The drawer navigator's body is the scroll context.
 pub fn layout(content: Element) -> Element {
     let style = ScreenScroll();
-    ui! { View(style = style) { content } }
+    ui! { view(style = style) { content } }
 }
 
 /// Build the persistent sidebar. Runs once at navigator init; its
@@ -45,11 +45,11 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Element {
     let active_route = slot.active_route;
 
     ui! {
-        View(style = body_style) {
-            View(style = header_style) { header_children }
+        view(style = body_style) {
+            view(style = header_style) { header_children }
             for section in SECTIONS {
                 (!section.title.is_empty()).then(|| ui! {
-                    Text(style = SidebarSection()) { section.title.to_string() }
+                    text(style = SidebarSection()) { section.title.to_string() }
                 })
                 for entry in section.entries {
                     nav_link(entry.route, entry.label, active_route)
@@ -83,7 +83,7 @@ fn theme_toggle(footer_style: SidebarFooter, is_dark: Signal<bool>) -> Element {
         )
     }];
 
-    ui! { View(style = footer_style) { row_children } }
+    ui! { view(style = footer_style) { row_children } }
 }
 
 /// One sidebar nav link. The `active` axis is derived reactively from
@@ -104,8 +104,8 @@ fn nav_link(
     let label_text = label.to_string();
 
     ui! {
-        Link(route = route, params = ()) {
-            Text(style = style) { label_text }
+        link(route = route, params = ()) {
+            text(style = style) { label_text }
         }
     }
 }

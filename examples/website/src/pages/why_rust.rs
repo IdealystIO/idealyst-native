@@ -132,7 +132,7 @@ fn pivot() -> Element {
 fn expressions_section() -> Element {
     let example = "// Every block in Rust evaluates to a value.\n\
                    let label = if count > 9 { \"9+\".to_string() } else { count.to_string() };\n\
-                   ui! { Text { label } }\n\
+                   ui! { text { label } }\n\
                    \n\
                    // Compare to a language where `if` is a statement:\n\
                    let label;\n\
@@ -207,7 +207,7 @@ fn enums_section() -> Element {
 
 fn macros_section() -> Element {
     let example = "// What you write:\n\
-                   ui! {\n    Button(label = \"Hi\".to_string(), on_click = on_press)\n}\n\
+                   ui! {\n    button(label = \"Hi\".to_string(), on_click = on_press)\n}\n\
                    \n\
                    // What the macro expands to:\n\
                    button(&ButtonProps {\n    \
@@ -302,8 +302,8 @@ fn zero_cost_section() -> Element {
     section(
         "The macro expansion IS the runtime",
         vec![
-            "`ui! { Button(label = \"Hi\") }` becomes `button(&ButtonProps { ... })` \
-             becomes a `Element::Button { ... }` constructor. No virtual DOM diff, no \
+            "`ui! { button(label = \"Hi\") }` becomes `button(&ButtonProps { ... })` \
+             becomes a `Element::button { ... }` constructor. No virtual DOM diff, no \
              JSX-to-element transformation, no reflection pass, no decorator metadata. \
              You read the macro as one thing; the compiler reads it as another; the \
              machine code is the second one.",
@@ -318,7 +318,7 @@ fn zero_cost_section() -> Element {
 
 fn tradeoff_section() -> Element {
     let cta = ui! {
-        Link(route = &QUICKSTART_ROUTE, params = ()) {
+        link(route = &QUICKSTART_ROUTE, params = ()) {
             Typography(
                 content = "Try the Quickstart \u{2192}".to_string(),
                 tone = Some(idea_ui::tone::Primary.into()),

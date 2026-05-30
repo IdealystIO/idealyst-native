@@ -53,11 +53,11 @@ pub fn Switch(props: &SwitchProps) -> Element {
 
     match label_node {
         Some(label) => ui! {
-            View(style = SwitchRow()) {
+            view(style = SwitchRow()) {
                 label
-                Toggle(value = value, on_change = move |v: bool| (on_change)(v))
+                toggle(value = value, on_change = move |v: bool| (on_change)(v))
             }
         },
-        None => ui! { Toggle(value = value, on_change = move |v: bool| (on_change)(v)) },
+        None => ui! { toggle(value = value, on_change = move |v: bool| (on_change)(v)) },
     }
 }
