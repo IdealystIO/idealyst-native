@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{lazy, signal, switch, ui, IntoElement, Element, Route, Signal, StyleApplication};
+use runtime_core::{lazy, signal, switch, ui, Element, IntoElement, Route, Signal, StyleApplication};
 use idea_ui::{Tabs, Typography, Tab};
 
 use crate::components::simulator::{

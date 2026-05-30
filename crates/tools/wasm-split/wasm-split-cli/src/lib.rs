@@ -2030,4 +2030,84 @@ mod tests {
              legitimate one-time-init entry points like `main`)"
         );
     }
+
+    /// Count `call <fn-with-name>` instructions in a function's body.
+    /// Walks the entry InstrSeq's instrs (the wasm-bindgen wrapper body
+    /// has no nested blocks, so a single walk is enough).
+    fn count_calls_to(bytes: &[u8], fn_name_with_dots: &str, target_name: &str) -> usize {
+        let module = Module::from_buffer(bytes).expect("re-parse wasm");
+        let fid = module
+            .funcs
+            .iter()
+            .find(|f| f.name.as_deref() == Some(fn_name_with_dots))
+            .map(|f| f.id())
+            .unwrap_or_else(|| panic!("function {fn_name_with_dots} not in re-parsed wasm"));
+        let func = module.funcs.get(fid);
+        let FunctionKind::Local(lf) = &func.kind else {
+            panic!("expected Local function for {fn_name_with_dots}");
+        };
+        let entry = lf.entry_block();
+        let block = lf.block(entry);
+        block
+            .instrs
+            .iter()
+            .filter(|(instr, _)| match instr {
+                ir::Instr::Call(call) => {
+                    module.funcs.get(call.func).name.as_deref() == Some(target_name)
+                }
+                _ => false,
+            })
+            .count()
+    }
+
+    /// REGRESSION: Pass A must strip the `call __wasm_call_ctors` from
+    /// every helper-wrapper body. Without it, the wasm-bindgen externref
+    /// closure shim still reaches the wrapper through internal
+    /// call-references (not the export table), and ctors re-run on every
+    /// closure invoke → inventory linked-list corruption → OOB.
+    ///
+    /// Pre-fix the wrapper body has exactly one `call __wasm_call_ctors`.
+    /// Post-fix it must have zero. The bare-name-exported wrappers (the
+    /// `main`-and-`host_reserve` fixture below) must KEEP their call —
+    /// they're the legitimate one-time-init entry points.
+    #[test]
+    fn neutralize_strips_ctor_call_from_suffixed_wrapper_body() {
+        let pre = build_wrapper_fixture("__wbindgen_malloc_command_export");
+        assert_eq!(
+            count_calls_to(&pre, "__wbindgen_malloc.command_export", "__wasm_call_ctors"),
+            1,
+            "fixture mis-set: wrapper body must initially have one `call __wasm_call_ctors`"
+        );
+
+        let post = neutralize_command_export_wrappers(&pre)
+            .expect("neutralize_command_export_wrappers");
+
+        // The wrapper function should still exist (Pass A strips the
+        // body's first instr; it does NOT remove the function).
+        assert_eq!(
+            count_calls_to(&post, "__wbindgen_malloc.command_export", "__wasm_call_ctors"),
+            0,
+            "Pass A regression: the `call __wasm_call_ctors` must be stripped \
+             from suffixed-wrapper bodies. If this fails, the wasm-bindgen \
+             externref closure shim will keep re-running ctors on every \
+             closure invoke and corrupt inventory state."
+        );
+    }
+
+    #[test]
+    fn neutralize_keeps_ctor_call_in_main_wrapper_body() {
+        // The `main` wrapper IS exported as `main` (no `_command_export`
+        // suffix) — Pass A must leave it alone so __wbindgen_start →
+        // main.command_export → __wasm_call_ctors runs once at init.
+        let pre = build_wrapper_fixture("main");
+        let post = neutralize_command_export_wrappers(&pre)
+            .expect("neutralize_command_export_wrappers");
+
+        assert_eq!(
+            count_calls_to(&post, "__wbindgen_malloc.command_export", "__wasm_call_ctors"),
+            1,
+            "Pass A must leave the bare-name-exported wrapper alone — \
+             it's the legitimate one-time-init entry point"
+        );
+    }
 }

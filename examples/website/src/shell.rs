@@ -16,8 +16,8 @@ use std::rc::Rc;
 
 use runtime_core::primitives::scroll_view::{scroll_view, ScrollViewHandle};
 use runtime_core::{
-    derived, effect, pressable, signal, text, ui, view, when, IntoElement, Element, Ref, Signal,
-    StyleApplication, ViewHandle,
+    derived, effect, icon, pressable, signal, text, ui, view, when, Easing, IntoElement, Element,
+    Ref, Signal, StrokeAnimation, StyleApplication, ViewHandle,
 };
 use drawer_navigator::SlotProps;
 use idea_ui::{
@@ -25,6 +25,7 @@ use idea_ui::{
     Breakpoint,
 };
 
+use crate::branding::LIGHT_LOGO;
 use crate::routes::{
     label_for_route, BACKENDS_ROUTE, CONCEPTS_ROUTE, QUICKSTART_ROUTE, SECTIONS, WHY_RUST_ROUTE,
 };
@@ -32,7 +33,8 @@ use crate::styles::{
     Footer, FooterBottom, FooterBrand, FooterColumn, FooterCopy, FooterGrid, FooterLink,
     FooterTagline, FooterTitle, FooterWordmark, MobileHeader, MobileHeaderButton,
     MobileHeaderTitle, MobileHeaderTitleWrap, NavLink, NavLinkActive, PageColumn, PageRow, ScreenScroll,
-    SidebarBody, SidebarFooter, SidebarHeader, SidebarSection, TocHeader, TocLink, TocPanel,
+    SidebarBody, SidebarBrandRow, SidebarBrandText, SidebarFooter, SidebarHeader, SidebarLogo,
+    SidebarSection, TocHeader, TocLink, TocPanel,
 };
 
 /// One entry in a page's table-of-contents. `handle` is a
@@ -505,7 +507,7 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Element {
     let header_style = SidebarHeader();
     let footer_style = SidebarFooter();
 
-    let header_children: Vec<Element> = vec![
+    let brand_text_children: Vec<Element> = vec![
         ui! { Typography(content = "Idealyst".to_string(), kind = idea_ui::typography_kind::H3) },
         ui! {
             Typography(
@@ -514,6 +516,15 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Element {
             )
         },
     ];
+    let brand_row = ui! {
+        View(style = SidebarBrandRow()) {
+            icon(LIGHT_LOGO)
+                .with_style(SidebarLogo())
+                .animate(StrokeAnimation::new(1400, Easing::EaseInOut))
+            View(style = SidebarBrandText()) { brand_text_children }
+        }
+    };
+    let header_children: Vec<Element> = vec![brand_row];
 
     let active_route = slot.active_route;
 

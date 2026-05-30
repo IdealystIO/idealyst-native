@@ -22,6 +22,7 @@ use idea_ui::{install_idea_theme, light_theme};
 // come BEFORE `mod pages` so the page modules see the lifted macros.
 #[macro_use]
 mod components;
+mod branding;
 mod pages;
 mod responsive;
 mod routes;

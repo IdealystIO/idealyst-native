@@ -185,6 +185,47 @@ stylesheet! {
     }
 }
 
+/// Logo + brand-text row at the top of the sidebar header. Bulb on
+/// the left, vertically centered against the two-line stack of
+/// wordmark + tagline on the right.
+stylesheet! {
+    pub SidebarBrandRow<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: 10.0,
+        }
+    }
+}
+
+/// Right-hand column inside the sidebar brand row: stacks the
+/// "Idealyst" H3 above the muted tagline. `min_width: 0` lets the
+/// tagline wrap within the column instead of forcing the parent row
+/// wider than the sidebar.
+stylesheet! {
+    pub SidebarBrandText<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            min_width: 0.0,
+            flex_shrink: 1.0,
+        }
+    }
+}
+
+/// Sizing wrapper for the lightbulb logo in the sidebar header.
+/// Size matched to the combined height of the H3 wordmark + muted
+/// tagline so the bulb spans both lines visually.
+stylesheet! {
+    pub SidebarLogo<IdeaThemeRef> {
+        base(_t) {
+            width: 40.0,
+            height: 40.0,
+            flex_shrink: 0.0,
+        }
+    }
+}
+
 stylesheet! {
     pub SidebarHeader<IdeaThemeRef> {
         base(_t) {
