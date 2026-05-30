@@ -12,7 +12,7 @@ use runtime_core::{lazy, signal, switch, ui, Element, IntoElement, Route, Signal
 use idea_ui::{Tabs, Typography, Tab};
 
 use crate::components::simulator::{
-    Simulator, simulator_placeholder, SimulatorProps, SimulatorSkin,
+    Simulator, simulator_placeholder, SimulatorSkin,
 };
 use crate::pages::common::CodePanel;
 use crate::routes::{

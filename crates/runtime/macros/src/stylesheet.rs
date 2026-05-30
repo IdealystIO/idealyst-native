@@ -541,6 +541,15 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
     // sitting alongside the regular property fields.
     let base_rules = emit_rules_struct_with_transitions(&decl.base.rules, &decl.transitions);
 
+    // Per-axis variants: emit one `.variant(...)` call per arm. Tried
+    // collapsing N per-arm closures into one match-dispatched
+    // `.variant_axis(...)` closure per axis: bundle GREW ~21 KB raw
+    // / ~15 KB gz on the website. Best theory: wasm-opt's
+    // function-merging pass was already deduplicating similar per-arm
+    // closure bodies ACROSS stylesheets (they share the same
+    // `Option`-of-`StyleRules` shell, only the inlined constants
+    // differ). One big match defeats those merges. Stick with the
+    // per-arm shape — the linker is smarter than collapsing here.
     let variant_chain = decl.variants.iter().flat_map(|axis| {
         let axis_name = axis.axis.to_string();
         let arm_calls = axis.arms.iter().map(|arm| {

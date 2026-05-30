@@ -13,7 +13,7 @@
 //! Color precedence: `tone: Some(...)` wins, then `muted: true`, then
 //! the theme's default text color.
 
-use runtime_core::{text, IntoElement, Element, Reactive, StyleApplication, TextAlign};
+use runtime_core::{component, text, IntoElement, Element, Reactive, StyleApplication, TextAlign};
 
 use idea_theme::extensible::{installed_typography_sheet, ToneRef, TypographyKindRef};
 
@@ -49,7 +49,8 @@ impl Default for TypographyProps {
     }
 }
 
-pub fn typography(props: &TypographyProps) -> Element {
+#[component]
+pub fn Typography(props: &TypographyProps) -> Element {
     let content = props.content.clone();
     let kind_key = props.kind.key().to_string();
     let color_key = match (&props.tone, props.muted) {

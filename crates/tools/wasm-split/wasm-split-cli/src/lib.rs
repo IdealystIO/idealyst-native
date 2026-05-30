@@ -798,6 +798,141 @@ impl<'a> Splitter<'a> {
             }
         }
 
+        // EXPERIMENTAL: zero the bytes of chunk-only data symbols in
+        // the main module. Gated behind an env var because the
+        // analysis uses the pre-GC main graph which is known to
+        // over-approximate (see comment block above). When safe it
+        // shrinks the gzipped main bundle by megabyte-scale on apps
+        // with a heavy lazy chunk (e.g. wgpu sim in main vs lazy).
+        //
+        // Approach: iterate every "unused" symbol the call graph
+        // classified as not-reachable-from-main, and overwrite its
+        // bytes with zeros. Segment shape is preserved (offsets +
+        // sizes unchanged) so live symbols stay at the same memory
+        // addresses; only the dead bytes go to zero, which gzip
+        // collapses to ~nothing. If a misclassified symbol gets
+        // zeroed, main will crash at runtime — that's the existing
+        // risk this gate exposes for experimentation.
+        if std::env::var("IDEALYST_WASM_SPLIT_PRUNE_DATA").is_ok() {
+            // Optional size threshold so the experiment can start by
+            // only pruning OBVIOUSLY-chunk-only symbols (huge tables
+            // shipped by wgpu/naga/cosmic-text/icu, which can't
+            // possibly be reached from main on a no-GPU SPA page).
+            // Small dead symbols are riskier — they're often
+            // panic / format strings that the symbol-level call
+            // graph occasionally misclassifies as chunk-only.
+            let min = std::env::var("IDEALYST_WASM_SPLIT_PRUNE_DATA_MIN")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0);
+            self.zero_dead_data_in_main(out, unused_symbols, min)?;
+        }
+        if std::env::var("IDEALYST_WASM_SPLIT_PRUNE_DATA_STATS").is_ok() {
+            self.report_dead_data_size_histogram(unused_symbols);
+        }
+
+        Ok(())
+    }
+
+    /// Histogram of chunk-only data symbol sizes — helps pick a
+    /// "only zero big symbols" heuristic if the unconditional zeroing
+    /// is too aggressive (over-approximation can misclassify
+    /// main-live data, particularly small panic / format strings).
+    fn report_dead_data_size_histogram(&self, unused_symbols: &HashSet<Node>) {
+        let buckets: &[(usize, usize)] = &[
+            (0, 16), (16, 64), (64, 256), (256, 1024),
+            (1024, 4096), (4096, 16384), (16384, usize::MAX),
+        ];
+        let mut counts = vec![(0usize, 0usize); buckets.len()];
+        for sym in unused_symbols {
+            let Node::DataSymbol(id) = sym else { continue };
+            let Some(symbol) = self.data_symbols.get(id) else { continue };
+            for (i, (lo, hi)) in buckets.iter().enumerate() {
+                if symbol.symbol_size >= *lo && symbol.symbol_size < *hi {
+                    counts[i].0 += 1;
+                    counts[i].1 += symbol.symbol_size;
+                    break;
+                }
+            }
+        }
+        eprintln!("[wasm-split prune-data histogram] chunk-only symbol size buckets:");
+        for (i, (lo, hi)) in buckets.iter().enumerate() {
+            let hi_label = if *hi == usize::MAX { "∞".to_string() } else { hi.to_string() };
+            eprintln!(
+                "  [{lo:>6}, {hi_label:>6}): {} symbols, {} bytes",
+                counts[i].0, counts[i].1,
+            );
+        }
+    }
+
+    /// Walk each main data segment and zero the byte ranges that
+    /// correspond to chunk-only data symbols. See the call site
+    /// above for the risk profile.
+    ///
+    /// `min_size` filters out small symbols — a tunable safety knob
+    /// during experimentation, since the over-approximation
+    /// in the symbol-level call graph misclassifies small
+    /// strings (panic / format messages) more often than huge
+    /// per-chunk tables.
+    fn zero_dead_data_in_main(
+        &self,
+        out: &mut Module,
+        unused_symbols: &HashSet<Node>,
+        min_size: usize,
+    ) -> Result<()> {
+        // Collect dead-symbol ranges, indexed by their data-segment
+        // index. The data-symbol parse stores `which_data_segment`
+        // already.
+        let mut dead_per_segment: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+        let mut dead_bytes_total: usize = 0;
+        let mut skipped_small: usize = 0;
+        for sym in unused_symbols {
+            let Node::DataSymbol(id) = sym else { continue };
+            let Some(symbol) = self.data_symbols.get(id) else { continue };
+            if symbol.symbol_size < min_size {
+                skipped_small += 1;
+                continue;
+            }
+            let range = symbol.segment_offset..symbol.segment_offset + symbol.symbol_size;
+            dead_bytes_total += symbol.symbol_size;
+            dead_per_segment
+                .entry(symbol.which_data_segment)
+                .or_default()
+                .push((range.start, range.end));
+        }
+        if skipped_small > 0 {
+            eprintln!(
+                "[wasm-split prune-data] skipped {skipped_small} chunk-only symbols smaller \
+                 than {min_size} bytes (safety threshold)",
+            );
+        }
+
+        // Iterate main's data segments in declaration order and zero
+        // every dead range. Walrus indexes segments via `out.data.iter()`;
+        // the parser's `which_data_segment` index matches that order.
+        let data_ids: Vec<_> = out.data.iter().map(|d| d.id()).collect();
+        let mut zeroed_bytes: usize = 0;
+        for (idx, data_id) in data_ids.into_iter().enumerate() {
+            let Some(dead_ranges) = dead_per_segment.get(&idx) else {
+                continue;
+            };
+            let data = out.data.get_mut(data_id);
+            for (lo, hi) in dead_ranges {
+                let lo = *lo;
+                let hi = (*hi).min(data.value.len());
+                if hi <= lo {
+                    continue;
+                }
+                for b in &mut data.value[lo..hi] {
+                    *b = 0;
+                }
+                zeroed_bytes += hi - lo;
+            }
+        }
+
+        eprintln!(
+            "[wasm-split prune-data] zeroed {zeroed_bytes} of {dead_bytes_total} chunk-only data bytes",
+        );
         Ok(())
     }
 

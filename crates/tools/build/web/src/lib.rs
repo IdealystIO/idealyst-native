@@ -71,6 +71,15 @@ pub struct BuildOptions {
     /// (the CLI flips `release` on when this is set). The dev loop
     /// always leaves this `false`.
     pub strip_panics: bool,
+    /// Enable `backend-web/hydrate`. Compile in the in-place hydration
+    /// machinery (cursor + remount bookkeeping + per-primitive
+    /// `hydrate_next` paths + the divergence-diagnostic) so the bundle
+    /// can adopt SSR/SSG HTML on boot instead of clearing it. SPA-only
+    /// builds (`idealyst build --web` without `--ssg`/`--ssr`) leave
+    /// this `false` to shave the machinery out of the wasm. Set to
+    /// `true` when SSG/SSR is being built alongside web — the
+    /// CLI does this automatically.
+    pub hydrate: bool,
 }
 
 #[derive(Debug)]
@@ -106,6 +115,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         &opts.source,
         &manifest,
         &opts.user_features,
+        opts.hydrate,
     )?;
 
     // Direct pipeline (no wasm-pack), so we can hit the flag matrix
@@ -162,6 +172,13 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             &staged.join("index.html"),
             &manifest.app.web.preload_fonts,
         )?;
+        // Generate the favicon set into the staged bundle and inject
+        // the corresponding `<link>` tags into `index.html`. Driven
+        // by `[package.metadata.idealyst.app.icon].source`; no-op
+        // when the icon block is absent. Has to run AFTER fonts
+        // (independent concerns, but both must finish before gzip)
+        // and BEFORE gzip for the same reason.
+        sync_and_inject_web_icons(&project_dir, &staged)?;
         if opts.gzip {
             gzip_bundle(&staged).with_context(|| format!("gzip bundle at {}", staged.display()))?;
         }
@@ -245,6 +262,36 @@ fn inject_font_preloads_into_staged_index(index_path: &Path, paths: &[String]) -
         .with_context(|| format!("read {}", index_path.display()))?;
     let rewritten = inject_into_head(html, &snippet);
     fs::write(index_path, rewritten)
+        .with_context(|| format!("write {}", index_path.display()))?;
+    Ok(())
+}
+
+/// Rasterize the project's master icon into the staged bundle and
+/// splice `<link>` tags for the generated files into `index.html`.
+/// No-op when `[package.metadata.idealyst.app.icon]` is absent —
+/// nothing is written, nothing is injected, the user's existing
+/// icon-handling (or lack of it) survives untouched.
+///
+/// Files land at the bundle root (`/favicon.ico`,
+/// `/favicon-{192,512}.png`, `/apple-touch-icon.png`) so the
+/// injected `<link>` tags can reference them with absolute paths,
+/// matching how the font-preload pipeline emits `/fonts/...`. The
+/// 16/32/48 sizes are bundled into `favicon.ico`; the PNGs cover
+/// web-app-manifest and Apple home-screen pinning.
+fn sync_and_inject_web_icons(project_dir: &Path, staged: &Path) -> Result<()> {
+    let Some(config) = icon_gen::load_config_from_manifest(project_dir)? else {
+        return Ok(());
+    };
+    let block = config.resolved_for(icon_gen::Target::Web);
+    icon_gen::sync_web_icons(Some(&block), staged)
+        .with_context(|| format!("generate web icons into {}", staged.display()))?;
+
+    let index_path = staged.join("index.html");
+    let html = fs::read_to_string(&index_path)
+        .with_context(|| format!("read {}", index_path.display()))?;
+    let snippet = icon_gen::web_icon_link_tags();
+    let rewritten = inject_into_head(html, &snippet);
+    fs::write(&index_path, rewritten)
         .with_context(|| format!("write {}", index_path.display()))?;
     Ok(())
 }
@@ -390,6 +437,7 @@ pub fn generate_wrapper(
     source: &FrameworkSource,
     manifest: &Manifest,
     user_features: &[String],
+    hydrate: bool,
 ) -> Result<()> {
     fs::create_dir_all(wrapper_dir.join("src"))
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
@@ -408,10 +456,35 @@ pub fn generate_wrapper(
     // The wrapper always installs `backend_web::install_async_executor()`
     // so `runtime_core::driver::spawn_async` works inside any
     // wasm app — required by `resource()`, `mutation()`, and the
-    // server-fn batch flusher. The export only exists when the
-    // `async-driver` feature on `backend-web` is on, so we enable
-    // it unconditionally here.
-    let bweb_dep = source.dep("crates/backend/web", &["async-driver"]);
+    // server-fn batch flusher.
+    //
+    // `hydrate` is the in-place hydration machinery (cursor + remount
+    // + per-primitive `hydrate_next` paths + the divergence-diagnostic).
+    // Enabled when the bundle is paired with SSG/SSR HTML it needs to
+    // adopt; suppressed for pure SPA builds so the machinery DCE's out
+    // of the wasm. We construct this dep line by hand (not via
+    // `source.dep`) so we can spell `default-features = false` and pick
+    // an exact feature set — `backend-web`'s default set includes
+    // `hydrate`, which is the desired standalone-check default but the
+    // wrong default for a CLI-built wrapper that knows what it needs.
+    let bweb_base = source.dep("crates/backend/web", &[]);
+    // `source.dep` returns `{ path = "..." }` (or git equivalent). Splice
+    // in the explicit feature set so the wrapper opts out of `hydrate`
+    // when SSG/SSR isn't paired with this build.
+    let bweb_inner = bweb_base.trim().trim_start_matches('{').trim_end_matches('}').trim();
+    let bweb_features: Vec<&str> = if hydrate {
+        vec!["async-driver", "hydrate"]
+    } else {
+        vec!["async-driver"]
+    };
+    let bweb_features_clause = format!(
+        "features = [{}]",
+        bweb_features.iter().map(|f| format!("\"{}\"", f)).collect::<Vec<_>>().join(", "),
+    );
+    let bweb_dep = format!(
+        "{{ {}, default-features = false, {} }}",
+        bweb_inner, bweb_features_clause,
+    );
     // `dev-client` is only needed in runtime-server mode. Declared as an
     // optional dep so plain wasm builds don't drag the `WireBackend`
     // replay engine into their bundle. We strip the outer braces from
@@ -1234,7 +1307,7 @@ mod regression_tests {
         let source = FrameworkSource::Workspace {
             root: workspace_root,
         };
-        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[])
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[], false)
             .expect("generate wrapper");
         (wrapper_dir, tmp)
     }
@@ -1460,6 +1533,87 @@ mod bundle_tests {
             png_raw,
             ".png must not be re-compressed",
         );
+    }
+
+    #[test]
+    fn sync_and_inject_web_icons_is_noop_without_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = fake_project(tmp.path());
+        let out = tmp.path().join("dist");
+        stage_bundle(&project, &out).unwrap();
+        let html_before = fs::read_to_string(out.join("index.html")).unwrap();
+
+        // `fake_project`'s Cargo.toml has no icon block, so the
+        // helper must leave the bundle untouched — no extra files,
+        // no HTML rewrite.
+        sync_and_inject_web_icons(&project, &out).unwrap();
+
+        assert!(!out.join("favicon.ico").exists());
+        assert!(!out.join("favicon-192.png").exists());
+        assert!(!out.join("favicon-512.png").exists());
+        assert!(!out.join("apple-touch-icon.png").exists());
+        assert_eq!(
+            fs::read_to_string(out.join("index.html")).unwrap(),
+            html_before,
+            "no icon block → index.html must be byte-identical",
+        );
+    }
+
+    #[test]
+    fn sync_and_inject_web_icons_emits_files_and_link_tags() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = fake_project(tmp.path());
+        // Append an icon block + drop an SVG next to Cargo.toml. Both
+        // are stripped from the bundle (Cargo.toml is excluded; the
+        // SVG isn't a top-level asset directory) so this only affects
+        // the icon-gen pipeline.
+        fs::write(
+            project.join("Cargo.toml"),
+            b"[package]\nname = 'demo'\n\n\
+              [package.metadata.idealyst.app.icon]\n\
+              source = 'icon.svg'\n",
+        )
+        .unwrap();
+        fs::write(
+            project.join("icon.svg"),
+            br##"<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" fill="#ff7a00"/>
+</svg>"##,
+        )
+        .unwrap();
+
+        let out = tmp.path().join("dist");
+        stage_bundle(&project, &out).unwrap();
+        sync_and_inject_web_icons(&project, &out).unwrap();
+
+        for name in [
+            "favicon.ico",
+            "favicon-192.png",
+            "favicon-512.png",
+            "apple-touch-icon.png",
+        ] {
+            assert!(
+                out.join(name).is_file(),
+                "{name} must be written into the bundle root",
+            );
+        }
+
+        let html = fs::read_to_string(out.join("index.html")).unwrap();
+        // Tag presence + the specific hrefs we emit. Using the
+        // attribute strings keeps the test sensitive to accidental
+        // path changes (e.g. someone dropping the leading slash).
+        for fragment in [
+            r#"rel="icon" type="image/x-icon" href="/favicon.ico""#,
+            r#"href="/favicon-192.png""#,
+            r#"href="/favicon-512.png""#,
+            r#"rel="apple-touch-icon" href="/apple-touch-icon.png""#,
+        ] {
+            assert!(
+                html.contains(fragment),
+                "index.html must contain `{fragment}`, got:\n{html}",
+            );
+        }
     }
 
     #[test]

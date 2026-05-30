@@ -29,7 +29,7 @@
 //! }
 //! ```
 
-use runtime_core::{pressable, text, ui, Element, Reactive, Signal, StyleApplication};
+use runtime_core::{component, pressable, text, ui, Element, Reactive, Signal, StyleApplication};
 use std::rc::Rc;
 
 use crate::stylesheets::{TabBar, TabButton};
@@ -79,7 +79,8 @@ impl Default for TabsProps {
     }
 }
 
-pub fn tabs(props: TabsProps) -> Element {
+#[component]
+pub fn Tabs(props: TabsProps) -> Element {
     let tab_items = props.tabs;
     let active = props.active;
     let on_change = props.on_change;

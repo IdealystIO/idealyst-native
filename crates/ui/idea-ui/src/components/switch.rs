@@ -20,7 +20,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, Element, Reactive, Signal};
+use runtime_core::{component, ui, Element, Reactive, Signal};
 
 use crate::stylesheets::{FieldLabel, SwitchRow};
 
@@ -44,7 +44,8 @@ impl Default for SwitchProps {
     }
 }
 
-pub fn switch(props: &SwitchProps) -> Element {
+#[component]
+pub fn Switch(props: &SwitchProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
 

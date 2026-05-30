@@ -152,6 +152,7 @@ fn element_has_class(el: &web_sys::Element, class: &str) -> bool {
 /// of `region` (an adopted frame slot / body outlet) so the next walker
 /// `create_*` calls adopt the server content inside it. No-op off
 /// hydration.
+#[cfg(feature = "hydrate")]
 pub fn hydrate_enter(region: &web_sys::Node) {
     let weak = WEB_BACKEND_HANDLE.with(|s| s.borrow().clone());
     let Some(weak) = weak else { return };
@@ -168,6 +169,13 @@ pub fn hydrate_enter(region: &web_sys::Node) {
         b.hydration_pending_fresh = false;
     };
 }
+
+/// Off-feature stub — `hydrate_enter` is a no-op when the `hydrate`
+/// feature is disabled. SDK navigator helpers call this on every region
+/// entry; this stub keeps them callable without `#[cfg]` plumbing in
+/// the SDK crates.
+#[cfg(not(feature = "hydrate"))]
+pub fn hydrate_enter(_region: &web_sys::Node) {}
 
 /// Install a self-handle so the batched text-update path
 /// ([`Backend::create_text_with_id`] / [`Backend::update_text_by_id`])
@@ -267,8 +275,10 @@ pub struct WebBackend {
     /// walker's pre-order `create_*` calls. Turned off in `finish` once
     /// the initial adoption pass completes (later reactive rebuilds
     /// create fresh nodes normally).
+    #[cfg(feature = "hydrate")]
     pub(crate) hydrating: bool,
     /// Next SSR node to adopt (pre-order). `None` once exhausted.
+    #[cfg(feature = "hydrate")]
     pub(crate) hydration_cursor: Option<web_sys::Node>,
     /// SUBTREE-LOCAL REMOUNT: when the walker's node doesn't match the
     /// SSR node at the cursor, we don't fail the whole hydration — we
@@ -279,18 +289,23 @@ pub struct WebBackend {
     ///
     /// `suppress` — inside the fresh remount subtree; `create_*` builds
     /// fresh and `hydrate_next` doesn't touch the cursor.
+    #[cfg(feature = "hydrate")]
     pub(crate) hydration_suppress: bool,
     /// The last `hydrate_next` mismatched; the next fresh node a
     /// `create_*` makes IS the remount root (recorded via
     /// [`Self::hydrate_note_fresh`]).
+    #[cfg(feature = "hydrate")]
     pub(crate) hydration_pending_fresh: bool,
     /// The fresh subtree root being built; when the walker `insert`s it,
     /// the remount completes (replace the stale node, resume cursor).
+    #[cfg(feature = "hydrate")]
     pub(crate) hydration_remount_root: Option<web_sys::Node>,
     /// The stale SSR node the remount root replaces (removed on resync).
+    #[cfg(feature = "hydrate")]
     pub(crate) hydration_remount_stale: Option<web_sys::Node>,
     /// Cursor to restore once the remount subtree completes (the stale
     /// node's next sibling — so the remounted node's siblings adopt).
+    #[cfg(feature = "hydrate")]
     pub(crate) hydration_remount_resume: Option<web_sys::Node>,
     pub(crate) _click_closures: Vec<Closure<dyn FnMut()>>,
     /// Keyboard handlers for `Element::Pressable` (Enter/Space →
@@ -678,6 +693,7 @@ impl WebBackend {
     /// (see `data-ssr-viewport` / [`ssr_viewport`](crate::ssr_viewport))
     /// BEFORE `mount`, then `install_viewport_observer()` AFTER so the real
     /// viewport drives a reactive update post-adoption.
+    #[cfg(feature = "hydrate")]
     pub fn hydrate(mount_selector: &str) -> Self {
         let mut b = Self::new(mount_selector);
         b.hydrating = true;
@@ -695,6 +711,7 @@ impl WebBackend {
     /// (leaving the cursor on it); the navigator adopts its frame via
     /// [`hydrate_adopt_child`] + re-enters regions via [`hydrate_enter`].
     /// `None` when not hydrating or the cursor doesn't match.
+    #[cfg(feature = "hydrate")]
     pub fn hydrate_adopt_container(&mut self, class: &str) -> Option<web_sys::Node> {
         if !self.hydrating {
             return None;
@@ -713,6 +730,7 @@ impl WebBackend {
     /// navigator frame build runs *inside* `create_navigator`'s
     /// `borrow_mut`, so the global-handle free fn's `try_borrow` would
     /// fail there). `None` when not hydrating or no match.
+    #[cfg(feature = "hydrate")]
     pub fn hydrate_adopt_child_of(
         &self,
         parent: &web_sys::Node,
@@ -736,6 +754,7 @@ impl WebBackend {
     /// fresh without adopting/arming a remount. METHOD form for the
     /// synchronous in-`borrow_mut` caller (end of the navigator frame
     /// build, before the walker's throwaway initial screen).
+    #[cfg(feature = "hydrate")]
     pub fn hydrate_suspend_cursor(&mut self) {
         if !self.hydrating {
             return;
@@ -754,6 +773,7 @@ impl WebBackend {
     /// caller's freshly-created node is captured by
     /// [`Self::hydrate_note_fresh`] as a subtree-local remount root.
     /// Inside a remount subtree (`suppress`), it always returns `None`.
+    #[cfg(feature = "hydrate")]
     pub(crate) fn hydrate_next(&mut self, tag: &str) -> Option<web_sys::Element> {
         if !self.hydrating || self.hydration_suppress {
             return None;
@@ -777,6 +797,7 @@ impl WebBackend {
     /// NOT walked by the framework — without this, the cursor would
     /// land on a child of the adopted node and the next walker step
     /// would mismatch against it.
+    #[cfg(feature = "hydrate")]
     pub(crate) fn hydrate_next_skip_subtree(
         &mut self,
         tag: &str,
@@ -801,6 +822,7 @@ impl WebBackend {
     /// node at the cursor) and where to resume adopting (the stale
     /// node's next sibling), and enter `suppress` so the rest of this
     /// subtree builds fresh. Cheap no-op otherwise.
+    #[cfg(feature = "hydrate")]
     pub(crate) fn hydrate_note_fresh(&mut self, fresh: &web_sys::Node) {
         if !self.hydration_pending_fresh {
             return;
@@ -843,9 +865,51 @@ impl WebBackend {
         self.hydration_suppress = true;
     }
 
+    // ---------------------------------------------------------------
+    // No-hydrate stubs. Public surface stays callable from SDK crates +
+    // generated wrappers; bodies optimize to a const `None` / no-op
+    // and DCE drops the cursor/diagnostic machinery from the bundle.
+    // `WebBackend::hydrate(...)` falls back to `new(...)` — the v1
+    // clear-and-rebuild path in `finish()` then runs (flicker on
+    // bundle boot, but no broken DOM).
+    // ---------------------------------------------------------------
+
+    #[cfg(not(feature = "hydrate"))]
+    pub fn hydrate(mount_selector: &str) -> Self {
+        Self::new(mount_selector)
+    }
+    #[cfg(not(feature = "hydrate"))]
+    pub fn hydrate_adopt_container(&mut self, _class: &str) -> Option<web_sys::Node> {
+        None
+    }
+    #[cfg(not(feature = "hydrate"))]
+    pub fn hydrate_adopt_child_of(
+        &self,
+        _parent: &web_sys::Node,
+        _class: &str,
+    ) -> Option<web_sys::Node> {
+        None
+    }
+    #[cfg(not(feature = "hydrate"))]
+    pub fn hydrate_suspend_cursor(&mut self) {}
+    #[cfg(not(feature = "hydrate"))]
+    pub(crate) fn hydrate_next(&mut self, _tag: &str) -> Option<web_sys::Element> {
+        None
+    }
+    #[cfg(not(feature = "hydrate"))]
+    pub(crate) fn hydrate_next_skip_subtree(
+        &mut self,
+        _tag: &str,
+    ) -> Option<web_sys::Element> {
+        None
+    }
+    #[cfg(not(feature = "hydrate"))]
+    pub(crate) fn hydrate_note_fresh(&mut self, _fresh: &web_sys::Node) {}
+
     /// Next node in a pre-order DFS of the SSR tree, bounded by `mount`.
     /// Descends into children first. Matches the walker's pre-order
     /// `create_*` order.
+    #[cfg(feature = "hydrate")]
     fn next_preorder(node: &web_sys::Node, mount: &web_sys::Element) -> Option<web_sys::Node> {
         let el = node.dyn_ref::<web_sys::Element>()?;
         if let Some(child) = el.first_element_child() {
@@ -856,6 +920,7 @@ impl WebBackend {
 
     /// Pre-order successor that SKIPS `node`'s subtree (its next sibling,
     /// else climb). Used to resume after a remounted subtree.
+    #[cfg(feature = "hydrate")]
     fn next_preorder_skip_subtree(
         node: &web_sys::Node,
         mount: &web_sys::Element,
@@ -883,12 +948,19 @@ impl WebBackend {
         Self {
             doc,
             mount,
+            #[cfg(feature = "hydrate")]
             hydrating: false,
+            #[cfg(feature = "hydrate")]
             hydration_cursor: None,
+            #[cfg(feature = "hydrate")]
             hydration_suppress: false,
+            #[cfg(feature = "hydrate")]
             hydration_pending_fresh: false,
+            #[cfg(feature = "hydrate")]
             hydration_remount_root: None,
+            #[cfg(feature = "hydrate")]
             hydration_remount_stale: None,
+            #[cfg(feature = "hydrate")]
             hydration_remount_resume: None,
             _click_closures: Vec::new(),
             _pressable_key_closures: Vec::new(),
@@ -1882,7 +1954,14 @@ impl Backend for WebBackend {
     }
 
     fn is_hydrating(&self) -> bool {
-        self.hydrating
+        #[cfg(feature = "hydrate")]
+        {
+            self.hydrating
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            false
+        }
     }
 
     /// Set the HTML `id` attribute on the underlying element. Used
@@ -1960,6 +2039,7 @@ impl Backend for WebBackend {
     // framework dispatches events externally.
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
+        #[cfg(feature = "hydrate")]
         if self.hydrating {
             // Subtree-remount resync: the fresh remount root is being
             // inserted → swap it in for the stale SSR node *in place*,
@@ -2821,6 +2901,7 @@ impl Backend for WebBackend {
     }
 
     fn finish(&mut self, root: Self::Node) {
+        #[cfg(feature = "hydrate")]
         if self.hydrating {
             // The initial adoption pass is done; subsequent reactive
             // rebuilds create fresh nodes through the normal path.

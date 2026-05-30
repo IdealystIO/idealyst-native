@@ -28,10 +28,18 @@ fn resolve_src<'a>(b: &'a WebBackend, src: &'a str) -> std::borrow::Cow<'a, str>
 }
 
 pub(crate) fn create(b: &mut WebBackend, src: &str, alt: Option<&str>) -> Node {
-    let img = b
-        .doc
-        .create_element("img")
-        .expect("create_element img failed");
+    // Hydration adoption — see `text_input::create` for the rationale.
+    let img = if let Some(el) = b.hydrate_next("img") {
+        el
+    } else {
+        let fresh = b
+            .doc
+            .create_element("img")
+            .expect("create_element img failed");
+        let node: Node = fresh.clone().unchecked_into();
+        b.hydrate_note_fresh(&node);
+        fresh
+    };
     let resolved = resolve_src(b, src);
     let _ = img.set_attribute("src", &resolved);
     if let Some(a) = alt {

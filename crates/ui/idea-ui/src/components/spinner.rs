@@ -8,7 +8,7 @@
 //! closed-enum [`crate::components::spinner`].
 
 use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
-use runtime_core::{ui, Element, VariantEnum};
+use runtime_core::{component, ui, Element, VariantEnum};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum SpinnerSize {
@@ -35,7 +35,8 @@ pub struct SpinnerProps {
     pub size: SpinnerSize,
 }
 
-pub fn spinner(props: &SpinnerProps) -> Element {
+#[component]
+pub fn Spinner(props: &SpinnerProps) -> Element {
     let native = match props.size {
         SpinnerSize::Small => ActivityIndicatorSize::Small,
         SpinnerSize::Large => ActivityIndicatorSize::Large,

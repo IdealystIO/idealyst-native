@@ -1,0 +1,42 @@
+[package]
+name = "icon-gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Idealyst icon generator — rasterize a single SVG (or PNG) into per-platform app icon assets"
+
+[dependencies]
+anyhow = "1"
+# Manifest parsing for `load_spec_from_manifest`. Both the CLI's
+# `sync icons` subcommand and the per-platform build crates parse
+# the same `[package.metadata.idealyst.app.icon]` block; centralizing
+# the parse here keeps one source of truth for the schema.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+# Content + config hashing for the build-output cache. SHA-256 is
+# overkill for a freshness check, but the per-bucket runtime is sub-
+# millisecond on typical icon sizes and using a standard hash gives
+# the cache a sharp invalidation boundary (nothing accidentally hits
+# because of a low-collision-probability cheap hash).
+sha2 = "0.10"
+# resvg pulls in usvg + tiny-skia transitively and re-exports both,
+# so we only depend on the umbrella crate here. Pinned to a version
+# that's known to round-trip SVG 1.1 + SVG 2 features the icon use
+# cases need (rounded corners, gradients, basic filters).
+resvg = "0.45"
+# Multi-resolution .ico bundling for `favicon.ico` and (later) the
+# Windows `.exe` icon set.
+ico = "0.4"
+# macOS `.icns` packaging — bundles the standard 16/32/128/256/512
+# resolutions (plus their @2x retina variants) into a single icon
+# file referenced from the .app's Info.plist `CFBundleIconFile`.
+icns = "0.3"
+# PNG / JPEG decode path for projects that hand us a raster source
+# instead of an SVG. Defaults turned off — we only need PNG and
+# JPEG; pulling the full `image` default feature set drags in
+# every codec the crate supports.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[dev-dependencies]
+tempfile = "3"

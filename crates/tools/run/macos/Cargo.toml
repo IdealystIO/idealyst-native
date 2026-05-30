@@ -14,3 +14,9 @@ license.workspace = true
 anyhow = "1"
 build-macos = { workspace = true }
 build-ios = { workspace = true }
+# When `[package.metadata.idealyst.app.icon]` is configured, the
+# bare binary gets wrapped in a `<App>.app` bundle with Info.plist +
+# `Resources/AppIcon.icns`. icon-gen produces the .icns; this crate
+# handles the layout. Without an icon block, the historical bare-
+# binary launch path stays in place.
+icon-gen = { workspace = true }

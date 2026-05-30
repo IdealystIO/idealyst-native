@@ -61,7 +61,6 @@ pub mod components;
 #[cfg(feature = "docs")]
 pub mod doc_controls;
 pub mod intent;
-pub mod invocations;
 pub mod stylesheets;
 pub mod theme;
 mod theme_runtime;
@@ -95,36 +94,39 @@ pub use breakpoint::{
     breakpoints, current_breakpoint, install_breakpoints, Breakpoint, Breakpoints,
 };
 
-pub use components::alert::{alert, AlertProps};
-pub use components::avatar::{avatar, AvatarColor, AvatarProps, AvatarSize};
-pub use components::badge::{badge, BadgeProps};
-pub use components::button::{button, ButtonProps};
-pub use components::card::{card, CardPadding, CardProps};
-pub use components::center::{center, CenterProps};
-pub use components::divider::{divider, DividerAxis, DividerProps};
-pub use components::field::{field, FieldProps, FieldSize};
-pub use components::icon_button::{icon_button, IconButtonProps, IconButtonSize};
-pub use components::modal::{modal, ModalProps};
-pub use components::popover::{popover, PopoverProps};
-pub use components::select::{select, SelectOption, SelectProps, SelectSize};
-pub use components::skeleton::{skeleton, SkeletonProps, SkeletonWidth};
-pub use components::spacer::{spacer, SpacerProps};
-pub use components::spinner::{spinner, SpinnerProps, SpinnerSize};
+// Each component re-exports both the PascalCase tag (which is both the
+// function and a `pub type Tag = TagProps` alias emitted by `#[component]`)
+// and the `*Props` struct + any companion enums. `ui! { Foo(...) }` resolves
+// `Foo` via the type alias, while direct fn-call sites resolve to the fn —
+// they coexist in different namespaces. See [[project_buildelement_dispatch]].
+pub use components::alert::{Alert, AlertProps};
+pub use components::avatar::{Avatar, AvatarColor, AvatarProps, AvatarSize};
+pub use components::badge::{Badge, BadgeProps};
+pub use components::button::{Button, ButtonProps};
+pub use components::card::{Card, CardPadding, CardProps};
+pub use components::center::{Center, CenterProps};
+pub use components::divider::{Divider, DividerAxis, DividerProps};
+pub use components::field::{Field, FieldProps, FieldSize};
+pub use components::icon_button::{IconButton, IconButtonProps, IconButtonSize};
+pub use components::modal::{Modal, ModalProps};
+pub use components::popover::{Popover, PopoverProps};
+pub use components::select::{Select, SelectOption, SelectProps, SelectSize};
+pub use components::skeleton::{Skeleton, SkeletonProps, SkeletonWidth};
+pub use components::spacer::{Spacer, SpacerProps};
+pub use components::spinner::{Spinner, SpinnerProps, SpinnerSize};
 pub use components::stack::{
-    stack, StackAlign, StackAxis, StackGap, StackJustify, StackPadding, StackProps,
+    Stack, StackAlign, StackAxis, StackGap, StackJustify, StackPadding, StackProps,
 };
-pub use components::switch::{switch, SwitchProps};
-pub use components::tabs::{tabs, Tab, TabsProps};
-pub use components::tag::{tag, TagProps};
-pub use components::typography::{typography, TypographyProps};
+pub use components::switch::{Switch, SwitchProps};
+pub use components::tabs::{Tab, Tabs, TabsProps};
+pub use components::tag::{Tag, TagProps};
+pub use components::typography::{Typography, TypographyProps};
 
-// Component tag aliases (`Typography`, `Btn`, `Card`, …). `ui! { Foo(...) }`
-// uses the tag as the type name (dispatch is `BuildElement::build(Foo { … })`),
-// so each tag must name a type. `invocations.rs` defines them as
-// `pub use FooProps as Foo` re-exports next to each component's
-// `BuildElement` impl; this surfaces them all at the crate root, so
-// existing `use idea_ui::{Typography, Card, …}` imports keep working.
-pub use invocations::*;
+// `Btn` alias for the styled button. The framework's `Button` primitive is
+// matched by literal name in the `ui!` macro and would collide with idea-ui's
+// styled `Button` tag if both lived at the call site under the same name.
+// Existing call sites (`ui! { Btn(...) }`) keep working through this alias.
+pub use components::button::Button as Btn;
 
 // The trait surface + built-in modifier ZSTs come from idea-theme.
 // Re-exported at the crate root so apps can write

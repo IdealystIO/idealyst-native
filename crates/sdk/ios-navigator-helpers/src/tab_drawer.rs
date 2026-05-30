@@ -68,6 +68,13 @@ pub(crate) struct TabDrawerEntry {
     pub(crate) background_effect: Option<runtime_core::Effect>,
     #[allow(dead_code)]
     pub(crate) menu_callback_target: Option<Retained<NSObject>>,
+    /// Configured drawer width (from `DrawerBuilder::drawer_width`).
+    /// `drawer_attach_sidebar` reads it to pin the sidebar UIView's
+    /// width via Auto Layout — the sidebar's own Taffy node is
+    /// orphaned (we addSubview directly instead of going through
+    /// `Backend::insert`), so without this pin its frame stays 0×0
+    /// and the open animation slides an invisible view.
+    pub(crate) drawer_width: f32,
 }
 
 // =========================================================================
@@ -105,6 +112,9 @@ pub(crate) fn create_tab(
         header_nav_ctrl: None,
         theme_effect: None,
         background_effect: None,
+        // Tab navigators don't have a sidebar; placeholder width is
+        // unused. Stored anyway so the struct stays uniform.
+        drawer_width: 0.0,
     };
     TAB_DRAWER_INSTANCES.with(|m| {
         m.borrow_mut()
@@ -400,6 +410,7 @@ pub(crate) fn create_drawer(
         }),
         theme_effect: None,
         background_effect: None,
+        drawer_width: callbacks.drawer_width,
     };
     let entry_rc = Rc::new(RefCell::new(entry));
     TAB_DRAWER_INSTANCES.with(|m| {
@@ -772,14 +783,51 @@ pub(crate) fn drawer_attach_sidebar(
     let Some(entry) = entry else { return };
     let entry = entry.borrow();
     let sidebar_view = sidebar.as_view();
-    unsafe { entry.content_host.addSubview(sidebar_view) };
 
+    // Pin the sidebar's geometry with Auto Layout, not Taffy. The
+    // sidebar's Taffy node has no parent (we attach directly via
+    // `addSubview` instead of going through `Backend::insert`, which
+    // would `add_child` it into the host's Taffy tree). Without an
+    // explicit width constraint the UIView frame stays 0×0 — the
+    // open animation then transforms a zero-width view from
+    // offscreen to onscreen, so the scrim darkens but no sidebar
+    // appears. Pinning top/leading/bottom + a width constraint
+    // matches what `pin_to_edges` does for screens, just with the
+    // trailing edge replaced by a fixed width.
+    let _: () = unsafe {
+        msg_send![sidebar_view, setTranslatesAutoresizingMaskIntoConstraints: false]
+    };
+    unsafe { entry.content_host.addSubview(sidebar_view) };
+    unsafe {
+        let p_top: Retained<NSObject> =
+            msg_send_id![&entry.content_host, topAnchor];
+        let p_bot: Retained<NSObject> =
+            msg_send_id![&entry.content_host, bottomAnchor];
+        let p_lead: Retained<NSObject> =
+            msg_send_id![&entry.content_host, leadingAnchor];
+        let c_top: Retained<NSObject> = msg_send_id![sidebar_view, topAnchor];
+        let c_bot: Retained<NSObject> = msg_send_id![sidebar_view, bottomAnchor];
+        let c_lead: Retained<NSObject> = msg_send_id![sidebar_view, leadingAnchor];
+        let c_width: Retained<NSObject> = msg_send_id![sidebar_view, widthAnchor];
+        for (a, b) in [(&c_top, &p_top), (&c_bot, &p_bot), (&c_lead, &p_lead)] {
+            let c: Retained<NSObject> = msg_send_id![a, constraintEqualToAnchor: &**b];
+            let _: () = msg_send![&c, setActive: true];
+        }
+        let w_const: CGFloat = entry.drawer_width as CGFloat;
+        let cw: Retained<NSObject> =
+            msg_send_id![&c_width, constraintEqualToConstant: w_const];
+        let _: () = msg_send![&cw, setActive: true];
+    }
+
+    // Start offscreen-left (configured width — not a magic 400) so
+    // the open animation translates to identity over the same
+    // distance the configured drawer occupies.
     let t = CGAffineTransform {
         a: 1.0,
         b: 0.0,
         c: 0.0,
         d: 1.0,
-        tx: -400.0,
+        tx: -(entry.drawer_width as CGFloat),
         ty: 0.0,
     };
     let _: () = unsafe { msg_send![sidebar_view, setTransform: t] };

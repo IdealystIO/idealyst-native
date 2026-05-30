@@ -7,7 +7,7 @@
           package="{{PACKAGE}}">
     <application
         android:label="{{APP_NAME}}"
-        android:hasCode="true">
+        android:hasCode="true"{{ICON_ATTRS}}>
         <!-- `configChanges` keeps the Activity alive across rotation,
              multi-window resize, keyboard show/hide, dark-mode toggle,
              density change, etc. Without it Android tears the Activity

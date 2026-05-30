@@ -114,3 +114,82 @@ When you fix a bug or regression, add a test that fails before the fix and passe
 - If the bug is in a layer that's hard to unit-test (platform-specific UIKit/Android behavior, GPU output, real device input), add the closest reachable test — an integration test against the backend trait, a snapshot of the relevant state, or a scripted example that reproduces the scenario — and document in a comment why a tighter test isn't possible.
 - Name the test after the bug, not the function. `regression_ios_scrollview_resets_on_layout` beats `test_apply_frames_3`.
 - If you can't write a failing test first, you don't yet understand the bug. Keep digging until you can reproduce it deterministically.
+
+## 9. Component implementation standards
+
+Components in this repo have one canonical shape. When writing a new component, or modifying an existing one, conform to it.
+
+### 9.1 Wrap with `#[component]`
+
+Components MUST be declared with the `#[component]` attribute. The macro generates the props struct's `BuildElement` impl, the `pub type Tag = TagProps` alias that makes `Tag()` work as a `ui!` call site, and the `Default` glue the struct-literal dispatch relies on. Don't hand-roll bespoke builder methods, manual `BuildElement` impls, `pascal_to_snake` shims, or centralized `build_impl!`-style registries.
+
+The *contract* — props struct + `Default` + `BuildElement` — is what `ui!` actually requires; `#[component]` is just the standard way to satisfy it. If you find yourself reaching for a manual impl, the macro should grow instead (e.g., it accepts `#[component(children)]` for container components that move children out of props, and `#[component(default(field = expr))]` for non-Default starting values).
+
+For container components, name the fn PascalCase to match the tag (`fn Card`, not `fn card`). The fn and the `pub type Card = CardProps` alias coexist in different namespaces — the fn-call form (`Card(props)`) and the struct-literal form (`ui! { Card(...) }`) both work, and `#[component]` adds `#[allow(non_snake_case)]` automatically.
+
+### 9.2 Render with `ui!`
+
+Component bodies should compose their tree with the `ui!` macro. The only acceptable deviations:
+
+- **Pedagogical examples** that explicitly showcase `jsx!` syntax or the hand-built `Element` form. These must include a comment naming what's being demonstrated and why `ui!` was skipped.
+- **A documented technical limitation** where `ui!` genuinely can't express the construct. Vanishingly rare — if you think you've found one, write the comment explaining the limitation and link it to an issue or memory entry so the next person hits the constraint, not the workaround.
+
+`jsx!` is a peer macro and is fine when a file or example is consistently `jsx!`-styled. The rule is: pick one, stay in it, don't mix `ui!`/`jsx!`/manual `Element` construction in the same component without a reason.
+
+### 9.3 Build children inside the macro, not around it
+
+Do not assemble a `Vec<Element>` outside the macro and splat it in just to populate a parent. Write children inline.
+
+```rust
+// NO — children built ad-hoc outside the macro
+let mut children = Vec::new();
+children.push(ui! { Foo() });
+children.push(ui! { Bar() });
+ui! { View() { children } }
+
+// YES — children live where they're rendered
+ui! {
+    View() {
+        Foo()
+        Bar()
+    }
+}
+```
+
+`ui!` already supports `for` (flat-splat sibling iteration with a compile-time `key=` when reactive), `if` / `match` branches, and bare-identifier child splats (`children`, no braces) for the legitimate cases where the children arrive as a prop or come from data. Use those. The out-of-macro `Vec::push` loop is almost never the right tool — it defeats keyed reconciliation, hides children from the macro's reactive-scope inference, and produces awkward indentation that obscures the tree.
+
+**The one legitimate `Vec<Element>` shape**: a container component that accepts `children: Vec<Element>` as a prop and flattens incoming fragments via `ChildList::append_to()` before splatting. See `crates/ui/idea-ui/src/components/card.rs` (`Card`) and `center.rs` (`Center`) for the canonical pattern. This is about flattening *received* children, not about authoring new ones in a push loop — the distinction matters. If you're writing the children yourself, they belong inside `ui!`.
+
+### 9.4 Conditional and iterative rendering belongs inside the macro
+
+If a child only sometimes appears, express that with `if` / `if let` / `match` *inside* `ui!`, not by conditionally pushing into a `Vec<Element>` before the macro call. Same for iteration: `for item in items { ... }` inside `ui!` is the standard form. The website's `pages/type_safety.rs::section()`, `pages/targets.rs::target_row()`, and `shell.rs::layout_with_toc()` helpers all currently build children with `let mut children = Vec::new(); children.push(...)` and are exactly the shape Section 9.3 forbids — when you touch one of those files for another reason, convert it.
+
+### 9.5 Local helpers vs. promoting to a component
+
+A snake_case `fn xyz() -> Element` is fine as a one-off, file-local helper that takes no props and is called from one place (e.g., `examples/website/src/pages/targets.rs::phones()`). The moment it starts taking parameters, gets called from a second site, or grows variants, promote it to a `#[component]` so call sites can use `ui!` struct-literal syntax (`Phones(variant = ...)`) instead of positional function arguments. Don't grow positional helper signatures — that's how `tone: ToneRef, variant: VariantRef, label: String, ...` happens.
+
+### 9.6 Optional callbacks: bind only when present
+
+For `Option<Rc<dyn Fn()>>` props, don't wire an unconditional closure that silently no-ops when `None`. Conditionally attach instead:
+
+```rust
+if let Some(cb) = on_press {
+    bound = bound.on_press(move || (cb)());
+}
+```
+
+This pattern lives in `crates/ui/idea-ui/src/components/button.rs` and `modal.rs` — match it. A silent no-op handler blocks hit-test fall-through on some backends and confuses event-routing assertions.
+
+### 9.7 Bring code you touch up to standard
+
+When you're editing a component (or the file it lives in) for any other reason and you notice it violates 9.1–9.6, fix it in the same change. Don't ship "half-converted" files where a refactored component sits next to a legacy one. Don't manufacture a follow-up PR for the cleanup.
+
+The inverse also holds: don't drive-by rewrite components you aren't otherwise modifying. Other agents may have in-flight work in the same file (see [[feedback_multi_agent_coordination]]) and noise commits create rebase pain. The rule is "fix what you're already touching," not "sweep the repo."
+
+**Known cleanup hotspots** flagged by the initial audit (drop into these when you're already in the file):
+
+- `examples/website/src/shell.rs` — `layout_with_toc`-style helpers build TOC entries via `Vec::with_capacity` + `.push(ui!{...})`.
+- `examples/website/src/pages/type_safety.rs` — `section()` helper.
+- `examples/website/src/pages/targets.rs` — `target_row()` helper.
+- `examples/website/src/pages/further_reading.rs` — pre-sized vec extended in a loop.
+- `examples/website/src/pages/why_rust.rs` — inline `if let Some(src)` + conditional push instead of `ui!`-internal `if`.

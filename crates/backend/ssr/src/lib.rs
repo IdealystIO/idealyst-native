@@ -1004,7 +1004,11 @@ fn push_meta_prop(out: &mut String, property: &str, content: &str) {
 ///   *append* a second copy instead of replacing.
 ///
 /// `bundle_module` is developer-provided config, not user input.
-pub fn render_document(page: &RenderedPage, bundle_module: Option<&str>) -> String {
+pub fn render_document(
+    page: &RenderedPage,
+    bundle_module: Option<&str>,
+    extra_head: Option<&str>,
+) -> String {
     let m = &page.metadata;
     let mut doc = String::from("<!DOCTYPE html>\n<html lang=\"en\">\n<head>");
     doc.push_str("<meta charset=\"utf-8\">");
@@ -1066,6 +1070,16 @@ pub fn render_document(page: &RenderedPage, bundle_module: Option<&str>) -> Stri
         doc.push_str("<link rel=\"canonical\" href=\"");
         escape_attr(url, &mut doc);
         doc.push_str("\">");
+    }
+    // Caller-supplied head injection (favicon `<link>` tags today;
+    // any other build-time-baked head metadata as it lands). Spliced
+    // verbatim right before `</head>` so it sits after the framework-
+    // owned tags (charset / viewport / preloads / styles / title) and
+    // can override them by source order if it needs to.
+    if let Some(snippet) = extra_head {
+        if !snippet.is_empty() {
+            doc.push_str(snippet);
+        }
     }
     // Embed the viewport this page was rendered at, so a hydrating client
     // can seed the IDENTICAL value before its first render — making the
@@ -1420,7 +1434,7 @@ mod tests {
             },
             head_css: ".x{color:red}".into(),
         };
-        let doc = render_document(&page, Some("/pkg/app.js"));
+        let doc = render_document(&page, Some("/pkg/app.js"), None);
 
         assert!(doc.starts_with("<!DOCTYPE html>"));
         assert!(doc.contains("<title>Home</title>"));
@@ -1442,7 +1456,7 @@ mod tests {
             metadata: Default::default(),
             head_css: String::new(),
         };
-        let doc = render_document(&page, None);
+        let doc = render_document(&page, None, None);
         assert!(doc.contains(r#"<div id="app" data-ssr-viewport="1280x800"><div>hi</div></div>"#));
         assert!(!doc.contains("<script"), "no bundle => no script, got: {doc}");
     }
@@ -1456,6 +1470,50 @@ mod tests {
                    @font-face{font-weight:700;src:url(\"/fonts/B.ttf\");}\
                    .c{background-image:url(\"/img/x.png\")}";
         assert_eq!(font_src_urls(css), vec!["/fonts/A.ttf", "/fonts/B.ttf"]);
+    }
+
+    /// `extra_head` lets callers (the SSR wrapper binary, today) splice
+    /// favicon `<link>` tags — baked at build time from
+    /// `[package.metadata.idealyst.app.icon]` — into the document so
+    /// every SSR-rendered page references the same icon set the
+    /// `static_dir` path serves. The injection lands inside `<head>`,
+    /// before the closing tag, after the framework-owned metadata.
+    #[test]
+    fn render_document_splices_extra_head_inside_head() {
+        let page = RenderedPage {
+            html: "<div>hi</div>".into(),
+            metadata: Default::default(),
+            head_css: String::new(),
+        };
+        let snippet =
+            r#"<link rel="icon" type="image/x-icon" href="/favicon.ico" sizes="16x16">"#;
+        let doc = render_document(&page, None, Some(snippet));
+        assert!(
+            doc.contains(snippet),
+            "extra_head snippet must appear in the document, got: {doc}",
+        );
+        let snippet_pos = doc.find(snippet).unwrap();
+        let head_close = doc.find("</head>").unwrap();
+        assert!(
+            snippet_pos < head_close,
+            "extra_head must land BEFORE </head> (got snippet at {snippet_pos}, </head> at {head_close})",
+        );
+    }
+
+    /// Empty `extra_head` must produce no change — equivalent to
+    /// passing `None`. Lets the SSR wrapper always emit
+    /// `Some(EXTRA_HEAD.to_string())` without conditional code paths
+    /// for projects without an icon block.
+    #[test]
+    fn render_document_empty_extra_head_is_noop() {
+        let page = RenderedPage {
+            html: "<div>hi</div>".into(),
+            metadata: Default::default(),
+            head_css: String::new(),
+        };
+        let with_none = render_document(&page, None, None);
+        let with_empty = render_document(&page, None, Some(""));
+        assert_eq!(with_none, with_empty);
     }
 
     /// `render_document` preloads each linked font (with `crossorigin` +
@@ -1473,7 +1531,7 @@ mod tests {
                        .x{background-image:url(\"/img/bg.png\")}"
                 .into(),
         };
-        let doc = render_document(&page, Some("/pkg/app.js"));
+        let doc = render_document(&page, Some("/pkg/app.js"), None);
         assert!(
             doc.contains(
                 r#"<link rel="preload" as="font" crossorigin type="font/ttf" href="/fonts/Inter-Regular.ttf">"#

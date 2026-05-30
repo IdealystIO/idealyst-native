@@ -15,9 +15,9 @@
 //! }
 //! ```
 
-use runtime_core::{ui, Element, Reactive, StyleApplication, VariantEnum};
+use runtime_core::{component, ui, Element, Reactive, StyleApplication, VariantEnum};
 
-use crate::stylesheets::{Avatar, AvatarText};
+use crate::stylesheets::{Avatar as AvatarStyle, AvatarText};
 use crate::theme::IdeaThemeRef;
 
 pub use crate::stylesheets::{AvatarColor, AvatarSize};
@@ -48,7 +48,8 @@ impl Default for AvatarProps {
     }
 }
 
-pub fn avatar(props: &AvatarProps) -> Element {
+#[component]
+pub fn Avatar(props: &AvatarProps) -> Element {
     let size = props.size;
     let color = props.color;
 
@@ -56,7 +57,7 @@ pub fn avatar(props: &AvatarProps) -> Element {
         let _ = crate::theme_runtime::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-        StyleApplication::new(Avatar::sheet())
+        StyleApplication::new(AvatarStyle::sheet())
             .with("size", size.as_variant_str().to_string())
             .with("color", color.as_variant_str().to_string())
     };

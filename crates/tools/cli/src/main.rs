@@ -56,6 +56,9 @@ enum Command {
     Doctor(cmd::doctor::Args),
     /// Regenerate icons, splash, and other derived assets.
     Sync(cmd::sync::Args),
+    /// Inspect generated icons (preview as platform-style mockups,
+    /// list output paths, etc.).
+    Icon(cmd::icon::Args),
     /// Materialize a hand-editable copy of a generated platform project.
     Scaffold(cmd::scaffold::Args),
     /// Roku: transpile `#[method]`-tagged functions to BrightScript.
@@ -107,6 +110,7 @@ fn main() -> anyhow::Result<()> {
         Command::Clean(args) => cmd::clean::run(args),
         Command::Doctor(args) => cmd::doctor::run(args),
         Command::Sync(args) => cmd::sync::run(args),
+        Command::Icon(args) => cmd::icon::run(args),
         Command::Scaffold(args) => cmd::scaffold::run(args),
         Command::Brs(args) => cmd::brs::run(args),
         Command::Mcp(args) => cmd::mcp::run(args),

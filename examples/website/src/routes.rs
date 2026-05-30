@@ -78,6 +78,7 @@ pub fn label_for_route(name: &str) -> &'static str {
         }
     }
     match name {
+        "home" => "Home",
         "targets" => "Targets",
         _ => "",
     }
@@ -86,13 +87,6 @@ pub fn label_for_route(name: &str) -> &'static str {
 /// Sidebar layout — `title` is the section header; entries render in
 /// order beneath. The active route highlight matches by `name`.
 pub const SECTIONS: &[IndexSection] = &[
-    IndexSection {
-        title: "",
-        entries: &[
-            IndexEntry { route: &HOME_ROUTE, label: "Home" },
-            IndexEntry { route: &DEMO_ROUTE, label: "Demo" },
-        ],
-    },
     IndexSection {
         title: "Features",
         entries: &[
@@ -117,6 +111,7 @@ pub const SECTIONS: &[IndexSection] = &[
     IndexSection {
         title: "Reference",
         entries: &[
+            IndexEntry { route: &DEMO_ROUTE, label: "Demo" },
             IndexEntry { route: &BACKENDS_ROUTE, label: "Backends" },
             IndexEntry { route: &AGENTIC_ROUTE, label: "Robot & MCP" },
             IndexEntry { route: &ROADMAP_ROUTE, label: "Roadmap" },

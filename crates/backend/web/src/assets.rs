@@ -198,6 +198,7 @@ impl WebBackend {
             // Hydration: the SSR `<head>` already carries this exact rule
             // (we just marked it present above), so DON'T inject a
             // duplicate — the server's rule styles the live page.
+            #[cfg(feature = "hydrate")]
             if self.hydrating {
                 continue;
             }

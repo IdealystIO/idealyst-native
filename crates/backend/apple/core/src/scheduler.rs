@@ -210,8 +210,28 @@ fn dispatch_main_async(f: Box<dyn FnOnce() + 'static>) {
         Rc::new(RefCell::new(Some(f)));
     let cell_for_block = cell.clone();
     let block = StackBlock::new(move || {
-        if let Some(g) = cell_for_block.borrow_mut().take() {
-            g();
+        // Block is invoked through libdispatch's main-queue drain
+        // (extern "C"). A Rust panic propagating out aborts the process
+        // with a stack trace that points at `panic_cannot_unwind` /
+        // `_dispatch_call_block_and_release` — the panic message
+        // disappears. Mirror the catch_unwind pattern from
+        // `render_loop.rs`, `imp/mod.rs::schedule_layout_pass`, and
+        // `imp/portal.rs` so microtask panics surface as a readable
+        // line on stderr instead.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(g) = cell_for_block.borrow_mut().take() {
+                g();
+            }
+        }));
+        if let Err(payload) = result {
+            let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+                (*s).to_string()
+            } else {
+                "<non-string panic payload>".to_string()
+            };
+            eprintln!("[backend-apple-core] microtask panic: {msg}");
         }
     });
     // libdispatch needs a heap-allocated block (StackBlock lives on

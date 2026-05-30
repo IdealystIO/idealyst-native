@@ -39,7 +39,7 @@ pub fn run(args: Args) -> Result<()> {
         ))
         .context("serve");
     }
-    serve_static(&args.host, args.port, &args.dir, None, None, None)
+    serve_static(&args.host, args.port, &args.dir, None, None, None, None, None)
 }
 
 #[cfg(test)]

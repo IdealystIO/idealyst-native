@@ -13,6 +13,7 @@ use runtime_core::scheduling::{ScheduleHandle, Scheduler};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
+#[cfg(feature = "hydrate")]
 thread_local! {
     /// SSR-hydration microtask buffer. `None` normally (dispatch via
     /// `Promise.then`). While hydrating, microtasks buffer here and
@@ -26,6 +27,7 @@ thread_local! {
 
 /// Begin buffering microtasks for the hydration window (called by
 /// `WebBackend::hydrate` before `mount`).
+#[cfg(feature = "hydrate")]
 pub(crate) fn begin_hydration_buffering() {
     HYDRATION_BUFFER.with(|b| {
         let mut slot = b.borrow_mut();
@@ -37,6 +39,7 @@ pub(crate) fn begin_hydration_buffering() {
 
 /// Stop buffering (called by `WebBackend::finish`). Any still-buffered
 /// tasks flush via the normal async path so none are dropped.
+#[cfg(feature = "hydrate")]
 pub(crate) fn end_hydration_buffering() {
     let leftover = HYDRATION_BUFFER.with(|b| b.borrow_mut().take());
     if let Some(tasks) = leftover {
@@ -46,6 +49,7 @@ pub(crate) fn end_hydration_buffering() {
     }
 }
 
+#[cfg(feature = "hydrate")]
 fn drain_hydration_buffer() {
     loop {
         let next =
@@ -80,19 +84,23 @@ struct WebScheduler;
 
 impl Scheduler for WebScheduler {
     fn schedule_microtask(&self, f: Box<dyn FnOnce() + 'static>) {
-        let buffering = HYDRATION_BUFFER.with(|b| b.borrow().is_some());
-        if buffering {
-            HYDRATION_BUFFER.with(|b| {
-                if let Some(q) = b.borrow_mut().as_mut() {
-                    q.push_back(f);
-                }
-            });
-            return;
+        #[cfg(feature = "hydrate")]
+        {
+            let buffering = HYDRATION_BUFFER.with(|b| b.borrow().is_some());
+            if buffering {
+                HYDRATION_BUFFER.with(|b| {
+                    if let Some(q) = b.borrow_mut().as_mut() {
+                        q.push_back(f);
+                    }
+                });
+                return;
+            }
         }
         dispatch_via_promise(f);
     }
 
     fn drain_buffered_microtasks(&self) {
+        #[cfg(feature = "hydrate")]
         drain_hydration_buffer();
     }
 

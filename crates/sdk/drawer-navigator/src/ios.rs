@@ -10,9 +10,11 @@
 
 use crate::{
     BarButton, DrawerCmd, DrawerHandle, DrawerPresentation, DrawerScreenOptions, DrawerSide,
-    DrawerSlotProps, DrawerType, MountPolicy, DRAWER_OPS,
+    DrawerSlotProps, DrawerType, LeadingIntent, MountPolicy, SlotProps, TrailingIntent,
+    DRAWER_OPS,
 };
 use backend_ios::{with_backend, IosBackend, IosNode};
+use runtime_core::IntoElement;
 use ios_navigator_helpers::{
     self as helpers, BarButton as HelpersBarButton, DrawerCmd as HelpersDrawerCmd,
     DrawerSide as HelpersDrawerSide, DrawerType as HelpersDrawerType, IosDrawerCallbacks,
@@ -176,16 +178,33 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
         // Sidebar build + attach — deferred so the outer
         // `backend.borrow_mut()` window (held across this `init` call)
         // is released before the walker re-enters via `build_node`.
-        if let Some(sidebar_builder) = presentation.sidebar.borrow().clone() {
+        //
+        // Two API surfaces during the SlotProps migration:
+        //   1. `leading_slot` — new shape, builder takes `SlotProps`
+        //      (preferred when set, matches web/Android handlers).
+        //   2. `sidebar` — legacy, builder takes `DrawerSlotProps`.
+        //
+        // The website calls `.leading_with(...)`, which only
+        // populates `leading_slot`. Without this branch the iOS
+        // sidebar was never built — the menu button opened the
+        // scrim but no panel slid in.
+        let leading_slot_owned = presentation.leading_slot.borrow_mut().take();
+        let legacy_sidebar = presentation.sidebar.borrow().clone();
+        if leading_slot_owned.is_some() || legacy_sidebar.is_some() {
             let active_route = nav_state.active_route;
             let active_path = nav_state.active_path.clone();
             let depth = nav_state.depth;
             let can_go_back = nav_state.can_go_back;
             let is_open_sig = presentation.is_open;
             let control_for_select = control.clone();
+            let control_for_open = control.clone();
+            let control_for_close = control.clone();
+            let control_for_pop = control.clone();
+            let control_for_legacy_close = control.clone();
             let control_for_ambient = control.clone();
-            let control_for_close = control;
+            let _ = control;
             let node_for_attach = node.clone();
+            let drawer_width = presentation.drawer_width;
             runtime_core::schedule_microtask(move || {
                 let on_select: Rc<dyn Fn(&'static str)> = {
                     let c = control_for_select;
@@ -198,34 +217,115 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
                         });
                     })
                 };
-                let on_close: Rc<dyn Fn()> = {
-                    let c = control_for_close;
-                    Rc::new(move || {
-                        c.dispatch(NavCommand::Custom(Rc::new(HelpersDrawerCmd::Close)));
-                    })
-                };
-                let props = DrawerSlotProps {
-                    active_route,
-                    active_path,
-                    depth,
-                    can_go_back,
-                    is_open: is_open_sig,
-                    on_select,
-                    on_close,
-                };
                 // Push this navigator onto the ambient stack so any
-                // `Link` primitives built inside `sidebar_builder`
-                // capture it as their target. The sidebar microtask
-                // runs OUTSIDE any navigator's `mount_screen`, so
-                // without this `Link::new` captures `target=None`
-                // and `on_activate` silently no-ops on tap. Guard
-                // pops at end of scope.
+                // `Link` primitives built inside the builder capture
+                // it as their target. The sidebar microtask runs
+                // OUTSIDE any navigator's `mount_screen`, so without
+                // this `Link::new` captures `target=None` and
+                // `on_activate` silently no-ops on tap. Guard pops at
+                // end of scope.
                 let _ambient =
                     runtime_core::primitives::navigator::AmbientNavGuard::push(
                         control_for_ambient.clone(),
                     );
-                let sidebar_primitive = sidebar_builder(props);
-                let sidebar_node = build_node(sidebar_primitive);
+
+                let sidebar_primitive: runtime_core::Element =
+                    if let Some(builder) = leading_slot_owned {
+                        let open_drawer: Rc<dyn Fn()> = {
+                            let c = control_for_open;
+                            Rc::new(move || {
+                                c.dispatch(NavCommand::Custom(Rc::new(
+                                    HelpersDrawerCmd::Open,
+                                )));
+                            })
+                        };
+                        let close_drawer: Rc<dyn Fn()> = {
+                            let c = control_for_close;
+                            Rc::new(move || {
+                                c.dispatch(NavCommand::Custom(Rc::new(
+                                    HelpersDrawerCmd::Close,
+                                )));
+                            })
+                        };
+                        let pop: Rc<dyn Fn()> = {
+                            let c = control_for_pop;
+                            Rc::new(move || {
+                                c.dispatch(NavCommand::Pop);
+                            })
+                        };
+                        // SlotProps fields the iOS drawer doesn't yet
+                        // track natively (leading/trailing intent,
+                        // screen title) get default-valued signals;
+                        // the website's sidebar only reads
+                        // `active_route` so these defaults are
+                        // observably equivalent. Scroll context is
+                        // None — UINavigationController owns the
+                        // body's scroll, not the drawer.
+                        let props = SlotProps {
+                            active_route,
+                            active_path,
+                            depth,
+                            can_go_back,
+                            is_open: is_open_sig,
+                            leading_intent: runtime_core::signal!(LeadingIntent::OpenDrawer),
+                            trailing_intent: runtime_core::signal!(TrailingIntent::None),
+                            screen_title: runtime_core::signal!(String::new()),
+                            on_select,
+                            open_drawer,
+                            close_drawer,
+                            pop,
+                            scroll: None,
+                        };
+                        builder(props)
+                    } else if let Some(sidebar_builder) = legacy_sidebar {
+                        let on_close: Rc<dyn Fn()> = {
+                            let c = control_for_legacy_close;
+                            Rc::new(move || {
+                                c.dispatch(NavCommand::Custom(Rc::new(
+                                    HelpersDrawerCmd::Close,
+                                )));
+                            })
+                        };
+                        let props = DrawerSlotProps {
+                            active_route,
+                            active_path,
+                            depth,
+                            can_go_back,
+                            is_open: is_open_sig,
+                            on_select,
+                            on_close,
+                        };
+                        sidebar_builder(props)
+                    } else {
+                        return;
+                    };
+
+                // Wrap so the sidebar's outermost Taffy node has an
+                // explicit width matching the configured drawer
+                // width. The user-supplied sidebar root typically has
+                // `width: auto`; without this wrap Taffy lays it out
+                // at viewport width while the iOS UIView is
+                // simultaneously pinned to `drawer_width` via Auto
+                // Layout, so the inner nav links overflow past the
+                // visible clip. With the wrap, Taffy and Auto Layout
+                // agree on the width.
+                let sized_sidebar: runtime_core::Element =
+                    runtime_core::view(vec![sidebar_primitive])
+                        .with_style(std::rc::Rc::new(
+                            runtime_core::StyleSheet::r#static(
+                                runtime_core::StyleRules {
+                                    width: Some(
+                                        runtime_core::Length::Px(drawer_width).into(),
+                                    ),
+                                    height: Some(
+                                        runtime_core::Length::pct(100.0).into(),
+                                    ),
+                                    ..Default::default()
+                                },
+                            ),
+                        ))
+                        .into_element();
+                let sidebar_node = build_node(sized_sidebar);
                 let _ = with_backend(|b| {
                     helpers::drawer_attach_sidebar(b.mtm(), &node_for_attach, sidebar_node);
                 });

@@ -24,7 +24,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, IntoElement, Element, Reactive, StyleApplication};
+use runtime_core::{component, ui, IntoElement, Element, Reactive, StyleApplication};
 
 use idea_theme::extensible::{installed_alert_sheet, tone, variant, ToneRef, VariantRef};
 
@@ -57,7 +57,8 @@ impl Default for AlertProps {
     }
 }
 
-pub fn alert(props: &AlertProps) -> Element {
+#[component]
+pub fn Alert(props: &AlertProps) -> Element {
     let title = props.title.clone();
     let tone = props.tone.clone();
     let variant = props.variant.clone();

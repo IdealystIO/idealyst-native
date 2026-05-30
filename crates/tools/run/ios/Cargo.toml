@@ -8,3 +8,8 @@ description = "Build and launch an idealyst app on iOS Simulator without an Xcod
 [dependencies]
 anyhow = "1"
 build-ios = { workspace = true }
+# Generates the .app's icon PNGs (AppIcon{20,29,40,60,76}x{pt}@2x/@3x
+# + AppIcon-1024) from `[package.metadata.idealyst.app.icon]` and
+# returns the entry list this crate splices into Info.plist's
+# CFBundleIcons block. No-op when the icon block is absent.
+icon-gen = { workspace = true }

@@ -10,3 +10,8 @@ anyhow = "1"
 build-android = { workspace = true }
 build-ios = { workspace = true }
 serde_json = "1"
+# Generates `mipmap-*dpi/ic_launcher.png` (and the round variants)
+# from `[package.metadata.idealyst.app.icon]`. The output is then
+# compiled to a `.flata` via `aapt2 compile --dir` and passed to
+# `aapt2 link -R` alongside the AAR-derived flats.
+icon-gen = { workspace = true }

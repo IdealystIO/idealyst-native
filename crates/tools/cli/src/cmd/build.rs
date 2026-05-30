@@ -281,6 +281,10 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
             bundle_out_dir: bundle_out_dir.clone(),
             gzip: args.gzip,
             strip_panics: args.strip_panics,
+            // Compile in hydration when SSG/SSR is also being built —
+            // the emitted HTML expects the wasm to adopt it on boot.
+            // Pure SPA builds drop the machinery for a smaller wasm.
+            hydrate: args.ssg || args.ssr,
         },
     )?;
     let bundle = artifact

@@ -29,6 +29,13 @@ pub struct ServeConfig {
     /// hydrating, the built web bundle (`/pkg/*.js`, `*.wasm`). `None`
     /// serves no files (text falls back to a system font).
     pub static_dir: Option<PathBuf>,
+    /// Extra HTML spliced into the `<head>` of every rendered page.
+    /// `build-ssr`'s wrapper template bakes
+    /// `icon_gen::web_icon_link_tags()` in here when the project has
+    /// an `[icon]` block, so the SSR-rendered HTML references the same
+    /// favicon set the static-file path serves out of `static_dir`.
+    /// `None` (or empty) suppresses the injection.
+    pub extra_head: Option<String>,
 }
 
 /// Serve `app` over HTTP at `addr` (e.g. `"127.0.0.1:8080"`). Blocks
@@ -67,10 +74,11 @@ where
         let app = app.clone();
         let register = register.clone();
         let bundle = config.bundle_module.clone();
+        let extra_head = config.extra_head.clone();
         let req_path = path.clone();
         let html = std::thread::spawn(move || {
             let page = render_path_with(&req_path, register, app);
-            render_document(&page, bundle.as_deref())
+            render_document(&page, bundle.as_deref(), extra_head.as_deref())
         })
         .join()
         .unwrap_or_else(|_| {

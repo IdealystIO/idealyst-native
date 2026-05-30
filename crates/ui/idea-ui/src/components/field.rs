@@ -25,8 +25,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    ui, Easing, Length, Element, Reactive, Signal, StyleApplication, StyleRules, StyleSheet,
-    Tokenized, Transition, VariantEnum, VariantSet,
+    component, ui, Easing, Length, Element, Reactive, Signal, StyleApplication, StyleRules,
+    StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
 };
 
 use idea_theme::active_theme;
@@ -256,7 +256,8 @@ fn size_key(size: FieldSize) -> &'static str {
     size.as_variant_str()
 }
 
-pub fn field(props: &FieldProps) -> Element {
+#[component]
+pub fn Field(props: &FieldProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
     let placeholder = props.placeholder.clone();

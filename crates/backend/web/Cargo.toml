@@ -8,6 +8,24 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [features]
+# Compile in the in-place hydration machinery: cursor + remount
+# bookkeeping in `WebBackend::hydrate`, the `hydrate_next` /
+# `hydrate_note_fresh` cursor-aware paths in every primitive, the
+# adopt/suspend helpers SDK navigators use, and the diagnostic
+# `console.warn` divergence reporter. Adds a few KB of wasm — worth it
+# when serving SSG/SSR HTML so the bundle adopts the server's DOM
+# instead of clearing + rebuilding. SPA-only apps that don't ship
+# pre-rendered HTML leave it off — the stubs in this crate make
+# `WebBackend::hydrate(...)` fall back to the clear-and-rebuild path
+# (same flicker as a fresh boot, but smaller bundle).
+#
+# OFF by default so an SDK crate's `backend-web = { workspace = true }`
+# (which carries no explicit feature opt-ins) doesn't drag the
+# machinery into every consumer. The CLI's `build_web` enables it
+# explicitly on the generated wrapper when SSG/SSR is being built
+# alongside; SPA-only wrappers leave it off and DCE removes the
+# cursor + diagnostic + remount code from the wasm.
+hydrate = []
 # Forwards to runtime-core's `debug-stats`. When on, the web
 # backend reports per-phase timings (`set_attribute`, `insert_rule`,
 # etc.) into the framework's phase-counter aggregator so apply-style

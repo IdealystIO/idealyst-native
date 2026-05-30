@@ -9,7 +9,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <application
         android:label="{{APP_NAME}}"
-        android:hasCode="true">
+        android:hasCode="true"{{ICON_ATTRS}}>
         <!-- Dev-server URL the runtime-server client connects to. Filled in by -->
         <!-- the CLI at `idealyst dev` time: `ws://127.0.0.1:<port>` via `adb -->
         <!-- reverse` for emulator builds, `ws://<lan-ip>:<port>` for physical -->

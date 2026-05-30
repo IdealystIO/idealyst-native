@@ -24,7 +24,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, IntoElement, Element, Reactive, StyleApplication};
+use runtime_core::{component, ui, IntoElement, Element, Reactive, StyleApplication};
 
 use idea_theme::extensible::{installed_tag_sheet, tone, variant, ToneRef, VariantRef};
 
@@ -51,7 +51,8 @@ impl Default for TagProps {
     }
 }
 
-pub fn tag(props: &TagProps) -> Element {
+#[component]
+pub fn Tag(props: &TagProps) -> Element {
     let label = props.label.clone();
     let tone = props.tone.clone();
     let variant = props.variant.clone();

@@ -22,8 +22,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    ui, ChildList, Easing, Length, Element, StyleApplication, StyleRules, StyleSheet, Tokenized,
-    Transition, VariantEnum, VariantSet,
+    component, ui, ChildList, Easing, Length, Element, StyleApplication, StyleRules, StyleSheet,
+    Tokenized, Transition, VariantEnum, VariantSet,
 };
 
 use idea_theme::active_theme;
@@ -209,7 +209,8 @@ impl Default for CardProps {
     }
 }
 
-pub fn card(props: CardProps) -> Element {
+#[component(children)]
+pub fn Card(props: CardProps) -> Element {
     let variant_key = props.variant.key().to_string();
     let padding_key = props.padding.as_variant_str().to_string();
 

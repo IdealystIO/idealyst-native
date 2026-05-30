@@ -23,7 +23,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{text, IntoElement, Element, StyleApplication, VariantEnum};
+use runtime_core::{component, text, IntoElement, Element, StyleApplication, VariantEnum};
 
 use idea_theme::extensible::{installed_icon_button_sheet, tone, variant, ToneRef, VariantRef};
 
@@ -52,7 +52,8 @@ impl Default for IconButtonProps {
     }
 }
 
-pub fn icon_button(props: &IconButtonProps) -> Element {
+#[component]
+pub fn IconButton(props: &IconButtonProps) -> Element {
     let glyph = props.glyph.clone();
     let on_click = props.on_click.clone();
     let tone = props.tone.clone();

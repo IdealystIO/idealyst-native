@@ -32,9 +32,10 @@ pub fn page() -> Element {
             PageHeader(
                 title = "Truly cross-platform",
                 blurb = "The same Rust code renders natively on phones, desktops, the browser, \
-                 a GPU surface, and the terminal. Not a shared abstraction painted on \
-                 top of each platform \u{2014} the platform's own toolkit, driven \
-                 directly, with behavior that converges no matter where it runs.",
+                 a GPU surface, even a terminal. Not a fan of the implementation decisions of \
+                 a particular platform? Your niche target doesn't have a premade implementation? \
+                 Implementing one trait is all it takes to add a new backend and get the rest \
+                 of the ecosystem for free.",
             )
             PageSection(handle = one_tree_ref) { one_tree() }
             PageSection(handle = native_ref) { native_widgets() }

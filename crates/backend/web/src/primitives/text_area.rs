@@ -21,11 +21,19 @@ pub(crate) fn create(
     on_change: Rc<dyn Fn(String)>,
     on_key_down: Option<KeyDownHandler>,
 ) -> Node {
-    let textarea: web_sys::HtmlTextAreaElement = b
-        .doc
-        .create_element("textarea")
-        .expect("create_element textarea failed")
-        .unchecked_into();
+    // Hydration adoption — see `text_input::create` for the rationale.
+    let textarea: web_sys::HtmlTextAreaElement = if let Some(el) = b.hydrate_next("textarea") {
+        el.unchecked_into()
+    } else {
+        let fresh: web_sys::HtmlTextAreaElement = b
+            .doc
+            .create_element("textarea")
+            .expect("create_element textarea failed")
+            .unchecked_into();
+        let node: Node = fresh.clone().unchecked_into();
+        b.hydrate_note_fresh(&node);
+        fresh
+    };
     textarea.set_value(initial_value);
     if let Some(p) = placeholder {
         textarea.set_placeholder(p);

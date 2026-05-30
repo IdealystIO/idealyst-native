@@ -5,9 +5,9 @@
 //! (centering a loading spinner, an empty-state illustration, etc.)
 //! doesn't need a one-off stylesheet.
 
-use runtime_core::{ui, ChildList, Element};
+use runtime_core::{component, ui, ChildList, Element};
 
-use crate::stylesheets::Center;
+use crate::stylesheets::Center as CenterStyle;
 
 #[derive(Default)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
@@ -15,8 +15,9 @@ pub struct CenterProps {
     pub children: Vec<Element>,
 }
 
-pub fn center(props: CenterProps) -> Element {
-    let style = Center();
+#[component(children)]
+pub fn Center(props: CenterProps) -> Element {
+    let style = CenterStyle();
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut children);

@@ -208,6 +208,17 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         Some(p) => format!("ws://127.0.0.1:{p}"),
         None => String::new(),
     };
+
+    // Generate the project's app icon into a project-`res/` dir.
+    // Returned flat (compiled below) goes into aapt2 link alongside
+    // the AAR flats; `icon_attrs` populates the manifest template's
+    // `{{ICON_ATTRS}}` placeholder so `android:icon` only appears
+    // when there's actually an icon to reference.
+    let project_res = build_dir.join("project-res");
+    let project_icon_flat = build_dir.join("project-res.flata");
+    let icon_attrs =
+        sync_android_icons_into_res(&project_dir, &project_res, &build_tools, &project_icon_flat)?;
+
     fs::write(
         &manifest_xml,
         render(manifest_tmpl, &[
@@ -215,6 +226,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             ("APP_NAME", &xml_escape(&manifest.app.name)),
             ("APP_ID", &xml_escape(manifest.app.require_bundle_id()?)),
             ("AAS_URL", &xml_escape(&aas_url)),
+            ("ICON_ATTRS", &icon_attrs),
         ]),
     )?;
 
@@ -232,12 +244,20 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // requirements (declared in each SDK's
     // `[package.metadata.idealyst.android]`).
     let wrapper_manifest = so.wrapper_dir.join("Cargo.toml");
-    let runtime = kotlin_runtime::build_runtime(
+    let mut runtime = kotlin_runtime::build_runtime(
         &build_dir,
         &android_jar,
         &build_tools,
         &wrapper_manifest,
     )?;
+    // Splice the project's compiled icon flat into the aapt2-link
+    // resource set. Empty when no icons were generated — `aapt2
+    // compile` only produces a flat when there's input, and
+    // `sync_android_icons_into_res` returns a fresh-empty path
+    // string in that case which we filter out.
+    if project_icon_flat.is_file() {
+        runtime.aar_resource_flats.push(project_icon_flat.clone());
+    }
 
     // ── 6. aapt2 link → APK + generated R.java ───────────────────
     let unsigned_apk = build_dir.join("unsigned.apk");
@@ -545,6 +565,50 @@ fn run_d8(
         anyhow::bail!("d8 exited with {status}");
     }
     Ok(())
+}
+
+/// Generate the Android app icons into a project-`res/` tree, compile
+/// the tree with `aapt2 compile --dir`, and return the manifest-attr
+/// snippet (`android:icon=…`) to splice into `<application>`.
+///
+/// Returns `Ok(String::new())` and writes nothing when the project's
+/// manifest has no `[package.metadata.idealyst.app.icon]` block.
+/// `out_flat` is only created in the configured case — callers check
+/// its existence before pushing it into the aapt2-link resource set.
+fn sync_android_icons_into_res(
+    project_dir: &Path,
+    res_dir: &Path,
+    build_tools: &Path,
+    out_flat: &Path,
+) -> Result<String> {
+    let Some(config) = icon_gen::load_config_from_manifest(project_dir)? else {
+        return Ok(String::new());
+    };
+    let block = config.resolved_for(icon_gen::Target::Android);
+    if icon_gen::sync_android_icons(Some(&block), res_dir)?.is_none() {
+        return Ok(String::new());
+    }
+    eprintln!(
+        "[run-android] aapt2 compile (project icons) → {}",
+        out_flat.display()
+    );
+    let status = Command::new(build_tools.join("aapt2"))
+        .arg("compile")
+        .arg("--dir")
+        .arg(res_dir)
+        .arg("-o")
+        .arg(out_flat)
+        .status()
+        .with_context(|| "spawn aapt2 compile for project icons")?;
+    if !status.success() {
+        anyhow::bail!("aapt2 compile project icons exited with {status}");
+    }
+    // Leading space + attr pair so the template can splice this
+    // directly into the `<application … {{ICON_ATTRS}}>` opening
+    // tag without breaking when icons aren't configured (empty
+    // string in that case).
+    Ok(" android:icon=\"@mipmap/ic_launcher\" android:roundIcon=\"@mipmap/ic_launcher_round\""
+        .to_string())
 }
 
 fn run_aapt2_link(

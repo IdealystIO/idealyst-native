@@ -788,6 +788,22 @@ fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
         font_paths: manifest.app.web.preload_fonts.clone(),
     });
 
+    // Framework-managed dev assets — favicons today; other generated
+    // dev-time outputs as they land. Lives under `target/idealyst/dev/web/`
+    // by convention (matches what build writes to its staging dir, but
+    // out of the way of the user's project tree). `dev-http` overlays
+    // this on top of the project root so `/favicon.ico` resolves
+    // without any committed file.
+    //
+    // In local mode we allocate the `ReloadSignal` up-front so the
+    // icon-source watcher can bump it on SVG edits — same signal the
+    // wasm rebuild watcher uses, so SSE clients reload on any change
+    // regardless of origin. Runtime-server mode skips the watcher
+    // (its hot-patch loop is separate; favicon updates wait for a
+    // manual reload, which is a rare-edge concern).
+    let local_signal = (args.local).then(dev_reload::ReloadSignal::new);
+    let (overlay_ctx, head_ctx) = sync_dev_web_overlay(dir, local_signal.clone())?;
+
     if !args.local {
         // ── 1. wasm shim that connects to the runtime-server host ────────────
         if !args.no_build {
@@ -854,11 +870,23 @@ fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
         // (which blocks forever) and TCP-polls until the bind lands
         // so we don't beat the server to the punch.
         spawn_browser_opener(&args.host, args.port);
-        serve_static(&args.host, args.port, dir, None, Some(ctx), preload_ctx)?;
+        serve_static(
+            &args.host,
+            args.port,
+            dir,
+            None,
+            Some(ctx),
+            preload_ctx,
+            overlay_ctx.clone(),
+            head_ctx.clone(),
+        )?;
         Ok(())
     } else {
         // ── Local-render mode: livereload-driven hot-reload. ───────
-        let signal = dev_reload::ReloadSignal::new();
+        // Signal was allocated above so the icon-source watcher could
+        // attach to it; reuse it for the wasm rebuild watcher and the
+        // SSE stream so all change sources fan into one reload event.
+        let signal = local_signal.expect("local_signal allocated for local mode");
         if !args.no_build {
             // `dev_reload::start_with` does the first build
             // synchronously and then keeps a watcher thread alive in
@@ -891,9 +919,106 @@ fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
             args.host, args.port
         );
         spawn_browser_opener(&args.host, args.port);
-        serve_static(&args.host, args.port, dir, Some(ctx), None, preload_ctx)?;
+        serve_static(
+            &args.host,
+            args.port,
+            dir,
+            Some(ctx),
+            None,
+            preload_ctx,
+            overlay_ctx,
+            head_ctx,
+        )?;
         Ok(())
     }
+}
+
+/// Generate dev-time framework assets (favicons today) into
+/// `<project>/target/idealyst/dev/web/` and produce the dev-http
+/// contexts that overlay-serve them and splice the corresponding
+/// `<head>` tags into served HTML. Returns `(None, None)` when the
+/// project has no `[package.metadata.idealyst.app.icon]` block —
+/// nothing to overlay, nothing to inject.
+///
+/// Also spawns an SVG-source watcher when `reload_signal` is
+/// supplied: when the project's icon source files change, the
+/// closure re-runs `sync_web_icons` (cache busts on content change)
+/// and bumps the signal so connected browsers reload. Detached
+/// thread; runs for the lifetime of the dev server.
+fn sync_dev_web_overlay(
+    project_dir: &Path,
+    reload_signal: Option<Arc<dev_reload::ReloadSignal>>,
+) -> Result<(
+    Option<dev_http::OverlayContext>,
+    Option<dev_http::HeadInjectionContext>,
+)> {
+    let Some(config) = icon_gen::load_config_from_manifest(project_dir)? else {
+        return Ok((None, None));
+    };
+    let block = config.resolved_for(icon_gen::Target::Web);
+    let overlay_dir = project_dir
+        .join("target")
+        .join("idealyst")
+        .join("dev")
+        .join("web");
+    if icon_gen::sync_web_icons(Some(&block), &overlay_dir)?.is_none() {
+        return Ok((None, None));
+    }
+    crate::dlog!(
+        "dev web",
+        "icon overlay → {} (favicon.ico + 192/512/180)",
+        overlay_dir.display()
+    );
+
+    // Spawn the SVG watcher. The block carries already-canonical
+    // paths to the source/foreground SVGs; we hand them straight
+    // to the watcher and rerun the same sync on change. The
+    // closure rebuilds the resolved block fresh each time so a
+    // mid-session manifest edit (e.g. swapping `foreground` to a
+    // different file) is picked up too.
+    if let Some(signal) = reload_signal {
+        let mut watch_paths = Vec::new();
+        if let Some(p) = block.source.as_ref() {
+            watch_paths.push(p.clone());
+        }
+        if let Some(p) = block.foreground.as_ref() {
+            watch_paths.push(p.clone());
+        }
+        // Also watch Cargo.toml so manifest-level changes (gradient
+        // stops, padding, swapping the source path) trigger a
+        // regen. dev-reload's main watcher already covers
+        // Cargo.toml for code rebuilds, but it doesn't know to
+        // also bump icons.
+        watch_paths.push(project_dir.join("Cargo.toml"));
+        let project_owned = project_dir.to_path_buf();
+        let overlay_owned = overlay_dir.clone();
+        let handle = dev_reload::start_watch(
+            watch_paths,
+            signal,
+            "icon",
+            move || {
+                let cfg = icon_gen::load_config_from_manifest(&project_owned)?;
+                let Some(cfg) = cfg else {
+                    return Ok(());
+                };
+                let block = cfg.resolved_for(icon_gen::Target::Web);
+                icon_gen::sync_web_icons(Some(&block), &overlay_owned)?;
+                Ok(())
+            },
+        )?;
+        // Detach: the watcher lives for the lifetime of the dev
+        // server, same as dev-reload's main watcher handle.
+        std::mem::forget(handle);
+    }
+
+    Ok((
+        Some(dev_http::OverlayContext {
+            roots: vec![overlay_dir],
+        }),
+        Some(dev_http::HeadInjectionContext {
+            html: icon_gen::web_icon_link_tags(),
+        }),
+    ))
 }
 
 /// SSR launcher — builds the wasm bundle (so the SSR server can serve
@@ -939,6 +1064,9 @@ fn launch_ssr(
                 bundle_out_dir: Some(bundle_dir.clone()),
                 gzip: false,
                 strip_panics: false,
+                // Always on in `dev --ssr` mode — the bundle is going
+                // to hydrate the server's DOM.
+                hydrate: true,
             },
         )
         .with_context(|| "wasm build for SSR mode failed")?;

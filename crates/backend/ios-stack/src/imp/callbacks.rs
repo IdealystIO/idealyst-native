@@ -195,10 +195,13 @@ declare_class!(
     }
 
     unsafe impl MetalView {
-        /// Override +layerClass to return [CAMetalLayer class].
+        /// Override +layerClass to return [CAMetalLayer class]. Return
+        /// type must be `&'static AnyClass` (objc encoding `#`); a raw
+        /// pointer encodes as `^v` and objc2-0.5+ rejects the class
+        /// declaration with a runtime panic during `register_class`.
         #[method(layerClass)]
-        fn layer_class() -> *const std::ffi::c_void {
-            objc2::class!(CAMetalLayer) as *const _ as *const std::ffi::c_void
+        fn layer_class() -> &'static objc2::runtime::AnyClass {
+            objc2::class!(CAMetalLayer)
         }
     }
 );

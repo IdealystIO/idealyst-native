@@ -109,6 +109,25 @@ targets   = ["web", "ios", "android"]
 [package.metadata.idealyst.app.splash]
 duration_ms = 0
 
+# Build-time icon pipeline (icon-gen). One base block per the
+# common identity, plus a per-platform `[icon.web]` override for the
+# favicon — which uses the already-colored outlined glyph so the
+# tab-strip thumbnail is legible without a backdrop.
+#
+# The base `foreground` + `background` pair drives iOS / Android
+# home-screen icons: the plain stroked `light.svg` glyph painted
+# over a yellow-to-white linear gradient (CSS-style angle, 180° =
+# top-to-bottom).
+[package.metadata.idealyst.app.icon]
+foreground = "assets/light.svg"
+background = { kind = "linear", angle = 180, stops = [
+    { offset = 0.0, color = "#EFDD74" },
+    { offset = 1.0, color = "#ffffff" },
+] }
+
+[package.metadata.idealyst.app.icon.web]
+source = "assets/light-outlined.svg"
+
 # Preload the Inter weights the marketing site renders above the fold.
 # The build (`stage_bundle`) injects `<link rel="preload" as="font" crossorigin>`
 # tags into the staged `index.html`, and the dev server (`dev-http`) does

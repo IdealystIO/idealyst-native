@@ -98,6 +98,40 @@ pub struct PreloadContext {
     pub font_paths: Vec<String>,
 }
 
+/// Additional read-only directories overlaid on top of the main
+/// serve root. Used by `idealyst dev` to expose framework-managed
+/// generated assets (favicons today; other dev-time outputs as they
+/// land) from `target/idealyst/dev/web/` without polluting the
+/// project tree. Each request walks the main root first, then the
+/// overlay roots in order; the first hit wins.
+///
+/// The SPA fallback (`index.html` for unknown text/html paths) is
+/// still served from the main root only — overlays don't shadow
+/// the user's application shell.
+///
+/// Path-traversal safety: every overlay is canonicalized at
+/// startup, and every resolved request path is verified to live
+/// under one of the canonical roots before being served.
+#[derive(Clone, Default)]
+pub struct OverlayContext {
+    pub roots: Vec<PathBuf>,
+}
+
+/// HTML snippet spliced into the `<head>` of every served HTML
+/// response, after font preloads and before the closing `</head>`.
+/// `idealyst dev` populates this with `icon_gen::web_icon_link_tags()`
+/// when the project declares an icon block, so the dev loop's tag
+/// set matches what `build-web` ships in the deployed bundle.
+///
+/// Empty string = no injection. The deliberately generic field name
+/// (rather than `icon_link_tags`) reflects the future direction —
+/// other manifest-driven head injections (meta viewport, OG tags,
+/// etc.) would chain into the same context.
+#[derive(Clone, Default)]
+pub struct HeadInjectionContext {
+    pub html: String,
+}
+
 /// Inlined into the `<body>` of every served HTML response when
 /// reload is active. Holds an `EventSource` open against
 /// [`RELOAD_SSE_URL`]; reloads the page when the generation in the
@@ -125,6 +159,8 @@ pub fn serve_static(
     reload: Option<ReloadContext>,
     aas: Option<AasContext>,
     preload: Option<PreloadContext>,
+    overlay: Option<OverlayContext>,
+    head: Option<HeadInjectionContext>,
 ) -> Result<()> {
     let addr = format!("{host}:{port}");
     let server = Server::http(&addr)
@@ -133,19 +169,46 @@ pub fn serve_static(
     let root = fs::canonicalize(root)
         .with_context(|| format!("cannot canonicalize serve root {}", root.display()))?;
 
+    // Canonicalize each overlay root once at startup. Missing
+    // overlay paths are dropped with a warning rather than failing
+    // the whole launch — a project that doesn't have icons yet
+    // shouldn't 500 the dev server.
+    let overlay_roots: Vec<PathBuf> = overlay
+        .as_ref()
+        .map(|o| o.roots.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|p| match fs::canonicalize(&p) {
+            Ok(canonical) => Some(canonical),
+            Err(e) => {
+                eprintln!(
+                    "[dev-http] overlay root {} skipped: {e}",
+                    p.display()
+                );
+                None
+            }
+        })
+        .collect();
+
     let mut extras = Vec::new();
     if reload.is_some() {
-        extras.push("livereload");
+        extras.push("livereload".to_string());
     }
     if aas.is_some() {
-        extras.push("aas-url");
+        extras.push("aas-url".to_string());
     }
     if preload
         .as_ref()
         .map(|p| !p.font_paths.is_empty())
         .unwrap_or(false)
     {
-        extras.push("font-preload");
+        extras.push("font-preload".to_string());
+    }
+    if !overlay_roots.is_empty() {
+        extras.push(format!("{} overlay(s)", overlay_roots.len()));
+    }
+    if head.as_ref().map(|h| !h.html.is_empty()).unwrap_or(false) {
+        extras.push("head-inject".to_string());
     }
     eprintln!(
         "[dev-http] serving {} on http://{}{}",
@@ -161,9 +224,11 @@ pub fn serve_static(
     for request in server.incoming_requests() {
         if let Err(e) = handle(
             &root,
+            &overlay_roots,
             reload.as_ref(),
             aas.as_ref(),
             preload.as_ref(),
+            head.as_ref(),
             request,
         ) {
             eprintln!("[dev-http] request error: {e}");
@@ -175,9 +240,11 @@ pub fn serve_static(
 
 fn handle(
     root: &Path,
+    overlay_roots: &[PathBuf],
     reload: Option<&ReloadContext>,
     aas: Option<&AasContext>,
     preload: Option<&PreloadContext>,
+    head: Option<&HeadInjectionContext>,
     request: Request,
 ) -> Result<()> {
     // GET / HEAD only. Anything else (POST, PUT, …) isn't meaningful
@@ -233,26 +300,34 @@ fn handle(
         .iter()
         .any(|h| h.field.equiv("Accept") && h.value.as_str().contains("text/html"));
 
-    let resolved = resolve(&root, url_path);
+    // Walk the main root first, then each overlay in order. First
+    // match wins. Overlay hits stream like any other file response —
+    // same content-type sniff, same HTML head injection — so dev
+    // and build paths emit identical bytes for the same source.
+    let resolved = resolve_in_roots(root, overlay_roots, url_path);
 
     match resolved {
         Some(path) if path.is_dir() => {
             let index = path.join("index.html");
             if index.is_file() {
-                respond_with_file(request, &index, reload, aas, preload)
+                respond_with_file(request, &index, reload, aas, preload, head)
             } else {
                 not_found(request)
             }
         }
-        Some(path) if path.is_file() => respond_with_file(request, &path, reload, aas, preload),
+        Some(path) if path.is_file() => {
+            respond_with_file(request, &path, reload, aas, preload, head)
+        }
         _ if wants_html => {
             // SPA fallback. Unknown route, but the browser is asking
             // for HTML — serve the root index so a client-side router
             // can decide what to render. Asset requests (JS, WASM,
-            // images) bypass this branch and get a real 404.
+            // images) bypass this branch and get a real 404. The SPA
+            // shell always comes from the main root; overlays don't
+            // get to shadow the user's application entry point.
             let index = root.join("index.html");
             if index.is_file() {
-                respond_with_file(request, &index, reload, aas, preload)
+                respond_with_file(request, &index, reload, aas, preload, head)
             } else {
                 not_found(request)
             }
@@ -341,10 +416,28 @@ fn write_ping(w: &mut Box<dyn Write + Send + 'static>) -> std::io::Result<()> {
     w.flush()
 }
 
-/// Resolve a URL path to an on-disk path under `root`. Returns `None`
-/// if the path escapes the root (via `..` or symlinks) or doesn't
-/// exist. Callers must still check `is_file` / `is_dir`.
-fn resolve(root: &Path, url_path: &str) -> Option<PathBuf> {
+/// Resolve a URL path against the main root and then each overlay
+/// root in order. Returns the canonical path of the first hit, or
+/// `None` if no root has a matching file (and the path didn't
+/// escape any root via `..` or symlinks). Callers must still check
+/// `is_file` / `is_dir`.
+fn resolve_in_roots(
+    root: &Path,
+    overlay_roots: &[PathBuf],
+    url_path: &str,
+) -> Option<PathBuf> {
+    if let Some(hit) = resolve_under(root, url_path) {
+        return Some(hit);
+    }
+    for overlay in overlay_roots {
+        if let Some(hit) = resolve_under(overlay, url_path) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+fn resolve_under(root: &Path, url_path: &str) -> Option<PathBuf> {
     let trimmed = url_path.trim_start_matches('/');
     let candidate = if trimmed.is_empty() {
         root.to_path_buf()
@@ -361,18 +454,22 @@ fn respond_with_file(
     reload: Option<&ReloadContext>,
     aas: Option<&AasContext>,
     preload: Option<&PreloadContext>,
+    head: Option<&HeadInjectionContext>,
 ) -> Result<()> {
     let ct = content_type(path);
     let is_html = matches!(ct, "text/html; charset=utf-8");
 
     // HTML responses get script tags injected (livereload + runtime-server
-    // URL + font preloads). Everything else streams straight from disk —
-    // wasm bundles can be large (hello-web's release wasm is ~13 MB),
-    // and `Response::from_file` sets up chunked transfer for us.
+    // URL + font preloads + head-inject). Everything else streams
+    // straight from disk — wasm bundles can be large (hello-web's
+    // release wasm is ~13 MB), and `Response::from_file` sets up
+    // chunked transfer for us.
     let preload_active = preload
         .map(|p| !p.font_paths.is_empty())
         .unwrap_or(false);
-    let needs_injection = is_html && (reload.is_some() || aas.is_some() || preload_active);
+    let head_active = head.map(|h| !h.html.is_empty()).unwrap_or(false);
+    let needs_injection =
+        is_html && (reload.is_some() || aas.is_some() || preload_active || head_active);
     if needs_injection {
         let mut body = String::new();
         fs::File::open(path)
@@ -390,6 +487,11 @@ fn respond_with_file(
             // set lands in the response as ships in the deployed bundle.
             let snippet = build_ios::font_preload_tags(&ctx.font_paths);
             body = build_ios::inject_into_head(body, &snippet);
+        }
+        if let Some(ctx) = head {
+            // Free-form `<head>` injection (favicon link tags today;
+            // other manifest-driven head metadata as it lands).
+            body = build_ios::inject_into_head(body, &ctx.html);
         }
         let response = Response::from_string(body)
             .with_header(header("Content-Type", ct))

@@ -40,9 +40,9 @@ use std::rc::Rc;
 
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
-use runtime_core::{ui, ChildList, Element};
+use runtime_core::{component, ui, ChildList, Element};
 
-use crate::stylesheets::Popover;
+use crate::stylesheets::Popover as PopoverStyle;
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct PopoverProps {
@@ -76,12 +76,13 @@ impl Default for PopoverProps {
     }
 }
 
-pub fn popover(props: PopoverProps) -> Element {
+#[component(children)]
+pub fn Popover(props: PopoverProps) -> Element {
     let target = props
         .target
         .expect("Popover: required `target` prop missing — set it to an AnchorTarget built from a Ref");
 
-    let surface_style = Popover();
+    let surface_style = PopoverStyle();
 
     let mut content: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {

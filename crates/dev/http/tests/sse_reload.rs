@@ -76,7 +76,7 @@ fn sse_stream_pushes_initial_and_bumped_events() {
         // Will block forever; the test thread exits and tears down
         // the process when done. tiny_http doesn't expose a clean
         // shutdown handle.
-        let _ = serve_static("127.0.0.1", port, &root, Some(ctx), None, None);
+        let _ = serve_static("127.0.0.1", port, &root, Some(ctx), None, None, None, None);
     });
 
     // Wait for the server to bind. tiny_http binds synchronously
@@ -138,7 +138,7 @@ fn sse_stream_serves_disabled_state_without_blocking_other_requests() {
     let port = pick_port();
     let root = std::env::current_dir().unwrap();
     let _server = thread::spawn(move || {
-        let _ = serve_static("127.0.0.1", port, &root, None, None, None);
+        let _ = serve_static("127.0.0.1", port, &root, None, None, None, None, None);
     });
 
     let connect_deadline = Instant::now() + Duration::from_secs(5);

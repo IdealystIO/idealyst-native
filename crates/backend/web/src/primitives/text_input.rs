@@ -17,11 +17,23 @@ pub(crate) fn create(
     on_change: Rc<dyn Fn(String)>,
     on_key_down: Option<KeyDownHandler>,
 ) -> Node {
-    let input: web_sys::HtmlInputElement = b
-        .doc
-        .create_element("input")
-        .expect("create_element input failed")
-        .unchecked_into();
+    // Hydration adoption: reuse the SSR `<input>` if the cursor is on
+    // a matching tag. Without this, the walker would build a fresh
+    // input next to the SSR one and the divergence cascade leaves
+    // both in the DOM. Even a leaf input must register with the
+    // adoption cursor or every sibling element after it desyncs.
+    let input: web_sys::HtmlInputElement = if let Some(el) = b.hydrate_next("input") {
+        el.unchecked_into()
+    } else {
+        let fresh: web_sys::HtmlInputElement = b
+            .doc
+            .create_element("input")
+            .expect("create_element input failed")
+            .unchecked_into();
+        let node: Node = fresh.clone().unchecked_into();
+        b.hydrate_note_fresh(&node);
+        fresh
+    };
     input.set_type("text");
     input.set_value(initial_value);
     if let Some(p) = placeholder {

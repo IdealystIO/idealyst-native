@@ -24,8 +24,8 @@ use std::rc::Rc;
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
-    signal, ui, IntoElement, PressableHandle, Element, Reactive, Ref, Signal, StyleApplication,
-    VariantEnum,
+    component, signal, ui, IntoElement, PressableHandle, Element, Reactive, Ref, Signal,
+    StyleApplication, VariantEnum,
 };
 
 use idea_theme::theme::IdeaThemeRef;
@@ -67,7 +67,8 @@ impl Default for SelectProps {
     }
 }
 
-pub fn select(props: SelectProps) -> Element {
+#[component]
+pub fn Select(props: SelectProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
     let size = props.size;

@@ -4,6 +4,7 @@ pub mod check;
 pub mod clean;
 pub mod dev;
 pub mod doctor;
+pub mod icon;
 pub mod init;
 pub mod mcp;
 pub mod new;

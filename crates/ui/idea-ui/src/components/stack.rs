@@ -6,9 +6,9 @@
 //! card bodies). Use `axis = StackAxis::Row` for row layouts (toolbars,
 //! button groups, badge rows).
 
-use runtime_core::{ui, ChildList, Element};
+use runtime_core::{component, ui, ChildList, Element};
 
-use crate::stylesheets::Stack;
+use crate::stylesheets::Stack as StackStyle;
 
 // Re-export the stylesheet-generated variant enums.
 pub use crate::stylesheets::{StackAlign, StackAxis, StackGap, StackJustify, StackPadding};
@@ -29,8 +29,9 @@ pub struct StackProps {
     pub children: Vec<Element>,
 }
 
-pub fn stack(props: StackProps) -> Element {
-    let style = Stack()
+#[component(children)]
+pub fn Stack(props: StackProps) -> Element {
+    let style = StackStyle()
         .gap(props.gap)
         .padding(props.padding)
         .axis(props.axis)

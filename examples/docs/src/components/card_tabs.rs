@@ -28,7 +28,7 @@
 use std::rc::Rc;
 
 use runtime_core::{component, signal, switch, ui, view, Element, Signal};
-use idea_ui::{Card, tabs, Tab, TabPanel, TabsProps};
+use idea_ui::{Card, Tab, TabPanel, Tabs, TabsProps};
 
 /// Props delivered by the `cardtabs!` invocation macro. Each entry
 /// is a `(label, render_closure)` pair — the macro wraps each
@@ -95,7 +95,7 @@ pub fn CardTabs(props: CardTabsProps) -> Element {
         active,
         on_change,
     };
-    let tabs_primitive = tabs(tabs_props);
+    let tabs_primitive = Tabs(tabs_props);
 
     let panel_style = TabPanel();
 

@@ -140,12 +140,23 @@ pub(crate) fn create(
     on_resize: OnResize,
     on_lost: OnLost,
 ) -> Node {
-    let canvas: web_sys::HtmlCanvasElement = b
-        .doc
-        .create_element("canvas")
-        .expect("create_element canvas failed")
-        .dyn_into()
-        .expect("created element is not a canvas");
+    // Hydration adoption — see `text_input::create` for the rationale.
+    // SSR emits a placeholder `<canvas>`; reuse it so the cursor
+    // advances past it and the post-hydration GPU surface attaches to
+    // the same DOM element.
+    let canvas: web_sys::HtmlCanvasElement = if let Some(el) = b.hydrate_next("canvas") {
+        el.dyn_into().expect("hydrated canvas is not an HtmlCanvasElement")
+    } else {
+        let fresh: web_sys::HtmlCanvasElement = b
+            .doc
+            .create_element("canvas")
+            .expect("create_element canvas failed")
+            .dyn_into()
+            .expect("created element is not a canvas");
+        let node: Node = fresh.clone().unchecked_into();
+        b.hydrate_note_fresh(&node);
+        fresh
+    };
 
     // Default sizing: fill the parent. Authors can override via
     // .with_style(...) — these are just so an unstyled Graphics

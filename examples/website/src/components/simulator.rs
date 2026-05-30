@@ -20,10 +20,15 @@ use runtime_core::{
     component, ui, view, Color, IntoElement, Length, Overflow, Element, Shadow, StyleRules,
     StyleSheet,
 };
-use host_web::DeviceProfile;
-
+// `DeviceProfile` is only constructed inside the `Simulator` component
+// (which the home page mounts via `lazy! { Simulator(...) }`). Keeping
+// the import out of file scope avoids a code-reachability path from
+// base → `host_web` → `render-wgpu` → `glyphon` → `cosmic-text` + `wgpu`
+// + `naga`. The base bundle would otherwise pay for the entire GPU
+// + text-shaping stack even though it's only painted into the canvas
+// inside the lazy chunk.
 #[cfg(target_arch = "wasm32")]
-use host_web::Painter;
+use host_web::{DeviceProfile, Painter};
 #[cfg(target_arch = "wasm32")]
 use runtime_core::driver::spawn_async;
 
@@ -96,10 +101,6 @@ pub struct SimulatorProps {
     /// don't have to import or `#[cfg]`-gate `host_web::Painter` /
     /// `ios_sim` / `android_sim` themselves.
     pub skin: SimulatorSkin,
-    /// Device profile (logical size + title + color scheme). `None`
-    /// resolves to the iPhone-portrait profile so the embedded
-    /// preview matches `variant_phone`.
-    pub profile: Option<DeviceProfile>,
     /// When true, wrap the canvas in a black outer chassis (rounded
     /// corners + drop shadow + clip) so the embedded device reads
     /// as a complete handset rather than a bare wgpu surface.
@@ -115,7 +116,6 @@ impl Default for SimulatorProps {
         Self {
             build_ui: Rc::new(|| runtime_core::view(Vec::new()).into()),
             skin: SimulatorSkin::default(),
-            profile: None,
             chassis: true,
         }
     }
@@ -171,9 +171,13 @@ fn wrap_in_chassis(canvas_wrapper: Element) -> Element {
         .into_element()
 }
 
-fn preview_dimensions(profile: &DeviceProfile) -> (f32, f32) {
-    let logical_h = profile.logical_size.1 as f32;
-    let logical_w = profile.logical_size.0 as f32;
+/// Compute the on-screen (CSS px) width/height of the simulator
+/// canvas from a logical-pixel device size. Pure arithmetic — kept
+/// out of the wasm-only block so the cross-target / placeholder paths
+/// reach it without dragging `host_web::DeviceProfile` into base.
+fn preview_dimensions(logical: (u32, u32)) -> (f32, f32) {
+    let logical_w = logical.0 as f32;
+    let logical_h = logical.1 as f32;
     (PREVIEW_WIDTH_PX, PREVIEW_WIDTH_PX * logical_h / logical_w)
 }
 
@@ -184,18 +188,21 @@ fn preview_dimensions(profile: &DeviceProfile) -> (f32, f32) {
 /// chunk fetches and the only visual delta on load is the canvas
 /// painting INSIDE the chassis.
 ///
-/// Pass the same `profile` you'll give to `simulator(...)` (or `None`
-/// for the iPhone-portrait default) so the placeholder's preview
-/// rectangle matches the loaded canvas's aspect ratio.
-pub fn simulator_placeholder(profile: Option<DeviceProfile>) -> Element {
+/// Pass the logical device size (or `None` for the iPhone-portrait
+/// default) so the placeholder's preview rectangle matches the loaded
+/// canvas's aspect ratio. Plain `(u32, u32)` instead of
+/// `host_web::DeviceProfile` so this function — which IS reachable
+/// from the base bundle (via `.placeholder(|| simulator_placeholder())`)
+/// — doesn't drag the wgpu / cosmic-text / naga stack into base.
+pub fn simulator_placeholder(logical_size: Option<(u32, u32)>) -> Element {
     // Welcome app's COLOR_LIGHT_BG. Inlined rather than imported so
     // the placeholder stays in main's bundle on web (importing the
     // welcome crate would pull its full transitive deps into main).
     const SCREEN_FILL: &str = "#000000";
     let inner_radius = screen_inner_radius();
 
-    let profile = profile.unwrap_or_else(default_profile);
-    let (w, h) = preview_dimensions(&profile);
+    let logical = logical_size.unwrap_or((DEFAULT_LOGICAL_W, DEFAULT_LOGICAL_H));
+    let (w, h) = preview_dimensions(logical);
 
     let screen_style = Rc::new(StyleSheet::r#static(StyleRules {
         width: Some(Length::Px(w).into()),
@@ -214,6 +221,13 @@ pub fn simulator_placeholder(profile: Option<DeviceProfile>) -> Element {
     wrap_in_chassis(off_screen)
 }
 
+// `DeviceProfile` lives on `host_web` (re-exported from `render-api`).
+// Constructing one is what links the heavy `render-wgpu` / `glyphon` /
+// `cosmic-text` / `wgpu` / `naga` graph — keep this fn wasm32-only
+// (where the simulator actually runs) so non-wasm compiles stay clean
+// AND wasm-split sees no base-reachable path that materializes a
+// `DeviceProfile`.
+#[cfg(target_arch = "wasm32")]
 fn default_profile() -> DeviceProfile {
     DeviceProfile {
         logical_size: (DEFAULT_LOGICAL_W, DEFAULT_LOGICAL_H),
@@ -225,22 +239,29 @@ fn default_profile() -> DeviceProfile {
 
 #[component(default(
     skin = SimulatorSkin::Ios,
-    profile = None,
     chassis = true,
 ))]
 pub fn Simulator(props: SimulatorProps) -> Element {
     let SimulatorProps {
         build_ui,
         skin,
-        profile,
         chassis,
     } = props;
 
-    let profile = profile.unwrap_or_else(default_profile);
-    let (preview_w_px, preview_height_px) = preview_dimensions(&profile);
+    let (preview_w_px, preview_height_px) =
+        preview_dimensions((DEFAULT_LOGICAL_W, DEFAULT_LOGICAL_H));
     // `skin` + `build_ui` are only consumed by the wasm32 on_ready
-    // closure (the painter wiring + host_web::mount). Bind them on
-    // non-wasm so the destructure stays exhaustive without warnings.
+    // closure below (the painter wiring + `host_web::mount`). Bind
+    // them on non-wasm so the destructure stays exhaustive without
+    // warnings. iOS Metal mount is intentionally a follow-up — the
+    // iOS Graphics primitive already provides a Metal-backed
+    // `raw_window_handle` (see [crates/backend/ios/mobile/src/imp/graphics.rs]),
+    // and `render-wgpu`'s `Host`/`Renderer` stack is platform-neutral,
+    // but no `host-ios-mobile` crate analogous to `host-web` exists
+    // yet to spin up `wgpu::Instance(Backends::METAL)`, configure the
+    // surface, drive a CADisplayLink render loop, and load fonts.
+    // Until that lands, the Simulator on iOS renders the chassis
+    // around an unmounted (visually empty) CAMetalLayer.
     #[cfg(not(target_arch = "wasm32"))]
     let _ = (&skin, &build_ui);
 
@@ -259,7 +280,11 @@ pub fn Simulator(props: SimulatorProps) -> Element {
             let slot = slot_ready.clone();
             let build_ui = build_ui.clone();
             let painter = painter_for(skin);
-            let profile = profile.clone();
+            // Build the DeviceProfile lazily on mount — its construction
+            // is the load-bearing path that brings host_web in, and we
+            // want it confined to the wgpu-mounting path inside the
+            // lazy chunk.
+            let profile = default_profile();
             let surface = _event.surface;
             let size = _event.size;
             spawn_async(async move {
@@ -322,7 +347,21 @@ pub fn Simulator(props: SimulatorProps) -> Element {
         wrapper_rules.border_bottom_right_radius = Some(Length::Px(r).into());
         wrapper_rules.overflow = Some(Overflow::Hidden);
     }
-    let wrapper = view(vec![graphics.into_element()])
+    // Force the Graphics primitive to fill its sized wrapper. Without
+    // this, native backends (iOS UIView + Taffy) lay the canvas out at
+    // its intrinsic main-axis size (0) and the chassis renders around a
+    // collapsed CAMetalLayer — the `on_ready` event fires with a
+    // `300×0` surface. On web the canvas's inline `width:100%;
+    // height:100%` already wins; this just keeps native backends
+    // symmetrical with that default.
+    let graphics_rules = StyleRules {
+        width: Some(Length::pct(100.0).into()),
+        height: Some(Length::pct(100.0).into()),
+        ..Default::default()
+    };
+    let wrapper = view(vec![graphics
+        .with_style(Rc::new(StyleSheet::r#static(graphics_rules)))
+        .into_element()])
         .with_style(Rc::new(StyleSheet::r#static(wrapper_rules)))
         .into_element();
 

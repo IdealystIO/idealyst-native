@@ -37,9 +37,9 @@ use std::rc::Rc;
 
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::ViewportPlacement;
-use runtime_core::{ui, ChildList, Element};
+use runtime_core::{component, ui, ChildList, Element};
 
-use crate::stylesheets::Modal;
+use crate::stylesheets::Modal as ModalStyle;
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ModalProps {
@@ -65,7 +65,8 @@ impl Default for ModalProps {
     }
 }
 
-pub fn modal(props: ModalProps) -> Element {
+#[component(children)]
+pub fn Modal(props: ModalProps) -> Element {
     let backdrop = if props.dismissable {
         BackdropMode::Dismiss
     } else {
@@ -73,7 +74,7 @@ pub fn modal(props: ModalProps) -> Element {
     };
 
     let on_dismiss = props.on_dismiss.clone();
-    let surface_style = Modal();
+    let surface_style = ModalStyle();
 
     let mut content: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {

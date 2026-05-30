@@ -224,6 +224,83 @@ fn drain<T>(rx: &mpsc::Receiver<T>) {
     while rx.try_recv().is_ok() {}
 }
 
+/// Spawn a watcher on `paths` that runs `on_change` for each
+/// debounced event batch, and bumps `signal` after each successful
+/// call so connected browsers reload. Used by paths that aren't the
+/// full wasm rebuild — currently the icon-source watcher in
+/// `cmd::dev`, which re-runs `icon_gen::sync_web_icons` when the
+/// project's SVG/PNG changes.
+///
+/// `label` appears in `[dev-reload <label>]` log lines so the user
+/// can tell which watcher fired. Failed callbacks log to stderr but
+/// don't bump the signal (or kill the thread) — the next change
+/// re-tries.
+pub fn start_watch<F>(
+    paths: Vec<PathBuf>,
+    signal: Arc<ReloadSignal>,
+    label: &'static str,
+    mut on_change: F,
+) -> Result<JoinHandle<()>>
+where
+    F: FnMut() -> Result<()> + Send + 'static,
+{
+    thread::Builder::new()
+        .name(format!("idealyst-watch-{label}"))
+        .spawn(move || {
+            let (tx, rx) = mpsc::channel();
+            let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), tx) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("[dev-reload {label}] watcher init failed: {e}");
+                    return;
+                }
+            };
+            // Watch each path non-recursively first — the typical
+            // case is a handful of asset files, not directories.
+            // The watcher silently tolerates a missing path (the
+            // user can add an icon mid-session and the next regen
+            // hits a different code path).
+            for path in &paths {
+                let mode = if path.is_dir() {
+                    RecursiveMode::Recursive
+                } else {
+                    RecursiveMode::NonRecursive
+                };
+                if let Err(e) = debouncer.watcher().watch(path, mode) {
+                    eprintln!(
+                        "[dev-reload {label}] cannot watch {}: {e}",
+                        path.display()
+                    );
+                }
+            }
+            eprintln!(
+                "[dev-reload {label}] watching {}",
+                paths
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+
+            while let Ok(events) = rx.recv() {
+                drain(&rx);
+                if events.is_err() {
+                    continue;
+                }
+                eprintln!("[dev-reload {label}] change detected");
+                match on_change() {
+                    Ok(()) => {
+                        let new_gen = signal.bump();
+                        eprintln!("[dev-reload {label}] regen complete — gen={new_gen}");
+                    }
+                    Err(e) => eprintln!("[dev-reload {label}] regen failed: {e}"),
+                }
+                drain(&rx);
+            }
+        })
+        .context("spawn watch thread")
+}
+
 fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
     // Delegate to `build_web::build` — it generates the wrapper,
     // runs wasm-pack against it, and copies `pkg/` into `dir`.
@@ -242,6 +319,8 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
             // Dev keeps panic messages — stripping them is a
             // production-only `idealyst build --web --strip-panics` thing.
             strip_panics: false,
+            // Dev-loop builds should support `dev --ssr` hand-offs.
+            hydrate: true,
         },
     )
     .map(|_| ())

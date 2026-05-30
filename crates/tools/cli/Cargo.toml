@@ -50,6 +50,15 @@ run-terminal = { workspace = true }
 # CLI only; the dev-tui crate dogfoods the framework's terminal
 # backend to render a live build/run status + log stream.
 dev-tui = { workspace = true }
+# Generates favicon / app-icon assets from a single SVG (or PNG)
+# source declared in `[package.metadata.idealyst.app.icon]`. Driven
+# by the `sync icons` subcommand and, eventually, build-time auto-
+# sync hooks in the per-platform build crates.
+icon-gen = { workspace = true }
+# Relative-path computation for the `icon preview` HTML
+# (`<img src="web/favicon.ico">` references resolved against the
+# HTML's location). Tiny dep; no transitive heft.
+pathdiff = "0.2"
 # Roku BrightScript transpiler — powers the `brs` subcommand, which
 # scans the project's source files for `#[method]`-tagged fns and
 # concatenates their BrightScript output into a single `.brs` file.

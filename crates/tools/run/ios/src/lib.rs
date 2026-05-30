@@ -210,10 +210,17 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     let exe_path = app_bundle.join(&executable_name);
     compile_and_link(&swift_dir, &lib_dir, &lib_name, &exe_path)?;
 
-    // ── 5. Info.plist + PkgInfo ──────────────────────────────────
+    // ── 5. App-icon PNGs (optional) ──────────────────────────────
+    // Generated directly into the .app bundle root because iOS
+    // resolves `CFBundleIcons.CFBundleIconFiles` stems against
+    // exactly that location, picking the matching `@1x` / `@2x` /
+    // `@3x` PNG based on the runtime device density.
+    let icon_plist_entries = sync_ios_icons_into_bundle(&project_dir, &app_bundle)?;
+
+    // ── 6. Info.plist + PkgInfo ──────────────────────────────────
     fs::write(
         app_bundle.join("Info.plist"),
-        render_info_plist(&manifest, &executable_name, &opts.mode)?,
+        render_info_plist(&manifest, &executable_name, &opts.mode, &icon_plist_entries)?,
     )?;
     fs::write(app_bundle.join("PkgInfo"), b"APPL????")?;
 
@@ -346,7 +353,46 @@ fn xcrun_sdk_path(sdk: &str) -> Result<PathBuf> {
 // Info.plist render
 // ---------------------------------------------------------------------------
 
-fn render_info_plist(manifest: &Manifest, executable_name: &str, mode: &RunMode) -> Result<String> {
+/// Generate the iOS icon set into `app_bundle` and return the
+/// CFBundleIcons XML snippet to splice into Info.plist. No-op when
+/// the project has no `[package.metadata.idealyst.app.icon]` block
+/// — returns an empty string and writes nothing.
+fn sync_ios_icons_into_bundle(project_dir: &Path, app_bundle: &Path) -> Result<String> {
+    let Some(config) = icon_gen::load_config_from_manifest(project_dir)? else {
+        return Ok(String::new());
+    };
+    let block = config.resolved_for(icon_gen::Target::Ios);
+    let Some(outs) = icon_gen::sync_ios_icons(Some(&block), app_bundle)? else {
+        return Ok(String::new());
+    };
+
+    // CFBundleIconFiles is a stem list — iOS auto-resolves the
+    // matching `@2x` / `@3x` file based on device density. Dedupe
+    // here so we don't list `AppIcon60x60` twice for its 2x and 3x
+    // entries.
+    let mut stems: Vec<&str> = outs.entries.iter().map(|e| e.plist_stem.as_str()).collect();
+    stems.sort();
+    stems.dedup();
+    let stem_xml: String = stems
+        .iter()
+        .map(|s| format!("            <string>{}</string>", xml_escape(s)))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Ok(format!(
+        "<key>CFBundleIcons</key>\n    <dict>\n        \
+         <key>CFBundlePrimaryIcon</key>\n        <dict>\n            \
+         <key>CFBundleIconFiles</key>\n            <array>\n{stem_xml}\n            \
+         </array>\n        </dict>\n    </dict>"
+    ))
+}
+
+fn render_info_plist(
+    manifest: &Manifest,
+    executable_name: &str,
+    mode: &RunMode,
+    icon_entries: &str,
+) -> Result<String> {
     // No more network-discovery advertisement: the Robot bridge writes
     // a per-process `~/.idealyst/apps/<name>-<pid>.json` registration
     // file the MCP server scans, and the dev-server URL is baked into
@@ -355,13 +401,24 @@ fn render_info_plist(manifest: &Manifest, executable_name: &str, mode: &RunMode)
     // — every previously broadcast-driven flow now goes through
     // file-based discovery.
 
-    let extra_entries = match mode {
+    let endpoint_entry = match mode {
         RunMode::Local => String::new(),
         RunMode::RuntimeServer { .. } => format!(
             "<key>IdealystDevEndpoint</key>\n    <string>{endpoint}</string>",
             endpoint = xml_escape(mode.endpoint()),
         ),
     };
+    // The Info.plist template has one `{{EXTRA_PLIST_ENTRIES}}`
+    // splice point, so multiple plist additions (icon block,
+    // runtime-server endpoint) get concatenated here. Newline +
+    // 4-space indent keeps the rendered plist consistent with the
+    // template's existing entries.
+    let extra_entries = [icon_entries, endpoint_entry.as_str()]
+        .iter()
+        .filter(|s| !s.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n    ");
     // Resolve bundle id eagerly so misconfigured manifests fail before
     // we render the plist (used to gate-keep IdealystAppId; now just
     // a sanity check).

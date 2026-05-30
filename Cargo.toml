@@ -102,6 +102,7 @@ members = [
     "crates/tools/wasm-split/wasm-split-cli",
     "crates/tools/wasm-split/wasm-split-macro",
     "crates/tools/wasm-split/wasm-used",
+    "crates/tools/icon-gen",
     "crates/tools/build/runtime-server",
     "crates/tools/build/android",
     "crates/tools/build/ios",
@@ -195,6 +196,7 @@ run-macos = { path = "crates/tools/run/macos" }
 build-terminal = { path = "crates/tools/build/terminal" }
 run-terminal = { path = "crates/tools/run/terminal" }
 dev-tui = { path = "crates/tools/dev-tui" }
+icon-gen = { path = "crates/tools/icon-gen" }
 backend-apple-core = { path = "crates/backend/apple/core" }
 backend-macos = { path = "crates/backend/macos" }
 backend-ios-core = { path = "crates/backend/ios/core" }

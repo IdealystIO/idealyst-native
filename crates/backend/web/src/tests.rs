@@ -1026,6 +1026,77 @@ fn font_face_dedup_across_backends_inserts_rule_once() {
 }
 
 // ---------------------------------------------------------------------------
+// Leaf-primitive hydration adoption.
+// ---------------------------------------------------------------------------
+
+/// REGRESSION TEST.
+///
+/// Leaf primitives whose `create()` body calls `b.doc.create_element(tag)`
+/// directly (text_input, text_area, image, …) must FIRST consult
+/// `b.hydrate_next(tag)` so the SSR node is adopted instead of a fresh
+/// sibling getting appended next to it. Earlier bugs: `<svg>` (icon)
+/// and `<input>` (text input on the Demo page) both bypassed the
+/// cursor; the SSR-emitted node stayed in the DOM while a fresh one
+/// was inserted alongside, and the divergence cascade panicked the
+/// navigator's `insertBefore` once the parent's child list desynced.
+///
+/// This test mounts a tiny SSR-style document into `#app`, hydrates,
+/// drives `create_text_input`, and asserts the returned node IS the
+/// pre-existing SSR `<input>` (same reference, no fresh duplicate
+/// appended).
+#[cfg(feature = "hydrate")]
+#[wasm_bindgen_test]
+fn text_input_create_adopts_ssr_input_during_hydration() {
+    use runtime_core::Backend;
+    use std::rc::Rc;
+
+    install_mount();
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let app = doc.get_element_by_id("app").unwrap();
+
+    // SSR-style markup: one root child, one `<input>` inside it. The
+    // hydration cursor starts on the root child (the same element a
+    // walker-built View would land on).
+    app.set_inner_html(
+        r#"<div><input value="seed" placeholder="hint"></div>"#,
+    );
+    let ssr_input = doc
+        .query_selector("#app input")
+        .unwrap()
+        .expect("ssr input must exist");
+
+    let mut backend = WebBackend::hydrate("#app");
+
+    // Drive the walker's order: the View wrapper adopts first, then
+    // the input inside it.
+    let _wrapper = backend.create_view(&Default::default());
+    let input_node = backend.create_text_input(
+        "", // initial_value (overridden post-adopt)
+        None,
+        Rc::new(|_: String| {}),
+        None,
+        &Default::default(),
+    );
+
+    // The returned node must be the SAME element the SSR rendered —
+    // adoption succeeded, not a fresh `<input>` next to it.
+    let adopted: web_sys::Element = input_node.unchecked_into();
+    assert!(
+        adopted.is_same_node(Some(ssr_input.as_ref())),
+        "text_input::create must adopt the SSR input during hydration; got a fresh element \
+         (the divergence would cascade to insertBefore panics)",
+    );
+
+    // And no second `<input>` got appended as a sibling.
+    let input_count = doc.query_selector_all("#app input").unwrap().length();
+    assert_eq!(
+        input_count, 1,
+        "exactly one input in the DOM after hydration; a fresh duplicate would be the \
+         original bug's signature",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Pointer-keyed dynamic cache rejects stale entries on content mismatch.
 // ---------------------------------------------------------------------------
 

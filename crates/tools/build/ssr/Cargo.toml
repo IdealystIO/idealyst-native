@@ -10,3 +10,9 @@ anyhow = "1"
 # `parse_manifest`, `FrameworkSource`, `Manifest` — shared with the
 # other build helpers so the schema lives in one place.
 build-ios = { workspace = true }
+# Reads `[package.metadata.idealyst.app.icon]` to bake the favicon
+# `<link>` tags into the generated SSR wrapper's `EXTRA_HEAD` const.
+# At runtime the wrapper passes the string to `ServeConfig.extra_head`
+# so every SSR-rendered page advertises the same icon set the
+# `static_dir` path serves out of `dist/web/`.
+icon-gen = { workspace = true }

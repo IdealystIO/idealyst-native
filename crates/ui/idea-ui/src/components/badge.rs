@@ -16,7 +16,7 @@
 //! before mounting. The default sheet is installed by
 //! `install_idea_theme`.
 
-use runtime_core::{text, IntoElement, Element, Reactive, StyleApplication};
+use runtime_core::{component, text, IntoElement, Element, Reactive, StyleApplication};
 
 use idea_theme::extensible::{installed_badge_sheet, tone, variant, ToneRef, VariantRef};
 
@@ -38,7 +38,8 @@ impl Default for BadgeProps {
     }
 }
 
-pub fn badge(props: &BadgeProps) -> Element {
+#[component]
+pub fn Badge(props: &BadgeProps) -> Element {
     let label = props.label.clone();
     let tone = props.tone.clone();
     let variant = props.variant.clone();

@@ -16,10 +16,18 @@ pub(crate) fn create(
     // same rule by checking a flag on the backend.
     b.ensure_spinner_keyframes();
 
-    let span = b
-        .doc
-        .create_element("span")
-        .expect("create_element span failed");
+    // Hydration adoption — see `text_input::create` for the rationale.
+    let span = if let Some(el) = b.hydrate_next("span") {
+        el
+    } else {
+        let fresh = b
+            .doc
+            .create_element("span")
+            .expect("create_element span failed");
+        let node: Node = fresh.clone().unchecked_into();
+        b.hydrate_note_fresh(&node);
+        fresh
+    };
     let diameter = match size {
         ActivityIndicatorSize::Small => 16,
         ActivityIndicatorSize::Large => 36,

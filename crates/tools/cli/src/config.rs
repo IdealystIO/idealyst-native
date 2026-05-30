@@ -5,10 +5,11 @@
 //! two sources of truth and lets tools that already understand Cargo
 //! workspaces parse it for free.
 //!
-//! This module is intentionally stub-shaped right now: the fields
-//! reflect the design discussion (app metadata + per-platform
-//! overrides + icon/splash assets), but the loader is a placeholder
-//! until a subcommand actually needs to read a real project.
+//! Most of this module is still stub-shaped — the wider shape
+//! exists so subcommands can plug in as they need it. The icon
+//! block has graduated out of here: its parser lives in `icon-gen`
+//! (`icon_gen::load_spec_from_manifest`) so CLI and build crates
+//! share one schema source of truth.
 
 #![allow(dead_code)]
 

@@ -27,7 +27,8 @@ use idea_ui::{
 
 use crate::branding::LIGHT_LOGO;
 use crate::routes::{
-    label_for_route, BACKENDS_ROUTE, CONCEPTS_ROUTE, QUICKSTART_ROUTE, SECTIONS, WHY_RUST_ROUTE,
+    label_for_route, BACKENDS_ROUTE, CONCEPTS_ROUTE, HOME_ROUTE, QUICKSTART_ROUTE, SECTIONS,
+    WHY_RUST_ROUTE,
 };
 use crate::styles::{
     Footer, FooterBottom, FooterBrand, FooterColumn, FooterCopy, FooterGrid, FooterLink,
@@ -517,11 +518,13 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Element {
         },
     ];
     let brand_row = ui! {
-        View(style = SidebarBrandRow()) {
-            icon(LIGHT_LOGO)
-                .with_style(SidebarLogo())
-                .animate(StrokeAnimation::new(1400, Easing::EaseInOut))
-            View(style = SidebarBrandText()) { brand_text_children }
+        Link(route = &HOME_ROUTE, params = ()) {
+            View(style = SidebarBrandRow()) {
+                icon(LIGHT_LOGO)
+                    .with_style(SidebarLogo())
+                    .animate(StrokeAnimation::new(1400, Easing::EaseInOut))
+                View(style = SidebarBrandText()) { brand_text_children }
+            }
         }
     };
     let header_children: Vec<Element> = vec![brand_row];

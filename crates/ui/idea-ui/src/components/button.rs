@@ -26,7 +26,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{text, IntoElement, PressableHandle, Element, Reactive, Ref, StyleApplication};
+use runtime_core::{component, text, IntoElement, PressableHandle, Element, Reactive, Ref, StyleApplication};
 
 use idea_theme::extensible::{installed_button_sheet, ButtonSizeRef, ShapeRef, ToneRef, VariantRef};
 
@@ -65,7 +65,8 @@ impl Default for ButtonProps {
     }
 }
 
-pub fn button(props: &ButtonProps) -> Element {
+#[component]
+pub fn Button(props: &ButtonProps) -> Element {
     let label = props.label.clone();
     let on_click = props.on_click.clone();
     let tone = props.tone.clone();

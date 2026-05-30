@@ -18,9 +18,9 @@
 //! }
 //! ```
 
-use runtime_core::{ui, Length, Element, StyleApplication};
+use runtime_core::{component, ui, Length, Element, StyleApplication};
 
-use crate::stylesheets::Skeleton;
+use crate::stylesheets::Skeleton as SkeletonStyle;
 use crate::theme::IdeaThemeRef;
 
 /// Width preset. Use [`SkeletonWidth::Px`] for an exact pixel width.
@@ -56,7 +56,8 @@ impl Default for SkeletonProps {
     }
 }
 
-pub fn skeleton(props: &SkeletonProps) -> Element {
+#[component]
+pub fn Skeleton(props: &SkeletonProps) -> Element {
     let height = props.height;
     let radius = props.radius;
     let width = match props.width {
@@ -73,7 +74,7 @@ pub fn skeleton(props: &SkeletonProps) -> Element {
         let _ = crate::theme_runtime::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-        let mut app = StyleApplication::new(Skeleton::sheet())
+        let mut app = StyleApplication::new(SkeletonStyle::sheet())
             .override_border_radius(Length::Px(radius));
         // No `override_width` / `override_height` builders yet —
         // poke `overrides` directly. (Framework follow-up.)
