@@ -838,6 +838,9 @@ stylesheet! {
             background: Tokenized::token("color-surface", Color("#ffffff".into())),
             border_top_width: 1.0,
             border_top_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            // Drawer-bottom slot doesn't inherit the page-body's font;
+            // set Inter on the footer root so every Text child picks it up.
+            font_family: &INTER,
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
             width: Length::pct(100.0),
