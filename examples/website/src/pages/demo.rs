@@ -60,10 +60,10 @@ pub fn page() -> Element {
                  to jump.",
             )
             PageSection(handle = counter_ref) { reactive_state() }
-            // PageSection(handle = fade_ref) { fade_demo() }
-            // PageSection(handle = spring_ref) { spring_vs_tween_demo() }
-            // PageSection(handle = entrance_ref) { entrance_demo() }
-            // PageSection(handle = color_ref) { color_demo() }
+            PageSection(handle = fade_ref) { fade_demo() }
+            PageSection(handle = spring_ref) { spring_vs_tween_demo() }
+            PageSection(handle = entrance_ref) { entrance_demo() }
+            PageSection(handle = color_ref) { color_demo() }
             PageSection(handle = intents_ref) { intents() }
             PageSection(handle = kinds_ref) { button_kinds() }
             PageSection(handle = feedback_ref) { feedback() }

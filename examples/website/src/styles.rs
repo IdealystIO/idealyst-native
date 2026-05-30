@@ -219,8 +219,8 @@ stylesheet! {
 stylesheet! {
     pub SidebarLogo<IdeaThemeRef> {
         base(_t) {
-            width: 40.0,
-            height: 40.0,
+            width: 50.0,
+            height: 50.0,
             flex_shrink: 0.0,
         }
     }

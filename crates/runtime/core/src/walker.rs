@@ -281,150 +281,55 @@ pub(super) fn build_inner<B: Backend + 'static>(
         }
     };
 
-    let result = match node {
-        Element::Text { source, style, ref_fill, accessibility, .. } => {
-            text::build(backend, source, style, ref_fill, accessibility)
-        }
-        Element::View { children, style, ref_fill, safe_area_sides, on_touch, accessibility, .. } => {
-            view::build(backend, children, style, ref_fill, safe_area_sides, on_touch, accessibility)
-        }
-        Element::Pressable { children, on_click, style, ref_fill, disabled, accessibility, .. } => {
-            pressable::build(backend, children, on_click, style, ref_fill, disabled, accessibility)
-        }
-        Element::Button { label, on_click, leading_icon, trailing_icon, style, ref_fill, disabled, accessibility, .. } => {
-            button::build(
-                backend, label, on_click, leading_icon, trailing_icon, style, ref_fill, disabled, accessibility,
-            )
-        }
-        Element::Image { src, alt, style, ref_fill, asset, accessibility, .. } => {
-            image::build(backend, src, alt, style, ref_fill, asset, accessibility)
-        }
-        Element::Icon { data, color, stroke, draw_in, style, ref_fill, accessibility, .. } => {
-            icon::build(backend, data, color, stroke, draw_in, style, ref_fill, accessibility)
-        }
-        Element::TextInput { value, on_change, on_key_down, placeholder, style, ref_fill, accessibility, .. } => {
-            text_input::build_text_input(
-                backend, value, on_change, on_key_down, placeholder, style, ref_fill, accessibility,
-            )
-        }
-        Element::TextArea { value, on_change, on_key_down, placeholder, style, ref_fill, accessibility, .. } => {
-            text_input::build_text_area(
-                backend, value, on_change, on_key_down, placeholder, style, ref_fill, accessibility,
-            )
-        }
-        Element::Toggle { value, on_change, style, ref_fill, accessibility, .. } => {
-            toggle::build(backend, value, on_change, style, ref_fill, accessibility)
-        }
-        Element::ScrollView { children, horizontal, style, ref_fill, safe_area_sides, on_scroll, accessibility, .. } => {
-            scroll_view::build(backend, children, horizontal, style, ref_fill, safe_area_sides, on_scroll, accessibility)
-        }
-        Element::Slider { value, on_change, min, max, step, style, ref_fill, accessibility, .. } => {
-            slider::build(backend, value, on_change, min, max, step, style, ref_fill, accessibility)
-        }
-        Element::ActivityIndicator { size, color, style, ref_fill, accessibility, .. } => {
-            activity_indicator::build(backend, size, color, style, ref_fill, accessibility)
-        }
-        Element::Virtualizer {
-            item_count,
-            item_key,
-            item_size,
-            render_item,
-            row_template,
-            row_index_signal_id,
-            overscan,
-            horizontal,
-            style,
-            ref_fill,
-            accessibility,
-            ..
-        } => virtualizer::build(
-            backend,
-            item_count,
-            item_key,
-            item_size,
-            render_item,
-            row_template,
-            row_index_signal_id,
-            overscan,
-            horizontal,
-            style,
-            ref_fill,
-            accessibility,
-        ),
-        Element::Graphics { on_ready, on_resize, on_lost, style, ref_fill, accessibility, .. } => {
-            graphics::build(backend, on_ready, on_resize, on_lost, style, ref_fill, accessibility)
-        }
-        Element::When { cond, then, otherwise, style } => {
-            when_switch::build_when(backend, cond, then, otherwise, style)
-        }
-        Element::Switch { discriminant, arms, default, style } => {
-            when_switch::build_switch(backend, discriminant, arms, default, style)
-        }
-        Element::Each { snapshot, style } => {
-            each::build(backend, snapshot, style)
-        }
-        Element::Link {
-            children,
-            route,
-            url,
-            make_params,
-            kind,
-            target,
-            external,
-            style,
-            ref_fill,
-            accessibility,
-        } => link::build(backend, children, route, url, make_params, kind, target, external, style, ref_fill, accessibility),
-        Element::External {
-            type_id,
-            type_name,
-            payload,
-            children,
-            style,
-            ref_fill,
-            accessibility,
-        } => external::build(backend, type_id, type_name, payload, children, style, ref_fill, accessibility),
-        Element::Navigator {
-            type_id,
-            type_name,
-            presentation,
-            config,
-            style,
-            slot_styles,
-            ref_fill,
-            accessibility,
-        } => navigator::build(
-            backend,
-            type_id,
-            type_name,
-            presentation,
-            config,
-            style,
-            slot_styles,
-            ref_fill,
-            accessibility,
-        ),
-        Element::Portal {
-            children,
-            target,
-            on_dismiss,
-            trap_focus,
-            style,
-            ref_fill,
-            accessibility,
-            ..
-        } => portal::build(backend, children, target, on_dismiss, trap_focus, style, ref_fill, accessibility),
-        Element::Presence { child, present, enter, exit, ref_fill, accessibility, .. } => {
-            presence::build(backend, child, present, enter, exit, ref_fill, accessibility)
-        }
-        Element::Lazy {
-            loader,
-            on_state,
-            placeholder,
-            style,
-            ref_fill,
-            accessibility,
-        } => lazy::build(backend, loader, on_state, placeholder, style, ref_fill, accessibility),
+    // Dispatch on the variant discriminant, then call the matching
+    // per-variant `dispatch_*` function through a single function
+    // pointer. Both the discriminant match and the call live in
+    // `build_inner` — but because there's exactly ONE call site, the
+    // compiler only reserves arg-passing slots for `Element` once.
+    //
+    // Why: the previous shape (one dispatch_X call per arm) made the
+    // compiler reserve a separate arg-copy slot per arm — 23 × ~1.8
+    // KiB = ~40 KiB just for the by-value `Element` arg moving into
+    // each call. Even at `opt-level = "z"` LLVM didn't merge them
+    // (the arms are mutually exclusive but the slot allocator
+    // doesn't see that). One call site, one slot.
+    //
+    // Combined with pushing the destructure into the per-variant
+    // functions, this collapses `build_inner`'s frame from ~77 KiB
+    // (the original "destructure inline in every arm" shape, which
+    // blew the 1 MiB wasm stack at ~13 levels of recursion and
+    // surfaced as the `RuntimeError: memory access out of bounds`
+    // crash on `/demo`) down to roughly `sizeof(Element)` + a few
+    // words.
+    //
+    // The function-pointer call is monomorphic (`B` is fixed for any
+    // given build), so this is a single direct call after match
+    // selection — no virtual dispatch overhead.
+    type Dispatcher<B> = fn(&Rc<RefCell<B>>, Element) -> <B as Backend>::Node;
+    let dispatcher: Dispatcher<B> = match &node {
+        Element::Text { .. } => dispatch_text::<B>,
+        Element::View { .. } => dispatch_view::<B>,
+        Element::Pressable { .. } => dispatch_pressable::<B>,
+        Element::Button { .. } => dispatch_button::<B>,
+        Element::Image { .. } => dispatch_image::<B>,
+        Element::Icon { .. } => dispatch_icon::<B>,
+        Element::TextInput { .. } => dispatch_text_input::<B>,
+        Element::TextArea { .. } => dispatch_text_area::<B>,
+        Element::Toggle { .. } => dispatch_toggle::<B>,
+        Element::ScrollView { .. } => dispatch_scroll_view::<B>,
+        Element::Slider { .. } => dispatch_slider::<B>,
+        Element::ActivityIndicator { .. } => dispatch_activity_indicator::<B>,
+        Element::Virtualizer { .. } => dispatch_virtualizer::<B>,
+        Element::Graphics { .. } => dispatch_graphics::<B>,
+        Element::When { .. } => dispatch_when::<B>,
+        Element::Switch { .. } => dispatch_switch::<B>,
+        Element::Each { .. } => dispatch_each::<B>,
+        Element::Link { .. } => dispatch_link::<B>,
+        Element::External { .. } => dispatch_external::<B>,
+        Element::Navigator { .. } => dispatch_navigator::<B>,
+        Element::Portal { .. } => dispatch_portal::<B>,
+        Element::Presence { .. } => dispatch_presence::<B>,
+        Element::Lazy { .. } => dispatch_lazy::<B>,
         Element::Repeat { .. } => {
             // `Repeat` represents N sibling nodes, not a single
             // node. It can only appear inside a parent's children
@@ -439,6 +344,7 @@ pub(super) fn build_inner<B: Backend + 'static>(
             );
         }
     };
+    let result = dispatcher(backend, node);
 
     #[cfg(feature = "debug-stats")]
     crate::debug::record_build_exit(_debug_kind);
@@ -467,4 +373,188 @@ pub(super) fn build_inner<B: Backend + 'static>(
     }
 
     result
+}
+
+// =============================================================================
+// Per-variant dispatch shims.
+//
+// Each `dispatch_*` takes the full `Element` by value, destructures
+// the one variant it owns, and forwards to that variant's submodule
+// `build(...)` helper. `#[inline(never)]` is the load-bearing
+// annotation — without it, rustc would re-inline these back into
+// `build_inner` and we'd re-bloat the frame.
+//
+// The `let-else { unreachable!() }` pattern keeps the variant-known
+// destructure cheap: in release builds LLVM proves the else branch
+// is dead given the caller's match-on-discriminant, so there's no
+// runtime check or panic infrastructure. (We use safe `unreachable!`
+// rather than `unreachable_unchecked!` because the cost is zero
+// after optimization and the safety story stays simple.)
+//
+// Each function's job is exactly one variant's destructure +
+// argument-marshalling. They're individually small (~few hundred
+// bytes of stack each) and called from at most one site, so the
+// code-size cost of `#[inline(never)]` is negligible.
+// =============================================================================
+
+#[inline(never)]
+fn dispatch_text<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Text { source, style, ref_fill, accessibility, .. } = node else { unreachable!() };
+    text::build(backend, source, style, ref_fill, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_view<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::View { children, style, ref_fill, safe_area_sides, on_touch, accessibility, .. } = node
+    else { unreachable!() };
+    view::build(backend, children, style, ref_fill, safe_area_sides, on_touch, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_pressable<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Pressable { children, on_click, style, ref_fill, disabled, accessibility, .. } = node
+    else { unreachable!() };
+    pressable::build(backend, children, on_click, style, ref_fill, disabled, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_button<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Button { label, on_click, leading_icon, trailing_icon, style, ref_fill, disabled, accessibility, .. } = node
+    else { unreachable!() };
+    button::build(backend, label, on_click, leading_icon, trailing_icon, style, ref_fill, disabled, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_image<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Image { src, alt, style, ref_fill, asset, accessibility, .. } = node
+    else { unreachable!() };
+    image::build(backend, src, alt, style, ref_fill, asset, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_icon<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Icon { data, color, stroke, draw_in, style, ref_fill, accessibility, .. } = node
+    else { unreachable!() };
+    icon::build(backend, data, color, stroke, draw_in, style, ref_fill, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_text_input<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::TextInput { value, on_change, on_key_down, placeholder, style, ref_fill, accessibility, .. } = node
+    else { unreachable!() };
+    text_input::build_text_input(backend, value, on_change, on_key_down, placeholder, style, ref_fill, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_text_area<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::TextArea { value, on_change, on_key_down, placeholder, style, ref_fill, accessibility, .. } = node
+    else { unreachable!() };
+    text_input::build_text_area(backend, value, on_change, on_key_down, placeholder, style, ref_fill, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_toggle<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Toggle { value, on_change, style, ref_fill, accessibility, .. } = node
+    else { unreachable!() };
+    toggle::build(backend, value, on_change, style, ref_fill, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_scroll_view<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::ScrollView { children, horizontal, style, ref_fill, safe_area_sides, on_scroll, accessibility, .. } = node
+    else { unreachable!() };
+    scroll_view::build(backend, children, horizontal, style, ref_fill, safe_area_sides, on_scroll, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_slider<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Slider { value, on_change, min, max, step, style, ref_fill, accessibility, .. } = node
+    else { unreachable!() };
+    slider::build(backend, value, on_change, min, max, step, style, ref_fill, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_activity_indicator<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::ActivityIndicator { size, color, style, ref_fill, accessibility, .. } = node
+    else { unreachable!() };
+    activity_indicator::build(backend, size, color, style, ref_fill, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_virtualizer<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Virtualizer {
+        item_count, item_key, item_size, render_item, row_template,
+        row_index_signal_id, overscan, horizontal, style, ref_fill, accessibility, ..
+    } = node else { unreachable!() };
+    virtualizer::build(
+        backend, item_count, item_key, item_size, render_item, row_template,
+        row_index_signal_id, overscan, horizontal, style, ref_fill, accessibility,
+    )
+}
+
+#[inline(never)]
+fn dispatch_graphics<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Graphics { on_ready, on_resize, on_lost, style, ref_fill, accessibility, .. } = node
+    else { unreachable!() };
+    graphics::build(backend, on_ready, on_resize, on_lost, style, ref_fill, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_when<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::When { cond, then, otherwise, style } = node else { unreachable!() };
+    when_switch::build_when(backend, cond, then, otherwise, style)
+}
+
+#[inline(never)]
+fn dispatch_switch<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Switch { discriminant, arms, default, style } = node else { unreachable!() };
+    when_switch::build_switch(backend, discriminant, arms, default, style)
+}
+
+#[inline(never)]
+fn dispatch_each<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Each { snapshot, style } = node else { unreachable!() };
+    each::build(backend, snapshot, style)
+}
+
+#[inline(never)]
+fn dispatch_link<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Link { children, route, url, make_params, kind, target, external, style, ref_fill, accessibility } = node
+    else { unreachable!() };
+    link::build(backend, children, route, url, make_params, kind, target, external, style, ref_fill, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_external<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::External { type_id, type_name, payload, children, style, ref_fill, accessibility } = node
+    else { unreachable!() };
+    external::build(backend, type_id, type_name, payload, children, style, ref_fill, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_navigator<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Navigator { type_id, type_name, presentation, config, style, slot_styles, ref_fill, accessibility } = node
+    else { unreachable!() };
+    navigator::build(backend, type_id, type_name, presentation, config, style, slot_styles, ref_fill, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_portal<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Portal { children, target, on_dismiss, trap_focus, style, ref_fill, accessibility, .. } = node
+    else { unreachable!() };
+    portal::build(backend, children, target, on_dismiss, trap_focus, style, ref_fill, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_presence<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Presence { child, present, enter, exit, ref_fill, accessibility, .. } = node
+    else { unreachable!() };
+    presence::build(backend, child, present, enter, exit, ref_fill, accessibility)
+}
+
+#[inline(never)]
+fn dispatch_lazy<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Lazy { loader, on_state, placeholder, style, ref_fill, accessibility } = node
+    else { unreachable!() };
+    lazy::build(backend, loader, on_state, placeholder, style, ref_fill, accessibility)
 }

@@ -830,23 +830,12 @@ fn cargo_build_wasm(
         cmd.arg("--features").arg(user_features.join(","));
     }
     let existing_rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
-    // `-z stack-size=4194304` bumps the wasm stack to 4 MiB (default
-    // wasm-ld is 1 MiB). `runtime_core::walker::build_inner` is a
-    // ~77 KiB-per-call beast (the big match-on-`Element` reserves
-    // stack for every arm's destructured locals at once), so 13-level
-    // recursive tree descent already crosses 1 MiB. Symptom is a
-    // wasm "memory access out of bounds" trap on the stack-pointer
-    // store inside any function called deep in the walk (often
-    // `RefCell::borrow_mut` or `build_inner` itself), which looks
-    // exactly like an externref-alloc reentrance but is just stack
-    // underflow at the function prologue. Bumping here is a
-    // workaround; the long-term fix is to shrink `build_inner`'s
-    // frame (or to convert the descent to an explicit-stack walk).
-    let combined_flags = format!(
-        "{} -C link-args=--emit-relocs -C link-args=-zstack-size=4194304",
-        existing_rustflags
-    );
-    cmd.env("RUSTFLAGS", combined_flags.trim());
+    let combined = if existing_rustflags.is_empty() {
+        "-C link-args=--emit-relocs".to_string()
+    } else {
+        format!("{existing_rustflags} -C link-args=--emit-relocs")
+    };
+    cmd.env("RUSTFLAGS", combined);
 
     eprintln!(
         "[build-web] cargo build --target wasm32-unknown-unknown{}{} (in {})",
