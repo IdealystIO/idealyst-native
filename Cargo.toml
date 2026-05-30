@@ -37,6 +37,8 @@ members = [
     "crates/gpu-backend/engine",
     "crates/gpu-backend/host/winit",
     "crates/gpu-backend/host/web",
+    "crates/gpu-backend/host/ios-mobile",
+    "crates/gpu-backend/host/wgpu",
     "crates/gpu-backend/host/appkit",
     "crates/gpu-backend/host/terminal",
     "crates/gpu-backend/host/wgpu-accesskit",
@@ -145,6 +147,12 @@ members = [
     "benchmark",
     "benchmark/idealyst-native/wasm",
     "benchmark/idealyst-native-anim/wasm",
+
+    # Framework regression test apps. See tests/README.md.
+    "tests/vtable-dispatch",
+    "tests/theme-swap",
+    "tests/lazy-chunk-handoff",
+    "tests/prune-regression",
 ]
 
 # Sub-crates under `examples/fiddle/` that have their own `[workspace]`
@@ -222,6 +230,8 @@ ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
 android-sim = { path = "crates/gpu-backend/painter/android-sim" }
 host-winit = { path = "crates/gpu-backend/host/winit" }
 host-web = { path = "crates/gpu-backend/host/web" }
+host-ios-mobile = { path = "crates/gpu-backend/host/ios-mobile" }
+host-wgpu = { path = "crates/gpu-backend/host/wgpu" }
 host-appkit = { path = "crates/gpu-backend/host/appkit" }
 host-terminal = { path = "crates/gpu-backend/host/terminal" }
 host-wgpu-accesskit = { path = "crates/gpu-backend/host/wgpu-accesskit" }

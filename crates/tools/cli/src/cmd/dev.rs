@@ -1067,6 +1067,10 @@ fn launch_ssr(
                 // Always on in `dev --ssr` mode — the bundle is going
                 // to hydrate the server's DOM.
                 hydrate: true,
+                // Dev builds skip data pruning — iteration speed beats
+                // bundle size, and the heuristic adds a pass per
+                // rebuild.
+                prune_dead_data_min: None,
             },
         )
         .with_context(|| "wasm build for SSR mode failed")?;

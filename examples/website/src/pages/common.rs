@@ -1,7 +1,8 @@
-//! Shared page chrome — `PageHeader`, `PageSection`, `CodePanel`,
-//! `DemoShowcase`, `PlaceholderBlock`. Each is a `#[component]` so its
-//! tag and props struct wire into `ui!` dispatch automatically (the
-//! macro emits `pub type Foo = FooProps` + the `BuildElement` impl).
+//! Shared page chrome — `PageHeader`, `PageSection`, `Section`,
+//! `CodeBlock`, `CodePanel`, `DemoShowcase`, `PlaceholderBlock`. Each is
+//! a `#[component]` so its tag and props struct wire into `ui!` dispatch
+//! automatically (the macro emits `pub type Foo = FooProps` + the
+//! `BuildElement` impl).
 
 use runtime_core::{
     component, switch, ui, Color, Element, IntoElement, Ref, StyleApplication, Tokenized,
@@ -216,10 +217,24 @@ fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
 /// surrounding surface (`CodePanel` for standalone code, `DemoShowcase`
 /// for the showcase card's code region).
 ///
+// =============================================================================
+// CodeBlock — theme-aware highlighted code block, no surrounding chrome.
+// Composed inside `CodePanel` (standalone snippet on a surface) and
+// `DemoShowcase` (the code region of the live-demo card). Promoted to a
+// `#[component]` rather than a snake_case helper because it has a prop
+// and is called from more than one site (CLAUDE.md §9.5).
+// =============================================================================
+
+#[derive(Default)]
+pub struct CodeBlockProps {
+    pub src: String,
+}
+
 /// On non-web targets, `idea-codeblock` falls back to a placeholder — the
 /// surrounding chrome still renders.
-fn code_block(src: &str) -> Element {
-    let src_owned = src.to_string();
+#[component]
+pub fn CodeBlock(props: CodeBlockProps) -> Element {
+    let src_owned = props.src;
     switch(theme_is_dark, move |&is_dark| {
         let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
         let spans = highlight(&src_owned, palette);
@@ -243,10 +258,50 @@ pub struct CodePanelProps {
 /// freestanding snippets (quickstart, concepts, …). Demo sections use
 /// [`DemoShowcase`] instead, which owns its code region's surface itself.
 #[component]
-pub fn CodePanel(props: &CodePanelProps) -> Element {
+pub fn CodePanel(props: CodePanelProps) -> Element {
     let panel_style = CodePanelStyle();
-    let dynamic = code_block(&props.src);
-    ui! { view(style = panel_style) { dynamic } }
+    let src = props.src;
+    ui! {
+        view(style = panel_style) {
+            CodeBlock(src = src)
+        }
+    }
+}
+
+// =============================================================================
+// Section — H2 + paragraph stack + optional code panel. The shape every
+// detail-page section was rebuilding from scratch as a snake_case
+// `section(title, paragraphs, code)` helper. Promoted to a shared
+// `#[component]` so per-page copies all go away (CLAUDE.md §9.5).
+// =============================================================================
+
+#[derive(Default)]
+pub struct SectionProps {
+    pub title: String,
+    pub paragraphs: Vec<String>,
+    pub code: Option<String>,
+}
+
+/// Renders an H2, then each paragraph as a `Typography`, then optionally
+/// a `CodePanel` underneath — wrapped in a `Stack` with `Lg` gaps. Used
+/// inside a `PageSection` body to keep the prose + code anchoring
+/// consistent across the marketing pages.
+#[component]
+pub fn Section(props: SectionProps) -> Element {
+    let title = props.title;
+    let paragraphs = props.paragraphs;
+    let code = props.code;
+    ui! {
+        Stack(gap = StackGap::Lg) {
+            Typography(content = title, kind = typography_kind::H2)
+            for paragraph in paragraphs {
+                Typography(content = paragraph)
+            }
+            if let Some(src) = code {
+                CodePanel(src = src)
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -277,11 +332,13 @@ pub fn DemoShowcase(props: DemoShowcaseProps) -> Element {
     let demo_style = ShowcaseDemo();
     let code_style = ShowcaseCode();
     let preview = props.children;
-    let code = code_block(&props.source);
+    let source = props.source;
     ui! {
         view(style = card_style) {
             view(style = demo_style) { preview }
-            view(style = code_style) { code }
+            view(style = code_style) {
+                CodeBlock(src = source)
+            }
         }
     }
 }

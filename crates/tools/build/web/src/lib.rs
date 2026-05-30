@@ -80,6 +80,16 @@ pub struct BuildOptions {
     /// `true` when SSG/SSR is being built alongside web — the
     /// CLI does this automatically.
     pub hydrate: bool,
+    /// Zero chunk-only data symbols `>= min_bytes` in the main bundle.
+    /// `None` disables. `Some(min)` recovers significant bytes
+    /// (≈400 KB gzipped on a wgpu-sim-bearing app like the website)
+    /// when there's a heavy lazy chunk that pulled big static tables
+    /// into the wasm. `min` matters: the heuristic call graph
+    /// misclassifies small vtables as chunk-only and zeroing them
+    /// triggers null-function traps at runtime. `Some(24)` is the
+    /// verified-safe floor on the website example; the CLI defaults
+    /// to that for release web builds.
+    pub prune_dead_data_min: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -149,8 +159,13 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .with_context(|| "wasm-bindgen")?;
     neutralize_command_export_wrappers(&wrapper_pkg, &manifest.lib_name)
         .with_context(|| "wasm-bindgen command_export neutralize")?;
-    run_wasm_split(&original_wasm, &wrapper_pkg, &manifest.lib_name)
-        .with_context(|| "wasm-split-cli post-build")?;
+    run_wasm_split(
+        &original_wasm,
+        &wrapper_pkg,
+        &manifest.lib_name,
+        opts.prune_dead_data_min,
+    )
+    .with_context(|| "wasm-split-cli post-build")?;
     if opts.release {
         wasm_opt_pkg(&wrapper_pkg).with_context(|| "wasm-opt post-split")?;
     }
@@ -1072,7 +1087,12 @@ fn neutralize_command_export_wrappers(pkg_dir: &Path, lib_name: &str) -> Result<
     Ok(())
 }
 
-fn run_wasm_split(original_wasm: &Path, pkg_dir: &Path, lib_name: &str) -> Result<()> {
+fn run_wasm_split(
+    original_wasm: &Path,
+    pkg_dir: &Path,
+    lib_name: &str,
+    prune_dead_data_min: Option<usize>,
+) -> Result<()> {
     let bindgened_wasm = pkg_dir.join(format!("{lib_name}_bg.wasm"));
     if !bindgened_wasm.is_file() {
         anyhow::bail!(
@@ -1096,8 +1116,9 @@ fn run_wasm_split(original_wasm: &Path, pkg_dir: &Path, lib_name: &str) -> Resul
     // Library API — calls into our vendored wasm-split-cli, so
     // patches we apply land automatically without users needing a
     // separate `cargo install`.
-    let splitter =
-        wasm_split_cli::Splitter::new(&original, &bindgened).context("wasm-split: parse module")?;
+    let splitter = wasm_split_cli::Splitter::new(&original, &bindgened)
+        .context("wasm-split: parse module")?
+        .with_data_pruning(prune_dead_data_min);
     let output = splitter.emit().context("wasm-split: emit chunks")?;
 
     // Replace the bindgened wasm with the split-extracted main.

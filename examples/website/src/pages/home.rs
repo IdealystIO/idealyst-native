@@ -8,16 +8,16 @@
 
 use std::rc::Rc;
 
-use runtime_core::{lazy, signal, switch, ui, Element, IntoElement, Route, Signal, StyleApplication};
-use idea_ui::{Tabs, Typography, Tab};
+use runtime_core::{component, lazy, ui, Element, IntoElement, Route, StyleApplication};
+use idea_ui::Typography;
 
 use crate::components::simulator::{
     Simulator, simulator_placeholder, SimulatorSkin,
 };
 use crate::pages::common::CodePanel;
 use crate::routes::{
-    AGENTIC_ROUTE, BACKENDS_ROUTE, CONCEPTS_ROUTE, INSTALL_ROUTE, QUICKSTART_ROUTE, TARGETS_ROUTE,
-    WHY_RUST_ROUTE,
+    AGENTIC_ROUTE, BACKENDS_ROUTE, COMPARISONS_ROUTE, CONCEPTS_ROUTE, INSTALL_ROUTE,
+    QUICKSTART_ROUTE, TARGETS_ROUTE, WHY_RUST_ROUTE,
 };
 use crate::shell::layout;
 use crate::styles::{
@@ -31,6 +31,7 @@ pub fn page() -> Element {
             { hero() }
             { quickstart_section() }
             { pillars_section() }
+            { comparisons_section() }
         }
     };
     layout(content)
@@ -95,101 +96,39 @@ fn hero() -> Element {
 
 // =============================================================================
 // Hero simulator — the live wgpu preview that sits next to the
-// headline. iOS/Android tab toggle on top + the bezel-wrapped canvas
-// below. Same wiring as the standalone simulator-section pattern,
-// just inlined into the hero so the headline + device read as one
-// visual unit.
+// headline. iOS-skinned bezel + canvas, inlined into the hero so the
+// headline + device read as one visual unit.
 // =============================================================================
 
 fn hero_simulator() -> Element {
-    // Wrap the entire simulator subtree in `lazy! { … }` — on web,
+    // Wrap the simulator subtree in `lazy! { … }` — on web,
     // wasm-split-cli post-build hoists the body (and its transitive
-    // wgpu / welcome / ios_sim / android_sim deps) into a separate
-    // chunk wasm loaded on demand. On native targets the macro is
-    // transparent: the body compiles inline and runs synchronously.
-    //
-    // The tab strip lives inside the lazy block too — it controls
-    // the simulator's painter, and the framework's current `lazy!`
-    // v1 doesn't support captures across the boundary. A future
-    // version can hoist the tab UI out and pass `active` through
-    // via wasm-split's shared memory (chunks can read parent-owned
-    // signals directly — that's the whole point of wasm-split vs.
-    // serde-bridged chunks). For now, the user sees the placeholder
-    // briefly while the chunk loads, then the chrome + simulator
-    // mount together.
+    // wgpu / welcome / ios_sim deps) into a separate chunk wasm
+    // loaded on demand. On native targets the macro is transparent:
+    // the body compiles inline and runs synchronously.
     lazy! {
-        let stage_style = crate::styles::SimulatorStage();
-        let active: Signal<usize> = signal!(0_usize);
-        let on_change: Rc<dyn Fn(usize)> = Rc::new(move |idx| active.set(idx));
-
-        let tab_strip = ui! {
-            Tabs(
-                tabs = vec![
-                    Tab::new("iOS"),
-                    Tab::new("Android"),
-                ],
-                active = active,
-                on_change = on_change,
-            )
-        };
-
-        // `switch` re-runs the body closure when the tab changes,
-        // rebuilding the Simulator with the matching painter. The
-        // outgoing Simulator's `on_lost` fires as its Graphics surface
-        // tears down so the wgpu host drops cleanly before the new one
-        // mounts. The Simulator owns its own outer chassis (default
-        // `chassis = true`) so the bezel rendering matches the
-        // `simulator_placeholder` below — no concentric curve drift.
-        let dynamic_sim = switch(
-            move || active.get(),
-            |&idx| {
-                let build_ui: Rc<dyn Fn() -> Element> = Rc::new(welcome::app);
-                let skin = if idx == 1 {
-                    SimulatorSkin::Android
-                } else {
-                    SimulatorSkin::Ios
-                };
-                ui! {
-                    Simulator(
-                        build_ui = build_ui,
-                        skin = skin,
-                    )
-                }
-            },
-        );
-
-        let stage_children: Vec<Element> = vec![tab_strip, dynamic_sim];
-        ui! { view(style = stage_style) { stage_children } }
+        let build_ui: Rc<dyn Fn() -> Element> = Rc::new(welcome::app);
+        ui! {
+            view(style = crate::styles::SimulatorStage()) {
+                Simulator(
+                    build_ui = build_ui,
+                    skin = SimulatorSkin::Ios,
+                )
+            }
+        }
     }
     // While the chunk loads, render the device chassis with an "off"
-    // screen inside (from `simulator_placeholder`), plus an empty
-    // band the height of the tab strip above it. Reserving the full
+    // screen inside (from `simulator_placeholder`). Reserving the
     // footprint means the surrounding hero layout doesn't reflow
     // when the simulator pops in — the only on-load delta is the
-    // wgpu canvas painting INSIDE the chassis and the tab labels
-    // appearing in the band above.
-    //
-    // Tab band reserves the height TabBar + TabButton produce
-    // (~36 px from `idea-ui::stylesheets::TabBar` / `TabButton`:
-    // 8 px vertical padding + 14 px font + 2 px active-border +
-    // 1 px bar border).
+    // wgpu canvas painting INSIDE the chassis.
     .placeholder(|| {
-        use runtime_core::{view, Length, StyleRules, StyleSheet};
-        const TAB_BAND_H: f32 = 36.0;
-        const TAB_BAND_W: f32 = 300.0;
-
-        let tab_band_style = Rc::new(StyleSheet::r#static(StyleRules {
-            width: Some(Length::Px(TAB_BAND_W).into()),
-            height: Some(Length::Px(TAB_BAND_H).into()),
-            ..Default::default()
-        }));
-        let tab_band = view(Vec::new())
-            .with_style(tab_band_style)
-            .into_element();
-        let device = simulator_placeholder(None);
-        let stage_children: Vec<Element> = vec![tab_band, device];
-        ui! { view(style = crate::styles::SimulatorStage()) { stage_children } }
-            .into_element()
+        ui! {
+            view(style = crate::styles::SimulatorStage()) {
+                { simulator_placeholder(None) }
+            }
+        }
+        .into_element()
     })
     .into_element()
 }
@@ -275,33 +214,82 @@ fn pillars_section() -> Element {
         ),
     ];
 
-    let mut cards: Vec<Element> = Vec::with_capacity(pillars.len());
-    for (title, blurb, route) in pillars {
-        cards.push(pillar_card(title, blurb, route));
+    ui! {
+        view(style = section_style) {
+            Typography(
+                content = "What makes it different".to_string(),
+                kind = idea_ui::typography_kind::H2,
+            )
+            view(style = grid_style) {
+                for (title, blurb, route) in pillars {
+                    PillarTile(
+                        title = title.to_string(),
+                        blurb = blurb.to_string(),
+                        route = route,
+                    )
+                }
+            }
+        }
     }
-
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = "What makes it different".to_string(), kind = idea_ui::typography_kind::H2) },
-        ui! { view(style = grid_style) { cards } },
-    ];
-
-    ui! { view(style = section_style) { children } }
 }
 
-fn pillar_card(title: &str, blurb: &str, route: &'static Route<()>) -> Element {
+/// One card on the home page's pillar grid. Promoted from the
+/// snake_case `pillar_card` helper because it has props and is called
+/// from a `for` loop (CLAUDE.md §9.5). Named `PillarTile`, not
+/// `PillarCard`, because `PillarCard` is a stylesheet in `styles.rs`
+/// — `#[component]` emits `pub type PillarTile = PillarTileProps`
+/// which would collide with the stylesheet's type alias.
+#[derive(Default)]
+pub struct PillarTileProps {
+    pub title: String,
+    pub blurb: String,
+    pub route: Option<&'static Route<()>>,
+}
+
+#[component]
+pub fn PillarTile(props: PillarTileProps) -> Element {
+    let title = props.title;
+    let blurb = props.blurb;
+    let route = props.route.expect("PillarTile requires a `route` prop");
     let card_style = PillarCard();
     let cta_style = move || StyleApplication::new(PillarCta::sheet());
-    let title_text = title.to_string();
-    let blurb_text = blurb.to_string();
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H3) },
-        ui! { Typography(content = blurb_text, muted = true) },
-        ui! {
+    ui! {
+        view(style = card_style) {
+            Typography(content = title, kind = idea_ui::typography_kind::H3)
+            Typography(content = blurb, muted = true)
             link(route = route, params = ()) {
                 text(style = cta_style) { "Read more \u{2192}" }
             }
-        },
-    ];
-    ui! { view(style = card_style) { children } }
+        }
+    }
+}
+
+// =============================================================================
+// Comparisons CTA — points to the "Why Idealyst over X" tangent pages
+// (Electron / React / Dioxus / Flutter / Vue+Angular+Svelte / when-not-to-use).
+// These aren't in the sidebar; this is the primary entry point into them.
+// =============================================================================
+
+fn comparisons_section() -> Element {
+    let section_style = crate::responsive::responsive_style(HomeSection::sheet());
+    let cta_style = move || StyleApplication::new(PillarCta::sheet());
+    ui! {
+        view(style = section_style) {
+            Typography(
+                content = "How idealyst compares".to_string(),
+                kind = idea_ui::typography_kind::H2,
+            )
+            Typography(
+                content = "If you've shipped real apps in Electron, React Native, Dioxus, \
+                 Flutter, or a JS framework, you've probably hit some of the same friction \
+                 that motivated this project. Honest framework-by-framework comparisons \
+                 (including \"when not to use Idealyst\") live on their own page.".to_string(),
+                muted = true,
+            )
+            link(route = &COMPARISONS_ROUTE, params = ()) {
+                text(style = cta_style) { "See the comparisons \u{2192}" }
+            }
+        }
+    }
 }
 

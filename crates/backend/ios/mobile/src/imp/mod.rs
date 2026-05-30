@@ -7,6 +7,7 @@ pub(crate) mod icon;
 pub(crate) mod image;
 pub(crate) mod portal;
 pub(crate) mod sticky;
+pub(crate) mod text_inset;
 pub(crate) mod touch;
 pub(crate) mod virtualizer;
 
@@ -762,7 +763,17 @@ impl Backend for IosBackend {
     }
 
     fn create_text(&mut self, content: &str, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
-        let label = unsafe { UILabel::new(self.mtm) };
+        // `IdealystLabel` is a UILabel subclass with per-side text
+        // insets. The framework's `StyleRules.padding_*` values get
+        // applied by Taffy as the node's padding rect, which insets
+        // children inside their parent's bounds — but UILabel has no
+        // children, so Taffy padding would otherwise just grow the
+        // label's outer frame without pushing the glyphs in. The
+        // subclass honors the insets in `drawText(in:)`,
+        // `sizeThatFits:`, and `intrinsicContentSize`. See
+        // `imp::text_inset` for the override details.
+        let custom_label = text_inset::IdealystLabel::new(self.mtm);
+        let label: Retained<UILabel> = Retained::into_super(custom_label);
         let ns_text = NSString::from_str(content);
         unsafe { label.setText(Some(&ns_text)) };
         let _: () = unsafe { msg_send![&label, setNumberOfLines: 0isize] };

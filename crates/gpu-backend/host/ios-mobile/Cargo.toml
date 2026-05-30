@@ -1,0 +1,41 @@
+[package]
+name = "host-ios-mobile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# iOS native shell for the wgpu render backend.
+#
+# The iOS sibling of `host-web`: takes the framework's
+# `Graphics`-allocated CAMetalLayer-backed UIView surface (via the
+# iOS backend's `IosSurfaceProvider`), runs the wgpu init against the
+# Metal backend, constructs the `render_wgpu::Host` + `Renderer`,
+# mounts the caller's UI, and drives per-frame paint through
+# `runtime_core::driver::render_loop` — which the iOS backend already
+# installs as an NSTimer at ~60 Hz.
+#
+# Used to embed a live preview of an idealyst app (the welcome
+# scaffold, a third-party SDK component) inside another idealyst
+# app's UI on iOS, without that preview taking over the device frame
+# the way `variant-phone` does for desktop.
+#
+# Note on inputs: this host does NOT install pointer handlers. The
+# embedded preview is read-only (the outer iOS backend owns hit
+# testing for the surrounding UIView tree, and touches on the
+# preview canvas don't have a meaningful target inside the wgpu
+# scene from the user's perspective). If a future use case wants
+# interaction, the `UIView`'s `touchesBegan:moved:ended:` overrides
+# would translate to `render_api::PointerEvent`s.
+
+[dependencies]
+render-api = { workspace = true }
+render-wgpu = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# Match host-web's wgpu major (29). Different feature set: Metal
+# instead of WebGL2. wgpu 29 ships the Metal backend behind the
+# `metal` feature flag.
+wgpu = { version = "29", default-features = false, features = ["metal", "wgsl"] }
+raw-window-handle = "0.6"
+log = "0.4"

@@ -41,6 +41,24 @@ pub const FURTHER_READING_ROUTE: Route<()> = Route::<()>::new("further-reading",
 // wants the long answer.
 pub const TARGETS_ROUTE: Route<()> = Route::<()>::new("targets", "/targets");
 
+// `/comparisons` and `/comparisons/...` — "Why Idealyst over X" pages.
+// Reachable from inline links on the home page (and from each other
+// via the comparisons index). Each individual comparison stands alone;
+// the index is the hub that lists them all.
+pub const COMPARISONS_ROUTE: Route<()> = Route::<()>::new("comparisons", "/comparisons");
+pub const COMPARE_ELECTRON_ROUTE: Route<()> =
+    Route::<()>::new("compare-electron", "/comparisons/electron");
+pub const COMPARE_REACT_ROUTE: Route<()> =
+    Route::<()>::new("compare-react", "/comparisons/react");
+pub const COMPARE_DIOXUS_ROUTE: Route<()> =
+    Route::<()>::new("compare-dioxus", "/comparisons/dioxus");
+pub const COMPARE_FLUTTER_ROUTE: Route<()> =
+    Route::<()>::new("compare-flutter", "/comparisons/flutter");
+pub const COMPARE_WEB_FRAMEWORKS_ROUTE: Route<()> =
+    Route::<()>::new("compare-web-frameworks", "/comparisons/web-frameworks");
+pub const COMPARE_WHEN_NOT_ROUTE: Route<()> =
+    Route::<()>::new("compare-when-not", "/comparisons/when-not");
+
 pub struct IndexEntry {
     /// The route this entry links to. Carrying the `Route` on the entry
     /// (instead of a bare name the sidebar re-matches against a `match`)
@@ -80,6 +98,13 @@ pub fn label_for_route(name: &str) -> &'static str {
     match name {
         "home" => "Home",
         "targets" => "Targets",
+        "comparisons" => "How Idealyst compares",
+        "compare-electron" => "Idealyst vs Electron",
+        "compare-react" => "Idealyst vs React / React Native",
+        "compare-dioxus" => "Idealyst vs Dioxus",
+        "compare-flutter" => "Idealyst vs Flutter",
+        "compare-web-frameworks" => "Idealyst vs Vue, Angular, Svelte",
+        "compare-when-not" => "When not to use Idealyst",
         _ => "",
     }
 }

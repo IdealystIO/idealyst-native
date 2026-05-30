@@ -1,0 +1,22 @@
+[package]
+name = "prune-regression"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Runner for the tests/ apps. Shells out to the installed `idealyst` CLI to build each app at --web --release (which enables data-segment pruning by default), asserts dist artifacts exist, and optionally (--browser) drives a headless Chrome to assert DOM + console state."
+
+[[bin]]
+name = "prune-regression"
+path = "src/main.rs"
+
+[dependencies]
+# Browser-driven assertions (--browser): serve dist/web over an
+# ephemeral local port and drive a headless Chrome subprocess via
+# `--dump-dom`. Single optional dep so the default fast path
+# (build-only) stays free of transitive deps + the system Chrome
+# dependency.
+tiny_http = { version = "0.12", optional = true }
+
+[features]
+default = ["browser"]
+browser = ["dep:tiny_http"]

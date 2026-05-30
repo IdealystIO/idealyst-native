@@ -109,6 +109,19 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub out_dir: Option<PathBuf>,
 
+    /// Web + release only: opt out of chunk-only data pruning in the
+    /// main wasm bundle. By default release web builds zero data
+    /// symbols (≥ 24 bytes) that wasm-split-cli classifies as
+    /// reachable only from `lazy!` chunks — recovers ~25-50% of the
+    /// gzipped main bundle on apps with a heavy lazy chunk (a wgpu
+    /// simulator, an editor, …). The 24-byte threshold is the
+    /// verified-safe floor below which the symbol-level call graph
+    /// misclassifies small vtables and the runtime hits null-function
+    /// traps. Pass this flag if a custom app trips on the analysis
+    /// — file a repro so we can tighten the heuristic.
+    #[arg(long)]
+    pub no_data_prune: bool,
+
     /// Web + release only: strip panic machinery from the wasm bundle
     /// via `-Z build-std-features=panic_immediate_abort`. Every panic
     /// (incl. `unwrap`/`expect`) becomes a bare `unreachable` trap with
@@ -285,6 +298,18 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
             // the emitted HTML expects the wasm to adopt it on boot.
             // Pure SPA builds drop the machinery for a smaller wasm.
             hydrate: args.ssg || args.ssr,
+            // Release web builds prune chunk-only data ≥ 24 bytes from
+            // the main bundle (the verified-safe floor below which the
+            // heuristic call graph misclassifies small vtables and
+            // null-function-traps at runtime). Recovers up to ~50% of
+            // gzipped bytes on apps with a heavy lazy chunk. Debug
+            // builds skip pruning to keep the build cycle fast.
+            // `--no-data-prune` opts out.
+            prune_dead_data_min: if args.release && !args.no_data_prune {
+                Some(24)
+            } else {
+                None
+            },
         },
     )?;
     let bundle = artifact

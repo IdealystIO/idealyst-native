@@ -204,6 +204,16 @@ pub struct Splitter<'a> {
     main_graph: HashSet<Node>,
     call_graph: HashMap<Node, HashSet<Node>>,
     parent_graph: HashMap<Node, HashSet<Node>>,
+
+    /// Minimum size (bytes) for a chunk-only data symbol to be eligible
+    /// for zeroing in the main bundle. `None` disables pruning entirely
+    /// (legacy behaviour); `Some(min)` zeros every chunk-only symbol
+    /// `>= min` bytes. Default: `None`. Callers (e.g. the CLI's web
+    /// build) set this to `Some(24)` for release builds — that's the
+    /// empirically-verified floor below which the heuristic call graph
+    /// starts misclassifying small vtables. Env-var
+    /// `IDEALYST_WASM_SPLIT_PRUNE_DATA_MIN` still overrides if set.
+    prune_dead_data_min: Option<usize>,
 }
 
 /// The results of splitting the wasm module with some additional metadata for later use.
@@ -259,12 +269,25 @@ impl<'a> Splitter<'a> {
             call_graph: Default::default(),
             parent_graph: Default::default(),
             shared_symbols: Default::default(),
+            prune_dead_data_min: None,
         };
 
         module.build_call_graph()?;
         module.build_split_chunks();
 
         Ok(module)
+    }
+
+    /// Configure dead-data pruning on the main bundle. Zeros every
+    /// data symbol the call graph classifies as chunk-only and whose
+    /// size is `>= min_bytes`. The threshold matters: below ~24 bytes
+    /// the heuristic misclassifies vtables (4-byte function-index
+    /// slots) and runtime hits a null-function trap. Callers should
+    /// pin a value they've smoke-tested; `Some(24)` is the verified
+    /// floor on the website example. `None` disables pruning entirely.
+    pub fn with_data_pruning(mut self, min_bytes: Option<usize>) -> Self {
+        self.prune_dead_data_min = min_bytes;
+        self
     }
 
     /// Split the module into multiple modules at the boundaries of split points.
@@ -813,11 +836,22 @@ impl<'a> Splitter<'a> {
         // collapses to ~nothing. If a misclassified symbol gets
         // zeroed, main will crash at runtime — that's the existing
         // risk this gate exposes for experimentation.
-        if std::env::var("IDEALYST_WASM_SPLIT_PRUNE_DATA").is_ok() {
+        // Resolve effective min size:
+        //  - `IDEALYST_WASM_SPLIT_PRUNE_DATA_MIN` env var (any value) wins.
+        //  - Else `prune_dead_data_min` field on the Splitter
+        //    (set via `with_data_pruning(...)` by the build pipeline).
+        //  - Else off.
+        let env_min = std::env::var("IDEALYST_WASM_SPLIT_PRUNE_DATA_MIN")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok());
+        let effective_min = env_min.or(self.prune_dead_data_min);
+        if let Some(min) = effective_min {
             // Heuristic path — uses the symbol-level call graph's
             // `unused_symbols`. Over-approximates (mis-classifies small
             // vtables as chunk-only), so the safe floor is ~24 bytes.
-            // See the size-threshold knob.
+            self.zero_dead_data_in_main(out, unused_symbols, min)?;
+        } else if std::env::var("IDEALYST_WASM_SPLIT_PRUNE_DATA").is_ok() {
+            // Legacy env-var path (defaults min=0, all-symbols).
             let min = std::env::var("IDEALYST_WASM_SPLIT_PRUNE_DATA_MIN")
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())

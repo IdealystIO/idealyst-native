@@ -20,16 +20,25 @@ use runtime_core::{
     component, ui, view, Color, IntoElement, Length, Overflow, Element, Shadow, StyleRules,
     StyleSheet,
 };
-// `DeviceProfile` is only constructed inside the `Simulator` component
-// (which the home page mounts via `lazy! { Simulator(...) }`). Keeping
-// the import out of file scope avoids a code-reachability path from
-// base → `host_web` → `render-wgpu` → `glyphon` → `cosmic-text` + `wgpu`
-// + `naga`. The base bundle would otherwise pay for the entire GPU
-// + text-shaping stack even though it's only painted into the canvas
-// inside the lazy chunk.
-#[cfg(target_arch = "wasm32")]
-use host_web::{DeviceProfile, Painter};
-#[cfg(target_arch = "wasm32")]
+// `DeviceProfile` + `Painter` come through the `host-wgpu` umbrella,
+// which cfg-routes internally to `host-web` on wasm and
+// `host-ios-mobile` on iOS. Author code names one symbol per
+// concept and the right backend is picked at link time.
+//
+// Why this isn't behind a `cfg(target_arch)` here: per §7 of
+// CLAUDE.md and `[[feedback_cfg_hack_signals_missing_backend_method]]`,
+// platform variance belongs in the backend layer (the host crates),
+// not in author code. `host-wgpu` is that backend abstraction —
+// `mount` returns `Err(MountError::Unsupported)` on targets without
+// a wgpu host wired (macOS-AppKit, terminal, …) so the consumer can
+// fall back without target gates.
+//
+// Code-reachability cost on web: `host_wgpu` transitively pulls the
+// same `host-web` → `render-wgpu` → `glyphon` / `cosmic-text` / `wgpu`
+// / `naga` graph the previous direct `host_web` import did. wasm-split
+// keeps that behind the same `lazy!` chunk as before because the
+// `mount`/`DeviceProfile` reachability surface is unchanged.
+use host_wgpu::{DeviceProfile, Painter};
 use runtime_core::driver::spawn_async;
 
 /// Target-agnostic identifier for which device chrome the embedded
@@ -50,7 +59,6 @@ impl Default for SimulatorSkin {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 fn painter_for(skin: SimulatorSkin) -> Rc<dyn Painter> {
     // `with_corner_radius(0.0)` suppresses each painter's rounded
     // device-frame SDF pass, so the engine doesn't draw an inner
@@ -165,8 +173,23 @@ fn chassis_sheet() -> Rc<StyleSheet> {
     }))
 }
 
-fn wrap_in_chassis(canvas_wrapper: Element) -> Element {
-    view(vec![canvas_wrapper])
+/// Outer device chassis — bezel + corner clip + drop shadow. Sits
+/// around the simulator's GPU canvas (or the placeholder's "off"
+/// screen) so the device chrome and the screen contents share one
+/// rounded boundary.
+///
+/// Promoted from the snake_case `wrap_in_chassis` helper because it
+/// takes children and is called from multiple sites (CLAUDE.md §9.5).
+/// Container shape: `children` flows into the inner `view`, the
+/// chassis stylesheet decorates the wrapper.
+#[derive(Default)]
+pub struct ChassisProps {
+    pub children: Vec<Element>,
+}
+
+#[component]
+pub fn Chassis(props: ChassisProps) -> Element {
+    view(props.children)
         .with_style(chassis_sheet())
         .into_element()
 }
@@ -218,16 +241,13 @@ pub fn simulator_placeholder(logical_size: Option<(u32, u32)>) -> Element {
     let off_screen = view(Vec::new())
         .with_style(screen_style)
         .into_element();
-    wrap_in_chassis(off_screen)
+    ui! {
+        Chassis {
+            off_screen
+        }
+    }
 }
 
-// `DeviceProfile` lives on `host_web` (re-exported from `render-api`).
-// Constructing one is what links the heavy `render-wgpu` / `glyphon` /
-// `cosmic-text` / `wgpu` / `naga` graph — keep this fn wasm32-only
-// (where the simulator actually runs) so non-wasm compiles stay clean
-// AND wasm-split sees no base-reachable path that materializes a
-// `DeviceProfile`.
-#[cfg(target_arch = "wasm32")]
 fn default_profile() -> DeviceProfile {
     DeviceProfile {
         logical_size: (DEFAULT_LOGICAL_W, DEFAULT_LOGICAL_H),
@@ -250,77 +270,86 @@ pub fn Simulator(props: SimulatorProps) -> Element {
 
     let (preview_w_px, preview_height_px) =
         preview_dimensions((DEFAULT_LOGICAL_W, DEFAULT_LOGICAL_H));
-    // `skin` + `build_ui` are only consumed by the wasm32 on_ready
-    // closure below (the painter wiring + `host_web::mount`). Bind
-    // them on non-wasm so the destructure stays exhaustive without
-    // warnings. iOS Metal mount is intentionally a follow-up — the
-    // iOS Graphics primitive already provides a Metal-backed
-    // `raw_window_handle` (see [crates/backend/ios/mobile/src/imp/graphics.rs]),
-    // and `render-wgpu`'s `Host`/`Renderer` stack is platform-neutral,
-    // but no `host-ios-mobile` crate analogous to `host-web` exists
-    // yet to spin up `wgpu::Instance(Backends::METAL)`, configure the
-    // surface, drive a CADisplayLink render loop, and load fonts.
-    // Until that lands, the Simulator on iOS renders the chassis
-    // around an unmounted (visually empty) CAMetalLayer.
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = (&skin, &build_ui);
 
-    #[cfg(target_arch = "wasm32")]
-    let slot: shared::Slot<host_web::WebHostHandle> = shared::new();
-    #[cfg(target_arch = "wasm32")]
+    // Single slot for the wgpu host handle — `host_wgpu::HostHandle`
+    // type-aliases to `WebHostHandle` on wasm, `IosHostHandle` on
+    // iOS, and a stub on unsupported targets. The on_ready /
+    // on_resize / on_lost callbacks below share it through clones,
+    // no per-target branching needed.
+    let slot: shared::Slot<host_wgpu::HostHandle> = shared::new();
     let slot_ready = slot.clone();
-    #[cfg(target_arch = "wasm32")]
     let slot_resize = slot.clone();
-    #[cfg(target_arch = "wasm32")]
     let slot_lost = slot;
 
-    let graphics = runtime_core::primitives::graphics::graphics(move |_event: OnReadyEvent| {
-        #[cfg(target_arch = "wasm32")]
-        {
-            let slot = slot_ready.clone();
+    let graphics = runtime_core::primitives::graphics::graphics(move |event: OnReadyEvent| {
+        let slot = slot_ready.clone();
+        let build_ui = build_ui.clone();
+        let painter = painter_for(skin);
+        // Build the DeviceProfile lazily on mount — its construction
+        // is the load-bearing path that brings the wgpu graph in,
+        // and on web wasm-split keeps that behind the lazy chunk
+        // that materializes this on_ready closure.
+        let profile = default_profile();
+        let surface = event.surface;
+        let size = event.size;
+        // `spawn_async` is the runtime-installed executor. On wasm it
+        // rides wasm-bindgen-futures; on iOS the `async-driver`
+        // feature on `backend-ios-mobile` plugs into libdispatch.
+        // Either way the `request_adapter` / `request_device`
+        // futures resolve on the main thread without blocking.
+        spawn_async(async move {
             let build_ui = build_ui.clone();
-            let painter = painter_for(skin);
-            // Build the DeviceProfile lazily on mount — its construction
-            // is the load-bearing path that brings host_web in, and we
-            // want it confined to the wgpu-mounting path inside the
-            // lazy chunk.
-            let profile = default_profile();
-            let surface = _event.surface;
-            let size = _event.size;
-            spawn_async(async move {
-                let build_ui = build_ui.clone();
-                match host_web::mount(surface, size, profile, painter, move || (&*build_ui)()).await {
-                    Ok(handle) => shared::fill(&slot, handle),
-                    Err(err) => {
-                        web_sys::console::warn_1(
-                            &format!("[website-simulator] host-web mount failed: {err}")
-                                .into(),
-                        );
-                    }
+            match host_wgpu::mount(surface, size, profile, painter, move || (&*build_ui)()).await {
+                Ok(handle) => {
+                    shared::fill(&slot, handle);
+                    // KEEPALIVE: leak a clone of the slot so the
+                    // host handle survives past this on_ready
+                    // closure's drop. The iOS `Graphics` primitive
+                    // takes `on_ready` by `FnMut` and consumes it
+                    // via `Option::take()` after firing
+                    // (`backend-ios-mobile/src/imp/graphics.rs:71`),
+                    // and the matching `_on_resize`/`_on_lost`
+                    // params are `_`-prefixed = dropped at create
+                    // time. So every captured `Rc` of the slot
+                    // gets dropped right after mount completes,
+                    // dragging the host's render-loop guard with
+                    // it and invalidating the NSTimer before the
+                    // first frame fires. The proper fix is to wire
+                    // those callbacks on the iOS side; this leak
+                    // is the minimum that keeps the preview alive
+                    // until that lands. One leaked `Rc` per
+                    // `Simulator` mount; the page's `lazy!`
+                    // boundary already caps this to one per
+                    // visit.
+                    std::mem::forget(slot.clone());
                 }
-            });
-        }
+                Err(err) => {
+                    // On wasm this goes to the browser console via
+                    // the runtime's panic-hook routing; on native
+                    // it lands on stderr captured by the dev loop.
+                    // Targets without a wgpu host hit
+                    // `MountError::Unsupported` here — that's the
+                    // documented "no preview, fall back to chassis"
+                    // path and not a real failure.
+                    eprintln!("[website-simulator] host-wgpu mount failed: {err}");
+                }
+            }
+        });
     })
-    .on_resize(move |_event: OnResizeEvent| {
-        #[cfg(target_arch = "wasm32")]
-        {
-            shared::with_ref(&slot_resize, |handle| {
-                if let Some(h) = handle {
-                    h.resize(_event.size);
-                }
-            });
-        }
+    .on_resize(move |event: OnResizeEvent| {
+        shared::with_ref(&slot_resize, |handle| {
+            if let Some(h) = handle {
+                h.resize(event.size);
+            }
+        });
     })
     .on_lost(move || {
-        #[cfg(target_arch = "wasm32")]
-        {
-            // Take the handle OUT of the slot before letting it drop:
-            // the handle's Drop walks listeners, the render loop, and
-            // the host \u{2014} we don't want any of that running while
-            // the slot is still borrowed.
-            let stale = shared::take(&slot_lost);
-            drop(stale);
-        }
+        // Take the handle OUT of the slot before letting it drop —
+        // the handle's Drop walks the render loop + host state, and
+        // we don't want any of that running while the slot is still
+        // borrowed.
+        let stale = shared::take(&slot_lost);
+        drop(stale);
     });
 
     // Pin the canvas to the device aspect via a sized wrapper. The
@@ -366,7 +395,11 @@ pub fn Simulator(props: SimulatorProps) -> Element {
         .into_element();
 
     if chassis {
-        wrap_in_chassis(wrapper)
+        ui! {
+            Chassis {
+                wrapper
+            }
+        }
     } else {
         wrapper
     }

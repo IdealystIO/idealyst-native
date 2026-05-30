@@ -21,6 +21,7 @@
 
 use runtime_core::primitives::icon::{FillRule, IconData};
 use runtime_core::Color;
+use objc2::encode::{Encode, Encoding};
 use objc2::msg_send;
 use objc2::msg_send_id;
 use objc2::rc::Retained;
@@ -28,8 +29,22 @@ use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker, NSObj
 use objc2_ui_kit::{UIColor, UIView};
 
 use backend_apple_core::icon_path::{parse_svg_path, PathEmitter};
-use backend_ios_core::style::color_to_uicolor;
+use backend_ios_core::style::{color_to_uicolor, CGColorRef};
 use super::IosNode;
+
+/// Opaque-pointer wrapper for CoreGraphics' `CGPathRef`. objc2 0.5+
+/// validates `msg_send!` return types against the runtime ObjC
+/// signature; a bare `*const c_void` encodes as `^v` while the
+/// real signature for `-[UIBezierPath CGPath]` is `^{CGPath=}`, so
+/// the runtime check panics. Mirrors `CGColorRef` in
+/// `backend-ios-core::style`.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct CGPathRef(*const std::ffi::c_void);
+
+unsafe impl Encode for CGPathRef {
+    const ENCODING: Encoding = Encoding::Pointer(&Encoding::Struct("CGPath", &[]));
+}
 
 // =========================================================================
 // UIBezierPath PathEmitter adapter — bridges the shared
@@ -149,7 +164,7 @@ pub(crate) fn create_icon(
     };
 
     // Set path.
-    let cg_path: *const std::ffi::c_void = unsafe { msg_send![&bezier, CGPath] };
+    let cg_path: CGPathRef = unsafe { msg_send![&bezier, CGPath] };
     let _: () = unsafe { msg_send![&shape_layer, setPath: cg_path] };
 
     // Stroke color.
@@ -160,13 +175,12 @@ pub(crate) fn create_icon(
             msg_send_id![cls, labelColor]
         },
     };
-    let cg_stroke: *const std::ffi::c_void =
-        unsafe { msg_send![&stroke_color, CGColor] };
+    let cg_stroke: CGColorRef = unsafe { msg_send![&stroke_color, CGColor] };
     let _: () = unsafe { msg_send![&shape_layer, setStrokeColor: cg_stroke] };
 
     // No fill — stroke-only (Lucide / outlined icon style).
     let clear: Retained<UIColor> = unsafe { UIColor::clearColor() };
-    let cg_clear: *const std::ffi::c_void = unsafe { msg_send![&clear, CGColor] };
+    let cg_clear: CGColorRef = unsafe { msg_send![&clear, CGColor] };
     let _: () = unsafe { msg_send![&shape_layer, setFillColor: cg_clear] };
 
     // Stroke width scaled to target size.
@@ -200,8 +214,7 @@ pub(crate) fn create_icon(
 pub(crate) fn update_icon_color(node: &IosNode, color: &Color) {
     if let Some(shape) = get_shape_layer(node) {
         let ui_color = color_to_uicolor(color);
-        let cg_color: *const std::ffi::c_void =
-            unsafe { msg_send![&ui_color, CGColor] };
+        let cg_color: CGColorRef = unsafe { msg_send![&ui_color, CGColor] };
         let _: () = unsafe { msg_send![&shape, setStrokeColor: cg_color] };
     }
 }

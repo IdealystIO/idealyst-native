@@ -1,0 +1,22 @@
+[package]
+name = "theme-swap-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Framework regression test: many tokens + a light/dark toggle that re-runs the reactive token-cohort. Catches token-registry / update_tokens batching regressions and any pruning that zeroes the cohort driver's data."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Theme Swap Test"
+bundle_id = "ai.truday.idealyst.theme_swap_test"
+version   = "0.0.1"
+targets   = ["web"]
+
+[package.metadata.idealyst.app.splash]
+duration_ms = 0

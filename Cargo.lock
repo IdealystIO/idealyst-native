@@ -2545,6 +2545,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "host-ios-mobile"
+version = "0.0.1"
+dependencies = [
+ "log",
+ "raw-window-handle",
+ "render-api",
+ "render-wgpu",
+ "runtime-core",
+ "wgpu",
+]
+
+[[package]]
 name = "host-terminal"
 version = "0.0.1"
 dependencies = [
@@ -2569,6 +2581,17 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "wgpu",
+]
+
+[[package]]
+name = "host-wgpu"
+version = "0.0.1"
+dependencies = [
+ "host-ios-mobile",
+ "host-web",
+ "render-api",
+ "render-wgpu",
+ "runtime-core",
 ]
 
 [[package]]
@@ -3298,6 +3321,14 @@ dependencies = [
  "arrayvec",
  "euclid",
  "smallvec",
+]
+
+[[package]]
+name = "lazy-chunk-handoff-test"
+version = "0.0.1"
+dependencies = [
+ "idea-ui",
+ "runtime-core",
 ]
 
 [[package]]
@@ -4543,6 +4574,13 @@ name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
+
+[[package]]
+name = "prune-regression"
+version = "0.0.1"
+dependencies = [
+ "tiny_http",
+]
 
 [[package]]
 name = "psm"
@@ -6089,6 +6127,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "theme-swap-test"
+version = "0.0.1"
+dependencies = [
+ "idea-ui",
+ "runtime-core",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6817,6 +6863,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vtable-dispatch-test"
+version = "0.0.1"
+dependencies = [
+ "idea-ui",
+ "runtime-core",
+]
+
+[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7280,6 +7334,7 @@ dependencies = [
  "backend-web",
  "drawer-navigator",
  "host-web",
+ "host-wgpu",
  "idea-codeblock",
  "idea-ui",
  "ios-sim",

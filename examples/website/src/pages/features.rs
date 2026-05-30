@@ -5,7 +5,7 @@
 //! six point at the pages where each adjacent capability already lives
 //! (Core concepts, Why Rust, Robot & MCP).
 
-use runtime_core::{ui, Element, Route, StyleApplication};
+use runtime_core::{component, ui, Element, Route, StyleApplication};
 use idea_ui::Typography;
 
 use crate::routes::{
@@ -125,28 +125,47 @@ fn grid() -> Element {
         ),
     ];
 
-    let mut cards: Vec<Element> = Vec::with_capacity(cards_data.len());
-    for (title, blurb, route) in cards_data {
-        cards.push(card(title, blurb, route));
+    ui! {
+        view(style = section_style) {
+            view(style = grid_style) {
+                for (title, blurb, route) in cards_data {
+                    FeatureCard(
+                        title = title.to_string(),
+                        blurb = blurb.to_string(),
+                        route = route,
+                    )
+                }
+            }
+        }
     }
-
-    let children: Vec<Element> = vec![ui! { view(style = grid_style) { cards } }];
-    ui! { view(style = section_style) { children } }
 }
 
-fn card(title: &str, blurb: &str, route: &'static Route<()>) -> Element {
+/// One card on the features grid. Promoted from the snake_case `card`
+/// helper because it has props and is called from a `for` loop
+/// (CLAUDE.md §9.5). Re-uses the home page's `PillarCard` /
+/// `PillarCta` stylesheets so the features grid reads as a
+/// continuation of the landing experience.
+#[derive(Default)]
+pub struct FeatureCardProps {
+    pub title: String,
+    pub blurb: String,
+    pub route: Option<&'static Route<()>>,
+}
+
+#[component]
+pub fn FeatureCard(props: FeatureCardProps) -> Element {
+    let title = props.title;
+    let blurb = props.blurb;
+    let route = props.route.expect("FeatureCard requires a `route` prop");
     let card_style = PillarCard();
     let cta_style = move || StyleApplication::new(PillarCta::sheet());
-    let title_text = title.to_string();
-    let blurb_text = blurb.to_string();
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H3) },
-        ui! { Typography(content = blurb_text, muted = true) },
-        ui! {
+    ui! {
+        view(style = card_style) {
+            Typography(content = title, kind = idea_ui::typography_kind::H3)
+            Typography(content = blurb, muted = true)
             link(route = route, params = ()) {
                 text(style = cta_style) { "Read more \u{2192}" }
             }
-        },
-    ];
-    ui! { view(style = card_style) { children } }
+        }
+    }
 }

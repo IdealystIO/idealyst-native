@@ -1,0 +1,40 @@
+[package]
+name = "host-wgpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Target-agnostic umbrella over the platform-specific wgpu host
+# crates (host-web for wasm32, host-ios-mobile for iOS — and future
+# host-android-mobile, host-macos-uikit, etc. as they land).
+#
+# Why this exists: the per-platform host crates can't share a build
+# graph — `host-web` pulls in `wasm-bindgen` / `web-sys`, `host-ios-
+# mobile` pulls in Metal + raw_window_handle UiKit. Each only exposes
+# its `mount` under a target gate. Author code that calls
+# `host_web::mount` on iOS won't link, and dispatching with
+# `#[cfg(target_os = ...)]` at every call site violates §7
+# (backends own platform variance, not user code) — see
+# `[[feedback_cfg_hack_signals_missing_backend_method]]`.
+#
+# `host-wgpu` re-exports the right `mount` / `HostHandle` /
+# `MountError` / `DeviceProfile` / `Painter` symbols under uniform
+# names. The `cfg` lives in this crate's `lib.rs`; consumer code
+# (Simulator components, preview embeds in third-party SDKs) calls
+# `host_wgpu::mount(...)` cross-target with no platform branching.
+#
+# On targets that don't have a wgpu host yet, every symbol resolves
+# but `mount` returns `MountError::Unsupported` immediately. That
+# keeps author code uniform without silently no-opping in a way that
+# would hide configuration mistakes.
+
+[dependencies]
+render-api = { workspace = true }
+render-wgpu = { workspace = true }
+runtime-core = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+host-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+host-ios-mobile = { workspace = true }

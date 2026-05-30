@@ -29,6 +29,12 @@ welcome = { workspace = true }
 # native targets and the `Simulator` component's compile-time
 # imports stay portable. Matches the docs example's Cargo wiring.
 host-web = { workspace = true }
+# Target-agnostic wgpu host umbrella. Internally cfg-routes to
+# `host-web` on wasm, `host-ios-mobile` on iOS, etc. The Simulator
+# component calls `host_wgpu::mount(...)` cross-target without any
+# per-platform `cfg` in author code — see §7 of CLAUDE.md +
+# `[[feedback_cfg_hack_signals_missing_backend_method]]`.
+host-wgpu = { workspace = true }
 render-api = { workspace = true }
 ios-sim = { workspace = true }
 android-sim = { workspace = true }
@@ -81,7 +87,14 @@ web-sys = { version = "0.3", features = [
 # native targets render screens raw inside a UINavigationController /
 # FragmentManager.
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
-backend-ios-mobile = { workspace = true }
+# `async-driver` is the iOS sibling of the same feature on
+# `backend-web` (line 72 above): it pulls in `install_async_executor`
+# (libdispatch-backed) + `install_render_loop` (NSTimer-backed) so
+# the embedded `Simulator` component's `spawn_async` future resolves
+# and the wgpu host's per-frame closure fires. Without it
+# `host_wgpu::mount` queues onto an executor that was never
+# installed, so the welcome app never paints.
+backend-ios-mobile = { workspace = true, features = ["async-driver"] }
 
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 backend-android-mobile = { workspace = true }

@@ -31,10 +31,12 @@ mod styles;
 mod typeface;
 
 use routes::{
-    AGENTIC_ROUTE, BACKENDS_ROUTE, CODE_SPLITTING_ROUTE, CONCEPTS_ROUTE, CROSS_PLATFORM_ROUTE,
-    DEMO_ROUTE, FEATURES_ROUTE, FURTHER_READING_ROUTE, HOME_ROUTE, INSTALL_ROUTE,
-    PERFORMANCE_ROUTE, QUICKSTART_ROUTE, ROADMAP_ROUTE, SERVER_FUNCTIONS_ROUTE, SSR_ROUTE,
-    TARGETS_ROUTE, TYPE_SAFETY_ROUTE, WHY_RUST_ROUTE,
+    AGENTIC_ROUTE, BACKENDS_ROUTE, CODE_SPLITTING_ROUTE, COMPARE_DIOXUS_ROUTE,
+    COMPARE_ELECTRON_ROUTE, COMPARE_FLUTTER_ROUTE, COMPARE_REACT_ROUTE,
+    COMPARE_WEB_FRAMEWORKS_ROUTE, COMPARE_WHEN_NOT_ROUTE, COMPARISONS_ROUTE, CONCEPTS_ROUTE,
+    CROSS_PLATFORM_ROUTE, DEMO_ROUTE, FEATURES_ROUTE, FURTHER_READING_ROUTE, HOME_ROUTE,
+    INSTALL_ROUTE, PERFORMANCE_ROUTE, QUICKSTART_ROUTE, ROADMAP_ROUTE, SERVER_FUNCTIONS_ROUTE,
+    SSR_ROUTE, TARGETS_ROUTE, TYPE_SAFETY_ROUTE, WHY_RUST_ROUTE,
 };
 
 #[component]
@@ -105,6 +107,13 @@ pub fn app() -> Element {
         .screen(ROADMAP_ROUTE, move |_| pages::roadmap::page())
         .screen(FURTHER_READING_ROUTE, move |_| pages::further_reading::page())
         .screen(TARGETS_ROUTE, move |_| pages::targets::page())
+        .screen(COMPARISONS_ROUTE, move |_| pages::comparisons::page())
+        .screen(COMPARE_ELECTRON_ROUTE, move |_| pages::comparisons::electron::page())
+        .screen(COMPARE_REACT_ROUTE, move |_| pages::comparisons::react::page())
+        .screen(COMPARE_DIOXUS_ROUTE, move |_| pages::comparisons::dioxus::page())
+        .screen(COMPARE_FLUTTER_ROUTE, move |_| pages::comparisons::flutter::page())
+        .screen(COMPARE_WEB_FRAMEWORKS_ROUTE, move |_| pages::comparisons::web_frameworks::page())
+        .screen(COMPARE_WHEN_NOT_ROUTE, move |_| pages::comparisons::when_not::page())
         .drawer_width(260.0)
         // Leading slot — the persistent sidebar. Runs ONCE at
         // navigator init; survives every screen swap.
@@ -175,6 +184,14 @@ pub fn register_extensions(backend: &mut backend_web::WebBackend) {
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
     drawer_navigator::register(backend);
+    // Install the iOS render-loop driver so the embedded `Simulator`
+    // component's wgpu host gets per-frame ticks. The driver is the
+    // NSTimer at ~60 Hz from `backend-ios-core::render_loop`; the
+    // `backend-ios-mobile` re-export is gated on the `async-driver`
+    // feature (enabled in this crate's `Cargo.toml`). Same role as
+    // `backend_web::install_async_executor` + `install_render_loop`
+    // in the wasm32 register_extensions above.
+    backend_ios::install_render_loop();
 }
 
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]

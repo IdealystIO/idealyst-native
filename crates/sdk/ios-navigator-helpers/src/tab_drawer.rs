@@ -182,7 +182,7 @@ fn select_screen(
                 unsafe { sub.removeFromSuperview() };
             }
             let result = mount_fn(name, params);
-            pin_to_edges(body, result.node.as_view());
+            attach_screen(body, result.node.as_view());
             // Force a synchronous Taffy layout + UIKit Auto Layout
             // pass so the new screen's content has computed frames
             // before the next render cycle. Without this the screen
@@ -192,6 +192,7 @@ fn select_screen(
             unsafe {
                 let _: () = msg_send![body.as_ref(), layoutIfNeeded];
             }
+            sync_scroll_content_size(body, result.node.as_view());
             *current_scope.borrow_mut() = Some(result.scope_id);
             *current_route.borrow_mut() = Some(name);
             result
@@ -219,7 +220,7 @@ fn select_screen(
                     )
                     .unwrap()
                 };
-                pin_to_edges(body, &view);
+                attach_screen(body, &view);
                 // Same rationale as the LazyDisposing branch: force a
                 // synchronous Taffy + Auto Layout pass so the new
                 // screen has computed frames before the next render
@@ -228,6 +229,7 @@ fn select_screen(
                 unsafe {
                     let _: () = msg_send![body.as_ref(), layoutIfNeeded];
                 }
+                sync_scroll_content_size(body, &view);
                 *current_scope.borrow_mut() = Some(result.scope_id);
                 let options = result
                     .options
@@ -310,6 +312,74 @@ unsafe impl Encode for CGAffineTransform {
         ],
     );
 }
+/// Attach a navigator screen as a child of `body`. If `body` is the
+/// drawer's UIScrollView, the screen is added as a plain subview
+/// (Taffy drives `frame` via `apply_frames`; no Auto Layout). If
+/// `body` is a plain UIView (tab navigator), pin the screen edge-to-
+/// edge via Auto Layout — the existing behavior the tab path relies
+/// on.
+///
+/// Why we don't use Auto Layout for the scroll body: pinning the
+/// screen's four edges to a UIScrollView's anchors maps to
+/// `contentLayoutGuide`, which is itself derived from `contentSize`.
+/// `contentSize` defaults to (0, 0) until explicitly set, so the
+/// constraint solver collapses the screen to a zero rect and stays
+/// there even after we write `contentSize` manually. Letting Taffy
+/// own the screen's frame avoids the circular dependency entirely.
+fn attach_screen(body: &UIView, child: &UIView) {
+    let is_scroll: bool = unsafe {
+        msg_send![body, isKindOfClass: objc2::class!(UIScrollView)]
+    };
+    if is_scroll {
+        unsafe { body.addSubview(child) };
+        return;
+    }
+    pin_to_edges(body, child);
+}
+
+/// After Taffy has assigned the screen's frame, walk into the screen
+/// one level (its sole `layout`-wrapper child holds the stacked page
+/// sections at their natural height) and find the maximum `y + height`.
+/// That's the actual overflow extent; the screen's own frame is the
+/// viewport size (Taffy roots fill the viewport — see
+/// `runtime-layout::compute`), so it doesn't tell us how tall the
+/// content is. Sets `body.contentSize` to (frame.width, max_y) so
+/// the UIScrollView body scrolls the column. No-op on plain UIView.
+fn sync_scroll_content_size(body: &UIView, screen: &UIView) {
+    let is_scroll: bool = unsafe {
+        msg_send![body, isKindOfClass: objc2::class!(UIScrollView)]
+    };
+    if !is_scroll {
+        return;
+    }
+    let screen_frame: CGRect = unsafe { msg_send![screen, frame] };
+    let width = screen_frame.size.width;
+    let mut max_y: CGFloat = screen_frame.size.height;
+    // The screen's outer view is the `layout(content)` wrapper from
+    // shell.rs. Its single child is the page's stacked sections.
+    // That child's `frame.maxY` is the true content extent.
+    let subs = screen.subviews();
+    for sv in subs.iter() {
+        let frame: CGRect = unsafe { msg_send![sv, frame] };
+        // Walk one more level — the wrapper's child holds the actual
+        // hero / sections column whose height is the overflow extent.
+        let inner = sv.subviews();
+        for iv in inner.iter() {
+            let iframe: CGRect = unsafe { msg_send![iv, frame] };
+            let bottom = frame.origin.y + iframe.origin.y + iframe.size.height;
+            if bottom > max_y {
+                max_y = bottom;
+            }
+        }
+        let bottom = frame.origin.y + frame.size.height;
+        if bottom > max_y {
+            max_y = bottom;
+        }
+    }
+    let size = objc2_foundation::CGSize::new(width, max_y);
+    let _: () = unsafe { msg_send![body, setContentSize: size] };
+}
+
 const IDENTITY: CGAffineTransform = CGAffineTransform {
     a: 1.0,
     b: 0.0,
@@ -327,7 +397,31 @@ pub(crate) fn create_drawer(
     let outer = unsafe { UIView::new(mtm) };
     unsafe { outer.setClipsToBounds(true) };
 
-    let body = unsafe { UIView::new(mtm) };
+    // The drawer's body IS the scroll context (matches the SDK's
+    // default `bottom_in_scroll = true`). Web renders this as a div
+    // with `overflow: auto`; on iOS we use a UIScrollView so the
+    // screen + footer column scrolls together as one column. Without
+    // this the screen was a fixed-height UIView and tall pages were
+    // clipped at the viewport bottom with no way to scroll.
+    let body_scroll: Retained<objc2_ui_kit::UIScrollView> =
+        unsafe { objc2_ui_kit::UIScrollView::new(mtm) };
+    let _: () = unsafe { msg_send![&body_scroll, setAlwaysBounceVertical: true] };
+    // Leave `contentInsetAdjustmentBehavior` at `.automatic` (0).
+    // The body is mounted inside a UINavigationController which
+    // expects its child scroll views to inset their content under
+    // the nav bar + safe area; turning that off pushes screen
+    // content up underneath the bar on scroll. The sidebar slot
+    // owns its own safe-area handling on the leading side, so we
+    // don't need to override the body here.
+    let _: () = unsafe {
+        msg_send![&body_scroll, setContentInsetAdjustmentBehavior: 0isize]
+    };
+    let body: Retained<UIView> = unsafe {
+        Retained::retain(
+            Retained::as_ptr(&body_scroll) as *const UIView as *mut UIView,
+        )
+        .expect("retain body scroll as UIView")
+    };
 
     let nav_ctrl = unsafe { UINavigationController::new(mtm) };
     let nav_view = nav_ctrl.view().expect("UINavigationController.view");
@@ -722,7 +816,29 @@ pub(crate) fn drawer_attach_initial(
     let view: Retained<UIView> = unsafe {
         Retained::retain(screen.as_view() as *const UIView as *mut UIView).unwrap()
     };
-    pin_to_edges(&entry.body, &view);
+    attach_screen(&entry.body, &view);
+    // The body-is-scroll attach path doesn't use Auto Layout — it
+    // relies on Taffy's apply_frames to size the screen. But
+    // `drawer_attach_initial` runs during navigator init, BEFORE the
+    // framework installs the backend's global self-ref. So
+    // `with_backend(|b| b.run_layout())` returns None silently and
+    // Taffy doesn't fire. We schedule the layout + contentSize sync
+    // via `schedule_layout_pass` (which queues onto the main run loop
+    // via libdispatch) and a microtask, so they fire AFTER the
+    // framework's initial render kicks the backend's global self into
+    // place. Without this defer, the screen renders at 0×0 and the
+    // body scroll stays empty.
+    let body_clone = entry.body.clone();
+    let view_clone: Retained<UIView> = unsafe {
+        Retained::retain(view.as_ref() as *const UIView as *mut UIView).unwrap()
+    };
+    runtime_core::schedule_microtask(move || {
+        backend_ios::with_backend(|b| b.run_layout());
+        unsafe {
+            let _: () = msg_send![body_clone.as_ref(), layoutIfNeeded];
+        }
+        sync_scroll_content_size(&body_clone, &view_clone);
+    });
     *entry.current_scope.borrow_mut() = Some(scope_id);
 
     if matches!(

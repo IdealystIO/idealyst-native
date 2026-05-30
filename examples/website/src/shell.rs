@@ -16,8 +16,8 @@ use std::rc::Rc;
 
 use runtime_core::primitives::scroll_view::{scroll_view, ScrollViewHandle};
 use runtime_core::{
-    derived, effect, icon, pressable, signal, text, ui, view, when, Easing, IntoElement, Element,
-    Ref, Signal, StrokeAnimation, StyleApplication, ViewHandle,
+    component, derived, effect, icon, pressable, signal, text, ui, view, when, Easing,
+    IntoElement, Element, Ref, Route, Signal, StrokeAnimation, StyleApplication, ViewHandle,
 };
 use drawer_navigator::SlotProps;
 use idea_ui::{
@@ -164,13 +164,26 @@ const GITHUB_ISSUES_URL: &str = "https://github.com/IdealystIO/idealyst-native/i
 const GITHUB_DISCUSSIONS_URL: &str =
     "https://github.com/IdealystIO/idealyst-native/discussions";
 
-/// External link to an off-app URL (GitHub, etc.). Uses the `Link`
+/// Footer link to an off-app URL (GitHub, etc.). Uses the `link`
 /// primitive's `external` form: on web a real `<a target="_blank">`
 /// (browser-native, never popup-blocked), on native a platform
-/// `open_url`. Same styling as `internal_link` so the footer reads
-/// uniformly.
-fn external_link(label: &'static str, url: &'static str) -> Element {
-    let label_text = label.to_string();
+/// `open_url`. Same styling as `FooterLinkInternal` so the footer
+/// reads uniformly.
+///
+/// Renamed from the snake_case `external_link` helper because it has
+/// props and is called from multiple call sites — CLAUDE.md §9.5
+/// requires the component form. The `FooterLink` *stylesheet* name is
+/// taken, so the component is prefixed with the variant axis.
+#[derive(Default)]
+pub struct FooterLinkExternalProps {
+    pub label: &'static str,
+    pub url: &'static str,
+}
+
+#[component]
+pub fn FooterLinkExternal(props: FooterLinkExternalProps) -> Element {
+    let label_text = props.label.to_string();
+    let url = props.url;
     let style = move || StyleApplication::new(FooterLink::sheet());
     ui! {
         link(external = url) {
@@ -179,12 +192,22 @@ fn external_link(label: &'static str, url: &'static str) -> Element {
     }
 }
 
-/// Internal link to a framework route — same styling as
-/// `external_link` so the footer reads uniformly. Uses `Link` (not
-/// `pressable + nav.push`) so the SDK's link-activator dispatches
+/// Footer link to a framework route — same styling as
+/// `FooterLinkExternal` so the footer reads uniformly. Uses `link`
+/// (not `pressable + nav.push`) so the SDK's link-activator dispatches
 /// the right command for the active navigator (drawer = Select).
-fn internal_link(label: &'static str, route: &'static runtime_core::Route<()>) -> Element {
-    let label_text = label.to_string();
+#[derive(Default)]
+pub struct FooterLinkInternalProps {
+    pub label: &'static str,
+    pub route: Option<&'static Route<()>>,
+}
+
+#[component]
+pub fn FooterLinkInternal(props: FooterLinkInternalProps) -> Element {
+    let label_text = props.label.to_string();
+    let route = props
+        .route
+        .expect("FooterLinkInternal requires a `route` prop");
     let style = move || StyleApplication::new(FooterLink::sheet());
     ui! {
         link(route = route, params = ()) {
@@ -220,19 +243,19 @@ pub fn footer() -> Element {
     let project_column = ui! {
         view(style = FooterColumn()) {
             text(style = title_style) { "Project" }
-            { external_link("GitHub", GITHUB_URL) }
-            { external_link("Issues", GITHUB_ISSUES_URL) }
-            { external_link("Discussions", GITHUB_DISCUSSIONS_URL) }
+            FooterLinkExternal(label = "GitHub", url = GITHUB_URL)
+            FooterLinkExternal(label = "Issues", url = GITHUB_ISSUES_URL)
+            FooterLinkExternal(label = "Discussions", url = GITHUB_DISCUSSIONS_URL)
         }
     };
 
     let resources_column = ui! {
         view(style = FooterColumn()) {
             text(style = title_style) { "Resources" }
-            { internal_link("Quickstart", &QUICKSTART_ROUTE) }
-            { internal_link("Core concepts", &CONCEPTS_ROUTE) }
-            { internal_link("Why Rust", &WHY_RUST_ROUTE) }
-            { internal_link("Backends", &BACKENDS_ROUTE) }
+            FooterLinkInternal(label = "Quickstart", route = &QUICKSTART_ROUTE)
+            FooterLinkInternal(label = "Core concepts", route = &CONCEPTS_ROUTE)
+            FooterLinkInternal(label = "Why Rust", route = &WHY_RUST_ROUTE)
+            FooterLinkInternal(label = "Backends", route = &BACKENDS_ROUTE)
         }
     };
 
@@ -506,7 +529,6 @@ fn install_scroll_spy(
 pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Element {
     let body_style = SidebarBody();
     let header_style = SidebarHeader();
-    let footer_style = SidebarFooter();
 
     let brand_text_children: Vec<Element> = vec![
         ui! { Typography(content = "Idealyst".to_string(), kind = idea_ui::typography_kind::H3) },
@@ -534,7 +556,7 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Element {
     // The whole sidebar is one `ui!` tree. Nested `for` loops over the
     // static route table emit flat siblings (no per-iteration wrapper
     // View); the section title is a `.then(...)` so title-less sections
-    // (e.g. Home) add nothing; and `Spacer` / `theme_toggle` sit inline
+    // (e.g. Home) add nothing; and `Spacer` / `ThemeToggle` sit inline
     // rather than being pushed onto a vector afterwards.
     ui! {
         view(style = body_style) {
@@ -544,14 +566,18 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Element {
                     text(style = SidebarSection()) { section.title.to_string() }
                 })
                 for entry in section.entries {
-                    nav_link(entry.route, entry.label, active_route)
+                    SidebarLink(
+                        route = entry.route,
+                        label = entry.label,
+                        active_route = active_route,
+                    )
                 }
             }
             // `Spacer` grows to fill leftover vertical space, pinning the
             // footer to the bottom when nav content is short; when it
             // overflows, the outer `.ui-nav-drawer-sidebar` div scrolls.
             Spacer()
-            theme_toggle(footer_style, is_dark)
+            ThemeToggle(is_dark = is_dark)
         }
     }
 }
@@ -559,7 +585,19 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Element {
 /// Dark/light theme switch pinned to the bottom of the sidebar.
 /// Flips `is_dark` AND swaps the installed `IdeaTheme` so every
 /// component re-renders against the new token set.
-fn theme_toggle(footer_style: SidebarFooter, is_dark: Signal<bool>) -> Element {
+///
+/// Promoted from the snake_case `theme_toggle` helper because it has
+/// props (CLAUDE.md §9.5); the wrapper `SidebarFooter` style is now
+/// computed inside the component instead of being passed in.
+#[derive(Default)]
+pub struct ThemeToggleProps {
+    pub is_dark: Signal<bool>,
+}
+
+#[component]
+pub fn ThemeToggle(props: ThemeToggleProps) -> Element {
+    let is_dark = props.is_dark;
+    let footer_style = SidebarFooter();
     let on_change: Rc<dyn Fn(bool)> = Rc::new(move |dark| {
         is_dark.set(dark);
         if dark {
@@ -568,30 +606,43 @@ fn theme_toggle(footer_style: SidebarFooter, is_dark: Signal<bool>) -> Element {
             set_idea_theme(light_theme());
         }
     });
-
-    let row_children: Vec<Element> = vec![
-        ui! {
+    ui! {
+        view(style = footer_style) {
             Switch(
                 label = Some("Dark mode".to_string()),
                 value = is_dark,
                 on_change = on_change,
             )
-        },
-    ];
-
-    ui! { view(style = footer_style) { row_children } }
+        }
+    }
 }
 
 /// One sidebar nav link. Routes are matched by name; each emits a
-/// `Link` to the corresponding `Route<()>` constant, which the
+/// `link` to the corresponding `Route<()>` constant, which the
 /// drawer SDK rewrites to a `Select` command. The style closure
 /// reads `active_route` so the active variant flips reactively
 /// without rebuilding the link.
-fn nav_link(
-    route: &'static runtime_core::Route<()>,
-    label: &'static str,
-    active_route: runtime_core::Signal<&'static str>,
-) -> Element {
+///
+/// Promoted from the snake_case `nav_link` helper because it has
+/// props and is called from a `for` loop (CLAUDE.md §9.5). The name
+/// is `SidebarLink`, not `NavLink`, because `NavLink` is a stylesheet
+/// in `styles.rs` — promoting the helper to `NavLink` would collide
+/// with the `pub type NavLink = NavLinkProps` alias `#[component]`
+/// emits.
+#[derive(Default)]
+pub struct SidebarLinkProps {
+    pub route: Option<&'static Route<()>>,
+    pub label: &'static str,
+    pub active_route: Signal<&'static str>,
+}
+
+#[component]
+pub fn SidebarLink(props: SidebarLinkProps) -> Element {
+    let route = props
+        .route
+        .expect("SidebarLink requires a `route` prop");
+    let label_text = props.label.to_string();
+    let active_route = props.active_route;
     let route_for_match: &'static str = route.name();
     // The `active` axis is derived reactively from `active_route`: the
     // `derived(...)` closure reads the signal, so the style effect
@@ -604,8 +655,6 @@ fn nav_link(
             NavLinkActive::Off
         }
     }));
-    let label_text = label.to_string();
-
     ui! {
         link(route = route, params = ()) {
             text(style = style) { label_text }

@@ -1,0 +1,22 @@
+[package]
+name = "lazy-chunk-handoff-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Framework regression test: a small app wrapping a lazy! { … } subtree. Verifies the main bundle ↔ chunk boundary survives release-mode data pruning (chunks reference main-bundle data symbols for shared vtables, statics, and panic strings)."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Lazy Chunk Handoff Test"
+bundle_id = "ai.truday.idealyst.lazy_chunk_handoff_test"
+version   = "0.0.1"
+targets   = ["web"]
+
+[package.metadata.idealyst.app.splash]
+duration_ms = 0

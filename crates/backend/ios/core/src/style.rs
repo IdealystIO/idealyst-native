@@ -2,7 +2,7 @@ use runtime_core::{Color, Length, StyleRules, Tokenized};
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
-use objc2_foundation::{CGFloat, CGSize, NSObject};
+use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker, NSObject, NSString};
 use objc2_ui_kit::{UIColor, UIView};
 use std::rc::Rc;
 use block2::ConcreteBlock;
@@ -544,33 +544,46 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         unsafe { view.setClipsToBounds(true) };
     }
 
-    // Border width
-    let border_w = [
-        style.border_top_width.as_ref(),
-        style.border_right_width.as_ref(),
-        style.border_bottom_width.as_ref(),
-        style.border_left_width.as_ref(),
-    ]
-    .iter()
-    .filter_map(|w| w.map(|t| t.resolve()))
-    .fold(0.0_f32, f32::max);
-    if border_w > 0.0 {
-        let _: () = unsafe { msg_send![&layer, setBorderWidth: border_w as CGFloat] };
-    }
-
-    // Border color
-    let border_color = style
-        .border_top_color
-        .as_ref()
-        .or(style.border_right_color.as_ref())
-        .or(style.border_bottom_color.as_ref())
-        .or(style.border_left_color.as_ref());
-    if let Some(bc) = border_color {
-        let bc_val = bc.resolve();
-        let c = color_to_uicolor(&bc_val);
-        let cg: CGColorRef = unsafe { msg_send![&c, CGColor] };
-        if !cg.0.is_null() {
-            let _: () = unsafe { msg_send![&layer, setBorderColor: cg] };
+    // Border — always rendered via per-side UIView subviews, never
+    // CALayer's uniform `borderWidth`. CALayer can only stroke all
+    // four sides with the same width, which doesn't match the
+    // framework's per-side `border_{top,right,bottom,left}_width` API
+    // (CSS-style). Even when the author sets all four equal we route
+    // through the same path so the code has one branch and the rules
+    // are consistent — author specifying `border_bottom_width: 1.0`
+    // produces exactly one bar at the bottom, never a four-sided box.
+    let widths = [
+        style.border_top_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
+        style.border_right_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
+        style.border_bottom_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
+        style.border_left_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
+    ];
+    // Tear down any previous per-side border subviews so reapplies
+    // (state overlays, theme swap) replace rather than stack them.
+    remove_border_subviews(view);
+    // CALayer's own border (potentially set by an earlier apply that
+    // predates this change, or by a `Card` SDK call that touches the
+    // layer directly) must be cleared — otherwise it would paint a
+    // ghost frame underneath the per-side bars.
+    let _: () = unsafe { msg_send![&layer, setBorderWidth: 0.0_f64] };
+    if widths.iter().any(|w| *w > 0.0) {
+        let colors: [Option<Color>; 4] = [
+            style.border_top_color.as_ref().map(|t| t.resolve()),
+            style.border_right_color.as_ref().map(|t| t.resolve()),
+            style.border_bottom_color.as_ref().map(|t| t.resolve()),
+            style.border_left_color.as_ref().map(|t| t.resolve()),
+        ];
+        let fallback_color = colors.iter().find_map(|c| c.clone());
+        let parent_bounds: CGRect = unsafe { msg_send![view, bounds] };
+        for (idx, &w) in widths.iter().enumerate() {
+            if w <= 0.0 {
+                continue;
+            }
+            let Some(color) = colors[idx].clone().or_else(|| fallback_color.clone())
+            else {
+                continue;
+            };
+            install_border_side(view, idx, w as CGFloat, &color, parent_bounds);
         }
     }
 
@@ -591,12 +604,21 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         unsafe { view.setClipsToBounds(false) };
     }
 
-    // Padding is handled entirely by Taffy now (writes into the
-    // node's `padding` Rect, which insets the content area inside
-    // the view's frame). We don't forward to setLayoutMargins
-    // because UIView's layoutMargins are only consulted by
-    // UIStackView's `layoutMarginsRelativeArrangement`, which we no
-    // longer use.
+    // Padding is handled entirely by Taffy for container views
+    // (writes into the node's `padding` Rect, which insets the
+    // content area inside the view's frame). We don't forward to
+    // setLayoutMargins because UIView's layoutMargins are only
+    // consulted by UIStackView's `layoutMarginsRelativeArrangement`,
+    // which we no longer use.
+    //
+    // UILabel is the exception: it has no children to inset, so
+    // Taffy padding would grow the label's outer frame without
+    // pushing the glyphs in. `IdealystLabel` (backend-ios-mobile's
+    // UILabel subclass) carries a per-side `textInsets` ivar that
+    // its overridden `drawText(in:)` / `sizeThatFits:` honor; copy
+    // the style's padding values into it via the obj-c runtime so
+    // this `core` crate doesn't need to depend on the mobile crate.
+    apply_text_insets_if_label(view, style);
 
     // Overflow
     if let Some(overflow) = &style.overflow {
@@ -706,5 +728,241 @@ pub fn apply_text_style(
     if is_label {
         let _: () = unsafe { msg_send![view, setNumberOfLines: 0isize] };
         let _: () = unsafe { msg_send![view, setLineBreakMode: 0isize] };
+    }
+}
+
+// ==========================================================================
+// Per-side border subviews
+// ==========================================================================
+//
+// CALayer's `borderWidth` / `borderColor` are uniform — they stroke
+// all four sides with the same value. The framework's `StyleRules`
+// expose `border_{top,right,bottom,left}_{width,color}` independently
+// (matching CSS), so a one-side rule like `border_bottom_width: 1.0`
+// can't ride the CALayer path without spilling the stroke onto the
+// other three sides. We install a thin UIView for each side that
+// the author opted into, tagged by accessibility identifier so
+// subsequent style applies can find and rebuild them.
+//
+// Autoresizing keeps the side views pinned to their respective edges
+// when Taffy resizes the parent: flexible width for top/bottom,
+// flexible height for left/right, plus the opposite-side margin so
+// the bar tracks its anchor edge.
+
+const BORDER_ID_TOP: &str = "idealyst_border_top";
+const BORDER_ID_RIGHT: &str = "idealyst_border_right";
+const BORDER_ID_BOTTOM: &str = "idealyst_border_bottom";
+const BORDER_ID_LEFT: &str = "idealyst_border_left";
+
+fn border_id_for(idx: usize) -> &'static str {
+    match idx {
+        0 => BORDER_ID_TOP,
+        1 => BORDER_ID_RIGHT,
+        2 => BORDER_ID_BOTTOM,
+        _ => BORDER_ID_LEFT,
+    }
+}
+
+// ==========================================================================
+// IdealystLabel padding adapter
+// ==========================================================================
+//
+// Detect whether `view` is an `IdealystLabel` (the UILabel subclass
+// declared in `backend-ios-mobile::imp::text_inset`) via the
+// obj-c-runtime class lookup, and if so, write the style's padding
+// values into its `text_insets` ivar by sending `setTextInsets:`.
+// We avoid a Rust-level dep on the mobile crate by reaching through
+// the runtime — the class name + the setter selector are the only
+// surface we need.
+
+/// `setTextInsets:` payload — matches `UIEdgeInsets` (top, left,
+/// bottom, right) per Apple's struct definition. The packing order
+/// matters: `objc2::msg_send!` writes the fields in declaration
+/// order into the ABI's argument frame, and a transposed pair
+/// renders padding on the wrong edges.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UIEdgeInsetsPayload {
+    top: CGFloat,
+    left: CGFloat,
+    bottom: CGFloat,
+    right: CGFloat,
+}
+
+unsafe impl Encode for UIEdgeInsetsPayload {
+    const ENCODING: Encoding = Encoding::Struct(
+        "UIEdgeInsets",
+        &[CGFloat::ENCODING, CGFloat::ENCODING, CGFloat::ENCODING, CGFloat::ENCODING],
+    );
+}
+
+fn apply_text_insets_if_label(
+    view: &UIView,
+    style: &runtime_core::StyleRules,
+) {
+    // ObjC class lookup. Returns null if the class isn't registered
+    // (e.g. running under a host that doesn't include
+    // `backend-ios-mobile`'s `IdealystLabel` declaration), in which
+    // case there's nothing for us to do.
+    let cls_name = std::ffi::CString::new("IdealystLabel").unwrap();
+    let cls_ptr = unsafe { objc2::ffi::objc_lookUpClass(cls_name.as_ptr()) };
+    if cls_ptr.is_null() {
+        return;
+    }
+    let cls_ref: &objc2::runtime::AnyClass =
+        unsafe { &*(cls_ptr as *const objc2::runtime::AnyClass) };
+    let is_match: bool = unsafe { msg_send![view, isKindOfClass: cls_ref] };
+    if !is_match {
+        return;
+    }
+
+    // Resolve each side's padding. `None` reads as zero. Resolving
+    // the `Tokenized` inside the wrapping apply-style Effect
+    // subscribes to the token signal automatically, so a theme swap
+    // that changes a padding token re-fires this branch with the
+    // new value.
+    let resolve_side = |t: Option<&Tokenized<Length>>| -> f32 {
+        t.map(|tok| match tok.resolve() {
+            Length::Px(px) => px,
+            // Percent paddings on a UILabel don't have a defined
+            // sizing parent (the label is a leaf), so fall back to
+            // zero rather than guessing.
+            _ => 0.0,
+        })
+        .unwrap_or(0.0)
+    };
+    let insets = UIEdgeInsetsPayload {
+        top: resolve_side(style.padding_top.as_ref()) as CGFloat,
+        left: resolve_side(style.padding_left.as_ref()) as CGFloat,
+        bottom: resolve_side(style.padding_bottom.as_ref()) as CGFloat,
+        right: resolve_side(style.padding_right.as_ref()) as CGFloat,
+    };
+    let _: () = unsafe { msg_send![view, setTextInsets: insets] };
+}
+
+fn is_border_id(s: &str) -> bool {
+    matches!(s, BORDER_ID_TOP | BORDER_ID_RIGHT | BORDER_ID_BOTTOM | BORDER_ID_LEFT)
+}
+
+fn remove_border_subviews(view: &UIView) {
+    let subviews = view.subviews();
+    for sub in subviews.iter() {
+        let id_obj: Option<Retained<NSString>> = unsafe {
+            msg_send_id![sub, accessibilityIdentifier]
+        };
+        let is_border = id_obj
+            .as_deref()
+            .map(|s| is_border_id(&s.to_string()))
+            .unwrap_or(false);
+        if is_border {
+            unsafe { sub.removeFromSuperview() };
+        }
+    }
+}
+
+fn install_border_side(
+    view: &UIView,
+    idx: usize,
+    width: CGFloat,
+    color: &Color,
+    _parent_bounds: CGRect,
+) {
+    // apply_style runs on the main thread per framework contract.
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let bar = unsafe { UIView::new(mtm) };
+    let ui_color = color_to_uicolor(color);
+    bar.setBackgroundColor(Some(&ui_color));
+    let _: () = unsafe { msg_send![&bar, setUserInteractionEnabled: false] };
+    let id_str = NSString::from_str(border_id_for(idx));
+    let _: () = unsafe { msg_send![&bar, setAccessibilityIdentifier: &*id_str] };
+
+    // Auto Layout, not frame + autoresizingMask. `apply_style` runs
+    // before Taffy assigns the parent's frame on initial mount, so a
+    // frame-based bar would be installed at (0, 0, 0, 0) and never
+    // grow — autoresizing only scales existing extents proportionally
+    // from a zero base, leaving the border invisible. Pinning to the
+    // parent's anchors makes UIKit recompute on every layout pass.
+    let _: () = unsafe {
+        msg_send![&bar, setTranslatesAutoresizingMaskIntoConstraints: false]
+    };
+    unsafe { view.addSubview(&bar) };
+    unsafe {
+        let p_top: Retained<NSObject> = msg_send_id![view, topAnchor];
+        let p_bot: Retained<NSObject> = msg_send_id![view, bottomAnchor];
+        let p_lead: Retained<NSObject> = msg_send_id![view, leadingAnchor];
+        let p_trail: Retained<NSObject> = msg_send_id![view, trailingAnchor];
+        let b_top: Retained<NSObject> = msg_send_id![&bar, topAnchor];
+        let b_bot: Retained<NSObject> = msg_send_id![&bar, bottomAnchor];
+        let b_lead: Retained<NSObject> = msg_send_id![&bar, leadingAnchor];
+        let b_trail: Retained<NSObject> = msg_send_id![&bar, trailingAnchor];
+        let b_width: Retained<NSObject> = msg_send_id![&bar, widthAnchor];
+        let b_height: Retained<NSObject> = msg_send_id![&bar, heightAnchor];
+
+        let activate = |c: &Retained<NSObject>| {
+            let _: () = msg_send![c, setActive: true];
+        };
+
+        match idx {
+            0 => {
+                // top: full width pinned to parent top
+                let c1: Retained<NSObject> =
+                    msg_send_id![&b_top, constraintEqualToAnchor: &*p_top];
+                let c2: Retained<NSObject> =
+                    msg_send_id![&b_lead, constraintEqualToAnchor: &*p_lead];
+                let c3: Retained<NSObject> =
+                    msg_send_id![&b_trail, constraintEqualToAnchor: &*p_trail];
+                let c4: Retained<NSObject> =
+                    msg_send_id![&b_height, constraintEqualToConstant: width];
+                activate(&c1);
+                activate(&c2);
+                activate(&c3);
+                activate(&c4);
+            }
+            1 => {
+                // right: full height pinned to parent trailing
+                let c1: Retained<NSObject> =
+                    msg_send_id![&b_top, constraintEqualToAnchor: &*p_top];
+                let c2: Retained<NSObject> =
+                    msg_send_id![&b_bot, constraintEqualToAnchor: &*p_bot];
+                let c3: Retained<NSObject> =
+                    msg_send_id![&b_trail, constraintEqualToAnchor: &*p_trail];
+                let c4: Retained<NSObject> =
+                    msg_send_id![&b_width, constraintEqualToConstant: width];
+                activate(&c1);
+                activate(&c2);
+                activate(&c3);
+                activate(&c4);
+            }
+            2 => {
+                // bottom: full width pinned to parent bottom
+                let c1: Retained<NSObject> =
+                    msg_send_id![&b_bot, constraintEqualToAnchor: &*p_bot];
+                let c2: Retained<NSObject> =
+                    msg_send_id![&b_lead, constraintEqualToAnchor: &*p_lead];
+                let c3: Retained<NSObject> =
+                    msg_send_id![&b_trail, constraintEqualToAnchor: &*p_trail];
+                let c4: Retained<NSObject> =
+                    msg_send_id![&b_height, constraintEqualToConstant: width];
+                activate(&c1);
+                activate(&c2);
+                activate(&c3);
+                activate(&c4);
+            }
+            _ => {
+                // left: full height pinned to parent leading
+                let c1: Retained<NSObject> =
+                    msg_send_id![&b_top, constraintEqualToAnchor: &*p_top];
+                let c2: Retained<NSObject> =
+                    msg_send_id![&b_bot, constraintEqualToAnchor: &*p_bot];
+                let c3: Retained<NSObject> =
+                    msg_send_id![&b_lead, constraintEqualToAnchor: &*p_lead];
+                let c4: Retained<NSObject> =
+                    msg_send_id![&b_width, constraintEqualToConstant: width];
+                activate(&c1);
+                activate(&c2);
+                activate(&c3);
+                activate(&c4);
+            }
+        }
     }
 }

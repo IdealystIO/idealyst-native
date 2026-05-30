@@ -4,6 +4,7 @@
 pub mod agentic;
 pub mod backends;
 pub mod code_splitting;
+pub mod comparisons;
 pub mod concepts;
 pub mod cross_platform;
 pub mod demo;

@@ -321,6 +321,10 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
             strip_panics: false,
             // Dev-loop builds should support `dev --ssr` hand-offs.
             hydrate: true,
+            // Dev-loop builds skip data pruning — iteration speed
+            // beats bundle size, and the heuristic adds a pass per
+            // rebuild.
+            prune_dead_data_min: None,
         },
     )
     .map(|_| ())

@@ -28,11 +28,16 @@ use std::rc::Rc;
 
 pub struct IosDrawerHandler {
     container: Option<IosNode>,
+    /// Active-route signal, kept on the handler so `attach_initial`
+    /// can default the nav-bar title to the route name when the
+    /// author hasn't set one (same fallback the `mount_screen`
+    /// closure applies for subsequent pushes).
+    active_route: Option<runtime_core::Signal<&'static str>>,
 }
 
 impl IosDrawerHandler {
     pub fn new() -> Self {
-        Self { container: None }
+        Self { container: None, active_route: None }
     }
 }
 impl Default for IosDrawerHandler {
@@ -112,19 +117,31 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
             let m = mount_screen;
             Rc::new(move |name, params| {
                 let result = m(name, params, None);
-                let new_options: Box<dyn Any> = if let Some(opts) =
+                let mut new_options: IosScreenOptions = if let Some(opts) =
                     result.options.downcast_ref::<DrawerScreenOptions>()
                 {
-                    Box::new(translate_options(opts))
-                } else if result.options.downcast_ref::<IosScreenOptions>().is_some() {
-                    result.options
+                    translate_options(opts)
+                } else if let Some(opts) =
+                    result.options.downcast_ref::<IosScreenOptions>()
+                {
+                    opts.clone()
                 } else {
-                    Box::new(IosScreenOptions::default())
+                    IosScreenOptions::default()
                 };
+                // Default the nav-bar title to the route name when the
+                // author hasn't set one explicitly. UINavigationItem's
+                // title is empty by default and the resulting blank
+                // bar reads as a regression to anyone who navigated
+                // here from web (where the URL is at least visible).
+                // Authors can still override via
+                // `DrawerScreenExt::title(...)`.
+                if new_options.title.is_none() {
+                    new_options.title = Some(name.to_string());
+                }
                 MountResult {
                     node: result.node,
                     scope_id: result.scope_id,
-                    options: new_options,
+                    options: Box::new(new_options),
                 }
             })
         };
@@ -169,11 +186,26 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
             build_content: None,
             active_changed: active_changed_helpers,
             open_changed,
-            background_color: None,
+            // Default the drawer chrome (nav-bar background + body)
+            // to the active theme's `color-background` token. Resolving
+            // inside this closure subscribes the helpers' bg Effect to
+            // the token's signal, so swapping themes re-paints the
+            // chrome without any author wiring. Authors can still
+            // override via `.header(...)` on the builder, which routes
+            // through `apply_drawer_header_style` and replaces the
+            // default once it sets a `background`.
+            background_color: Some(Rc::new(|| {
+                runtime_core::Tokenized::<runtime_core::Color>::token(
+                    "color-background",
+                    runtime_core::Color("#ffffff".into()),
+                )
+                .resolve()
+            })),
         };
 
         let node = helpers::create_drawer(backend.mtm(), drawer_callbacks, control.clone());
         self.container = Some(node.clone());
+        self.active_route = Some(nav_state.active_route);
 
         // Sidebar build + attach — deferred so the outer
         // `backend.borrow_mut()` window (held across this `init` call)
@@ -323,23 +355,37 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
 
                 // Wrap so the sidebar's outermost Taffy node has an
                 // explicit width matching the configured drawer
-                // width. The user-supplied sidebar root typically has
-                // `width: auto`; without this wrap Taffy lays it out
-                // at viewport width while the iOS UIView is
-                // simultaneously pinned to `drawer_width` via Auto
+                // width, and so the panel itself scrolls when the
+                // author's nav-link list overflows the viewport
+                // height. The user-supplied sidebar root typically
+                // has `width: auto`; without the width pin Taffy
+                // lays it out at viewport width while the iOS UIView
+                // is simultaneously pinned to `drawer_width` via Auto
                 // Layout, so the inner nav links overflow past the
-                // visible clip. With the wrap, Taffy and Auto Layout
-                // agree on the width.
+                // visible clip. Wrapping in `scroll_view` (instead
+                // of plain `view`) lets the iOS backend mount a
+                // UIScrollView whose `contentSize` sync picks up
+                // the sidebar's intrinsic height after Taffy lays
+                // it out — same mechanism the drawer body's screen
+                // host uses.
+                // ScrollView height stays `Auto` so the iOS backend's
+                // contentSize sync can pick up the inner sidebar's
+                // intrinsic height (which exceeds the viewport when
+                // the nav-link list is long). The Auto Layout pin
+                // installed by `drawer_attach_sidebar` constrains
+                // the UIScrollView's frame to viewport-tall via
+                // top/bottom anchors; the scroll view's own
+                // `contentSize` then drives the scrollable extent.
+                // If we pinned height to `100%` here Taffy would
+                // clamp the inner sidebar to viewport height and
+                // contentSize == bounds, no scroll.
                 let sized_sidebar: runtime_core::Element =
-                    runtime_core::view(vec![sidebar_primitive])
+                    runtime_core::primitives::scroll_view::scroll_view(vec![sidebar_primitive])
                         .with_style(std::rc::Rc::new(
                             runtime_core::StyleSheet::r#static(
                                 runtime_core::StyleRules {
                                     width: Some(
                                         runtime_core::Length::Px(drawer_width).into(),
-                                    ),
-                                    height: Some(
-                                        runtime_core::Length::pct(100.0).into(),
                                     ),
                                     ..Default::default()
                                 },
@@ -371,10 +417,22 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
         options: Box<dyn Any>,
     ) {
         let Some(container) = self.container.clone() else { return };
-        let ios_opts = options
+        let mut ios_opts = options
             .downcast_ref::<DrawerScreenOptions>()
             .map(translate_options)
             .unwrap_or_default();
+        // Same title fallback as the `mount_screen` closure in
+        // `init`: when the author hasn't set one, default to the
+        // active route's name. The initial screen takes a different
+        // attach path (`drawer_attach_initial`) that bypasses
+        // `mount_screen`, so without this the very first screen
+        // would render with a blank nav bar even when later pushes
+        // get the fallback.
+        if ios_opts.title.is_none() {
+            if let Some(route_sig) = self.active_route {
+                ios_opts.title = Some(route_sig.get().to_string());
+            }
+        }
         helpers::drawer_attach_initial(backend.mtm(), &container, screen, scope_id, &ios_opts);
     }
 
