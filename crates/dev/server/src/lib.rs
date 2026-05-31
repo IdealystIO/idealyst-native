@@ -365,7 +365,26 @@ struct RecorderState {
     /// `out` is still used for incremental broadcast to clients
     /// already past the snapshot point.
     scene: SceneModel,
+    /// Per-presentation-type navigator handler factories, registered
+    /// by the app's `register_extensions(&mut recorder)` (the SDK leaf
+    /// crates call `recorder.register_navigator::<DrawerPresentation,
+    /// _>(...)`). `create_navigator` looks one up by the presentation's
+    /// `TypeId`; the handler RECORDS the navigator as wire commands
+    /// rather than rendering it. Mirrors `WgpuBackend`'s registry.
+    navigator_handlers: runtime_core::NavigatorRegistry<WireRecordingBackend>,
+    /// Live handler instances keyed by the navigator's `NodeId`, so
+    /// `navigator_attach_initial` / `apply_navigator_slot_style` /
+    /// `release_navigator` and the reverse-channel event handlers can
+    /// re-acquire the handler that owns a given navigator.
+    nav_handler_instances:
+        HashMap<NodeId, Rc<RefCell<Box<dyn runtime_core::NavigatorHandler<WireRecordingBackend>>>>>,
 }
+
+/// Inert `NavigatorOps` for `make_navigator_handle` on a navigator that
+/// has no registered handler — the returned handle ignores dispatch.
+struct NoopRecorderNavOps;
+impl runtime_core::primitives::navigator::NavigatorOps for NoopRecorderNavOps {}
+static NOOP_RECORDER_NAV_OPS: NoopRecorderNavOps = NoopRecorderNavOps;
 
 impl RecorderState {
     /// Single emit point: the scene model interprets the command to
@@ -427,6 +446,8 @@ impl WireRecordingBackend {
             scope_to_navigator: HashMap::new(),
             nav_state_mirror: nav_state_mirror.clone(),
             scene: SceneModel::new(),
+            navigator_handlers: runtime_core::NavigatorRegistry::new(),
+            nav_handler_instances: HashMap::new(),
         }));
         // Install a per-thread weak handle so `RecordingViewOps`
         // (called from `AnimatedValue::bind` -> `ViewHandle::set_animated_*`)
@@ -440,6 +461,22 @@ impl WireRecordingBackend {
             inner,
             nav_state_mirror,
         }
+    }
+
+    /// Register a navigator handler factory keyed by presentation type
+    /// `P`. The app's `register_extensions(&mut recorder)` calls this
+    /// (via the SDK leaf, e.g. `drawer_navigator::register(recorder)`)
+    /// before mount so `create_navigator` can record the navigator.
+    /// Mirrors `WgpuBackend::register_navigator`.
+    pub fn register_navigator<P, F>(&mut self, factory: F)
+    where
+        P: 'static,
+        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<WireRecordingBackend>> + 'static,
+    {
+        self.inner
+            .borrow_mut()
+            .navigator_handlers
+            .register::<P, _>(factory);
     }
 
     /// Public handle to the per-navigator URL stack mirror. Send + Sync
@@ -564,6 +601,9 @@ impl WireRecordingBackend {
         state.state_handlers.clear();
         state.navigators.clear();
         state.scope_to_navigator.clear();
+        // Drop live handler instances; the post-reset re-walk re-creates
+        // them via `create_navigator` against the (preserved) registry.
+        state.nav_handler_instances.clear();
         // Drop old closures (frees their captured Rcs — old
         // NavigatorControl, signal handles, etc. — before the
         // next render starts) but keep `next` + `identity_to_id`
@@ -1585,6 +1625,96 @@ impl Backend for WireRecordingBackend {
     fn finish(&mut self, root: Self::Node) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::Finish { root });
+    }
+
+    // ----- Navigators -----------------------------------------------------
+    //
+    // The recorder dispatches to a registered RECORDING handler (one per
+    // navigator presentation type, installed by the app's
+    // `register_extensions(&mut recorder)`). The handler downcasts the
+    // SDK presentation and emits the navigator wire commands instead of
+    // rendering; the client replays them and reconstructs the native
+    // navigator via ITS registered handler. Mirrors `WgpuBackend`. When
+    // no handler is registered we degrade to a placeholder text node
+    // (never panic — the trait default would `unimplemented!()`).
+
+    fn create_navigator(
+        &mut self,
+        type_id: std::any::TypeId,
+        type_name: &'static str,
+        presentation: Rc<dyn std::any::Any>,
+        host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // Clone the factory out before calling the handler so we hold no
+        // borrow on `inner` across `handler.init(self, …)` (which calls
+        // back into `self.create_view` / `emit`).
+        let factory = self.inner.borrow().navigator_handlers.get(type_id);
+        let Some(factory) = factory else {
+            return self.create_text(
+                &format!("Navigator \"{type_name}\" not registered on the recorder"),
+                a11y,
+            );
+        };
+        let mut handler = factory();
+        let node = handler.init(self, host, presentation);
+        self.inner
+            .borrow_mut()
+            .nav_handler_instances
+            .insert(node, Rc::new(RefCell::new(handler)));
+        node
+    }
+
+    fn navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        options: Box<dyn std::any::Any>,
+    ) {
+        let handler = self
+            .inner
+            .borrow()
+            .nav_handler_instances
+            .get(navigator)
+            .cloned();
+        if let Some(handler) = handler {
+            handler
+                .borrow_mut()
+                .attach_initial(self, screen, scope_id, options);
+        }
+    }
+
+    fn apply_navigator_slot_style(
+        &mut self,
+        node: &Self::Node,
+        slot: &'static str,
+        style: &Rc<StyleRules>,
+    ) {
+        let handler = self.inner.borrow().nav_handler_instances.get(node).cloned();
+        if let Some(handler) = handler {
+            handler.borrow_mut().apply_slot_style(self, slot, style);
+        }
+    }
+
+    fn make_navigator_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::primitives::navigator::NavigatorHandle {
+        if let Some(handler) = self.inner.borrow().nav_handler_instances.get(node).cloned() {
+            return handler.borrow().make_handle();
+        }
+        runtime_core::primitives::navigator::NavigatorHandle::new(
+            Rc::new(()),
+            &NOOP_RECORDER_NAV_OPS,
+        )
+    }
+
+    fn release_navigator(&mut self, node: &Self::Node) {
+        let handler = self.inner.borrow_mut().nav_handler_instances.remove(node);
+        if let Some(handler) = handler {
+            handler.borrow_mut().release(self);
+        }
     }
 
     fn update_accessibility(
