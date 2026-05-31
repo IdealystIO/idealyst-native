@@ -3726,6 +3726,7 @@ dependencies = [
  "base64",
  "dev-client",
  "dev-server",
+ "drawer-navigator",
  "headless-screenshot",
  "image",
  "runtime-core",

@@ -58,3 +58,8 @@ headless-screenshot = { workspace = true, optional = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
 serde_json = "1"
+# End-to-end navigator round-trip test: register the drawer recording
+# handler on the recorder, mount a real DrawerNavigator, and assert the
+# client reconstructs sidebar + screen. `runtime-server` pulls the
+# recording handler (which itself deps dev-server — already in graph).
+drawer-navigator = { workspace = true, features = ["runtime-server"] }

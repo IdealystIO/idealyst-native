@@ -660,6 +660,53 @@ impl WireHarness {
         h
     }
 
+    /// Like [`mount`](Self::mount) but runs `setup(&mut recorder)` before
+    /// the render — the seam for registering SDK extensions (navigator
+    /// recording handlers, externals) on the recorder, exactly as the
+    /// sidecar's `register_extensions` does.
+    ///
+    /// Also installs the sidecar scheduler and ticks once after mount, so
+    /// deferred navigator chrome (e.g. a drawer's sidebar, built via a
+    /// `after_ms(0)` past the walker's `create_navigator` borrow) is in
+    /// the command stream before the first `sync`. Without the scheduler
+    /// `after_ms` runs synchronously and would re-enter that borrow.
+    pub fn mount_with<S, F>(setup: S, app: F) -> Self
+    where
+        S: FnOnce(&mut WireRecordingBackend),
+        F: FnOnce() -> Element + 'static,
+    {
+        dev_server::scheduler::install();
+
+        let mut recorder = WireRecordingBackend::new();
+        setup(&mut recorder);
+        let backend_rc = Rc::new(RefCell::new(recorder.clone()));
+        let owner = runtime_core::mount(backend_rc, app);
+        // Fire deferred nav chrome (sidebar) before the first sync.
+        recorder.tick_animations(std::time::Duration::from_millis(16));
+
+        let (tx, rx) = mpsc::channel();
+        let client = WireBackend::new(MockBackend::new(), tx);
+
+        let mut h = Self {
+            client,
+            recorder,
+            _owner: owner,
+            _outbound_rx: rx,
+        };
+        h.sync();
+        h
+    }
+
+    /// Tick the recorder's deferred scheduler (deadlines / raf loops),
+    /// then drain + replay. Use when an interaction schedules deferred
+    /// work (e.g. a drawer `Select` that defers chrome). Returns the
+    /// number of commands applied during the follow-up sync.
+    pub fn tick_and_sync(&mut self) -> usize {
+        self.recorder
+            .tick_animations(std::time::Duration::from_millis(16));
+        self.sync()
+    }
+
     /// Drain whatever commands the recorder has accumulated since the
     /// last call, round-trip them through `wire::codec`, and replay into
     /// the mock. Call after mutating a signal so the reactive delta

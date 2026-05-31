@@ -18,7 +18,7 @@ use std::rc::Rc;
 use std::sync::mpsc::Sender;
 
 
-use runtime_core::{Backend, ColorScheme, StateBits, StyleRules};
+use runtime_core::{AlignItems, Backend, ColorScheme, FlexDirection, Length, StateBits, StyleRules};
 use wire::{
     AppToDev, Command, EventArgs, HandlerId, NodeId, ScopeId, StyleId, WireColorScheme,
     WireDrawerSide, WireDrawerType, WireItemSize, WireMountPolicy, WireTabPlacement,
@@ -871,12 +871,15 @@ where
                         return Ok(());
                     }
                 }
-                let nav = self.lookup_node(navigator)?;
                 let screen_node = self.lookup_node(screen)?;
-                let opts = convert::wire_screen_options(&options, |id| self.handler_unit(id));
-                // Dev wire attach-initial stubbed pending protocol
-                // redesign; legacy Backend trait methods removed.
-                let _ = (state.kind, nav, screen_node, opts);
+                let _opts = convert::wire_screen_options(&options, |id| self.handler_unit(id));
+                let _ = scope;
+                // Mount the initial screen subtree into the navigator's
+                // outlet. The recorder built the screen as a floating
+                // primitive subtree (no parent edge); this is what makes
+                // it visible.
+                let mut outlet = state.outlet.clone();
+                self.backend.borrow_mut().insert(&mut outlet, screen_node);
                 state.mounted_urls.borrow_mut().push(url);
                 *state.replay_pos.borrow_mut() = state.mounted_urls.borrow().len();
             }
@@ -976,14 +979,24 @@ where
 
             // --- Drawer control plane ---
             Command::DrawerAttachSidebar { navigator, sidebar } => {
-                // Dedup: sidecar respawns re-emit this command, and
-                // Identity dedup gives the same wire ids — calling
-                // backend.drawer_navigator_attach_sidebar twice
-                // crashes DrawerLayout (two children with the same
-                // edge gravity).
-                // Dev wire drawer sidebar attach stubbed; legacy Backend
-                // trait method removed.
-                let _ = (navigator, sidebar);
+                // Insert the (floating) sidebar subtree into the
+                // navigator's persistent sidebar column. Dedup via
+                // `inserted_edges`: sidecar respawns re-emit this with
+                // the same Identity-deduped ids, and re-inserting would
+                // re-order the sidebar into the slot twice.
+                let state = self
+                    .navigators
+                    .get(&navigator)
+                    .cloned()
+                    .ok_or(ReplayError::UnknownNode(navigator))?;
+                if let Some(slot) = state.sidebar_slot.clone() {
+                    if !self.inserted_edges.contains(&(navigator, sidebar)) {
+                        let sidebar_node = self.lookup_node(sidebar)?;
+                        let mut slot = slot;
+                        self.backend.borrow_mut().insert(&mut slot, sidebar_node);
+                        self.inserted_edges.insert((navigator, sidebar));
+                    }
+                }
             }
             Command::OpenDrawer { navigator } => {
                 // Drawer open/close/toggle were enum variants on the
@@ -1229,6 +1242,10 @@ where
         let final_state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Stack,
             node: nav_node.clone(),
+            // Stack reconstruction is Phase 7; mount screens straight
+            // into the nav node for now so the active screen renders.
+            outlet: nav_node.clone(),
+            sidebar_slot: None,
             control,
             pending_mount: Rc::new(RefCell::new(None)),
             suppress_release: Rc::new(RefCell::new(false)),
@@ -1270,6 +1287,9 @@ where
         let final_state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Tab,
             node: nav_node.clone(),
+            // Tab reconstruction is Phase 7; mount into the nav node.
+            outlet: nav_node.clone(),
+            sidebar_slot: None,
             control,
             pending_mount: Rc::new(RefCell::new(None)),
             suppress_release: Rc::new(RefCell::new(false)),
@@ -1301,17 +1321,20 @@ where
             return;
         }
 
-        // Stubbed pending wire-protocol redesign.
-        let _ = (
-            initial_route,
-            side,
-            drawer_type,
-            drawer_width,
-            swipe_to_open,
-            mount_policy,
-        );
+        // `drawer_type` / `swipe_to_open` / `mount_policy` describe the
+        // *modal* slide-in behavior of the real per-platform drawer. The
+        // wire client reconstructs a **persistent sidebar + outlet**
+        // layout instead (the macOS-navigator / wide-web shape — see
+        // [[project_macos_navigator_design]]): the sidebar is always
+        // visible, no scrim, no animation. That's the right rendering for
+        // a thin replay/headless-screenshot client — you see the
+        // navigation — and it matches rule #7 (backends converge in
+        // observable behavior; the dev client is one such backend).
+        let _ = (initial_route, drawer_type, swipe_to_open, mount_policy);
         let a11y_props = self.a11y_props(a11y);
-        let nav_node = self.backend.borrow_mut().create_view(&a11y_props);
+
+        let (container, sidebar, outlet) =
+            self.build_drawer_layout(drawer_width, side, &a11y_props);
 
         let control = Rc::new(runtime_core::primitives::navigator::NavigatorControl::new());
         let mounted_urls = Rc::new(RefCell::new(Vec::new()));
@@ -1319,7 +1342,9 @@ where
 
         let final_state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Drawer,
-            node: nav_node.clone(),
+            node: container.clone(),
+            outlet,
+            sidebar_slot: Some(sidebar),
             control,
             pending_mount: Rc::new(RefCell::new(None)),
             suppress_release: Rc::new(RefCell::new(false)),
@@ -1330,8 +1355,61 @@ where
             replay_pos,
         });
 
-        self.nodes.insert(id, nav_node);
+        self.nodes.insert(id, container);
         self.navigators.insert(id, final_state);
+    }
+
+    /// Build the persistent drawer chrome — `Row[sidebar, outlet]` (or
+    /// `Row[outlet, sidebar]` for `DrawerSide::Right`) — and return
+    /// `(container, sidebar, outlet)`. Layout mirrors the terminal/macOS
+    /// drawer handlers: a fixed-width, non-shrinking sidebar column and a
+    /// flex-grow outlet. `flex_shrink: 0` on the sidebar + `flex_basis: 0`
+    /// on the outlet keep wide screen content from squashing the sidebar
+    /// to nothing (the bug the terminal handler documents).
+    fn build_drawer_layout(
+        &mut self,
+        drawer_width: f32,
+        side: WireDrawerSide,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> (B::Node, B::Node, B::Node) {
+        let mut backend = self.backend.borrow_mut();
+
+        let mut container = backend.create_view(a11y);
+        let mut container_style = StyleRules::default();
+        container_style.flex_direction = Some(FlexDirection::Row);
+        container_style.align_items = Some(AlignItems::Stretch);
+        container_style.width = Some(Length::pct(100.0).into());
+        container_style.height = Some(Length::pct(100.0).into());
+        backend.apply_style(&container, &Rc::new(container_style));
+
+        let sidebar = backend.create_view(a11y);
+        let mut sidebar_style = StyleRules::default();
+        sidebar_style.width = Some(Length::Px(drawer_width).into());
+        sidebar_style.height = Some(Length::pct(100.0).into());
+        sidebar_style.flex_direction = Some(FlexDirection::Column);
+        sidebar_style.flex_shrink = Some(0.0f32.into());
+        backend.apply_style(&sidebar, &Rc::new(sidebar_style));
+
+        let outlet = backend.create_view(a11y);
+        let mut outlet_style = StyleRules::default();
+        outlet_style.flex_grow = Some(1.0f32.into());
+        outlet_style.flex_basis = Some(Length::Px(0.0).into());
+        outlet_style.height = Some(Length::pct(100.0).into());
+        outlet_style.flex_direction = Some(FlexDirection::Column);
+        backend.apply_style(&outlet, &Rc::new(outlet_style));
+
+        match side {
+            WireDrawerSide::Left => {
+                backend.insert(&mut container, sidebar.clone());
+                backend.insert(&mut container, outlet.clone());
+            }
+            WireDrawerSide::Right => {
+                backend.insert(&mut container, outlet.clone());
+                backend.insert(&mut container, sidebar.clone());
+            }
+        }
+
+        (container, sidebar, outlet)
     }
 
     fn apply_create_virtualizer(
@@ -1384,15 +1462,25 @@ where
                 return Ok(());
             }
         }
-        let _ = (screen, scope, &options);
-        let _ = self.lookup_node(screen)?;
+        let _ = (scope, &options);
+        let screen_node = self.lookup_node(screen)?;
 
         match op {
             NavOp::Push | NavOp::Replace | NavOp::Reset => {
+                // Full stack reconstruction (a real stack of mounted
+                // screens with push/pop animation) is Phase 7. Keep the
+                // bookkeeping deterministic for now.
                 state.mounted_urls.borrow_mut().push(url);
                 *state.replay_pos.borrow_mut() = state.mounted_urls.borrow().len();
             }
-            NavOp::Select => {}
+            NavOp::Select => {
+                // Drawer/tab single-slot swap: replace the outlet's
+                // child with the newly-mounted screen subtree.
+                let mut outlet = state.outlet.clone();
+                let mut backend = self.backend.borrow_mut();
+                backend.clear_children(&outlet);
+                backend.insert(&mut outlet, screen_node);
+            }
         }
         Ok(())
     }

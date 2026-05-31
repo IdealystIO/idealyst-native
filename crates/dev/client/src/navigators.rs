@@ -36,6 +36,13 @@ pub enum NavigatorKind {
 pub struct NavigatorAppState<N: Clone + 'static> {
     pub kind: NavigatorKind,
     pub node: N,
+    /// Where path-matched screens mount. For a drawer this is the
+    /// dedicated body-outlet view beside the sidebar; for stack/tab
+    /// (full Phase-7 reconstruction still pending) it's the navigator
+    /// node itself, so the active screen at least renders.
+    pub outlet: N,
+    /// The drawer's persistent sidebar column. `None` for stack/tab.
+    pub sidebar_slot: Option<N>,
     pub control: Rc<NavigatorControl>,
     pub pending_mount: Rc<RefCell<Option<MountResult<N>>>>,
     pub suppress_release: Rc<RefCell<bool>>,
