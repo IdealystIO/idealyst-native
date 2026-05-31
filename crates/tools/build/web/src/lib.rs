@@ -569,7 +569,12 @@ lol_alloc = "0.4"
 # Two flips together: pull in the optional `dev-client` (WireBackend
 # replay engine) AND turn on `backend-web/runtime-server`, which is what
 # gates the `connect_web` + `WebClientHandle` exports we use below.
-aas = ["dep:dev-client", "backend-web/runtime-server"]
+runtime-server = ["dep:dev-client", "backend-web/runtime-server"]
+# Deprecated alias for the old "AAS" name — kept so any tooling that
+# still enables `aas` resolves. The canonical name is `runtime-server`
+# (matches the generated code's `#[cfg(feature = "runtime-server")]`
+# gates and `idealyst dev`'s `--features runtime-server`).
+aas = ["runtime-server"]
 {user_feature_forwards}
 {patch_block}
 # Wrapper-level release profile. wasm-pack is no longer in the
@@ -1233,7 +1238,20 @@ fn run_wasm_split(
 fn user_feature_forwards(user_name: &str, user_features: &[String]) -> String {
     let local: Vec<&String> = user_features
         .iter()
-        .filter(|f| !f.is_empty() && !f.contains('/') && f.as_str() != "aas")
+        .filter(|f| {
+            !f.is_empty()
+                // `dep/feat` activations are passed straight to cargo,
+                // not forwarded through the wrapper's feature table.
+                && !f.contains('/')
+                // Wrapper-LOCAL features the template already declares.
+                // Forwarding these to the user crate (e.g.
+                // `runtime-server = ["<user>/runtime-server"]`) would
+                // require every app to declare an unused feature and
+                // breaks `idealyst dev --web` on a fresh scaffold,
+                // which is exactly the bug this guards against.
+                && f.as_str() != "aas"
+                && f.as_str() != "runtime-server"
+        })
         .collect();
     if local.is_empty() {
         return String::new();
@@ -1349,22 +1367,80 @@ mod regression_tests {
     }
 
     #[test]
-    fn wrapper_aas_feature_pulls_backend_web_runtime_server() {
+    fn wrapper_runtime_server_feature_pulls_backend_web_runtime_server() {
         let (wrapper_dir, _tmp) = run_generator();
         let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
         let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
+        let rs = parsed
+            .get("features")
+            .and_then(|f| f.get("runtime-server"))
+            .and_then(|a| a.as_array())
+            .expect("web wrapper declares the `runtime-server` feature");
+        let entries: Vec<&str> = rs.iter().filter_map(|v| v.as_str()).collect();
+        assert!(
+            entries.iter().any(|e| *e == "backend-web/runtime-server"),
+            "web wrapper `runtime-server` feature must enable backend-web/runtime-server; \
+             without it, `idealyst dev --web` produces a local-mount bundle that \
+             won't connect to the dev-host. Got {:?}",
+            entries,
+        );
+        // Back-compat: the deprecated `aas` alias still resolves to it.
         let aas = parsed
             .get("features")
             .and_then(|f| f.get("aas"))
             .and_then(|a| a.as_array())
-            .expect("web wrapper declares the `aas` feature");
-        let entries: Vec<&str> = aas.iter().filter_map(|v| v.as_str()).collect();
+            .expect("web wrapper keeps the deprecated `aas` alias");
         assert!(
-            entries.iter().any(|e| *e == "backend-web/runtime-server"),
-            "web wrapper `aas` feature must enable backend-web/runtime-server; \
-             without it, `idealyst dev --web --runtime-server` produces a \
-             local-mount bundle that won't connect to the dev-host. Got {:?}",
-            entries,
+            aas.iter().filter_map(|v| v.as_str()).any(|e| e == "runtime-server"),
+            "`aas` must alias `runtime-server`",
+        );
+    }
+
+    /// Regression for the fresh-scaffold `idealyst dev --web` failure:
+    /// the wrapper's wrapper-LOCAL features (`runtime-server`, `aas`)
+    /// must NEVER be forwarded to the user crate as
+    /// `<user>/<feature>`. The dev launcher passes `runtime-server`
+    /// (+ `runtime-core/hot-reload`) as `user_features`; before the
+    /// fix `user_feature_forwards` emitted
+    /// `runtime-server = ["demo/runtime-server"]`, and since a
+    /// scaffolded app declares no such feature, cargo failed with
+    /// "package ... depends on demo with feature runtime-server but
+    /// demo does not have that feature."
+    #[test]
+    fn runtime_server_feature_is_not_forwarded_to_user_crate() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let wrapper_dir = tmp.path().join("wrapper");
+        let workspace_root = tmp.path().join("workspace");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        let manifest = fake_manifest(); // name = "demo"
+        let source = FrameworkSource::Workspace {
+            root: workspace_root,
+        };
+        // Exactly what `idealyst dev --web` (runtime-server mode) passes.
+        let user_features = vec![
+            "runtime-server".to_string(),
+            "runtime-core/hot-reload".to_string(),
+        ];
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &user_features, false)
+            .expect("generate wrapper");
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+
+        assert!(
+            !cargo.contains("demo/runtime-server"),
+            "wrapper must NOT forward `runtime-server` to the user crate \
+             (`demo/runtime-server`) — a fresh scaffold declares no such \
+             feature and the build would fail. Got:\n{cargo}",
+        );
+        // And it must still be a valid, resolvable feature locally.
+        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
+        assert!(
+            parsed
+                .get("features")
+                .and_then(|f| f.get("runtime-server"))
+                .is_some(),
+            "wrapper must declare `runtime-server` locally",
         );
     }
 }
