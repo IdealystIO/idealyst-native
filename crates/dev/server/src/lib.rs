@@ -379,6 +379,16 @@ struct RecorderState {
     /// re-acquire the handler that owns a given navigator.
     nav_handler_instances:
         HashMap<NodeId, Rc<RefCell<Box<dyn runtime_core::NavigatorHandler<WireRecordingBackend>>>>>,
+
+    /// Per-drawer-navigator open-state signal, keyed by the navigator's
+    /// `NodeId`. A drawer recording handler registers its
+    /// `DrawerPresentation.is_open` here at `init` so the reverse channel
+    /// ([`WireRecordingBackend::handle_drawer_state_changed`]) can sync
+    /// dev-side state when the *client* opens/closes the drawer via a
+    /// platform gesture — without dispatching back through the handler
+    /// (which would re-emit an `OpenDrawer`/`CloseDrawer` echo to the
+    /// client that already moved).
+    drawer_open_signals: HashMap<NodeId, runtime_core::Signal<bool>>,
 }
 
 /// Inert `NavigatorOps` for `make_navigator_handle` on a navigator that
@@ -449,6 +459,7 @@ impl WireRecordingBackend {
             scene: SceneModel::new(),
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
             nav_handler_instances: HashMap::new(),
+            drawer_open_signals: HashMap::new(),
         }));
         // Install a per-thread weak handle so `RecordingViewOps`
         // (called from `AnimatedValue::bind` -> `ViewHandle::set_animated_*`)
@@ -626,6 +637,10 @@ impl WireRecordingBackend {
         // Drop live handler instances; the post-reset re-walk re-creates
         // them via `create_navigator` against the (preserved) registry.
         state.nav_handler_instances.clear();
+        // Drop is_open signals from the old walk — the re-walk's handler
+        // `init` registers fresh ones (the old `Signal`s belong to the
+        // torn-down reactive scopes).
+        state.drawer_open_signals.clear();
         // Drop old closures (frees their captured Rcs — old
         // NavigatorControl, signal handles, etc. — before the
         // next render starts) but keep `next` + `identity_to_id`
@@ -1869,6 +1884,9 @@ impl Backend for WireRecordingBackend {
         if let Some(handler) = handler {
             handler.borrow_mut().release(self);
         }
+        // Drop the reverse-channel is_open signal for this navigator (if
+        // it was a drawer). Safe even when absent.
+        self.inner.borrow_mut().drawer_open_signals.remove(node);
     }
 
     fn update_accessibility(
@@ -2140,26 +2158,72 @@ fn wire_element_align(a: primitives::portal::ElementAlign) -> wire::WireElementA
 // ---------------------------------------------------------------------------
 
 impl WireRecordingBackend {
-    /// Handle an `AppToDev::ScreenReleased { scope }` event arriving
-    /// from the app side. Stubbed pending SDK-handler-level
-    /// recording — the legacy callback path was removed when the
-    /// navigator substrate was refactored out of runtime-core.
+    /// Register a drawer navigator's `is_open` signal so the reverse
+    /// channel can sync it on client-side gestures. Called by the
+    /// drawer recording handler's `init` (the recorder analogue of the
+    /// per-backend `open_changed` callback web/iOS install). Keyed by
+    /// the navigator's `NodeId`; cleared on reset / `release_navigator`.
+    pub fn register_drawer_open_signal(
+        &self,
+        navigator: NodeId,
+        signal: runtime_core::Signal<bool>,
+    ) {
+        self.inner
+            .borrow_mut()
+            .drawer_open_signals
+            .insert(navigator, signal);
+    }
+
+    /// Handle an `AppToDev::ScreenReleased { scope }` event from the
+    /// client (native back gesture, `unmount_on_blur`).
+    ///
+    /// No-op for the drawer kind: a drawer owns a single visible screen
+    /// and the dev-side dispatcher already drives `release_screen` on
+    /// `Select`, so the client never originates a release the dev side
+    /// didn't initiate. This activates with the **stack** recording
+    /// handler (Phase 7), where a client-side pop *does* release a screen
+    /// the dev side must drop. Returns whether the event was consumed.
     pub fn handle_screen_released(&self, _scope: u64) -> bool {
         false
     }
 
-    /// Handle `AppToDev::DrawerStateChanged` — informational only;
-    /// useful for analytics or for fwd to the framework's drawer
-    /// open-state signal in a follow-up.
-    pub fn handle_drawer_state_changed(&self, _navigator: NodeId, _is_open: bool) {
-        // Reserved for drawer signal sync in a follow-up.
+    /// Handle `AppToDev::DrawerStateChanged { navigator, is_open }` — the
+    /// user opened/closed the drawer with a platform gesture on the
+    /// client. Sync the dev-side `is_open` signal so author code (a
+    /// sidebar highlight, a disclosure chevron, an effect) observes the
+    /// real state.
+    ///
+    /// Sets the signal **directly** rather than dispatching
+    /// `Open`/`Close` through the handler: the client already moved, so
+    /// re-dispatching would emit a redundant `OpenDrawer`/`CloseDrawer`
+    /// echo back to it. The compare-then-set also stops a set→effect→
+    /// re-entrancy from looping.
+    pub fn handle_drawer_state_changed(&self, navigator: NodeId, is_open: bool) {
+        // Copy the signal out before touching it — setting it runs
+        // reactive effects that may re-enter the recorder, and we must
+        // not hold the `inner` borrow across that.
+        let sig = self
+            .inner
+            .borrow()
+            .drawer_open_signals
+            .get(&navigator)
+            .copied();
+        if let Some(sig) = sig {
+            if sig.get() != is_open {
+                sig.set(is_open);
+            }
+        }
     }
 
-    /// Handle `AppToDev::TabSelected` — used when the platform fires
-    /// a tab activation gesture. The framework's tab navigator
-    /// dispatcher needs to be told to switch.
+    /// Handle `AppToDev::TabSelected { navigator, index }` — the user
+    /// tapped a tab on the client.
+    ///
+    /// No-op until the **tab** recording handler exists (Phase 7): there
+    /// is no tab navigator to switch yet. When it lands, this routes the
+    /// activation to that handler so a lazy tab mounts + the active-tab
+    /// signal updates without echoing a redundant select.
     pub fn handle_tab_selected(&self, _navigator: NodeId, _index: u32) {
-        // Reserved for tab signal sync in a follow-up.
+        // Activates with the tab recording handler (Phase 7).
     }
 }
 

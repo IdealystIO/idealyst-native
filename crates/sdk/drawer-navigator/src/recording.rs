@@ -245,6 +245,12 @@ impl NavigatorHandler<WireRecordingBackend> for RecordingDrawerHandler {
         self.control = Some(host.control.clone());
         self.initial_route = host.initial_route;
 
+        // Register the open-state signal so the reverse channel
+        // (`handle_drawer_state_changed`) can sync it when the client
+        // opens/closes the drawer via a platform gesture — the recorder
+        // analogue of web/iOS's `open_changed` callback.
+        backend.register_drawer_open_signal(nav, pres.is_open);
+
         // Map `Link(route=...)` activations to `Select` (drawer shape),
         // not the substrate default `Push` (stack shape). Same fix as
         // every other drawer handler — without it sidebar links would

@@ -157,3 +157,46 @@ fn recording_drawer_dispatcher_emits_open_and_select() {
         "selected screen body recorded, got: {after_select:?}"
     );
 }
+
+/// Reverse channel: a client-side drawer gesture
+/// (`DrawerStateChanged`) syncs the dev-side `is_open` signal directly,
+/// WITHOUT echoing an `OpenDrawer`/`CloseDrawer` command back to the
+/// client (which already moved).
+#[test]
+fn recording_drawer_reverse_state_change_syncs_signal_without_echo() {
+    let (recorder, _owner, nav) = mount_drawer();
+    let cmds = recorder.drain_commands();
+
+    // Pull the navigator's NodeId out of the recorded stream.
+    let nav_id = cmds
+        .iter()
+        .find_map(|c| match c {
+            Command::CreateDrawerNavigator { id, .. } => Some(*id),
+            _ => None,
+        })
+        .expect("CreateDrawerNavigator in stream");
+
+    let handle = nav.get().expect("DrawerHandle filled after render");
+    assert!(!handle.is_open(), "drawer starts closed");
+
+    // Client opened the drawer via gesture.
+    recorder.handle_drawer_state_changed(nav_id, true);
+    assert!(handle.is_open(), "is_open signal synced from client gesture");
+
+    // Crucially: no OpenDrawer echoed back — the client already moved.
+    let echoed = recorder.drain_commands();
+    assert!(
+        !echoed.iter().any(|c| matches!(
+            c,
+            Command::OpenDrawer { .. } | Command::CloseDrawer { .. } | Command::ToggleDrawer { .. }
+        )),
+        "reverse sync must not echo a drawer command, got: {echoed:?}"
+    );
+
+    // Idempotent: re-reporting the same state is a no-op.
+    recorder.handle_drawer_state_changed(nav_id, true);
+    assert!(handle.is_open());
+    // And it syncs back to closed.
+    recorder.handle_drawer_state_changed(nav_id, false);
+    assert!(!handle.is_open(), "is_open synced back to closed");
+}
