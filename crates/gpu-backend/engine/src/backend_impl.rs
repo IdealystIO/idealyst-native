@@ -1315,16 +1315,55 @@ impl Backend for WgpuBackend {
                             .db_mut()
                             .load_font_data(bytes.to_vec());
                     }
-                    // Bytes-free path (web, `embed-font-bytes` off):
-                    // the font lives as a served file at the same
-                    // root-absolute `/{path}` the DOM backend links via
-                    // `@font-face`. The renderer can't issue an async
-                    // fetch, so queue the URL for the host shell
-                    // (`host-web`) to fetch + `load_font_data` after
-                    // mount, before the first frame. See
-                    // `drain_pending_font_urls`.
+                    // Bytes-free path. Two consumers:
+                    //
+                    // - **web** (`embed-font-bytes` off): the font lives
+                    //   as a served file at root-absolute `/{path}` the
+                    //   DOM backend links via `@font-face`. The renderer
+                    //   can't issue an async fetch, so queue the URL for
+                    //   the host shell (`host-web`) to fetch +
+                    //   `load_font_data` after mount, before the first
+                    //   frame. See `drain_pending_font_urls`.
+                    //
+                    // - **native, notably the headless screenshot
+                    //   backend**: in runtime-server mode every font
+                    //   arrives over the wire as `Bundled { path }`
+                    //   (the recorder strips bytes for transport), and
+                    //   there is no async fetch hook. Load the file
+                    //   straight from disk so registered weights (e.g.
+                    //   `Inter-Bold`) actually shape — without this the
+                    //   shaper only has the bundled default
+                    //   (`Inter-Regular`) and bold/italic/etc. silently
+                    //   fall back to a wrong font, so a screenshot
+                    //   diverges from the real iOS/Android render.
+                    //   `path` is the app-relative path the recorder
+                    //   captured; it resolves against the process CWD
+                    //   (the project dir for a dev-server sidecar).
                     runtime_core::AssetSource::Bundled { path } => {
-                        self.pending_font_urls.push(format!("/{path}"));
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            self.pending_font_urls.push(format!("/{path}"));
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            match std::fs::read(path) {
+                                Ok(bytes) => {
+                                    self.font_system.borrow_mut().db_mut().load_font_data(bytes);
+                                }
+                                Err(e) => {
+                                    // Keep the served-URL hook populated
+                                    // too — harmless on native, and lets
+                                    // any future fetch-capable native
+                                    // host still resolve it.
+                                    self.pending_font_urls.push(format!("/{path}"));
+                                    eprintln!(
+                                        "[render-wgpu] bundled font {path:?} not loadable from \
+                                         disk ({e}); text in this family/weight will fall back \
+                                         to the default font"
+                                    );
+                                }
+                            }
+                        }
                     }
                     // Arbitrary remote URL — same deferred-fetch hook.
                     runtime_core::AssetSource::Remote { url } => {
@@ -2559,6 +2598,41 @@ mod a11y_tests {
         let text = Rc::new(RefCell::new(crate::text::TextStore::new()));
         let fs = Rc::new(RefCell::new(glyphon::FontSystem::new()));
         WgpuBackend::new(text, fs, ColorScheme::Light, Rc::new(TestPainter))
+    }
+
+    /// Regression test: a `Bundled { path }` font asset must be loaded
+    /// from disk on native. In runtime-server mode every font reaches
+    /// the (headless) wgpu backend over the wire as `Bundled { path }`
+    /// — bytes stripped for transport — so if this arm only queued a
+    /// web-fetch URL (the pre-fix behavior), the shaper would be left
+    /// with just the bundled default weight and bold/italic text would
+    /// fall back to a wrong font, making a headless screenshot diverge
+    /// from the real iOS/Android render.
+    ///
+    /// `cargo test` runs with the crate dir as CWD, so the bundled
+    /// Inter-Regular under `assets/fonts/` resolves via the same
+    /// app-relative path the recorder would emit.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn bundled_font_is_loaded_from_disk_on_native() {
+        use runtime_core::{AssetId, AssetSource, AssetTag, Backend};
+
+        let mut b = make_backend();
+        let before = b.font_system.borrow().db().len();
+        b.register_asset(
+            AssetId(1),
+            AssetTag::Font,
+            &AssetSource::Bundled {
+                path: "assets/fonts/Inter-Regular.ttf",
+            },
+        );
+        let after = b.font_system.borrow().db().len();
+        assert!(
+            after > before,
+            "a Bundled font must be loaded into the shaper's DB on native \
+             (faces before={before}, after={after}); otherwise headless \
+             screenshots render registered weights with a fallback font"
+        );
     }
 
     /// Build a small View(Text) tree directly through the Backend
