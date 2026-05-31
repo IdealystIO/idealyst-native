@@ -308,6 +308,14 @@ pub use web::register;
 // SSR backend today) via `tab_navigator::chrome::register`.
 pub mod chrome;
 
+// Recording handler for the runtime-server sidecar's recorder backend.
+// Emits CreateTabNavigator + NavigatorAttachInitial + NavigatorSelect
+// instead of rendering, so a tab-navigator app works under
+// `idealyst dev` (runtime-server). Host-side only — gated behind the
+// `runtime-server` feature.
+#[cfg(feature = "runtime-server")]
+pub mod recording;
+
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 mod android;
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]

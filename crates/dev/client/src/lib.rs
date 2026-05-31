@@ -1296,10 +1296,15 @@ where
             return;
         }
 
-        // Stubbed pending wire-protocol redesign.
-        let _ = (initial_route, tabs, placement, mount_policy);
+        // Reconstruct a content outlet + a tab bar built from the
+        // registrations (labels are data on the wire, so no closures
+        // needed). The active tab's screen mounts into the outlet;
+        // Select swaps it (dispatch_push_like). `mount_policy` is a
+        // native-persistence concern the thin client doesn't model.
+        let _ = (initial_route, mount_policy);
         let a11y_props = self.a11y_props(a11y);
-        let nav_node = self.backend.borrow_mut().create_view(&a11y_props);
+
+        let (container, outlet) = self.build_tab_layout(&tabs, placement, &a11y_props);
 
         let control = Rc::new(runtime_core::primitives::navigator::NavigatorControl::new());
         let mounted_urls = Rc::new(RefCell::new(Vec::new()));
@@ -1307,9 +1312,8 @@ where
 
         let final_state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Tab,
-            node: nav_node.clone(),
-            // Tab reconstruction is Phase 7; mount into the nav node.
-            outlet: nav_node.clone(),
+            node: container.clone(),
+            outlet,
             sidebar_slot: None,
             screen_stack: Rc::new(RefCell::new(Vec::new())),
             control,
@@ -1322,8 +1326,62 @@ where
             replay_pos,
         });
 
-        self.nodes.insert(id, nav_node);
+        self.nodes.insert(id, container);
         self.navigators.insert(id, final_state);
+    }
+
+    /// Build the tab chrome — `Column[outlet, tab-bar]` (or
+    /// `[tab-bar, outlet]` for `Top` placement) — and return
+    /// `(container, outlet)`. The tab bar is a flex row of one text
+    /// label per registration; the outlet flex-grows to fill. This is
+    /// the thin-client reconstruction: a visible tab bar + the active
+    /// tab's screen, no native UITabBarController.
+    fn build_tab_layout(
+        &mut self,
+        tabs: &[WireTabRegistration],
+        placement: WireTabPlacement,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> (B::Node, B::Node) {
+        let mut backend = self.backend.borrow_mut();
+
+        let mut container = backend.create_view(a11y);
+        let mut container_style = StyleRules::default();
+        container_style.flex_direction = Some(FlexDirection::Column);
+        container_style.width = Some(Length::pct(100.0).into());
+        container_style.height = Some(Length::pct(100.0).into());
+        backend.apply_style(&container, &Rc::new(container_style));
+
+        let outlet = backend.create_view(a11y);
+        let mut outlet_style = StyleRules::default();
+        outlet_style.flex_grow = Some(1.0f32.into());
+        outlet_style.flex_basis = Some(Length::Px(0.0).into());
+        outlet_style.width = Some(Length::pct(100.0).into());
+        outlet_style.flex_direction = Some(FlexDirection::Column);
+        backend.apply_style(&outlet, &Rc::new(outlet_style));
+
+        let mut tab_bar = backend.create_view(a11y);
+        let mut bar_style = StyleRules::default();
+        bar_style.flex_direction = Some(FlexDirection::Row);
+        bar_style.width = Some(Length::pct(100.0).into());
+        bar_style.flex_shrink = Some(0.0f32.into());
+        backend.apply_style(&tab_bar, &Rc::new(bar_style));
+        for reg in tabs {
+            let label = backend.create_text(&reg.label, a11y);
+            backend.insert(&mut tab_bar, label);
+        }
+
+        match placement {
+            WireTabPlacement::Top => {
+                backend.insert(&mut container, tab_bar);
+                backend.insert(&mut container, outlet.clone());
+            }
+            WireTabPlacement::Bottom => {
+                backend.insert(&mut container, outlet.clone());
+                backend.insert(&mut container, tab_bar);
+            }
+        }
+
+        (container, outlet)
     }
 
     fn apply_create_drawer_navigator(

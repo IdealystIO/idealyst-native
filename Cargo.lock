@@ -3736,6 +3736,7 @@ dependencies = [
  "runtime-server-shell-native",
  "serde_json",
  "stack-navigator",
+ "tab-navigator",
  "wire",
 ]
 
@@ -6153,11 +6154,13 @@ dependencies = [
  "backend-macos",
  "backend-ssr",
  "backend-web",
+ "dev-server",
  "ios-navigator-helpers",
  "jni 0.21.1",
  "runtime-core",
  "web-navigator-helpers",
  "web-sys",
+ "wire",
 ]
 
 [[package]]

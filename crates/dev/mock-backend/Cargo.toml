@@ -64,3 +64,4 @@ serde_json = "1"
 # recording handler (which itself deps dev-server — already in graph).
 drawer-navigator = { workspace = true, features = ["runtime-server"] }
 stack-navigator = { workspace = true, features = ["runtime-server"] }
+tab-navigator = { workspace = true, features = ["runtime-server"] }

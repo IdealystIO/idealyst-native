@@ -24,7 +24,8 @@ use runtime_core::{
 };
 use wire::{
     Command, EventArgs, HandlerId, NodeId, ScopeId, StyleId, WireColor, WireDrawerSide,
-    WireDrawerType, WireMountPolicy, WireScreenOptions, WireStateBit,
+    WireDrawerType, WireMountPolicy, WireScreenOptions, WireStateBit, WireTabPlacement,
+    WireTabRegistration,
 };
 
 pub mod convert_out;
@@ -990,6 +991,39 @@ impl NavRecorder {
             };
             state.emit(cmd);
         });
+    }
+
+    // ----- Tab navigator ---------------------------------------------------
+
+    /// Emit `CreateTabNavigator`, minting an identity-deduped node. The
+    /// tab registrations (labels/icons) ride on the command as data, so
+    /// the client can reconstruct the tab bar without any closures
+    /// crossing the wire.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_tab_navigator(
+        &self,
+        initial_route: &str,
+        initial_path: &str,
+        tabs: Vec<WireTabRegistration>,
+        placement: WireTabPlacement,
+        mount_policy: WireMountPolicy,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> NodeId {
+        self.with_state(|state| {
+            let id = WireRecordingBackend::mint_node(state);
+            let wire_a11y = state.wire_a11y(a11y);
+            state.emit(Command::CreateTabNavigator {
+                id,
+                initial_route: initial_route.to_string(),
+                initial_path: initial_path.to_string(),
+                tabs,
+                placement,
+                mount_policy,
+                a11y: wire_a11y,
+            });
+            id
+        })
+        .unwrap_or(NodeId(0))
     }
 
     // ----- Stack navigator -------------------------------------------------
@@ -2315,12 +2349,15 @@ impl WireRecordingBackend {
     /// Handle `AppToDev::TabSelected { navigator, index }` — the user
     /// tapped a tab on the client.
     ///
-    /// No-op until the **tab** recording handler exists (Phase 7): there
-    /// is no tab navigator to switch yet. When it lands, this routes the
-    /// activation to that handler so a lazy tab mounts + the active-tab
-    /// signal updates without echoing a redundant select.
+    /// No-op by design, same reasoning as
+    /// [`handle_screen_released`](Self::handle_screen_released): the dev
+    /// side owns navigation. The tab recording handler's dispatcher
+    /// drives tab switches (`Select`), and the thin client's
+    /// reconstructed tab bar round-trips a tap as a `Select` the dev
+    /// side services — it doesn't originate its own tab switch. Kept in
+    /// the protocol for a future client hosting a real native tab bar.
     pub fn handle_tab_selected(&self, _navigator: NodeId, _index: u32) {
-        // Activates with the tab recording handler (Phase 7).
+        // See handle_screen_released — dev side owns navigation.
     }
 }
 
