@@ -803,20 +803,35 @@ unsafe impl Encode for UIEdgeInsetsPayload {
 /// `objc_lookUpClass` on every `apply_style` call (hot path: fires
 /// once per styled view during screen mount, and screen mount is
 /// what the website does for every nav-link tap).
-static IDEALYST_LABEL_CLASS: std::sync::OnceLock<Option<usize>> =
-    std::sync::OnceLock::new();
+///
+/// `AtomicPtr` instead of `OnceLock<Option<usize>>` so we cache ONLY
+/// successful lookups. The `IdealystLabel` class is registered with
+/// the obj-c runtime lazily — `declare_class!` (in `backend-ios-
+/// mobile`) emits a `class()` impl that calls `objc_allocateClassPair`
+/// on first reference, which happens the first time `create_text`
+/// runs. `apply_style` runs on container views before any text leaf
+/// exists in the tree, so the first `apply_text_insets_if_label` call
+/// can fire BEFORE any `IdealystLabel` is alive — and the obj-c
+/// runtime returns NULL because the class doesn't yet exist. A
+/// `OnceLock` would cache that NULL forever, leaving every subsequent
+/// text node without its insets. The atomic-pointer pattern below
+/// retries until the first success and only then memoizes.
+static IDEALYST_LABEL_CLASS: std::sync::atomic::AtomicPtr<objc2::runtime::AnyClass> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
 fn idealyst_label_class() -> Option<&'static objc2::runtime::AnyClass> {
-    let raw = *IDEALYST_LABEL_CLASS.get_or_init(|| {
-        let name = std::ffi::CString::new("IdealystLabel").ok()?;
-        let p = unsafe { objc2::ffi::objc_lookUpClass(name.as_ptr()) };
-        if p.is_null() {
-            None
-        } else {
-            Some(p as usize)
-        }
-    });
-    raw.map(|p| unsafe { &*(p as *const objc2::runtime::AnyClass) })
+    use std::sync::atomic::Ordering;
+    let cached = IDEALYST_LABEL_CLASS.load(Ordering::Relaxed);
+    if !cached.is_null() {
+        return Some(unsafe { &*cached });
+    }
+    let name = std::ffi::CString::new("IdealystLabel").ok()?;
+    let p = unsafe { objc2::ffi::objc_lookUpClass(name.as_ptr()) };
+    if p.is_null() {
+        return None;
+    }
+    IDEALYST_LABEL_CLASS.store(p as *mut _, Ordering::Relaxed);
+    Some(unsafe { &*(p as *const objc2::runtime::AnyClass) })
 }
 
 fn apply_text_insets_if_label(

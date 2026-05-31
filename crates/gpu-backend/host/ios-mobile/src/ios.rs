@@ -254,6 +254,22 @@ pub async fn mount(
     surface.configure(&device, &config);
 
     // 3. Build the render-side stack + mount the user app.
+    //
+    // Before mounting, push a fresh `session::REGISTRY` scope so the
+    // embedded app's `session::animated(…)` / `session::epoch_micros()`
+    // calls land in a per-host registry that disappears when this
+    // host's `IosHostHandle` drops. Lets `MountPolicy::LazyDisposing`
+    // navigators truly reset the embedded app on remount — the new
+    // host pushes its own scope, the old scope's AVs and epoch are
+    // gone, `keyed(…, default)` builds fresh AVs at default values,
+    // and the embedded animation timeline replays from time=0.
+    //
+    // Hot-patch rerenders happen INSIDE the existing host (no new
+    // `mount(…)` call), so the scope persists and the session-keyed
+    // state survives — preserving the existing
+    // `[[project_session_animated]]` "skip re-running acts on save"
+    // property for the dev edit loop.
+    let session_scope = runtime_core::session::push_scope();
     let renderer = Renderer::new(&device, &queue, config.format);
     let mut host = Host::new(skin, profile.color_scheme);
     let logical = (
@@ -290,6 +306,7 @@ pub async fn mount(
         ui_view,
         build_ui,
         was_visible: true,
+        _session_scope: session_scope,
     }));
 
     // 4. Per-frame loop via the framework's render-loop driver.
@@ -340,6 +357,14 @@ struct HostInner {
     /// transitions: visible→hidden triggers `host.unmount()`,
     /// hidden→visible triggers `host.mount(build_ui.clone())`.
     was_visible: bool,
+    /// RAII guard for this host's `session::REGISTRY` scope. Pushed
+    /// inside `mount(…)` so the embedded app's `keyed(…)` AVs and
+    /// `__epoch_us` are isolated to this host's lifetime. Declared
+    /// LAST so on `HostInner` drop the scope is popped AFTER the
+    /// renderer, host (welcome `Owner` + reactive cleanups), wgpu
+    /// surface, etc. drop — those cleanups may dispatch through
+    /// scope-anchored timers whose bodies read session state.
+    _session_scope: runtime_core::session::ScopeGuard,
 }
 
 /// Walk the UIView chain checking `window != nil` and that no

@@ -59,15 +59,74 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 thread_local! {
-    /// Per-session-thread registry. `&'static str` keys keep
-    /// lookup allocation-free; values are heap-boxed `Any` so
-    /// each call site can stash a different type. Last-write-
-    /// wins on key collision — author code is responsible for
-    /// picking unique keys (Layer 2/3 macros will enforce this
-    /// at the API boundary; Layer 1 uses one well-known
-    /// internal key, `__epoch_us`, which won't collide).
-    static REGISTRY: RefCell<HashMap<&'static str, Box<dyn Any>>> =
-        RefCell::new(HashMap::new());
+    /// Per-session-thread registry STACK. `&'static str` keys keep
+    /// lookup allocation-free; values are heap-boxed `Any` so each
+    /// call site can stash a different type.
+    ///
+    /// Index 0 is the always-present **root scope** — anything
+    /// outside an explicit [`push_scope`] reads/writes there.
+    /// Hosts that wrap an embedded app (the iOS wgpu host, the web
+    /// wgpu host) push a fresh scope at mount and pop it on drop;
+    /// the embedded app's `keyed(…)` calls land in that nested
+    /// scope and disappear when the host tears down. Hot-patch
+    /// rerenders happen inside the same scope and so survive.
+    ///
+    /// All session methods read/write the TOP scope only.
+    static REGISTRIES: RefCell<Vec<HashMap<&'static str, Box<dyn Any>>>> =
+        RefCell::new(vec![HashMap::new()]);
+}
+
+/// Push a fresh scope onto the per-thread registry stack. All
+/// subsequent session reads/writes land in the new scope until
+/// the returned guard drops (which pops it). The previous scope's
+/// entries are inaccessible while the new scope is on top.
+///
+/// Hosts that own an embedded-app lifetime use this to scope the
+/// embedded app's session-keyed state to the host's lifetime: the
+/// iOS wgpu host pushes a scope inside `mount(…)` and stores the
+/// guard in the returned `IosHostHandle`. When the handle drops
+/// (e.g. `MountPolicy::LazyDisposing` releases the host screen),
+/// the guard drops, the scope pops, the embedded app's session
+/// AVs and epoch are gone, and the next mount starts from a fresh
+/// `keyed(…, default)` baseline.
+///
+/// The guard is `!Send + !Sync`. It must be dropped on the same
+/// thread that pushed it (the only one where its stack slot lives).
+#[must_use = "drop the guard to pop the scope"]
+pub struct ScopeGuard {
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+pub fn push_scope() -> ScopeGuard {
+    REGISTRIES.with(|r| r.borrow_mut().push(HashMap::new()));
+    ScopeGuard { _not_send: std::marker::PhantomData }
+}
+
+impl Drop for ScopeGuard {
+    fn drop(&mut self) {
+        REGISTRIES.with(|r| {
+            let mut stack = r.borrow_mut();
+            // Defensive: never pop the always-present root scope.
+            // If something went very wrong (e.g. a guard from a
+            // different thread reached here, or guards dropped out
+            // of order) we'd rather no-op than corrupt the stack.
+            if stack.len() > 1 {
+                stack.pop();
+            }
+        });
+    }
+}
+
+/// Read-modify-write helper for the top scope. All other session
+/// APIs go through this so the top-only invariant lives in one place.
+fn with_top<R>(f: impl FnOnce(&mut HashMap<&'static str, Box<dyn Any>>) -> R) -> R {
+    REGISTRIES.with(|r| {
+        let mut stack = r.borrow_mut();
+        let top = stack
+            .last_mut()
+            .expect("session::REGISTRIES root scope always present");
+        f(top)
+    })
 }
 
 /// Return the value stored under `key`, or initialise it from
@@ -116,7 +175,7 @@ thread_local! {
 /// needs partitioned registries (one per Host), that becomes a
 /// real refactor; `clear()` is the pragmatic interim.
 pub fn clear() {
-    REGISTRY.with(|r| r.borrow_mut().clear());
+    with_top(|top| top.clear());
 }
 
 /// Drop the cached session epoch so the next [`epoch_micros`]
@@ -135,8 +194,8 @@ pub fn clear() {
 /// the raf body's elapsed jumps straight to the middle of the
 /// orbit, defeating the visible-reset.
 pub fn reset_epoch() {
-    REGISTRY.with(|r| {
-        r.borrow_mut().remove("__epoch_us");
+    with_top(|top| {
+        top.remove("__epoch_us");
     });
 }
 
@@ -157,8 +216,8 @@ pub fn reset_epoch() {
 /// prefix — embedded apps that pass their own prefix won't normally
 /// hit that, but the API doesn't special-case `__`-prefixed keys.
 pub fn clear_prefix(prefix: &str) {
-    REGISTRY.with(|r| {
-        r.borrow_mut().retain(|key, _| !key.starts_with(prefix))
+    with_top(|top| {
+        top.retain(|key, _| !key.starts_with(prefix))
     });
 }
 
@@ -166,12 +225,15 @@ pub fn get_or_init<T: 'static + Clone>(
     key: &'static str,
     init: impl FnOnce() -> T,
 ) -> T {
-    // Fast path: present and type matches. Short read borrow.
-    let existing = REGISTRY.with(|r| {
-        r.borrow()
-            .get(key)
-            .and_then(|b| b.downcast_ref::<T>())
-            .cloned()
+    // Fast path: present and type matches. Short read borrow on
+    // the top scope. Going through `with_top` here would borrow
+    // mut; do a manual immutable borrow path instead.
+    let existing: Option<T> = REGISTRIES.with(|r| {
+        let stack = r.borrow();
+        let top = stack
+            .last()
+            .expect("session::REGISTRIES root scope always present");
+        top.get(key).and_then(|b| b.downcast_ref::<T>()).cloned()
     });
     if let Some(v) = existing {
         return v;
@@ -180,7 +242,9 @@ pub fn get_or_init<T: 'static + Clone>(
     // short write borrow. The two borrows are separate so `init`
     // can call back in.
     let v = init();
-    REGISTRY.with(|r| r.borrow_mut().insert(key, Box::new(v.clone())));
+    with_top(|top| {
+        top.insert(key, Box::new(v.clone()));
+    });
     v
 }
 
@@ -367,5 +431,144 @@ mod tests {
         assert_eq!(other, 2);
         // This thread's value unchanged.
         assert_eq!(get_or_init("test_thread_isolation", || 99_u64), 1);
+    }
+
+    // -----------------------------------------------------------------
+    // Scope-stack regression tests
+    //
+    // The scope-stack semantics are how `MountPolicy::LazyDisposing`
+    // navigators reset an embedded wgpu host's session-keyed state
+    // (welcome AVs, `__epoch_us`) on remount while preserving them
+    // across hot-patch rerenders. The tests cover the invariants the
+    // host-lifetime ownership relies on:
+    //
+    //   * a pushed scope masks root-scope entries (reads/writes hit
+    //     the top only)
+    //   * dropping the guard pops the scope AND restores root visibility
+    //   * `clear` / `clear_prefix` / `reset_epoch` only affect the top
+    //     scope (so embedded-app cleanup doesn't wipe outer-app state)
+    //   * a guard that gets leaked still leaves the stack in a sane
+    //     state because the root scope is non-poppable
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn push_scope_masks_root_scope_entries() {
+        let _root = get_or_init("scope_test_masking", || 11_u64);
+        let _guard = push_scope();
+        // Top scope is empty — init runs fresh.
+        let inside = get_or_init("scope_test_masking", || 22_u64);
+        assert_eq!(inside, 22);
+        // Writes from inside the scope land in the top, not the root.
+        let inside_again = get_or_init("scope_test_masking", || 33_u64);
+        assert_eq!(inside_again, 22);
+        drop(_guard);
+        // Back at the root, the original value is intact.
+        let after = get_or_init("scope_test_masking", || 44_u64);
+        assert_eq!(after, 11);
+    }
+
+    #[test]
+    fn scope_guard_drop_pops_back_to_root() {
+        let baseline = get_or_init("scope_test_pop", || 1_u64);
+        assert_eq!(baseline, 1);
+        {
+            let _guard = push_scope();
+            let _ = get_or_init("scope_test_pop", || 999_u64);
+        }
+        // After the guard dropped at end of inner block, root
+        // entry is reachable again.
+        let after = get_or_init("scope_test_pop", || 2_u64);
+        assert_eq!(after, 1);
+    }
+
+    #[test]
+    fn nested_scopes_isolate_per_level() {
+        let _outer_guard = push_scope();
+        let _ = get_or_init("scope_test_nest", || 100_u64);
+        {
+            let _inner_guard = push_scope();
+            // Fresh scope, init runs.
+            let inner = get_or_init("scope_test_nest", || 200_u64);
+            assert_eq!(inner, 200);
+        }
+        // Back to outer scope, its value is preserved.
+        let outer = get_or_init("scope_test_nest", || 300_u64);
+        assert_eq!(outer, 100);
+    }
+
+    #[test]
+    fn clear_only_affects_top_scope() {
+        let root_keep = get_or_init("scope_test_clear_root", || 7_u64);
+        assert_eq!(root_keep, 7);
+        {
+            let _guard = push_scope();
+            let _ = get_or_init("scope_test_clear_inner", || 77_u64);
+            clear(); // wipes the inner scope, not the root.
+            let inner_after = get_or_init("scope_test_clear_inner", || 88_u64);
+            assert_eq!(inner_after, 88, "inner key should be wiped");
+        }
+        // Root scope untouched.
+        assert_eq!(
+            get_or_init("scope_test_clear_root", || 0_u64),
+            7,
+            "root scope must survive an inner clear()",
+        );
+    }
+
+    #[test]
+    fn clear_prefix_only_affects_top_scope() {
+        let _ = get_or_init("scope_test_prefix_root_a", || 1_u64);
+        let _ = get_or_init("scope_test_prefix_root_b", || 2_u64);
+        {
+            let _guard = push_scope();
+            let _ = get_or_init("scope_test_prefix_root_a", || 10_u64);
+            clear_prefix("scope_test_prefix_root_");
+            // Top scope: both keys gone, init runs again.
+            assert_eq!(
+                get_or_init("scope_test_prefix_root_a", || 11_u64),
+                11,
+            );
+        }
+        // Root scope: both keys intact.
+        assert_eq!(get_or_init("scope_test_prefix_root_a", || 0_u64), 1);
+        assert_eq!(get_or_init("scope_test_prefix_root_b", || 0_u64), 2);
+    }
+
+    #[test]
+    fn reset_epoch_only_affects_top_scope() {
+        let root_epoch = epoch_micros();
+        {
+            let _guard = push_scope();
+            // Fresh epoch inside the scope.
+            let inner_epoch = epoch_micros();
+            // Inner epoch is captured at THIS call (not the root).
+            // Hard to assert exact equality cross-platform without
+            // racing the clock, but the contract is: distinct from
+            // root because root_epoch was captured ~10us ago and
+            // would round-trip identically only if the registries
+            // were shared.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            reset_epoch();
+            let inner_after = epoch_micros();
+            assert!(
+                inner_after >= inner_epoch,
+                "after reset_epoch, next epoch_micros re-captures wall clock",
+            );
+        }
+        // Root epoch untouched even after inner reset_epoch.
+        assert_eq!(epoch_micros(), root_epoch);
+    }
+
+    #[test]
+    fn root_scope_is_never_popped() {
+        // Constructing a guard and dropping it many times must
+        // not eat into the always-present root scope.
+        for _ in 0..5 {
+            let g = push_scope();
+            drop(g);
+        }
+        // Root scope still functions.
+        let v = get_or_init("scope_test_root_indestructible", || 42_u64);
+        assert_eq!(v, 42);
     }
 }

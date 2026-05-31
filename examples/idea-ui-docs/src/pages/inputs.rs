@@ -140,10 +140,13 @@ pub fn switch() -> Element {
             }
 
             Section(title = "How it composes".to_string()) {
-                P(content = "Switch wraps the framework's native `toggle` primitive — the visual \
-                    is platform-native (UISwitch on iOS, Switch on Android, CSS toggle on web). \
-                    No tone/variant axes today; when the framework primitive grows a tint hook, \
-                    a Tone axis would land here.".to_string())
+                P(content = "Switch is a styled slide-toggle drawn from primitives — a `pressable` \
+                    track with a `view` thumb whose horizontal travel animates via \
+                    `AnimProp::TranslateX`. Because it's not the platform-native control, it \
+                    carries the same `tone` × `variant` × `size` axes as the rest of idea-ui and \
+                    looks identical on every backend. The 'on' track takes the tone fill; \
+                    override the appearance globally with \
+                    `install_switch_sheet(SwitchSheetBuilder::new().add_tone(Hype).build())`.".to_string())
             }
         }
     })

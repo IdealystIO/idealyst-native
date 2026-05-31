@@ -146,6 +146,16 @@ fn measure_textview(
             .call_method(&view_obj, "getMeasuredHeight", "()I", &[])
             .and_then(|v| v.i())
             .unwrap_or(0);
+        // `View.measure()` returns `text + padding` (Android includes
+        // setPadding in the measured size). We do NOT subtract that
+        // back out here, because the framework's `apply_style` already
+        // strips `padding_*` from the Taffy leaf style for TextView
+        // nodes (see `imp::mod.rs::apply_style` text-view branch).
+        // Taffy's outer-node size equals what `measure_fn` returns, so
+        // returning measured (text + setPadding) yields outer = text +
+        // padding once — `setPadding` then insets the glyphs visually
+        // within that frame. Subtracting here would give an outer
+        // frame too small for the glyphs to render in.
         let w_dp = measured_w_px as f32 / density;
         let h_dp = measured_h_px as f32 / density;
         runtime_layout::Size {

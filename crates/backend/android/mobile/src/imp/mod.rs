@@ -373,6 +373,13 @@ thread_local! {
     static MARGIN_LP_CLASS: std::cell::RefCell<Option<GlobalRef>> =
         std::cell::RefCell::new(None);
 
+    /// Cached `android.widget.TextView` class. Used by `is_text_view`
+    /// (apply_style's padding + text-styling branches), which fires
+    /// once per styled view per apply pass — easily the busiest
+    /// classloader probe in the backend.
+    static TEXTVIEW_CLASS: std::cell::RefCell<Option<GlobalRef>> =
+        std::cell::RefCell::new(None);
+
     /// Display density (dp → px scaling), constant for the lifetime of
     /// the Activity. Cached after the first successful read; reused on
     /// every dp-to-px conversion in the per-view layout path. The 5
@@ -482,6 +489,31 @@ fn measure_external_view(
             width: w_px as f32 / density,
             height: h_px as f32 / density,
         }
+    })
+}
+
+/// `true` when `view` is a `TextView` (or any subclass like
+/// `EditText`, `IdealystLabel`). Used by `apply_rules` to gate the
+/// `setPadding` / text-styling branches without hitting `find_class`
+/// per call.
+pub(crate) fn is_text_view(env: &mut JNIEnv, view: &JObject) -> bool {
+    TEXTVIEW_CLASS.with(|slot| {
+        let mut borrow = slot.borrow_mut();
+        if borrow.is_none() {
+            if let Ok(class) = env.find_class("android/widget/TextView") {
+                if let Ok(g) = env.new_global_ref(&class) {
+                    *borrow = Some(g);
+                }
+            }
+        }
+        let Some(g) = borrow.as_ref() else {
+            return false;
+        };
+        let class_obj = g.as_obj();
+        let class: &jni::objects::JClass = unsafe {
+            std::mem::transmute::<&JObject, &jni::objects::JClass>(class_obj)
+        };
+        env.is_instance_of(view, class).unwrap_or(false)
     })
 }
 
@@ -957,20 +989,8 @@ impl AndroidBackend {
     pub(crate) fn run_layout_pass(&mut self) {
         let (vw, vh) = self.viewport_size();
         if vw <= 0.0 || vh <= 0.0 {
-            log::info!("[layout] ABORT: viewport is zero ({}, {})", vw, vh);
             return;
         }
-        // Wall-clock the whole pass so the "slow screen mount"
-        // diagnosis has a number to point at. Native millis come from
-        // `std::time::Instant`; the cost is ~ns per call and runs once
-        // per pass regardless of view count.
-        let pass_start = std::time::Instant::now();
-        log::info!(
-            "[layout] run_layout_pass viewport=({:.1}, {:.1}) registered_views={}",
-            vw,
-            vh,
-            self.view_to_layout.len()
-        );
         let _t_total = phase_timer::PhaseTimer::start("layout_pass_total");
         let roots: Vec<runtime_layout::LayoutNode> = self
             .view_to_layout
@@ -1051,8 +1071,6 @@ impl AndroidBackend {
             }
         });
         drop(_t_total);
-        let elapsed_ms = pass_start.elapsed().as_secs_f64() * 1000.0;
-        log::info!("[layout] run_layout_pass DONE in {:.1}ms", elapsed_ms);
         // Drain the per-phase counters accumulated during this pass
         // and the apply-style work that preceded it. Logging here
         // (rather than at app exit) gives a per-pass histogram so

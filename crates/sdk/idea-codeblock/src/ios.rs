@@ -29,6 +29,40 @@ use std::rc::Rc;
 /// override.
 const PADDING_PT: f64 = 20.0;
 
+/// Mirror of UIKit's `UIEdgeInsets` struct. We don't pull the full
+/// `objc2-ui-kit` type because the SDK's tiny feature set
+/// (UIScrollView + UILabel) doesn't already enable it — re-declaring
+/// keeps `Cargo.toml` minimal. Same trick `virtualizer.rs` uses.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UIEdgeInsets {
+    top: f64,
+    left: f64,
+    bottom: f64,
+    right: f64,
+}
+unsafe impl objc2::Encode for UIEdgeInsets {
+    const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
+        "UIEdgeInsets",
+        &[
+            <f64 as objc2::Encode>::ENCODING,
+            <f64 as objc2::Encode>::ENCODING,
+            <f64 as objc2::Encode>::ENCODING,
+            <f64 as objc2::Encode>::ENCODING,
+        ],
+    );
+}
+
+fn set_content_inset(scroll: &UIScrollView, pad: f64) {
+    let insets = UIEdgeInsets {
+        top: pad,
+        left: pad,
+        bottom: pad,
+        right: pad,
+    };
+    let _: () = unsafe { msg_send![scroll, setContentInset: insets] };
+}
+
 /// `Element::External` handler for the iOS codeblock kind. Returns
 /// the wrapping UIScrollView so the framework parents it into the
 /// surrounding view tree; the inner UILabel + NSAttributedString are

@@ -222,8 +222,30 @@ pub(crate) fn apply_nav_header_style(
         let clear = UIColor::clearColor();
         let _: () = msg_send![&appearance, setShadowColor: &*clear];
 
+        // Write to ALL three appearance buckets on the nav bar AND
+        // the top VC's navigationItem. On iOS 15+ the item-level
+        // appearance shadows the bar-level one, so a re-themed
+        // bar appearance is silently ignored if any prior per-screen
+        // `apply_header_options_with_nav` call wrote to the item.
+        // We mirror that path's thoroughness here so theme swaps win
+        // regardless of order.
         let _: () = msg_send![&nav_bar, setStandardAppearance: &*appearance];
         let _: () = msg_send![&nav_bar, setScrollEdgeAppearance: &*appearance];
+        let _: () = msg_send![&nav_bar, setCompactAppearance: &*appearance];
+        let top_vc: Option<Retained<UIViewController>> =
+            msg_send_id![controller, topViewController];
+        if let Some(vc) = top_vc {
+            let nav_item: Retained<NSObject> = msg_send_id![&*vc, navigationItem];
+            let _: () = msg_send![&nav_item, setStandardAppearance: &*appearance];
+            let _: () = msg_send![&nav_item, setScrollEdgeAppearance: &*appearance];
+            let _: () = msg_send![&nav_item, setCompactAppearance: &*appearance];
+        }
+        // Force the nav bar to re-render with the new appearance.
+        // Without this, setting the standardAppearance on an already-
+        // visible bar can be silently coalesced — the user sees the
+        // old appearance until the next layout pass (rotation,
+        // navigation, etc).
+        let _: () = msg_send![&nav_bar, setNeedsLayout];
     }
 }
 
@@ -273,8 +295,22 @@ pub(crate) fn apply_nav_title_style(
         let _: () = msg_send![&dict, setObject: &*font, forKey: &*key];
 
         let _: () = msg_send![&appearance, setTitleTextAttributes: &*dict];
+        // Mirror apply_nav_header_style's full appearance fan-out
+        // (all three nav-bar buckets + the topVC nav_item override)
+        // so theme swaps win regardless of which appearance the bar
+        // is currently rendering from.
         let _: () = msg_send![&nav_bar, setStandardAppearance: &*appearance];
         let _: () = msg_send![&nav_bar, setScrollEdgeAppearance: &*appearance];
+        let _: () = msg_send![&nav_bar, setCompactAppearance: &*appearance];
+        let top_vc: Option<Retained<UIViewController>> =
+            msg_send_id![controller, topViewController];
+        if let Some(vc) = top_vc {
+            let nav_item: Retained<NSObject> = msg_send_id![&*vc, navigationItem];
+            let _: () = msg_send![&nav_item, setStandardAppearance: &*appearance];
+            let _: () = msg_send![&nav_item, setScrollEdgeAppearance: &*appearance];
+            let _: () = msg_send![&nav_item, setCompactAppearance: &*appearance];
+        }
+        let _: () = msg_send![&nav_bar, setNeedsLayout];
     }
 }
 

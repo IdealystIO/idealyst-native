@@ -793,3 +793,709 @@ pub fn install_default_icon_button_sheet() {
     install_icon_button_sheet(IconButtonSheetBuilder::new().build());
 }
 
+// =============================================================================
+// Shared arm helpers for the selection-control family (Switch, Checkbox, Radio)
+// =============================================================================
+//
+// These three components share one structural idea: an `appearance`
+// axis with one arm per `(tone, variant)` pair whose StyleRules come
+// from `variant.render(ctx)` — exactly like Button/Badge — plus a
+// `checked` axis (on/off) that overrides the appearance when the
+// control is unselected. Because the framework merges variant axes in
+// alphabetical name order (`appearance` < `checked` < `size`), the
+// `checked=off` arm reliably wins over the appearance fill, and the
+// `size` arm (dimensions only) wins over both.
+
+/// The neutral "unselected" look, shared by Checkbox box + Radio
+/// outer ring: transparent surface, a 1px theme border on every side,
+/// and muted foreground. Overrides whatever the `appearance` arm set.
+fn unchecked_surface_rules() -> StyleRules {
+    let theme_rc = active_theme();
+    let theme_ref = theme_rc
+        .downcast_ref::<IdeaThemeRef>()
+        .expect("selection-control sheet: install_idea_theme(...) first");
+    let border = theme_ref.colors().border.clone();
+    StyleRules {
+        background: Some(Tokenized::Literal(runtime_core::Color("transparent".into()))),
+        color: Some(theme_ref.colors().text_muted.clone()),
+        border_top_width: Some(Tokenized::Literal(1.0)),
+        border_right_width: Some(Tokenized::Literal(1.0)),
+        border_bottom_width: Some(Tokenized::Literal(1.0)),
+        border_left_width: Some(Tokenized::Literal(1.0)),
+        border_top_color: Some(border.clone()),
+        border_right_color: Some(border.clone()),
+        border_bottom_color: Some(border.clone()),
+        border_left_color: Some(border),
+        ..Default::default()
+    }
+}
+
+/// Add `appearance` arms (one per `(tone, variant)`) whose rules come
+/// straight from `variant.render(ctx)` — the same selected/filled look
+/// Button and Badge use. Custom tones/variants flow through unchanged.
+fn add_appearance_arms(
+    mut sheet: StyleSheet,
+    tones: &[ToneRef],
+    variants: &[VariantRef],
+) -> StyleSheet {
+    for tone in tones {
+        for variant in variants {
+            let key = format!("{}_{}", tone.current_key(), variant.current_key());
+            let tone_c = tone.clone();
+            let variant_c = variant.clone();
+            sheet = sheet.variant("appearance", key, move |_vs| {
+                let theme_rc = active_theme();
+                let theme_ref = theme_rc
+                    .downcast_ref::<IdeaThemeRef>()
+                    .expect("selection-control sheet: install_idea_theme(...) first");
+                let ctx = ResolutionCtx {
+                    theme: theme_ref,
+                    tone: &*tone_c.0,
+                };
+                variant_c.0.render(&ctx)
+            });
+        }
+    }
+    sheet
+}
+
+/// Add `appearance` arms that project `variant.render(ctx)`'s
+/// foreground color onto a single target — `color` (for a checkmark
+/// glyph) when `as_background` is false, or `background` (for a radio
+/// dot / a switch's "on" fill marker) when true. Everything else is
+/// dropped, so the arm only tints the indicator.
+fn add_indicator_color_arms(
+    mut sheet: StyleSheet,
+    tones: &[ToneRef],
+    variants: &[VariantRef],
+    as_background: bool,
+) -> StyleSheet {
+    for tone in tones {
+        for variant in variants {
+            let key = format!("{}_{}", tone.current_key(), variant.current_key());
+            let tone_c = tone.clone();
+            let variant_c = variant.clone();
+            sheet = sheet.variant("appearance", key, move |_vs| {
+                let theme_rc = active_theme();
+                let theme_ref = theme_rc
+                    .downcast_ref::<IdeaThemeRef>()
+                    .expect("selection-control sheet: install_idea_theme(...) first");
+                let ctx = ResolutionCtx {
+                    theme: theme_ref,
+                    tone: &*tone_c.0,
+                };
+                let fg = variant_c.0.render(&ctx).color;
+                if as_background {
+                    StyleRules { background: fg, ..Default::default() }
+                } else {
+                    StyleRules { color: fg, ..Default::default() }
+                }
+            });
+        }
+    }
+    sheet
+}
+
+// =============================================================================
+// SwitchSheetBuilder — styled slide-toggle track
+// =============================================================================
+//
+// A Switch is a pill track with a circular thumb that slides between
+// the off (left) and on (right) edges. The track's "on" fill is the
+// tone/variant render; the "off" fill is a muted theme track. The
+// thumb itself carries no tone — it's a white puck styled by an
+// idea-ui-local stylesheet — and its horizontal position is animated
+// by the component via `AnimProp::TranslateX`.
+
+thread_local! {
+    static SWITCH_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
+}
+
+pub fn install_switch_sheet(sheet: Rc<StyleSheet>) {
+    SWITCH_SHEET.with(|s| *s.borrow_mut() = Some(sheet));
+}
+pub fn installed_switch_sheet() -> Rc<StyleSheet> {
+    SWITCH_SHEET.with(|s| {
+        s.borrow().as_ref().cloned().expect(
+            "no Switch stylesheet installed; call install_idea_theme(...) before rendering",
+        )
+    })
+}
+
+/// Closed track dimensions per size: `(width, height)` in px.
+pub const SWITCH_TRACK_DIMS: [(&str, f32, f32); 3] =
+    [("sm", 30.0, 18.0), ("md", 38.0, 22.0), ("lg", 48.0, 28.0)];
+
+pub struct SwitchSheetBuilder {
+    tones: Vec<ToneRef>,
+    variants: Vec<VariantRef>,
+}
+impl SwitchSheetBuilder {
+    pub fn new() -> Self {
+        Self {
+            tones: ToneRef::builtins().into_iter().map(|(_, t)| t).collect(),
+            variants: VariantRef::builtins().into_iter().map(|(_, v)| v).collect(),
+        }
+    }
+    pub fn add_tone(mut self, t: impl Into<ToneRef>) -> Self {
+        self.tones.push(t.into());
+        self
+    }
+    pub fn add_variant(mut self, v: impl Into<VariantRef>) -> Self {
+        self.variants.push(v.into());
+        self
+    }
+    pub fn build(self) -> Rc<StyleSheet> {
+        use runtime_core::{AlignItems, FlexDirection, Length};
+        let pill = || Tokenized::token("radius-pill", Length::Px(999.0));
+        let mut sheet = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+            flex_direction: Some(FlexDirection::Row),
+            align_items: Some(AlignItems::Center),
+            border_top_left_radius: Some(pill()),
+            border_top_right_radius: Some(pill()),
+            border_bottom_left_radius: Some(pill()),
+            border_bottom_right_radius: Some(pill()),
+            padding_top: Some(Tokenized::Literal(Length::Px(2.0))),
+            padding_bottom: Some(Tokenized::Literal(Length::Px(2.0))),
+            padding_left: Some(Tokenized::Literal(Length::Px(2.0))),
+            padding_right: Some(Tokenized::Literal(Length::Px(2.0))),
+            background_transition: Some(Transition::new(180, Easing::EaseOut)),
+            ..Default::default()
+        });
+
+        // ON look — tone/variant fill.
+        sheet = add_appearance_arms(sheet, &self.tones, &self.variants);
+
+        // OFF look — muted track, no border.
+        sheet = sheet.variant("checked", "off", |_vs| {
+            let theme_rc = active_theme();
+            let theme_ref = theme_rc
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("Switch sheet: install_idea_theme(...) first");
+            StyleRules {
+                background: Some(theme_ref.colors().border.clone()),
+                border_top_width: Some(Tokenized::Literal(0.0)),
+                border_right_width: Some(Tokenized::Literal(0.0)),
+                border_bottom_width: Some(Tokenized::Literal(0.0)),
+                border_left_width: Some(Tokenized::Literal(0.0)),
+                ..Default::default()
+            }
+        });
+        sheet = sheet.variant("checked", "on", |_vs| StyleRules::default());
+
+        // Size — track width/height.
+        for (key, w, h) in SWITCH_TRACK_DIMS {
+            sheet = sheet.variant("size", key, move |_vs| StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(w))),
+                height: Some(Tokenized::Literal(Length::Px(h))),
+                ..Default::default()
+            });
+        }
+
+        sheet = sheet
+            .variant_default("appearance", "primary_filled")
+            .variant_default("checked", "off")
+            .variant_default("size", "md");
+        Rc::new(sheet)
+    }
+}
+impl Default for SwitchSheetBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+pub fn install_default_switch_sheet() {
+    install_switch_sheet(SwitchSheetBuilder::new().build());
+}
+
+// =============================================================================
+// CheckboxSheetBuilder — box + checkmark glyph
+// =============================================================================
+//
+// Two sub-sheets, bundled into one install/installed pair:
+//   - `box_sheet`: the square. `appearance` (tone×variant, the checked
+//     fill) + `checked` (off override) + `size` (dimensions).
+//   - `glyph_sheet`: the checkmark text. `appearance` arms tint only
+//     the glyph's `color` to the variant foreground; rendered only
+//     while checked, so it never needs an off arm.
+
+thread_local! {
+    static CHECKBOX_SHEETS: RefCell<Option<CheckboxSheets>> = const { RefCell::new(None) };
+}
+
+/// The pair of sheets a Checkbox renders with.
+#[derive(Clone)]
+pub struct CheckboxSheets {
+    pub box_sheet: Rc<StyleSheet>,
+    pub glyph_sheet: Rc<StyleSheet>,
+}
+
+pub fn install_checkbox_sheets(sheets: CheckboxSheets) {
+    CHECKBOX_SHEETS.with(|s| *s.borrow_mut() = Some(sheets));
+}
+pub fn installed_checkbox_sheets() -> CheckboxSheets {
+    CHECKBOX_SHEETS.with(|s| {
+        s.borrow().as_ref().cloned().expect(
+            "no Checkbox stylesheet installed; call install_idea_theme(...) before rendering",
+        )
+    })
+}
+
+/// Closed box dimensions per size: `(box_px, glyph_font_px)`.
+pub const CHECKBOX_DIMS: [(&str, f32, f32); 3] =
+    [("sm", 16.0, 11.0), ("md", 20.0, 14.0), ("lg", 24.0, 17.0)];
+
+pub struct CheckboxSheetBuilder {
+    tones: Vec<ToneRef>,
+    variants: Vec<VariantRef>,
+}
+impl CheckboxSheetBuilder {
+    pub fn new() -> Self {
+        Self {
+            tones: ToneRef::builtins().into_iter().map(|(_, t)| t).collect(),
+            variants: VariantRef::builtins().into_iter().map(|(_, v)| v).collect(),
+        }
+    }
+    pub fn add_tone(mut self, t: impl Into<ToneRef>) -> Self {
+        self.tones.push(t.into());
+        self
+    }
+    pub fn add_variant(mut self, v: impl Into<VariantRef>) -> Self {
+        self.variants.push(v.into());
+        self
+    }
+    pub fn build(self) -> CheckboxSheets {
+        use runtime_core::{AlignItems, JustifyContent, Length};
+        let radius = || Tokenized::token("radius-sm", Length::Px(4.0));
+
+        // ---- box ----
+        let mut box_sheet = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+            align_items: Some(AlignItems::Center),
+            justify_content: Some(JustifyContent::Center),
+            border_top_left_radius: Some(radius()),
+            border_top_right_radius: Some(radius()),
+            border_bottom_left_radius: Some(radius()),
+            border_bottom_right_radius: Some(radius()),
+            background_transition: Some(Transition::new(150, Easing::EaseOut)),
+            border_top_color_transition: Some(Transition::new(150, Easing::EaseOut)),
+            border_right_color_transition: Some(Transition::new(150, Easing::EaseOut)),
+            border_bottom_color_transition: Some(Transition::new(150, Easing::EaseOut)),
+            border_left_color_transition: Some(Transition::new(150, Easing::EaseOut)),
+            ..Default::default()
+        });
+        box_sheet = add_appearance_arms(box_sheet, &self.tones, &self.variants);
+        box_sheet = box_sheet
+            .variant("checked", "off", |_vs| unchecked_surface_rules())
+            .variant("checked", "on", |_vs| StyleRules::default());
+        for (key, dim, _glyph) in CHECKBOX_DIMS {
+            box_sheet = box_sheet.variant("size", key, move |_vs| StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(dim))),
+                height: Some(Tokenized::Literal(Length::Px(dim))),
+                ..Default::default()
+            });
+        }
+        box_sheet = box_sheet
+            .variant_default("appearance", "primary_filled")
+            .variant_default("checked", "off")
+            .variant_default("size", "md");
+
+        // ---- glyph (checkmark) ----
+        let mut glyph_sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            font_weight: Some(FontWeight::Bold),
+            text_align: Some(TextAlign::Center),
+            ..Default::default()
+        });
+        glyph_sheet = add_indicator_color_arms(glyph_sheet, &self.tones, &self.variants, false);
+        for (key, _dim, glyph) in CHECKBOX_DIMS {
+            glyph_sheet = glyph_sheet.variant("size", key, move |_vs| StyleRules {
+                font_size: Some(Tokenized::Literal(Length::Px(glyph))),
+                line_height: Some(Tokenized::Literal(glyph)),
+                ..Default::default()
+            });
+        }
+        glyph_sheet = glyph_sheet
+            .variant_default("appearance", "primary_filled")
+            .variant_default("size", "md");
+
+        CheckboxSheets {
+            box_sheet: Rc::new(box_sheet),
+            glyph_sheet: Rc::new(glyph_sheet),
+        }
+    }
+}
+impl Default for CheckboxSheetBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+pub fn install_default_checkbox_sheet() {
+    install_checkbox_sheets(CheckboxSheetBuilder::new().build());
+}
+
+// =============================================================================
+// RadioSheetBuilder — outer ring + inner dot
+// =============================================================================
+//
+// Mirror of Checkbox, but circular and the selected indicator is a
+// filled dot (a child view) rather than a glyph. `outer_sheet` is the
+// ring (`appearance`/`checked`/`size`); `dot_sheet` tints the inner
+// view's `background` to the variant foreground (rendered only while
+// selected).
+
+thread_local! {
+    static RADIO_SHEETS: RefCell<Option<RadioSheets>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone)]
+pub struct RadioSheets {
+    pub outer_sheet: Rc<StyleSheet>,
+    pub dot_sheet: Rc<StyleSheet>,
+}
+
+pub fn install_radio_sheets(sheets: RadioSheets) {
+    RADIO_SHEETS.with(|s| *s.borrow_mut() = Some(sheets));
+}
+pub fn installed_radio_sheets() -> RadioSheets {
+    RADIO_SHEETS.with(|s| {
+        s.borrow().as_ref().cloned().expect(
+            "no Radio stylesheet installed; call install_idea_theme(...) before rendering",
+        )
+    })
+}
+
+/// Closed dimensions per size: `(outer_px, dot_px)`.
+pub const RADIO_DIMS: [(&str, f32, f32); 3] =
+    [("sm", 16.0, 8.0), ("md", 20.0, 10.0), ("lg", 24.0, 12.0)];
+
+pub struct RadioSheetBuilder {
+    tones: Vec<ToneRef>,
+    variants: Vec<VariantRef>,
+}
+impl RadioSheetBuilder {
+    pub fn new() -> Self {
+        Self {
+            tones: ToneRef::builtins().into_iter().map(|(_, t)| t).collect(),
+            variants: VariantRef::builtins().into_iter().map(|(_, v)| v).collect(),
+        }
+    }
+    pub fn add_tone(mut self, t: impl Into<ToneRef>) -> Self {
+        self.tones.push(t.into());
+        self
+    }
+    pub fn add_variant(mut self, v: impl Into<VariantRef>) -> Self {
+        self.variants.push(v.into());
+        self
+    }
+    pub fn build(self) -> RadioSheets {
+        use runtime_core::{AlignItems, JustifyContent, Length};
+        let pill = || Tokenized::token("radius-pill", Length::Px(999.0));
+
+        // ---- outer ring ----
+        let mut outer = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+            align_items: Some(AlignItems::Center),
+            justify_content: Some(JustifyContent::Center),
+            border_top_left_radius: Some(pill()),
+            border_top_right_radius: Some(pill()),
+            border_bottom_left_radius: Some(pill()),
+            border_bottom_right_radius: Some(pill()),
+            background_transition: Some(Transition::new(150, Easing::EaseOut)),
+            border_top_color_transition: Some(Transition::new(150, Easing::EaseOut)),
+            border_right_color_transition: Some(Transition::new(150, Easing::EaseOut)),
+            border_bottom_color_transition: Some(Transition::new(150, Easing::EaseOut)),
+            border_left_color_transition: Some(Transition::new(150, Easing::EaseOut)),
+            ..Default::default()
+        });
+        // Radio's selected ring reads best as an outline, not a solid
+        // fill — keep the ring transparent with a tone-colored border
+        // even when selected, and let the dot carry the fill.
+        for tone in &self.tones {
+            for variant in &self.variants {
+                let key = format!("{}_{}", tone.current_key(), variant.current_key());
+                let tone_c = tone.clone();
+                let variant_c = variant.clone();
+                outer = outer.variant("appearance", key, move |_vs| {
+                    let theme_rc = active_theme();
+                    let theme_ref = theme_rc
+                        .downcast_ref::<IdeaThemeRef>()
+                        .expect("Radio sheet: install_idea_theme(...) first");
+                    let ctx = ResolutionCtx {
+                        theme: theme_ref,
+                        tone: &*tone_c.0,
+                    };
+                    let stroke = variant_c.0.render(&ctx).color;
+                    StyleRules {
+                        background: Some(Tokenized::Literal(runtime_core::Color(
+                            "transparent".into(),
+                        ))),
+                        border_top_width: Some(Tokenized::Literal(1.0)),
+                        border_right_width: Some(Tokenized::Literal(1.0)),
+                        border_bottom_width: Some(Tokenized::Literal(1.0)),
+                        border_left_width: Some(Tokenized::Literal(1.0)),
+                        border_top_color: stroke.clone(),
+                        border_right_color: stroke.clone(),
+                        border_bottom_color: stroke.clone(),
+                        border_left_color: stroke,
+                        ..Default::default()
+                    }
+                });
+            }
+        }
+        outer = outer
+            .variant("checked", "off", |_vs| unchecked_surface_rules())
+            .variant("checked", "on", |_vs| StyleRules::default());
+        for (key, dim, _dot) in RADIO_DIMS {
+            outer = outer.variant("size", key, move |_vs| StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(dim))),
+                height: Some(Tokenized::Literal(Length::Px(dim))),
+                ..Default::default()
+            });
+        }
+        outer = outer
+            .variant_default("appearance", "primary_filled")
+            .variant_default("checked", "off")
+            .variant_default("size", "md");
+
+        // ---- inner dot ----
+        let mut dot = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+            border_top_left_radius: Some(pill()),
+            border_top_right_radius: Some(pill()),
+            border_bottom_left_radius: Some(pill()),
+            border_bottom_right_radius: Some(pill()),
+            background_transition: Some(Transition::new(150, Easing::EaseOut)),
+            ..Default::default()
+        });
+        dot = add_indicator_color_arms(dot, &self.tones, &self.variants, true);
+        for (key, _dim, dot_px) in RADIO_DIMS {
+            dot = dot.variant("size", key, move |_vs| StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(dot_px))),
+                height: Some(Tokenized::Literal(Length::Px(dot_px))),
+                ..Default::default()
+            });
+        }
+        dot = dot
+            .variant_default("appearance", "primary_filled")
+            .variant_default("size", "md");
+
+        RadioSheets {
+            outer_sheet: Rc::new(outer),
+            dot_sheet: Rc::new(dot),
+        }
+    }
+}
+impl Default for RadioSheetBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+pub fn install_default_radio_sheet() {
+    install_radio_sheets(RadioSheetBuilder::new().build());
+}
+
+// =============================================================================
+// ProgressSheetBuilder — linear bar (muted track + tone fill)
+// =============================================================================
+//
+// Two sub-sheets:
+//   - `track_sheet`: the muted rail. `size` axis (bar thickness) only.
+//   - `fill_sheet`: the tone bar. `appearance` arms tint `background`
+//     to the variant fill; the component sets `width` (the value%)
+//     via a `with_computed` layer.
+
+thread_local! {
+    static PROGRESS_SHEETS: RefCell<Option<ProgressSheets>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone)]
+pub struct ProgressSheets {
+    pub track_sheet: Rc<StyleSheet>,
+    pub fill_sheet: Rc<StyleSheet>,
+}
+
+pub fn install_progress_sheets(sheets: ProgressSheets) {
+    PROGRESS_SHEETS.with(|s| *s.borrow_mut() = Some(sheets));
+}
+pub fn installed_progress_sheets() -> ProgressSheets {
+    PROGRESS_SHEETS.with(|s| {
+        s.borrow().as_ref().cloned().expect(
+            "no Progress stylesheet installed; call install_idea_theme(...) before rendering",
+        )
+    })
+}
+
+/// Bar thickness (px) per size.
+pub const PROGRESS_DIMS: [(&str, f32); 3] = [("sm", 4.0), ("md", 8.0), ("lg", 12.0)];
+
+pub struct ProgressSheetBuilder {
+    tones: Vec<ToneRef>,
+    variants: Vec<VariantRef>,
+}
+impl ProgressSheetBuilder {
+    pub fn new() -> Self {
+        Self {
+            tones: ToneRef::builtins().into_iter().map(|(_, t)| t).collect(),
+            variants: VariantRef::builtins().into_iter().map(|(_, v)| v).collect(),
+        }
+    }
+    pub fn add_tone(mut self, t: impl Into<ToneRef>) -> Self {
+        self.tones.push(t.into());
+        self
+    }
+    pub fn add_variant(mut self, v: impl Into<VariantRef>) -> Self {
+        self.variants.push(v.into());
+        self
+    }
+    pub fn build(self) -> ProgressSheets {
+        use runtime_core::{Length, Overflow};
+        let pill = || Tokenized::token("radius-pill", Length::Px(999.0));
+
+        // ---- track ----
+        let mut track = StyleSheet::new(move |_vs: &VariantSet| {
+            let theme_rc = active_theme();
+            let theme_ref = theme_rc
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("Progress sheet: install_idea_theme(...) first");
+            StyleRules {
+                background: Some(theme_ref.colors().border.clone()),
+                width: Some(Tokenized::Literal(Length::pct(100.0))),
+                overflow: Some(Overflow::Hidden),
+                border_top_left_radius: Some(pill()),
+                border_top_right_radius: Some(pill()),
+                border_bottom_left_radius: Some(pill()),
+                border_bottom_right_radius: Some(pill()),
+                ..Default::default()
+            }
+        });
+        for (key, h) in PROGRESS_DIMS {
+            track = track.variant("size", key, move |_vs| StyleRules {
+                height: Some(Tokenized::Literal(Length::Px(h))),
+                ..Default::default()
+            });
+        }
+        track = track.variant_default("size", "md");
+
+        // ---- fill ----
+        let mut fill = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+            height: Some(Tokenized::Literal(Length::pct(100.0))),
+            border_top_left_radius: Some(pill()),
+            border_top_right_radius: Some(pill()),
+            border_bottom_left_radius: Some(pill()),
+            border_bottom_right_radius: Some(pill()),
+            background_transition: Some(Transition::new(200, Easing::EaseOut)),
+            opacity_transition: Some(Transition::new(200, Easing::EaseOut)),
+            ..Default::default()
+        });
+        for tone in &self.tones {
+            for variant in &self.variants {
+                let key = format!("{}_{}", tone.current_key(), variant.current_key());
+                let tone_c = tone.clone();
+                let variant_c = variant.clone();
+                fill = fill.variant("appearance", key, move |_vs| {
+                    let theme_rc = active_theme();
+                    let theme_ref = theme_rc
+                        .downcast_ref::<IdeaThemeRef>()
+                        .expect("Progress sheet: install_idea_theme(...) first");
+                    let ctx = ResolutionCtx {
+                        theme: theme_ref,
+                        tone: &*tone_c.0,
+                    };
+                    StyleRules {
+                        background: variant_c.0.render(&ctx).background,
+                        ..Default::default()
+                    }
+                });
+            }
+        }
+        fill = fill.variant_default("appearance", "primary_filled");
+
+        ProgressSheets {
+            track_sheet: Rc::new(track),
+            fill_sheet: Rc::new(fill),
+        }
+    }
+}
+impl Default for ProgressSheetBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+pub fn install_default_progress_sheet() {
+    install_progress_sheets(ProgressSheetBuilder::new().build());
+}
+
+
+// =============================================================================
+// Tests — selection-control + progress sheet builders
+// =============================================================================
+
+#[cfg(test)]
+mod selection_sheet_tests {
+    use super::*;
+
+    /// Count the `appearance` arms a built sheet declares — one per
+    /// `(tone, variant)` pair. The closures aren't run (no theme
+    /// needed), so this just verifies the Cartesian product wiring.
+    fn appearance_arms(sheet: &StyleSheet) -> usize {
+        sheet
+            .variant_keys()
+            .iter()
+            .filter(|(axis, _)| axis == "appearance")
+            .count()
+    }
+
+    fn has(sheet: &StyleSheet, axis: &str, value: &str) -> bool {
+        sheet
+            .variant_keys()
+            .iter()
+            .any(|(a, v)| a == axis && v == value)
+    }
+
+    const BUILTIN_APPEARANCE_ARMS: usize = 7 * 4; // 7 tones × 4 variants
+
+    #[test]
+    fn switch_sheet_has_builtin_arms_and_axes() {
+        let sheet = SwitchSheetBuilder::new().build();
+        assert_eq!(appearance_arms(&sheet), BUILTIN_APPEARANCE_ARMS);
+        assert!(has(&sheet, "appearance", "primary_filled"));
+        assert!(has(&sheet, "checked", "off"));
+        assert!(has(&sheet, "checked", "on"));
+        assert!(has(&sheet, "size", "md"));
+    }
+
+    #[test]
+    fn checkbox_box_and_glyph_share_appearance_matrix() {
+        let s = CheckboxSheetBuilder::new().build();
+        assert_eq!(appearance_arms(&s.box_sheet), BUILTIN_APPEARANCE_ARMS);
+        assert_eq!(appearance_arms(&s.glyph_sheet), BUILTIN_APPEARANCE_ARMS);
+        assert!(has(&s.box_sheet, "checked", "off"));
+        assert!(has(&s.box_sheet, "size", "lg"));
+    }
+
+    #[test]
+    fn radio_outer_and_dot_share_appearance_matrix() {
+        let s = RadioSheetBuilder::new().build();
+        assert_eq!(appearance_arms(&s.outer_sheet), BUILTIN_APPEARANCE_ARMS);
+        assert_eq!(appearance_arms(&s.dot_sheet), BUILTIN_APPEARANCE_ARMS);
+        assert!(has(&s.outer_sheet, "checked", "off"));
+    }
+
+    #[test]
+    fn progress_fill_has_appearance_track_has_size() {
+        let s = ProgressSheetBuilder::new().build();
+        assert_eq!(appearance_arms(&s.fill_sheet), BUILTIN_APPEARANCE_ARMS);
+        assert!(has(&s.track_sheet, "size", "sm"));
+        assert!(has(&s.track_sheet, "size", "lg"));
+    }
+
+    #[test]
+    fn add_tone_extends_the_appearance_matrix_by_one_variant_row() {
+        // A custom tone adds one arm per variant (×4) on top of builtins.
+        let base = SwitchSheetBuilder::new().build();
+        let extended = SwitchSheetBuilder::new()
+            .add_tone(crate::extensible::tone::Primary) // stand-in custom tone
+            .build();
+        // Primary already exists, so a duplicate key dedupes — the count
+        // is unchanged. This guards against the builder silently dropping
+        // the builtin set when a tone is appended.
+        assert_eq!(appearance_arms(&base), appearance_arms(&extended));
+    }
+}

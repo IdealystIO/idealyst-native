@@ -207,6 +207,24 @@ pub async fn mount(
     surface.configure(&device, &config);
 
     // 3. Build the render-side stack + mount the user app.
+    //
+    // Before mounting, push a fresh `session::REGISTRY` scope so the
+    // embedded app's `session::animated(…)` / `session::epoch_micros()`
+    // calls land in a per-host registry that disappears when this
+    // host's `WebHostHandle` drops. Mirrors the iOS host's scope
+    // handling — see [[project-session-scope-stack]]. Without this,
+    // an outer page that mounts/unmounts an embedded wgpu app
+    // multiple times (carousel, modal-with-preview, tab) would have
+    // the embedded app's session AVs survive each unmount and
+    // resume mid-animation on remount instead of replaying from
+    // initial state.
+    //
+    // Hot-patch rerenders happen INSIDE the existing host (no new
+    // `mount(…)` call), so the scope persists and session-keyed
+    // state survives — preserving the existing
+    // `[[project-session-animated]]` "skip re-running acts on save"
+    // property for the dev edit loop.
+    let session_scope = runtime_core::session::push_scope();
     let mut renderer = Renderer::new(&device, &queue, config.format);
     let mut host = Host::new(skin, profile.color_scheme);
     let logical = (
@@ -262,6 +280,7 @@ pub async fn mount(
         logical,
         canvas: canvas.clone(),
         build_ui,
+        _session_scope: session_scope,
     }));
 
     // 4. Per-frame loop. The closure borrows the inner mut; pointer
@@ -344,6 +363,14 @@ struct HostInner {
     /// Re-callable embedded-app builder. Cached so [`WebHostHandle::resume`]
     /// can re-mount after a [`pause`].
     build_ui: Rc<dyn Fn() -> Element + 'static>,
+    /// RAII guard for this host's `session::REGISTRY` scope. Pushed
+    /// in `mount(…)` so the embedded app's `keyed(…)` AVs and
+    /// `__epoch_us` are isolated to this host's lifetime. Declared
+    /// LAST so on `HostInner` drop the scope is popped AFTER the
+    /// renderer, host (welcome `Owner` + reactive cleanups), wgpu
+    /// surface, etc. drop — same ordering rationale as the iOS
+    /// host (see [[project-session-scope-stack]]).
+    _session_scope: runtime_core::session::ScopeGuard,
 }
 
 /// One installed JS event listener. Drop = `removeEventListener` +

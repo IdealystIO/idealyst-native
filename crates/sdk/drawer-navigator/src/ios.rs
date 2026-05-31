@@ -118,7 +118,7 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
             let m = mount_screen;
             Rc::new(move |name, params| {
                 let result = m(name, params, None);
-                let mut new_options: IosScreenOptions = if let Some(opts) =
+                let new_options: IosScreenOptions = if let Some(opts) =
                     result.options.downcast_ref::<DrawerScreenOptions>()
                 {
                     translate_options(opts)
@@ -129,16 +129,11 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
                 } else {
                     IosScreenOptions::default()
                 };
-                // Default the nav-bar title to the route name when the
-                // author hasn't set one explicitly. UINavigationItem's
-                // title is empty by default and the resulting blank
-                // bar reads as a regression to anyone who navigated
-                // here from web (where the URL is at least visible).
-                // Authors can still override via
-                // `DrawerScreenExt::title(...)`.
-                if new_options.title.is_none() {
-                    new_options.title = Some(name.to_string());
-                }
+                // No title fallback. Showing `route.name()` (the
+                // short kebab identifier) as the nav-bar title is a
+                // misleading crutch — author intent is "no title".
+                // Match Android, which renders an empty Toolbar
+                // title when `options.title` is None.
                 MountResult {
                     node: result.node,
                     scope_id: result.scope_id,
@@ -467,22 +462,10 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
         options: Box<dyn Any>,
     ) {
         let Some(container) = self.container.clone() else { return };
-        let mut ios_opts = options
+        let ios_opts = options
             .downcast_ref::<DrawerScreenOptions>()
             .map(translate_options)
             .unwrap_or_default();
-        // Same title fallback as the `mount_screen` closure in
-        // `init`: when the author hasn't set one, default to the
-        // active route's name. The initial screen takes a different
-        // attach path (`drawer_attach_initial`) that bypasses
-        // `mount_screen`, so without this the very first screen
-        // would render with a blank nav bar even when later pushes
-        // get the fallback.
-        if ios_opts.title.is_none() {
-            if let Some(route_sig) = self.active_route {
-                ios_opts.title = Some(route_sig.get().to_string());
-            }
-        }
         helpers::drawer_attach_initial(backend.mtm(), &container, screen, scope_id, &ios_opts);
     }
 

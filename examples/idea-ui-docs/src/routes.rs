@@ -86,6 +86,14 @@ pub const EXT_DOC_CONTROLS_ROUTE: Route<()> =
     Route::<()>::new("ext-doc-controls", "/extending/doc-controls");
 
 // =============================================================================
+// New components & patterns
+// =============================================================================
+pub const CONTROLS_ROUTE: Route<()> = Route::<()>::new("controls", "/new/controls");
+pub const DATA_ROUTE: Route<()> = Route::<()>::new("data", "/new/data");
+pub const MENUS_ROUTE: Route<()> = Route::<()>::new("menus", "/new/menus");
+pub const COMBOS_ROUTE: Route<()> = Route::<()>::new("combos", "/new/combos");
+
+// =============================================================================
 // Sidebar index — drives both the sidebar and (via lib.rs) the
 // navigator's `.screen(...)` wiring.
 // =============================================================================
@@ -176,6 +184,15 @@ pub const SECTIONS: &[IndexSection] = &[
         entries: &[
             IndexEntry { route: &TABS_ROUTE, label: "Tabs" },
             IndexEntry { route: &COLLAPSIBLE_ROUTE, label: "Collapsible & Accordion" },
+        ],
+    },
+    IndexSection {
+        title: "New components & patterns",
+        entries: &[
+            IndexEntry { route: &CONTROLS_ROUTE, label: "Selection controls" },
+            IndexEntry { route: &DATA_ROUTE, label: "Navigation & data" },
+            IndexEntry { route: &MENUS_ROUTE, label: "Menu & submenu" },
+            IndexEntry { route: &COMBOS_ROUTE, label: "Combinations" },
         ],
     },
     IndexSection {

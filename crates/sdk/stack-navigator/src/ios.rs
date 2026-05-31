@@ -51,12 +51,40 @@ fn translate_options(opts: &StackScreenOptions) -> IosScreenOptions {
         header_background: opts.header_background.clone(),
         header_tint: opts.header_tint.clone(),
         title_color: opts.title_color.clone(),
-        // `unmount_on_blur` is currently a no-op on the iOS stack:
-        // releasing the scope on push leaves UIKit's cached VC
-        // showing stale rendered output, and there's no natural
-        // remount hook on pop. The field is plumbed for API
-        // consistency with drawer/tab; honoring it requires a
-        // remount-on-pop strategy that's deferred to follow-up.
+        // `unmount_on_blur` is currently a no-op on the iOS stack.
+        // The field is plumbed through `StackScreenOptions` for API
+        // surface symmetry with drawer/tab `MountPolicy`, but
+        // honoring it requires three things this layer doesn't have
+        // yet:
+        //
+        //   1. **Mount-params snapshot.** `NavCommand::Push.params`
+        //      is `Box<dyn Any>` — owned, non-`Clone`, consumed by
+        //      the first `mount_screen` call. Remounting after a
+        //      pop needs a stored copy. Easiest fix is to switch
+        //      `Box<dyn Any>` → `Rc<dyn Any>` on the command type
+        //      so the dispatcher can keep a clone alongside the
+        //      `ScreenEntry`; alternatively, expose a framework
+        //      `remount_screen(scope_id)` that re-runs the
+        //      route's original builder with the original payload
+        //      transparently.
+        //   2. **Pop-completion hook that fires BEFORE the
+        //      revealed VC's `viewWillAppear`.** UIKit's
+        //      `UINavigationControllerDelegate::didShow` runs AFTER
+        //      the pop animation — too late to swap the revealed
+        //      VC's content view without a visible flash. The
+        //      cleanest hook is the navigation controller's
+        //      `willShow:animated:` delegate method (already
+        //      implementable since we own the delegate at
+        //      `crates/sdk/ios-navigator-helpers/src/stack.rs:79`).
+        //   3. **Per-`ScreenEntry` remount-needed marker.** The
+        //      helper's `Vec<ScreenEntry>` would need to track a
+        //      `mount_policy: MountPolicy` (or equivalent) per
+        //      entry so the `willShow` hook knows which screens
+        //      to rebuild and which to leave cached.
+        //
+        // Once (1) lands the rest is a straight refactor of
+        // `stack.rs::create_stack`'s `Push`/`Pop` arms. Until then
+        // the field rides as documentation of intent.
         mount_policy: None,
     }
 }

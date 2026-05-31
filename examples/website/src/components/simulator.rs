@@ -313,29 +313,6 @@ pub fn Simulator(props: SimulatorProps) -> Element {
     // once the renderer-no-op bug is understood.
 
     let graphics = runtime_core::primitives::graphics::graphics(move |event: OnReadyEvent| {
-        // Fresh `on_ready` = fresh wgpu surface = a truly fresh mount
-        // of the embedded app (e.g. after a `MountPolicy::LazyDisposing`
-        // remount of the host screen). Wipe any session-keyed AVs the
-        // previous embedded run left in the thread's `session::REGISTRY`
-        // so the new mount's `keyed(…, default)` calls return AVs at
-        // their initial defaults — the welcome demo replays its act
-        // timeline + sun pulse from time=0 instead of resuming
-        // mid-orbit with stale values.
-        //
-        // Scoped to `"welcome_"` so the outer website's session state
-        // (if it grows any in the future) isn't collateral damage.
-        // Hot-patch rerenders DON'T fire `on_ready` (the surface
-        // survives the rerender), so the existing
-        // `[[project_session_animated]]` "skip re-running acts on
-        // save" property is preserved for the dev edit loop.
-        runtime_core::session::clear_prefix("welcome_");
-        // Also drop the session clock so the embedded app's next
-        // `session::epoch_micros()` re-reads `now`. Without this, a
-        // `clear_prefix` alone leaves the epoch frozen at original
-        // install time — the welcome's `raf_loop` body computes
-        // `elapsed = now - epoch` and jumps straight to mid-orbit on
-        // remount, so the "reset" doesn't read as a reset.
-        runtime_core::session::reset_epoch();
         let slot = slot_ready.clone();
         let build_ui = build_ui.clone();
         let painter = painter_for(skin);

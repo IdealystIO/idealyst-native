@@ -11,11 +11,24 @@
 //! drawer). Terminal: drawer SDK no-ops the sidebar (per the
 //! repo's terminal-minimalism convention).
 
-use runtime_core::{component, effect, signal, ui, Color, Element, Ref, Signal, Tokenized};
+use runtime_core::{component, effect, signal, ui, Color, Element, Ref, Route, Signal, Tokenized};
+use runtime_core::primitives::navigator::Screen;
 use drawer_navigator::{
-    DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerScreenExt, MountPolicy, TopSlot,
+    DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerScreenExt, HeaderStyle, MountPolicy,
+    TopSlot,
 };
-use idea_ui::{install_idea_theme, light_theme};
+use idea_ui::{idea_color, install_idea_theme, light_theme};
+
+/// Wrap a page's `Element` in a `Screen` whose nav-bar title is the
+/// sidebar label resolved via [`routes::label_for_route`] (which
+/// covers both `SECTIONS` entries and the off-sidebar tangents like
+/// `/targets` and `/comparisons/*`). Drives both
+/// `UINavigationItem.title` on iOS and Android's `Toolbar` title;
+/// without this the bar renders empty since iOS no longer falls
+/// back to `route.name()`.
+fn titled(route: &'static Route<()>, el: Element) -> Screen {
+    Screen::new(el).title(routes::label_for_route(route.name()))
+}
 
 // `#[macro_use]` lifts the `#[component]`-generated invocation macros
 // from `components::simulator` (and any future siblings) up to
@@ -91,6 +104,18 @@ pub fn app() -> Element {
     responsive::install_responsive_css();
 
     let builder = DrawerNavigator::new(&HOME_ROUTE)
+        // Navigator-level header theming: closures re-resolve their
+        // token reads every time the iOS slot-style Effect / Android
+        // slot_styles dispatcher re-fires on `set_idea_theme` token
+        // swaps. Without this the iOS UINavigationController bar /
+        // Android Toolbar keeps the platform default that was
+        // installed once at create_drawer time and never re-tints.
+        .header(|| HeaderStyle {
+            background: Some((idea_color(|c| c.surface.clone()))()),
+            title: Some((idea_color(|c| c.text.clone()))()),
+            tint: Some((idea_color(|c| c.text.clone()))()),
+            body_background: Some((idea_color(|c| c.background.clone()))()),
+        })
         // Home embeds a wgpu-backed `Simulator` running the welcome
         // demo. Mark it `LazyDisposing` so navigating away tears
         // down the home screen's reactive scope (and with it the
@@ -101,33 +126,32 @@ pub fn app() -> Element {
         // initial state. Models the intended pattern for any
         // graphics-heavy screen in a multi-screen navigator.
         .screen(HOME_ROUTE, move |_| {
-            runtime_core::Screen::new(pages::home::page())
-                .mount_policy(MountPolicy::LazyDisposing)
+            titled(&HOME_ROUTE, pages::home::page()).mount_policy(MountPolicy::LazyDisposing)
         })
-        .screen(FEATURES_ROUTE, move |_| pages::features::page())
-        .screen(CROSS_PLATFORM_ROUTE, move |_| pages::cross_platform::page())
-        .screen(PERFORMANCE_ROUTE, move |_| pages::performance::page())
-        .screen(TYPE_SAFETY_ROUTE, move |_| pages::type_safety::page())
-        .screen(SSR_ROUTE, move |_| pages::ssr::page())
-        .screen(INSTALL_ROUTE, move |_| pages::install::page())
-        .screen(QUICKSTART_ROUTE, move |_| pages::quickstart::page())
-        .screen(CONCEPTS_ROUTE, move |_| pages::concepts::page())
-        .screen(WHY_RUST_ROUTE, move |_| pages::why_rust::page())
-        .screen(DEMO_ROUTE, move |_| pages::demo::page())
-        .screen(BACKENDS_ROUTE, move |_| pages::backends::page())
-        .screen(SERVER_FUNCTIONS_ROUTE, move |_| pages::server_functions::page())
-        .screen(CODE_SPLITTING_ROUTE, move |_| pages::code_splitting::page())
-        .screen(AGENTIC_ROUTE, move |_| pages::agentic::page())
-        .screen(ROADMAP_ROUTE, move |_| pages::roadmap::page())
-        .screen(FURTHER_READING_ROUTE, move |_| pages::further_reading::page())
-        .screen(TARGETS_ROUTE, move |_| pages::targets::page())
-        .screen(COMPARISONS_ROUTE, move |_| pages::comparisons::page())
-        .screen(COMPARE_ELECTRON_ROUTE, move |_| pages::comparisons::electron::page())
-        .screen(COMPARE_REACT_ROUTE, move |_| pages::comparisons::react::page())
-        .screen(COMPARE_DIOXUS_ROUTE, move |_| pages::comparisons::dioxus::page())
-        .screen(COMPARE_FLUTTER_ROUTE, move |_| pages::comparisons::flutter::page())
-        .screen(COMPARE_WEB_FRAMEWORKS_ROUTE, move |_| pages::comparisons::web_frameworks::page())
-        .screen(COMPARE_WHEN_NOT_ROUTE, move |_| pages::comparisons::when_not::page())
+        .screen(FEATURES_ROUTE, move |_| titled(&FEATURES_ROUTE, pages::features::page()))
+        .screen(CROSS_PLATFORM_ROUTE, move |_| titled(&CROSS_PLATFORM_ROUTE, pages::cross_platform::page()))
+        .screen(PERFORMANCE_ROUTE, move |_| titled(&PERFORMANCE_ROUTE, pages::performance::page()))
+        .screen(TYPE_SAFETY_ROUTE, move |_| titled(&TYPE_SAFETY_ROUTE, pages::type_safety::page()))
+        .screen(SSR_ROUTE, move |_| titled(&SSR_ROUTE, pages::ssr::page()))
+        .screen(INSTALL_ROUTE, move |_| titled(&INSTALL_ROUTE, pages::install::page()))
+        .screen(QUICKSTART_ROUTE, move |_| titled(&QUICKSTART_ROUTE, pages::quickstart::page()))
+        .screen(CONCEPTS_ROUTE, move |_| titled(&CONCEPTS_ROUTE, pages::concepts::page()))
+        .screen(WHY_RUST_ROUTE, move |_| titled(&WHY_RUST_ROUTE, pages::why_rust::page()))
+        .screen(DEMO_ROUTE, move |_| titled(&DEMO_ROUTE, pages::demo::page()))
+        .screen(BACKENDS_ROUTE, move |_| titled(&BACKENDS_ROUTE, pages::backends::page()))
+        .screen(SERVER_FUNCTIONS_ROUTE, move |_| titled(&SERVER_FUNCTIONS_ROUTE, pages::server_functions::page()))
+        .screen(CODE_SPLITTING_ROUTE, move |_| titled(&CODE_SPLITTING_ROUTE, pages::code_splitting::page()))
+        .screen(AGENTIC_ROUTE, move |_| titled(&AGENTIC_ROUTE, pages::agentic::page()))
+        .screen(ROADMAP_ROUTE, move |_| titled(&ROADMAP_ROUTE, pages::roadmap::page()))
+        .screen(FURTHER_READING_ROUTE, move |_| titled(&FURTHER_READING_ROUTE, pages::further_reading::page()))
+        .screen(TARGETS_ROUTE, move |_| titled(&TARGETS_ROUTE, pages::targets::page()))
+        .screen(COMPARISONS_ROUTE, move |_| titled(&COMPARISONS_ROUTE, pages::comparisons::page()))
+        .screen(COMPARE_ELECTRON_ROUTE, move |_| titled(&COMPARE_ELECTRON_ROUTE, pages::comparisons::electron::page()))
+        .screen(COMPARE_REACT_ROUTE, move |_| titled(&COMPARE_REACT_ROUTE, pages::comparisons::react::page()))
+        .screen(COMPARE_DIOXUS_ROUTE, move |_| titled(&COMPARE_DIOXUS_ROUTE, pages::comparisons::dioxus::page()))
+        .screen(COMPARE_FLUTTER_ROUTE, move |_| titled(&COMPARE_FLUTTER_ROUTE, pages::comparisons::flutter::page()))
+        .screen(COMPARE_WEB_FRAMEWORKS_ROUTE, move |_| titled(&COMPARE_WEB_FRAMEWORKS_ROUTE, pages::comparisons::web_frameworks::page()))
+        .screen(COMPARE_WHEN_NOT_ROUTE, move |_| titled(&COMPARE_WHEN_NOT_ROUTE, pages::comparisons::when_not::page()))
         .drawer_width(260.0)
         // Leading slot — the persistent sidebar. Runs ONCE at
         // navigator init; survives every screen swap.

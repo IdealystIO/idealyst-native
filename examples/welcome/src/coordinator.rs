@@ -269,26 +269,8 @@ pub fn use_welcome() -> WelcomeRefs {
             // they left off.
             let mut pause_start_us: Option<u64> = None;
             let mut paused_duration_us: u64 = 0;
-            let mut tick_count: u64 = 0;
             raf_loop_scoped(move || {
                 let now = runtime_core::time::now_micros();
-                // TEMPORARY DIAGNOSTIC — log every ~1s so we can see
-                // in `xcrun simctl spawn booted log show --process
-                // Website` whether the welcome's raf_loop is alive
-                // post-LazyDisposing-remount. Planets stay at style
-                // opacity=0 until the first tick that runs past the
-                // is_frame_active gate; if `[welcome-raf]` never
-                // appears in the log after nav-back, the raf_loop
-                // isn't ticking.
-                tick_count = tick_count.wrapping_add(1);
-                if tick_count % 60 == 0 {
-                    runtime_core::scheduling::debug_log(&format!(
-                        "[welcome-raf] tick {} frame_active={} elapsed_ms={:.0}",
-                        tick_count,
-                        runtime_core::is_frame_active(),
-                        ((now.saturating_sub(epoch).saturating_sub(paused_duration_us)) as f64) / 1000.0,
-                    ));
-                }
                 if !runtime_core::is_frame_active() {
                     if pause_start_us.is_none() {
                         pause_start_us = Some(now);

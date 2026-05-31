@@ -14,3 +14,5 @@ pub mod feedback;
 pub mod overlays;
 pub mod stateful;
 pub mod extending;
+pub mod controls;
+pub mod patterns;

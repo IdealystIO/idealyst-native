@@ -545,6 +545,10 @@ pub fn install_default_idea_sheets() {
     crate::extensible::install_default_alert_sheet();
     crate::extensible::install_default_typography_sheet();
     crate::extensible::install_default_icon_button_sheet();
+    crate::extensible::install_default_switch_sheet();
+    crate::extensible::install_default_checkbox_sheet();
+    crate::extensible::install_default_radio_sheet();
+    crate::extensible::install_default_progress_sheet();
 }
 
 /// Build a reactive color closure for a navigator's `header_*` /

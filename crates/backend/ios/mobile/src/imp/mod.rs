@@ -1971,12 +1971,14 @@ impl Backend for IosBackend {
         // Mirror the resolved style into the Taffy node so flex
         // properties (width/height/flex-direction/padding/gap/…) take
         // effect during the layout pass. For Text leaves padding is
-        // stripped: `Text` has no children for padding to position,
-        // and inflating the label's box by padding only produces
-        // empty space around the glyphs that the renderer can't
-        // cleanly inset (UILabel has no native padding). Authors
-        // who want spacing around text wrap the Text in a styled
-        // View — that View's padding works correctly via Taffy.
+        // stripped — the visual padding is handled by the
+        // `IdealystLabel` subclass (its `textInsets` ivar gets the
+        // style's `padding_*`, and `sizeThatFits:` returns
+        // `content + insets`). Taffy's outer size then equals what
+        // measure_fn returns (= sizeThatFits), so the padding is
+        // accounted for exactly once. Stripping Taffy padding here
+        // prevents the double-count that would otherwise inflate
+        // the label's outer rect by 2× the padding.
         let layout_node = self.layout_for_view(view);
         if matches!(node, IosNode::Label(_)) {
             let mut text_style: StyleRules = (**style).clone();

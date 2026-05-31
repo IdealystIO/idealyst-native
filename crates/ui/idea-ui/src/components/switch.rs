@@ -1,37 +1,70 @@
-//! `Switch` — passthrough to the framework's `Toggle` primitive with
-//! an optional inline label.
+//! `Switch` — a styled slide-toggle: a tone-colored pill track with a
+//! white thumb that slides between the off (left) and on (right)
+//! edges.
 //!
 //! ```ignore
 //! ui! {
 //!     Switch(
-//!         label = "Notifications",
+//!         label = Some("Notifications".into()),
 //!         value = on,
 //!         on_change = move |v: bool| on.set(v),
+//!         tone = tone::Success,
 //!     )
 //! }
 //! ```
 //!
-//! No tone/variant/size axes today — the framework `Toggle`'s
-//! appearance is platform-native. When the framework primitive
-//! grows a style hook, this is the place a Tone axis would land.
-//! Until then this lives in the `extensible` namespace for
-//! consistent layout — the API matches the closed-enum
-//! [`crate::components::switch`].
+//! Unlike the framework's raw `toggle` primitive (which renders the
+//! platform-native switch), this is drawn from primitives — `pressable`
+//! track + `view` thumb — so it carries the same `tone` × `variant` ×
+//! `size` styling axes as the rest of idea-ui and looks identical on
+//! every backend. The track fill comes from the installed Switch
+//! stylesheet (override via
+//! `install_switch_sheet(SwitchSheetBuilder::new().add_tone(Hype).build())`);
+//! the thumb's horizontal travel is animated via `AnimProp::TranslateX`.
 
 use std::rc::Rc;
+use std::time::Duration;
 
-use runtime_core::{component, ui, Element, Reactive, Signal};
+use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
+use runtime_core::{
+    component, ui, Effect, Element, IntoElement, Reactive, Ref, Signal, StyleApplication, ViewHandle,
+};
 
-use crate::stylesheets::{FieldLabel, SwitchRow};
+use idea_theme::extensible::{installed_switch_sheet, ToneRef, VariantRef};
+
+use crate::components::ControlSize;
+use crate::stylesheets::{ControlRow, FieldLabel, SwitchThumb};
+
+/// Duration of the thumb-slide / track-color animation.
+const SWITCH_ANIM_MS: u64 = 180;
+
+/// Thumb travel distance (px) per size — the width the thumb slides
+/// from off to on. `track_width − thumb_diameter − 2·inset`, matching
+/// `SWITCH_TRACK_DIMS` / `SwitchThumb` (inset = 2px each edge):
+///   sm: 30 − 14 − 4 = 12   md: 38 − 18 − 4 = 16   lg: 48 − 24 − 4 = 20
+fn travel_for(size: ControlSize) -> f32 {
+    match size {
+        ControlSize::Sm => 12.0,
+        ControlSize::Md => 16.0,
+        ControlSize::Lg => 20.0,
+    }
+}
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct SwitchProps {
-    /// Optional inline label. `Reactive<Option<String>>` — `None` /
-    /// `Some("…")` are static; a `Signal<Option<String>>` or
-    /// `rx!(Some(…))` makes the label text live.
+    /// Optional inline label rendered to the left of the track.
+    /// `Reactive<Option<String>>` — static (`None`/`Some`) or live.
     pub label: Reactive<Option<String>>,
+    /// Controlled bool state. The host owns the signal.
     pub value: Signal<bool>,
+    /// Fires with the new value when the user flips the switch.
     pub on_change: Rc<dyn Fn(bool)>,
+    /// Semantic palette for the "on" track fill. Default Primary.
+    pub tone: ToneRef,
+    /// Surface skeleton for the "on" track fill. Default Filled.
+    pub variant: VariantRef,
+    /// Track + thumb scale. Default Md.
+    pub size: ControlSize,
 }
 
 impl Default for SwitchProps {
@@ -40,6 +73,9 @@ impl Default for SwitchProps {
             label: Reactive::Static(None),
             value: Signal::new(false),
             on_change: Rc::new(|_| {}),
+            tone: ToneRef::default(),
+            variant: VariantRef::default(),
+            size: ControlSize::default(),
         }
     }
 }
@@ -48,16 +84,52 @@ impl Default for SwitchProps {
 pub fn Switch(props: &SwitchProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
+    let size = props.size;
 
-    let label_node = crate::components::optional_reactive_text(props.label.clone(), FieldLabel());
+    // Per-instance appearance/size keys (static). The `checked` axis is
+    // the only reactive piece — it flips the track between the tone
+    // fill and the muted off-track.
+    let appearance = format!("{}_{}", props.tone.key(), props.variant.key());
+    let size_key = size.as_variant_str().to_string();
 
-    match label_node {
+    // --- thumb: a white puck whose TranslateX animates the slide ---
+    let thumb_ref: Ref<ViewHandle> = Ref::new();
+    let travel = travel_for(size);
+    let av: AnimatedValue<f32> = AnimatedValue::new(if value.get() { travel } else { 0.0 });
+    av.bind(thumb_ref, AnimProp::TranslateX);
+    let slide = Effect::new(move || {
+        let target = if value.get() { travel } else { 0.0 };
+        av.animate(TweenTo::new(target, Duration::from_millis(SWITCH_ANIM_MS)).ease_out());
+    });
+    std::mem::forget(slide);
+
+    let thumb_size_key = size_key.clone();
+    let thumb = runtime_core::view(Vec::new())
+        .with_style(move || {
+            StyleApplication::new(SwitchThumb::sheet()).with("size", thumb_size_key.clone())
+        })
+        .bind(thumb_ref)
+        .into_element();
+
+    // --- track: a pressable that toggles, styled by the checked axis ---
+    let track_style = move || {
+        StyleApplication::new(installed_switch_sheet())
+            .with("appearance", appearance.clone())
+            .with("checked", if value.get() { "on" } else { "off" }.to_string())
+            .with("size", size_key.clone())
+    };
+    let toggle = move || (on_change)(!value.get());
+    let track = runtime_core::pressable(vec![thumb], toggle)
+        .with_style(track_style)
+        .into_element();
+
+    match crate::components::optional_reactive_text(props.label.clone(), FieldLabel()) {
         Some(label) => ui! {
-            view(style = SwitchRow()) {
+            view(style = ControlRow()) {
                 label
-                toggle(value = value, on_change = move |v: bool| (on_change)(v))
+                track
             }
         },
-        None => ui! { toggle(value = value, on_change = move |v: bool| (on_change)(v)) },
+        None => track,
     }
 }

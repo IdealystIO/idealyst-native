@@ -27,19 +27,38 @@ pub(crate) fn apply_rules(
 
     // --- Padding.
     //
-    // Never propagated to Android's `View.setPadding(...)`. Padding
-    // is a Taffy concept: it shifts children's computed positions
-    // inside the parent's box, and Taffy writes those shifted
-    // positions to each child's `LayoutParams.leftMargin` /
-    // `topMargin`. Setting Android padding on top would double-shift.
+    // **Container views**: padding is a Taffy concept — it shifts
+    // children's computed positions inside the parent's box, and
+    // Taffy writes those shifted positions to each child's
+    // `LayoutParams.leftMargin` / `topMargin`. Calling Android's
+    // `setPadding` on top would double-shift, so we explicitly write
+    // zero to clear any prior values.
     //
-    // Text views don't get padding either: padding on a Text node
-    // is a no-op at the framework level (see the matching strip in
-    // `set_style` for IosNode::Label and TextView paths). Authors
-    // who want spacing around text wrap the Text in a styled View
-    // — that View's padding correctly shifts the Text child via
-    // Taffy without any Android-side `setPadding` involvement.
-    let want_padding = [0, 0, 0, 0];
+    // **Text views**: padding goes to `TextView.setPadding(L, T, R,
+    // B)` instead. TextView is a Taffy leaf — there are no children
+    // to shift. The mobile backend's `apply_style` (in `imp::mod.rs`)
+    // already strips `padding_*` from the Taffy style it hands to
+    // `LayoutTree::set_style` for TextView nodes, so Taffy's outer
+    // size is just what `measure_textview` returns — which is the
+    // widget's full measured size including its own setPadding.
+    // `setPadding` then insets the glyphs visually within that frame.
+    // (If apply_style ever stops stripping padding for text leaves,
+    // `measure_textview` would have to subtract `getPadding*` to
+    // avoid double-counting — they're paired.)
+    //
+    // Net result: authors can write `padding_*` on a text style and
+    // it just works — no `XStyle + XText` split required.
+    let is_text_view = super::is_text_view(env, &view);
+    let want_padding = if is_text_view {
+        [
+            dp_to_px(env, &view, px_or(rules.padding_left.as_ref(), 0.0)),
+            dp_to_px(env, &view, px_or(rules.padding_top.as_ref(), 0.0)),
+            dp_to_px(env, &view, px_or(rules.padding_right.as_ref(), 0.0)),
+            dp_to_px(env, &view, px_or(rules.padding_bottom.as_ref(), 0.0)),
+        ]
+    } else {
+        [0, 0, 0, 0]
+    };
     let padding_transitions = [
         rules.padding_left_transition,
         rules.padding_top_transition,
@@ -153,8 +172,9 @@ pub(crate) fn apply_rules(
     }
 
     // --- Text color + font size (no-op for views that aren't TextView).
-    let textview_class = env.find_class("android/widget/TextView").unwrap();
-    let is_textview = env.is_instance_of(&view, &textview_class).unwrap_or(false);
+    // Reuse the `is_text_view` we computed above so we don't pay for a
+    // second `find_class` + `is_instance_of` on every styled view.
+    let is_textview = is_text_view;
 
     if is_textview {
         if let Some(c) = rules.color.as_ref().map(|t| t.resolve()) {
@@ -861,6 +881,48 @@ fn apply_drawable_path(
         } else {
             set_corner_radii(env, &drawable_obj, want_radii);
         }
+    }
+    // --- Outline clipping so children honor the rounded background.
+    //
+    // Android renders the GradientDrawable's rounded corners
+    // correctly on the background, but by default the View does NOT
+    // clip its children to that outline — a Card with rounded
+    // corners would still paint its child views as square rectangles
+    // overhanging the rounded edges. The fix is `setClipToOutline(true)`
+    // combined with the default `ViewOutlineProvider` (already
+    // installed by `setBackground(GradientDrawable)`), which derives
+    // a rounded-rect outline from the background drawable.
+    //
+    // Only enable when there's a corner radius — `clipToOutline` on
+    // a 0-radius view is harmless but the extra outline-pass cost
+    // isn't free, and we'd lose the ability to render shadows /
+    // overflow content on unrounded views.
+    let has_any_radius = want_radii.iter().any(|r| *r > 0.0);
+    if has_any_radius {
+        let _ = env.call_method(
+            &view,
+            "setClipToOutline",
+            "(Z)V",
+            &[JValue::Bool(1)],
+        );
+    }
+    // Mirror corner radii onto the per-side border drawable (if
+    // installed) so its `drawRoundRect`/edge-clipping path respects
+    // the same curves the GradientDrawable background paints with.
+    // Without this, border foregrounds would paint square corners
+    // overlapping the rounded background.
+    if let Some(border_drawable) = state.border_drawable.clone() {
+        let _ = env.call_method(
+            border_drawable.as_obj(),
+            "setCornerRadii",
+            "(FFFF)V",
+            &[
+                JValue::Float(want_radii[0]),
+                JValue::Float(want_radii[1]),
+                JValue::Float(want_radii[2]),
+                JValue::Float(want_radii[3]),
+            ],
+        );
     }
 }
 

@@ -721,6 +721,66 @@ stylesheet! {
 }
 
 // =============================================================================
+// Selection controls — Switch thumb + shared label row
+// =============================================================================
+//
+// The tone-bearing surfaces (Switch track, Checkbox box, Radio ring)
+// live in idea-theme's extensible sheet builders so apps can register
+// custom tones. The thumb and the label-row layout carry no tone, so
+// they're plain static stylesheets here.
+
+stylesheet! {
+    pub SwitchThumb<IdeaThemeRef> {
+        base(t) {
+            background: Color("#ffffff".into()),
+            border_radius: Tokenized::token("radius-pill", Length::Px(999.0)),
+            shadow: runtime_core::Shadow {
+                x: 0.0,
+                y: 1.0,
+                blur: 3.0,
+                color: Color("rgba(15, 17, 21, 0.30)".into()),
+            },
+        }
+        // Diameter = track height − 4 (2px inset on each edge). Mirrors
+        // `SWITCH_TRACK_DIMS` in idea-theme; keep in lockstep.
+        variant size {
+            sm(_t) { width: 14.0, height: 14.0 }
+            #[default]
+            md(_t) { width: 18.0, height: 18.0 }
+            lg(_t) { width: 24.0, height: 24.0 }
+        }
+    }
+}
+
+// A horizontal label row shared by Switch / Checkbox / Radio: control
+// on one side, label text on the other, vertically centered.
+stylesheet! {
+    pub ControlRow<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+        }
+    }
+}
+
+// Toast stack — the column of floating toasts inside the ToastHost
+// overlay. Capped width so a long message wraps rather than spanning
+// the viewport.
+stylesheet! {
+    pub ToastStack<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding: Tokenized::token("spacing-md", Length::Px(12.0)),
+            width: 360.0,
+            max_width: Length::pct(100.0),
+        }
+    }
+}
+
+// =============================================================================
 // Select — trigger + menu surfaces
 // =============================================================================
 //
@@ -1925,6 +1985,320 @@ stylesheet! {
         }
         transitions {
             border_top_color: 250ms EaseInOut,
+        }
+    }
+}
+
+// =============================================================================
+// Tooltip — compact high-contrast bubble
+// =============================================================================
+
+stylesheet! {
+    pub TooltipBubble<IdeaThemeRef> {
+        base(t) {
+            background: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            color: Tokenized::token("color-text-inverse", Color("#ffffff".into())),
+            padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
+            font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
+            max_width: 260.0,
+            shadow: runtime_core::Shadow {
+                x: 0.0, y: 4.0, blur: 12.0, color: Color("rgba(15, 17, 21, 0.22)".into()),
+            },
+        }
+    }
+}
+
+// =============================================================================
+// Menu — panel rows, section labels, separators
+// =============================================================================
+// The panel surface reuses `SelectMenu`. These style the contents.
+
+stylesheet! {
+    pub MenuItemRow<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            background: Color("transparent".into()),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+            text_align: TextAlign::Left,
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
+        }
+        state hovered(t) {
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+        }
+        transitions { background: 120ms EaseOut }
+    }
+}
+
+stylesheet! {
+    pub MenuLabel<IdeaThemeRef> {
+        base(t) {
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: Tokenized::token("typography-overline-size", Length::Px(11.0)),
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: 0.8,
+            text_transform: TextTransform::Uppercase,
+            padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
+        }
+    }
+}
+
+stylesheet! {
+    pub MenuSeparator<IdeaThemeRef> {
+        base(t) {
+            height: 1.0,
+            width: Length::pct(100.0),
+            background: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            margin_top: 4.0,
+            margin_bottom: 4.0,
+        }
+    }
+}
+
+// Trailing chevron for SubMenu rows.
+stylesheet! {
+    pub MenuChevron<IdeaThemeRef> {
+        base(t) {
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+        }
+    }
+}
+
+// =============================================================================
+// Breadcrumbs
+// =============================================================================
+
+stylesheet! {
+    pub BreadcrumbRow<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+        }
+    }
+}
+
+stylesheet! {
+    pub BreadcrumbItem<IdeaThemeRef> {
+        base(t) {
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
+            background: Color("transparent".into()),
+            padding_vertical: 0.0,
+            padding_horizontal: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
+        }
+        variant current {
+            #[default]
+            off(_t) {}
+            on(t) {
+                color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+                font_weight: FontWeight::SemiBold,
+            }
+        }
+        state hovered(t) { color: Tokenized::token("color-text", Color("#1a1a1f".into())) }
+        transitions { color: 120ms EaseOut }
+    }
+}
+
+stylesheet! {
+    pub BreadcrumbSeparator<IdeaThemeRef> {
+        base(t) {
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
+        }
+    }
+}
+
+// =============================================================================
+// Pagination
+// =============================================================================
+
+stylesheet! {
+    pub PaginationRow<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+        }
+    }
+}
+
+stylesheet! {
+    pub PageButton<IdeaThemeRef> {
+        base(t) {
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            min_width: 32.0,
+            height: 32.0,
+            padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            background: Color("transparent".into()),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
+            font_weight: FontWeight::Medium,
+            text_align: TextAlign::Center,
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(t) {
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+                color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
+            }
+        }
+        state hovered(t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
+        state disabled(_t) { opacity: 0.4 }
+        transitions { background: 120ms EaseOut, color: 120ms EaseOut }
+    }
+}
+
+// =============================================================================
+// List / ListItem
+// =============================================================================
+
+stylesheet! {
+    pub ListContainer<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Column,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_top_width: 1.0,
+            border_right_width: 1.0,
+            border_bottom_width: 1.0,
+            border_left_width: 1.0,
+            border_top_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_right_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_left_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_top_left_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_top_right_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_bottom_left_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            border_bottom_right_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            overflow: runtime_core::Overflow::Hidden,
+        }
+    }
+}
+
+stylesheet! {
+    pub ListItemRow<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
+            background: Color("transparent".into()),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+            text_align: TextAlign::Left,
+        }
+        variant divided {
+            #[default]
+            off(_t) {}
+            on(t) {
+                border_top_width: 1.0,
+                border_top_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            }
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
+        }
+        state hovered(t) { background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())) }
+        transitions { background: 120ms EaseOut }
+    }
+}
+
+// =============================================================================
+// Grid — N equal columns via chunked flex rows
+// =============================================================================
+
+stylesheet! {
+    pub GridContainer<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Column,
+            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
+        }
+        variant gap {
+            none(_t) { gap: Length::Px(0.0) }
+            xs(t)    { gap: Tokenized::token("spacing-xs", Length::Px(4.0)) }
+            sm(t)    { gap: Tokenized::token("spacing-sm", Length::Px(8.0)) }
+            #[default]
+            md(t)    { gap: Tokenized::token("spacing-md", Length::Px(12.0)) }
+            lg(t)    { gap: Tokenized::token("spacing-lg", Length::Px(16.0)) }
+            xl(t)    { gap: Tokenized::token("spacing-xl", Length::Px(24.0)) }
+        }
+    }
+}
+
+stylesheet! {
+    pub GridRow<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Stretch,
+            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
+        }
+        variant gap {
+            none(_t) { gap: Length::Px(0.0) }
+            xs(t)    { gap: Tokenized::token("spacing-xs", Length::Px(4.0)) }
+            sm(t)    { gap: Tokenized::token("spacing-sm", Length::Px(8.0)) }
+            #[default]
+            md(t)    { gap: Tokenized::token("spacing-md", Length::Px(12.0)) }
+            lg(t)    { gap: Tokenized::token("spacing-lg", Length::Px(16.0)) }
+            xl(t)    { gap: Tokenized::token("spacing-xl", Length::Px(24.0)) }
+        }
+    }
+}
+
+// Each grid cell flexes equally and is allowed to shrink below content.
+stylesheet! {
+    pub GridCell<IdeaThemeRef> {
+        base(_t) {
+            flex_grow: 1.0,
+            flex_basis: 0.0,
+            min_width: 0.0,
+        }
+    }
+}
+
+// =============================================================================
+// Link — inline navigational text
+// =============================================================================
+
+stylesheet! {
+    pub LinkText<IdeaThemeRef> {
+        base(t) {
+            color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+            font_weight: FontWeight::Medium,
+        }
+        state hovered(t) { color: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())) }
+        transitions { color: 120ms EaseOut }
+    }
+}
+
+// =============================================================================
+// Image — clipping box
+// =============================================================================
+
+stylesheet! {
+    pub ImageBox<IdeaThemeRef> {
+        base(_t) {
+            overflow: runtime_core::Overflow::Hidden,
         }
     }
 }

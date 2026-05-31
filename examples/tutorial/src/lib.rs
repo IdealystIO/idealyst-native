@@ -14,9 +14,32 @@
 //! the step body. Each step ends with a prev/next bar derived from the
 //! linear order in `routes`.
 
-use runtime_core::{component, signal, ui, Element, Ref, Signal};
-use drawer_navigator::{install_navigator_pin_width, DrawerBuilder, DrawerHandle, DrawerNavigator};
+use runtime_core::{component, signal, ui, Element, Ref, Route, Signal};
+use runtime_core::primitives::navigator::Screen;
+use drawer_navigator::{
+    install_navigator_pin_width, DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerScreenExt,
+};
 use idea_ui::{install_idea_theme, light_theme};
+
+/// Wrap a lesson's `Element` in a `Screen` whose nav-bar title is
+/// the sidebar `IndexEntry::label` for the route. Without this the
+/// iOS `UINavigationItem.title` / Android `Toolbar` title render
+/// empty (iOS no longer falls back to `route.name()`).
+fn titled(route: &'static Route<()>, el: Element) -> Screen {
+    let label = label_for_route(route.name()).unwrap_or_else(|| route.name());
+    Screen::new(el).title(label)
+}
+
+fn label_for_route(route_name: &'static str) -> Option<&'static str> {
+    for section in routes::SECTIONS {
+        for entry in section.entries {
+            if entry.route.name() == route_name {
+                return Some(entry.label);
+            }
+        }
+    }
+    None
+}
 
 mod common;
 mod lessons;
@@ -44,27 +67,27 @@ pub fn app() -> Element {
     install_navigator_pin_width(900.0);
 
     let builder = DrawerNavigator::new(&HOME_ROUTE)
-        .screen(HOME_ROUTE, move |_| lessons::home::page())
+        .screen(HOME_ROUTE, move |_| titled(&HOME_ROUTE, lessons::home::page()))
         // Reactivity
-        .screen(RX_SIGNALS_ROUTE, move |_| lessons::reactivity::signals())
-        .screen(RX_EFFECTS_ROUTE, move |_| lessons::reactivity::effects())
-        .screen(RX_DERIVED_ROUTE, move |_| lessons::reactivity::derived())
-        .screen(RX_BATCHING_ROUTE, move |_| lessons::reactivity::batching())
+        .screen(RX_SIGNALS_ROUTE, move |_| titled(&RX_SIGNALS_ROUTE, lessons::reactivity::signals()))
+        .screen(RX_EFFECTS_ROUTE, move |_| titled(&RX_EFFECTS_ROUTE, lessons::reactivity::effects()))
+        .screen(RX_DERIVED_ROUTE, move |_| titled(&RX_DERIVED_ROUTE, lessons::reactivity::derived()))
+        .screen(RX_BATCHING_ROUTE, move |_| titled(&RX_BATCHING_ROUTE, lessons::reactivity::batching()))
         // Stylesheets
-        .screen(ST_TOKENS_ROUTE, move |_| lessons::stylesheets::tokens())
-        .screen(ST_STYLESHEETS_ROUTE, move |_| lessons::stylesheets::stylesheets())
-        .screen(ST_VARIANTS_ROUTE, move |_| lessons::stylesheets::variants())
+        .screen(ST_TOKENS_ROUTE, move |_| titled(&ST_TOKENS_ROUTE, lessons::stylesheets::tokens()))
+        .screen(ST_STYLESHEETS_ROUTE, move |_| titled(&ST_STYLESHEETS_ROUTE, lessons::stylesheets::stylesheets()))
+        .screen(ST_VARIANTS_ROUTE, move |_| titled(&ST_VARIANTS_ROUTE, lessons::stylesheets::variants()))
         // Media queries
-        .screen(MQ_BREAKPOINTS_ROUTE, move |_| lessons::media_queries::breakpoints())
-        .screen(MQ_MOBILE_FIRST_ROUTE, move |_| lessons::media_queries::mobile_first())
-        .screen(MQ_SIGNAL_ROUTE, move |_| lessons::media_queries::signal_escape())
+        .screen(MQ_BREAKPOINTS_ROUTE, move |_| titled(&MQ_BREAKPOINTS_ROUTE, lessons::media_queries::breakpoints()))
+        .screen(MQ_MOBILE_FIRST_ROUTE, move |_| titled(&MQ_MOBILE_FIRST_ROUTE, lessons::media_queries::mobile_first()))
+        .screen(MQ_SIGNAL_ROUTE, move |_| titled(&MQ_SIGNAL_ROUTE, lessons::media_queries::signal_escape()))
         // Accessibility
-        .screen(A11Y_DEFAULTS_ROUTE, move |_| lessons::accessibility::defaults())
-        .screen(A11Y_MODEL_ROUTE, move |_| lessons::accessibility::model())
+        .screen(A11Y_DEFAULTS_ROUTE, move |_| titled(&A11Y_DEFAULTS_ROUTE, lessons::accessibility::defaults()))
+        .screen(A11Y_MODEL_ROUTE, move |_| titled(&A11Y_MODEL_ROUTE, lessons::accessibility::model()))
         // Advanced (scaffolded)
-        .screen(ADV_BACKENDS_ROUTE, move |_| lessons::advanced::custom_backends())
-        .screen(ADV_CLI_ROUTE, move |_| lessons::advanced::interactive_cli())
-        .screen(ADV_EMBEDDED_ROUTE, move |_| lessons::advanced::embedded())
+        .screen(ADV_BACKENDS_ROUTE, move |_| titled(&ADV_BACKENDS_ROUTE, lessons::advanced::custom_backends()))
+        .screen(ADV_CLI_ROUTE, move |_| titled(&ADV_CLI_ROUTE, lessons::advanced::interactive_cli()))
+        .screen(ADV_EMBEDDED_ROUTE, move |_| titled(&ADV_EMBEDDED_ROUTE, lessons::advanced::embedded()))
         .drawer_width(280.0)
         .leading_with(move |slot| shell::sidebar(slot, is_dark));
 

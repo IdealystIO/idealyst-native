@@ -159,10 +159,19 @@ fn stack_options_to_android(opts: Option<Box<StackScreenOptions>>) -> AndroidScr
         header_tint: opts.header_tint.clone(),
         title_color: opts.title_color.clone(),
         // `unmount_on_blur` is a stack-only knob; AndroidScreenOptions
-        // shares its mount_policy with drawer/tab. The Android stack
-        // helper today doesn't honor unmount-on-push semantics — the
-        // field rides here for surface symmetry and is wired through
-        // for follow-up when the helper grows a remount-on-pop path.
+        // shares its `mount_policy` slot with drawer/tab. The Android
+        // stack helper today doesn't honor unmount-on-push semantics —
+        // same blocker as iOS (`crates/sdk/stack-navigator/src/ios.rs`,
+        // `translate_options`): `NavCommand::Push.params` is
+        // non-`Clone` `Box<dyn Any>`, so the dispatcher has no way to
+        // remember mount params for a remount-on-pop pass. The Android
+        // helper would additionally need a "before the popped fragment
+        // is revealed" hook similar to UIKit's `willShow:animated:`
+        // delegate — likely a custom `FragmentTransaction.runOnCommit`
+        // wedge so the fragment whose scope was released gets a fresh
+        // mount before its view becomes visible. The field rides here
+        // for surface symmetry; honoring it lands in the same patch
+        // that lands iOS's path.
         mount_policy: None,
     }
 }

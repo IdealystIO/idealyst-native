@@ -104,8 +104,24 @@ pub use components::alert::{Alert, AlertProps};
 pub use components::avatar::{Avatar, AvatarColor, AvatarProps, AvatarSize};
 pub use components::badge::{Badge, BadgeProps};
 pub use components::button::{Button, ButtonProps};
+pub use components::breadcrumbs::{Breadcrumbs, BreadcrumbsProps, Crumb};
 pub use components::card::{Card, CardPadding, CardProps};
 pub use components::center::{Center, CenterProps};
+pub use components::checkbox::{Checkbox, CheckboxProps};
+pub use components::grid::{Grid, GridProps};
+pub use components::image::{ImageView, ImageViewProps};
+pub use components::link::{TextLink, TextLinkProps};
+pub use components::list::{List, ListItem, ListItemProps, ListProps};
+pub use components::menu::{
+    Menu, MenuEntry, MenuItem, MenuItemProps, MenuLabel, MenuLabelProps, MenuProps, MenuSeparator,
+    MenuSeparatorProps, SubMenu, SubMenuProps,
+};
+pub use components::pagination::{Pagination, PaginationProps};
+pub use components::tooltip::{Tooltip, TooltipProps};
+pub use components::radio::{
+    Radio, RadioAxis, RadioGroup, RadioGroupProps, RadioOption, RadioProps,
+};
+pub use components::ControlSize;
 pub use components::collapsible::{
     Accordion, AccordionExpand, AccordionItem, AccordionProps, Collapsible, CollapsibleProps,
     CollapsibleTransition,
@@ -115,6 +131,7 @@ pub use components::field::{Field, FieldProps, FieldSize};
 pub use components::icon_button::{IconButton, IconButtonProps, IconButtonSize};
 pub use components::modal::{Modal, ModalProps};
 pub use components::popover::{Popover, PopoverProps};
+pub use components::progress::{Progress, ProgressProps};
 pub use components::select::{Select, SelectOption, SelectProps, SelectSize};
 pub use components::skeleton::{Skeleton, SkeletonProps, SkeletonWidth};
 pub use components::spacer::{Spacer, SpacerProps};
@@ -126,6 +143,11 @@ pub use components::switch::{Switch, SwitchProps};
 pub use components::table::{Table, TableCell, TableCellProps, TableProps, TableRow, TableRowProps};
 pub use components::tabs::{Tab, Tabs, TabsProps};
 pub use components::tag::{Tag, TagProps};
+pub use components::textarea::{Textarea, TextareaProps};
+pub use components::toast::{
+    dismiss_toast, push_toast, push_toast_with, ToastCard, ToastCardProps, ToastEntry, ToastHost,
+    ToastHostProps, ToastPlacement,
+};
 pub use components::typography::{Typography, TypographyProps};
 
 // Historical note: an earlier `Btn` alias for `Button` existed because the

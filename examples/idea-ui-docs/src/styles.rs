@@ -30,11 +30,25 @@ stylesheet! {
 // Centered, padded reading column for each page.
 stylesheet! {
     pub PagePad<()> {
+        // Mobile-first: 16pt padding + 20pt gap on phones so the
+        // reading column doesn't waste half the screen on chrome.
+        // Each successive breakpoint relaxes back toward the
+        // desktop-comfortable 48pt / 28pt. Defaults map to Tailwind-
+        // style buckets (sm ≥ 640dp, md ≥ 768dp) — see
+        // `runtime_core::breakpoint::Breakpoints::DEFAULT`.
         base(_t) {
             flex_direction: FlexDirection::Column,
             max_width: 880.0,
             align_self: runtime_core::AlignSelf::Center,
             width: Length::pct(100.0),
+            padding: 16.0,
+            gap: 20.0,
+        }
+        breakpoint sm(_t) {
+            padding: 24.0,
+            gap: 24.0,
+        }
+        breakpoint md(_t) {
             padding: 48.0,
             gap: 28.0,
         }
@@ -52,7 +66,18 @@ stylesheet! {
             padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
             gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             flex_direction: FlexDirection::Column,
-            min_height: Length::pct(100.0),
+            // NB: do NOT set `min_height: Percent(100)` here. Taffy
+            // clamps SidebarBody to the scroll view's height when
+            // min_height: 100% is set, so the bottom of the sidebar
+            // (overflow children — the dark-mode toggle, the last
+            // few nav links) renders outside SidebarBody's frame.
+            // They're still visible (scroll content extends past
+            // SidebarBody), but iOS UIView hit-testing won't descend
+            // into children outside the parent's frame — taps on the
+            // bottom half of the sidebar fall through to nothing.
+            // The SDK's scroll_view wrapper carries the same
+            // `color-surface` background so removing the min_height
+            // here doesn't leave a transparent gap.
         }
         transitions {
             background: 250ms EaseInOut,

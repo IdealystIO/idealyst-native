@@ -87,7 +87,7 @@ pub fn install_field_input_sheet(sheet: Rc<StyleSheet>) {
     FIELD_INPUT_SHEET.with(|s| *s.borrow_mut() = Some(sheet));
 }
 
-fn field_input_sheet() -> Rc<StyleSheet> {
+pub(crate) fn field_input_sheet() -> Rc<StyleSheet> {
     FIELD_INPUT_SHEET.with(|s| {
         if s.borrow().is_none() {
             let tones: Vec<ToneRef> = ToneRef::builtins().into_iter().map(|(_, t)| t).collect();
@@ -97,7 +97,7 @@ fn field_input_sheet() -> Rc<StyleSheet> {
     })
 }
 
-fn field_help_sheet() -> Rc<StyleSheet> {
+pub(crate) fn field_help_sheet() -> Rc<StyleSheet> {
     FIELD_HELP_SHEET.with(|s| {
         if s.borrow().is_none() {
             let tones: Vec<ToneRef> = ToneRef::builtins().into_iter().map(|(_, t)| t).collect();
