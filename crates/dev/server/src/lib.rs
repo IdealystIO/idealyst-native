@@ -23,7 +23,8 @@ use runtime_core::{
     Backend, Color, ColorScheme, StateBits, StyleRules, TextHandle, TextOps, ViewHandle, ViewOps,
 };
 use wire::{
-    Command, EventArgs, HandlerId, NodeId, StyleId, WireColor, WireStateBit,
+    Command, EventArgs, HandlerId, NodeId, ScopeId, StyleId, WireColor, WireDrawerSide,
+    WireDrawerType, WireMountPolicy, WireScreenOptions, WireStateBit,
 };
 
 pub mod convert_out;
@@ -479,6 +480,27 @@ impl WireRecordingBackend {
             .register::<P, _>(factory);
     }
 
+    /// Hand a recording `NavigatorHandler` (e.g. the drawer SDK's
+    /// `recording` handler) a cloneable, microtask-safe emit handle for
+    /// navigator wire commands. The handler grabs one during `init` and
+    /// uses it to emit `CreateDrawerNavigator` / `DrawerAttachSidebar` /
+    /// `NavigatorAttachInitial` / `NavigatorSelect` / `OpenDrawer` … both
+    /// synchronously during `init` and later from the control dispatcher
+    /// closure it installs (which runs outside any backend borrow, on a
+    /// user event — long after `init` returned).
+    ///
+    /// Why a separate handle rather than `&mut self`: the dispatcher
+    /// outlives `init` and never gets a `&mut WireRecordingBackend`, and
+    /// the deferred sidebar build runs from a stored timer. Both need to
+    /// emit without a backend reference. [`NavRecorder`] closes over a
+    /// `Weak` to the recorder state so a dispatcher captured by
+    /// `NavigatorControl` degrades to a no-op after a sidecar respawn
+    /// instead of keeping a dead recorder alive (same posture as the
+    /// `RECORDER_HANDLE` Weak the animation path uses).
+    pub fn nav_recorder(&self) -> NavRecorder {
+        NavRecorder { state: Rc::downgrade(&self.inner) }
+    }
+
     /// Public handle to the per-navigator URL stack mirror. Send + Sync
     /// — safe to share with the file-watch / rebuild thread so it can
     /// serialize the current navigation hierarchy before `exec`.
@@ -821,6 +843,138 @@ impl WireRecordingBackend {
         state.styles_by_content.insert(content_hash, id);
         state.emit(Command::RegisterStyle { id, rules: wire });
         id
+    }
+}
+
+/// Cloneable, microtask-safe emit handle for navigator wire commands,
+/// handed to recording `NavigatorHandler`s via
+/// [`WireRecordingBackend::nav_recorder`].
+///
+/// Every method funnels through [`RecorderState::emit`] (same as the
+/// `Backend` methods), so the [`SceneModel`] mirror — and therefore the
+/// reconnect snapshot — stays consistent with the live command log.
+///
+/// Holds a `Weak` to the recorder state: a `NavRecorder` captured by a
+/// long-lived dispatcher closure (installed on `NavigatorControl`) must
+/// not keep a dead recorder alive across a sidecar respawn. On a dead
+/// handle every method is a silent no-op — acceptable because a respawn
+/// rebuilds the whole scene anyway.
+#[derive(Clone)]
+pub struct NavRecorder {
+    state: std::rc::Weak<RefCell<RecorderState>>,
+}
+
+impl NavRecorder {
+    /// Run `f` against the live recorder state, or no-op if the recorder
+    /// has been dropped (respawn).
+    fn with_state<R>(&self, f: impl FnOnce(&mut RecorderState) -> R) -> Option<R> {
+        self.state.upgrade().map(|rc| f(&mut rc.borrow_mut()))
+    }
+
+    /// Emit `CreateDrawerNavigator`, minting an identity-deduped node.
+    /// Call this from the handler's `init` (under the navigator's
+    /// ambient identity) so the node id stays stable across sidecar
+    /// respawns — the same property that makes hot reload incremental.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_drawer_navigator(
+        &self,
+        initial_route: &str,
+        initial_path: &str,
+        side: WireDrawerSide,
+        drawer_type: WireDrawerType,
+        drawer_width: f32,
+        swipe_to_open: bool,
+        mount_policy: WireMountPolicy,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> NodeId {
+        self.with_state(|state| {
+            let id = WireRecordingBackend::mint_node(state);
+            let wire_a11y = state.wire_a11y(a11y);
+            state.emit(Command::CreateDrawerNavigator {
+                id,
+                initial_route: initial_route.to_string(),
+                initial_path: initial_path.to_string(),
+                side,
+                drawer_type,
+                drawer_width,
+                swipe_to_open,
+                mount_policy,
+                a11y: wire_a11y,
+            });
+            id
+        })
+        .unwrap_or(NodeId(0))
+    }
+
+    /// Emit `DrawerAttachSidebar` — `sidebar` is the root node of the
+    /// already-recorded sidebar primitive subtree (built via
+    /// `host.build_node`).
+    pub fn attach_sidebar(&self, navigator: NodeId, sidebar: NodeId) {
+        self.with_state(|s| s.emit(Command::DrawerAttachSidebar { navigator, sidebar }));
+    }
+
+    /// Emit `NavigatorAttachInitial` for the navigator's initial screen.
+    pub fn attach_initial(
+        &self,
+        navigator: NodeId,
+        screen: NodeId,
+        scope: ScopeId,
+        options: WireScreenOptions,
+    ) {
+        self.with_state(|s| {
+            s.emit(Command::NavigatorAttachInitial { navigator, screen, scope, options })
+        });
+    }
+
+    /// Emit `NavigatorSelect` — swap a drawer/tab navigator's single
+    /// visible screen without tearing down a stack.
+    pub fn select(
+        &self,
+        navigator: NodeId,
+        screen: NodeId,
+        scope: ScopeId,
+        options: WireScreenOptions,
+        url: String,
+    ) {
+        self.with_state(|s| {
+            s.emit(Command::NavigatorSelect { navigator, screen, scope, options, url })
+        });
+    }
+
+    /// Emit `OpenDrawer`.
+    pub fn open_drawer(&self, navigator: NodeId) {
+        self.with_state(|s| s.emit(Command::OpenDrawer { navigator }));
+    }
+
+    /// Emit `CloseDrawer`.
+    pub fn close_drawer(&self, navigator: NodeId) {
+        self.with_state(|s| s.emit(Command::CloseDrawer { navigator }));
+    }
+
+    /// Emit `ToggleDrawer`.
+    pub fn toggle_drawer(&self, navigator: NodeId) {
+        self.with_state(|s| s.emit(Command::ToggleDrawer { navigator }));
+    }
+
+    /// Intern `rules` to a `StyleId` (emitting `RegisterStyle` on first
+    /// sight) and emit the matching per-slot `Apply*Style` command. SDK
+    /// slot names map to the wire's navigator/drawer style channels;
+    /// unknown slots are ignored (matches every backend handler's
+    /// no-op-on-unknown-slot contract).
+    pub fn apply_slot_style(&self, navigator: NodeId, slot: &str, rules: &Rc<StyleRules>) {
+        self.with_state(|state| {
+            let style = WireRecordingBackend::intern_style(state, rules);
+            let cmd = match slot {
+                "header" => Command::ApplyNavigatorHeaderStyle { navigator, style },
+                "title" => Command::ApplyNavigatorTitleStyle { navigator, style },
+                "button" => Command::ApplyNavigatorButtonStyle { navigator, style },
+                "body" => Command::ApplyNavigatorBodyStyle { navigator, style },
+                "sidebar" => Command::ApplyDrawerSidebarStyle { navigator, style },
+                "scrim" => Command::ApplyDrawerScrimStyle { navigator, style },
+                _ => return,
+            };
+            state.emit(cmd);
+        });
     }
 }
 

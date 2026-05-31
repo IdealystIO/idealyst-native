@@ -14,12 +14,27 @@ license.workspace = true
 # Single-crate cfg-gated layout. App bootstrap:
 # `drawer_navigator::register(&mut backend)`.
 
+[features]
+# Recording handler for the runtime-server sidecar's recorder backend
+# (`dev-server::WireRecordingBackend`). Enabled only in host-side
+# sidecar builds (build-runtime-server) — emits navigator wire commands
+# instead of rendering. Off by default so device/web/SSR builds never
+# pull the host-side dev-server dep.
+runtime-server = ["dep:dev-server", "dep:wire"]
+
 [dependencies]
 runtime-core = { workspace = true }
 # Backend-neutral (runtime-core only). The generic `chrome` handler
 # stamps the shared `ui-nav-*` classes + ships `NAVIGATOR_LAYOUT_CSS`,
 # the single source of truth shared with the live web navigator.
 css = { workspace = true }
+
+# Recording handler deps (feature `runtime-server`, host-side only).
+# `dev-server` owns `WireRecordingBackend` + `NavRecorder`; `wire` is
+# the shared command/enum vocabulary the recorder emits. Optional +
+# off by default — a wasm/iOS/Android/macOS build never compiles them.
+dev-server = { workspace = true, optional = true }
+wire = { workspace = true, optional = true }
 
 # Only the SSR integration tests need backend-ssr (to register the
 # generic `chrome` handler on a concrete SsrBackend). The handler is

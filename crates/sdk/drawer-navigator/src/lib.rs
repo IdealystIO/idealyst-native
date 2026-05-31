@@ -1036,6 +1036,16 @@ pub use web::register;
 // SSR backend today) via `drawer_navigator::chrome::register`.
 pub mod chrome;
 
+// Recording handler for the runtime-server sidecar's recorder backend
+// (`dev-server::WireRecordingBackend`). Emits navigator wire commands
+// instead of rendering, so a `DrawerNavigator` app works under
+// `idealyst dev` (runtime-server, the default) and can be
+// headless-screenshotted. Host-side only — gated behind the
+// `runtime-server` feature (off by default; enabled by the sidecar
+// build). Registered via `drawer_navigator::recording::register(recorder)`.
+#[cfg(feature = "runtime-server")]
+pub mod recording;
+
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 mod android;
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
