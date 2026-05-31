@@ -9,7 +9,8 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, derived, switch, ui, Color, Element, IntoElement, StyleApplication, Tokenized,
+    component, derived, switch, ui, Color, Element, IntoElement, SafeAreaSides, StyleApplication,
+    Tokenized,
 };
 use drawer_navigator::SlotProps;
 use idea_ui::{
@@ -20,8 +21,9 @@ use idea_ui::{
 use crate::routes::SECTIONS;
 use crate::styles::{
     Callout as CalloutBox, CodePanel as CodePanelBox, CodeText, ControlsBox, DemoRow,
-    DemoSurface as DemoSurfaceBox, NavLink, NavLinkActive, PagePad, PreviewBox, PreviewSlot,
-    ScreenScroll, SidebarBody, SidebarFooter, SidebarHeader, SidebarSection,
+    DemoSurface as DemoSurfaceBox, NavLink, NavLinkActive, NavLinkText, NavLinkTextActive,
+    PagePad, PreviewBox, PreviewSlot, ScreenScroll, SidebarBody, SidebarFooter, SidebarHeader,
+    SidebarSection,
 };
 
 // =============================================================================
@@ -30,8 +32,21 @@ use crate::styles::{
 // =============================================================================
 
 pub fn layout(content: Element) -> Element {
+    // Each page's body lives inside a vertical scroll view. On web the
+    // browser provides page scroll for free, but on native (iOS /
+    // Android) an overflowing flex view just clips — there's no scroll
+    // affordance unless we explicitly wrap the content in a scroll
+    // primitive. `scroll_view` defaults to vertical, which is what
+    // every page needs.
+    //
+    // `.safe_area(BOTTOM)` adds the device's bottom inset (Android
+    // gesture bar / iOS home indicator) to the scroll content so the
+    // last page section isn't sitting under the system chrome. Top is
+    // handled by the navigator's toolbar, which has its own
+    // status-bar inset; horizontal insets aren't an issue here
+    // because the page never bleeds into them.
     let style = ScreenScroll();
-    ui! { view(style = style) { content } }
+    ui! { scroll_view(style = style) { content }.safe_area(SafeAreaSides::BOTTOM) }
 }
 
 // =============================================================================
@@ -99,18 +114,33 @@ fn nav_link(
     active_route: runtime_core::Signal<&'static str>,
 ) -> Element {
     let route_for_match: &'static str = route.name();
-    let style = NavLink().active(derived(move || {
+    // Container styles (padding, background, border-radius) on the
+    // wrapping view; text styles (color, font) on the text. Splitting
+    // is required because Android `apply_style` doesn't propagate
+    // padding to `setPadding` — padding works only via Taffy shifting
+    // child positions, so a text node (no children) gets zero
+    // padding on native. See styles.rs for the full rationale.
+    let container_style = NavLink().active(derived(move || {
         if active_route.get() == route_for_match {
             NavLinkActive::On
         } else {
             NavLinkActive::Off
         }
     }));
+    let text_style = NavLinkText().active(derived(move || {
+        if active_route.get() == route_for_match {
+            NavLinkTextActive::On
+        } else {
+            NavLinkTextActive::Off
+        }
+    }));
     let label_text = label.to_string();
 
     ui! {
         link(route = route, params = ()) {
-            text(style = style) { label_text }
+            view(style = container_style) {
+                text(style = text_style) { label_text }
+            }
         }
     }
 }

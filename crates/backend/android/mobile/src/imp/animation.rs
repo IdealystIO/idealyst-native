@@ -137,6 +137,54 @@ pub(crate) fn start_padding_animator(
 }
 
 /// Stroke animator: `GradientDrawable.setStroke` takes
+/// Per-side border animator. Interpolates four widths + four colors
+/// in lockstep and re-invokes `RustBorderDrawable.update(...)` on
+/// each tick. Width arrays + color arrays are in
+/// (top, right, bottom, left) order — same convention the per-side
+/// drawable uses. All eight axes interpolate at the same fraction;
+/// the framework's per-side `border_*_transition` props get
+/// collapsed to a single timing at the caller (matches the iOS path,
+/// which doesn't animate borders at all).
+pub(crate) fn start_border_animator(
+    env: &mut JNIEnv,
+    drawable: &GlobalRef,
+    from_w: [i32; 4],
+    to_w: [i32; 4],
+    from_c: [i32; 4],
+    to_c: [i32; 4],
+    transition: Transition,
+) -> Option<GlobalRef> {
+    let class = env.find_class("io/idealyst/runtime/Animators").ok()?;
+    let interpolator = build_interpolator(env, transition.easing)?;
+    let from_w_arr = env.new_int_array(4).ok()?;
+    env.set_int_array_region(&from_w_arr, 0, &from_w).ok()?;
+    let to_w_arr = env.new_int_array(4).ok()?;
+    env.set_int_array_region(&to_w_arr, 0, &to_w).ok()?;
+    let from_c_arr = env.new_int_array(4).ok()?;
+    env.set_int_array_region(&from_c_arr, 0, &from_c).ok()?;
+    let to_c_arr = env.new_int_array(4).ok()?;
+    env.set_int_array_region(&to_c_arr, 0, &to_c).ok()?;
+    let anim = env
+        .call_static_method(
+            &class,
+            "animateBorder",
+            "(Lio/idealyst/runtime/RustBorderDrawable;[I[I[I[IJLandroid/view/animation/Interpolator;)Landroid/animation/ValueAnimator;",
+            &[
+                JValue::Object(&drawable.as_obj()),
+                JValue::Object(&from_w_arr),
+                JValue::Object(&to_w_arr),
+                JValue::Object(&from_c_arr),
+                JValue::Object(&to_c_arr),
+                JValue::Long(transition.duration_ms as i64),
+                JValue::Object(&interpolator),
+            ],
+        )
+        .ok()?
+        .l()
+        .ok()?;
+    env.new_global_ref(&anim).ok()
+}
+
 /// `(width, color)` together so we route through a Kotlin helper
 /// that owns a ValueAnimator and re-invokes `setStroke` on each
 /// tick using a separate `ArgbEvaluator` for the color and a linear

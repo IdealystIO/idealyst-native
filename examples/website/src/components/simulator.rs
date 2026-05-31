@@ -279,35 +279,63 @@ pub fn Simulator(props: SimulatorProps) -> Element {
     let slot: shared::Slot<host_wgpu::HostHandle> = shared::new();
     let slot_ready = slot.clone();
     let slot_resize = slot.clone();
-    let slot_focus = slot.clone();
     let slot_lost = slot;
 
-    // Pause the embedded wgpu app when the user navigates away from
-    // this screen, resume when they return. `use_focus()` reads the
-    // current screen's route at build time + the navigator's
-    // active-route signal; the effect re-fires whenever focus flips.
-    // No-op on targets where the host couldn't mount (stub
-    // HostHandle's pause/resume are empty).
-    let is_focused = runtime_core::primitives::navigator::use_focus();
-    let focus_effect = runtime_core::Effect::new(move || {
-        let focused = is_focused();
-        shared::with_ref(&slot_focus, |handle| {
-            if let Some(h) = handle {
-                if focused { h.resume() } else { h.pause() }
-            }
-        });
-    });
-    // The Effect handle disposes its subscription on drop. The
-    // surrounding screen scope is what should own its lifetime, but
-    // there's no scope binding to attach to here — the component
-    // returns an Element tree, not a scope handle. `mem::forget`
-    // leaks the handle, which is the framework's standard pattern
-    // for "I want this effect to live as long as the current
-    // screen". The screen's eventual drop reclaims the underlying
-    // reactive state via `release_screen`.
-    std::mem::forget(focus_effect);
+    // KNOWN ISSUE — auto-pause via `use_focus()` → `host.pause()`
+    // disabled until the wgpu Host's renderer state-reset bug is
+    // understood. Symptom: after `Host::unmount()` + `mount()`,
+    // Taffy layout compute succeeds (root=390×844, children=6,
+    // child0=390×844 all confirmed via diagnostic), but the
+    // `Renderer::walk` produces no visible draws — the surface
+    // stays at the white clear color forever. Tried: clearing
+    // `presence_tweens`, `animator`, `sticky_registry`,
+    // `graphics_cache`, `image_cache`, text-shaper `buffers`,
+    // `session::REGISTRY`, calling `surface.configure()` on resume.
+    // None of those individually fix it.
+    //
+    // The cooperative approach already in place delivers the
+    // observable pause/resume behavior the auto-pause was meant
+    // to deliver, without the renderer bug:
+    //
+    //   - `host-ios-mobile::draw_frame` skips Metal encode +
+    //     present via `is_view_visible()` while the MetalView is
+    //     hidden (`setHidden:true` on a navigator-persistent
+    //     screen). GPU work pauses.
+    //
+    //   - The welcome app's `raf_loop_scoped` body reads
+    //     `runtime_core::is_frame_active()` and skips advancement
+    //     when painting is paused — and tracks paused duration so
+    //     positions resume exactly where they left off.
+    //
+    // The wgpu Host stays mounted across navigation; its renderer
+    // state is preserved; the canvas content is intact on return.
+    // `IosHostHandle::pause` / `resume` stays exposed for opt-in
+    // once the renderer-no-op bug is understood.
 
     let graphics = runtime_core::primitives::graphics::graphics(move |event: OnReadyEvent| {
+        // Fresh `on_ready` = fresh wgpu surface = a truly fresh mount
+        // of the embedded app (e.g. after a `MountPolicy::LazyDisposing`
+        // remount of the host screen). Wipe any session-keyed AVs the
+        // previous embedded run left in the thread's `session::REGISTRY`
+        // so the new mount's `keyed(…, default)` calls return AVs at
+        // their initial defaults — the welcome demo replays its act
+        // timeline + sun pulse from time=0 instead of resuming
+        // mid-orbit with stale values.
+        //
+        // Scoped to `"welcome_"` so the outer website's session state
+        // (if it grows any in the future) isn't collateral damage.
+        // Hot-patch rerenders DON'T fire `on_ready` (the surface
+        // survives the rerender), so the existing
+        // `[[project_session_animated]]` "skip re-running acts on
+        // save" property is preserved for the dev edit loop.
+        runtime_core::session::clear_prefix("welcome_");
+        // Also drop the session clock so the embedded app's next
+        // `session::epoch_micros()` re-reads `now`. Without this, a
+        // `clear_prefix` alone leaves the epoch frozen at original
+        // install time — the welcome's `raf_loop` body computes
+        // `elapsed = now - epoch` and jumps straight to mid-orbit on
+        // remount, so the "reset" doesn't read as a reset.
+        runtime_core::session::reset_epoch();
         let slot = slot_ready.clone();
         let build_ui = build_ui.clone();
         let painter = painter_for(skin);

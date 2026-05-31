@@ -119,6 +119,49 @@ pub fn clear() {
     REGISTRY.with(|r| r.borrow_mut().clear());
 }
 
+/// Drop the cached session epoch so the next [`epoch_micros`]
+/// call re-initialises from `time::now_micros()`. Used together
+/// with [`clear_prefix`] when a host wants the next mount of an
+/// embedded app to behave like a brand-new session — the welcome
+/// demo's session-relative `timeline!` acts replay from time=0
+/// and the `raf_loop_scoped` body's `elapsed_us = now - epoch`
+/// starts at zero again.
+///
+/// Pair `clear_prefix("…")` (wipes the app's AVs) with this
+/// (wipes the session clock) for a complete embedded-app reset.
+/// Without this call, a `clear_prefix` alone would leave the
+/// epoch frozen at its original install time — the welcome's
+/// `session::after_ms(glare_start, …)` collapses to delay=0 and
+/// the raf body's elapsed jumps straight to the middle of the
+/// orbit, defeating the visible-reset.
+pub fn reset_epoch() {
+    REGISTRY.with(|r| {
+        r.borrow_mut().remove("__epoch_us");
+    });
+}
+
+/// Clear every keyed entry whose key starts with `prefix`. Lets a
+/// nested embedded app (the welcome demo running inside a
+/// `Simulator` chassis on the website) wipe just its own AVs
+/// without touching the outer app's session-keyed state.
+///
+/// Pair with the `MountPolicy::LazyDisposing` navigator path: the
+/// outer scope tears down on blur, and on the next fresh mount the
+/// embedded app's `use_*` constructor calls `clear_prefix("…")`
+/// so its `keyed(…, default)` calls return fresh AVs at default
+/// values — the welcome's act timeline replays from time=0, the
+/// sun/planet `raf_loop` starts from the new session epoch, and
+/// the demo truly resets instead of resuming mid-orbit.
+///
+/// Also clears the internal `__epoch_us` if its key matches the
+/// prefix — embedded apps that pass their own prefix won't normally
+/// hit that, but the API doesn't special-case `__`-prefixed keys.
+pub fn clear_prefix(prefix: &str) {
+    REGISTRY.with(|r| {
+        r.borrow_mut().retain(|key, _| !key.starts_with(prefix))
+    });
+}
+
 pub fn get_or_init<T: 'static + Clone>(
     key: &'static str,
     init: impl FnOnce() -> T,

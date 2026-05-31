@@ -38,6 +38,46 @@ pub fn register_extensions(backend: &mut backend_web::WebBackend) {
     backend_web::install_viewport_observer();
 }
 
+// On native, `idea_codeblock::register` and `table::register` are
+// generic no-ops over any `Backend` — the SDKs build their node trees
+// directly from view + text primitives instead of via `Element::External`,
+// so there's nothing per-backend to install. The calls are kept for
+// symmetry with the web path; if either SDK ever grows native-specific
+// setup, this is where it lands.
+
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
+    drawer_navigator::register(backend);
+    idea_codeblock::register(backend);
+    table::register(backend);
+}
+
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
+    drawer_navigator::register(backend);
+    idea_codeblock::register(backend);
+    table::register(backend);
+}
+
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
+    drawer_navigator::register(backend);
+    idea_codeblock::register(backend);
+    table::register(backend);
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "ios"),
+    not(target_os = "android"),
+    not(target_os = "macos"),
+))]
+pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
+    drawer_navigator::register(backend);
+    idea_codeblock::register(backend);
+    table::register(backend);
+}
+
 use routes::{
     ALERT_ROUTE, AVATAR_ROUTE, BADGE_ROUTE, BUTTON_ROUTE, CARD_ROUTE, CENTER_ROUTE,
     COLLAPSIBLE_ROUTE, CUSTOM_THEME_ROUTE, DIVIDER_ROUTE, DRAWER_ROUTE, EXT_BUILD_COMPONENT_ROUTE,

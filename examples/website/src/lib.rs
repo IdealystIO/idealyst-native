@@ -12,7 +12,9 @@
 //! repo's terminal-minimalism convention).
 
 use runtime_core::{component, effect, signal, ui, Color, Element, Ref, Signal, Tokenized};
-use drawer_navigator::{DrawerBuilder, DrawerHandle, DrawerNavigator, TopSlot};
+use drawer_navigator::{
+    DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerScreenExt, MountPolicy, TopSlot,
+};
 use idea_ui::{install_idea_theme, light_theme};
 
 // `#[macro_use]` lifts the `#[component]`-generated invocation macros
@@ -89,7 +91,19 @@ pub fn app() -> Element {
     responsive::install_responsive_css();
 
     let builder = DrawerNavigator::new(&HOME_ROUTE)
-        .screen(HOME_ROUTE, move |_| pages::home::page())
+        // Home embeds a wgpu-backed `Simulator` running the welcome
+        // demo. Mark it `LazyDisposing` so navigating away tears
+        // down the home screen's reactive scope (and with it the
+        // `IosHostHandle` driving the embedded wgpu device + render
+        // loop + welcome's `raf_loop`). Navigating back rebuilds
+        // the screen from scratch — a fresh `Graphics::on_ready`
+        // mounts a new host, and the welcome timeline replays from
+        // initial state. Models the intended pattern for any
+        // graphics-heavy screen in a multi-screen navigator.
+        .screen(HOME_ROUTE, move |_| {
+            runtime_core::Screen::new(pages::home::page())
+                .mount_policy(MountPolicy::LazyDisposing)
+        })
         .screen(FEATURES_ROUTE, move |_| pages::features::page())
         .screen(CROSS_PLATFORM_ROUTE, move |_| pages::cross_platform::page())
         .screen(PERFORMANCE_ROUTE, move |_| pages::performance::page())

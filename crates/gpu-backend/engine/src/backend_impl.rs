@@ -313,6 +313,36 @@ impl WgpuBackend {
         self.roots.last().cloned()
     }
 
+    /// Drop transient per-tree state — presence tweens, animator,
+    /// sticky registry — so a subsequent `Host::mount(build_ui)`
+    /// doesn't carry stale references into the new tree. Called by
+    /// [`Host::unmount`]. GPU pipelines and shared device/queue
+    /// resources survive.
+    ///
+    /// `presence_tweens` is the load-bearing one: it holds strong
+    /// `WgpuNode` refs and is iterated by [`tick_presence_tweens`]
+    /// every frame. Without this clear, the per-frame tick keeps
+    /// advancing tweens on ghosts of the previous tree, and the
+    /// renderer's walk over the new root's subtree never visits
+    /// them — net effect is the renderer emits no draws for what
+    /// the user expects to see.
+    pub fn reset_per_tree_state(&mut self) {
+        self.presence_tweens.clear();
+        self.animator.clear();
+        self.sticky_registry = crate::sticky::StickyRegistry::new();
+        self.active_spinner_count = 0;
+        // `text.buffers` is keyed by Taffy `LayoutNode` IDs. Taffy's
+        // SlotMap recycles freed IDs, so without this clear the new
+        // tree's text nodes may inherit stale `BufferEntry` values
+        // from the old tree (the keys collide). That's the highest-
+        // probability cause of "everything rendered fine on initial
+        // mount, but a remount renders a blank canvas" — the walk
+        // reads `text.buffers.get(&data.layout)` and either skips
+        // (if the stale entry is unusable) or stages the old glyph
+        // data which doesn't match the new viewport.
+        self.text.borrow_mut().buffers.clear();
+    }
+
     /// Install a Taffy measure callback that asks glyphon for the
     /// wrapped extent given the constraint Taffy passes in. Captures
     /// `Weak`s to the shared text + font_system stores so the
@@ -1241,6 +1271,10 @@ impl Backend for WgpuBackend {
                 AnimProp::ScaleY => ov.scale_y = Some(value),
                 AnimProp::RotateZ => ov.rotate_z = Some(value),
                 AnimProp::ZIndex => ov.z_index = Some(value),
+                // No layout-affecting animation on gpu-backend yet —
+                // snap-only (the property value lands on the next
+                // layout pass via normal style application).
+                AnimProp::MaxHeight => {}
                 // Wrong family. Same posture as the iOS / web f32
                 // path — silently ignored; misrouting is a
                 // diagnostic concern, not a runtime crash.
@@ -1434,7 +1468,8 @@ impl Backend for WgpuBackend {
                 | AnimProp::ScaleX
                 | AnimProp::ScaleY
                 | AnimProp::RotateZ
-                | AnimProp::ZIndex => {}
+                | AnimProp::ZIndex
+                | AnimProp::MaxHeight => {}
             }
         }
         request_redraw();

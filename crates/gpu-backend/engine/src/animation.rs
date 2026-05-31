@@ -311,6 +311,15 @@ impl Animator {
         self.scalars.retain(|k, _| k.node != node);
         self.colors.retain(|k, _| k.node != node);
     }
+
+    /// Drop every tween of every kind. Called from
+    /// `WgpuBackend::reset_per_tree_state` so a host's
+    /// unmount/remount cycle doesn't leave the per-frame `tick`
+    /// advancing tweens on ghosts of the previous tree.
+    pub fn clear(&mut self) {
+        self.scalars.clear();
+        self.colors.clear();
+    }
 }
 
 fn color_close(a: [f32; 4], b: [f32; 4]) -> bool {

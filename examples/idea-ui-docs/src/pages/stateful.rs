@@ -139,10 +139,13 @@ pub fn collapsible() -> Element {
         ) {
             H2(content = "Collapsible".to_string())
             P(content = "Click the header to toggle. The body always stays mounted; \
-                visibility flows through stylesheet variants selected by the \
-                `transition` prop (`Smooth` is default; `Snap` skips animation).".to_string())
-            Section(title = "Smooth (default)".to_string()) {
-                collapsible_demo_smooth()
+                visibility flows through stylesheet variants or a measured animation \
+                depending on the `transition` prop.".to_string())
+            Section(title = "Measured (default)".to_string()) {
+                P(content = "Cross-platform smooth. Measures the body's natural content \
+                    height via `ViewHandle::on_layout`, then animates `MaxHeight` from \
+                    0 → measured (and back) via the framework's animator. No fixed cap.".to_string())
+                collapsible_demo_measured()
             }
             Section(title = "Snap".to_string()) {
                 collapsible_demo_snap()
@@ -225,12 +228,12 @@ ui! {
                     Prop {
                         name: "transition",
                         ty: "CollapsibleTransition",
-                        desc: "Smooth (default) — animates max-height + opacity + padding over ~240ms. Snap — no animation, state changes apply in one frame.",
+                        desc: "Measured (default) — animates AnimProp::MaxHeight 0↔measured-content-height via the framework animator. Snap — instant toggle.",
                     },
                     Prop {
-                        name: "max_height",
-                        ty: "f32",
-                        desc: "Smooth-only max-height cap (px). Default 400. Visible portion of the open animation is content-height / max_height of the duration — tune closer to actual content height for the smoothest feel.",
+                        name: "duration_ms",
+                        ty: "u32",
+                        desc: "Open/close animation duration in milliseconds. Default 240. Only meaningful when transition = Measured (Snap is instant). Keep close to 240 — chrome transitions (padding, opacity) are baked into the stylesheet at that timing.",
                     },
                     Prop {
                         name: "children",
@@ -258,9 +261,9 @@ ui! {
                         desc: "Per-item open/close animation. Same vocabulary as Collapsible.",
                     },
                     Prop {
-                        name: "max_height",
-                        ty: "f32",
-                        desc: "Forwarded to each item's Collapsible. See Collapsible.max_height.",
+                        name: "duration_ms",
+                        ty: "u32",
+                        desc: "Per-item duration in milliseconds. Forwarded to each Collapsible. See Collapsible.duration_ms.",
                     },
                     Prop {
                         name: "open",
@@ -277,36 +280,41 @@ ui! {
 
             Callout(label = "Transition extensibility".to_string()) {
                 P(content = "`CollapsibleTransition` is the extensibility seam — \
-                    `Smooth` animates max-height + opacity + padding via the framework's \
-                    transition primitives, `Snap` skips animation. New flavors land here \
-                    by adding stylesheet variants in idea-ui; the component picks the \
-                    right one per the prop. Apps that want reduced-motion can wire \
-                    `prefers-reduced-motion` to `CollapsibleTransition::Snap` themselves.".to_string())
+                    `Measured` measures the body via `ViewHandle::on_layout` and \
+                    animates `AnimProp::MaxHeight` to the natural content height \
+                    via the framework's animator; `Snap` skips animation. New \
+                    flavors land here by adding stylesheet variants in idea-ui; \
+                    the component picks the right one per the prop. Apps that \
+                    want reduced-motion can wire `prefers-reduced-motion` to \
+                    `CollapsibleTransition::Snap` themselves.".to_string())
             }
         }
     })
 }
 
-fn collapsible_demo_smooth() -> Element {
+fn collapsible_demo_measured() -> Element {
     let open = signal!(false);
     let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| open.set(v));
     ui! {
         DemoSurface {
             Collapsible(
-                title = "Smooth — click to expand".to_string(),
+                title = "Measured — click to expand".to_string(),
                 value = open,
                 on_change = on_change,
-                transition = CollapsibleTransition::Smooth,
+                transition = CollapsibleTransition::Measured,
             ) {
                 Stack(gap = StackGap::Sm) {
                     Typography(
-                        content = "Max-height, opacity, and padding all animate over \
-                            ~240ms. The body grows into place rather than snapping.".to_string(),
+                        content = "The body's natural height is measured via the \
+                            framework's `ViewHandle::on_layout` (web `ResizeObserver`, \
+                            iOS `layoutSubviews`, Android `OnLayoutChangeListener`). \
+                            The animator tweens `AnimProp::MaxHeight` between 0 and \
+                            that measured value.".to_string(),
                     )
                     Typography(
-                        content = "Content taller than ~2000px animates smoothly to the \
-                            cap, then snaps the remainder — fine for typical disclosure \
-                            content.".to_string(),
+                        content = "Content changes re-measure automatically — the next \
+                            toggle uses the new natural height. No fixed cap, so any \
+                            content size animates smoothly end-to-end.".to_string(),
                         muted = true,
                     )
                 }

@@ -20,6 +20,7 @@ mod style;
 // imported directly by their callers.
 pub(crate) mod view_rect;
 
+use crate::phase_timer;
 use runtime_core::primitives::navigator::NavigatorOps;
 use runtime_core::{Backend, ButtonHandle, StyleRules};
 
@@ -118,6 +119,25 @@ pub(crate) struct NodeAnim {
     // Held so corner/stroke animators can mutate one drawable
     // instead of `setBackground`-ing a fresh one every tick.
     pub(crate) drawable: Option<GlobalRef>,
+
+    /// Persistent `RustBorderDrawable` set as the view's foreground
+    /// when any of `border_{top,right,bottom,left}_width` is non-
+    /// zero. The framework's per-side border API doesn't map onto
+    /// Android's `GradientDrawable.setStroke` (uniform-only), so we
+    /// paint per-side via this custom Drawable. Stashed across
+    /// apply-style calls so repeated style applies mutate the same
+    /// instance instead of churning the GC. `None` until the first
+    /// border is requested.
+    pub(crate) border_drawable: Option<GlobalRef>,
+    /// Last-applied per-side border state (px widths, packed ARGB
+    /// colors). Used to short-circuit the JNI call when nothing
+    /// changed. Stored as an option array so a `0`-width side with a
+    /// stale color doesn't trip an unnecessary update.
+    pub(crate) last_border_widths: [Option<i32>; 4],
+    pub(crate) last_border_colors: [Option<i32>; 4],
+    /// Running ValueAnimator driving per-side border interpolation.
+    /// Cancelled + restarted on each transitionable border change.
+    pub(crate) anim_border: Option<GlobalRef>,
 
     /// Per-stop sRGB colors for the node's `background_gradient`.
     /// Stashed by `apply_gradient_to_drawable` so the per-frame
@@ -293,6 +313,197 @@ pub(crate) fn density_of(env: &mut JNIEnv, view: &JObject) -> Option<f32> {
     Some(density)
 }
 
+/// `true` when `view`'s direct parent is a `RustDrawerLayout` (or any
+/// `DrawerLayout` subclass) AND `view` is the drawer panel — i.e. the
+/// drawer-side child, NOT the body content. We approximate "drawer
+/// panel" with "any direct child of a DrawerLayout" because the body
+/// (added via `attachContent` with MATCH_PARENT) already has a fixed
+/// LP that matches what Taffy would write — so skipping it here is a
+/// no-op visually, and a stricter check (read `lp.gravity != 0`) costs
+/// JNI round-trips we don't need.
+fn is_drawer_panel_child(env: &mut JNIEnv, view: &JObject) -> bool {
+    let parent = match env
+        .call_method(view, "getParent", "()Landroid/view/ViewParent;", &[])
+        .and_then(|v| v.l())
+    {
+        Ok(p) if !p.is_null() => p,
+        _ => return false,
+    };
+    // Cache the `DrawerLayout` class globally. `find_class` is one of
+    // the slow JNI calls (string lookup through the classloader graph,
+    // plus a local-ref allocation per call). This function fires per
+    // view per layout pass — for 200 views and a 5ms find_class that's
+    // a 1-second tax on each pass. Cache once into a JVM GlobalRef and
+    // re-use forever.
+    DRAWER_LAYOUT_CLASS.with(|slot| {
+        let mut borrow = slot.borrow_mut();
+        if borrow.is_none() {
+            if let Ok(class) = env.find_class("androidx/drawerlayout/widget/DrawerLayout") {
+                if let Ok(g) = env.new_global_ref(&class) {
+                    *borrow = Some(g);
+                }
+            }
+        }
+        let Some(g) = borrow.as_ref() else {
+            return false;
+        };
+        // SAFETY: `JClass` and `JObject` share representation; the
+        // GlobalRef wraps a JObject we know is a class. We need to
+        // pass it back to `is_instance_of` which takes a `JClass<'_>`.
+        let class_obj = g.as_obj();
+        let class: &jni::objects::JClass = unsafe {
+            std::mem::transmute::<&JObject, &jni::objects::JClass>(class_obj)
+        };
+        env.is_instance_of(&parent, class).unwrap_or(false)
+    })
+}
+
+thread_local! {
+    /// Cached `androidx.drawerlayout.widget.DrawerLayout` class
+    /// reference. Lazily filled on the first `is_drawer_panel_child`
+    /// call; subsequent calls skip the `find_class` round trip.
+    /// `RefCell` (vs `Cell`) because `GlobalRef` isn't `Copy`.
+    static DRAWER_LAYOUT_CLASS: std::cell::RefCell<Option<GlobalRef>> =
+        std::cell::RefCell::new(None);
+
+    /// Cached `android.view.ViewGroup$MarginLayoutParams` class. Same
+    /// reasoning as `DRAWER_LAYOUT_CLASS` — `find_class` is one of the
+    /// slow JNI calls, and `apply_frame_to_layout_params` is the
+    /// per-view-per-pass hot path that needs the MLP class.
+    static MARGIN_LP_CLASS: std::cell::RefCell<Option<GlobalRef>> =
+        std::cell::RefCell::new(None);
+
+    /// Display density (dp → px scaling), constant for the lifetime of
+    /// the Activity. Cached after the first successful read; reused on
+    /// every dp-to-px conversion in the per-view layout path. The 5
+    /// JNI calls behind a fresh density read add up fast on big trees.
+    static CACHED_DENSITY: std::cell::Cell<Option<f32>> =
+        std::cell::Cell::new(None);
+}
+
+/// Get the display density, computing on the first call and reusing
+/// the cached value afterwards. Density is per-display and we don't
+/// support display changes mid-mount, so the cache lifetime equals
+/// the Activity lifetime — see `CACHED_DENSITY` for the thread-local
+/// hand-off. Falls back to 1.0 (caller-side default) on JNI failure;
+/// the layout writes are best-effort.
+fn cached_density(env: &mut JNIEnv, view: &JObject) -> f32 {
+    if let Some(d) = CACHED_DENSITY.with(|c| c.get()) {
+        return d;
+    }
+    let d = density_of(env, view).unwrap_or(1.0);
+    CACHED_DENSITY.with(|c| c.set(Some(d)));
+    d
+}
+
+/// Install a generic `View.measure(...)`-based Taffy measure_fn on
+/// the given view's layout node. Used by `create_external` so author-
+/// supplied native views (HorizontalScrollView, CardView, …) report a
+/// sensible preferred size to the flex layout instead of collapsing
+/// to 0×0.
+///
+/// The measure function:
+///   - Maps Taffy's `AvailableSpace` to Android `MeasureSpec` modes:
+///     `Definite(w)` → `AT_MOST | w_px`, `MaxContent` → UNSPECIFIED
+///     (TextView's natural max width), `MinContent` → `EXACTLY 0`.
+///   - Calls `view.measure(width_spec, height_spec)`.
+///   - Reads `getMeasuredWidth/Height` and converts back to dp.
+///
+/// Container views (FrameLayout, the HorizontalScrollView used by
+/// RustCodeBlock) measure their children internally during this call,
+/// so the reported size accounts for the whole subtree.
+fn install_external_measure_fn(b: &mut AndroidBackend, view: &GlobalRef) {
+    let layout = b.layout_for_view(view);
+    let view_for_measure = view.clone();
+    b.layout.set_measure_fn(
+        layout,
+        std::rc::Rc::new(move |known_dimensions, available_space| {
+            measure_external_view(&view_for_measure, known_dimensions, available_space)
+        }),
+    );
+}
+
+/// Implementation of [`install_external_measure_fn`]'s measure
+/// callback. Split out for clarity; the closure body is just a
+/// shim that hands its args here.
+fn measure_external_view(
+    view: &GlobalRef,
+    known_dimensions: runtime_layout::Size<Option<f32>>,
+    available_space: runtime_layout::Size<runtime_layout::AvailableSpace>,
+) -> runtime_layout::Size<f32> {
+    use runtime_layout::AvailableSpace;
+    with_env(|env| {
+        let view_obj = view.as_obj();
+        let density = cached_density(env, &view_obj);
+        // MeasureSpec mode bits (Android API constants):
+        const UNSPECIFIED: i32 = 0; // 0 << 30
+        const EXACTLY: i32 = 0x4000_0000; // 1 << 30
+        const AT_MOST: i32 = -0x8000_0000; // 2 << 30, i32 high bit
+        let make_spec = |known: Option<f32>, avail: AvailableSpace| -> i32 {
+            // Only honor a positive known dimension as EXACTLY — a
+            // known=Some(0.0) is Taffy's MinContent intrinsic-size
+            // probe, NOT "you must be 0 tall", and Android's
+            // MeasureSpec.EXACTLY clamps the view to literally 0
+            // pixels (the codeblock vanishes). For zero / min-content
+            // / non-finite cases, fall through to UNSPECIFIED so the
+            // view returns its preferred size — same convention the
+            // text primitive's measure_fn uses.
+            if let Some(dp) = known {
+                if dp > 0.0 {
+                    let px = (dp * density).round() as i32;
+                    return EXACTLY | (px & 0x3fff_ffff);
+                }
+            }
+            match avail {
+                AvailableSpace::Definite(dp) if dp > 0.0 => {
+                    let px = (dp * density).round() as i32;
+                    AT_MOST | (px & 0x3fff_ffff)
+                }
+                _ => UNSPECIFIED,
+            }
+        };
+        let w_spec = make_spec(known_dimensions.width, available_space.width);
+        let h_spec = make_spec(known_dimensions.height, available_space.height);
+        let _ = env.call_method(
+            &view_obj,
+            "measure",
+            "(II)V",
+            &[JValue::Int(w_spec), JValue::Int(h_spec)],
+        );
+        let w_px = env
+            .call_method(&view_obj, "getMeasuredWidth", "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(0);
+        let h_px = env
+            .call_method(&view_obj, "getMeasuredHeight", "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(0);
+        runtime_layout::Size {
+            width: w_px as f32 / density,
+            height: h_px as f32 / density,
+        }
+    })
+}
+
+/// Get the `MarginLayoutParams` class as a `GlobalRef`, looking it up
+/// once and reusing on every subsequent call. Returns `None` on
+/// classloader failure (effectively never happens on a valid Android
+/// install but kept fallible so the per-view caller short-circuits
+/// cleanly instead of panicking).
+fn cached_margin_lp_class(env: &mut JNIEnv) -> Option<GlobalRef> {
+    MARGIN_LP_CLASS.with(|slot| {
+        let mut borrow = slot.borrow_mut();
+        if borrow.is_none() {
+            let class = env
+                .find_class("android/view/ViewGroup$MarginLayoutParams")
+                .ok()?;
+            let g = env.new_global_ref(&class).ok()?;
+            *borrow = Some(g);
+        }
+        borrow.clone()
+    })
+}
+
 /// Apply a Taffy-computed `Frame` to the view's `LayoutParams`. The
 /// view is expected to be a child of a `FrameLayout`-shaped parent —
 /// `FrameLayout.LayoutParams` (which extends `MarginLayoutParams`)
@@ -305,7 +516,25 @@ fn apply_frame_to_layout_params(
     frame: runtime_layout::Frame,
 ) {
     let view_obj = view.as_obj();
-    let density = density_of(env, &view_obj).unwrap_or(1.0);
+    // Skip drawer-panel children. `RustDrawerLayout.attachDrawer` writes
+    // an explicit `DrawerLayout.LayoutParams` whose width is the
+    // author-configured `drawer_width` (in px after dp→px). The Taffy
+    // frame for the sidebar's root reflects its stylesheet, which is
+    // typically `width: 100%` — overwriting the LP here would expand
+    // the panel to the full DrawerLayout width and defeat the
+    // configured `drawer_width`. DrawerLayout owns its child's
+    // size + position (gravity-based for the drawer panel, full-bleed
+    // for content), so leaving the LP alone is correct.
+    if is_drawer_panel_child(env, &view_obj) {
+        return;
+    }
+    // `density` is a per-display constant (a DPI scaling factor) that
+    // never varies between views on the same Activity. Read once,
+    // cache, reuse. Avoids 5 JNI calls (getResources +
+    // getDisplayMetrics + get_field, each with a result `.l()`/`.f()`)
+    // per view per layout pass — for a 200-view tree that's a 1000-
+    // call tax we don't need.
+    let density = cached_density(env, &view_obj);
     let left_px = (frame.x * density).round() as i32;
     let top_px = (frame.y * density).round() as i32;
     let w_px = (frame.width * density).round() as i32;
@@ -313,6 +542,7 @@ fn apply_frame_to_layout_params(
     // Read the current LayoutParams. If the view isn't attached
     // yet there may be no LP — fall back to fresh
     // `FrameLayout.LayoutParams(w, h)`.
+    let _t_get_lp = phase_timer::PhaseTimer::start("apply_frame_getLayoutParams");
     let lp_obj = env
         .call_method(
             &view_obj,
@@ -322,21 +552,37 @@ fn apply_frame_to_layout_params(
         )
         .ok()
         .and_then(|v| v.l().ok());
+    drop(_t_get_lp);
     let lp = match lp_obj {
         Some(o) if !o.is_null() => {
             // Already a LayoutParams of *some* shape. We need it to
             // be `MarginLayoutParams` (or subclass — `FrameLayout`'s
             // own LP class extends MarginLayoutParams) so we can
             // write margins. If it isn't, wrap it.
-            let mlp_class = env
-                .find_class("android/view/ViewGroup$MarginLayoutParams")
-                .unwrap();
-            let is_mlp = env.is_instance_of(&o, &mlp_class).unwrap_or(false);
+            //
+            // Use the cached MarginLayoutParams JClass — `find_class`
+            // is a slow JNI call that we'd otherwise pay for every
+            // view in every layout pass. With 200 views per pass and
+            // a 1-3ms find_class on the emulator, that's most of the
+            // wall-clock budget of the pass.
+            let class_global = cached_margin_lp_class(env);
+            let Some(class_global) = class_global else {
+                // Without the class we can't proceed; punt this view.
+                // Callers fall through to a no-op LP write and the
+                // next pass can retry.
+                return;
+            };
+            let mlp_class: &jni::objects::JClass = unsafe {
+                std::mem::transmute::<&JObject, &jni::objects::JClass>(
+                    class_global.as_obj(),
+                )
+            };
+            let is_mlp = env.is_instance_of(&o, mlp_class).unwrap_or(false);
             if is_mlp {
                 o
             } else {
                 env.new_object(
-                    &mlp_class,
+                    mlp_class,
                     "(II)V",
                     &[JValue::Int(w_px), JValue::Int(h_px)],
                 )
@@ -344,32 +590,41 @@ fn apply_frame_to_layout_params(
             }
         }
         _ => {
-            let mlp_class = env
-                .find_class("android/view/ViewGroup$MarginLayoutParams")
-                .unwrap();
+            let Some(class_global) = cached_margin_lp_class(env) else {
+                return;
+            };
+            let mlp_class: &jni::objects::JClass = unsafe {
+                std::mem::transmute::<&JObject, &jni::objects::JClass>(
+                    class_global.as_obj(),
+                )
+            };
             env.new_object(
-                &mlp_class,
+                mlp_class,
                 "(II)V",
                 &[JValue::Int(w_px), JValue::Int(h_px)],
             )
             .unwrap()
         }
     };
+    let _t_fields = phase_timer::PhaseTimer::start("apply_frame_set_fields");
     let _ = env.set_field(&lp, "width", "I", JValue::Int(w_px));
     let _ = env.set_field(&lp, "height", "I", JValue::Int(h_px));
     let _ = env.set_field(&lp, "leftMargin", "I", JValue::Int(left_px));
     let _ = env.set_field(&lp, "topMargin", "I", JValue::Int(top_px));
+    drop(_t_fields);
     // Zero out trailing margins — they're authored via the same
     // taffy-computed frame and writing 0 keeps stale values from a
     // prior layout pass from leaking through.
     let _ = env.set_field(&lp, "rightMargin", "I", JValue::Int(0));
     let _ = env.set_field(&lp, "bottomMargin", "I", JValue::Int(0));
+    let _t_set_lp = phase_timer::PhaseTimer::start("apply_frame_setLayoutParams");
     let _ = env.call_method(
         &view_obj,
         "setLayoutParams",
         "(Landroid/view/ViewGroup$LayoutParams;)V",
         &[JValue::Object(&lp)],
     );
+    drop(_t_set_lp);
 }
 
 /// Build `Intent(ACTION_VIEW, Uri.parse(url))` and hand it to
@@ -705,56 +960,67 @@ impl AndroidBackend {
             log::info!("[layout] ABORT: viewport is zero ({}, {})", vw, vh);
             return;
         }
+        // Wall-clock the whole pass so the "slow screen mount"
+        // diagnosis has a number to point at. Native millis come from
+        // `std::time::Instant`; the cost is ~ns per call and runs once
+        // per pass regardless of view count.
+        let pass_start = std::time::Instant::now();
         log::info!(
             "[layout] run_layout_pass viewport=({:.1}, {:.1}) registered_views={}",
             vw,
             vh,
             self.view_to_layout.len()
         );
+        let _t_total = phase_timer::PhaseTimer::start("layout_pass_total");
         let roots: Vec<runtime_layout::LayoutNode> = self
             .view_to_layout
             .values()
             .map(|(_, n)| *n)
             .filter(|n| self.layout.is_root(*n))
             .collect();
-        for root_node in &roots {
-            self.layout.compute(*root_node, vw, vh);
+        {
+            let _t = phase_timer::PhaseTimer::start("layout_taffy_compute");
+            for root_node in &roots {
+                self.layout.compute(*root_node, vw, vh);
+            }
         }
         // Snapshot the entries up front so the mutable JNI calls
         // below don't conflict with the borrow on `self.view_to_layout`.
-        let frames: Vec<(GlobalRef, runtime_layout::Frame)> = self
-            .view_to_layout
-            .values()
-            .map(|(view, n)| (view.clone(), self.layout.frame_of(*n)))
-            .collect();
+        let frames: Vec<(GlobalRef, runtime_layout::Frame)> = {
+            let _t = phase_timer::PhaseTimer::start("layout_snapshot_frames");
+            self.view_to_layout
+                .values()
+                .map(|(view, n)| (view.clone(), self.layout.frame_of(*n)))
+                .collect()
+        };
         with_env(|env| {
             for (view, frame) in &frames {
                 if frame.width <= 0.0 && frame.height <= 0.0 {
                     continue;
                 }
-                apply_frame_to_layout_params(env, view, *frame);
+                {
+                    let _t = phase_timer::PhaseTimer::start("apply_frame");
+                    apply_frame_to_layout_params(env, view, *frame);
+                }
                 let key = Self::node_key(view);
                 if let Some(state) = self.anim_state.get(&key) {
-                    // Resolve any percent-valued `transform: translate`
-                    // requests now that the box has real pixel
-                    // dimensions. CSS spec: translate-% is box-relative,
-                    // so the shift needs the box's own width / height —
-                    // not knowable at apply-style time when bounds are
-                    // still zero.
-                    style::sync_transform_translate_percent(
-                        env,
-                        view.as_obj(),
-                        state,
-                        frame.width,
-                        frame.height,
-                    );
+                    {
+                        let _t = phase_timer::PhaseTimer::start("transform_pct");
+                        // Resolve any percent-valued `transform: translate`
+                        // requests now that the box has real pixel
+                        // dimensions.
+                        style::sync_transform_translate_percent(
+                            env,
+                            view.as_obj(),
+                            state,
+                            frame.width,
+                            frame.height,
+                        );
+                    }
+                    let density = cached_density(env, &view.as_obj());
+                    let _t = phase_timer::PhaseTimer::start("radial_gradient_resize");
                     // Recompute the radial gradient's px radius now that
-                    // the view has a real size. The apply-style path
-                    // ran `getMeasuredWidth/Height` before the view was
-                    // measured (both returned 0) and wrote a placeholder
-                    // 100dp radius — that's the "small sun" smell on
-                    // any view sized via a percent / aspect_ratio.
-                    let density = density_of(env, &view.as_obj()).unwrap_or(1.0);
+                    // the view has a real size.
                     style::sync_radial_gradient_radius(
                         env,
                         state,
@@ -774,13 +1040,25 @@ impl AndroidBackend {
             // construction. Mirrors iOS's
             // `sticky::refresh_layout_positions` call in
             // `run_layout_pass_global`.
-            sticky::refresh_layout_positions(
-                env,
-                &mut self.sticky_registry,
-                &self.layout,
-                &self.view_to_layout,
-            );
+            {
+                let _t = phase_timer::PhaseTimer::start("sticky_refresh");
+                sticky::refresh_layout_positions(
+                    env,
+                    &mut self.sticky_registry,
+                    &self.layout,
+                    &self.view_to_layout,
+                );
+            }
         });
+        drop(_t_total);
+        let elapsed_ms = pass_start.elapsed().as_secs_f64() * 1000.0;
+        log::info!("[layout] run_layout_pass DONE in {:.1}ms", elapsed_ms);
+        // Drain the per-phase counters accumulated during this pass
+        // and the apply-style work that preceded it. Logging here
+        // (rather than at app exit) gives a per-pass histogram so
+        // we can spot regressions immediately — and clears the
+        // table so the next pass starts fresh.
+        phase_timer::drain_and_log_phase_counters();
     }
 
     /// Stable key for the node's animation state. The pointer comes
@@ -1019,8 +1297,20 @@ fn promote_pending_sticky_recursive(
         // ancestor — leave it in `pending` so a future re-parent
         // could pick it up.
     }
-    // Walk children. `view.getChildCount()` + `view.getChildAt(i)`
-    // covers any ViewGroup; non-group views return 0.
+    // `getChildCount`/`getChildAt` live on ViewGroup, NOT on every
+    // View — TextView/ImageView/etc. extend View directly. iOS gets
+    // away without a runtime check here because `UIView.subviews` is
+    // defined on the base UIView class and a UILabel just returns an
+    // empty array. On Android, calling getChildCount on a TextView
+    // raises `NoSuchMethodError`. The Rust call site's `unwrap_or(0)`
+    // masks the error from our side, but the JNI **pending exception**
+    // stays live on `env` and the next ART-side bookkeeping check
+    // aborts the process ("No pending exception expected"). Gate the
+    // call on `instanceof ViewGroup` so leaf views short-circuit before
+    // touching the missing method.
+    if !is_view_group(env, view.as_obj()) {
+        return;
+    }
     let child_count = env
         .call_method(view.as_obj(), "getChildCount", "()I", &[])
         .and_then(|v| v.i())
@@ -1056,6 +1346,19 @@ fn promote_pending_sticky_recursive(
             to_remove,
         );
     }
+}
+
+/// `instanceof android.view.ViewGroup`. Used by the sticky walkers
+/// before calling `getChildCount`/`getChildAt`, which only exist on
+/// ViewGroup — invoking them on a leaf View (TextView, ImageView,
+/// etc.) raises `NoSuchMethodError` and crashes the runtime via the
+/// JNI pending-exception path. Returns `false` (don't recurse) on
+/// class-lookup failure to stay safe.
+fn is_view_group(env: &mut JNIEnv, view: &JObject) -> bool {
+    let Ok(class) = env.find_class("android/view/ViewGroup") else {
+        return false;
+    };
+    env.is_instance_of(view, &class).unwrap_or(false)
 }
 
 /// Recursive cleanup helper used by `clear_children`. For each
@@ -1108,7 +1411,13 @@ fn walk_and_deregister_sticky(
         );
     }
 
-    // Recurse into children.
+    // Recurse into children. Same ViewGroup-guard rationale as
+    // `promote_pending_sticky_recursive` — getChildCount on a leaf
+    // View raises a JNI pending exception that crashes the next
+    // ART check.
+    if !is_view_group(env, view) {
+        return;
+    }
     let child_count = env
         .call_method(view, "getChildCount", "()I", &[])
         .and_then(|v| v.i())
@@ -1805,6 +2114,16 @@ impl Backend for AndroidBackend {
         // External primitives carry no inherent role — third-party
         // SDK authors set the right one via props.role.
         a11y::apply(&node, a11y, None);
+        // Install a Taffy measure_fn that asks the underlying Android
+        // View for its preferred size via `View.measure(spec, spec)`.
+        // Without this, every External view collapses to 0×0 in the
+        // flex layout — the framework's text/button primitives install
+        // measure_fns themselves, but External handlers go through a
+        // generic path that doesn't know the concrete widget type. A
+        // generic `View.measure` works because every Android View
+        // implements it; container views (FrameLayout, scroll views)
+        // measure their children internally and report the right size.
+        install_external_measure_fn(self, &node);
         node
     }
 
@@ -2033,6 +2352,13 @@ impl Backend for AndroidBackend {
             // on web / `layer.zPosition` on iOS. Takes device pixels;
             // the dp-to-px conversion below handles the unit.
             P::ZIndex => ("setTranslationZ", "(F)V"),
+            // `MaxHeight` would need the LayoutParams height path +
+            // a ValueAnimator to drive layout-affecting properties
+            // smoothly. For now, snap-stub (no-op) — matches the
+            // iOS/gpu MaxHeight TODO. Authors hitting this on Android
+            // get a non-animated open/close until the native-animator
+            // plumbing lands.
+            P::MaxHeight => return,
             // Wrong family; silently ignored.
             P::BackgroundColor | P::ForegroundColor | P::GradientStopColor(_) => {
                 return
@@ -2141,7 +2467,8 @@ impl Backend for AndroidBackend {
             | P::ScaleX
             | P::ScaleY
             | P::RotateZ
-            | P::ZIndex => {}
+            | P::ZIndex
+            | P::MaxHeight => {}
         }
     }
 

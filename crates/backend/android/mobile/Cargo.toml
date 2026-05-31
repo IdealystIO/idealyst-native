@@ -25,6 +25,13 @@ runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-nativ
 # `runtime-core/async-driver` so `render_loop` / `spawn_async`
 # resolve. Host calls `install_render_loop()` once at init.
 async-driver = ["runtime-core/async-driver", "backend-android-core/async-driver"]
+# Per-phase timing counters drained + logged after every layout pass.
+# `phase_timer::PhaseTimer::start("name")` becomes a real RAII guard
+# (now_micros snapshot + record_apply_phase on drop) when this
+# feature is on, and a zero-sized stub the optimizer strips when off.
+# The variant crate enables this through its OWN `debug-stats` feature
+# forwarding here — see CLAUDE.md for the variant-vs-dep gotcha.
+debug-stats = ["runtime-core/debug-stats"]
 
 [dependencies]
 # `embed-font-bytes`: Android loads fonts by writing the raw bytes to

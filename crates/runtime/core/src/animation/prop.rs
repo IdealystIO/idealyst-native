@@ -72,6 +72,17 @@ pub enum AnimProp {
     /// `View.setTranslationZ` (in dp, converted to device px). All
     /// three are sibling-relative.
     ZIndex,
+    /// Layout-affecting maximum height in DIPs. Animating this
+    /// triggers reflow of the node's siblings on every frame — the
+    /// backend writes through the platform-native max-height
+    /// equivalent (web `style.maxHeight`, iOS Taffy `max_size`
+    /// constraint, Android `View.layoutParams.height` cap).
+    ///
+    /// The reference consumer is idea-ui's `Collapsible(transition =
+    /// Measured)` — measures natural content height via
+    /// [`ViewHandle::on_layout`], then animates `MaxHeight` between
+    /// `0` and that measured value.
+    MaxHeight,
 
     // --- Color ([f32; 4]) ---
     /// Background fill color. sRGB `[r, g, b, a]`.
@@ -113,6 +124,7 @@ impl AnimProp {
                 | AnimProp::ScaleY
                 | AnimProp::RotateZ
                 | AnimProp::ZIndex
+                | AnimProp::MaxHeight
         )
     }
 
@@ -138,6 +150,7 @@ mod tests {
             AnimProp::ScaleY,
             AnimProp::RotateZ,
             AnimProp::ZIndex,
+            AnimProp::MaxHeight,
             AnimProp::BackgroundColor,
             AnimProp::ForegroundColor,
             AnimProp::GradientStopColor(0),

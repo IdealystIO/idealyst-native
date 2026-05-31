@@ -1840,24 +1840,19 @@ stylesheet! {
     }
 }
 
-// Smooth-mode body: animates `max_height` + `opacity` so opening
-// reveals the content over time.
+// Measured-mode body: the chrome (padding, opacity, border-top)
+// CSS-transitions on variant flip, while `max-height` is driven per
+// frame by an `AnimatedValue<f32>` in `measured_body` — the stylesheet
+// deliberately does NOT declare `max_height` on either variant so the
+// inline-style writes from `set_animated_f32(MaxHeight, …)` aren't
+// fighting a class-rule baseline.
 //
-// **The `max_height` cap matters for perceived smoothness.** CSS
-// can't transition `height: auto`, so the framework can't know
-// content's natural height — instead the variant grows max-height to
-// a fixed cap. The visible portion of the transition is
-// `content-height / cap` of the total duration (content beyond the
-// cap clips during the transition then stretches to fit at the end).
-//
-// Default cap is the constant `SMOOTH_MAX_HEIGHT_DEFAULT_PX` in the
-// `collapsible` component module. Authors with taller content tune
-// it via `Collapsible.max_height(px)` — a smaller cap relative to
-// content height means more of the transition duration is visible
-// motion. Authors with shorter content (a few text lines, a small
-// form) can leave the default.
+// If the chrome timings here change (e.g. `padding_top: 240ms EaseOut`
+// becomes 180ms), update [`COLLAPSIBLE_DURATION_DEFAULT_MS`] in
+// `components/collapsible.rs` in lockstep — the constant is the
+// recommended AV tween length for matching perceptual feel.
 stylesheet! {
-    pub CollapsibleBodySmooth<IdeaThemeRef> {
+    pub CollapsibleBodyAnimated<IdeaThemeRef> {
         base(_t) {
             flex_direction: FlexDirection::Column,
             padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
@@ -1869,22 +1864,12 @@ stylesheet! {
         variant open {
             #[default]
             closed(_t) {
-                max_height: Length::Px(0.0),
                 padding_top: Length::Px(0.0),
                 padding_bottom: Length::Px(0.0),
                 opacity: 0.0,
                 border_top_width: 0.0,
             }
             shown(_t) {
-                // The shown max-height is overridden per-instance
-                // via `app.overrides.max_height` (see
-                // `collapsible_body` in `components/collapsible.rs`)
-                // so authors can tune. The literal here is a
-                // fallback when the override isn't set; small enough
-                // that the default still feels smooth on typical
-                // disclosure content (~50–200px), large enough that
-                // it doesn't clip a paragraph.
-                max_height: Length::Px(400.0),
                 padding_top: Tokenized::token("spacing-md", Length::Px(12.0)),
                 padding_bottom: Tokenized::token("spacing-md", Length::Px(12.0)),
                 opacity: 1.0,
@@ -1893,7 +1878,6 @@ stylesheet! {
         }
         transitions {
             border_top_color: 250ms EaseInOut,
-            max_height: 240ms EaseOut,
             opacity: 200ms EaseOut,
             padding_top: 240ms EaseOut,
             padding_bottom: 240ms EaseOut,

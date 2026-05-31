@@ -121,6 +121,8 @@ features = [
     "PopStateEvent",
     "Url",
     "ResizeObserver",
+    "ResizeObserverEntry",
+    "DomRectReadOnly",
     # `Response` powers the `Primitive::Lazy` web loader's
     # `chunk_manifest.json` fetch.
     "Response",

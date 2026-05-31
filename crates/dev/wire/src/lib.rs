@@ -1201,6 +1201,7 @@ pub enum WireAnimProp {
     ScaleY,
     RotateZ,
     ZIndex,
+    MaxHeight,
     // --- Color ([f32; 4]) family ---
     BackgroundColor,
     ForegroundColor,

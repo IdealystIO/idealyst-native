@@ -1,6 +1,7 @@
 package io.idealyst.runtime
 
 import android.content.Context
+import android.content.res.Resources
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -149,13 +150,23 @@ class RustDrawerLayout(
     }
 
     /**
-     * Insert the drawer (side panel) view. Sized to its intrinsic
-     * width with full height. Gravity = [drawerGravity] determines
-     * which edge it slides from.
+     * Insert the drawer (side panel) view. Width is given in dp; a
+     * value `<= 0` falls back to `WRAP_CONTENT` (which DrawerLayout
+     * clamps to `screen - 56dp`). Height is always `MATCH_PARENT`.
+     * Gravity = [drawerGravity] determines which edge it slides from.
      */
-    fun attachDrawer(drawer: View) {
+    fun attachDrawer(drawer: View, widthDp: Float) {
+        val widthSpec = if (widthDp > 0f) {
+            // dp → px via the display density. Resources.getSystem
+            // gives the system-wide DisplayMetrics; `density` is
+            // dp-per-px. Same convention every backend uses for
+            // converting Taffy frames (dp) to view-space (px).
+            (widthDp * Resources.getSystem().displayMetrics.density).toInt()
+        } else {
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        }
         val lp = LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
+            widthSpec,
             ViewGroup.LayoutParams.MATCH_PARENT,
         )
         lp.gravity = drawerGravity

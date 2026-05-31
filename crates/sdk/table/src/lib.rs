@@ -2,19 +2,28 @@
 //!
 //! Web emits real HTML `<table>` / `<thead>` / `<tbody>` / `<tr>` /
 //! `<th>` / `<td>` so the browser's native table-layout algorithm
-//! handles cross-row column alignment for free. Native targets get a
-//! plain passthrough container (a flex column) — the column-alignment
-//! win is web-specific; native users that want pixel-perfect grid
-//! layouts already need explicit per-column widths.
+//! handles cross-row column alignment for free.
+//!
+//! Native (iOS / Android / macOS / terminal / gpu) builds a plain
+//! `Element::View` tree with Taffy flex styling — the outer container
+//! stacks rows in a column, each row lays cells out in a row, and
+//! cells claim equal width via `flex_grow: 1` + `flex_basis: 0`. No
+//! per-backend handler registration needed; the framework's existing
+//! `view` path renders correctly on every target.
+//!
+//! Native does not reproduce HTML's column-fits-widest behavior — cells
+//! share width equally. Authors that need per-column widths attach an
+//! explicit `width`/`flex_grow` style to individual cells.
 //!
 //! # Why this is an SDK and not a core primitive
 //!
-//! Native platforms have no analogous structure (UITableView is a
-//! vertical list; Android RecyclerView the same; macOS NSTableView is
-//! row-keyed) and a core primitive that's web-only-with-real-behavior
-//! would be a web capability wearing a primitive's clothes. So Table
-//! plugs in via `Element::External` — registered once per backend,
-//! invisible to apps that don't use it.
+//! Web's `<table>` is a layout primitive with no native equivalent —
+//! UITableView is a vertical list, Android RecyclerView the same,
+//! macOS NSTableView is row-keyed. Putting a web-only-with-real-
+//! behavior primitive in the framework would be a web capability
+//! wearing a primitive's clothes. The SDK keeps that behavior pluggable:
+//! web wires up real `<table>` via `Element::External`, native composes
+//! plain views.
 //!
 //! # Usage
 //!
@@ -58,10 +67,17 @@
 //! primitive. The web backend layers `<table>`'s native column-fits-
 //! widest algorithm on top.
 
-use std::any::{Any, TypeId};
 use std::rc::Rc;
 
 use runtime_core::{BuildElement, Bound, Element, ExternalHandle, IntoElement};
+
+#[cfg(target_arch = "wasm32")]
+use std::any::{Any, TypeId};
+
+#[cfg(not(target_arch = "wasm32"))]
+use runtime_core::{
+    FlexDirection, StyleApplication, StyleSheet, Tokenized, VariantSet,
+};
 
 // ============================================================================
 // Props
@@ -106,9 +122,11 @@ pub type TableCellHandle = ExternalHandle<TableCellProps>;
 // Constructors
 // ============================================================================
 
-/// Build a `Table` container. Lowers to `Element::External` keyed by
-/// `TableProps`. The backend's registered handler returns the concrete
-/// node (a `<table>` on web, a flex view on native).
+/// Build a `Table` container. On web lowers to `Element::External`
+/// keyed by `TableProps` (the registered handler emits a real
+/// `<table>`); on native lowers to a plain `view` column with the
+/// SDK's default table styling.
+#[cfg(target_arch = "wasm32")]
 pub fn table(mut props: TableProps) -> Bound<TableHandle> {
     let children = std::mem::take(&mut props.children);
     external(TypeId::of::<TableProps>(),
@@ -117,7 +135,14 @@ pub fn table(mut props: TableProps) -> Bound<TableHandle> {
              children)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub fn table(mut props: TableProps) -> Bound<TableHandle> {
+    let children = std::mem::take(&mut props.children);
+    native_view::<TableHandle>(children, native_styles::table_sheet())
+}
+
 /// Build a table row.
+#[cfg(target_arch = "wasm32")]
 pub fn table_row(mut props: TableRowProps) -> Bound<TableRowHandle> {
     let children = std::mem::take(&mut props.children);
     external(TypeId::of::<TableRowProps>(),
@@ -126,7 +151,16 @@ pub fn table_row(mut props: TableRowProps) -> Bound<TableRowHandle> {
              children)
 }
 
-/// Build a table cell. `header = true` produces a `<th>` on web.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn table_row(mut props: TableRowProps) -> Bound<TableRowHandle> {
+    let children = std::mem::take(&mut props.children);
+    native_view::<TableRowHandle>(children, native_styles::row_sheet())
+}
+
+/// Build a table cell. `header = true` produces a `<th>` on web; on
+/// native it's a layout passthrough — visual treatment lives on the
+/// caller's `with_style(...)` (e.g. idea-ui's `TableHeadCell`).
+#[cfg(target_arch = "wasm32")]
 pub fn table_cell(mut props: TableCellProps) -> Bound<TableCellHandle> {
     let children = std::mem::take(&mut props.children);
     external(TypeId::of::<TableCellProps>(),
@@ -135,6 +169,13 @@ pub fn table_cell(mut props: TableCellProps) -> Bound<TableCellHandle> {
              children)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub fn table_cell(mut props: TableCellProps) -> Bound<TableCellHandle> {
+    let children = std::mem::take(&mut props.children);
+    native_view::<TableCellHandle>(children, native_styles::cell_sheet())
+}
+
+#[cfg(target_arch = "wasm32")]
 fn external<H>(
     type_id: TypeId,
     type_name: &'static str,
@@ -150,6 +191,113 @@ fn external<H>(
         ref_fill: None,
         accessibility: runtime_core::accessibility::AccessibilityProps::default(),
     })
+}
+
+// =============================================================================
+// Native (non-web) view-tree fallback.
+//
+// Each constructor returns a `Bound<H>` wrapping an `Element::View` with
+// a pre-attached `StyleSource::Static` that supplies the SDK's default
+// flex layout for that role. The framework's normal `view` path applies
+// the style via Taffy on every native backend — no per-backend handler
+// registration required.
+//
+// Author-side `.with_style(...)` chained on the returned `Bound` lands
+// on the same `style` slot, replacing the SDK's default with the
+// caller's stylesheet (the framework's `with_style` overwrites, not
+// merges). The themed `Table` / `TableRow` / `TableCell` in idea-ui
+// supply their own visual stylesheets that already include the right
+// flex axis, so layout stays correct end-to-end.
+// =============================================================================
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_view<H>(children: Vec<Element>, sheet: Rc<StyleSheet>) -> Bound<H> {
+    let style = StyleApplication::new(sheet);
+    // Go through `runtime_core::view(...).with_style(...)` so the
+    // construction path stays insulated from `Element::View`'s field
+    // shape (which includes a feature-gated `test_id` field under
+    // `runtime-core/robot`). The view builder fills sensible defaults
+    // for every field; `with_style` writes the SDK's role-default
+    // sheet into the same `style` slot a later author-side
+    // `.with_style(...)` would overwrite.
+    //
+    // The handle-type marker `H` differs from the `view()` return
+    // (`Bound<ViewHandle>`), so we re-wrap via `Bound::new` after
+    // extracting the underlying `Element`. The marker is type-check
+    // only — see `Bound`'s rustdoc.
+    Bound::new(runtime_core::view(children).with_style(style).into_element())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+mod native_styles {
+    use super::*;
+    use runtime_core::StyleRules;
+    use std::cell::RefCell;
+
+    thread_local! {
+        // Cache the sheets so every `table()` call reuses the same
+        // `Rc<StyleSheet>` — the framework's style resolver dedup's
+        // applications by sheet pointer + variant set, so sharing a
+        // single sheet across all instances keeps the class table
+        // small (one class per role, not one per call site).
+        static TABLE_SHEET: RefCell<Option<Rc<StyleSheet>>> = RefCell::new(None);
+        static ROW_SHEET: RefCell<Option<Rc<StyleSheet>>> = RefCell::new(None);
+        static CELL_SHEET: RefCell<Option<Rc<StyleSheet>>> = RefCell::new(None);
+    }
+
+    pub(super) fn table_sheet() -> Rc<StyleSheet> {
+        TABLE_SHEET.with(|slot| {
+            slot.borrow_mut()
+                .get_or_insert_with(|| {
+                    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                        // Default View direction is already Column;
+                        // stating it explicitly documents intent and
+                        // protects against future default changes.
+                        flex_direction: Some(FlexDirection::Column),
+                        ..Default::default()
+                    }))
+                })
+                .clone()
+        })
+    }
+
+    pub(super) fn row_sheet() -> Rc<StyleSheet> {
+        ROW_SHEET.with(|slot| {
+            slot.borrow_mut()
+                .get_or_insert_with(|| {
+                    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                        // Rows lay their cells out horizontally.
+                        flex_direction: Some(FlexDirection::Row),
+                        ..Default::default()
+                    }))
+                })
+                .clone()
+        })
+    }
+
+    pub(super) fn cell_sheet() -> Rc<StyleSheet> {
+        CELL_SHEET.with(|slot| {
+            slot.borrow_mut()
+                .get_or_insert_with(|| {
+                    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                        // Equal-width column distribution. `flex_grow: 1`
+                        // alone would size cells by their content
+                        // (the typical flex behavior); `flex_basis: 0`
+                        // forces them to share remaining space evenly,
+                        // matching the "every column the same width"
+                        // expectation for a generic data table.
+                        flex_grow: Some(Tokenized::Literal(1.0)),
+                        flex_basis: Some(Tokenized::Literal(runtime_core::Length::Px(0.0))),
+                        // Stack cell contents vertically — multi-line
+                        // cell content (a label + a description) should
+                        // wrap naturally inside the column.
+                        flex_direction: Some(FlexDirection::Column),
+                        ..Default::default()
+                    }))
+                })
+                .clone()
+        })
+    }
 }
 
 // Styling note: `Bound<H>::with_style(…)` is already provided as an

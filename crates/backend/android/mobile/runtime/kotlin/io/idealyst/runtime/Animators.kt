@@ -90,6 +90,53 @@ object Animators {
     }
 
     /**
+     * Animate per-side borders on a [RustBorderDrawable]. Four
+     * widths + four colors interpolate independently between the
+     * given `from` and `to` arrays. Both arrays are in
+     * (top, right, bottom, left) order — same convention the Rust
+     * caller uses when calling `RustBorderDrawable.update`.
+     *
+     * One ValueAnimator drives all eight axes; we interpolate them
+     * together at the same fraction so they finish on the same frame.
+     * The framework's per-side transition props (which technically
+     * allow different timings per side) get collapsed to a single
+     * timing at the Rust caller — same simplification iOS does by
+     * snap-transitioning borders.
+     */
+    @JvmStatic
+    fun animateBorder(
+        drawable: RustBorderDrawable,
+        fromW: IntArray,
+        toW: IntArray,
+        fromC: IntArray,
+        toC: IntArray,
+        durationMs: Long,
+        interpolator: Interpolator
+    ): ValueAnimator {
+        require(fromW.size == 4 && toW.size == 4 && fromC.size == 4 && toC.size == 4) {
+            "border width/color arrays must have 4 elements (top, right, bottom, left)"
+        }
+        val anim = ValueAnimator.ofFloat(0f, 1f)
+        anim.duration = durationMs
+        anim.interpolator = interpolator
+        val argb = ArgbEvaluator()
+        anim.addUpdateListener { a ->
+            val f = a.animatedFraction
+            val w0 = (fromW[0] + (toW[0] - fromW[0]) * f).toInt()
+            val w1 = (fromW[1] + (toW[1] - fromW[1]) * f).toInt()
+            val w2 = (fromW[2] + (toW[2] - fromW[2]) * f).toInt()
+            val w3 = (fromW[3] + (toW[3] - fromW[3]) * f).toInt()
+            val c0 = argb.evaluate(f, fromC[0], toC[0]) as Int
+            val c1 = argb.evaluate(f, fromC[1], toC[1]) as Int
+            val c2 = argb.evaluate(f, fromC[2], toC[2]) as Int
+            val c3 = argb.evaluate(f, fromC[3], toC[3]) as Int
+            drawable.update(w0, c0, w1, c1, w2, c2, w3, c3)
+        }
+        anim.start()
+        return anim
+    }
+
+    /**
      * Animate the four corner radii of a `GradientDrawable`
      * independently. `from` and `to` are length-4 arrays in the order
      * [tl, tr, br, bl] (px). On each tick we build the 8-element

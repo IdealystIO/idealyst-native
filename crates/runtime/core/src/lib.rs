@@ -84,8 +84,8 @@ pub use backend::{open_url, platform, Backend, ColorScheme, Platform, Virtualize
 pub use page_meta::{set_page_metadata, take_page_metadata, PageMetadata};
 pub use batch::{BackendBatch, BatchOp};
 pub use handles::{
-    ButtonHandle, ButtonOps, PressableHandle, PressableOps, RefFill, RefOps, StateBits, TextHandle,
-    TextOps, ViewHandle, ViewOps,
+    ButtonHandle, ButtonOps, LayoutSubscription, PressableHandle, PressableOps, RefFill, RefOps,
+    StateBits, TextHandle, TextOps, ViewHandle, ViewOps,
 };
 pub use builder::{
     button, each_keyed, pressable, switch, text, view, when, Bindable, Bound, BuildElement,
@@ -169,8 +169,8 @@ pub use breakpoint::{
     breakpoints, current_breakpoint, install_breakpoints, Breakpoint, Breakpoints,
 };
 pub use scheduling::{
-    after_animation_frame, after_ms, after_ms_scoped, raf_loop, raf_loop_scoped,
-    schedule_microtask, RafLoop, ScheduledTask,
+    after_animation_frame, after_ms, after_ms_scoped, is_frame_active, raf_loop,
+    raf_loop_scoped, schedule_microtask, set_frame_active, RafLoop, ScheduledTask,
 };
 pub use logging::{install_logger, is_logger_installed, log, LogLevel, Logger, StderrLogger};
 

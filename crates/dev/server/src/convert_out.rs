@@ -64,6 +64,7 @@ pub fn anim_prop_to_wire(p: runtime_core::animation::AnimProp) -> wire::WireAnim
         AnimProp::ScaleY => wire::WireAnimProp::ScaleY,
         AnimProp::RotateZ => wire::WireAnimProp::RotateZ,
         AnimProp::ZIndex => wire::WireAnimProp::ZIndex,
+        AnimProp::MaxHeight => wire::WireAnimProp::MaxHeight,
         AnimProp::BackgroundColor => wire::WireAnimProp::BackgroundColor,
         AnimProp::ForegroundColor => wire::WireAnimProp::ForegroundColor,
         AnimProp::GradientStopColor(idx) => wire::WireAnimProp::GradientStopColor(idx),

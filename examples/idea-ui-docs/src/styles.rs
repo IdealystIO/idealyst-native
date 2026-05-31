@@ -102,6 +102,18 @@ stylesheet! {
     }
 }
 
+// NavLink is split into two stylesheets — container (padding +
+// background + border-radius) and text (color + font + alignment) —
+// because on Android `apply_style` does NOT propagate padding to
+// `View.setPadding`; padding only takes effect via Taffy shifting
+// *children* inside the parent's content box. A text node has no
+// children, so padding on it would silently no-op on native. By
+// wrapping the text in a view with container styles, Taffy shifts the
+// text child by the padding and the visual matches web (where CSS
+// padding on the underlying `<a>` is just text-padded).
+//
+// Both stylesheets share the same `active` variant axis so the SDK
+// can flip both with a single signal read at the call site.
 stylesheet! {
     pub NavLink<()> {
         base(_t) {
@@ -109,9 +121,7 @@ stylesheet! {
             padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
             border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             background: Color("transparent".into()),
-            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
-            font_size: 14.0,
-            text_align: TextAlign::Left,
+            flex_direction: FlexDirection::Column,
         }
         variant active {
             #[default]
@@ -121,6 +131,25 @@ stylesheet! {
                     "intent-primary-soft-bg",
                     Color("rgba(91, 108, 255, 0.12)".into()),
                 ),
+            }
+        }
+        transitions {
+            background: 180ms EaseOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub NavLinkText<()> {
+        base(_t) {
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: 14.0,
+            text_align: TextAlign::Left,
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(_t) {
                 color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
             }
         }
@@ -128,7 +157,6 @@ stylesheet! {
             color: Tokenized::token("color-text", Color("#1a1a1f".into())),
         }
         transitions {
-            background: 180ms EaseOut,
             color: 180ms EaseOut,
         }
     }
@@ -143,7 +171,10 @@ stylesheet! {
             border_width: 1.0,
             border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
-            padding: 20.0,
+            // Padding lives INSIDE the codeblock (on its inner column,
+            // inside the horizontal scroll view) so it scrolls with
+            // content — keeping it here would clip the rightmost
+            // content behind the right padding when scrolled.
             overflow: Overflow::Hidden,
             min_width: 0.0,
         }

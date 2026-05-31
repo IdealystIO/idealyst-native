@@ -47,12 +47,14 @@ use std::rc::Rc;
 
 use runtime_core::{
     component, derived, pressable, signal, switch, text, ui, ChildList, Element, IntoElement,
-    Length, Reactive, Signal, StyleApplication, Tokenized, VariantEnum,
+    LayoutSubscription, Reactive, Ref, Signal, StyleApplication, VariantEnum, ViewHandle,
 };
+use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
+use std::time::Duration;
 
 use crate::stylesheets::{
-    AccordionContainer, AccordionItemSeparator, CollapsibleBody, CollapsibleBodyOpen,
-    CollapsibleBodySmooth, CollapsibleBodySmoothOpen, CollapsibleChevron, CollapsibleContainer,
+    AccordionContainer, AccordionItemSeparator, CollapsibleBody, CollapsibleBodyAnimated,
+    CollapsibleBodyAnimatedOpen, CollapsibleBodyOpen, CollapsibleChevron, CollapsibleContainer,
     CollapsibleHeader,
 };
 
@@ -60,33 +62,59 @@ use crate::stylesheets::{
 // CollapsibleTransition + tunables
 // =============================================================================
 
-/// Default cap for the Smooth transition's `max-height` animation in
-/// pixels. CSS can't transition `height: auto`, so we animate
-/// `max-height` to a fixed value — the visible portion of the
-/// transition is `content-height / max-height` of the duration.
-/// Authors with taller content set their own via `Collapsible.max_height`.
-pub const SMOOTH_MAX_HEIGHT_DEFAULT_PX: f32 = 400.0;
+/// Default duration of the open/close animation in milliseconds.
+/// Used by [`CollapsibleTransition::Measured`] for the AV tween.
+/// Override via `Collapsible.duration_ms`.
+///
+/// Note: chrome transitions (padding, opacity, border-color) on the
+/// underlying stylesheet are baked into CSS at the framework's
+/// compile time — they don't currently track this constant per-
+/// instance. If you set `duration_ms` far from 240, the chrome will
+/// finish ahead of (or after) the height animation. The "right" fix
+/// is per-instance transition-timing overrides on
+/// `StyleApplication`; until that lands, keep `duration_ms` close to
+/// the default 240 to avoid visible mismatch.
+pub const COLLAPSIBLE_DURATION_DEFAULT_MS: u32 = 240;
+
+/// Total vertical chrome (padding + border) on a Measured body when
+/// shown. Used to translate the inner content's measured height into
+/// the outer's target max-height — the framework forces
+/// `box-sizing: border-box`, so the outer's max-height has to cover
+/// content + chrome to avoid clipping.
+///
+/// Mirrors the `CollapsibleBodyAnimated` `shown` variant:
+/// `padding_top: spacing-md (12) + padding_bottom: spacing-md (12) +
+/// border_top_width: 1 = 25`. If the stylesheet's chrome changes,
+/// bump this in lockstep.
+const MEASURED_CHROME_PX: f32 = 25.0;
 
 /// How a [`Collapsible`] (or [`Accordion`] item) animates between
 /// open and closed states.
 ///
-/// `Smooth` is the default. Pick `Snap` when motion is wrong for the
-/// surface (a dense data tree, an oncall dashboard, a reduced-motion
-/// preference). Adding new transition flavors here is the supported
-/// extensibility seam — components select stylesheets per variant
-/// inside, no per-app CSS knowledge required.
+/// `Measured` is the default and the only smooth option — measures
+/// the body's natural content height via [`ViewHandle::on_layout`]
+/// (web `ResizeObserver` etc.) and tweens `AnimProp::MaxHeight` to
+/// that exact value via the framework's animator. `Snap` is the
+/// no-animation option for reduced-motion contexts.
+///
+/// Adding new transition flavors lands here as new enum variants
+/// — components select stylesheets + animation strategies per
+/// variant inside, no per-app CSS knowledge required.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum CollapsibleTransition {
-    /// Animated `max-height` + `opacity` + `padding` over ~240ms. The
-    /// content grows smoothly into place. Content taller than the
-    /// stylesheet's `max-height` cap (2000px) grows smoothly to the
-    /// cap then snaps the remainder.
-    #[default]
-    Smooth,
-    /// No transition. State changes apply in one frame. Cheap and
+    /// No animation. State changes apply in one frame. Cheap and
     /// predictable; matches the `prefers-reduced-motion` user
     /// preference (which apps can wire to `Snap` themselves).
     Snap,
+    /// **Measured** — the recommended default. Measures the body's
+    /// natural content height via [`ViewHandle::on_layout`], then
+    /// animates `AnimProp::MaxHeight` between `0 ↔ measured` via the
+    /// framework's animator. No fixed cap — the open animation grows
+    /// the body exactly as tall as its content. Works on every
+    /// backend that supports `set_animated_f32` for `MaxHeight`
+    /// (web today; iOS/Android pending native animation API).
+    #[default]
+    Measured,
 }
 
 // =============================================================================
@@ -108,19 +136,17 @@ pub struct CollapsibleProps {
     /// `Rc::new(move |v| value.set(v))` for the standard "click =
     /// toggle" wiring.
     pub on_change: Rc<dyn Fn(bool)>,
-    /// How to animate the open/close — `Smooth` (default) or `Snap`.
+    /// How to animate the open/close — `Measured` (default) or
+    /// `Snap`.
     pub transition: CollapsibleTransition,
-    /// Smooth-transition max-height cap in pixels. Only meaningful
-    /// when `transition = Smooth`. Default
-    /// [`SMOOTH_MAX_HEIGHT_DEFAULT_PX`] (400). Tune up for taller
-    /// content — the visible portion of the open animation is
-    /// `content-height / max_height` of the duration, so a cap close
-    /// to actual content height feels smoothest. Content taller than
-    /// the cap clips during the transition then stretches at the
-    /// end.
-    pub max_height: f32,
+    /// Duration of the open/close animation in milliseconds. Only
+    /// meaningful when `transition = Measured` (Snap is instant).
+    /// Default [`COLLAPSIBLE_DURATION_DEFAULT_MS`] (240). See the
+    /// constant docs for the chrome-vs-AV timing caveat.
+    pub duration_ms: u32,
     /// Body contents. Always mounted; visibility flows through the
-    /// stylesheet variant axis selected by `transition`.
+    /// per-`transition` strategy (variant axis swap for `Snap`,
+    /// `AnimProp::MaxHeight` tween for `Measured`).
     pub children: Vec<Element>,
 }
 
@@ -131,7 +157,7 @@ impl Default for CollapsibleProps {
             value: Signal::new(false),
             on_change: Rc::new(|_| {}),
             transition: CollapsibleTransition::default(),
-            max_height: SMOOTH_MAX_HEIGHT_DEFAULT_PX,
+            duration_ms: COLLAPSIBLE_DURATION_DEFAULT_MS,
             children: Vec::new(),
         }
     }
@@ -141,7 +167,7 @@ impl Default for CollapsibleProps {
 pub fn Collapsible(props: CollapsibleProps) -> Element {
     let container = CollapsibleContainer();
     let header = collapsible_header(props.title, props.value, props.on_change);
-    let body = collapsible_body(props.value, props.transition, props.max_height, props.children);
+    let body = collapsible_body(props.value, props.transition, props.duration_ms, props.children);
     ui! {
         view(style = container) {
             header
@@ -188,26 +214,22 @@ fn collapsible_header(
         .into_element()
 }
 
-/// The collapsible body — always mounted; visibility is driven by the
-/// stylesheet's `open` variant axis (`closed` vs `shown`). The browser
-/// transitions opacity + padding when the variant flips. The
-/// `max_height` snap is instant (the framework's transition vocabulary
-/// doesn't cover `height: auto`); padding + opacity carry the visible
-/// animation.
+/// The collapsible body. Dispatches on `transition`:
+/// - `Snap`: instantaneous show/hide via the `CollapsibleBody`
+///   stylesheet's `open` variant axis (max-height 0 ↔ shown is one
+///   frame, no CSS transition declared).
+/// - `Measured`: see [`measured_body`].
 ///
 /// Why not `presence`: presence's body closure has a `Fn`-bound
-/// signature, but `Vec<Element>` is single-move. Keeping the DOM
+/// signature, but `Vec<Element>` is single-move. Keeping the body
 /// permanently mounted sidesteps the rebuild requirement and matches
-/// how most disclosure widgets are implemented on the web — the
-/// browser already handles the per-property transition.
-///
-/// The `max_height: 2000px` cap in the `shown` variant covers typical
-/// section content; very tall bodies would clip past that. Bumping it
-/// is a one-line edit on the stylesheet.
+/// how most disclosure widgets are implemented — the visible
+/// animation flows through inline-style writes (Measured) or
+/// variant axis swap (Snap) on a stable subtree.
 fn collapsible_body(
     value: Signal<bool>,
     transition: CollapsibleTransition,
-    max_height: f32,
+    duration_ms: u32,
     children: Vec<Element>,
 ) -> Element {
     let mut kids: Vec<Element> = Vec::with_capacity(children.len());
@@ -226,30 +248,135 @@ fn collapsible_body(
             }));
             ui! { view(style = style) { kids } }
         }
-        CollapsibleTransition::Smooth => {
-            // Closure form so we can layer a per-instance
-            // `max_height` override on top of the variant — the
-            // stylesheet's literal value is just a fallback when
-            // authors don't tune.
-            let style = move || {
-                let variant = if value.get() {
-                    CollapsibleBodySmoothOpen::Shown
-                } else {
-                    CollapsibleBodySmoothOpen::Closed
-                };
-                let mut app = StyleApplication::new(CollapsibleBodySmooth::sheet())
-                    .with("open", variant.as_variant_str().to_string());
-                if value.get() {
-                    // Only override on the open state — closed keeps
-                    // max_height: 0 from the variant.
-                    app.overrides.max_height =
-                        Some(Tokenized::Literal(Length::Px(max_height)));
-                }
-                app
-            };
-            ui! { view(style = style) { kids } }
-        }
+        CollapsibleTransition::Measured => measured_body(value, duration_ms, kids),
     }
+}
+
+/// Body for `CollapsibleTransition::Measured`. The wiring:
+///
+/// 1. Outer `view` (bound to `body_ref`) is what we animate — its
+///    `max_height` is driven by `av: AnimatedValue<f32>` via
+///    `AnimProp::MaxHeight`.
+/// 2. Inner `view` (bound to `content_ref`) holds the actual content.
+///    A `LayoutSubscription` on this inner view captures the natural
+///    content height into `natural_height: Signal<f32>` — re-fires on
+///    content changes so the target always tracks reality.
+/// 3. An `Effect` watches both `value` and `natural_height` and
+///    triggers a `TweenTo` on `av` whenever they change: target =
+///    `natural_height + MEASURED_CHROME_PX` when open, `0.0` when
+///    closed. The chrome offset compensates for `box-sizing:
+///    border-box` (framework universal) — without it, max-height
+///    would clip the bottom of content by padding + border height.
+///
+/// Why two views: the outer one carries the `overflow: hidden` + the
+/// animated max-height. The inner one is in the natural-flow layout
+/// so `ResizeObserver` (or platform equivalent) sees its full height
+/// regardless of the outer's max-height clamp.
+fn measured_body(value: Signal<bool>, duration_ms: u32, kids: Vec<Element>) -> Element {
+    // Per-instance signals + handles.
+    let natural_height: Signal<f32> = signal!(0.0);
+    let body_ref: Ref<ViewHandle> = Ref::new();
+    let content_ref: Ref<ViewHandle> = Ref::new();
+
+    // AnimatedValue drives the outer view's `max_height` via the
+    // framework's per-frame writer. We don't need the result —
+    // `bind` itself anchors the binding into the active scope.
+    let av: AnimatedValue<f32> = AnimatedValue::new(0.0);
+    av.bind(body_ref, AnimProp::MaxHeight);
+
+    // Capture the layout subscription into a Rc<RefCell> so its
+    // lifetime is the closure's, not the Signal's (LayoutSubscription
+    // isn't Clone — it owns the unsubscribe closure).
+    //
+    // Setup is deferred to `after_animation_frame` because `content_ref`
+    // isn't filled until after the framework's mount pass completes —
+    // an Effect created here runs synchronously during render, before
+    // the ref is populated. The next-frame callback runs after mount
+    // (and after the first paint), at which point `content_ref.with`
+    // returns the filled ViewHandle and we can register the
+    // ResizeObserver against the real DOM element.
+    let layout_sub_holder: std::rc::Rc<std::cell::RefCell<Option<LayoutSubscription>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+    let holder_for_setup = layout_sub_holder.clone();
+    let setup_task = runtime_core::after_animation_frame(move || {
+        let sub_opt = content_ref.with(|h| {
+            h.on_layout(move |_w, h| {
+                if (natural_height.get() - h).abs() > 0.5 {
+                    natural_height.set(h);
+                }
+            })
+        });
+        if let Some(sub) = sub_opt {
+            *holder_for_setup.borrow_mut() = Some(sub);
+        }
+    });
+    // Both must outlive the function return — ScheduledTask cancels on
+    // drop, holder owns the subscription that cancels on drop.
+    std::mem::forget(setup_task);
+    std::mem::forget(layout_sub_holder);
+
+    // Toggle effect: kick a TweenTo on `av` whenever `value` or
+    // `natural_height` flips. Reading both inside the effect closure
+    // subscribes to both — value changes trigger an open/close
+    // animation; height changes mid-open (content grew/shrunk)
+    // re-tween to the new target.
+    let _toggle = runtime_core::Effect::new(move || {
+        let open = value.get();
+        // Add chrome offset to the measured content height — the
+        // outer's `box-sizing: border-box` (framework universal)
+        // means max-height covers padding + border + content. The
+        // ResizeObserver on the inner reports only content height,
+        // so we'd clip the bottom of content by the chrome amount
+        // without this addition.
+        let target = if open {
+            let nh = natural_height.get();
+            if nh > 0.0 { nh + MEASURED_CHROME_PX } else { 0.0 }
+        } else {
+            0.0
+        };
+        // `TweenTo` from the framework animation system — handles
+        // raf loop, easing, cancellation. The chrome transitions
+        // (padding, opacity, border) on `CollapsibleBodyAnimated`
+        // are baked at 200–240ms; keep `duration_ms` near 240 to
+        // avoid the chrome finishing visibly out of sync with the
+        // height.
+        av.animate(TweenTo::new(target, Duration::from_millis(duration_ms as u64)).ease_out());
+    });
+    std::mem::forget(_toggle);
+
+    // Outer view — `body_ref` binds for AnimatedValue (drives
+    // max-height per frame). The variant axis switches between
+    // `closed` and `shown` based on `value`, so padding / opacity /
+    // border-top CSS-transition between the variants' values via
+    // the declared transitions on `CollapsibleBodyAnimated`.
+    //
+    // Division of labor:
+    //   - max-height: driven by AV (animator-precise to natural height)
+    //   - padding-top/bottom, opacity, border-top: CSS transitions
+    //     on variant swap (handled by the browser)
+    //
+    // Both run concurrently over ~240ms — the body's chrome
+    // (padding, border) collapses with the height, so closed items
+    // leave zero visible footprint.
+    let outer_style = move || {
+        let variant = if value.get() {
+            CollapsibleBodyAnimatedOpen::Shown
+        } else {
+            CollapsibleBodyAnimatedOpen::Closed
+        };
+        StyleApplication::new(CollapsibleBodyAnimated::sheet())
+            .with("open", variant.as_variant_str().to_string())
+    };
+
+    // Inner view is in natural flow — its layout reports the
+    // intrinsic content height regardless of the outer's clamp.
+    // Use the framework's view() builder to chain `.bind(ref)` —
+    // the `ui!` macro doesn't expose a `ref =` prop.
+    let inner = runtime_core::view(kids).bind(content_ref).into_element();
+    runtime_core::view(vec![inner])
+        .with_style(outer_style)
+        .bind(body_ref)
+        .into_element()
 }
 
 // =============================================================================
@@ -294,12 +421,13 @@ pub struct AccordionProps {
     /// subset). Default: [`AccordionExpand::Single`].
     pub expand: AccordionExpand,
     /// How each item animates between open and closed. Default:
-    /// [`CollapsibleTransition::Smooth`].
+    /// [`CollapsibleTransition::Measured`].
     pub transition: CollapsibleTransition,
-    /// Smooth-transition max-height cap (px). Forwarded to each
-    /// item's underlying Collapsible. Default
-    /// [`SMOOTH_MAX_HEIGHT_DEFAULT_PX`]. See [`CollapsibleProps::max_height`].
-    pub max_height: f32,
+    /// Duration of each item's open/close animation in milliseconds.
+    /// Forwarded to every item's underlying Collapsible. Default
+    /// [`COLLAPSIBLE_DURATION_DEFAULT_MS`] (240). See
+    /// [`CollapsibleProps::duration_ms`].
+    pub duration_ms: u32,
     /// Fires after the Accordion mutates `open` in response to a
     /// click. Receives the index that was clicked and that item's
     /// new state. Optional — the Accordion already wrote the change
@@ -315,7 +443,7 @@ impl Default for AccordionProps {
             open: Signal::new(Vec::new()),
             expand: AccordionExpand::default(),
             transition: CollapsibleTransition::default(),
-            max_height: SMOOTH_MAX_HEIGHT_DEFAULT_PX,
+            duration_ms: COLLAPSIBLE_DURATION_DEFAULT_MS,
             on_change: None,
         }
     }
@@ -327,7 +455,7 @@ pub fn Accordion(props: AccordionProps) -> Element {
     let open_state = props.open;
     let expand = props.expand;
     let transition = props.transition;
-    let max_height = props.max_height;
+    let duration_ms = props.duration_ms;
     let on_change = props.on_change;
     let n = props.items.len();
 
@@ -385,7 +513,7 @@ pub fn Accordion(props: AccordionProps) -> Element {
         // Build the collapsible header + body in a wrapper that
         // contributes the inter-item divider when not first.
         let header = collapsible_header(item.title, item_open, item_on_change);
-        let body = collapsible_body(item_open, transition, max_height, vec![item.body]);
+        let body = collapsible_body(item_open, transition, duration_ms, vec![item.body]);
 
         let item_block = if idx == 0 {
             // First item: no top divider; the container's own border

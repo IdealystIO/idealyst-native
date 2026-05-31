@@ -66,6 +66,22 @@ pub(crate) struct TabDrawerEntry {
     pub(crate) mount_policy: MountPolicy,
     pub(crate) mounted: Rc<RefCell<HashMap<&'static str, MountedScreen>>>,
     pub(crate) current_route: Rc<RefCell<Option<&'static str>>>,
+    /// The on-screen view of whichever screen is currently active.
+    /// Populated for every screen regardless of policy — for
+    /// `LazyPersistent` it mirrors the cached `MountedScreen.view`;
+    /// for `LazyDisposing` it's the only handle (the screen isn't in
+    /// the cache because LazyDisposing screens get released and
+    /// rebuilt). `select_screen` reads this to know which subview to
+    /// hide vs `removeFromSuperview` on the outgoing transition.
+    pub(crate) current_view: Rc<RefCell<Option<Retained<UIView>>>>,
+    /// Effective mount policy of the currently active screen (the
+    /// screen's own override if `IosScreenOptions::mount_policy` was
+    /// set, else the navigator-global default). Used by
+    /// `select_screen` to branch on the OUTGOING screen's policy
+    /// rather than the navigator default — so a `LazyDisposing` home
+    /// screen can drop its scope on blur even when the navigator
+    /// global is `LazyPersistent`.
+    pub(crate) current_effective_policy: Rc<RefCell<MountPolicy>>,
     pub(crate) active_route_sig: runtime_core::Signal<&'static str>,
     pub(crate) header_root_vc: Option<Retained<UIViewController>>,
     pub(crate) header_nav_ctrl: Option<Retained<NSObject>>,
@@ -102,6 +118,9 @@ pub(crate) fn create_tab(
     let mounted: Rc<RefCell<HashMap<&'static str, MountedScreen>>> =
         Rc::new(RefCell::new(HashMap::new()));
     let current_route: Rc<RefCell<Option<&'static str>>> = Rc::new(RefCell::new(None));
+    let current_view: Rc<RefCell<Option<Retained<UIView>>>> = Rc::new(RefCell::new(None));
+    let current_effective_policy: Rc<RefCell<MountPolicy>> =
+        Rc::new(RefCell::new(mount_policy));
     let entry = TabDrawerEntry {
         outer: outer.clone(),
         content_host: outer.clone(),
@@ -113,6 +132,8 @@ pub(crate) fn create_tab(
         mount_policy,
         mounted: mounted.clone(),
         current_route: current_route.clone(),
+        current_view: current_view.clone(),
+        current_effective_policy: current_effective_policy.clone(),
         active_route_sig,
         menu_callback_target: None,
         header_root_vc: None,
@@ -138,6 +159,8 @@ pub(crate) fn create_tab(
     let cs_for_dispatch = current_scope.clone();
     let mounted_for_dispatch = mounted.clone();
     let current_route_for_dispatch = current_route.clone();
+    let current_view_for_dispatch = current_view.clone();
+    let current_policy_for_dispatch = current_effective_policy.clone();
 
     control.install(Box::new(move |cmd| {
         if let NavCommand::Select { name, params, url: _, state: _ } = cmd {
@@ -146,6 +169,8 @@ pub(crate) fn create_tab(
                 &body_for_dispatch,
                 &mounted_for_dispatch,
                 &current_route_for_dispatch,
+                &current_view_for_dispatch,
+                &current_policy_for_dispatch,
                 &cs_for_dispatch,
                 &mount,
                 &release,
@@ -161,108 +186,147 @@ pub(crate) fn create_tab(
     IosNode::View(outer)
 }
 
-/// Shared screen-switch logic for tab and drawer navigators. Honors
-/// Mount or re-show the screen named `name`, applying per-screen
-/// `MountPolicy` to both the outgoing screen (looked up from the
-/// `mounted` map) and the incoming one (read from its returned
-/// `IosScreenOptions::mount_policy`, falling back to
-/// `nav_global_policy`).
+/// Shared screen-switch logic for tab and drawer navigators.
 ///
-/// Outgoing transitions:
-/// - cached `LazyDisposing`: release its scope, removeFromSuperview,
-///   drop the cache entry.
-/// - cached `LazyPersistent` / `EagerPersistent`: `setHidden:true`,
-///   keep the entry for the next revisit.
+/// Honors per-screen `IosScreenOptions::mount_policy`: the OUTGOING
+/// screen's effective policy decides whether its view is hidden or
+/// fully released; the INCOMING screen's effective policy decides
+/// whether it's added to the persistence cache.
 ///
-/// Incoming transitions:
-/// - cache hit: unhide.
-/// - cache miss: call `mount_fn`, attach the new view, cache the
-///   entry (record `effective_policy` so the next transition knows
-///   what to do with this screen on blur).
+/// Default behavior when no per-screen override is set matches the
+/// navigator-global `navigator_default_policy`.
+///
+/// Why the per-screen branch matters: a graphics-heavy screen (the
+/// website's home + embedded `Simulator`) wants `LazyDisposing` so
+/// its wgpu host + descendant UIView tree get released when blurred
+/// and rebuilt from scratch when re-focused. Other text-only screens
+/// in the same navigator stay `LazyPersistent` so navigating back
+/// to them is instant.
 fn select_screen(
-    nav_global_policy: MountPolicy,
+    navigator_default_policy: MountPolicy,
     body: &Retained<UIView>,
     mounted: &Rc<RefCell<HashMap<&'static str, MountedScreen>>>,
     current_route: &Rc<RefCell<Option<&'static str>>>,
+    current_view: &Rc<RefCell<Option<Retained<UIView>>>>,
+    current_effective_policy: &Rc<RefCell<MountPolicy>>,
     current_scope: &Rc<RefCell<Option<u64>>>,
     mount_fn: &Rc<dyn Fn(&'static str, Box<dyn std::any::Any>) -> MountResult<IosNode>>,
     release_fn: &Rc<dyn Fn(u64)>,
     name: &'static str,
     params: Box<dyn std::any::Any>,
 ) -> IosScreenOptions {
-    // Handle the outgoing screen per its own cached policy.
-    if let Some(prev) = current_route.borrow().clone() {
-        if prev != name {
-            let entry = mounted.borrow_mut().remove(prev);
-            if let Some(m) = entry {
-                match m.effective_policy {
-                    MountPolicy::LazyDisposing => {
-                        // Disposing: release the scope + view; drop
-                        // the cache entry. Next time this route is
-                        // shown it'll mount fresh.
-                        release_fn(m.scope_id);
-                        unsafe { m.view.removeFromSuperview() };
-                    }
-                    MountPolicy::LazyPersistent | MountPolicy::EagerPersistent => {
-                        // Persistent: hide + re-insert the entry.
-                        let _: () =
-                            unsafe { msg_send![m.view.as_ref(), setHidden: true] };
-                        mounted.borrow_mut().insert(prev, m);
-                    }
+    // ---- Outgoing transition ----
+    //
+    // The outgoing screen's policy decides hide vs release. Only
+    // touch the outgoing view — cached `LazyPersistent` screens
+    // that aren't the current outgoing stay where they are (still
+    // in `body.subviews()`, still hidden).
+    let prev_route_name = current_route.borrow().clone();
+    let prev_view_opt = current_view.borrow().clone();
+    let prev_policy = *current_effective_policy.borrow();
+    if let (Some(prev_name), Some(prev_view)) = (prev_route_name, prev_view_opt) {
+        match prev_policy {
+            MountPolicy::LazyDisposing => {
+                // Drop the scope first so descendant cleanups
+                // (the embedded wgpu host's `on_lost`, animator
+                // tick handles, subscriptions) fire before the
+                // UIView leaves the hierarchy. Releasing in the
+                // other order is safe in practice — UIKit doesn't
+                // require ordering — but firing cleanups first
+                // keeps the lifecycle story easy to reason about.
+                if let Some(old_scope) = current_scope.borrow_mut().take() {
+                    release_fn(old_scope);
                 }
+                unsafe { prev_view.removeFromSuperview() };
+                // `LazyDisposing` screens aren't in the persistence
+                // cache by construction, but defensively remove in
+                // case a prior policy change left a stale entry.
+                mounted.borrow_mut().remove(prev_name);
+            }
+            MountPolicy::LazyPersistent | MountPolicy::EagerPersistent => {
+                let _: () = unsafe { msg_send![prev_view.as_ref(), setHidden: true] };
             }
         }
     }
 
-    // Cache hit on the incoming screen → unhide + re-apply options.
-    {
-        let map = mounted.borrow();
-        if let Some(m) = map.get(name) {
-            let _: () = unsafe { msg_send![m.view.as_ref(), setHidden: false] };
-            *current_scope.borrow_mut() = Some(m.scope_id);
-            *current_route.borrow_mut() = Some(name);
-            return m.options.clone();
-        }
+    // ---- Incoming: cache hit? ----
+    //
+    // `LazyPersistent` / `EagerPersistent` screens previously
+    // visited stay in `mounted` with their view in `body.subviews()`
+    // (hidden). Re-focus just unhides.
+    let cached = mounted.borrow().get(name).cloned_for_select();
+    if let Some(m) = cached {
+        let _: () = unsafe { msg_send![m.view.as_ref(), setHidden: false] };
+        *current_scope.borrow_mut() = Some(m.scope_id);
+        *current_view.borrow_mut() = Some(m.view.clone());
+        *current_effective_policy.borrow_mut() = m.effective_policy;
+        *current_route.borrow_mut() = Some(name);
+        return m.options;
     }
 
-    // Cache miss → mount fresh and decide caching based on this
-    // screen's effective policy.
+    // ---- Incoming: fresh mount ----
     let result = mount_fn(name, params);
     let view: Retained<UIView> = unsafe {
         Retained::retain(result.node.as_view() as *const UIView as *mut UIView).unwrap()
     };
     attach_screen(body, &view);
-    // Force a synchronous Taffy + Auto Layout pass so the new screen
-    // has computed frames before the next render cycle; otherwise
-    // the user sees a brief white flash until the next layout pass
-    // runs.
     backend_ios::with_backend(|b| b.run_layout());
     unsafe {
         let _: () = msg_send![body.as_ref(), layoutIfNeeded];
     }
     sync_scroll_content_size(body, &view);
-    let options = result
+
+    let options: IosScreenOptions = result
         .options
         .downcast_ref::<IosScreenOptions>()
         .cloned()
         .unwrap_or_default();
-    let effective_policy = options.mount_policy.unwrap_or(nav_global_policy);
+    let effective_policy = options.mount_policy.unwrap_or(navigator_default_policy);
+
     *current_scope.borrow_mut() = Some(result.scope_id);
+    *current_view.borrow_mut() = Some(view.clone());
+    *current_effective_policy.borrow_mut() = effective_policy;
     *current_route.borrow_mut() = Some(name);
-    // Cache regardless of policy. Disposing screens stay cached
-    // *while* they are the active screen — the dispose runs on the
-    // next outgoing transition (above). Persistent screens stay
-    // cached across transitions.
-    mounted.borrow_mut().insert(
-        name,
-        MountedScreen {
-            view,
-            scope_id: result.scope_id,
-            options: options.clone(),
-            effective_policy,
-        },
-    );
+
+    // Only cache Persistent screens. `LazyDisposing` ones live only
+    // in `current_view` / `current_scope` until they blur.
+    if matches!(
+        effective_policy,
+        MountPolicy::LazyPersistent | MountPolicy::EagerPersistent
+    ) {
+        mounted.borrow_mut().insert(
+            name,
+            MountedScreen {
+                view,
+                scope_id: result.scope_id,
+                options: options.clone(),
+                effective_policy,
+            },
+        );
+    }
+
     options
+}
+
+/// Trivial helper trait so `Option<&MountedScreen>` can `.cloned()`
+/// at a call site where the inner type doesn't implement `Clone`
+/// for the whole struct via derive (it doesn't — `Retained<UIView>`
+/// is `Clone` but the struct doesn't derive it because some prior
+/// version held non-`Clone` fields). Keeps the call site readable
+/// without sprinkling `.map(|m| MountedScreen { … })`.
+trait CloneForSelect {
+    fn cloned_for_select(&self) -> Option<MountedScreen>;
+}
+
+impl CloneForSelect for Option<&MountedScreen> {
+    fn cloned_for_select(&self) -> Option<MountedScreen> {
+        self.map(|m| MountedScreen {
+            view: m.view.clone(),
+            scope_id: m.scope_id,
+            options: m.options.clone(),
+            effective_policy: m.effective_policy,
+        })
+    }
 }
 
 pub(crate) fn tab_attach_initial(
@@ -280,12 +344,26 @@ pub(crate) fn tab_attach_initial(
     pin_to_edges(&entry.body, &view);
     *entry.current_scope.borrow_mut() = Some(scope_id);
 
+    // Track current view + active route regardless of policy. The
+    // outgoing-transition path in `select_screen` reads these to
+    // decide hide vs release on the FIRST nav-away even when the
+    // initial screen is `LazyDisposing` (and therefore not in the
+    // persistence cache).
+    let initial_name = entry.active_route_sig.get();
+    *entry.current_route.borrow_mut() = Some(initial_name);
+    *entry.current_view.borrow_mut() = Some(view.clone());
+    // Tab navigators don't yet propagate per-screen
+    // `IosScreenOptions` for the initial screen — the SDK call site
+    // doesn't thread them through `tab_attach_initial`. Fall back to
+    // the navigator-global policy; per-screen overrides still take
+    // effect on subsequent navigations once `select_screen` reads
+    // them from the mount result.
+    *entry.current_effective_policy.borrow_mut() = entry.mount_policy;
+
     if matches!(
         entry.mount_policy,
         MountPolicy::LazyPersistent | MountPolicy::EagerPersistent
     ) {
-        let initial_name = entry.active_route_sig.get();
-        *entry.current_route.borrow_mut() = Some(initial_name);
         entry.mounted.borrow_mut().insert(
             initial_name,
             MountedScreen {
@@ -473,6 +551,9 @@ pub(crate) fn create_drawer(
     let mounted: Rc<RefCell<HashMap<&'static str, MountedScreen>>> =
         Rc::new(RefCell::new(HashMap::new()));
     let current_route: Rc<RefCell<Option<&'static str>>> = Rc::new(RefCell::new(None));
+    let current_view: Rc<RefCell<Option<Retained<UIView>>>> = Rc::new(RefCell::new(None));
+    let current_effective_policy: Rc<RefCell<MountPolicy>> =
+        Rc::new(RefCell::new(mount_policy));
 
     // Install a leading hamburger button on `root_vc.navigationItem`.
     // Tapping dispatches `Custom(DrawerCmd::Open)` on the navigator's
@@ -509,6 +590,8 @@ pub(crate) fn create_drawer(
         mount_policy,
         mounted: mounted.clone(),
         current_route: current_route.clone(),
+        current_view: current_view.clone(),
+        current_effective_policy: current_effective_policy.clone(),
         active_route_sig,
         menu_callback_target: Some(menu_target_retain),
         header_root_vc: Some(root_vc.clone()),
@@ -576,6 +659,8 @@ pub(crate) fn create_drawer(
     let is_open_for_dispatch = is_open.clone();
     let mounted_for_dispatch = mounted.clone();
     let current_route_for_dispatch = current_route.clone();
+    let current_view_for_dispatch = current_view.clone();
+    let current_policy_for_dispatch = current_effective_policy.clone();
     let scrim_ref = scrim.clone();
     let sidebar_for_anim = sidebar_cell.clone();
     let body_for_anim = nav_view.clone();
@@ -752,6 +837,8 @@ pub(crate) fn create_drawer(
                 &body_for_dispatch,
                 &mounted_for_dispatch,
                 &current_route_for_dispatch,
+                &current_view_for_dispatch,
+                &current_policy_for_dispatch,
                 &cs_for_dispatch,
                 &mount,
                 &release,
@@ -854,13 +941,21 @@ pub(crate) fn drawer_attach_initial(
     });
     *entry.current_scope.borrow_mut() = Some(scope_id);
 
+    // Track the active screen regardless of policy so the
+    // outgoing-transition path in `select_screen` can read it on
+    // the FIRST nav-away. The initial screen IS in the cache when
+    // its effective policy is Persistent; otherwise the cache stays
+    // empty and `current_view` is the only handle to it.
+    let initial_name = entry.active_route_sig.get();
+    let effective_policy = options.mount_policy.unwrap_or(entry.mount_policy);
+    *entry.current_route.borrow_mut() = Some(initial_name);
+    *entry.current_view.borrow_mut() = Some(view.clone());
+    *entry.current_effective_policy.borrow_mut() = effective_policy;
+
     if matches!(
-        entry.mount_policy,
+        effective_policy,
         MountPolicy::LazyPersistent | MountPolicy::EagerPersistent
     ) {
-        let initial_name = entry.active_route_sig.get();
-        *entry.current_route.borrow_mut() = Some(initial_name);
-        let effective_policy = options.mount_policy.unwrap_or(entry.mount_policy);
         entry.mounted.borrow_mut().insert(
             initial_name,
             MountedScreen {

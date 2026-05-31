@@ -22,6 +22,7 @@ pub(crate) fn apply_rules(
     rules: &StyleRules,
     font_registry: &FontRegistry,
 ) {
+    let _t_total = crate::phase_timer::PhaseTimer::start("apply_style_total");
     let view = node.as_obj();
 
     // --- Padding.
@@ -325,6 +326,7 @@ pub(crate) fn apply_rules(
     let has_gradient = rules.background_gradient.is_some();
 
     if has_border || has_radius || has_gradient {
+        let _t = crate::phase_timer::PhaseTimer::start("apply_drawable_path");
         apply_drawable_path(env, node, state, rules);
     } else if let Some(c) = rules.background.as_ref().map(|t| t.resolve()) {
         if let Some(packed) = parse_color(&c.0) {
@@ -584,64 +586,235 @@ fn apply_drawable_path(
         }
     }
 
-    // --- Stroke. GradientDrawable.setStroke(width, color) — single
-    //     value. We collapse per-side to the first that's set (same
-    //     as before). Width + color may each animate.
-    // `border_*_width` is `Option<Tokenized<f32>>` after the
-    // tokenization refactor. Resolve to the literal (native has no
-    // token system) before passing to `dp_to_px`.
-    let want_w = rules
-        .border_top_width
-        .as_ref()
-        .or(rules.border_right_width.as_ref())
-        .or(rules.border_bottom_width.as_ref())
-        .or(rules.border_left_width.as_ref())
-        .map(|tok| dp_to_px(env, &view, tok.resolve()));
-    let want_c = rules
+    // --- Per-side borders.
+    //
+    // Android's `GradientDrawable.setStroke(width, color)` is uniform-
+    // only (all four sides get the same width + color). The framework's
+    // CSS-style API lets authors set `border_bottom_width: 1` without
+    // touching the other three sides, which never had a sane mapping
+    // onto `setStroke`. We instead paint each side ourselves via the
+    // `RustBorderDrawable` Kotlin helper, attached as the View's
+    // foreground (renders over content + children, matching the
+    // CSS "border sits on the box edge" model).
+    //
+    // This mirrors the iOS backend's per-side `UIView` subview
+    // approach (`install_border_side` in
+    // `backend-ios-core/src/style.rs`). A custom Drawable is cleaner
+    // than adding chrome subviews on Android because it doesn't
+    // create extra Views that Taffy / the layout-pass walker /
+    // hit-testing need to special-case.
+    //
+    // Snap-only for now — animating per-side borders would need a
+    // ValueAnimator per side. Authors transitioning whole-card
+    // border-color (the only common case) won't notice; the previous
+    // `setStroke` animator path only covered the uniform border
+    // anyway.
+    //
+    // Clear any stale `GradientDrawable` stroke from before this fix
+    // landed on a node — otherwise the bottom of a card would show
+    // the per-side bottom border PLUS a uniform 1px stroke from the
+    // drawable underneath.
+    if state.last_stroke_w.is_some() {
+        let _ = env.call_method(
+            &drawable_obj,
+            "setStroke",
+            "(II)V",
+            &[JValue::Int(0), JValue::Int(0)],
+        );
+        state.last_stroke_w = None;
+        state.last_stroke_color = None;
+        cancel_animator(env, state.anim_stroke_w.take());
+    }
+
+    let widths_px: [i32; 4] = [
+        rules
+            .border_top_width
+            .as_ref()
+            .map(|t| dp_to_px(env, &view, t.resolve()))
+            .unwrap_or(0),
+        rules
+            .border_right_width
+            .as_ref()
+            .map(|t| dp_to_px(env, &view, t.resolve()))
+            .unwrap_or(0),
+        rules
+            .border_bottom_width
+            .as_ref()
+            .map(|t| dp_to_px(env, &view, t.resolve()))
+            .unwrap_or(0),
+        rules
+            .border_left_width
+            .as_ref()
+            .map(|t| dp_to_px(env, &view, t.resolve()))
+            .unwrap_or(0),
+    ];
+    // Per-CSS, an unset per-side color falls back to the first
+    // border-color that IS set on any side. Lets authors write
+    // `border_color: "black"` once and `border_*_width` per side
+    // without having to repeat the color four times.
+    let fallback_color = rules
         .border_top_color
         .as_ref()
         .or(rules.border_right_color.as_ref())
         .or(rules.border_bottom_color.as_ref())
         .or(rules.border_left_color.as_ref())
-        .and_then(|c| parse_color(&c.resolve().0));
+        .and_then(|c| parse_color(&c.resolve().0))
+        .unwrap_or(0); // 0 = fully transparent; renders nothing
+    let colors_argb: [i32; 4] = [
+        rules
+            .border_top_color
+            .as_ref()
+            .and_then(|c| parse_color(&c.resolve().0))
+            .unwrap_or(fallback_color),
+        rules
+            .border_right_color
+            .as_ref()
+            .and_then(|c| parse_color(&c.resolve().0))
+            .unwrap_or(fallback_color),
+        rules
+            .border_bottom_color
+            .as_ref()
+            .and_then(|c| parse_color(&c.resolve().0))
+            .unwrap_or(fallback_color),
+        rules
+            .border_left_color
+            .as_ref()
+            .and_then(|c| parse_color(&c.resolve().0))
+            .unwrap_or(fallback_color),
+    ];
 
-    if let (Some(w), Some(c)) = (want_w, want_c) {
-        let prev_w = state.last_stroke_w;
-        let prev_c = state.last_stroke_color;
-        let w_changed = prev_w != Some(w);
-        let c_changed = prev_c != Some(c);
-        state.last_stroke_w = Some(w);
-        state.last_stroke_color = Some(c);
-        if w_changed || c_changed {
-            // setStroke is a single combined call. We don't have a
-            // separate "stroke width" property to animate via
-            // ObjectAnimator, so for animated stroke we use a
-            // ValueAnimator that re-invokes setStroke on each tick.
-            let w_t = rules
-                .border_top_width_transition
-                .or(rules.border_right_width_transition)
-                .or(rules.border_bottom_width_transition)
-                .or(rules.border_left_width_transition);
-            let c_t = rules
-                .border_top_color_transition
-                .or(rules.border_right_color_transition)
-                .or(rules.border_bottom_color_transition)
-                .or(rules.border_left_color_transition);
-            match (prev_w, prev_c, w_t.or(c_t)) {
-                (Some(fw), Some(fc), Some(t)) if (fw != w || fc != c) => {
-                    cancel_animator(env, state.anim_stroke_w.take());
-                    state.anim_stroke_w =
-                        start_stroke_animator(env, &drawable, fw, w, fc, c, t);
-                }
-                _ => {
+    let _t_border = crate::phase_timer::PhaseTimer::start("border_path");
+    let any_border = widths_px.iter().any(|w| *w > 0);
+    let state_changed = (0..4).any(|i| {
+        state.last_border_widths[i] != Some(widths_px[i])
+            || state.last_border_colors[i] != Some(colors_argb[i])
+    });
+    // Pick a single transition for all sides — first non-None in
+    // (top, right, bottom, left) order, across both width and color.
+    // Matches the iOS path's "borders snap" simplification at the
+    // semantic level: authors typically transition a single
+    // `border_color` across all sides at the same timing, and the
+    // ValueAnimator drives all four sides at the same fraction.
+    let any_transition = rules
+        .border_top_color_transition
+        .or(rules.border_right_color_transition)
+        .or(rules.border_bottom_color_transition)
+        .or(rules.border_left_color_transition)
+        .or(rules.border_top_width_transition)
+        .or(rules.border_right_width_transition)
+        .or(rules.border_bottom_width_transition)
+        .or(rules.border_left_width_transition);
+    if state_changed {
+        let prev_w = [
+            state.last_border_widths[0],
+            state.last_border_widths[1],
+            state.last_border_widths[2],
+            state.last_border_widths[3],
+        ];
+        let prev_c = [
+            state.last_border_colors[0],
+            state.last_border_colors[1],
+            state.last_border_colors[2],
+            state.last_border_colors[3],
+        ];
+        for i in 0..4 {
+            state.last_border_widths[i] = Some(widths_px[i]);
+            state.last_border_colors[i] = Some(colors_argb[i]);
+        }
+        if any_border {
+            // Create the drawable on first use; reuse the same
+            // instance on subsequent applies so we don't churn the
+            // GC. `setForeground` is idempotent — calling it on the
+            // same instance multiple times is fine.
+            let drawable_ref = match state.border_drawable.clone() {
+                Some(d) => d,
+                None => {
+                    let class = match env.find_class("io/idealyst/runtime/RustBorderDrawable") {
+                        Ok(c) => c,
+                        Err(e) => {
+                            log::error!(
+                                "RustBorderDrawable class missing — make sure the CLI was \
+                                 reinstalled after adding the runtime registry entry. \
+                                 Underlying: {:?}",
+                                e
+                            );
+                            return;
+                        }
+                    };
+                    let Ok(local) = env.new_object(&class, "()V", &[]) else {
+                        log::error!("new RustBorderDrawable failed");
+                        return;
+                    };
+                    let Ok(g) = env.new_global_ref(local) else {
+                        return;
+                    };
                     let _ = env.call_method(
-                        &drawable_obj,
-                        "setStroke",
-                        "(II)V",
-                        &[JValue::Int(w), JValue::Int(c)],
+                        &view,
+                        "setForeground",
+                        "(Landroid/graphics/drawable/Drawable;)V",
+                        &[JValue::Object(&g.as_obj())],
                     );
+                    state.border_drawable = Some(g.clone());
+                    g
                 }
+            };
+            // Decide: animator-driven interpolation or snap.
+            // Animator only if (a) author declared a transition on
+            // any border axis AND (b) we have a previous state to
+            // interpolate FROM (first apply always snaps).
+            let all_prev_known = prev_w.iter().all(|p| p.is_some())
+                && prev_c.iter().all(|p| p.is_some());
+            if let (Some(transition), true) = (any_transition, all_prev_known) {
+                cancel_animator(env, state.anim_border.take());
+                let from_w = [
+                    prev_w[0].unwrap(),
+                    prev_w[1].unwrap(),
+                    prev_w[2].unwrap(),
+                    prev_w[3].unwrap(),
+                ];
+                let from_c = [
+                    prev_c[0].unwrap(),
+                    prev_c[1].unwrap(),
+                    prev_c[2].unwrap(),
+                    prev_c[3].unwrap(),
+                ];
+                state.anim_border = start_border_animator(
+                    env,
+                    &drawable_ref,
+                    from_w,
+                    widths_px,
+                    from_c,
+                    colors_argb,
+                    transition,
+                );
+            } else {
+                cancel_animator(env, state.anim_border.take());
+                let _ = env.call_method(
+                    drawable_ref.as_obj(),
+                    "update",
+                    "(IIIIIIII)V",
+                    &[
+                        JValue::Int(widths_px[0]),
+                        JValue::Int(colors_argb[0]),
+                        JValue::Int(widths_px[1]),
+                        JValue::Int(colors_argb[1]),
+                        JValue::Int(widths_px[2]),
+                        JValue::Int(colors_argb[2]),
+                        JValue::Int(widths_px[3]),
+                        JValue::Int(colors_argb[3]),
+                    ],
+                );
             }
+        } else if let Some(_) = state.border_drawable.take() {
+            // All four sides cleared and we previously had borders —
+            // detach the foreground so the view doesn't keep
+            // referencing the drawable (and the GC can collect it).
+            let _ = env.call_method(
+                &view,
+                "setForeground",
+                "(Landroid/graphics/drawable/Drawable;)V",
+                &[JValue::Object(&JObject::null())],
+            );
         }
     }
 

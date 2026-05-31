@@ -11,11 +11,37 @@ license.workspace = true
 # 100-300× more backend ops per re-render than the single-node
 # primitive, even with the batched-Repeat fast path.
 #
-# The renderer is now BACKEND-NEUTRAL: it builds its `<pre>`+spans via
-# the `Backend` trait (`create_element` / `create_text` / `apply_style`),
-# so it server-renders on the SSR backend AND hydrates cleanly on web
-# (the build goes through the adoption cursor). No `web_sys` / backend
-# dependency — one generic `register<B: RegisterExternal>(b)`.
+# Single-node throughout: web emits one `<pre>` with child `<span>`s;
+# Android renders one `RustCodeBlock` (HorizontalScrollView + TextView
+# + SpannableString); iOS renders one UIScrollView wrapping a UILabel
+# with NSAttributedString. Per-target `register` functions live in
+# `lib.rs` behind `#[cfg(...)]`.
 
 [dependencies]
 runtime-core = { workspace = true }
+
+# Android handler depends on the Android backend's `register_external`
+# inherent method plus its JNI surface for constructing the
+# `RustCodeBlock` view and feeding it a SpannableString. The dep is
+# target-gated so non-Android targets don't try to link the Android
+# backend.
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+jni = "0.21"
+log = "0.4"
+
+# iOS handler depends on the iOS backend + core for `IosBackend` /
+# `IosNode` / `color_to_uicolor`, plus objc2 for the obj-c message
+# sends that build the NSAttributedString and UILabel.
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+backend-ios-core = { workspace = true }
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSAttributedString",
+    "NSDictionary",
+    "NSString",
+    "NSRange",
+] }
+objc2-ui-kit = { version = "0.2", features = ["UIScrollView", "UILabel"] }
+

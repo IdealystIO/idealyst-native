@@ -40,6 +40,14 @@
 #[cfg(target_os = "android")]
 mod imp;
 
+/// Phase-timer wrapper around `runtime_core::debug`'s aggregator.
+/// Zero-cost stub when `debug-stats` is off (the macro expansion is
+/// a let-binding the optimizer elides). Enabled by passing
+/// `--features debug-stats` to the variant at build time. See
+/// `phase_timer.rs` for the on/off shapes.
+#[cfg(target_os = "android")]
+mod phase_timer;
+
 /// Pure-compute helpers + host-runnable regression coverage for
 /// `Position::Sticky` on Android. The full registry / JNI-driven
 /// pipeline lives in `imp::sticky` (target_os = "android"); this

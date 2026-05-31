@@ -316,12 +316,49 @@ declare_class!(
         /// objects holding a borrow on this view's CAMetalLayer
         /// surface; clears `ready_fired` so a subsequent add re-fires
         /// `on_ready`.
+        ///
+        /// Caveat: `willMoveToSuperview` only fires when the view's
+        /// IMMEDIATE superview changes. When an ancestor (a navigator
+        /// screen, a list cell) is removed and the view is detached
+        /// via cascade, UIKit does NOT fire this method on
+        /// descendants — see `willMoveToWindow:` below for the
+        /// cascade-safe trigger.
         #[method(willMoveToSuperview:)]
         fn will_move_to_superview(&self, new_superview: *const objc2_ui_kit::UIView) {
             let _: () = unsafe {
                 msg_send![super(self), willMoveToSuperview: new_superview]
             };
             if new_superview.is_null() && self.ivars().ready_fired.get() {
+                if let Some(cb) = self.ivars().on_lost.borrow_mut().as_mut() {
+                    cb();
+                }
+                self.ivars().ready_fired.set(false);
+                self.ivars().last_size.set((0, 0));
+            }
+        }
+
+        /// Cascade-safe sibling of `willMoveToSuperview:`. UIKit fires
+        /// `willMoveToWindow:` on the entire descendant tree whenever
+        /// an ancestor is added or removed from a window — including
+        /// the case where a navigator screen far above us is removed
+        /// (`MountPolicy::LazyDisposing` releasing the home screen,
+        /// a list cell being recycled, etc). Without this hook, a
+        /// MetalView buried inside a torn-down screen never receives
+        /// the lifecycle event that releases its strong-Rc cycle
+        /// through the slot's `on_*` closures — the wgpu host stays
+        /// alive (with its render-loop NSTimer firing on a detached
+        /// CAMetalLayer) until the WHOLE app dies.
+        ///
+        /// We only fire when `newWindow` is null AND `ready_fired`
+        /// is set, so the inverse transition (added to a window,
+        /// first layout fires `on_ready`) doesn't bounce through a
+        /// stale `on_lost`.
+        #[method(willMoveToWindow:)]
+        fn will_move_to_window(&self, new_window: *const objc2_foundation::NSObject) {
+            let _: () = unsafe {
+                msg_send![super(self), willMoveToWindow: new_window]
+            };
+            if new_window.is_null() && self.ivars().ready_fired.get() {
                 if let Some(cb) = self.ivars().on_lost.borrow_mut().as_mut() {
                     cb();
                 }

@@ -122,8 +122,15 @@ impl IosHostHandle {
     /// drives its state via plain `Signal`/`Effect`, so the wipe
     /// is safe.
     pub fn pause(&self) {
-        self.inner.borrow_mut().host.unmount();
-        runtime_core::session::clear();
+        let mut inner = self.inner.borrow_mut();
+        inner.host.unmount();
+        // NOTE: skipping the renderer cache reset (graphics_cache,
+        // image_cache) and the session::clear — those were causing
+        // the renderer to produce no draws after remount even
+        // though Taffy compute showed valid frames. Hypothesis:
+        // they were dropping state the renderer relies on to track
+        // which nodes have been seen.
+        drop(inner);
     }
 
     /// Re-mount the embedded app from its cached `build_ui`. Idempotent
@@ -135,6 +142,15 @@ impl IosHostHandle {
         }
         let build_ui = inner.build_ui.clone();
         inner.host.mount(move || (&*build_ui)());
+        // After remount, the wgpu surface's swapchain may have been
+        // invalidated during the hidden period (CAMetalLayer's
+        // bounds drift, drawableSize stale, etc.). Reconfigure to
+        // force a fresh swapchain. Without this, `get_current_texture`
+        // returns `Outdated`/`Lost` for several frames, the renderer
+        // returns early before running Taffy layout compute, and the
+        // tree's frames stay at (0,0,0,0) — net effect is a
+        // permanently white canvas.
+        inner.surface.configure(&inner.device, &inner.config);
     }
 
     /// True iff the embedded app is currently mounted.
@@ -377,12 +393,17 @@ fn draw_frame(inner: &mut HostInner) {
     // navigator's focus signal with [`IosHostHandle::pause`] /
     // [`resume`] to wire it up. The default is "keep running"
     // (matches React Navigation's Stack default).
-    if !unsafe { is_view_visible(inner.ui_view) } {
+    let visible = unsafe { is_view_visible(inner.ui_view) };
+    // Publish to the per-thread frame-active flag so author-side
+    // animation tickers (any `raf_loop_scoped` consumer that reads
+    // `runtime_core::is_frame_active()`) can short-circuit when
+    // nothing's painting. Without this hook the welcome app's
+    // planets keep advancing while off-home — the visibility check
+    // stops the GPU encode but not the CPU-side AV updates.
+    runtime_core::set_frame_active(visible);
+    if !visible {
         return;
     }
-    // `was_visible` retained but unused for now — left in place as
-    // documentation of where the transition hook lives in case a
-    // future per-host scheduler wants to observe it.
     inner.was_visible = true;
     // wgpu 29: `get_current_texture` returns a `CurrentSurfaceTexture`
     // enum. Reconfigure on Outdated/Lost; skip on Timeout/Occluded/

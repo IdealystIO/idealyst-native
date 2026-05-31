@@ -104,6 +104,13 @@ fn start_inner(f: Box<dyn FnMut(f32) + 'static>) -> IosHandle {
         }
     });
     let block = block.copy();
+    // Scheduled in `NSDefaultRunLoopMode` so the wgpu host's
+    // per-frame draw doesn't fire during UIKit scroll/pan gestures.
+    // The Metal command-buffer encode + present is expensive enough
+    // that competing with scroll for CPU/GPU makes the gesture
+    // visibly jumpy. Trading off animation freeze during a scroll
+    // gesture for smooth scrolling is the explicit preferred
+    // trade-off for the website's Simulator demo.
     let timer: Retained<NSObject> = unsafe {
         msg_send_id![
             objc2::class!(NSTimer),

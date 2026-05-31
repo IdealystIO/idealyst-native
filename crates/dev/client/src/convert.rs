@@ -116,6 +116,7 @@ pub fn wire_anim_prop(w: wire::WireAnimProp) -> Option<runtime_core::animation::
         wire::WireAnimProp::ScaleY => AnimProp::ScaleY,
         wire::WireAnimProp::RotateZ => AnimProp::RotateZ,
         wire::WireAnimProp::ZIndex => AnimProp::ZIndex,
+        wire::WireAnimProp::MaxHeight => AnimProp::MaxHeight,
         wire::WireAnimProp::BackgroundColor => AnimProp::BackgroundColor,
         wire::WireAnimProp::ForegroundColor => AnimProp::ForegroundColor,
         wire::WireAnimProp::GradientStopColor(idx) => AnimProp::GradientStopColor(idx),

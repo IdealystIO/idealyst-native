@@ -309,6 +309,19 @@ impl IosBackend {
                         unsafe { msg_send![layer, setZPosition: value as CGFloat] };
                 }
             }
+            AnimProp::MaxHeight => {
+                // TODO: native animation API path. For v1, snap-only —
+                // the value lands on the Taffy node as `max_size.height`
+                // (no per-frame interpolation). Animating layout-
+                // affecting properties on UIKit needs either per-frame
+                // Taffy re-layout (jank risk) or a `UIView.animate`
+                // block driven by the framework's animator. The right
+                // shape is a new `Backend::animate_property` method
+                // that lets each backend use its native animator;
+                // until that lands, iOS's `Smooth` collapsible
+                // degrades to snap.
+                let _ = value;
+            }
             AnimProp::BackgroundColor
             | AnimProp::ForegroundColor
             | AnimProp::GradientStopColor(_) => {
@@ -398,7 +411,8 @@ impl IosBackend {
             | AnimProp::ScaleX
             | AnimProp::ScaleY
             | AnimProp::RotateZ
-            | AnimProp::ZIndex => {}
+            | AnimProp::ZIndex
+            | AnimProp::MaxHeight => {}
         }
     }
 

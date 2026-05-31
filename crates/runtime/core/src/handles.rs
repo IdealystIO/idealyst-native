@@ -197,6 +197,43 @@ impl ViewHandle {
     }
 }
 
+/// RAII handle returned by [`ViewOps::subscribe_layout`]. Drop it to
+/// unsubscribe. Backends without layout-callback support return
+/// [`LayoutSubscription::noop`] — the closure simply never fires.
+///
+/// The cleanup closure runs on `Drop`; for web that's
+/// `ResizeObserver.disconnect()`, for iOS removing the bounds-KVO
+/// observer, etc. Holding the subscription past the relevant view's
+/// lifetime is safe (the cleanup closure should bail gracefully if
+/// the node is gone), but the canonical lifetime is "as long as the
+/// component scope that registered it" — store it in a `Ref<>` slot
+/// or hand it to `std::mem::forget` if the framework's scope-owned
+/// lifecycle is what you want.
+pub struct LayoutSubscription {
+    drop_fn: Option<Box<dyn FnOnce()>>,
+}
+
+impl LayoutSubscription {
+    pub fn new(drop_fn: impl FnOnce() + 'static) -> Self {
+        Self { drop_fn: Some(Box::new(drop_fn)) }
+    }
+
+    /// Subscription that does nothing on drop. Returned by backends
+    /// that don't expose a layout-callback primitive; the registered
+    /// closure never fires.
+    pub fn noop() -> Self {
+        Self { drop_fn: None }
+    }
+}
+
+impl Drop for LayoutSubscription {
+    fn drop(&mut self) {
+        if let Some(f) = self.drop_fn.take() {
+            f();
+        }
+    }
+}
+
 pub trait ViewOps {
     /// Viewport-relative rect for overlay anchoring. Returns the zero
     /// rect as a sentinel meaning "centered fallback" — overlays rely
@@ -256,6 +293,32 @@ pub trait ViewOps {
         value: [f32; 4],
     ) {
     }
+
+    /// Register a callback that fires when the view's laid-out frame
+    /// changes (post-layout). The callback receives `(width, height)`
+    /// in DIPs. Re-fires whenever the framework's layout engine
+    /// recomputes the view's frame — typically because of content
+    /// changes, parent reflow, or window resize.
+    ///
+    /// Backends that don't expose a layout-callback primitive return
+    /// [`LayoutSubscription::noop`]; the callback never fires. The
+    /// reference impl is web's `ResizeObserver`; iOS / Android wire
+    /// to their respective `layoutSubviews` / `OnLayoutChangeListener`
+    /// hooks.
+    ///
+    /// Authors use this through [`ViewHandle::on_layout`] — the
+    /// canonical pattern is to measure a not-yet-displayed view to
+    /// drive animations that need a known target size (the
+    /// Collapsible's `Measured` transition is the reference
+    /// consumer).
+    #[allow(unused_variables)]
+    fn subscribe_layout(
+        &self,
+        node: &dyn Any,
+        callback: Box<dyn Fn(f32, f32)>,
+    ) -> LayoutSubscription {
+        LayoutSubscription::noop()
+    }
 }
 
 impl ViewHandle {
@@ -286,6 +349,25 @@ impl ViewHandle {
     /// and [`AnimatedValue::bind_gradient_stop`](crate::animation::AnimatedValue::bind_gradient_stop).
     pub fn set_animated_color(&self, prop: crate::animation::AnimProp, value: [f32; 4]) {
         self.ops.set_animated_color(&*self.node, prop, value);
+    }
+
+    /// Register a callback fired post-layout with the view's
+    /// `(width, height)` in DIPs. Returns a [`LayoutSubscription`] —
+    /// drop it to unsubscribe.
+    ///
+    /// ```ignore
+    /// let body_ref: Ref<ViewHandle> = Ref::new();
+    /// // ... mount view with `.bind(body_ref)` ...
+    /// let natural_height = signal!(0.0_f32);
+    /// let _sub = body_ref.with(|h| h.on_layout(move |_w, h| natural_height.set(h)));
+    /// ```
+    ///
+    /// Anchor the returned `LayoutSubscription` to a stable scope
+    /// (a `Ref` slot or `mem::forget` inside a component scope) so
+    /// it survives long enough for the callback to fire on every
+    /// subsequent layout.
+    pub fn on_layout<F: Fn(f32, f32) + 'static>(&self, f: F) -> LayoutSubscription {
+        self.ops.subscribe_layout(&*self.node, Box::new(f))
     }
 }
 

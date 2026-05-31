@@ -74,6 +74,13 @@ enum DrawerKind {
         listener_ptr: jlong,
         #[allow(dead_code)]
         swipe_to_open: bool,
+        /// Author-configured drawer width in dp (from
+        /// `.drawer_width(N)` on the SDK builder). Forwarded to
+        /// `RustDrawerLayout.attachDrawer(view, widthDp)` so the
+        /// drawer panel takes exactly this width instead of
+        /// DrawerLayout's `screen - 56dp` fallback. `0.0` means
+        /// "use WRAP_CONTENT" (legacy behavior).
+        drawer_width: f32,
     },
 }
 
@@ -178,6 +185,7 @@ pub(crate) fn create_drawer(
     control: Rc<NavigatorControl>,
 ) -> GlobalRef {
     let mount_policy = callbacks.mount_policy;
+    let drawer_width = callbacks.drawer_width;
     let AndroidDrawerCallbacks {
         navigator,
         is_open,
@@ -312,6 +320,7 @@ pub(crate) fn create_drawer(
             drawer_view: drawer_layout_ref,
             listener_ptr,
             swipe_to_open,
+            drawer_width,
         },
         mount_policy,
     )
@@ -660,16 +669,18 @@ fn drawer_jni_call(instance: &Rc<RefCell<TabDrawerInstance>>, method: &str) {
 /// as the drawer-child (gravity = START or END as configured).
 pub(crate) fn attach_sidebar(navigator: &GlobalRef, sidebar: GlobalRef) {
     let key = node_key(navigator);
-    let drawer_view = TAB_DRAWER_INSTANCES.with(|m| -> Option<GlobalRef> {
+    let lookup = TAB_DRAWER_INSTANCES.with(|m| -> Option<(GlobalRef, f32)> {
         let map = m.borrow();
         let entry = map.get(&key)?;
-        let dv = match &entry.instance.borrow().kind {
-            DrawerKind::Drawer { drawer_view, .. } => Some(drawer_view.clone()),
+        let result = match &entry.instance.borrow().kind {
+            DrawerKind::Drawer { drawer_view, drawer_width, .. } => {
+                Some((drawer_view.clone(), *drawer_width))
+            }
             DrawerKind::Tab => None,
         };
-        dv
+        result
     });
-    let Some(drawer_view) = drawer_view else {
+    let Some((drawer_view, drawer_width)) = lookup else {
         log::warn!("tab_drawer attach_sidebar: not a drawer navigator");
         return;
     };
@@ -677,8 +688,11 @@ pub(crate) fn attach_sidebar(navigator: &GlobalRef, sidebar: GlobalRef) {
         if let Err(e) = env.call_method(
             drawer_view.as_obj(),
             "attachDrawer",
-            "(Landroid/view/View;)V",
-            &[JValue::Object(&sidebar.as_obj())],
+            "(Landroid/view/View;F)V",
+            &[
+                JValue::Object(&sidebar.as_obj()),
+                JValue::Float(drawer_width),
+            ],
         ) {
             if env.exception_check().unwrap_or(false) {
                 let _ = env.exception_describe();
@@ -687,16 +701,12 @@ pub(crate) fn attach_sidebar(navigator: &GlobalRef, sidebar: GlobalRef) {
             log::error!("RustDrawerLayout.attachDrawer JNI call failed: {:?}", e);
         }
     });
-    // `attachDrawer` replaces the sidebar's LayoutParams with a fresh
-    // `DrawerLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT)` — this
-    // blows away whatever width Taffy's apply_frames had written to the
-    // previous LP. Without a re-layout, the sidebar measures wider than
-    // its style's `width: 260dp`: DrawerLayout's WRAP_CONTENT spec falls
-    // through to the inner FrameLayout's MATCH_PARENT, which fills the
-    // DrawerLayout's max-drawer width. Buttons then render wider than
-    // the sidebar's intended visual width and get clipped by
-    // DrawerLayout's right edge. Schedule a layout pass so apply_frames
-    // re-writes the Taffy-computed width onto the fresh LP.
+    // `attachDrawer` writes a DrawerLayout.LayoutParams with width
+    // = the SDK's `drawer_width` (dp→px on the Kotlin side). Schedule
+    // a layout pass so apply_frames runs against the now-installed
+    // sidebar subtree — the sidebar's own Taffy children (header,
+    // links, footer) still need their frames written, even though
+    // the outer LP is now author-explicit.
     backend_android::schedule_layout_pass();
 }
 

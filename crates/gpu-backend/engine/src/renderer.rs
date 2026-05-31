@@ -254,6 +254,21 @@ impl Renderer {
         }
     }
 
+    /// Drop the per-tree caches that key off `LayoutNode` IDs from
+    /// the tree the renderer was previously rendering. Called by
+    /// `Host::unmount` so a subsequent `mount(build_ui)` doesn't
+    /// hit stale entries pointing at freed Taffy IDs (which
+    /// otherwise produces a permanently blank canvas — the cache
+    /// hands back the wrong texture / no entry, the per-frame
+    /// resolve skips the node).
+    ///
+    /// GPU pipelines (rect, text, image, device_frame) survive —
+    /// they're per-format/per-device, not per-tree.
+    pub fn reset_per_tree_caches(&mut self) {
+        self.image_cache.clear();
+        self.graphics_cache.clear();
+    }
+
     /// Ensure the cache holds a `GraphicsTextureEntry` for `layout`
     /// sized to `(w, h)` physical px. Reallocates if the cached
     /// size doesn't match (resize via parent layout). Returns

@@ -3092,6 +3092,49 @@ impl runtime_core::ViewOps for WebViewOps {
             crate::set_animated_color(n, prop, value);
         }
     }
+
+    /// Layout-change callback. Backed by `ResizeObserver`, which
+    /// fires the callback whenever the element's box dimensions
+    /// change — naturally re-fires on content changes, parent
+    /// reflow, or window resize. The returned `LayoutSubscription`
+    /// holds the `ResizeObserver` + the JS callback closure alive;
+    /// dropping it calls `.disconnect()` to remove the listener.
+    fn subscribe_layout(
+        &self,
+        node: &dyn std::any::Any,
+        callback: Box<dyn Fn(f32, f32)>,
+    ) -> runtime_core::LayoutSubscription {
+        let Some(el) = element_from_any(node) else {
+            return runtime_core::LayoutSubscription::noop();
+        };
+        // Wrap the user callback into a JS callback that reads the
+        // first observed entry's contentRect. Single-element
+        // observers always emit a one-entry array; we still bounds-
+        // check in case the spec evolves.
+        let cb = wasm_bindgen::closure::Closure::wrap(Box::new(
+            move |entries: js_sys::Array, _observer: web_sys::ResizeObserver| {
+                let Some(first) = entries.get(0).dyn_into::<web_sys::ResizeObserverEntry>().ok()
+                else {
+                    return;
+                };
+                let rect = first.content_rect();
+                callback(rect.width() as f32, rect.height() as f32);
+            },
+        )
+            as Box<dyn FnMut(js_sys::Array, web_sys::ResizeObserver)>);
+        let Ok(observer) = web_sys::ResizeObserver::new(cb.as_ref().unchecked_ref()) else {
+            return runtime_core::LayoutSubscription::noop();
+        };
+        observer.observe(&el);
+        // Move both into the cleanup closure so they live as long as
+        // the subscription. Dropping the subscription drops the
+        // observer (auto-disconnects via DOM ownership) and the JS
+        // closure (so the wasm-bindgen ref doesn't leak).
+        runtime_core::LayoutSubscription::new(move || {
+            observer.disconnect();
+            drop(cb);
+        })
+    }
 }
 
 fn element_from_any(node: &dyn std::any::Any) -> Option<web_sys::Element> {

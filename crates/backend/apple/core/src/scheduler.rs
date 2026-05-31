@@ -29,6 +29,13 @@ use objc2_foundation::NSObject;
 /// install wins. Safe to call from any Apple host (iOS / tvOS / macOS).
 pub fn install_scheduler() {
     install(Box::new(AppleScheduler));
+    // Wire `runtime_core::debug_log` through NSLog so author-side
+    // diagnostic instrumentation (e.g. in the welcome example's
+    // raf_loop) surfaces in `xcrun simctl spawn booted log show`.
+    // First-install wins; subsequent calls no-op.
+    runtime_core::scheduling::install_debug_log(Box::new(|msg| {
+        crate::log::apple_log(msg);
+    }));
 }
 
 struct AppleScheduler;
@@ -81,6 +88,15 @@ impl Scheduler for AppleScheduler {
         // but requires a custom ObjC class with a target/action
         // pair — same trade-off the render-loop drivers in the leaf
         // crates make.
+        //
+        // Scheduled in `NSDefaultRunLoopMode` (NOT `kCFRunLoopCommonModes`)
+        // so the per-frame tick does NOT fire during UIKit
+        // scroll/pan gestures. The wgpu host's `draw_frame` is
+        // expensive enough (Metal command-buffer encode + present)
+        // that competing with scroll for CPU/GPU makes the gesture
+        // visibly jumpy. Pausing tick during scroll trades animation
+        // smoothness during the gesture for scroll smoothness; the
+        // user said this was the preferable trade-off.
         let state: Rc<RefCell<Box<dyn FnMut() + 'static>>> = Rc::new(RefCell::new(f.take_inner()));
         let state_for_block = state.clone();
         let block = StackBlock::new(move |_t: *const NSObject| {
@@ -121,6 +137,39 @@ fn after_ms_inner(delay_ms: i32, f: Box<dyn FnOnce() + 'static>) -> NsTimerHandl
     // ObjC block (which needs Clone) can hold it.
     let cell: Rc<RefCell<Option<Box<dyn FnOnce() + 'static>>>> =
         Rc::new(RefCell::new(Some(f)));
+    // Zero-delay path: route through libdispatch instead of an
+    // NSTimer at interval 0. Per
+    // [[project_apple_microtask_libdispatch]], `scheduledTimerWith…`
+    // at interval 0 is unreliable — the runloop must enter the
+    // timer's mode for it to fire, and "next iteration" is a tiny
+    // window that high-frequency layout activity (a fresh
+    // `Host::mount` triggering Taffy reflow + Metal encode) can
+    // squeeze out. The welcome's `session::after_ms(glare_start,
+    // body)` collapses to delay_ms=0 on resume (session has long
+    // since passed `glare_start`); when that 0-delay body silently
+    // never fires, the inner `raf_loop_scoped` never gets
+    // registered, animations stay frozen, and `av_writes` is stuck
+    // on the diagnostic counter.
+    //
+    // `dispatch_async(main_q, block)` is mode-independent and
+    // guaranteed to drain on the next main-thread iteration.
+    // Cancellation is honoured via the existing `cell`: if the
+    // owning `NsTimerHandle` drops before the block fires, the
+    // cell is cleared and the dispatched block becomes a no-op.
+    if delay_ms <= 0 {
+        let cell_for_dispatch = cell.clone();
+        dispatch_main_async(Box::new(move || {
+            if let Some(g) = cell_for_dispatch.borrow_mut().take() {
+                g();
+            }
+        }));
+        // No NSTimer to invalidate — cancellation is the cell.take()
+        // race resolved by holding `_state` in the returned handle.
+        return NsTimerHandle {
+            timer: None,
+            _state: AnyState::Once(cell),
+        };
+    }
     let cell_for_block = cell.clone();
     let block = StackBlock::new(move |_t: *const NSObject| {
         if let Some(g) = cell_for_block.borrow_mut().take() {
@@ -129,9 +178,8 @@ fn after_ms_inner(delay_ms: i32, f: Box<dyn FnOnce() + 'static>) -> NsTimerHandl
     });
     let block = block.copy();
     // `scheduledTimerWithTimeInterval:repeats:block:` requires a
-    // non-negative interval. NSTimer's "fire as soon as possible"
-    // is interval 0 with repeats:false.
-    let interval = (delay_ms.max(0) as f64) / 1000.0;
+    // non-negative interval.
+    let interval = (delay_ms as f64) / 1000.0;
     let timer: Retained<NSObject> = unsafe {
         msg_send_id![
             objc2::class!(NSTimer),
@@ -168,6 +216,20 @@ impl NsTimerHandle {
     fn cancel_inner(&mut self) {
         if let Some(timer) = self.timer.take() {
             let _: () = unsafe { objc2::msg_send![&timer, invalidate] };
+        }
+        // Clear the FnOnce cell so a libdispatch path (timer=None,
+        // delay was 0 — see `after_ms_inner`) becomes a no-op when
+        // the dispatched block eventually fires. Without this, the
+        // block would run the body *after* the owning reactive scope
+        // dropped, leaking a `raf_loop_scoped` whose `on_cleanup`
+        // attaches to a dead scope and is never invoked — the
+        // NSTimer it installs ticks forever, hits AVs whose listeners
+        // have already been unsubscribed, and animations appear
+        // frozen after pause/resume. Same idea NSTimer's `invalidate`
+        // gives us in the non-zero-delay path; the cell is the
+        // libdispatch equivalent.
+        if let AnyState::Once(cell) = &self._state {
+            cell.borrow_mut().take();
         }
     }
 }
@@ -251,4 +313,72 @@ fn dispatch_main_async(f: Box<dyn FnOnce() + 'static>) {
     // double-released before libdispatch is done with it.
     std::mem::forget(block);
     std::mem::forget(cell);
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+#[cfg(target_os = "macos")]
+mod tests {
+    //! Regression: dropping an `after_ms_inner(0, …)` handle MUST
+    //! clear the FnOnce cell so the still-pending `dispatch_main_async`
+    //! block becomes a no-op when libdispatch eventually fires it.
+    //!
+    //! The bug this prevents: the wgpu Host's `pause()` →
+    //! `Host::unmount()` chain runs scope cleanups, dropping every
+    //! `ScheduledTask` registered via `after_ms_scoped`. Pre-fix, the
+    //! 0-delay dispatch path's drop was a no-op (no NSTimer to
+    //! invalidate, cell left full), so the dispatched body fired
+    //! AFTER the scope was gone — installing a `raf_loop_scoped`
+    //! whose `on_cleanup` attached to a dead scope and was never
+    //! invoked. The NSTimer it scheduled then ticked forever, hitting
+    //! AVs whose listeners had already been unsubscribed and showing
+    //! up as frozen animations after the next remount.
+    //!
+    //! Gated to `target_os = "macos"`: this exercises the apple
+    //! scheduler against the host's libdispatch; iOS cargo-test
+    //! workflows are non-trivial to set up. The code under test is
+    //! identical on both targets.
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[test]
+    fn after_ms_inner_zero_delay_clears_cell_on_drop() {
+        let fired = Rc::new(Cell::new(false));
+        let fired_clone = fired.clone();
+        let handle = after_ms_inner(0, Box::new(move || fired_clone.set(true)));
+
+        // The handle's `_state` carries the cell holding the FnOnce.
+        // Clone the Rc so we can observe its contents post-drop.
+        let cell_observe = match &handle._state {
+            AnyState::Once(c) => c.clone(),
+            AnyState::Raf(_) => panic!("after_ms_inner returned Raf state"),
+        };
+        assert!(
+            cell_observe.borrow().is_some(),
+            "cell should hold the FnOnce until either the dispatched \
+             block fires or the handle is dropped",
+        );
+
+        // Drop the handle — this simulates `on_cleanup` firing when
+        // the owning reactive scope dies. `cancel_inner` must empty
+        // the cell so the pending libdispatch block becomes a no-op.
+        drop(handle);
+        assert!(
+            cell_observe.borrow().is_none(),
+            "dropping the NsTimerHandle must clear the cell so the \
+             pending libdispatch block fires as a no-op",
+        );
+
+        // Sanity: the body never ran (we never drained main_q, but
+        // even if libdispatch fired the block right now, the cleared
+        // cell would make `take()` return None).
+        assert!(
+            !fired.get(),
+            "body must NOT have run before / during this test",
+        );
+    }
 }

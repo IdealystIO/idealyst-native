@@ -94,7 +94,10 @@ impl WebHostHandle {
     /// so callers must wire it themselves — typically inside a
     /// reactive effect bound to `use_focus()`.
     pub fn pause(&self) {
-        self.inner.borrow_mut().host.unmount();
+        let mut inner = self.inner.borrow_mut();
+        inner.host.unmount();
+        inner.renderer.reset_per_tree_caches();
+        drop(inner);
         runtime_core::session::clear();
     }
 

@@ -561,6 +561,11 @@ impl Host {
     /// document their chosen semantics.
     pub fn unmount(&mut self) {
         self._owner = None;
+        // Backend state cleanup (presence_tweens, animator, sticky
+        // registry) is left to the platform host's pause() — earlier
+        // experiments showed that clearing too aggressively makes
+        // the renderer produce no draws after remount even though
+        // Taffy compute shows valid frames. Investigation ongoing.
     }
 
     /// True iff a build_ui has been mounted (and not since unmounted).

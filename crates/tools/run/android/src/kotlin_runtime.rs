@@ -84,9 +84,21 @@ const RUNTIME_KOTLIN_FILES: &[(&str, &str)] = &[
         ),
     ),
     (
+        "RustBorderDrawable.kt",
+        include_str!(
+            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustBorderDrawable.kt"
+        ),
+    ),
+    (
         "RustClickListener.kt",
         include_str!(
             "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustClickListener.kt"
+        ),
+    ),
+    (
+        "RustCodeBlock.kt",
+        include_str!(
+            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustCodeBlock.kt"
         ),
     ),
     (

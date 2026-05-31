@@ -18,6 +18,19 @@ crate-type = ["cdylib", "rlib"]
 # this crate needs to define it (even though there's nothing here
 # that gates on it). See `cli::cmd::dev` comments.
 runtime-server = []
+# Forwards the framework's `debug-stats` instrumentation through to
+# `runtime-core` AND the Android backend's phase_timer module. Per
+# CLAUDE.md section 6, the VARIANT crate must declare its own
+# `debug-stats` (not just put `features = ["debug-stats"]` on a dep
+# line) so that backend-android-mobile's PhaseTimer compiles to the
+# real timing struct. Currently default-on so `idealyst dev --android`
+# bakes in instrumentation without extra flags; flip back to opt-in
+# once a regression hunt is over.
+debug-stats = [
+    "runtime-core/debug-stats",
+    "backend-android-mobile/debug-stats",
+]
+default = ["debug-stats"]
 
 [dependencies]
 runtime-core = { workspace = true }
@@ -40,6 +53,21 @@ web-sys = { version = "0.3", features = ["console"] }
 console_error_panic_hook = "0.1"
 lol_alloc = "0.4"
 
+# Native backend deps for the CLI-generated wrappers. Each wrapper's
+# `register_extensions(&mut <Backend>)` lives in `lib.rs` behind a
+# matching `#[cfg(...)]` block.
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
+backend-terminal = { workspace = true }
+
 # wasm-opt's bundled binaryen rejects bulk-memory ops emitted by
 # recent rustc; the wasm is still LTO'd at link time without the
 # post-pass. Re-enable if/when wasm-pack ships a binaryen with
@@ -53,9 +81,9 @@ wasm-opt = false
 # copy.
 [package.metadata.idealyst.app]
 name      = "idea-ui Docs"
-bundle_id = "ai.truday.idealyst.idea-ui-docs"
+bundle_id = "io.idealyst.idea_ui_docs"
 version   = "0.0.1"
-targets   = ["web"]
+targets   = ["web", "ios", "android"]
 
 [package.metadata.idealyst.app.splash]
 duration_ms = 0

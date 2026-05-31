@@ -128,7 +128,7 @@ wasm-opt = false
 
 [package.metadata.idealyst.app]
 name      = "Idealyst"
-bundle_id = "ai.truday.idealyst.website"
+bundle_id = "io.idealyst"
 version   = "0.0.1"
 targets   = ["web", "ios", "android"]
 

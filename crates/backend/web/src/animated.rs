@@ -167,6 +167,15 @@ impl WebBackend {
                 let z = value.round() as i32;
                 let _ = element.style().set_property("z-index", &z.to_string());
             }
+            AnimProp::MaxHeight => {
+                // Inline `style.max-height` overrides any class-based
+                // value. The browser's reflow handles sibling
+                // repositioning naturally — no per-frame extra work
+                // on our side.
+                let _ = element
+                    .style()
+                    .set_property("max-height", &format!("{}px", value));
+            }
             // Color variants are silently ignored on the scalar path
             // — they belong on `impl_set_animated_color`. We don't
             // panic because animator code mis-routing a color prop
@@ -227,7 +236,8 @@ impl WebBackend {
             | AnimProp::ScaleX
             | AnimProp::ScaleY
             | AnimProp::RotateZ
-            | AnimProp::ZIndex => {}
+            | AnimProp::ZIndex
+            | AnimProp::MaxHeight => {}
         }
     }
 

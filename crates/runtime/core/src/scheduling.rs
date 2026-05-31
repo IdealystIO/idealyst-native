@@ -239,6 +239,82 @@ impl RafLoop {
 ///
 /// The closure is `FnMut` so it can hold mutable state across
 /// frames.
+// ---------------------------------------------------------------------------
+// Frame-active flag — cooperation between rendering hosts and
+// per-frame author code (animation tickers, etc).
+// ---------------------------------------------------------------------------
+//
+// Default `true`. Render hosts (e.g. `host-ios-mobile`'s `draw_frame`)
+// set it `false` when their per-frame loop short-circuits because the
+// hosted surface isn't visible (e.g. a UIKit ancestor was
+// `setHidden:true`). Author-side `raf_loop_scoped` consumers that
+// drive animation state read [`is_frame_active`] as a cheap "should I
+// do work this frame?" hint and bail early when false — pausing
+// CPU-side animation advancement without dropping the reactive scope.
+//
+// Thread-local, not global: a second wgpu host on the same thread
+// would share this flag (acceptable for the website's single-Simulator
+// case; revisit when multi-host setups arrive). Lives in this module
+// rather than `driver` so it's accessible without the `async-driver`
+// feature, which not every embed turns on.
+
+thread_local! {
+    static FRAME_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// `true` when render hosts on this thread report their surface as
+/// visible / actively painting. Consumers that drive per-frame
+/// animation state read this to skip work when nothing's painting —
+/// see the module-level comment for the cooperation pattern.
+pub fn is_frame_active() -> bool {
+    FRAME_ACTIVE.with(|c| c.get())
+}
+
+/// Set the per-thread frame-active flag. Render hosts call this at
+/// the top of their per-frame closure (`true` before normal paint,
+/// `false` before a visibility-gated skip). Default `true` so author
+/// code without an installed host sees the optimistic "go" answer.
+pub fn set_frame_active(active: bool) {
+    FRAME_ACTIVE.with(|c| c.set(active));
+}
+
+// NOTE: end of historic diag-counter block — counters removed once
+// the renderer-walk-no-op investigation isolated the apple-core
+// `after_ms_inner` 0-delay cancellation bug; the fix + regression
+// test live in `crates/backend/apple/core/src/scheduler.rs`.
+
+// ---------------------------------------------------------------------------
+// Cross-platform debug log shim. Native hosts (apple-core, android-core)
+// install a closure that routes through their platform-native log
+// channel (`NSLog`, `__android_log_print`) so author-side
+// `runtime_core::debug_log(...)` calls surface in `xcrun simctl spawn
+// log show` / logcat. Off-host this is a no-op (defaults to a closure
+// that discards the message), keeping the call cheap. Intended for
+// diagnostic instrumentation that needs to cross author → backend
+// boundaries without a per-platform dep at the call site.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static DEBUG_LOG: std::cell::RefCell<Option<Box<dyn Fn(&str)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub fn install_debug_log(f: Box<dyn Fn(&str)>) {
+    DEBUG_LOG.with(|c| {
+        if c.borrow().is_none() {
+            *c.borrow_mut() = Some(f);
+        }
+    });
+}
+
+pub fn debug_log(msg: &str) {
+    DEBUG_LOG.with(|c| {
+        if let Some(ref f) = *c.borrow() {
+            f(msg);
+        }
+    });
+}
+
 pub fn raf_loop<F: FnMut() + 'static>(f: F) -> RafLoop {
     if let Some(s) = SCHEDULER.get() {
         return RafLoop {

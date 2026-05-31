@@ -15,6 +15,7 @@
 
 use crate::{
     DrawerCmd, DrawerPresentation, DrawerScreenOptions, DrawerSide, DrawerSlotProps, DrawerType,
+    LeadingIntent, SlotProps, TrailingIntent,
     MountPolicy,
 };
 use android_navigator_helpers::{
@@ -26,7 +27,7 @@ use backend_android::AndroidBackend;
 use jni::objects::GlobalRef;
 use runtime_core::{
     primitives::navigator::{MountResult, NavCommand, NavigatorHandler, NavigatorHost, NavigatorOps},
-    NavigatorHandle,
+    IntoElement, NavigatorHandle,
 };
 use std::any::Any;
 use std::rc::Rc;
@@ -170,12 +171,24 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
         // `init`) has released by the time `build_node` re-enters the
         // walker. Once built, hand the `GlobalRef` to the helpers crate's
         // `drawer_attach_sidebar`.
-        let sidebar_slot = presentation.sidebar.borrow().clone();
-        if let Some(sidebar_builder) = sidebar_slot {
+        // Two API surfaces during the SlotProps migration:
+        //   1. `leading_slot` — new shape, builder takes `SlotProps`
+        //      (preferred when set; matches web / iOS / macOS handlers).
+        //   2. `sidebar` — legacy, builder takes `DrawerSlotProps`.
+        //
+        // The user's docs site calls `.leading_with(...)`, which only
+        // populates `leading_slot`. Without this branch the Android
+        // sidebar was never built — the hamburger fired all the way
+        // through the dispatch chain to `openDrawerProgrammatic`, but
+        // `drawerChild` was null so the call was a no-op.
+        let leading_slot_owned = presentation.leading_slot.borrow_mut().take();
+        let legacy_sidebar = presentation.sidebar.borrow().clone();
+        if leading_slot_owned.is_some() || legacy_sidebar.is_some() {
             let container_for_microtask = node.clone();
             let nav_state = nav_state.clone();
             let is_open_cap = is_open;
             let control_cap = control.clone();
+            let drawer_width = presentation.drawer_width;
             runtime_core::schedule_microtask(move || {
                 let on_select: Rc<dyn Fn(&'static str)> = {
                     let control = control_cap.clone();
@@ -188,26 +201,11 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
                         });
                     })
                 };
-                let on_close: Rc<dyn Fn()> = {
-                    let control = control_cap.clone();
-                    Rc::new(move || {
-                        control.dispatch(NavCommand::Custom(Rc::new(HelpersDrawerCmd::Close)));
-                    })
-                };
-                let props = DrawerSlotProps {
-                    active_route: nav_state.active_route,
-                    active_path: nav_state.active_path.clone(),
-                    depth: nav_state.depth,
-                    can_go_back: nav_state.can_go_back,
-                    is_open: is_open_cap,
-                    on_select,
-                    on_close,
-                };
                 // Push this navigator onto the ambient stack so any
-                // `Link` primitives built inside `sidebar_builder`
-                // capture it as their target. Without this push the
-                // sidebar runs OUTSIDE any navigator's `mount_screen`
-                // (it's a deferred microtask) — `Link::new` calls
+                // `Link` primitives built inside the builder capture
+                // it as their target. Without this push the sidebar
+                // runs OUTSIDE any navigator's `mount_screen` (it's a
+                // deferred microtask) — `Link::new` calls
                 // `ambient_navigator()` which returns `None`, the
                 // captured `target` is `None`, and `on_activate`
                 // silently returns on every tap. Guard pops on drop.
@@ -215,9 +213,127 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
                     runtime_core::primitives::navigator::AmbientNavGuard::push(
                         control_cap.clone(),
                     );
-                let prim = sidebar_builder(props);
-                let sidebar = build_node(prim);
-                android_navigator_helpers::drawer_attach_sidebar(&container_for_microtask, sidebar);
+
+                let sidebar_primitive: runtime_core::Element =
+                    if let Some(builder) = leading_slot_owned {
+                        let open_drawer: Rc<dyn Fn()> = {
+                            let c = control_cap.clone();
+                            Rc::new(move || {
+                                c.dispatch(NavCommand::Custom(Rc::new(
+                                    HelpersDrawerCmd::Open,
+                                )));
+                            })
+                        };
+                        let close_drawer: Rc<dyn Fn()> = {
+                            let c = control_cap.clone();
+                            Rc::new(move || {
+                                c.dispatch(NavCommand::Custom(Rc::new(
+                                    HelpersDrawerCmd::Close,
+                                )));
+                            })
+                        };
+                        let pop: Rc<dyn Fn()> = {
+                            let c = control_cap.clone();
+                            Rc::new(move || {
+                                c.dispatch(NavCommand::Pop);
+                            })
+                        };
+                        // Fields the Android drawer doesn't yet track
+                        // natively (leading/trailing intent, screen
+                        // title) get default-valued signals — same
+                        // shape as the iOS path. Scroll context is
+                        // `None` because Android's drawer body owns
+                        // its own per-screen scroll, not the drawer.
+                        let props = SlotProps {
+                            active_route: nav_state.active_route,
+                            active_path: nav_state.active_path.clone(),
+                            depth: nav_state.depth,
+                            can_go_back: nav_state.can_go_back,
+                            is_open: is_open_cap,
+                            leading_intent: runtime_core::signal!(
+                                LeadingIntent::OpenDrawer
+                            ),
+                            trailing_intent: runtime_core::signal!(
+                                TrailingIntent::None
+                            ),
+                            screen_title: runtime_core::signal!(String::new()),
+                            on_select,
+                            open_drawer,
+                            close_drawer,
+                            pop,
+                            scroll: None,
+                        };
+                        builder(props)
+                    } else if let Some(sidebar_builder) = legacy_sidebar {
+                        let on_close: Rc<dyn Fn()> = {
+                            let control = control_cap.clone();
+                            Rc::new(move || {
+                                control.dispatch(NavCommand::Custom(Rc::new(
+                                    HelpersDrawerCmd::Close,
+                                )));
+                            })
+                        };
+                        let props = DrawerSlotProps {
+                            active_route: nav_state.active_route,
+                            active_path: nav_state.active_path.clone(),
+                            depth: nav_state.depth,
+                            can_go_back: nav_state.can_go_back,
+                            is_open: is_open_cap,
+                            on_select,
+                            on_close,
+                        };
+                        sidebar_builder(props)
+                    } else {
+                        return;
+                    };
+
+                // Mirror the iOS path: wrap the author's sidebar in
+                // a `scroll_view` sized to exactly `drawer_width`.
+                // Two reasons:
+                //
+                // 1. **Sizing.** The author's sidebar is built via
+                //    `build_node` standalone — its Taffy root has no
+                //    parent, so the framework's layout pass computes
+                //    it against the full viewport width. Children
+                //    stretch to viewport width and then get visually
+                //    clipped by the DrawerLayout panel (which is
+                //    `drawer_width` wide via our `attachDrawer` LP
+                //    write). Wrapping in a view with explicit
+                //    `width: drawer_width` constrains Taffy to lay
+                //    children out at the correct width.
+                //
+                // 2. **Scrolling.** A long sidebar (many nav links)
+                //    needs to scroll vertically. The author's
+                //    `SidebarBody` is a plain View — overflowing
+                //    children just clip. `scroll_view` adds the
+                //    vertical scroll affordance the same way iOS
+                //    handles it.
+                //
+                // The DrawerLayout's panel LP (set in `attachDrawer`)
+                // and this view's Taffy width are both `drawer_width`
+                // — they agree on the panel size. `is_drawer_panel_child`
+                // in `backend-android-mobile` keeps the layout pass
+                // from overwriting the LP, so the Kotlin side and the
+                // Taffy side stay in sync.
+                let sized_sidebar: runtime_core::Element =
+                    runtime_core::primitives::scroll_view::scroll_view(vec![
+                        sidebar_primitive,
+                    ])
+                    .with_style(std::rc::Rc::new(runtime_core::StyleSheet::r#static(
+                        runtime_core::StyleRules {
+                            width: Some(
+                                runtime_core::Length::Px(drawer_width).into(),
+                            ),
+                            height: Some(runtime_core::Length::pct(100.0).into()),
+                            ..Default::default()
+                        },
+                    )))
+                    .into_element();
+                let sidebar = build_node(sized_sidebar);
+                android_navigator_helpers::drawer_attach_sidebar(
+                    &container_for_microtask,
+                    sidebar,
+                );
             });
         }
 
