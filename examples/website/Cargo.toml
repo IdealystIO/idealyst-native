@@ -47,6 +47,11 @@ android-sim = { workspace = true }
 # regular features active).
 backend-ssr = { workspace = true, features = ["serve"], optional = true }
 
+# Recorder backend for the runtime-server sidecar wrapper. Optional —
+# pulled in only by the `sidecar` feature (host-side sidecar build);
+# never compiled for device/web targets.
+dev-server = { workspace = true, optional = true }
+
 [features]
 # Default to perf instrumentation ON during this investigation. The
 # `debug-stats` feature is feature-gated end-to-end (runtime-core,
@@ -66,6 +71,11 @@ debug-stats = [
 # CLI's `idealyst dev --ssr` / `--static` SSR wrapper sets this
 # (`features = ["ssr"]` on its path-dep on the user crate).
 ssr = ["dep:backend-ssr"]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
+# (build-runtime-server). Pulls `dev-server` + the drawer SDK's recording
+# handler so `register_extensions_recorder` can register a navigator
+# recording handler on the runtime-server recorder backend.
+sidecar = ["dep:dev-server", "drawer-navigator/runtime-server"]
 
 # Web target — wasm + DOM. The marketing site's primary surface.
 #

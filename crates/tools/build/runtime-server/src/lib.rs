@@ -300,7 +300,12 @@ edition = "2021"
 [dependencies]
 runtime-core = {fcore_dep}
 dev-server = {dev_server_dep}
-{user_name} = {{ path = "{user_path}" }}
+# `sidecar` feature: pulls the user crate's recorder-side extension
+# registration (navigator recording handlers) + its `dev-server` dep, so
+# the generated `register_extensions_recorder` resolves. Distinct from
+# the web wrapper's `runtime-server` feature (which must NOT pull
+# dev-server — it'd break the wasm client build).
+{user_name} = {{ path = "{user_path}", features = ["sidecar"] }}
 
 # Sidecar is short-lived dev infra — strip everything that costs
 # link time. debug = 0 cuts ~half the link work; the patch dylib's
@@ -327,7 +332,7 @@ strip = "debuginfo"
 //! here.
 
 fn main() -> std::io::Result<()> {{
-    dev_server::sidecar::run({lib}::app)
+    dev_server::sidecar::run({lib}::app, {lib}::register_extensions_recorder)
 }}
 "#,
         lib = manifest.lib_name,

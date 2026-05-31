@@ -108,6 +108,20 @@ pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
     table::register(backend);
 }
 
+// Recorder-side registration for the runtime-server sidecar. A distinct
+// fn name (not an overload of `register_extensions`) so it never
+// collides with the host target's per-backend overload above when both
+// compile in the sidecar build. Only the drawer navigator needs a
+// recording handler: `idea_codeblock` / `table` build their trees from
+// view+text primitives on non-web backends (no `Element::External`), so
+// the recorder captures them as ordinary primitives — nothing to
+// register. Gated by `sidecar` (set only by the generated sidecar
+// wrapper) so device/web builds never pull `dev-server`.
+#[cfg(feature = "sidecar")]
+pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
+    drawer_navigator::recording::register(backend);
+}
+
 use routes::{
     ALERT_ROUTE, AVATAR_ROUTE, BADGE_ROUTE, BUTTON_ROUTE, CARD_ROUTE, CENTER_ROUTE,
     COLLAPSIBLE_ROUTE, COMBOS_ROUTE, CONTROLS_ROUTE, CUSTOM_THEME_ROUTE, DATA_ROUTE, DIVIDER_ROUTE,

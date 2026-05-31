@@ -48,6 +48,16 @@ pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
     stack_navigator::register(backend);
 }
 
+// Recorder-side registration for the runtime-server sidecar. Distinct fn
+// name (not an overload of `register_extensions`) so it never collides
+// with the host target's per-backend overload when both compile in the
+// sidecar build. Gated by `sidecar` (set only by the generated sidecar
+// wrapper) so device/web builds never pull `dev-server`.
+#[cfg(feature = "sidecar")]
+pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {
+    // No SDK navigator/external needs recorder-side registration in this app.
+}
+
 // ---------------------------------------------------------------------------
 // Routes. One per screen. The `Route<()>` constants get reused by
 // the screen builder AND by every `nav.push(&ROUTE, ())` call site —

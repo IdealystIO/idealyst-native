@@ -31,9 +31,17 @@ server = [
     "dep:tokio",
     "dep:tower-http",
 ]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
+# (build-runtime-server). Pulls `dev-server` so
+# `register_extensions_recorder` is compiled against the recorder backend.
+sidecar = ["dep:dev-server"]
 
 [dependencies]
 server = { workspace = true }
+# Recorder backend for the runtime-server sidecar wrapper. Optional —
+# pulled in only by the `sidecar` feature (host-side sidecar build);
+# never compiled for device/web targets.
+dev-server = { workspace = true, optional = true }
 net = { workspace = true }
 runtime-core = { workspace = true, features = ["async-driver"] }
 serde = { version = "1", features = ["derive"] }

@@ -247,6 +247,17 @@ pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
     drawer_navigator::register(backend);
 }
 
+// Recorder-side registration for the runtime-server sidecar. Distinct fn
+// name (not an overload of `register_extensions`) so it never collides
+// with the host target's per-backend overload when both compile in the
+// sidecar build. Only the drawer navigator needs a recording handler.
+// Gated by `sidecar` (set only by the generated sidecar wrapper) so
+// device/web builds never pull `dev-server`.
+#[cfg(feature = "sidecar")]
+pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
+    drawer_navigator::recording::register(backend);
+}
+
 /// SSR build path. The CLI's `idealyst dev --ssr` / `--static` wrapper
 /// calls this once per request to install the SDK chrome handlers
 /// `backend-ssr` invokes when it renders a navigator / external. Gated

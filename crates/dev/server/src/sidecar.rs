@@ -558,7 +558,10 @@ mod runtime {
     /// generated wrapper's `use {lib}::app;` referred to before this
     /// refactor. Passed as a function pointer so it's `Send + Sync +
     /// Copy + 'static` without any user-side adaptation.
-    pub fn run(app: fn() -> Element) -> std::io::Result<()> {
+    pub fn run(
+        app: fn() -> Element,
+        register_extensions: fn(&mut WireRecordingBackend),
+    ) -> std::io::Result<()> {
         // Install a SIGSEGV/SIGBUS handler so silent dylib-call
         // crashes (from a hot-patched function jumping to a bad
         // address) print the faulting address before the process
@@ -651,6 +654,7 @@ mod runtime {
                                 rx,
                                 out_clone,
                                 app,
+                                register_extensions,
                                 viewport,
                             );
                         })
@@ -766,9 +770,17 @@ mod runtime {
         rx: mpsc::Receiver<SessionMsg>,
         out: Arc<Mutex<std::io::Stdout>>,
         app: fn() -> Element,
+        register_extensions: fn(&mut WireRecordingBackend),
         initial_viewport: Option<wire::WireViewport>,
     ) {
-        let recorder = WireRecordingBackend::new();
+        let mut recorder = WireRecordingBackend::new();
+        // Register the app's SDK extensions (navigator recording
+        // handlers, externals) on the recorder BEFORE mount, so an
+        // `Element::Navigator` resolves to a recording handler instead
+        // of the create_navigator fallback. The navigator registry
+        // survives `reset_log_and_scene` (only live instances clear), so
+        // once per session is enough — re-renders reuse the factories.
+        register_extensions(&mut recorder);
         let backend_rc = Rc::new(RefCell::new(recorder.clone()));
         // Plant the viewport BEFORE `mount` runs. The user's `app()`
         // executes inside `mount`'s root scope and may immediately

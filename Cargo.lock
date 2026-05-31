@@ -1504,6 +1504,7 @@ dependencies = [
  "backend-web",
  "console_error_panic_hook",
  "dev-client",
+ "dev-server",
  "docs-macro",
  "drawer-navigator",
  "host-web",
@@ -2727,6 +2728,7 @@ name = "hydration-demo"
 version = "0.0.1"
 dependencies = [
  "backend-ssr",
+ "dev-server",
  "idea-ui",
  "runtime-core",
 ]
@@ -2992,6 +2994,7 @@ dependencies = [
  "backend-terminal",
  "backend-web",
  "console_error_panic_hook",
+ "dev-server",
  "drawer-navigator",
  "idea-codeblock",
  "idea-ui",
@@ -4870,6 +4873,7 @@ version = "0.0.1"
 name = "reactive-loops"
 version = "0.0.1"
 dependencies = [
+ "dev-server",
  "idea-ui",
  "runtime-core",
 ]
@@ -5542,6 +5546,7 @@ name = "server-fn-demo"
 version = "0.0.1"
 dependencies = [
  "axum",
+ "dev-server",
  "idea-ui",
  "net",
  "runtime-core",
@@ -5830,6 +5835,7 @@ dependencies = [
  "backend-macos",
  "backend-terminal",
  "backend-web",
+ "dev-server",
  "idea-ui",
  "runtime-core",
  "stack-navigator",
@@ -6676,6 +6682,7 @@ dependencies = [
  "backend-macos",
  "backend-terminal",
  "backend-web",
+ "dev-server",
  "drawer-navigator",
  "idea-codeblock",
  "idea-ui",
@@ -7407,6 +7414,7 @@ dependencies = [
  "backend-ssr",
  "backend-terminal",
  "backend-web",
+ "dev-server",
  "drawer-navigator",
  "host-web",
  "host-wgpu",
@@ -7449,6 +7457,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 name = "welcome"
 version = "0.0.1"
 dependencies = [
+ "dev-server",
  "runtime-core",
 ]
 

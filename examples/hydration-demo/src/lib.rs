@@ -72,3 +72,11 @@ pub fn app() -> Element {
 /// wasm wrapper boots + HYDRATES via `WebBackend::hydrate` (see the
 /// crate-level docs); this crate stays platform-neutral.
 pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
+
+// Recorder-side registration for the runtime-server sidecar. Gated by
+// `sidecar` (set only by the generated sidecar wrapper) so device/web
+// builds never pull `dev-server`.
+#[cfg(feature = "sidecar")]
+pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {
+    // No SDK navigator/external needs recorder-side registration in this app.
+}
