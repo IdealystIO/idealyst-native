@@ -1383,6 +1383,11 @@ pub struct WireIconData {
     pub view_box: (u16, u16),
     pub paths: Vec<String>,
     pub fill_rule: WireFillRule,
+    /// When true, paths are filled with the icon color (stroke disabled).
+    /// `#[serde(default)]` keeps older wire payloads (pre-fill) decoding as
+    /// outlined icons.
+    #[serde(default)]
+    pub filled: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

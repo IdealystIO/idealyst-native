@@ -178,6 +178,12 @@ pub struct WireIconData {
     pub viewport_width: f32,
     pub viewport_height: f32,
     pub paths: Vec<String>,
+    /// True = paths filled with the icon color; false = stroked outline.
+    /// The Roku client picks the matching sprite-atlas variant; the flag
+    /// is also folded into `cache_key` so the two variants of one path set
+    /// don't collide in the atlas cache.
+    #[serde(default)]
+    pub filled: bool,
 }
 
 /// The full command set. Every `Backend` trait method we support

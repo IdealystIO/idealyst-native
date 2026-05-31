@@ -303,7 +303,24 @@ fn read_project_framework_dep(project_dir: &Path) -> Option<FrameworkSource> {
     let table = dep.as_table()?;
 
     if let Some(path_str) = table.get("path").and_then(|v| v.as_str()) {
-        let core_path = PathBuf::from(path_str);
+        // The user's `path = ...` is relative to THIS project's
+        // Cargo.toml. Resolve it against `project_dir` and canonicalize
+        // so the recovered workspace root is ABSOLUTE. This matters
+        // because the generated wrapper Cargo.toml lives deeper
+        // (`<root>/target/idealyst/<proj>/<platform>/wrapper`) and cargo
+        // resolves a wrapper `path = ...` dep relative to the wrapper
+        // file — a relative root copied verbatim (e.g. `../idealyst-native`)
+        // would resolve to the wrong place and the build fails with
+        // "failed to load manifest for dependency `backend-web`".
+        let raw_core = PathBuf::from(path_str);
+        let core_path = if raw_core.is_absolute() {
+            raw_core
+        } else {
+            project_dir.join(&raw_core)
+        };
+        // canonicalize() also collapses `..` segments; fall back to the
+        // un-canonicalized join if the path doesn't exist yet.
+        let core_path = core_path.canonicalize().unwrap_or(core_path);
         // Strip `crates/runtime/core` (3 ancestors up) to recover
         // the workspace root. `is_framework_root` is the
         // authoritative check — if the strip lands somewhere that
@@ -530,6 +547,64 @@ edition = "2021"
         assert!(line.contains("rev = \"c77425a\""));
         assert!(line.contains("features = [\"hot-reload\"]"));
         assert!(!line.contains("path ="));
+    }
+
+    /// A project that path-deps the framework with a RELATIVE path must
+    /// resolve to a `Workspace` whose root is ABSOLUTE. The generated
+    /// wrapper Cargo.toml lives deeper than the project, and cargo
+    /// resolves its `path = ...` deps relative to the wrapper file — a
+    /// relative root copied verbatim resolved to a non-existent
+    /// directory and failed the web/ios wrapper build with "failed to
+    /// load manifest for dependency `backend-web`".
+    #[test]
+    fn relative_path_dep_resolves_to_absolute_workspace_root() {
+        // Lay out a fake framework checkout and a sibling project under a
+        // shared temp parent, so the project's dep can be `../fw/...`.
+        let parent = TempProject::new("relpath-parent");
+        let fw = parent.path.join("fw");
+        fs::create_dir_all(fw.join("crates/runtime/core")).expect("mk fw tree");
+        fs::write(fw.join("Cargo.toml"), "[workspace]\n").expect("fw root Cargo.toml");
+        fs::write(
+            fw.join("crates/runtime/core/Cargo.toml"),
+            "[package]\nname = \"runtime-core\"\nversion = \"0.0.1\"\n",
+        )
+        .expect("fw core Cargo.toml");
+
+        let proj = parent.path.join("proj");
+        fs::create_dir_all(&proj).expect("mk proj");
+        fs::write(
+            proj.join("Cargo.toml"),
+            r#"
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+runtime-core = { path = "../fw/crates/runtime/core" }
+"#,
+        )
+        .expect("write proj Cargo.toml");
+
+        let src = FrameworkSource::detect(&proj, git_defaults()).expect("detect");
+        match src {
+            FrameworkSource::Workspace { root } => {
+                assert!(
+                    root.is_absolute(),
+                    "workspace root must be absolute so the deeper wrapper \
+                     Cargo.toml resolves it correctly; got {}",
+                    root.display()
+                );
+                assert_eq!(
+                    root,
+                    fs::canonicalize(&fw).expect("canon fw"),
+                    "root should be the framework checkout, canonicalized"
+                );
+            }
+            FrameworkSource::Git { .. } => {
+                panic!("relative path dep must resolve to Workspace, not Git")
+            }
+        }
     }
 
     /// `require_workspace_root` is the legacy fail-clear helper. The

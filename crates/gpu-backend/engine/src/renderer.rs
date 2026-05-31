@@ -1787,7 +1787,7 @@ fn walk<'a>(
                     opacity: r.opacity,
                 });
             }
-            NodeKind::Icon { paths, view_box, color, stroke_progress } => {
+            NodeKind::Icon { paths, view_box, color, stroke_progress, filled } => {
                 let tint = color.unwrap_or(r.color);
                 // Sample the animator first — `animate_icon_stroke`
                 // drives the IconStroke property; falls back to the
@@ -1797,7 +1797,7 @@ fn walk<'a>(
                     stroke_progress.get(),
                     now,
                 );
-                paint_icon(x, y, w, h, paths, *view_box, tint, progress, rects);
+                paint_icon(x, y, w, h, paths, *view_box, tint, progress, *filled, rects);
             }
             NodeKind::Link { .. } => {
                 // Hit-region is wired via Pressable-style press
@@ -2822,6 +2822,7 @@ const ICON_ARC_STEPS: usize = 16;
 /// This is a stroke-only renderer (no fill) because Lucide's
 /// icons are stroke-2 line art. Fill-based SVG icon packs would
 /// need a tessellator (lyon) instead.
+#[allow(clippy::too_many_arguments)]
 pub fn paint_icon(
     x: f32,
     y: f32,
@@ -2831,13 +2832,16 @@ pub fn paint_icon(
     view_box: (u16, u16),
     tint: [f32; 4],
     stroke_progress: f32,
+    filled: bool,
     rects: &mut Vec<RectInstance>,
 ) {
     if w <= 0.0 || h <= 0.0 || view_box.0 == 0 || view_box.1 == 0 {
         return;
     }
     let progress = stroke_progress.clamp(0.0, 1.0);
-    if progress <= 0.0 {
+    // A filled icon has no "draw-in" notion — stroke progress only
+    // gates the stroked outline path below.
+    if !filled && progress <= 0.0 {
         return;
     }
     let vb_w = view_box.0 as f32;
@@ -2851,6 +2855,16 @@ pub fn paint_icon(
     let ox = x + (w - draw_w) * 0.5;
     let oy = y + (h - draw_h) * 0.5;
     let to_screen = |p: (f32, f32)| (ox + p.0 * scale, oy + p.1 * scale);
+
+    if filled {
+        // Filled / silhouette icons: scanline-fill the closed subpaths
+        // with the tint. The GPU backend has no general path
+        // rasterizer; this approximates fill with horizontal span rects
+        // (even-odd coverage), which is exact for the polygons that
+        // `path_segments` produces after curve flattening.
+        fill_icon(paths, &to_screen, tint, rects);
+        return;
+    }
 
     // Fast path: fully drawn, no length math required.
     if progress >= 1.0 {
@@ -2901,6 +2915,121 @@ pub fn paint_icon(
                 stroke_segment(to_screen(a), to_screen(cut), stroke_w, tint, rects);
                 break 'outer;
             }
+        }
+    }
+}
+
+/// Scanline-fill the closed subpaths of an icon with `tint`.
+///
+/// `path_segments` flattens every curve into line segments, so each
+/// subpath becomes a polygon (a contiguous run of segments whose
+/// endpoints chain together). We collect the polygon vertices, then
+/// rasterize using the even-odd scanline rule: for each 1px-tall scan
+/// row we find polygon-edge crossings, sort them, and emit a filled
+/// rect for each inside span (between crossing pairs). Even-odd matches
+/// SVG's `fill-rule` for the holes Lucide-style icons use (e.g. a
+/// filled ring). The rects go through the same instance batch the
+/// rest of the renderer uses, so no new pipeline is needed.
+///
+/// `to_screen` maps path-space → screen-space; we fill directly in
+/// screen space so the spans line up with the device pixel grid.
+fn fill_icon(
+    paths: &[&str],
+    to_screen: &impl Fn((f32, f32)) -> (f32, f32),
+    tint: [f32; 4],
+    rects: &mut Vec<RectInstance>,
+) {
+    // Gather screen-space polygons, one per subpath.
+    let mut polygons: Vec<Vec<(f32, f32)>> = Vec::new();
+    for path in paths {
+        let mut current: Vec<(f32, f32)> = Vec::new();
+        let mut last_end: Option<(f32, f32)> = None;
+        for (a, b) in path_segments(path) {
+            let sa = to_screen(a);
+            let sb = to_screen(b);
+            // A gap between the previous segment's end and this
+            // segment's start marks a new subpath.
+            let new_subpath = match last_end {
+                Some(prev) => (prev.0 - sa.0).abs() > 0.01 || (prev.1 - sa.1).abs() > 0.01,
+                None => true,
+            };
+            if new_subpath {
+                if current.len() >= 3 {
+                    polygons.push(std::mem::take(&mut current));
+                } else {
+                    current.clear();
+                }
+                current.push(sa);
+            }
+            current.push(sb);
+            last_end = Some(sb);
+        }
+        if current.len() >= 3 {
+            polygons.push(current);
+        }
+    }
+    if polygons.is_empty() {
+        return;
+    }
+
+    // Vertical bounds across all polygons.
+    let mut min_y = f32::INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for poly in &polygons {
+        for &(_, py) in poly {
+            min_y = min_y.min(py);
+            max_y = max_y.max(py);
+        }
+    }
+    if !min_y.is_finite() || !max_y.is_finite() || max_y <= min_y {
+        return;
+    }
+
+    // Scan row-by-row at device-pixel resolution, sampling at the row
+    // center. Crossings from ALL subpaths feed one sorted list so the
+    // even-odd rule produces holes where subpaths overlap.
+    let y_start = min_y.floor() as i32;
+    let y_end = max_y.ceil() as i32;
+    let mut crossings: Vec<f32> = Vec::new();
+    for row in y_start..y_end {
+        let sy = row as f32 + 0.5;
+        crossings.clear();
+        for poly in &polygons {
+            let n = poly.len();
+            for i in 0..n {
+                let (x0, y0) = poly[i];
+                let (x1, y1) = poly[(i + 1) % n];
+                // Half-open edge test [min_y, max_y) avoids
+                // double-counting a vertex shared by two edges.
+                let (ya, yb) = (y0.min(y1), y0.max(y1));
+                if sy >= ya && sy < yb {
+                    let t = (sy - y0) / (y1 - y0);
+                    crossings.push(x0 + t * (x1 - x0));
+                }
+            }
+        }
+        if crossings.len() < 2 {
+            continue;
+        }
+        crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut i = 0;
+        while i + 1 < crossings.len() {
+            let xa = crossings[i];
+            let xb = crossings[i + 1];
+            let span = xb - xa;
+            if span > 0.0 {
+                rects.push(RectInstance {
+                    rect: [xa, row as f32, span, 1.0],
+                    bg: srgb_rgba_to_linear(tint),
+                    corner_radius: [0.0; 4],
+                    border_color: [0.0; 4],
+                    border_width: 0.0,
+                    rotation: 0.0,
+                    shadow_blur: 0.0,
+                    ..no_gradient_fields()
+                });
+            }
+            i += 2;
         }
     }
 }

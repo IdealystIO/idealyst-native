@@ -551,12 +551,21 @@ impl Backend for SsrBackend {
         svg.attrs.push(("xmlns", "http://www.w3.org/2000/svg".to_string()));
         svg.attrs.push(("width", "1em".to_string()));
         svg.attrs.push(("height", "1em".to_string()));
-        svg.attrs.push(("fill", "none".to_string()));
-        let stroke = color.map(|c| c.0.clone()).unwrap_or_else(|| "currentColor".to_string());
-        svg.attrs.push(("stroke", stroke));
-        svg.attrs.push(("stroke-width", "2".to_string()));
-        svg.attrs.push(("stroke-linecap", "round".to_string()));
-        svg.attrs.push(("stroke-linejoin", "round".to_string()));
+        // Mirror the web backend: filled icons paint the interior with the
+        // icon color and disable the stroke; outlined icons stroke the
+        // outline and leave the interior empty. Must match
+        // `backend_web::primitives::icon::create` for hydration parity.
+        let icon_color = color.map(|c| c.0.clone()).unwrap_or_else(|| "currentColor".to_string());
+        if data.filled {
+            svg.attrs.push(("fill", icon_color));
+            svg.attrs.push(("stroke", "none".to_string()));
+        } else {
+            svg.attrs.push(("fill", "none".to_string()));
+            svg.attrs.push(("stroke", icon_color));
+            svg.attrs.push(("stroke-width", "2".to_string()));
+            svg.attrs.push(("stroke-linecap", "round".to_string()));
+            svg.attrs.push(("stroke-linejoin", "round".to_string()));
+        }
         svg.style = Some(css::ICON_INLINE_STYLE.to_string());
         let fill_rule = match data.fill_rule {
             runtime_core::primitives::icon::FillRule::NonZero => "nonzero",

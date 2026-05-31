@@ -250,17 +250,20 @@ fn build_icon_drawable<'a>(
         .and_then(|v| v.l())
         .unwrap();
 
-    // Paint.Style.STROKE = 1
+    // Paint style: FILL for filled/silhouette icons, STROKE for outlined
+    // (the default). The stroke width/cap/join set below are inert when
+    // the paint is in FILL mode, so we leave them unconditional.
     let style_class = env.find_class("android/graphics/Paint$Style").unwrap();
-    let stroke_style = env
-        .get_static_field(&style_class, "STROKE", "Landroid/graphics/Paint$Style;")
+    let style_field = if data.filled { "FILL" } else { "STROKE" };
+    let paint_style = env
+        .get_static_field(&style_class, style_field, "Landroid/graphics/Paint$Style;")
         .and_then(|v| v.l())
         .unwrap();
     let _ = env.call_method(
         &paint,
         "setStyle",
         "(Landroid/graphics/Paint$Style;)V",
-        &[JValue::Object(&stroke_style)],
+        &[JValue::Object(&paint_style)],
     );
 
     // Stroke width (2 units in viewBox space — will be scaled by drawable).

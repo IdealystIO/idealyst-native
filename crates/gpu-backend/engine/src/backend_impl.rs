@@ -867,6 +867,7 @@ impl Backend for WgpuBackend {
                 view_box: data.view_box,
                 color: color.map(parse_color),
                 stroke_progress: std::cell::Cell::new(1.0),
+                filled: data.filled,
             },
             layout,
         );

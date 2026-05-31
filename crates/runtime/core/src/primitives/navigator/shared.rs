@@ -77,6 +77,67 @@ pub fn ambient_navigator() -> Option<Rc<NavigatorControl>> {
     AMBIENT_NAV.with(|s| s.borrow().last().cloned())
 }
 
+/// Snapshot of the ambient navigator context (nav control, screen
+/// state, screen route) at a point in the build. Reactive regions
+/// (`when`/`switch`/`for`) capture this when first built — inside the
+/// screen's ambient scope — and re-establish it around every rebuild,
+/// so a subtree rebuilt by a signal change (e.g. a `link` whose active
+/// styling flips) keeps the same ambient navigator it was born with.
+/// Without this, a reactively-remounted `link` captures `None` and
+/// silently stops navigating.
+///
+/// The navigator control is held WEAK on purpose: the navigator owns
+/// the screen scopes, a screen scope owns the reactive region's Effect,
+/// and that Effect would own this snapshot — a strong `Rc` here closes
+/// a reference cycle that leaks the whole navigator. `enter()` upgrades;
+/// if the navigator is gone (region tearing down) it simply restores
+/// nothing.
+#[derive(Clone, Default)]
+pub struct AmbientNavContext {
+    nav: Option<std::rc::Weak<NavigatorControl>>,
+    // Outer Option = "was a screen-state guard present"; inner = the
+    // state value (itself optional — `()`-param screens push `None`).
+    state: Option<Option<Rc<dyn Any>>>,
+    route: Option<&'static str>,
+}
+
+/// Capture the current ambient context. Call this synchronously while
+/// building a reactive region (i.e. while the screen's guards are still
+/// on the stack), BEFORE creating the rebuild Effect.
+pub fn capture_ambient_nav_context() -> AmbientNavContext {
+    AmbientNavContext {
+        nav: AMBIENT_NAV.with(|s| s.borrow().last().map(Rc::downgrade)),
+        state: SCREEN_STATE.with(|s| s.borrow().last().cloned()),
+        route: SCREEN_ROUTE.with(|s| s.borrow().last().copied()),
+    }
+}
+
+impl AmbientNavContext {
+    /// True when there is no navigator context to restore — lets callers
+    /// cheaply skip when used outside any navigator.
+    pub fn is_empty(&self) -> bool {
+        self.nav.is_none() && self.state.is_none() && self.route.is_none()
+    }
+
+    /// Re-push the captured context. The returned guard pops all three
+    /// stacks on drop. Hold it across the subtree rebuild.
+    pub fn enter(&self) -> AmbientNavContextGuard {
+        AmbientNavContextGuard {
+            _nav: self.nav.as_ref().and_then(|w| w.upgrade()).map(AmbientNavGuard::push),
+            _state: self.state.clone().map(ScreenStateGuard::push),
+            _route: self.route.map(ScreenRouteGuard::push),
+        }
+    }
+}
+
+/// Drops in field order; each inner guard pops its own (independent)
+/// stack, so order is irrelevant for correctness.
+pub struct AmbientNavContextGuard {
+    _nav: Option<AmbientNavGuard>,
+    _state: Option<ScreenStateGuard>,
+    _route: Option<ScreenRouteGuard>,
+}
+
 // ---------------------------------------------------------------------------
 // RouteParams — URL ⇄ typed params
 // ---------------------------------------------------------------------------

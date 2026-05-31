@@ -18,10 +18,11 @@
 //!
 //! ## Stroke vs fill
 //!
-//! Mirror iOS's `create_icon`: stroke-only with rounded caps, line
-//! width = 2 × scale factor. Authors can switch to fill later
-//! through a future style attribute; current `IconData` doesn't
-//! carry a stroke/fill discriminant.
+//! Mirror iOS's `create_icon`: outlined icons (`IconData.filled ==
+//! false`) stroke with rounded caps and line width = 2 × scale factor;
+//! filled icons (`filled == true`) fill the path with the icon color
+//! and disable the stroke. `update_icon_color` keys off the layer's
+//! live `fillColor` alpha to know which paint to rewrite.
 
 use std::ffi::c_void;
 
@@ -73,6 +74,7 @@ extern "C" {
     );
     fn CGPathCloseSubpath(path: *mut CGPathRef);
     fn CGPathRelease(path: *mut CGPathRef);
+    fn CGColorGetAlpha(color: *const c_void) -> f64;
 }
 
 /// `PathEmitter` adapter that writes into a CGMutablePathRef.
@@ -177,21 +179,27 @@ pub(crate) fn create_icon(
     let _: () = unsafe { msg_send![&shape_layer, setPath: raw_path as *const c_void] };
     unsafe { CGPathRelease(raw_path) };
 
-    // Stroke color via NSColor → CGColor. Matches the iOS path's
+    // Icon color via NSColor → CGColor. Matches the iOS path's
     // UIColor → CGColor route.
     let ns_color: Retained<NSColor> = match color {
         Some(c) => color_to_nscolor(c),
         None => unsafe { msg_send_id![objc2::class!(NSColor), labelColor] },
     };
     let cg_color: *const c_void = unsafe { msg_send![&ns_color, CGColor] };
-    let _: () = unsafe { msg_send![&shape_layer, setStrokeColor: cg_color] };
-
-    // No fill — outlined icons (matches Lucide / iOS posture).
     let clear: Retained<NSColor> = unsafe {
         msg_send_id![objc2::class!(NSColor), clearColor]
     };
     let cg_clear: *const c_void = unsafe { msg_send![&clear, CGColor] };
-    let _: () = unsafe { msg_send![&shape_layer, setFillColor: cg_clear] };
+
+    if data.filled {
+        // Filled / silhouette style: fill with the icon color, no stroke.
+        let _: () = unsafe { msg_send![&shape_layer, setFillColor: cg_color] };
+        let _: () = unsafe { msg_send![&shape_layer, setStrokeColor: cg_clear] };
+    } else {
+        // Stroke-only (outlined, matches Lucide / iOS posture).
+        let _: () = unsafe { msg_send![&shape_layer, setStrokeColor: cg_color] };
+        let _: () = unsafe { msg_send![&shape_layer, setFillColor: cg_clear] };
+    }
 
     // Stroke width scaled to target size.
     let line_width: f64 = 2.0 * sx;
@@ -202,8 +210,7 @@ pub(crate) fn create_icon(
     let _: () = unsafe { msg_send![&shape_layer, setLineCap: &*round] };
     let _: () = unsafe { msg_send![&shape_layer, setLineJoin: &*round] };
 
-    // Fill rule (only relevant if a future style attribute swaps
-    // to fill-only; harmless for stroke-only).
+    // Fill rule (relevant when `filled`; harmless for stroke-only).
     if data.fill_rule == FillRule::EvenOdd {
         let rule = NSString::from_str("even-odd");
         let _: () = unsafe { msg_send![&shape_layer, setFillRule: &*rule] };
@@ -223,14 +230,22 @@ pub(crate) fn create_icon(
     view
 }
 
-/// Update the stroke color on an existing icon view's CAShapeLayer.
-/// Walks the layer's first sublayer (which we know is the shape
-/// layer because `create_icon` adds exactly one).
+/// Update the color on an existing icon view's CAShapeLayer. Walks the
+/// layer's first sublayer (which we know is the shape layer because
+/// `create_icon` adds exactly one) and rewrites whichever paint is
+/// active: a filled icon has a non-clear `fillColor`, an outlined icon a
+/// clear fill.
 pub(crate) fn update_icon_color(node: &MacosNode, color: &Color) {
     if let Some(shape) = get_shape_layer(node) {
         let ns = color_to_nscolor(color);
         let cg: *const c_void = unsafe { msg_send![&ns, CGColor] };
-        let _: () = unsafe { msg_send![&shape, setStrokeColor: cg] };
+        let cg_fill: *const c_void = unsafe { msg_send![&shape, fillColor] };
+        let is_filled = !cg_fill.is_null() && unsafe { CGColorGetAlpha(cg_fill) } > 0.0;
+        if is_filled {
+            let _: () = unsafe { msg_send![&shape, setFillColor: cg] };
+        } else {
+            let _: () = unsafe { msg_send![&shape, setStrokeColor: cg] };
+        }
     }
 }
 

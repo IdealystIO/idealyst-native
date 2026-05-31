@@ -402,6 +402,10 @@ pub enum NodeKind {
         /// painted partially. Driven by `update_icon_stroke` /
         /// `animate_icon_stroke`. Default 1.0 = fully drawn.
         stroke_progress: std::cell::Cell<f32>,
+        /// When true, the icon's closed subpaths are scanline-filled
+        /// with the tint instead of stroked. Stroke-reveal progress is
+        /// ignored for filled icons (a fill has no "draw-in" notion).
+        filled: bool,
     },
     /// Top-of-stack portal. The renderer hoists Portal subtrees
     /// to a top z-layer after the main walk so they paint above

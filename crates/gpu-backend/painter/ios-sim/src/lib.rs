@@ -697,6 +697,7 @@ impl Painter for IosSim {
                     icon.view_box,
                     tint,
                     1.0,
+                    false,
                     rects,
                 );
                 hit_regions.push(NavigatorHeaderHit {
@@ -716,6 +717,7 @@ impl Painter for IosSim {
                 icon.view_box,
                 tint,
                 1.0,
+                    false,
                 rects,
             );
             // Extend the hit target leftward to the bar edge so
@@ -740,6 +742,7 @@ impl Painter for IosSim {
                     icon.view_box,
                     tint,
                     1.0,
+                    false,
                     rects,
                 );
                 hit_regions.push(NavigatorHeaderHit {

@@ -51,6 +51,7 @@ docs! {
                 pub view_box: (u16, u16),
                 pub paths: &'static [&'static str],
                 pub fill_rule: FillRule,
+                pub filled: bool,
             }
         "##),
         list(
@@ -61,6 +62,11 @@ docs! {
               plus a filled bowl, for example)."],
             [code("fill_rule"), " — ", code("NonZero"), " (the SVG default) or ",
              code("EvenOdd"), "."],
+            [code("filled"), " — ", code("false"),
+             " (the default) strokes the paths with the icon color, leaving the \
+              interior transparent — the outlined Lucide style. ", code("true"),
+             " fills the paths with the icon color (using ", code("fill_rule"),
+             ") and disables the stroke, for solid/silhouette glyphs."],
         ),
         p("Because the whole thing is ", code("const"),
           ", an icon pack is a Rust module of static constants. There's no init \
@@ -200,6 +206,7 @@ docs! {
                 view_box: (24, 24),
                 paths: &["M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"],
                 fill_rule: FillRule::NonZero,
+                filled: false,         // outlined (stroke); set true for a solid star
             };
 
             pub const LOGO: IconData = IconData {
@@ -209,6 +216,7 @@ docs! {
                     "M16 10l6 6-6 6-6-6z",            // inner diamond
                 ],
                 fill_rule: FillRule::NonZero,
+                filled: false,
             };
         "##),
         p("That's it. Copy path data from any SVG, drop it into a constant, use it \
@@ -270,6 +278,7 @@ docs! {
                             view_box: ({}, {}), \
                             paths: &[{}], \
                             fill_rule: ::runtime_core::FillRule::NonZero, \
+                            filled: false, \
                          }};\n",
                         vb.0, vb.1,
                         paths.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>().join(",")

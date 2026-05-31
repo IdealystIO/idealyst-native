@@ -61,8 +61,11 @@ fn main() {
             let escaped = p.replace('\\', "\\\\").replace('"', "\\\"");
             output.push_str(&format!("\"{}\"", escaped));
         }
+        // Lucide icons are outlined (stroke-only); `filled: false` preserves
+        // the historic stroke rendering. A future filled icon pack would set
+        // this true.
         output.push_str(&format!(
-            "],\n    fill_rule: {},\n}};\n\n",
+            "],\n    fill_rule: {},\n    filled: false,\n}};\n\n",
             fill_rule
         ));
     }

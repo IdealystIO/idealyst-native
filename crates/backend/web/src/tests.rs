@@ -1188,3 +1188,96 @@ fn dynamic_by_ptr_stale_entry_does_not_misroute_class() {
          or replaced with the correct content_key",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Icon fill vs stroke — regression test for the filled-icon support.
+// ---------------------------------------------------------------------------
+
+use runtime_core::primitives::icon::{FillRule, IconData};
+use runtime_core::Color;
+
+const FILLED_ICON: IconData = IconData {
+    view_box: (24, 24),
+    paths: &["M12 2l3 7h7l-6 4 3 7-7-4-7 4 3-7-6-4h7z"],
+    fill_rule: FillRule::NonZero,
+    filled: true,
+};
+
+const OUTLINED_ICON: IconData = IconData {
+    view_box: (24, 24),
+    paths: &["M12 2l3 7h7l-6 4 3 7-7-4-7 4 3-7-6-4h7z"],
+    fill_rule: FillRule::NonZero,
+    filled: false,
+};
+
+/// REGRESSION TEST.
+///
+/// Before filled-icon support, `icon()` hardcoded `fill="none"` and
+/// painted the icon color into `stroke`, so a filled/silhouette
+/// `IconData` rendered as a thin outline (or invisible). A filled icon
+/// must paint its color into `fill` and disable the stroke; an outlined
+/// icon must keep the historic stroke-only rendering. `update_color`
+/// must rewrite whichever paint is live.
+#[wasm_bindgen_test]
+fn regression_filled_icon_paints_fill_not_stroke() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+
+    let red = Color("rgb(255, 0, 0)".to_string());
+
+    // --- Filled icon: color goes to `fill`, stroke disabled. ---
+    let filled_node = crate::primitives::icon::create(&mut backend, &FILLED_ICON, Some(&red));
+    let filled_el: web_sys::Element = filled_node.clone().dyn_into().unwrap();
+    assert_eq!(filled_el.tag_name().to_lowercase(), "svg");
+    assert_eq!(
+        filled_el.get_attribute("fill").as_deref(),
+        Some("rgb(255, 0, 0)"),
+        "filled icon must paint the color into fill",
+    );
+    assert_eq!(
+        filled_el.get_attribute("stroke").as_deref(),
+        Some("none"),
+        "filled icon must disable the stroke",
+    );
+
+    // update_color on a filled icon rewrites `fill`, not `stroke`.
+    let blue = Color("rgb(0, 0, 255)".to_string());
+    crate::primitives::icon::update_color(&filled_node, &blue);
+    assert_eq!(
+        filled_el.get_attribute("fill").as_deref(),
+        Some("rgb(0, 0, 255)"),
+        "update_color on a filled icon must rewrite fill",
+    );
+    assert_eq!(
+        filled_el.get_attribute("stroke").as_deref(),
+        Some("none"),
+        "update_color must not re-enable the stroke on a filled icon",
+    );
+
+    // --- Outlined icon (default): historic stroke-only behavior. ---
+    let outlined_node = crate::primitives::icon::create(&mut backend, &OUTLINED_ICON, Some(&red));
+    let outlined_el: web_sys::Element = outlined_node.clone().dyn_into().unwrap();
+    assert_eq!(
+        outlined_el.get_attribute("fill").as_deref(),
+        Some("none"),
+        "outlined icon must keep fill=none",
+    );
+    assert_eq!(
+        outlined_el.get_attribute("stroke").as_deref(),
+        Some("rgb(255, 0, 0)"),
+        "outlined icon must paint the color into stroke",
+    );
+
+    // update_color on an outlined icon rewrites `stroke`, not `fill`.
+    crate::primitives::icon::update_color(&outlined_node, &blue);
+    assert_eq!(
+        outlined_el.get_attribute("stroke").as_deref(),
+        Some("rgb(0, 0, 255)"),
+        "update_color on an outlined icon must rewrite stroke",
+    );
+    assert_eq!(
+        outlined_el.get_attribute("fill").as_deref(),
+        Some("none"),
+        "update_color must not paint fill on an outlined icon",
+    );
+}

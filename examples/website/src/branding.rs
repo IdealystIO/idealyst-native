@@ -28,4 +28,5 @@ pub const LIGHT_LOGO: IconData = IconData {
          15.319 17.872C15.932 22.774 20.119 27.268 20.119 34.621L20.119 37.889",
     ],
     fill_rule: FillRule::NonZero,
+    filled: false,
 };

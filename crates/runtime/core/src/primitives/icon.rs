@@ -51,6 +51,7 @@ pub enum FillRule {
 ///     view_box: (24, 24),
 ///     paths: &["M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"],
 ///     fill_rule: FillRule::NonZero,
+///     filled: false,
 /// };
 /// ```
 #[derive(Debug, Clone, Copy)]
@@ -62,6 +63,12 @@ pub struct IconData {
     pub paths: &'static [&'static str],
     /// Default fill rule applied to all paths.
     pub fill_rule: FillRule,
+    /// When `false` (the default, matching Lucide's outlined style), the
+    /// icon's paths are stroked with the icon color and the interior is
+    /// left transparent. When `true`, the paths are *filled* with the
+    /// icon color (using `fill_rule`) and the stroke is disabled — for
+    /// solid/silhouette glyphs (brand marks, sparkles, solid play/pause).
+    pub filled: bool,
 }
 
 // ---------------------------------------------------------------------------

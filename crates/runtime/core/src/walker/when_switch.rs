@@ -89,6 +89,16 @@ fn build_when_closure<B: Backend + 'static>(
     let branch_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> = Rc::new(RefCell::new(None));
     let branch_scope_for_effect = branch_scope.clone();
 
+    // Capture the ambient navigator context ONCE, synchronously, while
+    // the screen's `AmbientNavGuard`/`ScreenStateGuard`/`ScreenRouteGuard`
+    // are still on the stack. Re-established around every rebuild below so
+    // a `link` (or anything reading `ambient_navigator()`) rebuilt by a
+    // signal change keeps the navigator it was born with. Without this the
+    // rebuild fires after the screen build returned (guards dropped) and
+    // the link captures `None`, silently no-op'ing. Weak nav ref inside —
+    // see `AmbientNavContext`.
+    let nav_ctx = crate::primitives::navigator::shared::capture_ambient_nav_context();
+
     let compute = cond.compute.clone();
     let _e = Effect::new(move || {
         let active = (compute)();
@@ -113,6 +123,10 @@ fn build_when_closure<B: Backend + 'static>(
         // a normal mount they build fresh and we `insert` below.
         let mut new_scope = Box::new(reactive::Scope::new());
         untrack(|| {
+            // Re-establish the ambient nav context for the duration of the
+            // subtree build so links built inside capture the restored
+            // navigator. Drops at the end of this closure.
+            let _nav_restore = nav_ctx.enter();
             reactive::with_scope(&mut new_scope, || {
                 let branch = if active { then() } else { otherwise() };
                 let child_node = super::build(&backend_for_effect, 0, branch);
@@ -264,6 +278,14 @@ fn build_switch_closure<B: Backend + 'static>(
     let arms: Rc<Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Element>)>> = Rc::new(arms);
     let default: Rc<dyn Fn() -> Element> = default.into();
 
+    // Capture the ambient navigator context ONCE, synchronously, while the
+    // screen's guards are still on the stack. Re-established around the
+    // deferred rebuild below so a reactively-remounted `link` keeps its
+    // navigator (see `build_when_closure` for the full rationale). The
+    // hydration INLINE build above runs during the initial pass while the
+    // guards are still live, so it needs no restore.
+    let nav_ctx = crate::primitives::navigator::shared::capture_ambient_nav_context();
+
     // Hydration: build the active arm INLINE so the walker descends
     // through the SSR arm's nodes and adopts them (the cursor advances
     // past the anchor subtree naturally). Without this, the deferred
@@ -321,6 +343,7 @@ fn build_switch_closure<B: Backend + 'static>(
         let last_key_for_microtask = last_key_for_effect.clone();
         let arms_for_microtask = arms.clone();
         let default_for_microtask = default.clone();
+        let nav_ctx_for_microtask = nav_ctx.clone();
 
         schedule_microtask(move || {
             if !opaque {
@@ -372,6 +395,10 @@ fn build_switch_closure<B: Backend + 'static>(
             let _t_build = crate::debug::now_micros();
             let mut new_scope = Box::new(reactive::Scope::new());
             untrack(|| {
+                // Re-establish the ambient nav context for the subtree
+                // build (the screen's guards are long gone by the time
+                // this deferred microtask fires).
+                let _nav_restore = nav_ctx_for_microtask.enter();
                 reactive::with_scope(&mut new_scope, || {
                     // Pick the matching arm by JSON equality, or
                     // fall through to default. Empty arms vec

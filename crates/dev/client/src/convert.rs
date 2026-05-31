@@ -190,6 +190,7 @@ pub fn wire_icon_to_static(w: WireIconData) -> primitives::icon::IconData {
             WireFillRule::NonZero => primitives::icon::FillRule::NonZero,
             WireFillRule::EvenOdd => primitives::icon::FillRule::EvenOdd,
         },
+        filled: w.filled,
     }
 }
 

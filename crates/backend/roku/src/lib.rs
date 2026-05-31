@@ -338,10 +338,13 @@ impl RokuBackend {
         WireIconData {
             // The framework treats the static `paths` slice pointer
             // as the icon's stable identity — same icon, same address.
-            cache_key: data.paths.as_ptr() as usize as u64,
+            // Fold `filled` into the key so the filled and outlined sprite
+            // for one path set get distinct atlas entries.
+            cache_key: (data.paths.as_ptr() as usize as u64) ^ (data.filled as u64),
             viewport_width: data.view_box.0 as f32,
             viewport_height: data.view_box.1 as f32,
             paths: data.paths.iter().map(|s| s.to_string()).collect(),
+            filled: data.filled,
         }
     }
 }

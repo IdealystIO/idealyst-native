@@ -225,6 +225,17 @@ pub(super) fn build<B: Backend + 'static>(
     let anchor_for_effect = anchor.clone();
     let snapshot = Rc::new(snapshot);
 
+    // Capture the ambient navigator context ONCE, synchronously, while the
+    // screen's guards are still on the stack. Re-established around every
+    // row (re)build below so a `link` rebuilt by a list change keeps its
+    // navigator (see `walker::when_switch::build_when_closure`). The Effect
+    // re-fires after the screen build returned (guards dropped), so without
+    // this a remounted-row link captures `None` and silently no-ops. Weak
+    // nav ref inside — see `AmbientNavContext`. `Clone` so each (mutually
+    // exclusive) branch's Effect can own its own copy.
+    let nav_ctx = crate::primitives::navigator::shared::capture_ambient_nav_context();
+    let nav_ctx_fallback = nav_ctx.clone();
+
     if backend.borrow().supports_child_splice() {
         // Keyed reconcile under the anchor (the rows are the anchor's
         // children, so `base_index` is 0).
@@ -233,6 +244,9 @@ pub(super) fn build<B: Backend + 'static>(
             // TRACKED: enumerate the rows. Reads the iterable's signal(s)
             // + each row's key — that's the rebuild dependency set.
             let rows = (snapshot)();
+            // Re-establish the ambient nav context for the duration of the
+            // reconcile (which builds any new/changed rows synchronously).
+            let _nav_restore = nav_ctx.enter();
             reconcile(&backend_for_effect, &anchor_for_effect, 0, rows, &state);
         });
     } else {
@@ -249,6 +263,8 @@ pub(super) fn build<B: Backend + 'static>(
             backend_for_effect.borrow_mut().clear_children(&anchor_for_effect);
             let mut new_scope = Box::new(reactive::Scope::new());
             untrack(|| {
+                // Re-establish the ambient nav context for the rebuild.
+                let _nav_restore = nav_ctx_fallback.enter();
                 reactive::with_scope(&mut new_scope, || {
                     let children: Vec<Element> =
                         rows.into_iter().flat_map(|(_, build)| build()).collect();
@@ -295,8 +311,15 @@ pub(super) fn build_spliced<B: Backend + 'static>(
     let count: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
     let count_for_effect = count.clone();
 
+    // Capture the ambient navigator context ONCE, synchronously (guards
+    // still on the stack), and re-establish it around every reconcile so
+    // a row's `link` rebuilt by a list change keeps its navigator. See
+    // `build` above / `build_when_closure` for the full rationale.
+    let nav_ctx = crate::primitives::navigator::shared::capture_ambient_nav_context();
+
     let _e = Effect::new(move || {
         let rows = (snapshot)(); // TRACKED
+        let _nav_restore = nav_ctx.enter();
         reconcile(&backend_for_effect, &parent, base_index, rows, &state);
         *count_for_effect.borrow_mut() =
             state.borrow().rows.iter().map(|(_, e)| e.nodes.len()).sum();

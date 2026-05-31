@@ -34,6 +34,7 @@ pub fn icon_data_to_wire(d: &primitives::icon::IconData) -> WireIconData {
             primitives::icon::FillRule::NonZero => WireFillRule::NonZero,
             primitives::icon::FillRule::EvenOdd => WireFillRule::EvenOdd,
         },
+        filled: d.filled,
     }
 }
 

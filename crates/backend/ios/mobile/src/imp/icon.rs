@@ -167,21 +167,30 @@ pub(crate) fn create_icon(
     let cg_path: CGPathRef = unsafe { msg_send![&bezier, CGPath] };
     let _: () = unsafe { msg_send![&shape_layer, setPath: cg_path] };
 
-    // Stroke color.
-    let stroke_color = match color {
+    // Resolve the icon color (falls back to the label color).
+    let icon_color = match color {
         Some(c) => color_to_uicolor(c),
         None => unsafe {
             let cls = objc2::class!(UIColor);
             msg_send_id![cls, labelColor]
         },
     };
-    let cg_stroke: CGColorRef = unsafe { msg_send![&stroke_color, CGColor] };
-    let _: () = unsafe { msg_send![&shape_layer, setStrokeColor: cg_stroke] };
-
-    // No fill — stroke-only (Lucide / outlined icon style).
+    let cg_icon: CGColorRef = unsafe { msg_send![&icon_color, CGColor] };
     let clear: Retained<UIColor> = unsafe { UIColor::clearColor() };
     let cg_clear: CGColorRef = unsafe { msg_send![&clear, CGColor] };
-    let _: () = unsafe { msg_send![&shape_layer, setFillColor: cg_clear] };
+
+    if data.filled {
+        // Filled / silhouette style: fill the paths with the icon color,
+        // disable the stroke. `update_icon_color` mirrors this by writing
+        // fillColor when fillColor is non-clear.
+        let _: () = unsafe { msg_send![&shape_layer, setFillColor: cg_icon] };
+        let _: () = unsafe { msg_send![&shape_layer, setStrokeColor: cg_clear] };
+    } else {
+        // Stroke-only (Lucide / outlined icon style): stroke the paths,
+        // leave the interior transparent.
+        let _: () = unsafe { msg_send![&shape_layer, setStrokeColor: cg_icon] };
+        let _: () = unsafe { msg_send![&shape_layer, setFillColor: cg_clear] };
+    }
 
     // Stroke width scaled to target size.
     let line_width: CGFloat = 2.0 * sx;
@@ -209,14 +218,36 @@ pub(crate) fn create_icon(
     IosNode::View(view)
 }
 
-/// Update the icon's stroke color. Grabs the first sublayer (our
-/// CAShapeLayer) and sets `strokeColor`.
+/// Update the icon's color. Grabs the first sublayer (our CAShapeLayer)
+/// and rewrites whichever paint is active: a filled icon has a non-clear
+/// `fillColor` (set at create time) so we update `fillColor`; an outlined
+/// icon has a clear fill so we update `strokeColor`.
 pub(crate) fn update_icon_color(node: &IosNode, color: &Color) {
     if let Some(shape) = get_shape_layer(node) {
         let ui_color = color_to_uicolor(color);
         let cg_color: CGColorRef = unsafe { msg_send![&ui_color, CGColor] };
-        let _: () = unsafe { msg_send![&shape, setStrokeColor: cg_color] };
+        if shape_layer_is_filled(&shape) {
+            let _: () = unsafe { msg_send![&shape, setFillColor: cg_color] };
+        } else {
+            let _: () = unsafe { msg_send![&shape, setStrokeColor: cg_color] };
+        }
     }
+}
+
+/// Returns true if the shape layer's `fillColor` is opaque (non-clear),
+/// meaning the icon was created in `filled` mode. A clear/null fillColor
+/// has alpha 0.
+fn shape_layer_is_filled(shape: &Retained<NSObject>) -> bool {
+    let cg_fill: CGColorRef = unsafe { msg_send![shape, fillColor] };
+    if cg_fill.0.is_null() {
+        return false;
+    }
+    let alpha: CGFloat = unsafe { CGColorGetAlpha(cg_fill) };
+    alpha > 0.0
+}
+
+extern "C" {
+    fn CGColorGetAlpha(color: CGColorRef) -> CGFloat;
 }
 
 /// Set stroke progress immediately (no animation).
@@ -434,12 +465,19 @@ fn render_to_uiimage_uncached(data: &IconData, size: CGFloat) -> Retained<NSObje
         let _: () = unsafe { msg_send![&bezier, setUsesEvenOddFillRule: true] };
     }
 
-    // Render: stroke in black (template mode ignores source color).
+    // Render in black (template mode ignores source color). Filled icons
+    // fill the path; outlined icons stroke it.
     let bezier_clone = bezier.clone();
+    let filled = data.filled;
     let block = block2::StackBlock::new(move |_ctx: *const NSObject| {
         let black: Retained<UIColor> = unsafe { UIColor::blackColor() };
-        let _: () = unsafe { msg_send![&black, setStroke] };
-        let _: () = unsafe { msg_send![&bezier_clone, stroke] };
+        if filled {
+            let _: () = unsafe { msg_send![&black, setFill] };
+            let _: () = unsafe { msg_send![&bezier_clone, fill] };
+        } else {
+            let _: () = unsafe { msg_send![&black, setStroke] };
+            let _: () = unsafe { msg_send![&bezier_clone, stroke] };
+        }
     });
 
     let image: Retained<NSObject> = unsafe {

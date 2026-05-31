@@ -772,6 +772,7 @@ impl Painter for AndroidSim {
                     icon.view_box,
                     tint,
                     1.0,
+                    false,
                     rects,
                 );
                 hit_regions.push(NavigatorHeaderHit {
@@ -797,6 +798,7 @@ impl Painter for AndroidSim {
                 icon.view_box,
                 tint,
                 1.0,
+                    false,
                 rects,
             );
             hit_regions.push(NavigatorHeaderHit {
@@ -825,6 +827,7 @@ impl Painter for AndroidSim {
                     icon.view_box,
                     tint,
                     1.0,
+                    false,
                     rects,
                 );
                 hit_regions.push(NavigatorHeaderHit {

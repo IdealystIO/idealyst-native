@@ -291,6 +291,199 @@ pub(crate) fn make_on_activate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::navigator::{AmbientNavGuard, NavCommand};
+    use crate::style::StyleRules;
+    use std::cell::RefCell;
+
+    /// Test backend that wires `Link` activation so a test can OBSERVE
+    /// whether a link dispatched. The default `make_link_handle` returns
+    /// a no-op `LinkOps`, so we override `create_link` + `make_link_handle`
+    /// to keep each node's `on_activate` closure in a side table and fire
+    /// it from `LinkHandle::activate()`.
+    struct LinkTestBackend {
+        next_id: RefCell<u32>,
+        // node id -> the link's on_activate closure (built by the walker
+        // from the captured ambient navigator).
+        activations: Rc<RefCell<std::collections::HashMap<u32, Rc<dyn Fn()>>>>,
+    }
+
+    impl LinkTestBackend {
+        fn new() -> Self {
+            Self {
+                next_id: RefCell::new(0),
+                activations: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            }
+        }
+        fn mint(&self) -> u32 {
+            let id = *self.next_id.borrow();
+            *self.next_id.borrow_mut() = id + 1;
+            id
+        }
+    }
+
+    /// `LinkOps` that fires the closure stored for the link's node id.
+    struct TableLinkOps {
+        activations: Rc<RefCell<std::collections::HashMap<u32, Rc<dyn Fn()>>>>,
+    }
+    impl LinkOps for TableLinkOps {
+        fn activate(&self, node: &dyn Any) {
+            let id = *node.downcast_ref::<u32>().expect("link node is u32");
+            let cb = self.activations.borrow().get(&id).cloned();
+            if let Some(cb) = cb {
+                cb();
+            }
+        }
+    }
+
+    impl crate::Backend for LinkTestBackend {
+        type Node = u32;
+
+        fn create_view(
+            &mut self,
+            _a11y: &crate::accessibility::AccessibilityProps,
+        ) -> Self::Node {
+            self.mint()
+        }
+        fn create_text(
+            &mut self,
+            _content: &str,
+            _a11y: &crate::accessibility::AccessibilityProps,
+        ) -> Self::Node {
+            self.mint()
+        }
+        fn create_button(
+            &mut self,
+            _label: &str,
+            _on_click: &crate::derive::Action,
+            _leading: Option<&crate::primitives::icon::IconData>,
+            _trailing: Option<&crate::primitives::icon::IconData>,
+            _a11y: &crate::accessibility::AccessibilityProps,
+        ) -> Self::Node {
+            self.mint()
+        }
+        fn create_link(
+            &mut self,
+            config: LinkConfig,
+            _a11y: &crate::accessibility::AccessibilityProps,
+        ) -> Self::Node {
+            let id = self.mint();
+            self.activations.borrow_mut().insert(id, config.on_activate);
+            id
+        }
+        fn make_link_handle(&self, node: &Self::Node) -> LinkHandle {
+            // The ops needs the side table; leak a per-backend ops object
+            // so it can be a `&'static dyn LinkOps` (test-only — one per
+            // backend instance, lives for the process).
+            let ops: &'static TableLinkOps = Box::leak(Box::new(TableLinkOps {
+                activations: self.activations.clone(),
+            }));
+            LinkHandle::new(Rc::new(*node), ops)
+        }
+        fn insert(&mut self, _parent: &mut Self::Node, _child: Self::Node) {}
+        fn update_text(&mut self, _node: &Self::Node, _content: &str) {}
+        fn clear_children(&mut self, _node: &Self::Node) {}
+        fn apply_style(&mut self, _node: &Self::Node, _style: &Rc<StyleRules>) {}
+        fn finish(&mut self, _root: Self::Node) {}
+    }
+
+    /// Regression: a `link` rebuilt by a reactive `when` region (its
+    /// `then` branch re-running inside the region's Effect, AFTER the
+    /// screen build returned and the screen's `AmbientNavGuard` dropped)
+    /// must keep navigating. The ambient navigator is captured at
+    /// link CONSTRUCTION time; the rebuild happens with no guard on the
+    /// stack, so without the ambient-context snapshot the rebuilt link
+    /// captures `None` and silently no-ops.
+    #[test]
+    fn regression_reactively_remounted_link_keeps_navigator() {
+        use crate::reactive::Signal;
+
+        // The navigator + an installed link activator that records every
+        // dispatched route name. Recording is how we OBSERVE the link
+        // actually fired (vs. silently capturing `None`).
+        let dispatched: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let control = Rc::new(NavigatorControl::new());
+        {
+            let dispatched = dispatched.clone();
+            control.install_link_activator(Rc::new(
+                move |name: &'static str, url: String, _params: Box<dyn Any>| {
+                    dispatched.borrow_mut().push(name.to_string());
+                    // Return a harmless command; the recording above is
+                    // the observable side effect we assert on. No SDK
+                    // dispatcher is installed, so `dispatch` won't forward.
+                    NavCommand::Push { name, url, params: Box::new(()), state: None }
+                },
+            ));
+        }
+
+        static ROUTE: Route<()> = Route::new("detail", "/detail");
+
+        let backend = Rc::new(RefCell::new(LinkTestBackend::new()));
+        let link_ref: Ref<LinkHandle> = Ref::new();
+        // Condition: when `cond` is true the `then` branch builds the
+        // link. Toggling cond re-runs the region's Effect; toggling it
+        // back to true rebuilds `then`, refilling `link_ref` with a
+        // freshly-built link.
+        let cond = Signal::new(true);
+
+        // Mount with the navigator ambient ON the stack, exactly like
+        // `mount_screen` does for the screen build.
+        let _ambient = AmbientNavGuard::push(control.clone());
+        let _owner = crate::render(backend.clone(), {
+            let link_ref = link_ref;
+            crate::element::Element::When {
+                cond: {
+                    let cond = cond;
+                    crate::derive::IntoDerived::into_derived(move || cond.get())
+                },
+                then: Box::new(move || {
+                    link(&ROUTE, (), Vec::new()).bind(link_ref).into()
+                }),
+                otherwise: Box::new(|| {
+                    crate::builder::view(Vec::new()).into()
+                }),
+                style: None,
+            }
+        });
+
+        // FIRST build: link captured the ambient navigator. Activating
+        // it must dispatch once.
+        link_ref
+            .with(|h| h.activate())
+            .expect("link should be mounted after first build");
+        assert_eq!(
+            *dispatched.borrow(),
+            vec!["detail".to_string()],
+            "link must navigate on first build",
+        );
+
+        // Drop the ambient guard BEFORE triggering the rebuild — this is
+        // the real-world situation: the reactive Effect re-fires long
+        // after the screen build returned and its guard was dropped.
+        drop(_ambient);
+        assert!(
+            crate::primitives::navigator::ambient_navigator().is_none(),
+            "ambient nav must be empty when the rebuild fires",
+        );
+
+        // TRIGGER REBUILD: flip false then back to true so the `then`
+        // branch is rebuilt and `link_ref` is refilled with a brand-new
+        // link element built inside the region's Effect.
+        cond.set(false);
+        cond.set(true);
+
+        // The REBUILT link must STILL navigate. Against the buggy code
+        // the rebuilt link captured `None` (no ambient guard on the
+        // stack during the Effect rebuild) and `activate()` no-ops, so
+        // the activator is never called again.
+        link_ref
+            .with(|h| h.activate())
+            .expect("link should be remounted after rebuild");
+        assert_eq!(
+            *dispatched.borrow(),
+            vec!["detail".to_string(), "detail".to_string()],
+            "reactively-remounted link must keep its navigator and dispatch again",
+        );
+    }
 
     /// `external_link` must build a `Element::Link` flagged
     /// external, carrying the raw URL, with no route and no captured

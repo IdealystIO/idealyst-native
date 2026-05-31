@@ -42,7 +42,6 @@ pub(crate) fn create(b: &mut WebBackend, data: &IconData, color: Option<&Color>)
     // Size with em so icon scales with font-size context.
     let _ = svg.set_attribute("width", "1em");
     let _ = svg.set_attribute("height", "1em");
-    let _ = svg.set_attribute("fill", "none");
     // Prevent the SVG from capturing pointer events on transparent
     // regions — pass through to parent pressable/button.
     let _ = svg.set_attribute("style", css::ICON_INLINE_STYLE);
@@ -52,17 +51,27 @@ pub(crate) fn create(b: &mut WebBackend, data: &IconData, color: Option<&Color>)
         FillRule::EvenOdd => "evenodd",
     };
 
-    let stroke_color = match color {
+    let icon_color = match color {
         Some(c) => c.0.clone(),
         None => "currentColor".to_string(),
     };
 
-    // Set stroke on the <svg> element — SVG presentation attributes
-    // cascade to child elements, so all <path>s inherit.
-    let _ = svg.set_attribute("stroke", &stroke_color);
-    let _ = svg.set_attribute("stroke-width", "2");
-    let _ = svg.set_attribute("stroke-linecap", "round");
-    let _ = svg.set_attribute("stroke-linejoin", "round");
+    // Set the active paint on the <svg> element — SVG presentation
+    // attributes cascade to child <path>s. Filled icons paint the
+    // interior with the color and disable the stroke; outlined icons
+    // (the default) stroke the outline and leave the interior empty.
+    // `update_color` keys off which one is "none" to know which to
+    // rewrite on a color change.
+    if data.filled {
+        let _ = svg.set_attribute("fill", &icon_color);
+        let _ = svg.set_attribute("stroke", "none");
+    } else {
+        let _ = svg.set_attribute("fill", "none");
+        let _ = svg.set_attribute("stroke", &icon_color);
+        let _ = svg.set_attribute("stroke-width", "2");
+        let _ = svg.set_attribute("stroke-linecap", "round");
+        let _ = svg.set_attribute("stroke-linejoin", "round");
+    }
 
     for path_d in data.paths {
         let path = b
@@ -91,7 +100,15 @@ pub(crate) fn create(b: &mut WebBackend, data: &IconData, color: Option<&Color>)
 
 pub(crate) fn update_color(node: &Node, color: &Color) {
     if let Ok(el) = node.clone().dyn_into::<web_sys::Element>() {
-        let _ = el.set_attribute("stroke", &color.0);
+        // A filled icon set `stroke="none"` at create time, so the live
+        // paint is `fill`; an outlined icon set `fill="none"`. Rewrite
+        // whichever one is active so reactive `.color()` works for both.
+        let is_filled = el.get_attribute("stroke").as_deref() == Some("none");
+        if is_filled {
+            let _ = el.set_attribute("fill", &color.0);
+        } else {
+            let _ = el.set_attribute("stroke", &color.0);
+        }
     }
 }
 
