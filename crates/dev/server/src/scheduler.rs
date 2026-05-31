@@ -225,7 +225,19 @@ pub fn drive_pending() {
             ready
         });
     for cell in ready {
-        if let Some(f) = cell.borrow_mut().take() {
+        // Bind the take() into a `let` so the `RefMut` from
+        // `borrow_mut()` is released BEFORE `f()` runs. An
+        // `if let Some(f) = cell.borrow_mut().take()` would hold that
+        // borrow across the whole `if` body, so a deadline body that
+        // drops a `DeadlineHandle` for this same cell (a self-cancel,
+        // or a reactive scope teardown / hot-patch rerender firing
+        // during the callback) re-enters `DeadlineHandle::cancel` →
+        // `cell.borrow_mut()` while still borrowed → "RefCell already
+        // borrowed" panic. Mirrors the `Cell::take` discipline the
+        // raf-loop path below already uses. See
+        // [[project_refmut_lifetime_reentrancy]].
+        let taken = cell.borrow_mut().take();
+        if let Some(f) = taken {
             f();
         }
     }
@@ -403,5 +415,45 @@ mod tests {
             after_first,
             after_second
         );
+    }
+
+    /// Regression for the live runtime-server crash: a deadline body
+    /// that drops its OWN `ScheduledTask` handle while firing — the
+    /// shape a scope teardown / hot-patch rerender produces while a
+    /// `session::after_ms` is mid-callback. Before `drive_pending`
+    /// bound the deadline `take()` into a `let`, the cell stayed
+    /// borrowed across the callback, so the handle drop re-entered
+    /// `DeadlineHandle::cancel` → `cell.borrow_mut()` while borrowed →
+    /// "RefCell already borrowed". On the device this panic-looped
+    /// `tick_animations` every `RequestFrame`, so any animated app
+    /// rendered blank / froze. Must not panic now.
+    #[test]
+    fn deadline_dropping_own_handle_mid_fire_does_not_panic() {
+        use std::cell::RefCell;
+        ensure_installed();
+
+        let slot: Rc<RefCell<Option<runtime_core::scheduling::ScheduledTask>>> =
+            Rc::new(RefCell::new(None));
+        let slot_for_body = slot.clone();
+        let fired = Rc::new(Cell::new(0u32));
+        let fired_inner = fired.clone();
+
+        let task = runtime_core::scheduling::after_ms(0, move || {
+            fired_inner.set(fired_inner.get() + 1);
+            // Drop this deadline's own handle while it's executing —
+            // ScheduledTask::Drop → DeadlineHandle::cancel →
+            // borrow_mut on the cell drive_pending is iterating.
+            let taken = slot_for_body.borrow_mut().take();
+            drop(taken);
+        });
+        *slot.borrow_mut() = Some(task);
+
+        // Pre-fix: panics here with "RefCell already borrowed".
+        drive_pending();
+        assert_eq!(fired.get(), 1, "deadline body must run exactly once");
+
+        // Self-cancelled: must not re-fire or panic on later drives.
+        drive_pending();
+        assert_eq!(fired.get(), 1, "self-cancelled deadline must not re-fire");
     }
 }
