@@ -54,8 +54,8 @@ pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
 // sidecar build. Gated by `sidecar` (set only by the generated sidecar
 // wrapper) so device/web builds never pull `dev-server`.
 #[cfg(feature = "sidecar")]
-pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBackend) {
-    // No SDK navigator/external needs recorder-side registration in this app.
+pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
+    stack_navigator::recording::register(backend);
 }
 
 // ---------------------------------------------------------------------------

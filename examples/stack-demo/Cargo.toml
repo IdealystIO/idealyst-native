@@ -12,7 +12,7 @@ crate-type = ["rlib"]
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
 # (build-runtime-server). Pulls `dev-server` so
 # `register_extensions_recorder` is compiled against the recorder backend.
-sidecar = ["dep:dev-server"]
+sidecar = ["dep:dev-server", "stack-navigator/runtime-server"]
 
 [dependencies]
 runtime-core = { workspace = true }
