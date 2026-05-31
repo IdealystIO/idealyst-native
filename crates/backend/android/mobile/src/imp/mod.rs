@@ -1583,6 +1583,26 @@ impl Backend for AndroidBackend {
         node
     }
 
+    /// Override the trait default (which silently falls back to
+    /// `create_view`, dropping `on_click`) so Pressable's tap handler
+    /// actually fires on Android. Same `FrameLayout + setClickable +
+    /// setOnClickListener` shape `create_link` uses — the only
+    /// difference between a Link and a Pressable at this layer is the
+    /// trigger semantics (nav dispatch vs author closure), and
+    /// `link::create` already takes the bare `Rc<dyn Fn()>` we have
+    /// here. The default fall-through was the root cause of the
+    /// `Switch` rewrite's track-tap-doesn't-toggle bug — and any
+    /// other author Pressable on Android.
+    fn create_pressable(
+        &mut self,
+        on_click: std::rc::Rc<dyn Fn()>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let node = primitives::link::create(self, on_click);
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
     fn create_link(
         &mut self,
         config: runtime_core::primitives::link::LinkConfig,

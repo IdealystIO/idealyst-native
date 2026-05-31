@@ -805,6 +805,24 @@ mod runtime {
         let mut owner: Option<Owner> = Some(dev_hot::with_retry(|| {
             mount(backend_for_mount.clone(), app)
         }));
+
+        // Register the headless `"screenshot"` Robot-bridge verb for
+        // this session. `mount` above started the auto-polling Robot
+        // bridge on THIS thread (the `robot` feature is on via the
+        // sidecar's `runtime-core/dev`); the custom-verb registry is
+        // thread-local, so registration must happen here, on the same
+        // thread. The handler snapshots this session's recorder and
+        // rasterizes it via the headless wgpu renderer — letting Robot
+        // / the MCP server screenshot the mocked app on demand.
+        #[cfg(feature = "screenshot")]
+        {
+            let snap_recorder = recorder.clone();
+            let size = initial_viewport
+                .map(|v| (v.width.round() as u32, v.height.round() as u32))
+                .unwrap_or((393, 800));
+            headless_screenshot::register_screenshot_command(size, move || snap_recorder.snapshot());
+        }
+
         let mut cursor = recorder.command_count();
 
         // Ship the initial render's snapshot up to the host.

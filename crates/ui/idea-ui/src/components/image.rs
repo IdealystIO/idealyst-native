@@ -1,12 +1,12 @@
-//! `ImageView` — a themed wrapper over the framework's `image` primitive
+//! `Image` — a themed wrapper over the framework's `image` primitive
 //! with optional explicit dimensions and circular cropping.
 //!
 //! ```ignore
-//! ui! { ImageView(src = "https://…/avatar.png", alt = Some("Ada".into()), width = Some(64.0f32), height = Some(64.0f32), rounded = true) }
+//! ui! { Image(src = "https://…/avatar.png", alt = Some("Ada".into()), width = Some(64.0f32), height = Some(64.0f32), rounded = true) }
 //! ```
 //!
-//! Named `ImageView` (not `Image`) because `ui!` reserves the
-//! PascalCase `Image` tag for the framework's `image` primitive.
+//! `ui!` routes the PascalCase `Image` tag to this component; the
+//! lowercase `image` tag is the framework's raw primitive.
 //!
 //! Sizing is opt-in: with no `width`/`height` the image takes its
 //! natural / flex-given size. `rounded` clips to a circle (pair with
@@ -19,7 +19,7 @@ use runtime_core::{
 use crate::stylesheets::ImageBox;
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
-pub struct ImageViewProps {
+pub struct ImageProps {
     pub src: String,
     /// Accessible description. Maps to `alt` on web.
     pub alt: Option<String>,
@@ -31,14 +31,14 @@ pub struct ImageViewProps {
     pub rounded: bool,
 }
 
-impl Default for ImageViewProps {
+impl Default for ImageProps {
     fn default() -> Self {
         Self { src: String::new(), alt: None, width: None, height: None, rounded: false }
     }
 }
 
 #[component]
-pub fn ImageView(props: &ImageViewProps) -> Element {
+pub fn Image(props: &ImageProps) -> Element {
     let w = props.width;
     let h = props.height;
     let rounded = props.rounded;

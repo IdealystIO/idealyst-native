@@ -136,6 +136,7 @@ pub unsafe extern "C" fn ios_main(
     if let Err(payload) = result {
         let msg = panic_payload_message(payload);
         eprintln!("[backend-ios::aas] ios_main panicked: {msg}");
+        std::process::abort();
     }
 }
 
@@ -150,6 +151,7 @@ pub unsafe extern "C" fn ios_teardown() {
     if let Err(payload) = result {
         let msg = panic_payload_message(payload);
         eprintln!("[backend-ios::aas] ios_teardown panicked: {msg}");
+        std::process::abort();
     }
 }
 

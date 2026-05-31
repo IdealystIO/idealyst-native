@@ -399,13 +399,20 @@ fn apply_transform(
     rules: &StyleRules,
 ) {
     use runtime_core::{Length, Transform};
-    // Default identity values. The loop overwrites them if matching
-    // ops appear in `transform`. Percent translates are stashed on
-    // `state` instead of converted here — translate-% is CSS-spec
-    // BOX-relative, and the box's pixel size isn't known until
-    // Taffy lays out. `sync_transform_translate_percent` (called
-    // from the layout pass) reads the stashed values and writes
-    // `setTranslationX/Y` with the resolved px.
+    // Per-axis "does the style block explicitly drive this axis?"
+    // flags. We only write to the View property when the answer is
+    // yes \u{2014} Android's `setTranslationX` / `setScaleX` /
+    // `setRotation` are the SAME backing fields the animation system
+    // (`set_animated_f32`) writes to, so an unconditional
+    // setTranslationX(0) on every `apply_style` clobbers whatever
+    // the running animation has currently set. Visible bug pre-fix:
+    // idea-ui's Switch animates its thumb's `TranslateX` via that
+    // path; a theme toggle re-fires `apply_style` from the cohort
+    // for the thumb's stylesheet (which has no `transform:` op),
+    // and the old code wrote setTranslationX(0) \u{2014} snapping the
+    // thumb from "on" position back to 0 while the track color
+    // update still ran. Mirrors the iOS fix in
+    // `apply_static_transform`.
     let mut tx_dp: f32 = 0.0;
     let mut ty_dp: f32 = 0.0;
     let mut pct_x: Option<f32> = None;
@@ -413,25 +420,49 @@ fn apply_transform(
     let mut sx: f32 = 1.0;
     let mut sy: f32 = 1.0;
     let mut rot_deg: f32 = 0.0;
+    let mut style_writes_tx = false;
+    let mut style_writes_ty = false;
+    let mut style_writes_sx = false;
+    let mut style_writes_sy = false;
+    let mut style_writes_rot = false;
     if let Some(ops) = rules.transform.as_ref() {
         for op in ops {
             match op {
-                Transform::TranslateX(Length::Px(v)) => tx_dp = *v,
-                Transform::TranslateY(Length::Px(v)) => ty_dp = *v,
-                Transform::TranslateX(Length::Percent(v)) => pct_x = Some(*v),
-                Transform::TranslateY(Length::Percent(v)) => pct_y = Some(*v),
+                Transform::TranslateX(Length::Px(v)) => {
+                    tx_dp = *v;
+                    style_writes_tx = true;
+                }
+                Transform::TranslateY(Length::Px(v)) => {
+                    ty_dp = *v;
+                    style_writes_ty = true;
+                }
+                Transform::TranslateX(Length::Percent(v)) => {
+                    pct_x = Some(*v);
+                    style_writes_tx = true;
+                }
+                Transform::TranslateY(Length::Percent(v)) => {
+                    pct_y = Some(*v);
+                    style_writes_ty = true;
+                }
                 Transform::TranslateX(Length::Auto) | Transform::TranslateY(Length::Auto) => {
                     // `Auto` makes no sense for translate — treat as 0.
                 }
                 Transform::Scale(v) => {
                     sx = *v;
                     sy = *v;
+                    style_writes_sx = true;
+                    style_writes_sy = true;
                 }
                 Transform::ScaleXY { x, y } => {
                     sx = *x;
                     sy = *y;
+                    style_writes_sx = true;
+                    style_writes_sy = true;
                 }
-                Transform::Rotate(deg) => rot_deg = *deg,
+                Transform::Rotate(deg) => {
+                    rot_deg = *deg;
+                    style_writes_rot = true;
+                }
                 // Skew not representable as a flat `View` property —
                 // would require a `Matrix` on a custom drawable. Skip.
                 Transform::SkewX(_) | Transform::SkewY(_) => {}
@@ -440,15 +471,59 @@ fn apply_transform(
     }
     state.transform_translate_pct_x = pct_x;
     state.transform_translate_pct_y = pct_y;
-    // Convert dp → px for px translations; the percent translates
-    // are resolved later when the view has real bounds.
-    let tx_px = dp_to_px(env, view, tx_dp) as f32;
-    let ty_px = dp_to_px(env, view, ty_dp) as f32;
-    let _ = env.call_method(view, "setTranslationX", "(F)V", &[JValue::Float(tx_px)]);
-    let _ = env.call_method(view, "setTranslationY", "(F)V", &[JValue::Float(ty_px)]);
-    let _ = env.call_method(view, "setScaleX", "(F)V", &[JValue::Float(sx)]);
-    let _ = env.call_method(view, "setScaleY", "(F)V", &[JValue::Float(sy)]);
-    let _ = env.call_method(view, "setRotation", "(F)V", &[JValue::Float(rot_deg)]);
+    // Convert dp → px for px translations; resolve percent translates
+    // immediately against the view's already-laid-out box if we can.
+    //
+    // On the INITIAL apply (pre-first-layout) `getWidth()` /
+    // `getHeight()` return 0 and we leave the px value at the
+    // px-translate (0 for the typical pure-percent case); the
+    // layout pass's `sync_transform_translate_percent` fills them in
+    // once Taffy hands us a real frame.
+    //
+    // On every SUBSEQUENT apply (theme swap re-firing the cohort
+    // driver, reactive style change, etc.) the view DOES have real
+    // pixel dimensions — resolve immediately. Without this, the
+    // `applied_frames` cache in the layout pass short-circuits the
+    // post-frame sync (frame unchanged → skip), so the stashed
+    // `transform_translate_pct_*` never gets re-applied and the
+    // disc shifts from `translate(45%, -45%)` to identity.
+    let mut tx_px = dp_to_px(env, view, tx_dp) as f32;
+    let mut ty_px = dp_to_px(env, view, ty_dp) as f32;
+    if pct_x.is_some() || pct_y.is_some() {
+        let width_px = env
+            .call_method(view, "getWidth", "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(0) as f32;
+        let height_px = env
+            .call_method(view, "getHeight", "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(0) as f32;
+        if width_px > 0.0 {
+            if let Some(px) = pct_x {
+                tx_px = width_px * (px / 100.0);
+            }
+        }
+        if height_px > 0.0 {
+            if let Some(py) = pct_y {
+                ty_px = height_px * (py / 100.0);
+            }
+        }
+    }
+    if style_writes_tx {
+        let _ = env.call_method(view, "setTranslationX", "(F)V", &[JValue::Float(tx_px)]);
+    }
+    if style_writes_ty {
+        let _ = env.call_method(view, "setTranslationY", "(F)V", &[JValue::Float(ty_px)]);
+    }
+    if style_writes_sx {
+        let _ = env.call_method(view, "setScaleX", "(F)V", &[JValue::Float(sx)]);
+    }
+    if style_writes_sy {
+        let _ = env.call_method(view, "setScaleY", "(F)V", &[JValue::Float(sy)]);
+    }
+    if style_writes_rot {
+        let _ = env.call_method(view, "setRotation", "(F)V", &[JValue::Float(rot_deg)]);
+    }
 }
 
 /// Resolve any `transform: translate(%, %)` requests stashed on

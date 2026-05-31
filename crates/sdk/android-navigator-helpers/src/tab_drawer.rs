@@ -347,6 +347,73 @@ fn make_frame_layout(backend: &AndroidBackend) -> GlobalRef {
 /// [Toolbar, screen] stacked top-to-bottom. The Toolbar is added by
 /// [`attach_initial`] from `AndroidScreenOptions`; the screen view is
 /// the framework-built navigator content. Using a vertical LinearLayout
+/// Wrap a screen view in an `android.widget.ScrollView`. The drawer
+/// body is a vertical `LinearLayout` whose children (Toolbar +
+/// Screen) get sized to their measured height — a screen taller than
+/// the available viewport gets clipped because LinearLayout itself
+/// doesn't scroll. Wrapping the screen in a ScrollView gives it
+/// vertical scroll affordance, matching iOS's body_scroll +
+/// web's drawer body div.
+///
+/// The wrapper is what we hand back to the caller; cache it in
+/// `MountedScreen.view` so swap_body's `removeView(m.view)` removes
+/// the wrapper (and its inner screen by hierarchy). Visibility flips
+/// on the wrapper hide the inner content too.
+fn wrap_in_scroll_view(env: &mut jni::JNIEnv, context: &GlobalRef, screen: &GlobalRef) -> Option<GlobalRef> {
+    let class = env.find_class("android/widget/ScrollView").ok()?;
+    let scroll = env
+        .new_object(
+            &class,
+            "(Landroid/content/Context;)V",
+            &[JValue::Object(&context.as_obj())],
+        )
+        .ok()?;
+    // Default LayoutParams (`WRAP_CONTENT, WRAP_CONTENT`) on the
+    // ScrollView would size it to its child — no scrolling. The
+    // parent LinearLayout uses `layout_weight=1` semantics via
+    // `setLayoutParams(LinearLayout.LayoutParams(MATCH_PARENT, 0,
+    // weight=1))` to make it fill the leftover vertical space below
+    // the Toolbar. ScrollView's child stays at its Taffy-assigned
+    // height; ScrollView is whatever the LinearLayout gives it.
+    if let Ok(lp_class) = env.find_class("android/widget/LinearLayout$LayoutParams") {
+        if let Ok(lp) = env.new_object(
+            &lp_class,
+            "(IIF)V",
+            &[
+                JValue::Int(-1), // MATCH_PARENT width
+                JValue::Int(0),  // 0 height — weight takes over
+                JValue::Float(1.0),
+            ],
+        ) {
+            let _ = env.call_method(
+                &scroll,
+                "setLayoutParams",
+                "(Landroid/view/ViewGroup$LayoutParams;)V",
+                &[JValue::Object(&lp)],
+            );
+        }
+    }
+    // Add the screen as the (only) child. The screen's own
+    // LayoutParams (set by apply_frame) determine its scrollable
+    // height inside the ScrollView's content area.
+    if env
+        .call_method(
+            &scroll,
+            "addView",
+            "(Landroid/view/View;)V",
+            &[JValue::Object(&screen.as_obj())],
+        )
+        .is_err()
+    {
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_describe();
+            let _ = env.exception_clear();
+        }
+        return None;
+    }
+    env.new_global_ref(&scroll).ok()
+}
+
 /// (not a FrameLayout) lets the Toolbar reserve its measured height
 /// at the top without overlapping the screen.
 fn make_body_linear(backend: &AndroidBackend) -> GlobalRef {
@@ -575,7 +642,7 @@ fn swap_body(
     // Without this, the user sees one frame of wrong positions
     // before the deferred handler-posted layout pass overwrites them.
     backend_android::run_layout_now();
-    let new_toolbar = with_jni_env(|env| {
+    let (new_toolbar, body_child) = with_jni_env(|env| {
         // Build a new toolbar for this screen (drawer only; tabs
         // don't have per-screen chrome).
         let tb = if is_drawer {
@@ -598,11 +665,22 @@ fn swap_body(
                 );
             }
         }
+        // Wrap the screen in a ScrollView so content taller than the
+        // viewport (the website's hero + simulator + sections) is
+        // actually scrollable. Without this, body's LinearLayout
+        // clips at the viewport edge — visible bug: can't scroll
+        // past the embedded simulator to see content below. Drawer
+        // only — tabs don't have per-screen scroll semantics yet.
+        let body_child = if is_drawer {
+            wrap_in_scroll_view(env, &context, &new_view).unwrap_or_else(|| new_view.clone())
+        } else {
+            new_view.clone()
+        };
         if let Err(e) = env.call_method(
             body.as_obj(),
             "addView",
             "(Landroid/view/View;)V",
-            &[JValue::Object(&new_view.as_obj())],
+            &[JValue::Object(&body_child.as_obj())],
         ) {
             if env.exception_check().unwrap_or(false) {
                 let _ = env.exception_describe();
@@ -610,7 +688,7 @@ fn swap_body(
             }
             log::error!("swap_body addView failed: {:?}", e);
         }
-        tb
+        (tb, body_child)
     });
     {
         let mut inst = instance.borrow_mut();
@@ -618,7 +696,11 @@ fn swap_body(
         inst.mounted.insert(
             name,
             MountedScreen {
-                view: new_view,
+                // Cache the BODY-side child (ScrollView wrapper for
+                // drawer, raw view for tabs) — `removeView` /
+                // `setVisibility` later in swap_body operate on what's
+                // actually parented to `body`.
+                view: body_child,
                 toolbar: new_toolbar,
                 scope_id: new_scope,
                 options: new_options,
@@ -731,19 +813,26 @@ pub(crate) fn attach_initial(
         Some((inst.body.clone(), inst.context.clone(), is_drawer))
     });
     let Some((body, context, is_drawer)) = entry_data else { return false };
-    let new_toolbar = with_jni_env(|env| {
+    let (new_toolbar, body_child) = with_jni_env(|env| {
         let tb = if is_drawer {
             attach_toolbar_to_body(env, &context, &body, options)
         } else {
             None
         };
+        // Mirror swap_body: wrap the screen in a ScrollView for
+        // drawer navigators so taller-than-viewport content scrolls.
+        let body_child = if is_drawer {
+            wrap_in_scroll_view(env, &context, &screen).unwrap_or_else(|| screen.clone())
+        } else {
+            screen.clone()
+        };
         let _ = env.call_method(
             body.as_obj(),
             "addView",
             "(Landroid/view/View;)V",
-            &[JValue::Object(&screen.as_obj())],
+            &[JValue::Object(&body_child.as_obj())],
         );
-        tb
+        (tb, body_child)
     });
     TAB_DRAWER_INSTANCES.with(|m| {
         let map = m.borrow();
@@ -763,7 +852,7 @@ pub(crate) fn attach_initial(
             inst.mounted.insert(
                 initial_name,
                 MountedScreen {
-                    view: screen,
+                    view: body_child,
                     toolbar: new_toolbar,
                     scope_id,
                     options: options.clone(),

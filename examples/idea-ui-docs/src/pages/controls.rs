@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use runtime_core::{signal, ui, Element};
 use idea_ui::{
-    tone, Breadcrumbs, Card, Checkbox, Crumb, Grid, ImageView, List, ListItem, Pagination, Progress,
-    RadioGroup, RadioOption, Stack, StackGap, Switch, TextLink, Textarea, Typography,
+    tone, Breadcrumbs, Card, Checkbox, Crumb, Grid, Image, List, ListItem, Pagination, Progress,
+    RadioGroup, RadioOption, Stack, StackGap, Switch, Link, Textarea, Typography,
 };
 
 use crate::shell::{self, ComponentPage, DemoSurface, P, Section};
@@ -153,13 +153,13 @@ pub fn data() -> Element {
 
             Section(title = "Link".to_string()) {
                 DemoSurface {
-                    TextLink(label = "idealyst on GitHub", url = "https://github.com")
+                    Link(label = "idealyst on GitHub", url = "https://github.com")
                 }
             }
 
             Section(title = "Image".to_string()) {
                 DemoSurface {
-                    ImageView(
+                    Image(
                         src = "https://picsum.photos/96",
                         alt = Some("Random sample".to_string()),
                         width = Some(96.0f32),

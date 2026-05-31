@@ -1,0 +1,37 @@
+[package]
+name = "host-android-mobile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Android native shell for the wgpu render backend.
+#
+# Sibling of `host-ios-mobile` / `host-web`: takes the framework's
+# `Element::Graphics` SurfaceView surface (via the Android backend's
+# `AndroidNdkWindowHandle`-bearing `GraphicsSurface`), runs the wgpu
+# init against the Vulkan/GL backend, constructs the
+# `render_wgpu::Host` + `Renderer`, mounts the caller's UI, and drives
+# per-frame paint through `runtime_core::driver::render_loop` — which
+# `backend-android-mobile` already installs as a Choreographer-driven
+# raf_loop.
+#
+# Used to embed a live preview of an idealyst app (the welcome
+# scaffold, a third-party SDK component) inside another idealyst app's
+# UI on Android, without that preview taking over the device frame.
+#
+# No pointer plumbing today — same rationale as `host-ios-mobile`:
+# the preview is read-only and touches on the SurfaceView don't have a
+# meaningful target inside the wgpu scene.
+
+[dependencies]
+render-api = { workspace = true }
+render-wgpu = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Match host-ios-mobile / host-web on wgpu 29. Vulkan is the modern
+# Android backend (API 24+); GL is the legacy fallback. Enabling both
+# lets wgpu pick whichever the device supports.
+wgpu = { version = "29", default-features = false, features = ["vulkan", "gles", "wgsl"] }
+raw-window-handle = "0.6"
+log = "0.4"

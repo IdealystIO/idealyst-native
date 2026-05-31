@@ -206,17 +206,73 @@ impl IosBackend {
         let view = node.as_view();
         let state = self.animated_states.entry(key).or_default();
 
-        // Clear the static slots first so removing the transform
-        // reverts to identity. Animation system slots aren't touched
-        // beyond translate / scale / rotate — those are static-or-
-        // animated; the latest write wins.
-        state.translate_x = None;
-        state.translate_y = None;
-        state.scale_x = None;
-        state.scale_y = None;
-        state.rotate_z = None;
-        state.static_translate_pct_x = None;
-        state.static_translate_pct_y = None;
+        // Pre-scan: which axes does the style's transform block
+        // ACTUALLY drive? Only those get cleared+overwritten below.
+        // We can't blanket-clear translate_x/y/scale_x/y/rotate_z
+        // because those slots are shared with the animation system —
+        // a `AnimatedValue<f32>` bound to `AnimProp::TranslateX`
+        // writes the same field. Pre-fix bug: idea-ui's Switch
+        // animates its thumb's TranslateX via that path; a theme
+        // toggle re-fires `apply_style` from the cohort for the
+        // thumb's static stylesheet, which has NO transform: op,
+        // so the old code cleared `translate_x` and never restored
+        // it \u{2014} thumb snapped from "on" position back to 0
+        // while the track color update still ran. Same trap applies
+        // to scale_x/y / rotate_z any time author code animates
+        // those props.
+        let mut style_writes_tx = false;
+        let mut style_writes_ty = false;
+        let mut style_writes_pct_x = false;
+        let mut style_writes_pct_y = false;
+        let mut style_writes_sx = false;
+        let mut style_writes_sy = false;
+        let mut style_writes_rot = false;
+        if let Some(ops) = style.transform.as_ref() {
+            for op in ops {
+                match op {
+                    Transform::TranslateX(Length::Px(_)) => style_writes_tx = true,
+                    Transform::TranslateY(Length::Px(_)) => style_writes_ty = true,
+                    Transform::TranslateX(Length::Percent(_)) => style_writes_pct_x = true,
+                    Transform::TranslateY(Length::Percent(_)) => style_writes_pct_y = true,
+                    Transform::TranslateX(Length::Auto) | Transform::TranslateY(Length::Auto) => {}
+                    Transform::Scale(_) => {
+                        style_writes_sx = true;
+                        style_writes_sy = true;
+                    }
+                    Transform::ScaleXY { .. } => {
+                        style_writes_sx = true;
+                        style_writes_sy = true;
+                    }
+                    Transform::Rotate(_) => style_writes_rot = true,
+                    Transform::SkewX(_) | Transform::SkewY(_) => {}
+                }
+            }
+        }
+
+        // Clear only the axes the style explicitly controls. If the
+        // style USED to set X and now doesn't, that's "removing the
+        // transform" \u{2014} the call site should explicitly animate
+        // back to 0 in that case (CSS-transition parity); we don't
+        // clobber an animation-owned slot on the assumption that the
+        // style change "removed" what it never wrote in the first
+        // place.
+        if style_writes_tx || style_writes_pct_x {
+            state.translate_x = None;
+            state.static_translate_pct_x = None;
+        }
+        if style_writes_ty || style_writes_pct_y {
+            state.translate_y = None;
+            state.static_translate_pct_y = None;
+        }
+        if style_writes_sx {
+            state.scale_x = None;
+        }
+        if style_writes_sy {
+            state.scale_y = None;
+        }
+        if style_writes_rot {
+            state.rotate_z = None;
+        }
 
         if let Some(ops) = style.transform.as_ref() {
             for op in ops {
@@ -249,9 +305,37 @@ impl IosBackend {
             }
         }
 
-        // Compose + emit. Percent translates contribute 0 at this
-        // stage (translate_x/y still None for those axes); the
-        // layout pass resolves them once the view has real bounds.
+        // Percent translates need the view's box-relative size to
+        // convert % → px. On the initial apply (pre-first-layout)
+        // the view's `bounds.size` is 0×0 and we leave the resolved
+        // slots `None`; the layout pass's `sync_static_transform_percent`
+        // fills them in once Taffy hands us a frame.
+        //
+        // On every SUBSEQUENT apply (theme swap re-firing the cohort
+        // driver, reactive style change, etc.) the view DOES have
+        // real bounds — we resolve immediately. Without this, the
+        // applied_frames cache in `run_layout_pass` short-circuits
+        // the post-frame sync block (frame unchanged → skip), so the
+        // % values stay at `None` and the disc snaps to the
+        // un-translated raw position. Visible bug: hero sun-glare
+        // disc shifts from `translate(45%, -45%)` to identity on
+        // every theme toggle.
+        let need_resolve = state.static_translate_pct_x.is_some()
+            || state.static_translate_pct_y.is_some();
+        if need_resolve {
+            let bounds: objc2_foundation::CGRect = unsafe { msg_send![&*view, bounds] };
+            let w = bounds.size.width as f32;
+            let h = bounds.size.height as f32;
+            if w > 0.0 && h > 0.0 {
+                if let Some(pct_x) = state.static_translate_pct_x {
+                    state.translate_x = Some(w * (pct_x / 100.0));
+                }
+                if let Some(pct_y) = state.static_translate_pct_y {
+                    state.translate_y = Some(h * (pct_y / 100.0));
+                }
+            }
+        }
+
         let matrix = state.compose();
         let _: () = unsafe { msg_send![&*view, setTransform: matrix] };
     }

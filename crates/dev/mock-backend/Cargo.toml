@@ -1,0 +1,60 @@
+[package]
+name = "mock-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# A headless, queryable `runtime_core::Backend` implementation plus an
+# over-the-wire test harness. Lets runtime-server / hot-reload behavior
+# be exercised without a real device (iOS / Android emulator):
+#
+#   real app (walker) → WireRecordingBackend → wire::codec (JSON) →
+#     dev_client::WireBackend → MockBackend (reconstructs a queryable
+#     scene tree)
+#
+# Tests assert against the reconstructed tree, so a bug in the
+# framework-core walker, the wire codec, or the dev-client receiver
+# surfaces as a wrong/missing node — not a blank emulator screen.
+#
+# This is a dev/test utility crate: nothing in a shipped app depends on
+# it. Consumers pull it in via `[dev-dependencies]`.
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+# `screenshot`: adds the headless GPU path — replay a wire command
+# stream (or mount an app) into a real `WgpuBackend` and rasterize a
+# PNG via `render-wgpu`'s offscreen renderer. Off by default so the
+# lightweight logical `WireHarness` doesn't drag in wgpu/glyphon.
+screenshot = ["dep:headless-screenshot"]
+
+[dependencies]
+# `robot` is forced on (not optional) so the `runtime_core::Element`
+# field set is deterministic regardless of who else is in the build
+# graph. `Element::Text { test_id, .. }` is `#[cfg(feature = "robot")]`;
+# without pinning robot here, a build that also pulls dev-server (which
+# enables robot) would unify the feature on and break this crate's
+# struct literals, while a standalone build would have them right —
+# i.e. it would compile xor not depending on the build set. Pinning it
+# makes `test_id` always present. Robot also makes the populated
+# query registry available to harness consumers for free.
+runtime-core = { workspace = true, features = ["robot"] }
+wire = { workspace = true }
+dev-client = { workspace = true }
+dev-server = { workspace = true }
+# The over-socket harness drives the real native client shell against a
+# loopback dev-server. `runtime-server` activates the tungstenite worker.
+runtime-server-shell-native = { workspace = true, features = ["runtime-server"] }
+# Headless GPU screenshot bridge (scene commands → PNG + the
+# Robot-bridge "screenshot" verb). Leaf crate — pulls render-wgpu /
+# dev-client / wgpu transitively, only under the `screenshot` feature.
+headless-screenshot = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Decode captured PNGs + parse the bridge JSON response in the
+# `screenshot`-feature integration tests.
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
+serde_json = "1"

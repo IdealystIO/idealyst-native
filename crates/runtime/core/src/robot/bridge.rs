@@ -19,9 +19,12 @@
 //!   whenever the bridge starts, removed on graceful shutdown. Used by
 //!   the MCP server to enumerate every live Idealyst app on the host.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -29,6 +32,67 @@ use super::{Element, ElementId, ElementKind, Query, Robot, TreeNode};
 
 /// Default port for the robot bridge.
 pub const DEFAULT_PORT: u16 = 9718;
+
+/// A custom bridge-command handler. Receives the request's `args` JSON
+/// and returns the response `ok` payload as a JSON string (or an error
+/// string that becomes the `err` field).
+pub type CommandHandler = Rc<dyn Fn(&serde_json::Value) -> Result<String, String>>;
+
+thread_local! {
+    /// Verbs registered by dev-mode tooling that `runtime-core` can't
+    /// implement itself (it can't see the renderer, the wire layer,
+    /// etc.). The canonical example is `"screenshot"`: a dev-server /
+    /// host crate that owns the scene command stream AND a headless
+    /// renderer registers a handler here, so `dispatch` can route the
+    /// verb without `runtime-core` ever depending on `render-wgpu` /
+    /// `dev-client` (which would be a cycle). Handlers run on the UI
+    /// thread inside [`BridgeHandle::poll`] / [`invoke_command`].
+    static CUSTOM_COMMANDS: RefCell<HashMap<String, CommandHandler>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Register a custom bridge verb. `name` is the `cmd` an external
+/// client sends; `handler` runs on the UI thread and produces the
+/// response payload. Re-registering the same name replaces the prior
+/// handler. Built-in verbs (`click`, `find_element`, …) take priority —
+/// a custom name that collides with a built-in is never reached.
+///
+/// Must be called on the same thread that polls the bridge (the UI /
+/// dev-server thread), because the registry is thread-local — the
+/// handler will be invoked from `dispatch` on that thread.
+pub fn register_command(
+    name: impl Into<String>,
+    handler: impl Fn(&serde_json::Value) -> Result<String, String> + 'static,
+) {
+    let name = name.into();
+    CUSTOM_COMMANDS.with(|c| {
+        c.borrow_mut().insert(name, Rc::new(handler));
+    });
+}
+
+/// Remove a previously-registered custom verb. No-op if absent.
+pub fn unregister_command(name: &str) {
+    CUSTOM_COMMANDS.with(|c| {
+        c.borrow_mut().remove(name);
+    });
+}
+
+/// Look up + invoke a registered custom verb, if any. Clones the
+/// handler `Rc` out of the registry before calling so the handler may
+/// itself (un)register commands without a re-entrant borrow panic.
+fn try_custom_command(cmd: &str, args: &serde_json::Value) -> Option<Result<String, String>> {
+    let handler = CUSTOM_COMMANDS.with(|c| c.borrow().get(cmd).cloned())?;
+    Some(handler(args))
+}
+
+/// Invoke a bridge verb in-process — the same dispatch path
+/// [`BridgeHandle::poll`] runs per TCP command, minus the socket.
+/// Built-in verbs plus any [`register_command`] customs. Lets in-process
+/// drivers (and tests) exercise a verb directly. Must run on the UI
+/// thread (where the Robot registry + custom handlers live).
+pub fn invoke_command(cmd: &str, args: &serde_json::Value) -> Result<String, String> {
+    dispatch(&Robot::new(), cmd, args)
+}
 
 /// A pending command, with a oneshot reply channel for the result.
 pub struct BridgeCommand {
@@ -703,7 +767,12 @@ fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String
             )?;
             Ok("\"ok\"".into())
         }
-        _ => Err(format!("unknown command: {}", cmd)),
+        // Fall back to a dev-mode-registered custom verb (e.g.
+        // "screenshot") before declaring the command unknown.
+        _ => match try_custom_command(cmd, args) {
+            Some(result) => result,
+            None => Err(format!("unknown command: {}", cmd)),
+        },
     }
 }
 
@@ -891,5 +960,40 @@ mod tests {
         );
         // No assertion needed: the function should just return
         // without panicking when there's no env var to point at.
+    }
+
+    #[test]
+    fn custom_command_dispatches_and_unregisters() {
+        // Unknown verb errors before registration.
+        let before = invoke_command("unit_echo", &serde_json::json!({"v": 7}));
+        assert!(
+            before.is_err(),
+            "unregistered verb must be 'unknown command', got {before:?}"
+        );
+
+        // Register a custom verb that echoes an arg back as the payload.
+        register_command("unit_echo", |args| {
+            let v = args.get("v").and_then(|v| v.as_i64()).unwrap_or(-1);
+            Ok(format!("{{\"echo\":{v}}}"))
+        });
+
+        let ok = invoke_command("unit_echo", &serde_json::json!({"v": 7}))
+            .expect("registered verb must dispatch");
+        let parsed: serde_json::Value = serde_json::from_str(&ok).unwrap();
+        assert_eq!(parsed["echo"], 7, "custom handler payload must round-trip");
+
+        // A built-in verb name is never shadowed by a custom one.
+        // (`ping` is built-in.) Registering `ping` must NOT override it.
+        register_command("ping", |_| Ok("\"hijacked\"".into()));
+        let ping = invoke_command("ping", &serde_json::json!({})).unwrap();
+        assert_eq!(ping, "\"pong\"", "built-in verbs take priority over customs");
+
+        // Unregister restores 'unknown command'.
+        unregister_command("unit_echo");
+        assert!(
+            invoke_command("unit_echo", &serde_json::json!({})).is_err(),
+            "unregistered verb must error again"
+        );
+        unregister_command("ping");
     }
 }

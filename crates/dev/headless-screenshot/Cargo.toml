@@ -1,0 +1,27 @@
+[package]
+name = "headless-screenshot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The "scene commands → PNG" bridge, factored out so BOTH `mock-backend`
+# (tests) and `dev-server` (the live runtime-server sidecar) can use it
+# without a dependency cycle. It depends on neither: only the wire
+# protocol, the dev-client replay engine, the headless wgpu renderer,
+# and the Robot bridge's custom-verb hook.
+#
+# Replays a `Vec<wire::Command>` (a recorded scene) into a headless
+# `WgpuBackend` and rasterizes a PNG, and registers a `"screenshot"`
+# Robot-bridge verb that does so on demand from a snapshot closure.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# `robot` for `runtime_core::robot::bridge::register_command`.
+runtime-core = { workspace = true, features = ["robot"] }
+wire = { workspace = true }
+dev-client = { workspace = true }
+render-wgpu = { workspace = true, features = ["headless"] }
+base64 = "0.22"
+serde_json = "1"

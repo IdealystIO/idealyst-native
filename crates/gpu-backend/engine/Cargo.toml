@@ -17,6 +17,15 @@ build = "build.rs"
 [features]
 default = []
 async-driver = ["runtime-core/async-driver"]
+# `headless`: offscreen screenshot rendering with no window. Spins up a
+# wgpu device (hardware, falling back to a software adapter like Mesa
+# lavapipe on GPU-less servers — same shaders either way, so software
+# output matches GPU output), renders the scene to an offscreen texture,
+# and reads pixels back as RGBA / PNG. Powers the headless dev-server +
+# Robot/MCP "screenshot the app even when mocked" path. Pulls `pollster`
+# to block on the async device/readback, and `embed-font-bytes` so text
+# shapes against the bundled font on a server with no system fonts.
+headless = ["dep:pollster", "embed-font-bytes"]
 # `embed-font-bytes`: the wgpu Simulator shapes text with cosmic-text,
 # which needs the raw font bytes. NATIVE hosts (`host-winit`, the
 # mobile sims) enable this so `face!` fonts are `include_bytes!`-baked
@@ -58,4 +67,9 @@ image = { version = "0.25", default-features = false, features = [
     "png",
     "jpeg",
 ] }
+
+# Block on async wgpu device-request + buffer-map during headless
+# screenshot capture. Only pulled in by the `headless` feature — the
+# windowed hosts drive their own event loop and don't need it.
+pollster = { version = "0.4", optional = true }
 

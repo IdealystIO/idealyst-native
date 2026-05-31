@@ -30,7 +30,7 @@
 //!   emitted as `.bind(r)` on the constructed element — the same way `style`
 //!   on primitives is lifted into `.with_style(...)`.
 //! - **Text content** still goes through the `Text` wrapper:
-//!     `<Text>"hello"</Text>` or `<Text>{format!("score: {}", n)}</Text>`.
+//!     `<text>"hello"</text>` or `<text>{format!("score: {}", n)}</text>`.
 //!   Bare strings between tags are *not* allowed (matches `ui!`).
 //! - **Reactive `if`** (condition containing `.get()`) is rewritten to
 //!   `when(...)`, same as `ui!`. `for` desugars to a `Vec<Element>`.
@@ -150,7 +150,7 @@ fn parse_node(input: ParseStream) -> syn::Result<JsxNode> {
         return Ok(JsxNode::Expr(expr));
     }
     // Bare string literal — only meaningful as `Text`'s single child:
-    //     <Text>"hello"</Text>
+    //     <text>"hello"</text>
     // We accept it anywhere a child is allowed; the parent element decides
     // what to do with it. Text's emitter routes it through `text(expr)`.
     if input.peek(syn::LitStr) {
@@ -469,7 +469,7 @@ fn emit_element(
     children: Option<&[JsxNode]>,
 ) -> TokenStream2 {
     // Primitives are canonicalized to snake_case (parity with `ui!`).
-    // Both `<View>` and `<view>` are accepted during the migration window.
+    // Both `<view>` and `<view>` are accepted during the migration window.
     let name_str = name.to_string();
     let canonical = crate::primitives::canonical_primitive(&name_str);
     let is_primitive = canonical.is_some();
@@ -757,14 +757,14 @@ mod tests {
 
     #[test]
     fn self_closing_text_with_content_attr() {
-        let out = parse_and_emit(quote! { <Text content="hi" /> });
+        let out = parse_and_emit(quote! { <text content="hi" /> });
         assert!(out.contains(":: runtime_core :: text"));
         assert!(out.contains("\"hi\""));
     }
 
     #[test]
     fn text_with_string_child() {
-        let out = parse_and_emit(quote! { <Text>{"hello"}</Text> });
+        let out = parse_and_emit(quote! { <text>{"hello"}</text> });
         assert!(out.contains(":: runtime_core :: text"));
         assert!(out.contains("\"hello\""));
     }
@@ -822,9 +822,9 @@ mod tests {
     fn reactive_if_rewrites_to_when() {
         let out = parse_and_emit(quote! {
             if flag.get() {
-                <Text content="on" />
+                <text content="on" />
             } else {
-                <Text content="off" />
+                <text content="off" />
             }
         });
         assert!(out.contains(":: runtime_core :: when"));
@@ -835,9 +835,9 @@ mod tests {
     fn non_reactive_if_emits_plain_if() {
         let out = parse_and_emit(quote! {
             if some_bool {
-                <Text content="on" />
+                <text content="on" />
             } else {
-                <Text content="off" />
+                <text content="off" />
             }
         });
         assert!(!out.contains(":: runtime_core :: when"));
@@ -848,7 +848,7 @@ mod tests {
     fn for_loop_emits_type_driven_dispatch() {
         let out = parse_and_emit(quote! {
             for n in items {
-                <Text content="x" />
+                <text content="x" />
             }
         });
         // Keyless `for` lowers to the type-driven `__idealyst_for_each`
@@ -862,7 +862,7 @@ mod tests {
     fn for_loop_with_key_emits_keyed_dispatch() {
         let out = parse_and_emit(quote! {
             for n in items, key = n.id {
-                <Text content="x" />
+                <text content="x" />
             }
         });
         assert!(out.contains("__idealyst_for_each_keyed"));
@@ -872,9 +872,9 @@ mod tests {
     #[test]
     fn braced_child_expr_passes_through() {
         let out = parse_and_emit(quote! {
-            <View>
+            <view>
                 {existing_primitive}
-            </View>
+            </view>
         });
         assert!(out.contains("existing_primitive"));
         assert!(out.contains("ChildList :: append_to"));
@@ -883,7 +883,7 @@ mod tests {
     #[test]
     fn style_attr_on_primitive_emits_with_style() {
         let out = parse_and_emit(quote! {
-            <Text style={banner_style()}>{"hi"}</Text>
+            <text style={banner_style()}>{"hi"}</text>
         });
         assert!(out.contains(". with_style (banner_style"));
     }
@@ -891,8 +891,8 @@ mod tests {
     #[test]
     fn multiple_top_level_elements_wrap_in_view() {
         let out = parse_and_emit(quote! {
-            <Text content="a" />
-            <Text content="b" />
+            <text content="a" />
+            <text content="b" />
         });
         assert!(out.contains(":: runtime_core :: view"));
         let count = out.matches(":: runtime_core :: text").count();
@@ -903,7 +903,7 @@ mod tests {
     fn explicit_empty_children_block_works() {
         // <Foo></Foo> should be equivalent to <Foo />, just with an empty
         // children list emitted.
-        let out = parse_and_emit(quote! { <View></View> });
+        let out = parse_and_emit(quote! { <view></view> });
         assert!(out.contains(":: runtime_core :: view"));
     }
 
@@ -920,8 +920,8 @@ mod tests {
         // ChildList::append_to.
         let out = parse_and_emit(quote! {
             <>
-                <Text content="a" />
-                <Text content="b" />
+                <text content="a" />
+                <text content="b" />
             </>
         });
         assert!(out.contains(":: runtime_core :: view"));
@@ -931,16 +931,16 @@ mod tests {
 
     #[test]
     fn fragment_inside_element_flattens_via_childlist() {
-        // <View><><Text/><Text/></></View> — the fragment emits a
+        // <view><><text/><text/></></view> — the fragment emits a
         // Vec<Element> that ChildList::append_to extends into the
         // view's children inline. No nested view container.
         let out = parse_and_emit(quote! {
-            <View>
+            <view>
                 <>
-                    <Text content="a" />
-                    <Text content="b" />
+                    <text content="a" />
+                    <text content="b" />
                 </>
-            </View>
+            </view>
         });
         // Outer view emission appears once; no inner view wrapping
         // the fragment.
@@ -957,11 +957,11 @@ mod tests {
         let out = parse_and_emit(quote! {
             if flag.get() {
                 <>
-                    <Text content="a" />
-                    <Text content="b" />
+                    <text content="a" />
+                    <text content="b" />
                 </>
             } else {
-                <Text content="off" />
+                <text content="off" />
             }
         });
         assert!(out.contains(":: runtime_core :: when"));
@@ -985,7 +985,7 @@ mod tests {
         // `<>` opens a fragment; `</Foo>` is *not* its close — the
         // children parser keeps going past `</>` only. A `</Foo>` after
         // `<>` should be unmatched. We expect a parse error.
-        let err = parse_err(quote! { <><Text content="a" /></Foo> });
+        let err = parse_err(quote! { <><text content="a" /></Foo> });
         // The exact message isn't load-bearing — just confirm it errors.
         assert!(!err.is_empty());
     }

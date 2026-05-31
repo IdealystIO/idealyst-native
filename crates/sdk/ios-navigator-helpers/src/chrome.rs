@@ -16,6 +16,39 @@ use objc2_ui_kit::{UIColor, UINavigationController, UIView, UIViewController};
 use runtime_core::StyleRules;
 use std::rc::Rc;
 
+/// Duration of the cross-fade attached to nav-bar appearance changes.
+/// Matches the body's `transitions { background: 250ms EaseInOut }` so
+/// the bar and the page beneath swap themes in lockstep — without
+/// this the new `UINavigationBarAppearance` snaps in while the body
+/// still tweens through its color animator.
+const NAV_THEME_FADE_MS: u32 = 250;
+
+/// Attach a one-shot `CATransition` (fade) to the nav-bar layer so
+/// the next render commit cross-dissolves the bar's current state into
+/// the new appearance. `setStandardAppearance:` etc. don't drive layer
+/// properties directly, so neither `UIView.animate` nor
+/// `CABasicAnimation` would catch them \u{2014} a layer-level fade
+/// transition is the only API that animates the bar's rendered output.
+///
+/// Adding the transition is idempotent within a single runloop turn:
+/// multiple `addAnimation:forKey:` calls with the same key replace,
+/// so the three slot-style appliers (header / title / button) firing
+/// in the same theme-toggle tick coalesce into one fade rather than
+/// stacking three.
+fn add_nav_theme_crossfade(nav_bar: &NSObject) {
+    let duration = NAV_THEME_FADE_MS as CGFloat / 1000.0;
+    unsafe {
+        let layer: Retained<NSObject> = msg_send_id![nav_bar, layer];
+        let cls = objc2::class!(CATransition);
+        let transition: Retained<NSObject> = msg_send_id![cls, animation];
+        let fade_type = NSString::from_str("fade");
+        let _: () = msg_send![&transition, setType: &*fade_type];
+        let _: () = msg_send![&transition, setDuration: duration];
+        let key = NSString::from_str("themeFade");
+        let _: () = msg_send![&layer, addAnimation: &*transition, forKey: &*key];
+    }
+}
+
 /// Configure a UIViewController's navigationItem and the parent
 /// UINavigationBar from `IosScreenOptions`. Called after mounting a
 /// screen in a stack or drawer navigator.
@@ -199,6 +232,7 @@ pub(crate) fn apply_nav_header_style(
 ) {
     unsafe {
         let nav_bar: Retained<NSObject> = msg_send_id![controller, navigationBar];
+        add_nav_theme_crossfade(&nav_bar);
         let appearance: Retained<NSObject> =
             msg_send_id![objc2::class!(UINavigationBarAppearance), new];
 
@@ -207,11 +241,18 @@ pub(crate) fn apply_nav_header_style(
             let bg_val = bg.resolve();
             let c = color_to_uicolor(&bg_val);
             let _: () = msg_send![&appearance, setBackgroundColor: &*c];
+            // The wrapper nav view + top VC view back the bar visually
+            // (status-area / safe-area bleed). They're separate layers
+            // from the nav-bar, so they need their own fade or the
+            // body wash snaps while the bar dissolves \u{2014} same
+            // disjoint-frames bug we just fixed on the bar itself.
+            add_nav_theme_crossfade(&*nav_view);
             nav_view.setBackgroundColor(Some(&c));
             let top_vc: Option<Retained<UIViewController>> =
                 msg_send_id![controller, topViewController];
             if let Some(vc) = top_vc {
                 if let Some(vc_view) = vc.view() {
+                    add_nav_theme_crossfade(&*vc_view);
                     vc_view.setBackgroundColor(Some(&c));
                 }
             }
@@ -255,6 +296,7 @@ pub(crate) fn apply_nav_title_style(
 ) {
     unsafe {
         let nav_bar: Retained<NSObject> = msg_send_id![controller, navigationBar];
+        add_nav_theme_crossfade(&nav_bar);
         let appearance: Retained<NSObject> = msg_send_id![&nav_bar, standardAppearance];
         let appearance: Retained<NSObject> = msg_send_id![&appearance, copy];
 
@@ -321,6 +363,7 @@ pub(crate) fn apply_nav_button_style(
     unsafe {
         let nav_bar: Retained<NSObject> = msg_send_id![controller, navigationBar];
         if let Some(ref color) = style.color {
+            add_nav_theme_crossfade(&nav_bar);
             let color_val = color.resolve();
             let c = color_to_uicolor(&color_val);
             let _: () = msg_send![&nav_bar, setTintColor: &*c];

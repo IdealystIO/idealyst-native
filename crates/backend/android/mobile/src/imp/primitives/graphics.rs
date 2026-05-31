@@ -160,7 +160,27 @@ pub(crate) fn create(
     let ptr: jlong = leak(cb);
 
     with_env(|env| {
-        let class = env.find_class("android/view/SurfaceView").unwrap();
+        // `TextureView` instead of `SurfaceView` so the rendered
+        // surface composites NORMALLY inside the View tree —
+        // sibling Views (a sidebar drawer scrim, a modal, a
+        // floating button) overlay it as expected. A `SurfaceView`
+        // with `setZOrderOnTop(true)` would paint the wgpu output
+        // ABOVE every regular View in the window, including the
+        // drawer-navigator's sidebar, which is the visible bug
+        // ("simulator preview covers the sidebar"). The earlier
+        // SurfaceView path used `setZOrderOnTop` to dodge a
+        // separate problem — the View's own background drawable
+        // occluding the punched hole when authors applied
+        // `background: …` via `with_style`. TextureView has no
+        // hole-punch model at all: the surface is a hardware-
+        // accelerated texture rendered into the View's own draw
+        // pass, so neither the View's background nor sibling Views
+        // create occlusion artifacts. Cost: TextureView uses one
+        // more GPU composition pass than SurfaceView and doesn't
+        // get the dedicated overlay plane on hardware-accelerated
+        // composites, but for a small embedded preview that's
+        // immaterial.
+        let class = env.find_class("android/view/TextureView").unwrap();
         let local = env
             .new_object(
                 &class,
@@ -169,39 +189,22 @@ pub(crate) fn create(
             )
             .unwrap();
 
-        // Render the SurfaceView's secondary surface ABOVE the View
-        // hierarchy. Default Android behavior is the opposite — the
-        // View itself paints in the normal compositor layer and the
-        // surface lives behind it via a transparent "hole" punched
-        // through the View. That works as long as nothing in the
-        // View tree (including the SurfaceView's own background
-        // drawable from `apply_style`) paints over the hole. Once
-        // any author applies `background: …` via `with_style`, the
-        // background drawable occludes the surface and you see a
-        // flat color where the gradient should be. Z-order-on-top
-        // sidesteps the whole class of issues: the wgpu output
-        // covers everything in the View's bounding rect, regardless
-        // of what the View itself draws.
-        env.call_method(&local, "setZOrderOnTop", "(Z)V", &[JValue::Bool(1)])
-            .unwrap();
-
-        // Build the Kotlin callback wrapping our leaked pointer,
-        // then attach it via SurfaceHolder.addCallback.
+        // Build the Kotlin listener wrapping our leaked pointer,
+        // then attach it via `TextureView.setSurfaceTextureListener`.
+        // `RustTextureListener` translates the four `SurfaceTextureListener`
+        // methods into the same `nativeSurfaceCreated/Changed/Destroyed`
+        // JNI exports `RustGraphicsCallback` uses — the Rust side's
+        // callback path is unchanged.
         let cb_class = env
-            .find_class("io/idealyst/runtime/RustGraphicsCallback")
+            .find_class("io/idealyst/runtime/RustTextureListener")
             .unwrap();
         let cb_obj = env
             .new_object(&cb_class, "(J)V", &[JValue::Long(ptr)])
             .unwrap();
-        let holder = env
-            .call_method(&local, "getHolder", "()Landroid/view/SurfaceHolder;", &[])
-            .unwrap()
-            .l()
-            .unwrap();
         env.call_method(
-            &holder,
-            "addCallback",
-            "(Landroid/view/SurfaceHolder$Callback;)V",
+            &local,
+            "setSurfaceTextureListener",
+            "(Landroid/view/TextureView$SurfaceTextureListener;)V",
             &[JValue::Object(&cb_obj)],
         )
         .unwrap();
@@ -472,4 +475,58 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGraphicsCallback_nati
     // call (unlikely but possible during finalization races) bails.
     boxed.released = true;
     drop(boxed);
+}
+
+// =====================================================================
+// JNI exports for the TextureView listener path
+// =====================================================================
+//
+// `TextureView.SurfaceTextureListener` lives on a different Kotlin
+// class (`RustTextureListener`), so the JNI symbol mangler emits
+// distinct `Java_..._RustTextureListener_native…` names. The
+// underlying lifecycle is identical to the `SurfaceView` path —
+// these are thin forwards to the same `GraphicsCallback` helpers.
+// Authors don't get a choice between the two listeners: this file's
+// `create(...)` picks `TextureView` for the Android Graphics
+// primitive so embedded previews composite normally with the View
+// tree (sidebar overlays, drawer scrim, modals).
+
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTextureListener_nativeSurfaceCreated<'l>(
+    env: jni::JNIEnv<'l>,
+    this: jni::objects::JObject<'l>,
+    ptr: jlong,
+    surface: jni::objects::JObject<'l>,
+) {
+    Java_io_idealyst_runtime_RustGraphicsCallback_nativeSurfaceCreated(env, this, ptr, surface);
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTextureListener_nativeSurfaceChanged<'l>(
+    env: jni::JNIEnv<'l>,
+    this: jni::objects::JObject<'l>,
+    ptr: jlong,
+    surface: jni::objects::JObject<'l>,
+    width: i32,
+    height: i32,
+) {
+    Java_io_idealyst_runtime_RustGraphicsCallback_nativeSurfaceChanged(env, this, ptr, surface, width, height);
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTextureListener_nativeSurfaceDestroyed(
+    env: jni::JNIEnv,
+    this: jni::objects::JObject,
+    ptr: jlong,
+) {
+    Java_io_idealyst_runtime_RustGraphicsCallback_nativeSurfaceDestroyed(env, this, ptr);
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTextureListener_nativeDrop(
+    env: jni::JNIEnv,
+    this: jni::objects::JObject,
+    ptr: jlong,
+) {
+    Java_io_idealyst_runtime_RustGraphicsCallback_nativeDrop(env, this, ptr);
 }

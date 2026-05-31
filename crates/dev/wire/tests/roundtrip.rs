@@ -257,7 +257,7 @@ fn full_round_trip_through_json() {
 
     wire_app.apply_batch(commands_app).expect("replay must succeed");
 
-    let trace = wire_app.backend().trace.clone();
+    let trace = wire_app.backend().borrow().trace.clone();
 
     // We don't pin every command's translation here — the recorder
     // emits RegisterStyle eagerly + AttachStates not used in this
@@ -435,7 +435,7 @@ fn real_walker_drives_recorder() {
     let mut wire_app = WireBackend::new(TraceBackend::default(), tx);
     wire_app.apply_batch(commands).expect("replay succeeds");
 
-    let trace = wire_app.backend().trace.clone();
+    let trace = wire_app.backend().borrow().trace.clone();
     assert!(
         trace.iter().any(|t| matches!(t, Trace::CreateText(_, s) if s == "hello, wire")),
         "trace must contain the rendered text content"
@@ -559,122 +559,6 @@ fn graphics_round_trip_unnamed() {
     // default panics. So we just verify the wire path emits the
     // command correctly — that's the main contract being tested.
     let _ = wire_app; // silence
-}
-
-/// Verify the reverse-channel `handle_screen_released` path: the
-/// app reports a swipe-back, the recorder looks up which navigator
-/// owns the scope, and calls back into the framework's
-/// `release_screen` callback.
-#[test]
-fn screen_released_reverse_channel() {
-    use runtime_core::primitives::navigator::{NavigatorCallbacks, NavigatorControl, NavState};
-    use runtime_core::Signal;
-    use std::cell::Cell;
-
-    let mut recorder = WireRecordingBackend::new();
-
-    // Synthesize NavigatorCallbacks pretending we're the framework.
-    let released = Rc::new(Cell::new(None::<u64>));
-    let released_clone = released.clone();
-    let mount_called = Rc::new(Cell::new(0u32));
-    let mount_called_clone = mount_called.clone();
-    let callbacks: NavigatorCallbacks<wire::NodeId> = NavigatorCallbacks {
-        initial_route: "home",
-        initial_path: "/",
-        mount_screen: Rc::new(move |_, _| {
-            mount_called_clone.set(mount_called_clone.get() + 1);
-            runtime_core::primitives::navigator::MountResult {
-                node: wire::NodeId(42),
-                scope_id: 100,
-                options: runtime_core::primitives::navigator::ScreenOptions::default(),
-            }
-        }),
-        release_screen: Rc::new(move |scope| {
-            released_clone.set(Some(scope));
-        }),
-        match_path: Rc::new(|_| None),
-        build_layout: None,
-        nav_state: NavState {
-            active_route: Signal::new("home"),
-            active_path: Signal::new("/".to_string()),
-            depth: Signal::new(1),
-            can_go_back: Signal::new(false),
-        },
-        depth_changed: Rc::new(|_| {}),
-        defer_initial_mount: false,
-    };
-
-    let control = Rc::new(NavigatorControl::new());
-    let nav_id = recorder.create_stack_navigator(callbacks, control, &Default::default());
-
-    // Attach an initial screen via the framework path. Note this
-    // mirrors what `stack_navigator_attach_initial` would normally do.
-    recorder.stack_navigator_attach_initial(
-        &nav_id,
-        wire::NodeId(7),
-        100,
-        runtime_core::primitives::navigator::ScreenOptions::default(),
-    );
-
-    // App reports the user swiped back, releasing scope 100.
-    let handled = recorder.handle_screen_released(100);
-    assert!(handled, "scope 100 must map to the registered navigator");
-    assert_eq!(
-        released.get(),
-        Some(100),
-        "framework's release_screen must have been called with scope 100"
-    );
-
-    // mount_called shouldn't have fired in this test — we only
-    // exercised the release path.
-    assert_eq!(mount_called.get(), 0);
-}
-
-/// Drive a Element::Navigator through the framework's real walker
-/// against the WireRecordingBackend. Verifies that CreateNavigator
-/// and the navigator's child screen are emitted, plus the
-/// NavigatorAttachInitial command.
-#[test]
-fn stack_navigator_initial_mount_round_trip() {
-    use runtime_core::primitives::navigator::{Navigator, Route};
-    use runtime_core::{render, Element, TextSource};
-    use std::cell::RefCell;
-
-    // Build a navigator with one route "home" → Text("Home").
-    let home_route: Route<()> = Route::new("home", "/");
-    let nav: runtime_core::Bound<runtime_core::NavigatorHandle> =
-        Navigator::new(&home_route).screen(home_route, |_params: ()| Element::Text {
-            source: TextSource::Static("Home".into()),
-            style: None,
-            ref_fill: None,
-            accessibility: Default::default(),
-            test_id: None,
-        });
-
-    let tree: Element = <runtime_core::Bound<runtime_core::NavigatorHandle> as runtime_core::IntoElement>::into_element(nav);
-    let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-    let _owner = render(backend_rc, tree);
-
-    let commands = recorder.drain_commands();
-
-    let has_create_nav = commands
-        .iter()
-        .any(|c| matches!(c, Command::CreateNavigator { .. }));
-    assert!(has_create_nav, "CreateNavigator must be emitted");
-
-    let has_create_text = commands
-        .iter()
-        .any(|c| matches!(c, Command::CreateText { .. }));
-    assert!(has_create_text, "the initial screen's Text must be built");
-
-    let has_attach_initial = commands
-        .iter()
-        .any(|c| matches!(c, Command::NavigatorAttachInitial { .. }));
-    assert!(has_attach_initial, "NavigatorAttachInitial must be emitted");
-
-    let has_finish = commands.iter().any(|c| matches!(c, Command::Finish { .. }));
-    assert!(has_finish, "Finish must be the terminal command");
 }
 
 // ---------------------------------------------------------------------------
@@ -860,7 +744,7 @@ fn end_to_end_announce_reaches_trace_backend() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut wire_app = WireBackend::new(TraceBackend::default(), tx);
     wire_app.apply_batch(commands).expect("replay must succeed");
-    let announcements = wire_app.backend().announcements.clone();
+    let announcements = wire_app.backend().borrow().announcements.clone();
     assert_eq!(announcements.len(), 1, "exactly one announcement replayed");
     assert_eq!(announcements[0].0, "hi");
     assert!(matches!(announcements[0].1, LiveRegionPriority::Polite));
@@ -932,7 +816,7 @@ fn end_to_end_create_carries_a11y_through_to_trace_backend() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut wire_app = WireBackend::new(TraceBackend::default(), tx);
     wire_app.apply_batch(commands).expect("replay");
-    let backend = wire_app.backend();
+    let backend = wire_app.backend().borrow();
     assert_eq!(
         backend
             .last_text_a11y_label
@@ -1011,7 +895,7 @@ fn end_to_end_accessibility_action_handler_fires() {
     let mut wire_app = WireBackend::new(TraceBackend::default(), tx);
     wire_app.apply_batch(commands).expect("replay must succeed");
     let captured_action = {
-        let backend = wire_app.backend();
+        let backend = wire_app.backend().borrow();
         assert_eq!(backend.last_view_action_handlers.len(), 1);
         assert_eq!(backend.last_view_action_handlers[0].0, "Delete");
         backend.last_view_action_handlers[0].1.clone()

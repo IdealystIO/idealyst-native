@@ -363,6 +363,10 @@ pub fn run(args: Args) -> Result<()> {
     // (below) for the file to appear, then bakes
     // `IDEALYST_DEV_ENDPOINT=ws://host:port` into every platform
     // launch — no in-app discovery needed.
+    // PID of the spawned dev-host child, if any. Used by the tail of
+    // this fn to keep the CLI alive while the host serves — see the
+    // wait loop after the worker join.
+    let mut host_pid: Option<u32> = None;
     let runtime_server_port: Option<u16> = if !args.local {
         let host_binary = build_runtime_server_host(&dir)?;
         let port_file = runtime_server_port_file(&dir);
@@ -422,6 +426,7 @@ pub fn run(args: Args) -> Result<()> {
             host_binary.display(),
             port_file.display(),
         );
+        host_pid = Some(child.id());
         children.lock().unwrap().push(child);
 
         // Block until the host writes its bound port. Every platform
@@ -569,17 +574,77 @@ pub fn run(args: Args) -> Result<()> {
         return Ok(());
     }
 
-    // Wait for all workers to settle. In practice the web launcher
-    // is a foreground HTTP serve loop that blocks forever — so this
-    // join effectively waits for Ctrl-C, which terminates the process
-    // via the handler installed above. We still `.join` so any
-    // background-only target (iOS launch + return) doesn't make us
-    // exit immediately when its worker finishes.
+    // Wait for all workers to settle. In practice a foreground worker
+    // (web's `serve_static` HTTP loop) blocks forever — so this join
+    // effectively waits for Ctrl-C, which terminates the process via
+    // the handler installed above. We still `.join` so a
+    // background-only target (iOS / Android launch + return) doesn't
+    // make us exit immediately when its worker finishes.
     for w in workers {
         let _ = w.join();
     }
 
+    // If every active target launched-and-returned (the common case
+    // for an `android`- or `ios`-only run — adb/simctl install the app
+    // and the worker exits) AND we're in runtime-server mode, we must
+    // NOT fall off the end of `main` here. The dev-host is a CHILD of
+    // this process; once the CLI exits, the host reparents to launchd
+    // (pid 1) and its parent-pid watchdog (added in `b5bf102` to reap
+    // orphaned hosts) SIGKILLs it within ~500ms — leaving the app we
+    // just launched connected to a dead server, i.e. a blank screen.
+    //
+    // Keep the CLI alive (and thus the host parented to it) until the
+    // user interrupts — Ctrl-C drains+kills `children` (host included)
+    // and exits — or the host dies on its own (crash / self-exec gone
+    // wrong), in which case we tear down and exit cleanly so the
+    // terminal isn't left hanging.
+    if let Some(pid) = host_pid {
+        wait_for_host_exit(&children, pid);
+        if let Ok(mut guard) = children.lock() {
+            for mut child in guard.drain(..) {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
     Ok(())
+}
+
+/// Block until the dev-host child (`host_pid`) is no longer running,
+/// then return. Polls rather than `Child::wait()` because the `Child`
+/// handle lives in the shared `children` vec (the Ctrl-C handler needs
+/// it there to tear the host down), and `wait` would take ownership /
+/// hold the lock across a blocking call. A short poll interval keeps
+/// teardown latency low without busy-spinning.
+///
+/// Returns early if the host is no longer in `children` at all — that
+/// means the Ctrl-C handler already drained the vec (the process is
+/// exiting underneath us).
+fn wait_for_host_exit(children: &Arc<Mutex<Vec<Child>>>, host_pid: u32) {
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let mut guard = match children.lock() {
+            Ok(g) => g,
+            // Poisoned (a launcher thread panicked while holding it) —
+            // nothing more we can sensibly wait on; let `main` return.
+            Err(_) => return,
+        };
+        match guard.iter_mut().find(|c| c.id() == host_pid) {
+            // Still tracked — check whether it has exited.
+            Some(child) => match child.try_wait() {
+                Ok(Some(_status)) => {
+                    eprintln!("[dev] runtime-server host exited; stopping.");
+                    return;
+                }
+                Ok(None) => { /* still running — keep waiting */ }
+                Err(_) => return,
+            },
+            // Drained by the Ctrl-C handler; the process is on its way
+            // out, so stop waiting.
+            None => return,
+        }
+    }
 }
 
 /// Compute which targets to launch.
@@ -1682,5 +1747,60 @@ impl Drop for EarlyStderrRedirect {
                 self.saved_fd = -1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    /// Regression guard for the "android blank screen" bug: in
+    /// runtime-server mode the CLI must keep running while the dev-host
+    /// child serves. `wait_for_host_exit` is the kernel of that — it
+    /// must block until the host process actually ends, NOT return
+    /// immediately (the pre-fix behavior, which orphaned the host and
+    /// let its watchdog SIGKILL it out from under a freshly-launched
+    /// app). A tighter test of the full `dev --android` flow isn't
+    /// reachable here (it needs adb + an emulator), so we pin the
+    /// helper's contract directly.
+    #[test]
+    fn wait_for_host_exit_blocks_until_host_process_ends() {
+        // Stand-in "host" that exits on its own after a short delay.
+        let child = Command::new("sleep")
+            .arg("0.4")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id();
+        let children: Arc<Mutex<Vec<Child>>> = Arc::new(Mutex::new(vec![child]));
+
+        let start = Instant::now();
+        wait_for_host_exit(&children, pid);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(250),
+            "must poll until the host exits, not return instantly (returned in {elapsed:?}) — \
+             returning early is exactly the bug that orphaned the dev-host",
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "must return promptly once the host exits (took {elapsed:?})",
+        );
+    }
+
+    /// If the Ctrl-C handler has already drained `children` (the
+    /// process is exiting), the host pid is no longer tracked — the
+    /// wait must return on the first poll rather than hang forever.
+    #[test]
+    fn wait_for_host_exit_returns_when_host_not_tracked() {
+        let children: Arc<Mutex<Vec<Child>>> = Arc::new(Mutex::new(Vec::new()));
+        let start = Instant::now();
+        wait_for_host_exit(&children, 999_999);
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "a missing host pid must return promptly, not hang",
+        );
     }
 }

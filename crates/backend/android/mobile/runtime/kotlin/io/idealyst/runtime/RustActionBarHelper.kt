@@ -1,14 +1,19 @@
 package io.idealyst.runtime
 
+import android.animation.ArgbEvaluator
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorFilter
 import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.view.View
 import android.widget.Toolbar
+import android.widget.TextView
 
 /**
  * Programmatic 3-line "hamburger" drawable. Used as the in-tree
@@ -25,6 +30,10 @@ class HamburgerDrawable : Drawable() {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
     }
+
+    /** Current stroke color, exposed so theme-fade animators have a
+     *  `from` value without poking at the private Paint. */
+    val strokeColor: Int get() = paint.color
 
     fun setStrokeColor(c: Int) {
         paint.color = c
@@ -162,6 +171,22 @@ object RustActionBarHelper {
         }
     }
 
+    /** Cross-fade duration for theme-driven Toolbar / body color swaps.
+     *  Matches the framework's 250 ms body-background transition so
+     *  the bar and the page beneath dissolve in lockstep. */
+    private const val THEME_FADE_MS = 250L
+
+    /** Pull the current solid color out of a View's background, or
+     *  fall back to `default` if the background isn't a plain
+     *  `ColorDrawable`. Needed because ObjectAnimator on
+     *  "backgroundColor" reads via getBackground+ColorDrawable.color;
+     *  if there's no prior color we still need a starting point for
+     *  the ArgbEvaluator. */
+    private fun currentSolidBackgroundColor(view: View, default: Int): Int {
+        val bg = view.background
+        return if (bg is ColorDrawable) bg.color else default
+    }
+
     /**
      * Re-tint the Toolbar's background. Called by the navigator's
      * reactive `header_style` Effect on theme change — the bar itself
@@ -169,8 +194,17 @@ object RustActionBarHelper {
      */
     @JvmStatic
     fun setToolbarBackground(bar: Toolbar, css: String?) {
-        val c = parseColorOrNull(css) ?: return
-        bar.setBackgroundColor(c)
+        val to = parseColorOrNull(css) ?: return
+        val from = currentSolidBackgroundColor(bar, to)
+        if (from == to) {
+            bar.setBackgroundColor(to)
+            return
+        }
+        val anim = ValueAnimator.ofObject(ArgbEvaluator(), from, to).apply {
+            duration = THEME_FADE_MS
+            addUpdateListener { a -> bar.setBackgroundColor(a.animatedValue as Int) }
+        }
+        anim.start()
     }
 
     /**
@@ -180,8 +214,40 @@ object RustActionBarHelper {
      */
     @JvmStatic
     fun setToolbarTitleColor(bar: Toolbar, css: String?) {
-        val c = parseColorOrNull(css) ?: return
-        bar.setTitleTextColor(c)
+        val to = parseColorOrNull(css) ?: return
+        // Toolbar stores its title in an internally-managed TextView
+        // (created on first `setTitle`). Walk the bar's children to
+        // find it; if absent, just set the color statically (next
+        // setTitle will pick it up).
+        var titleView: TextView? = null
+        for (i in 0 until bar.childCount) {
+            val c = bar.getChildAt(i)
+            if (c is TextView) {
+                titleView = c
+                break
+            }
+        }
+        if (titleView == null) {
+            bar.setTitleTextColor(to)
+            return
+        }
+        val from = titleView.currentTextColor
+        if (from == to) {
+            bar.setTitleTextColor(to)
+            return
+        }
+        val tv = titleView
+        val anim = ValueAnimator.ofObject(ArgbEvaluator(), from, to).apply {
+            duration = THEME_FADE_MS
+            addUpdateListener { a ->
+                val v = a.animatedValue as Int
+                tv.setTextColor(v)
+                // Keep Toolbar's "future title-set" color in sync so
+                // a title change mid-fade picks up the live color.
+                bar.setTitleTextColor(v)
+            }
+        }
+        anim.start()
     }
 
     /**
@@ -194,8 +260,17 @@ object RustActionBarHelper {
      */
     @JvmStatic
     fun setViewBackground(view: View, css: String?) {
-        val c = parseColorOrNull(css) ?: return
-        view.setBackgroundColor(c)
+        val to = parseColorOrNull(css) ?: return
+        val from = currentSolidBackgroundColor(view, to)
+        if (from == to) {
+            view.setBackgroundColor(to)
+            return
+        }
+        val anim = ValueAnimator.ofObject(ArgbEvaluator(), from, to).apply {
+            duration = THEME_FADE_MS
+            addUpdateListener { a -> view.setBackgroundColor(a.animatedValue as Int) }
+        }
+        anim.start()
     }
 
     /**
@@ -204,13 +279,24 @@ object RustActionBarHelper {
      */
     @JvmStatic
     fun setToolbarNavIconTint(bar: Toolbar, css: String?) {
-        val c = parseColorOrNull(css) ?: return
+        val to = parseColorOrNull(css) ?: return
         val drawable = bar.navigationIcon ?: return
         if (drawable is HamburgerDrawable) {
-            drawable.setStrokeColor(c)
+            val from = drawable.strokeColor
+            if (from == to) {
+                drawable.setStrokeColor(to)
+                return
+            }
+            val anim = ValueAnimator.ofObject(ArgbEvaluator(), from, to).apply {
+                duration = THEME_FADE_MS
+                addUpdateListener { a -> drawable.setStrokeColor(a.animatedValue as Int) }
+            }
+            anim.start()
         } else {
-            // Generic fallback for future non-hamburger icons.
-            drawable.setTint(c)
+            // Generic fallback for future non-hamburger icons. `setTint`
+            // is instant; an icon-class-specific animator would go here
+            // when we ship a non-Hamburger icon.
+            drawable.setTint(to)
         }
     }
 

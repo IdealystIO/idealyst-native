@@ -46,6 +46,12 @@ mod style_convert;
 pub mod text;
 pub mod widgets;
 
+/// Headless offscreen screenshot rendering (no window). Gated behind
+/// the `headless` feature so windowed/native builds don't pull
+/// `pollster` or the readback path.
+#[cfg(feature = "headless")]
+pub mod headless;
+
 // Re-export the api vocabulary so consumers of this crate
 // don't have to depend on `render-api` separately for
 // the common types.

@@ -25,8 +25,8 @@ pub mod apple;
 pub mod transport;
 
 pub use shell::{
-    endpoint_or_panic, resolve_endpoint, RuntimeServerShell, RuntimeServerShellOptions,
-    ENDPOINT_ENV,
+    endpoint_or_panic, protocol_mismatch, resolve_endpoint, RuntimeServerShell,
+    RuntimeServerShellOptions, ENDPOINT_ENV,
 };
 pub use transport::{connect_and_run, ClientError};
 

@@ -15,7 +15,7 @@
 //!     *type* is a signal; `for x in sig.get()` iterates a `Vec`
 //!     snapshot → STATIC. A reactive count `for i in 0..n.get()` is the
 //!     one narrow range-bound special case that still rebuilds.
-//!   - `FlatList(data = sig, ...)` → reactive `Element::Virtualizer`
+//!   - `flat_list(data = sig, ...)` → reactive `Element::Virtualizer`
 //!     (the keyed/windowed reactive-list path for large/scrolling lists).
 //!   - static / reactive `if`/`else` → plain Rust `if` / `when(...)`.
 //!   - static / reactive `match` → plain Rust `match` / `switch(...)`.
@@ -68,9 +68,9 @@ fn count_text(events: &[Event], needle: &str) -> usize {
 fn static_array_maps_to_components() {
     let rt = TestRuntime::new();
     let tree: Element = ui! {
-        View {
+        view {
             for label in ["one", "two", "three"] {
-                Text { label.to_string() }
+                text { label.to_string() }
             }
         }
     };
@@ -85,9 +85,9 @@ fn static_vec_ref_maps_to_components() {
     let rt = TestRuntime::new();
     let items = vec![10, 20, 30];
     let tree: Element = ui! {
-        View {
+        view {
             for n in &items {
-                Text { format!("n={}", n) }
+                text { format!("n={}", n) }
             }
         }
     };
@@ -103,9 +103,9 @@ fn static_hashmap_maps_to_components() {
     map.insert("a", 1);
     map.insert("b", 2);
     let tree: Element = ui! {
-        View {
+        view {
             for (k, v) in &map {
-                Text { format!("{}={}", k, v) }
+                text { format!("{}={}", k, v) }
             }
         }
     };
@@ -123,8 +123,8 @@ fn iterator_map_collect_passthrough() {
     // expression in child position, flattened by `ChildList`.
     let rt = TestRuntime::new();
     let tree: Element = ui! {
-        View {
-            ["x", "y"].iter().map(|s| ui! { Text { s.to_string() } }).collect::<Vec<_>>()
+        view {
+            ["x", "y"].iter().map(|s| ui! { text { s.to_string() } }).collect::<Vec<_>>()
         }
     };
     let _owner = rt.render(tree);
@@ -136,9 +136,9 @@ fn iterator_map_collect_passthrough() {
 fn static_range_maps_to_components() {
     let rt = TestRuntime::new();
     let tree: Element = ui! {
-        View {
+        view {
             for i in 0..3 {
-                Text { format!("r{}", i) }
+                text { format!("r{}", i) }
             }
         }
     };
@@ -162,9 +162,9 @@ fn signal_iteration_rebuilds_on_change() {
     let rt = TestRuntime::new();
     let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
     let tree: Element = ui! {
-        View {
+        view {
             for s in data, key = *s {
-                Text { s.to_string() }
+                text { s.to_string() }
             }
         }
     };
@@ -201,12 +201,12 @@ fn each_releases_old_row_scopes_on_rebuild() {
     let data: Signal<Vec<i32>> = signal!(vec![1, 2]);
     let c = cleaned.clone();
     let tree: Element = ui! {
-        View {
+        view {
             for n in data, key = *n {
                 {
                     let c2 = c.clone();
                     on_cleanup(move || c2.set(c2.get() + 1));
-                    ui! { Text { n.to_string() } }
+                    ui! { text { n.to_string() } }
                 }
             }
         }
@@ -229,9 +229,9 @@ fn snapshot_get_iteration_is_static() {
     let rt = TestRuntime::new();
     let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
     let tree: Element = ui! {
-        View {
+        view {
             for s in data.get() {
-                Text { s.to_string() }
+                text { s.to_string() }
             }
         }
     };
@@ -256,9 +256,9 @@ fn reactive_range_count_rebuilds() {
     let rt = TestRuntime::new();
     let n: Signal<usize> = signal!(2usize);
     let tree: Element = ui! {
-        View {
+        view {
             for i in 0..n.get() {
-                Text { format!("#{}", i) }
+                text { format!("#{}", i) }
             }
         }
     };
@@ -278,10 +278,10 @@ fn reactive_for_multi_node_body_flattens_on_rebuild() {
     let rt = TestRuntime::new();
     let data: Signal<Vec<i32>> = signal!(vec![1]);
     let tree: Element = ui! {
-        View {
+        view {
             for n in data, key = *n {
-                Text { format!("h{}", n) }
-                Text { format!("b{}", n) }
+                text { format!("h{}", n) }
+                text { format!("b{}", n) }
             }
         }
     };
@@ -300,10 +300,10 @@ fn reactive_for_multi_node_body_flattens_on_rebuild() {
 }
 
 // ---------------------------------------------------------------------------
-// Reactive list — FlatList (the supported reactive-iteration path)
+// Reactive list — flat_list (the supported reactive-iteration path)
 // ---------------------------------------------------------------------------
 
-/// `FlatList(data = sig, render = ...)` builds a reactive Virtualizer:
+/// `flat_list(data = sig, render = ...)` builds a reactive Virtualizer:
 /// it mounts as a virtualizer node, and a data-signal change notifies
 /// the backend via `virtualizer_data_changed`. (Row content isn't
 /// observable in the mock — it doesn't drive `mount_item`.)
@@ -312,10 +312,10 @@ fn reactive_flat_list_creates_virtualizer_and_reacts_to_data() {
     let rt = TestRuntime::new();
     let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
     let tree: Element = ui! {
-        View {
-            FlatList(
+        view {
+            flat_list(
                 data = data,
-                render = |_idx, item: &i32| ui! { Text { format!("item {}", item) } },
+                render = |_idx, item: &i32| ui! { text { format!("item {}", item) } },
             )
         }
     };
@@ -346,9 +346,9 @@ fn flat_list_mounts_rows_with_real_content() {
     let rt = TestRuntime::new();
     let data: Signal<Vec<i32>> = signal!(vec![10, 20, 30]);
     let tree: Element = ui! {
-        FlatList(
+        flat_list(
             data = data,
-            render = |_idx, item: &i32| ui! { Text { format!("item {}", item) } },
+            render = |_idx, item: &i32| ui! { text { format!("item {}", item) } },
         )
     };
     let _owner = rt.render(tree);
@@ -366,9 +366,9 @@ fn flat_list_mounts_only_new_row_on_growth() {
     let rt = TestRuntime::new();
     let data: Signal<Vec<i32>> = signal!(vec![1, 2]);
     let tree: Element = ui! {
-        FlatList(
+        flat_list(
             data = data,
-            render = |_idx, item: &i32| ui! { Text { format!("v{}", item) } },
+            render = |_idx, item: &i32| ui! { text { format!("v{}", item) } },
         )
     };
     let _owner = rt.render(tree);
@@ -391,12 +391,12 @@ fn flat_list_releases_row_scopes_on_shrink() {
     let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
     let c = cleaned.clone();
     let tree: Element = ui! {
-        FlatList(
+        flat_list(
             data = data,
             render = move |_idx, item: &i32| {
                 let c2 = c.clone();
                 on_cleanup(move || c2.set(c2.get() + 1));
-                ui! { Text { format!("v{}", item) } }
+                ui! { text { format!("v{}", item) } }
             },
         )
     };
@@ -424,7 +424,7 @@ fn for_count_signal_renders_real_rows_not_placeholder() {
     let count_sig: Signal<usize> = signal!(3);
     let tree: Element = ui! {
         for _i in structured_count(count_sig) {
-            Text { "row".to_string() }
+            text { "row".to_string() }
         }
     };
     match tree {
@@ -453,7 +453,7 @@ fn for_count_signal_mounts_real_rows_end_to_end() {
     let n: Signal<usize> = signal!(2usize);
     let tree: Element = ui! {
         for _i in structured_count(n) {
-            Text { "cell".to_string() }
+            text { "cell".to_string() }
         }
     };
     let _owner = rt.render(tree);
@@ -476,11 +476,11 @@ fn for_count_signal_mounts_real_rows_end_to_end() {
 fn static_if_else_mounts_single_branch() {
     let rt = TestRuntime::new();
     let tree: Element = ui! {
-        View {
+        view {
             if 3 < 4 {
-                Text { "yes".to_string() }
+                text { "yes".to_string() }
             } else {
-                Text { "no".to_string() }
+                text { "no".to_string() }
             }
         }
     };
@@ -496,11 +496,11 @@ fn reactive_if_else_flips_on_signal() {
     let rt = TestRuntime::new();
     let flag: Signal<bool> = signal!(true);
     let tree: Element = ui! {
-        View {
+        view {
             if flag.get() {
-                Text { "on".to_string() }
+                text { "on".to_string() }
             } else {
-                Text { "off".to_string() }
+                text { "off".to_string() }
             }
         }
     };
@@ -520,9 +520,9 @@ fn reactive_if_without_else_toggles_presence() {
     let rt = TestRuntime::new();
     let show: Signal<bool> = signal!(false);
     let tree: Element = ui! {
-        View {
+        view {
             if show.get() {
-                Text { "visible".to_string() }
+                text { "visible".to_string() }
             }
         }
     };
@@ -546,15 +546,15 @@ fn reactive_if_flip_releases_old_branch_scope() {
     let flag: Signal<bool> = signal!(true);
     let c = cleaned.clone();
     let tree: Element = ui! {
-        View {
+        view {
             if flag.get() {
                 {
                     let c2 = c.clone();
                     on_cleanup(move || c2.set(c2.get() + 1));
-                    ui! { Text { "on".to_string() } }
+                    ui! { text { "on".to_string() } }
                 }
             } else {
-                Text { "off".to_string() }
+                text { "off".to_string() }
             }
         }
     };
@@ -574,11 +574,11 @@ fn static_match_mounts_single_arm() {
     let rt = TestRuntime::new();
     let mode = 2;
     let tree: Element = ui! {
-        View {
+        view {
             match mode {
-                1 => { Text { "one".to_string() } }
-                2 => { Text { "two".to_string() } }
-                _ => { Text { "other".to_string() } }
+                1 => { text { "one".to_string() } }
+                2 => { text { "two".to_string() } }
+                _ => { text { "other".to_string() } }
             }
         }
     };
@@ -595,11 +595,11 @@ fn reactive_match_switches_on_signal_with_default() {
     let rt = TestRuntime::new();
     let mode: Signal<u32> = signal!(0u32);
     let tree: Element = ui! {
-        View {
+        view {
             match mode.get() {
-                0 => { Text { "zero".to_string() } }
-                1 => { Text { "one".to_string() } }
-                _ => { Text { "fallback".to_string() } }
+                0 => { text { "zero".to_string() } }
+                1 => { text { "one".to_string() } }
+                _ => { text { "fallback".to_string() } }
             }
         }
     };
@@ -626,16 +626,16 @@ fn reactive_match_arm_change_releases_old_arm_scope() {
     let mode: Signal<u32> = signal!(0u32);
     let c = cleaned.clone();
     let tree: Element = ui! {
-        View {
+        view {
             match mode.get() {
                 0 => {
                     {
                         let c2 = c.clone();
                         on_cleanup(move || c2.set(c2.get() + 1));
-                        ui! { Text { "zero".to_string() } }
+                        ui! { text { "zero".to_string() } }
                     }
                 }
-                _ => { Text { "other".to_string() } }
+                _ => { text { "other".to_string() } }
             }
         }
     };
@@ -658,10 +658,10 @@ fn reactive_match_arm_change_releases_old_arm_scope() {
 fn static_if_multi_node_branch_flattens_in_children() {
     let rt = TestRuntime::new();
     let tree: Element = ui! {
-        View {
+        view {
             if 1 < 2 {
-                Text { "a".to_string() }
-                Text { "b".to_string() }
+                text { "a".to_string() }
+                text { "b".to_string() }
             }
         }
     };
@@ -682,9 +682,9 @@ fn static_if_multi_node_branch_flattens_in_children() {
 fn static_if_no_else_false_adds_no_empty_view() {
     let rt = TestRuntime::new();
     let tree: Element = ui! {
-        View {
+        view {
             if 1 > 2 {
-                Text { "never".to_string() }
+                text { "never".to_string() }
             }
         }
     };
@@ -705,13 +705,13 @@ fn static_match_multi_node_arm_flattens_in_children() {
     let rt = TestRuntime::new();
     let mode = 1;
     let tree: Element = ui! {
-        View {
+        view {
             match mode {
                 1 => {
-                    Text { "x".to_string() }
-                    Text { "y".to_string() }
+                    text { "x".to_string() }
+                    text { "y".to_string() }
                 }
-                _ => { Text { "z".to_string() } }
+                _ => { text { "z".to_string() } }
             }
         }
     };
@@ -744,9 +744,9 @@ fn anchorless_region_splices_flat_in_place() {
     });
     let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
     let tree: Element = ui! {
-        View {
+        view {
             for x in data, key = *x {
-                Text { x.to_string() }
+                text { x.to_string() }
             }
         }
     };
@@ -786,9 +786,9 @@ fn default_backend_uses_anchored_region() {
     let rt = TestRuntime::new(); // no splice support
     let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
     let tree: Element = ui! {
-        View {
+        view {
             for x in data, key = *x {
-                Text { x.to_string() }
+                text { x.to_string() }
             }
         }
     };
@@ -814,12 +814,12 @@ fn anchorless_region_splices_at_position_among_siblings() {
     });
     let data: Signal<Vec<&'static str>> = signal!(vec!["a", "b"]);
     let tree: Element = ui! {
-        View {
-            Text { "header".to_string() }
+        view {
+            text { "header".to_string() }
             for x in data, key = *x {
-                Text { x.to_string() }
+                text { x.to_string() }
             }
-            Text { "footer".to_string() }
+            text { "footer".to_string() }
         }
     };
     let _owner = rt.render(tree);
@@ -883,12 +883,12 @@ fn keyed_add_preserves_existing_row_scopes() {
     let data: Signal<Vec<i32>> = signal!(vec![1, 2]);
     let c = cleaned.clone();
     let tree: Element = ui! {
-        View {
+        view {
             for n in data, key = *n {
                 {
                     let c2 = c.clone();
                     on_cleanup(move || c2.set(c2.get() + 1));
-                    ui! { Text { n.to_string() } }
+                    ui! { text { n.to_string() } }
                 }
             }
         }
@@ -917,12 +917,12 @@ fn keyed_remove_drops_only_removed_row_scope() {
     let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
     let r = removed.clone();
     let tree: Element = ui! {
-        View {
+        view {
             for n in data, key = *n {
                 {
                     let r2 = r.clone();
                     on_cleanup(move || r2.borrow_mut().push(n));
-                    ui! { Text { n.to_string() } }
+                    ui! { text { n.to_string() } }
                 }
             }
         }
@@ -960,12 +960,12 @@ fn keyed_readd_same_key_gets_fresh_scope() {
     let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
     let r = removed.clone();
     let tree: Element = ui! {
-        View {
+        view {
             for n in data, key = *n {
                 {
                     let r2 = r.clone();
                     on_cleanup(move || r2.borrow_mut().push(n));
-                    ui! { Text { n.to_string() } }
+                    ui! { text { n.to_string() } }
                 }
             }
         }
@@ -1002,12 +1002,12 @@ fn keyed_reorder_preserves_scopes_without_rebuild() {
     let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
     let c = cleaned.clone();
     let tree: Element = ui! {
-        View {
+        view {
             for n in data, key = *n {
                 {
                     let c2 = c.clone();
                     on_cleanup(move || c2.set(c2.get() + 1));
-                    ui! { Text { n.to_string() } }
+                    ui! { text { n.to_string() } }
                 }
             }
         }

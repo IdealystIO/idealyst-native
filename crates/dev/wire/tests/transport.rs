@@ -149,7 +149,7 @@ fn websocket_round_trip_basic_tree() {
         };
         let owner = render(backend_rc, tree);
         std::mem::forget(owner);
-        let _ = serve(server_addr_clone, recorder, "transport-test");
+        let _ = serve(server_addr_clone, recorder);
     });
 
     // Give the server time to bind.
@@ -278,6 +278,7 @@ fn run_with_budget(
         color_scheme: wire::WireColorScheme::Auto,
         initial_url: None,
         identity: wire::ClientIdentity::default(),
+        viewport: None,
     };
     let bytes = serde_json::to_vec(&hello).unwrap();
     ws.send(Message::Binary(bytes.into())).ok();
@@ -308,7 +309,7 @@ fn run_with_budget(
         while rx.try_recv().is_ok() {}
     }
 
-    std::mem::take(&mut wire.backend_mut().trace)
+    std::mem::take(&mut wire.backend().borrow_mut().trace)
 }
 
 // Suppress dead-code lints for the imports/types that are
@@ -336,7 +337,7 @@ fn server_hello_carries_primary_session_in_single_process_mode() {
         let recorder = WireRecordingBackend::new();
         // Don't bother with an Owner — we only care about the Hello
         // exchange.
-        let _ = serve(server_addr_clone, recorder, "session-test");
+        let _ = serve(server_addr_clone, recorder);
     });
     wait_for_port(&server_addr, Duration::from_secs(3));
 
@@ -352,6 +353,7 @@ fn server_hello_carries_primary_session_in_single_process_mode() {
             platform: wire::WirePlatform::Web,
             device_label: Some("client-a".into()),
         },
+        viewport: None,
     };
     ws_a.send(Message::Binary(serde_json::to_vec(&hello_a).unwrap().into()))
         .unwrap();
@@ -373,6 +375,7 @@ fn server_hello_carries_primary_session_in_single_process_mode() {
         color_scheme: wire::WireColorScheme::Auto,
         initial_url: None,
         identity: wire::ClientIdentity::default(),
+        viewport: None,
     };
     ws_b.send(Message::Binary(serde_json::to_vec(&hello_b).unwrap().into()))
         .unwrap();

@@ -580,9 +580,9 @@ where
 /// use runtime_core::{signal, ui, Element, Signal};
 /// let items: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
 /// let _tree: Element = ui! {
-///     View {
+///     view {
 ///         for n in items, key = *n {
-///             Text { n.to_string() }
+///             text { n.to_string() }
 ///         }
 ///     }
 /// };
@@ -595,9 +595,9 @@ where
 /// use runtime_core::{signal, ui, Element, Signal};
 /// let items: Signal<Vec<i32>> = signal!(vec![1, 2, 3]);
 /// let _tree: Element = ui! {
-///     View {
+///     view {
 ///         for n in items {
-///             Text { n.to_string() }
+///             text { n.to_string() }
 ///         }
 ///     }
 /// };

@@ -780,7 +780,7 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     //
     //   1. **Structured `Derived<String>`** when the body is a
     //      function-call expression whose args look like bare
-    //      signal references (e.g. `Text { count_label(count) }`).
+    //      signal references (e.g. `text { count_label(count) }`).
     //      Emits a `TextSource::Bound(Derived<String> { method,
     //      inputs, initial, compute })` — generator backends
     //      (Roku) read the structure; runtime backends use
@@ -951,7 +951,7 @@ impl DerivedKind for bool {
 }
 
 /// Heuristic: does the token stream contain `.get()`? Used to decide
-/// whether `Text { ... }` bodies should be wrapped in a reactive
+/// whether `text { ... }` bodies should be wrapped in a reactive
 /// closure. Matches the same heuristic `condition_is_reactive` uses
 /// for `if` conditions, so authors who reach for `.get()` in their
 /// content get the reactive behavior they expect.
@@ -2627,14 +2627,14 @@ mod tests {
 
     #[test]
     fn text_with_children_block_emits_text_call() {
-        let out = parse_and_emit(quote! { Text { "hello" } });
+        let out = parse_and_emit(quote! { text { "hello" } });
         assert!(out.contains(":: runtime_core :: text"));
         assert!(out.contains("\"hello\""));
     }
 
     #[test]
     fn text_with_content_prop_emits_text_call() {
-        let out = parse_and_emit(quote! { Text(content = "hi") });
+        let out = parse_and_emit(quote! { text(content = "hi") });
         assert!(out.contains(":: runtime_core :: text"));
         assert!(out.contains("\"hi\""));
     }
@@ -2690,7 +2690,7 @@ mod tests {
         // through expression parsing (see
         // `next_is_component_invocation`). This is what lets reactive
         // helper calls like `count_label(count)` work inside
-        // `Text { ... }` without the parser trying to grab `count` as
+        // `text { ... }` without the parser trying to grab `count` as
         // a prop name.
         let out = parse_and_emit(quote! { mycomp(x = 1) });
         // Should be wrapped via IntoElement::into_element (the
@@ -2721,9 +2721,9 @@ mod tests {
     fn reactive_if_rewrites_to_when() {
         let out = parse_and_emit(quote! {
             if flag.get() {
-                Text { "on" }
+                text { "on" }
             } else {
-                Text { "off" }
+                text { "off" }
             }
         });
         assert!(out.contains(":: runtime_core :: when"));
@@ -2734,9 +2734,9 @@ mod tests {
     fn non_reactive_if_emits_plain_if() {
         let out = parse_and_emit(quote! {
             if some_bool {
-                Text { "on" }
+                text { "on" }
             } else {
-                Text { "off" }
+                text { "off" }
             }
         });
         // Plain if, not when() — `.get()` is required to opt into reactivity.
@@ -2748,7 +2748,7 @@ mod tests {
     fn for_loop_emits_type_driven_dispatch() {
         let out = parse_and_emit(quote! {
             for n in items {
-                Text { "x" }
+                text { "x" }
             }
         });
         // A keyless `for` lowers to the type-driven `__idealyst_for_each`
@@ -2766,7 +2766,7 @@ mod tests {
     fn for_loop_with_key_emits_keyed_dispatch() {
         let out = parse_and_emit(quote! {
             for n in items, key = n.id {
-                Text { "x" }
+                text { "x" }
             }
         });
         // A `, key = …` clause lowers to the KEYED dispatch, passing a
@@ -2782,7 +2782,7 @@ mod tests {
         // Should parse without error; emitted shape contains nested
         // if/else.
         let out = parse_and_emit(quote! {
-            if a.get() { Text { "a" } } else if b.get() { Text { "b" } } else { Text { "c" } }
+            if a.get() { text { "a" } } else if b.get() { text { "b" } } else { text { "c" } }
         });
         assert!(out.contains(":: runtime_core :: when"));
     }
@@ -2847,7 +2847,7 @@ mod tests {
         // A broken child with no salvageable prop value: recovery still
         // produces a valid, compile_error-bearing expression (empty salvage
         // closure), never unparseable tokens.
-        let input = quote! { Text { foo. } };
+        let input = quote! { text { foo. } };
         let err = parse_err(input.clone());
         let ts = emit_recovery(input, &err);
         assert!(ts.to_string().contains("compile_error"));

@@ -1422,10 +1422,12 @@ dependencies = [
  "anyhow",
  "ctrlc",
  "dev-hot",
+ "headless-screenshot",
  "idea-ui",
  "libc",
  "notify-debouncer-mini",
  "runtime-core",
+ "runtime-server-shell-native",
  "serde",
  "serde_json",
  "subsecond-types",
@@ -2507,6 +2509,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "headless-screenshot"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "dev-client",
+ "render-wgpu",
+ "runtime-core",
+ "serde_json",
+ "wire",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2532,6 +2546,18 @@ name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
+
+[[package]]
+name = "host-android-mobile"
+version = "0.0.1"
+dependencies = [
+ "log",
+ "raw-window-handle",
+ "render-api",
+ "render-wgpu",
+ "runtime-core",
+ "wgpu",
+]
 
 [[package]]
 name = "host-appkit"
@@ -2591,6 +2617,7 @@ dependencies = [
 name = "host-wgpu"
 version = "0.0.1"
 dependencies = [
+ "host-android-mobile",
  "host-ios-mobile",
  "host-web",
  "render-api",
@@ -3688,6 +3715,21 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mock-backend"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "dev-client",
+ "dev-server",
+ "headless-screenshot",
+ "image",
+ "runtime-core",
+ "runtime-server-shell-native",
+ "serde_json",
+ "wire",
 ]
 
 [[package]]
@@ -4935,6 +4977,7 @@ dependencies = [
  "glyphon",
  "image",
  "log",
+ "pollster",
  "render-api",
  "runtime-core",
  "runtime-layout",

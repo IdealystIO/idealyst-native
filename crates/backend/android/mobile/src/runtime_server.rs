@@ -135,7 +135,7 @@ pub fn attach_with_url<'l>(
     url: &str,
 ) {
     install_panic_hook_once();
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let context_global = env
             .new_global_ref(&context)
             .expect("new_global_ref(context)");
@@ -163,6 +163,13 @@ pub fn attach_with_url<'l>(
             url,
         );
     }));
+    if result.is_err() {
+        // catch_unwind here exists to print the panic before we abort
+        // \u{2014} JNI return ABI is nounwind. Project policy is
+        // crash-loud (the panic hook installed above logged the
+        // message already, so we just need to abort).
+        std::process::abort();
+    }
 }
 
 /// Drain the worker thread's pending `DevToApp` messages and apply
@@ -178,12 +185,11 @@ pub fn attach_with_url<'l>(
 /// care of measure/layout on the next vsync via its own dirty
 /// tracking.
 pub fn drain() {
-    // `extern "system"` (JNI) ABI is `nounwind` — letting a panic
-    // escape this function aborts the whole app process. The
-    // wrapping `catch_unwind` traps any panic from inside the runtime-server
-    // client's wire replay (mostly framework bugs hit during
-    // command apply) so the worst case is a logged error instead
-    // of a sudden disappearance.
+    // `extern "system"` (JNI) ABI is `nounwind` \u{2014} letting a
+    // Rust panic escape this function is UB. `catch_unwind` here
+    // exists only to let the installed panic hook log the message
+    // first; we then abort. Project policy is crash-loud (no
+    // surviving the broken state that produced the panic).
     //
     // `RuntimeServerShell::tick` is the cross-platform "do everything per
     // frame" entry — report viewport, drain inbound (which sends
@@ -192,13 +198,16 @@ pub fn drain() {
     // it separately via [`report_viewport`] from
     // `OnLayoutChangeListener`), so we pass `None` and let the
     // shell's last-reported value stand.
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         SHELL.with(|slot| {
             if let Some(shell) = slot.borrow().as_ref() {
                 shell.tick(None);
             }
         });
     }));
+    if result.is_err() {
+        std::process::abort();
+    }
 }
 
 /// Tear down the active runtime-server shell. Called from the consuming

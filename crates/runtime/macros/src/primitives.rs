@@ -3,45 +3,26 @@
 //! Primitives are the fixed set of framework leaf tags (`view`, `text`,
 //! `button`, `text_input`, `scroll_view`, …) that lower to free functions
 //! in `runtime_core` rather than going through `BuildElement` struct-literal
-//! dispatch. The canonical form is **snake_case**, matching the underlying
-//! `runtime_core::view(...)` / `runtime_core::text_input(...)` builder fn
-//! names and React's `<div>` / `<input>` lowercase-intrinsic convention.
+//! dispatch. The canonical (and only accepted) form is **snake_case**,
+//! matching the underlying `runtime_core::view(...)` / `runtime_core::text_input(...)`
+//! builder fn names and React's `<div>` / `<input>` lowercase-intrinsic
+//! convention.
 //!
-//! `canonical_primitive` accepts either snake_case (`view`, `text_input`)
-//! or PascalCase (`View`, `TextInput`) so call sites can migrate gradually;
-//! once every site is on snake_case the PascalCase fallback can be deleted.
+//! PascalCase tags are **always** routed to user-component dispatch. This
+//! is what lets an app or component library define a `#[component]` named
+//! `Image`, `Link`, `Toggle`, `Slider`, etc. without the framework
+//! primitive of the same name shadowing it. The lowercase form (`image`,
+//! `link`, …) is the primitive; the PascalCase form (`Image`, `Link`, …)
+//! is whatever component is in scope. (Historically the macro also
+//! accepted PascalCase primitive tags for back-compat; that fallback was
+//! removed once every call site migrated to snake_case.)
 
-/// Convert a PascalCase identifier to snake_case. Idempotent on already
-/// snake_case input: `View` → `view`, `TextInput` → `text_input`,
-/// `text_input` → `text_input`.
-fn to_snake(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 4);
-    for (i, ch) in s.char_indices() {
-        if ch.is_ascii_uppercase() && i > 0 {
-            let prev = s.as_bytes()[i - 1] as char;
-            if prev != '_' {
-                out.push('_');
-            }
-        }
-        out.push(ch.to_ascii_lowercase());
-    }
-    out
-}
-
-/// If `name` is a recognized primitive tag (in either PascalCase or
-/// snake_case form), return the canonical snake_case form. Otherwise
-/// return `None`, signalling that the caller should dispatch to user-
-/// component code (`emit_user`).
+/// If `name` is a recognized primitive tag, return its canonical
+/// snake_case form. Only the snake_case spelling is recognized —
+/// PascalCase names return `None` so the caller dispatches to
+/// user-component code (`emit_user`).
 pub(crate) fn canonical_primitive(name: &str) -> Option<&'static str> {
-    // `button` is special: idea-ui exposes a `Button` component that
-    // should win when authors write `Button` in `ui!`. Only the
-    // lowercase form routes to the primitive; PascalCase falls through
-    // to user-component dispatch.
-    if name == "Button" {
-        return None;
-    }
-    let snake = to_snake(name);
-    match snake.as_str() {
+    match name {
         "text" => Some("text"),
         "button" => Some("button"),
         "view" => Some("view"),
@@ -69,25 +50,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pascal_to_snake() {
-        assert_eq!(to_snake("View"), "view");
-        assert_eq!(to_snake("TextInput"), "text_input");
-        assert_eq!(to_snake("ActivityIndicator"), "activity_indicator");
-        assert_eq!(to_snake("AnchoredOverlay"), "anchored_overlay");
-    }
-
-    #[test]
-    fn snake_passes_through() {
-        assert_eq!(to_snake("view"), "view");
-        assert_eq!(to_snake("text_input"), "text_input");
-    }
-
-    #[test]
-    fn canonical_matches_both_cases() {
-        assert_eq!(canonical_primitive("View"), Some("view"));
+    fn canonical_matches_snake_case_only() {
         assert_eq!(canonical_primitive("view"), Some("view"));
-        assert_eq!(canonical_primitive("TextInput"), Some("text_input"));
         assert_eq!(canonical_primitive("text_input"), Some("text_input"));
+        assert_eq!(canonical_primitive("anchored_overlay"), Some("anchored_overlay"));
+    }
+
+    #[test]
+    fn pascal_case_primitives_route_to_user_component() {
+        // PascalCase forms are NO LONGER recognized as primitives — they
+        // fall through to component dispatch, so an app can define a
+        // `#[component]` named `View`/`Image`/`Link`/`Toggle`/… and have
+        // it win. The lowercase spelling is the primitive.
+        assert_eq!(canonical_primitive("View"), None);
+        assert_eq!(canonical_primitive("Text"), None);
+        assert_eq!(canonical_primitive("Image"), None);
+        assert_eq!(canonical_primitive("Link"), None);
+        assert_eq!(canonical_primitive("Toggle"), None);
+        assert_eq!(canonical_primitive("TextInput"), None);
+        assert_eq!(canonical_primitive("Button"), None);
     }
 
     #[test]
@@ -95,13 +76,5 @@ mod tests {
         assert_eq!(canonical_primitive("MyComponent"), None);
         assert_eq!(canonical_primitive("Pressable"), None);
         assert_eq!(canonical_primitive("DrawerNavigator"), None);
-    }
-
-    #[test]
-    fn pascal_button_routes_to_user_component() {
-        // `Button` (PascalCase) is idea-ui's component; only lowercase
-        // `button` is the primitive. See `canonical_primitive`.
-        assert_eq!(canonical_primitive("Button"), None);
-        assert_eq!(canonical_primitive("button"), Some("button"));
     }
 }

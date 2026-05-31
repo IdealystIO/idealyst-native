@@ -1753,6 +1753,7 @@ mod tests {
             color_scheme: WireColorScheme::Auto,
             initial_url: None,
             identity: ClientIdentity::default(),
+            viewport: None,
         };
         let bytes = codec::encode(&h).unwrap();
         match codec::decode::<AppToDev>(&bytes).unwrap() {
@@ -1772,6 +1773,7 @@ mod tests {
                 platform: WirePlatform::Ios,
                 device_label: Some("iPhone 15 Pro Sim".into()),
             },
+            viewport: None,
         };
         let bytes = codec::encode(&h).unwrap();
         match codec::decode::<AppToDev>(&bytes).unwrap() {

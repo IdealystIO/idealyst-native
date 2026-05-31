@@ -44,11 +44,25 @@ test-support = []
 # stay anyhow-free + don't drag subsecond through their build.
 runtime-server = ["dep:dev-hot", "dep:subsecond-types", "dep:libc", "dep:anyhow", "dep:ctrlc"]
 
+# Registers a `"screenshot"` Robot-bridge verb in each runtime-server
+# session so Robot / the MCP server can rasterize the (mocked) app's
+# current scene to a PNG headlessly. Pulls the `headless-screenshot`
+# leaf crate (→ render-wgpu/wgpu, compiled once for the workspace).
+# Implies `runtime-server` (the verb lives in the sidecar session loop)
+# and `robot` (the bridge it registers on). The generated sidecar build
+# enables this; the lightweight recorder/transport consumers don't.
+screenshot = ["dep:headless-screenshot", "runtime-server", "robot"]
+
 [dependencies]
 runtime-core = { workspace = true }
 wire = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Scene → PNG bridge + the Robot `"screenshot"` verb. Optional, pulled
+# in only by the `screenshot` feature (drags render-wgpu/wgpu). Leaf
+# crate; depends on neither dev-server nor mock-backend, so no cycle.
+headless-screenshot = { workspace = true, optional = true }
 
 # Activated by the `sidecar-runtime` feature. `dev-hot` is the
 # subsecond facade — exposes `apply_patch(JumpTable)`. We pick up the
@@ -91,3 +105,11 @@ serde_json = "1"
 # choose to enable `robot` via *our* feature, see `[features]` above.
 runtime-core = { workspace = true, features = ["robot"] }
 idea-ui = { workspace = true }
+# `tests/runtime_server_shell_e2e.rs` drives the *real* native
+# runtime-server client shell (the worker-thread WebSocket transport +
+# `RuntimeServerShell::drain`) against this crate's loopback dev-server,
+# so the end-to-end "app connects, snapshots, replays, reconnects"
+# path is guarded. `runtime-server` activates the tungstenite worker.
+# No dependency cycle: the shell crate depends on dev-client/wire/
+# runtime-core, never on dev-server.
+runtime-server-shell-native = { workspace = true, features = ["runtime-server"] }

@@ -440,10 +440,10 @@ pub(crate) fn schedule_main<F: FnOnce() + 'static>(f: F) {
         // exactly once. The box reclaim transfers ownership back to
         // Rust before the user closure runs.
         let boxed: Box<Box<dyn FnOnce()>> = unsafe { Box::from_raw(ctx as *mut _) };
-        // Wrap the user closure in `catch_unwind` — libdispatch is C
-        // code and a panic propagating into it is undefined behavior.
-        // The closure is `FnOnce`; we take it out of the box explicitly
-        // so the closure body can move captures freely.
+        // libdispatch is C and a panic propagating into it is UB.
+        // catch_unwind here only prints the panic location before
+        // we abort \u{2014} project policy is crash-loud (no surviving
+        // post-panic on user-supplied closures scheduled via portal).
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             boxed();
         }));
@@ -456,6 +456,7 @@ pub(crate) fn schedule_main<F: FnOnce() + 'static>(f: F) {
                 "<non-string panic payload>".to_string()
             };
             eprintln!("[backend-ios::portal] schedule_main closure panicked: {msg}");
+            std::process::abort();
         }
     }
 

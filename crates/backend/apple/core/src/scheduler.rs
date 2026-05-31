@@ -159,7 +159,15 @@ fn after_ms_inner(delay_ms: i32, f: Box<dyn FnOnce() + 'static>) -> NsTimerHandl
     if delay_ms <= 0 {
         let cell_for_dispatch = cell.clone();
         dispatch_main_async(Box::new(move || {
-            if let Some(g) = cell_for_dispatch.borrow_mut().take() {
+            // Bind through a let so the `RefMut` temporary dies at the
+            // semicolon \u{2014} otherwise it lives through the whole
+            // if-let body. The closure `g()` regularly drops Rcs whose
+            // `NsTimerHandle::Drop` re-borrows this same cell via
+            // `cancel_inner`, and the second `borrow_mut` panics
+            // ("RefCell already borrowed"). Real crash seen during
+            // first-render settle on the iOS website.
+            let taken = cell_for_dispatch.borrow_mut().take();
+            if let Some(g) = taken {
                 g();
             }
         }));
@@ -172,7 +180,10 @@ fn after_ms_inner(delay_ms: i32, f: Box<dyn FnOnce() + 'static>) -> NsTimerHandl
     }
     let cell_for_block = cell.clone();
     let block = StackBlock::new(move |_t: *const NSObject| {
-        if let Some(g) = cell_for_block.borrow_mut().take() {
+        // Same `RefMut`-lifetime fix as the libdispatch branch above:
+        // bind through a let so the borrow ends before `g()` runs.
+        let taken = cell_for_block.borrow_mut().take();
+        if let Some(g) = taken {
             g();
         }
     });
@@ -273,15 +284,20 @@ fn dispatch_main_async(f: Box<dyn FnOnce() + 'static>) {
     let cell_for_block = cell.clone();
     let block = StackBlock::new(move || {
         // Block is invoked through libdispatch's main-queue drain
-        // (extern "C"). A Rust panic propagating out aborts the process
-        // with a stack trace that points at `panic_cannot_unwind` /
-        // `_dispatch_call_block_and_release` — the panic message
-        // disappears. Mirror the catch_unwind pattern from
-        // `render_loop.rs`, `imp/mod.rs::schedule_layout_pass`, and
-        // `imp/portal.rs` so microtask panics surface as a readable
-        // line on stderr instead.
+        // (extern "C"). A Rust panic propagating out aborts the
+        // process via `panic_cannot_unwind` with no readable message.
+        // catch_unwind here is purely to print the panic location
+        // *before* we abort \u{2014} the abort is mandatory so we never
+        // keep running on the partially-invariant state that produced
+        // the panic. Crash-loud is the project policy; see
+        // [[project-refmut-lifetime-reentrancy]] for the bug that
+        // motivated tightening this.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if let Some(g) = cell_for_block.borrow_mut().take() {
+            // Bind the take() out so the `RefMut` temporary dies before
+            // `g()` runs — same reentrancy fix as the after_ms_inner
+            // branches above.
+            let taken = cell_for_block.borrow_mut().take();
+            if let Some(g) = taken {
                 g();
             }
         }));
@@ -294,6 +310,7 @@ fn dispatch_main_async(f: Box<dyn FnOnce() + 'static>) {
                 "<non-string panic payload>".to_string()
             };
             eprintln!("[backend-apple-core] microtask panic: {msg}");
+            std::process::abort();
         }
     });
     // libdispatch needs a heap-allocated block (StackBlock lives on

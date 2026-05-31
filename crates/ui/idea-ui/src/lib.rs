@@ -109,8 +109,8 @@ pub use components::card::{Card, CardPadding, CardProps};
 pub use components::center::{Center, CenterProps};
 pub use components::checkbox::{Checkbox, CheckboxProps};
 pub use components::grid::{Grid, GridProps};
-pub use components::image::{ImageView, ImageViewProps};
-pub use components::link::{TextLink, TextLinkProps};
+pub use components::image::{Image, ImageProps};
+pub use components::link::{Link, LinkProps};
 pub use components::list::{List, ListItem, ListItemProps, ListProps};
 pub use components::menu::{
     Menu, MenuEntry, MenuItem, MenuItemProps, MenuLabel, MenuLabelProps, MenuProps, MenuSeparator,

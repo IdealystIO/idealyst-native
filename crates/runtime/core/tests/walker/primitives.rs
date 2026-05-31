@@ -101,7 +101,7 @@ fn nested_view_tree() {
 
 /// Mounting then dropping the Owner triggers the backend's cleanup
 /// path. We don't yet have per-primitive release events for plain
-/// View/Text (no `release_view`/`release_text` exists), but
+/// View/text (no `release_view`/`release_text` exists), but
 /// `on_node_unstyled` fires for styled nodes. Verify the framework
 /// at least doesn't panic on drop.
 #[test]

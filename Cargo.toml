@@ -38,6 +38,7 @@ members = [
     "crates/gpu-backend/host/winit",
     "crates/gpu-backend/host/web",
     "crates/gpu-backend/host/ios-mobile",
+    "crates/gpu-backend/host/android-mobile",
     "crates/gpu-backend/host/wgpu",
     "crates/gpu-backend/host/appkit",
     "crates/gpu-backend/host/terminal",
@@ -57,6 +58,8 @@ members = [
     "crates/dev/reload",
     "crates/dev/web-host",
     "crates/dev/runtime-server-shell",
+    "crates/dev/mock-backend",
+    "crates/dev/headless-screenshot",
 
     # MCP — project-aware catalog, stdio server, robot proxy.
     "crates/mcp/catalog",
@@ -187,6 +190,8 @@ runtime-layout = { path = "crates/runtime/layout" }
 wire = { path = "crates/dev/wire" }
 dev-client = { path = "crates/dev/client" }
 dev-server = { path = "crates/dev/server" }
+mock-backend = { path = "crates/dev/mock-backend" }
+headless-screenshot = { path = "crates/dev/headless-screenshot" }
 dev-http = { path = "crates/dev/http" }
 dev-reload = { path = "crates/dev/reload" }
 web-dev-host = { path = "crates/dev/web-host" }
@@ -232,6 +237,7 @@ android-sim = { path = "crates/gpu-backend/painter/android-sim" }
 host-winit = { path = "crates/gpu-backend/host/winit" }
 host-web = { path = "crates/gpu-backend/host/web" }
 host-ios-mobile = { path = "crates/gpu-backend/host/ios-mobile" }
+host-android-mobile = { path = "crates/gpu-backend/host/android-mobile" }
 host-wgpu = { path = "crates/gpu-backend/host/wgpu" }
 host-appkit = { path = "crates/gpu-backend/host/appkit" }
 host-terminal = { path = "crates/gpu-backend/host/terminal" }

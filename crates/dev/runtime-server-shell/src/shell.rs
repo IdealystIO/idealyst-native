@@ -329,11 +329,44 @@ impl<B: Backend + 'static> RuntimeServerShell<B> {
     }
 }
 
+/// Whether a dev-server's reported protocol version is incompatible
+/// with the version this client was built against.
+///
+/// Any difference is incompatible: the wire format is not forward- or
+/// backward-compatible across [`wire::PROTOCOL_VERSION`] bumps (a
+/// renamed/added field, a new `Command` variant the old replayer
+/// can't decode, a changed `Hello` shape, …). The native shell bakes
+/// the client at `idealyst dev` time, so the only way to hit a
+/// mismatch is to point a stale wrapper binary at a freshly-built
+/// dev-server (or vice-versa). We surface it loudly rather than
+/// silently failing — see [`apply_dev_msg`].
+pub fn protocol_mismatch(server_version: u32) -> bool {
+    server_version != wire::PROTOCOL_VERSION
+}
+
 /// Decide what to do with one inbound `DevToApp` message. Split out
 /// of [`RuntimeServerShell::drain`] so per-message handling stays trivial.
 fn apply_dev_msg<B: Backend>(client: &mut RuntimeServerClient<B>, msg: DevToApp) {
     match msg {
-        DevToApp::Hello { session, .. } => {
+        DevToApp::Hello { session, protocol_version, .. } => {
+            // A protocol mismatch means the commands that follow may
+            // fail to decode or replay into the wrong backend calls —
+            // the classic "blank screen after a wire bump" footgun.
+            // The legacy `transport::connect_and_run` path already
+            // warned here; the worker-thread shell (iOS / Android /
+            // macOS) used to swallow it entirely. Match the legacy
+            // behavior so the failure is diagnosable rather than a
+            // silent no-render. Rebuilding via `idealyst dev` re-bakes
+            // a matching client.
+            if protocol_mismatch(protocol_version) {
+                eprintln!(
+                    "[runtime-server-shell] PROTOCOL VERSION MISMATCH: dev-server speaks \
+                     v{protocol_version}, this client was built for v{}. Replay will likely \
+                     fail or render incorrectly — rebuild the app via `idealyst dev` to bake \
+                     a matching client.",
+                    wire::PROTOCOL_VERSION
+                );
+            }
             if !session.is_empty() {
                 eprintln!("[runtime-server-shell] connected to session: {}", session);
             }

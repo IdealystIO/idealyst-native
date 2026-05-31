@@ -33,10 +33,10 @@ fn multi_node_for_body_emits_flat_siblings_no_wrapper_view() {
     let rt = TestRuntime::new();
 
     let tree: Element = ui! {
-        View {
+        view {
             for s in ["a", "b"] {
-                Text { s.to_string() }
-                Text { format!("{}!", s) }
+                text { s.to_string() }
+                text { format!("{}!", s) }
             }
         }
     };
@@ -61,11 +61,11 @@ fn nested_for_in_multi_node_body_flattens() {
     let rt = TestRuntime::new();
 
     let tree: Element = ui! {
-        View {
+        view {
             for group in [2usize, 1usize] {
-                Text { format!("header {}", group) }
+                text { format!("header {}", group) }
                 for i in 0..group {
-                    Text { format!("item {}", i) }
+                    text { format!("item {}", i) }
                 }
             }
         }
@@ -91,9 +91,9 @@ fn single_node_for_body_unchanged() {
     let rt = TestRuntime::new();
 
     let tree: Element = ui! {
-        View {
+        view {
             for s in ["x", "y", "z"] {
-                Text { s.to_string() }
+                text { s.to_string() }
             }
         }
     };

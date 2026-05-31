@@ -36,7 +36,7 @@ fn Label(props: &LabelProps) -> Element {
     let observed = props.value.get();
     SEEN.with(|s| s.borrow_mut().push(observed));
     ui! {
-        Text { "label" }
+        text { "label" }
     }
 }
 

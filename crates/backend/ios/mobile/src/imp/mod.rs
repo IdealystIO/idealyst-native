@@ -420,10 +420,11 @@ pub fn schedule_layout_pass() {
         // pass itself will re-arm and fire AFTER this one — they
         // reflect post-layout state we couldn't have captured here.
         LAYOUT_PASS_QUEUED.with(|q| q.set(false));
-        // Absorb panics — libdispatch is C and a Rust panic unwinding
-        // back into it is undefined behavior. The layout pass touches
-        // user reactive state via apply effects; if any of those
-        // panic, log + bail rather than abort the app.
+        // libdispatch is C and a Rust panic unwinding back into it is
+        // undefined behavior. catch_unwind here only prints the panic
+        // message before we abort \u{2014} project policy is crash-loud
+        // so the layout pass never silently keeps running on top of
+        // a partially-mutated reactive state.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let weak = IOS_BACKEND_SELF.with(|s| s.borrow().clone());
             let Some(weak) = weak else { return };
@@ -445,7 +446,8 @@ pub fn schedule_layout_pass() {
             } else {
                 "<non-string panic payload>".to_string()
             };
-            eprintln!("[backend-ios] layout-pass trampoline panic absorbed: {msg}");
+            eprintln!("[backend-ios] layout-pass trampoline panic: {msg}");
+            std::process::abort();
         }
     }
 

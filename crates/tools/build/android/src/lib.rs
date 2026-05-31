@@ -308,11 +308,31 @@ fn generate_wrapper(
 
     let wrapper_name = match mode {
         BuildMode::Local => format!("{}-android-wrapper", manifest.name),
-        BuildMode::RuntimeServer => format!("{}-android-runtime-server-wrapper", manifest.name),
+        // NB: the package name MUST translate to the `.so` filename the
+        // build + run sides expect (`lib{lib_name}_android_aas_wrapper.so`).
+        // Cargo derives the dylib name from the package name with `-` → `_`,
+        // so using `-android-runtime-server-wrapper` would emit
+        // `lib<name>_android_runtime_server_wrapper.so` instead — paths
+        // diverge and the post-build artifact-existence check fails with
+        // "cargo build reported success but … was not produced". Naming
+        // it `-android-aas-wrapper` here matches the expected `.so`.
+        BuildMode::RuntimeServer => format!("{}-android-aas-wrapper", manifest.name),
     };
     let fcore_dep = source.dep("crates/runtime/core", &[]);
-    let bandroid_local_dep = source.dep("crates/backend/android/mobile", &[]);
-    let bandroid_aas_dep = source.dep("crates/backend/android/mobile", &["runtime-server"]);
+    // `async-driver` brings in `spawn_async` + the executor wiring
+    // backend-android installs through `install_render_loop`. Without
+    // it the framework's `spawn_async` is a no-op and any async path
+    // (the website's `Simulator` calling `host_wgpu::mount(...).await`,
+    // SDK code awaiting GPU init) silently never resolves — the
+    // simulator's wgpu surface stays blank. Mirrors the iOS wrapper,
+    // whose backend-ios-mobile dep enables `async-driver` for the same
+    // reason.
+    let bandroid_local_dep =
+        source.dep("crates/backend/android/mobile", &["async-driver"]);
+    let bandroid_aas_dep = source.dep(
+        "crates/backend/android/mobile",
+        &["runtime-server", "async-driver"],
+    );
 
     let cargo_toml = match mode {
         BuildMode::Local => format!(
@@ -458,6 +478,16 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
         // time, which breaks the long-press recognizer and
         // every other timer-driven feature.
         backend_android::install_scheduler();
+        // Install the Choreographer-driven raf-loop so
+        // `runtime_core::driver::render_loop(...)` callbacks fire
+        // each vsync. Required by anything that drives per-frame
+        // work through the driver: the website's `Simulator`
+        // component (host-android-mobile's wgpu render-loop), the
+        // welcome scaffold's planet animation, etc. Without it
+        // those callbacks register but never run — symptom: the
+        // embedded wgpu preview stays blank because draw_frame is
+        // never invoked.
+        backend_android::install_render_loop();
         // Register third-party extensions (navigator SDKs, custom
         // primitives) into the backend before any `app()` code runs.
         // The user crate exposes `register_extensions` either generic

@@ -2,6 +2,18 @@
 //! Each export downcasts its `jlong` pointer back to a leaked
 //! callback box and invokes the inner closure, wrapped in
 //! `catch_unwind` because Rust panics across the FFI boundary are UB.
+//!
+//! Project policy is crash-loud: when the inner closure panics, the
+//! trampoline logs the panic message via `log::error!` (which hits
+//! logcat under tag `idealyst`) and then `std::process::abort()`s.
+//! Surviving past a user-handler panic leaves the reactive tree in
+//! a half-mutated state \u{2014} better to die loudly so the bug is
+//! actually noticed instead of producing weird downstream behavior.
+//! Use [`run_void_callback`] for the common void-callback shape;
+//! value-returning trampolines that need a fallback on panic (e.g.
+//! key event handlers that pass-through on failure) keep their own
+//! `catch_unwind` and DO NOT abort \u{2014} they document the trade-off
+//! locally.
 
 use super::callbacks::{
     ClickCallback, HeaderButtonCallback, KeyDownCallback, OverlayDismissCallback,
@@ -10,6 +22,54 @@ use super::callbacks::{
 use jni::objects::{JObject, JValue};
 use jni::sys::{jboolean, jfloat, jint, jlong};
 use jni::JNIEnv;
+
+/// Crash-loud wrapper for void JNI callbacks: run `f` inside
+/// `catch_unwind` so a panic doesn't unwind into the JVM (UB on the
+/// `extern "system"` boundary), log the panic message under
+/// `idealyst` so it lands in `logcat`, then abort the process.
+///
+/// `label` shows up in the error line and the crash report so a
+/// triage can identify which JNI export tripped \u{2014} keep it short
+/// and stable (e.g. `"click"`, `"text-change"`).
+fn run_void_callback(label: &'static str, f: impl FnOnce() + std::panic::UnwindSafe) {
+    let result = std::panic::catch_unwind(f);
+    if let Err(payload) = result {
+        log_then_abort(label, &payload);
+    }
+}
+
+/// Returning-value variant of [`run_void_callback`]: the user-supplied
+/// closure produces an `R`. Crash-loud policy still applies \u{2014} a
+/// panic logs the location and aborts the process, never substitutes
+/// a "graceful" default value. Substituting on panic hides real bugs:
+/// a touch handler that silently returns IGNORED, or a virtualizer
+/// row that silently disappears, produces weird downstream behavior
+/// that's harder to diagnose than a crash.
+fn run_returning_callback<R>(
+    label: &'static str,
+    f: impl FnOnce() -> R + std::panic::UnwindSafe,
+) -> R {
+    match std::panic::catch_unwind(f) {
+        Ok(r) => r,
+        Err(payload) => {
+            log_then_abort(label, &payload);
+        }
+    }
+}
+
+/// Shared payload-to-string + abort path. Returns `!` so callers can
+/// use it directly in match arms that yield an `R`.
+fn log_then_abort(label: &'static str, payload: &Box<dyn std::any::Any + Send>) -> ! {
+    let msg = if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else {
+        "<non-string panic payload>".to_string()
+    };
+    log::error!("[jni::{}] callback panicked: {}", label, msg);
+    std::process::abort();
+}
 
 // ---------------------------------------------------------------------------
 // Click listener
@@ -36,7 +96,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustClickListener_nativeI
         return;
     }
     let cb = &*(ptr as *const ClickCallback);
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (cb.0)()));
+    run_void_callback("click", std::panic::AssertUnwindSafe(|| (cb.0)()));
 }
 
 /// `RustActionBarHelper.nativeInvoke` dispatches the home-button
@@ -61,7 +121,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustActionBarHelper_nativ
         return;
     }
     let cb = &*(ptr as *const HeaderButtonCallback);
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (cb.0)()));
+    run_void_callback("header-button", std::panic::AssertUnwindSafe(|| (cb.0)()));
 }
 
 /// Free a leaked `ClickCallback`. Currently unused (see lifetime
@@ -114,7 +174,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustStateListener_nativeS
     // re-entrant borrow_mut.
     let maybe_cb = cb.inner.borrow().clone();
     if let Some(setter) = maybe_cb {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| setter(bit, on)));
+        run_void_callback("state", std::panic::AssertUnwindSafe(|| setter(bit, on)));
     }
 }
 
@@ -189,10 +249,12 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTouchListener_nativeI
     let Some(handler) = handler_opt else {
         return 0;
     };
-    // Catch unwinds across the JNI boundary — Rust panics into Java
-    // are UB.
-    let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&event)))
-        .unwrap_or(runtime_core::TouchResponse::IGNORED);
+    // Crash-loud on panic \u{2014} substituting IGNORED would hide a
+    // bug in the user's touch handler behind random "lost touches."
+    let response = run_returning_callback(
+        "touch",
+        std::panic::AssertUnwindSafe(|| handler(&event)),
+    );
     let mut packed: jint = 0;
     if response.consumed {
         packed |= 0x1;
@@ -239,7 +301,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTextWatcher_nativeCha
         .map(|js| js.to_str().unwrap_or("").to_string())
         .unwrap_or_default();
     let cb = &*(ptr as *const TextChangeCallback);
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (cb.0)(s)));
+    run_void_callback("text-change", std::panic::AssertUnwindSafe(|| (cb.0)(s)));
 }
 
 /// `RustKeyListener.onKey` dispatch. Maps the Android keycode +
@@ -283,8 +345,10 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustKeyListener_nativeKey
         selection_start: sel_start.max(0) as usize,
         selection_end: sel_end.max(0) as usize,
     };
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (cb.0)(&event)))
-        .unwrap_or(runtime_core::primitives::key::KeyOutcome::Default);
+    let outcome = run_returning_callback(
+        "key-down",
+        std::panic::AssertUnwindSafe(|| (cb.0)(&event)),
+    );
     match outcome {
         runtime_core::primitives::key::KeyOutcome::PreventDefault => 1,
         runtime_core::primitives::key::KeyOutcome::Default => 0,
@@ -348,7 +412,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustToggleListener_native
     }
     let cb = &*(ptr as *const ToggleChangeCallback);
     let v = checked != 0;
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (cb.0)(v)));
+    run_void_callback("toggle-change", std::panic::AssertUnwindSafe(|| (cb.0)(v)));
 }
 
 /// `RustSliderListener.onProgressChanged` dispatch. Converts the
@@ -369,7 +433,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustSliderListener_native
     let t = progress as f32 / cb.resolution as f32;
     let value = cb.min + t * (cb.max - cb.min);
     let on_change = cb.on_change.clone();
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_change(value)));
+    run_void_callback("slider-change", std::panic::AssertUnwindSafe(|| on_change(value)));
 }
 
 // ---------------------------------------------------------------------------
@@ -401,7 +465,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustStickyScrollListener_
     scroll_x: jfloat,
     scroll_y: jfloat,
 ) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    run_void_callback("scroll", std::panic::AssertUnwindSafe(|| {
         let weak = crate::imp::ANDROID_BACKEND_SELF.with(|s| s.borrow().clone());
         let Some(weak) = weak else { return };
         let Some(rc) = weak.upgrade() else { return };
@@ -461,7 +525,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustOverlayDismissListene
     // re-enter framework code that also reads backend state.
     let maybe_cb = cb.inner.borrow().clone();
     if let Some(dismiss) = maybe_cb {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dismiss()));
+        run_void_callback("overlay-dismiss", std::panic::AssertUnwindSafe(|| dismiss()));
     }
 }
 
@@ -501,7 +565,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustPopupDismissListener_
     let cb = &*(ptr as *const OverlayDismissCallback);
     let maybe_cb = cb.inner.borrow().clone();
     if let Some(dismiss) = maybe_cb {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dismiss()));
+        run_void_callback("modal-dismiss", std::panic::AssertUnwindSafe(|| dismiss()));
     }
 }
 
@@ -525,7 +589,15 @@ unsafe fn with_callbacks<R>(
         return None;
     }
     let cbs = &*(ptr as *const AndroidVirtCallbacks);
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(cbs))).ok()
+    // Crash-loud on panic. Returning `None` instead would let the
+    // adapter silently report 0 items / a missing row / a stale
+    // measurement \u{2014} all visually indistinguishable from a real
+    // virtualizer edge case, which is exactly the kind of bug we
+    // want to fail fast on.
+    Some(run_returning_callback(
+        "virtualizer",
+        std::panic::AssertUnwindSafe(|| f(cbs)),
+    ))
 }
 
 #[no_mangle]

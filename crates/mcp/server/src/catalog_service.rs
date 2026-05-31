@@ -261,6 +261,21 @@ pub struct RobotAppOnly {
     pub app: Option<String>,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotScreenshotArgs {
+    /// Target app name (from `list_apps`). Optional when only one app
+    /// is registered; required otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    /// Capture width in physical pixels. Optional — defaults to the
+    /// session's configured viewport size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    /// Capture height in physical pixels. Optional — see `width`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
 #[allow(dead_code)]
 fn _doc_marker() -> &'static str {
     APP_ARG_DOC
@@ -683,6 +698,16 @@ impl CatalogService {
         let app = args.app.clone();
         let body = strip_app(serde_json::to_value(args).unwrap_or_default());
         self.robot_call("invoke_method", app.as_deref(), body).await
+    }
+
+    #[tool(description = "Capture a PNG screenshot of the running app and return it as base64. Works even when the app is mocked (runtime-server / headless dev mode) — the dev-server rasterizes the current scene with the same GPU renderer the real app uses. Optional `width`/`height` in physical pixels (default: the session's viewport size). Response JSON: { png_base64, width, height }. Requires the session to have registered the screenshot verb; returns an error otherwise.")]
+    async fn screenshot(
+        &self,
+        Parameters(args): Parameters<RobotScreenshotArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("screenshot", app.as_deref(), body).await
     }
 
     #[tool(description = "List every running idealyst app — discovered via per-process registration files at `~/.idealyst/apps/<name>-<pid>.json` that the running app's Robot bridge writes on bind. Each entry includes name, bundle_id, project_root, bridge_addr, and pid. Entries are removed automatically when the app exits (RAII cleanup on graceful shutdown; stale ones get pruned at scan time when `kill(pid, 0)` reports the process is gone).")]

@@ -99,8 +99,18 @@ pub(crate) fn update_stroke(node: &GlobalRef, progress: f32) {
         if let Ok(d) = drawable {
             // Set level (0–10000) to represent stroke progress.
             // ShapeDrawable/custom drawables can use this.
+            //
+            // NB: `Drawable.setLevel(int)` returns `boolean` (true if
+            // the level change altered the drawable's appearance) —
+            // its JNI signature is `(I)Z`, NOT `(I)V`. Using `(I)V`
+            // makes `GetMethodID` fail to resolve and raises a
+            // pending `NoSuchMethodError` that aborts the ART runtime
+            // shortly after — visible as a SIGABRT during the
+            // sidebar build path's icon stroke animator startup. The
+            // returned bool is ignored (Android re-draws on level
+            // change regardless via the subsequent `invalidate()`).
             let level = (progress.clamp(0.0, 1.0) * 10000.0) as i32;
-            let _ = env.call_method(&d, "setLevel", "(I)V", &[JValue::Int(level)]);
+            let _ = env.call_method(&d, "setLevel", "(I)Z", &[JValue::Int(level)]);
             let _ = env.call_method(node.as_obj(), "invalidate", "()V", &[]);
         }
     });

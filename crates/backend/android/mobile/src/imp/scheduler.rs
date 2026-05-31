@@ -393,14 +393,16 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustScheduledRunnable_nat
     if let Some(f) = cb {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f()));
         if let Err(payload) = result {
-            // Surface the panic — without this it disappears into
-            // the JNI return and we never see why a scheduled
-            // callback misbehaved.
+            // Log first so the message hits logcat, then abort. JNI
+            // boundary makes a Rust unwind UB; project policy is
+            // crash-loud so we never keep running on the partially-
+            // invariant state that produced the panic.
             log::error!(
                 "scheduled callback (id={}) panicked: {}",
                 id,
                 panic_message(&payload),
             );
+            std::process::abort();
         }
     }
 }
