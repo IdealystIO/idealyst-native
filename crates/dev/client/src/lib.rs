@@ -880,6 +880,7 @@ where
                 // it visible.
                 let mut outlet = state.outlet.clone();
                 self.backend.borrow_mut().insert(&mut outlet, screen_node);
+                state.screen_stack.borrow_mut().push(screen);
                 state.mounted_urls.borrow_mut().push(url);
                 *state.replay_pos.borrow_mut() = state.mounted_urls.borrow().len();
             }
@@ -938,13 +939,32 @@ where
                 )?;
             }
             Command::NavigatorPop { navigator, count } => {
-                // Pop dispatch is stubbed pending the wire-protocol
-                // redesign for SDK-driven navigators. The legacy
-                // `NavigatorControl.dispatch(NavCommand::Pop)` path
-                // no longer carries the framework's callback layer
-                // that used to surface the pop to the underlying
-                // backend.
-                let _ = (navigator, count);
+                // Pop `count` frames off the tracked screen stack and
+                // re-show the new top in the outlet. Popped screen nodes
+                // stay in `self.nodes` (just detached) — the dev side
+                // releases their scopes via the recorder.
+                let state = self
+                    .navigators
+                    .get(&navigator)
+                    .cloned()
+                    .ok_or(ReplayError::UnknownNode(navigator))?;
+                let top = {
+                    let mut st = state.screen_stack.borrow_mut();
+                    for _ in 0..count {
+                        if st.len() <= 1 {
+                            break;
+                        }
+                        st.pop();
+                    }
+                    st.last().copied()
+                };
+                if let Some(top) = top {
+                    let top_node = self.lookup_node(top)?;
+                    let mut outlet = state.outlet.clone();
+                    let mut backend = self.backend.borrow_mut();
+                    backend.clear_children(&outlet);
+                    backend.insert(&mut outlet, top_node);
+                }
             }
             Command::NavigatorMountTab {
                 navigator,
@@ -1246,6 +1266,7 @@ where
             // into the nav node for now so the active screen renders.
             outlet: nav_node.clone(),
             sidebar_slot: None,
+            screen_stack: Rc::new(RefCell::new(Vec::new())),
             control,
             pending_mount: Rc::new(RefCell::new(None)),
             suppress_release: Rc::new(RefCell::new(false)),
@@ -1290,6 +1311,7 @@ where
             // Tab reconstruction is Phase 7; mount into the nav node.
             outlet: nav_node.clone(),
             sidebar_slot: None,
+            screen_stack: Rc::new(RefCell::new(Vec::new())),
             control,
             pending_mount: Rc::new(RefCell::new(None)),
             suppress_release: Rc::new(RefCell::new(false)),
@@ -1345,6 +1367,7 @@ where
             node: container.clone(),
             outlet,
             sidebar_slot: Some(sidebar),
+            screen_stack: Rc::new(RefCell::new(Vec::new())),
             control,
             pending_mount: Rc::new(RefCell::new(None)),
             suppress_release: Rc::new(RefCell::new(false)),
@@ -1465,21 +1488,41 @@ where
         let _ = (scope, &options);
         let screen_node = self.lookup_node(screen)?;
 
+        // Every push-like op makes `screen` the single visible child of
+        // the outlet (the client renders the top-of-stack screen). The
+        // difference is what each does to the tracked screen stack, which
+        // is what lets `NavigatorPop` re-show the prior screen.
+        {
+            let mut outlet = state.outlet.clone();
+            let mut backend = self.backend.borrow_mut();
+            backend.clear_children(&outlet);
+            backend.insert(&mut outlet, screen_node);
+        }
         match op {
-            NavOp::Push | NavOp::Replace | NavOp::Reset => {
-                // Full stack reconstruction (a real stack of mounted
-                // screens with push/pop animation) is Phase 7. Keep the
-                // bookkeeping deterministic for now.
+            NavOp::Push => {
+                state.screen_stack.borrow_mut().push(screen);
+                state.mounted_urls.borrow_mut().push(url);
+                *state.replay_pos.borrow_mut() = state.mounted_urls.borrow().len();
+            }
+            NavOp::Replace => {
+                // Swap the top frame.
+                let mut st = state.screen_stack.borrow_mut();
+                st.pop();
+                st.push(screen);
+            }
+            NavOp::Reset => {
+                let mut st = state.screen_stack.borrow_mut();
+                st.clear();
+                st.push(screen);
                 state.mounted_urls.borrow_mut().push(url);
                 *state.replay_pos.borrow_mut() = state.mounted_urls.borrow().len();
             }
             NavOp::Select => {
-                // Drawer/tab single-slot swap: replace the outlet's
-                // child with the newly-mounted screen subtree.
-                let mut outlet = state.outlet.clone();
-                let mut backend = self.backend.borrow_mut();
-                backend.clear_children(&outlet);
-                backend.insert(&mut outlet, screen_node);
+                // Drawer/tab single-slot swap: the stack is always one
+                // entry (the selected screen).
+                let mut st = state.screen_stack.borrow_mut();
+                st.clear();
+                st.push(screen);
             }
         }
         Ok(())

@@ -63,3 +63,4 @@ serde_json = "1"
 # client reconstructs sidebar + screen. `runtime-server` pulls the
 # recording handler (which itself deps dev-server — already in graph).
 drawer-navigator = { workspace = true, features = ["runtime-server"] }
+stack-navigator = { workspace = true, features = ["runtime-server"] }

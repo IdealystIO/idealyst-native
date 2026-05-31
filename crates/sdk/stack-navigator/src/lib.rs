@@ -453,6 +453,15 @@ pub use web::register;
 // wanted (the SSR backend today) via `stack_navigator::chrome::register`.
 pub mod chrome;
 
+// Recording handler for the runtime-server sidecar's recorder backend.
+// Emits navigator wire commands (CreateNavigator / NavigatorAttachInitial
+// / NavigatorPush / NavigatorPop / NavigatorReplace / NavigatorReset)
+// instead of rendering, so a stack-navigator app works under
+// `idealyst dev` (runtime-server) and can be headless-screenshotted.
+// Host-side only — gated behind the `runtime-server` feature.
+#[cfg(feature = "runtime-server")]
+pub mod recording;
+
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 mod android;
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]

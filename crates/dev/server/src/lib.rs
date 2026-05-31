@@ -991,6 +991,100 @@ impl NavRecorder {
             state.emit(cmd);
         });
     }
+
+    // ----- Stack navigator -------------------------------------------------
+
+    /// Emit `CreateNavigator` (the plain/stack navigator), minting an
+    /// identity-deduped node. Same once-at-`init`-under-the-nav-identity
+    /// contract as [`create_drawer_navigator`](Self::create_drawer_navigator).
+    pub fn create_stack_navigator(
+        &self,
+        initial_route: &str,
+        initial_path: &str,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> NodeId {
+        self.with_state(|state| {
+            let id = WireRecordingBackend::mint_node(state);
+            let wire_a11y = state.wire_a11y(a11y);
+            state.emit(Command::CreateNavigator {
+                id,
+                initial_route: initial_route.to_string(),
+                initial_path: initial_path.to_string(),
+                a11y: wire_a11y,
+            });
+            id
+        })
+        .unwrap_or(NodeId(0))
+    }
+
+    /// Emit `NavigatorPush` — `screen` is the root of the already-recorded
+    /// pushed-screen primitive subtree.
+    pub fn push(
+        &self,
+        navigator: NodeId,
+        screen: NodeId,
+        scope: ScopeId,
+        options: WireScreenOptions,
+        url: String,
+    ) {
+        self.with_state(|s| {
+            s.emit(Command::NavigatorPush {
+                navigator,
+                screen,
+                scope,
+                options,
+                url,
+                restore: false,
+            })
+        });
+    }
+
+    /// Emit `NavigatorPop { count }`.
+    pub fn pop(&self, navigator: NodeId, count: u32) {
+        self.with_state(|s| s.emit(Command::NavigatorPop { navigator, count }));
+    }
+
+    /// Emit `NavigatorReplace` — pop the top frame, push the new screen.
+    pub fn replace(
+        &self,
+        navigator: NodeId,
+        screen: NodeId,
+        scope: ScopeId,
+        options: WireScreenOptions,
+        url: String,
+    ) {
+        self.with_state(|s| {
+            s.emit(Command::NavigatorReplace {
+                navigator,
+                screen,
+                scope,
+                options,
+                url,
+                restore: false,
+            })
+        });
+    }
+
+    /// Emit `NavigatorReset` — drop the whole stack, mount a new root.
+    pub fn reset(
+        &self,
+        navigator: NodeId,
+        screen: NodeId,
+        scope: ScopeId,
+        options: WireScreenOptions,
+        url: String,
+    ) {
+        self.with_state(|s| {
+            s.emit(Command::NavigatorReset {
+                navigator,
+                screen,
+                scope,
+                options,
+                url,
+                restore: false,
+            })
+        });
+    }
 }
 
 impl Default for WireRecordingBackend {
@@ -2175,14 +2269,17 @@ impl WireRecordingBackend {
     }
 
     /// Handle an `AppToDev::ScreenReleased { scope }` event from the
-    /// client (native back gesture, `unmount_on_blur`).
+    /// client.
     ///
-    /// No-op for the drawer kind: a drawer owns a single visible screen
-    /// and the dev-side dispatcher already drives `release_screen` on
-    /// `Select`, so the client never originates a release the dev side
-    /// didn't initiate. This activates with the **stack** recording
-    /// handler (Phase 7), where a client-side pop *does* release a screen
-    /// the dev side must drop. Returns whether the event was consumed.
+    /// No-op by design in the recorder model: the dev side owns screen
+    /// lifecycle. Every navigator recording handler's dispatcher drives
+    /// `release_screen` itself (drawer on `Select`; stack on
+    /// `Pop`/`Replace`/`Reset`), and the thin client reconstructs
+    /// navigators as primitive layouts that never originate their own
+    /// releases — a native back gesture round-trips as a `Pop` dispatch
+    /// the dev side then services. The variant stays in the protocol for
+    /// completeness (a future client that hosts a real native navigator
+    /// could use it). Returns whether the event was consumed.
     pub fn handle_screen_released(&self, _scope: u64) -> bool {
         false
     }

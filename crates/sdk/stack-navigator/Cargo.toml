@@ -15,8 +15,20 @@ license.workspace = true
 # &mut backend)` once; the registration installs the per-target handler
 # factory into the backend's NavigatorRegistry.
 
+[features]
+# Recording handler for the runtime-server sidecar's recorder backend
+# (`dev-server::WireRecordingBackend`). Host-side only; off by default.
+# See `drawer-navigator`'s identical feature for rationale.
+runtime-server = ["dep:dev-server", "dep:wire"]
+
 [dependencies]
 runtime-core = { workspace = true }
+
+# Recording handler deps (feature `runtime-server`, host-side only):
+# emit navigator wire commands instead of rendering. Off by default so a
+# device/web/SSR build never pulls them.
+dev-server = { workspace = true, optional = true }
+wire = { workspace = true, optional = true }
 
 # `backend-ssr` is only needed by the SSR integration tests/examples (to
 # register the generic `chrome` handler on a concrete SsrBackend). The

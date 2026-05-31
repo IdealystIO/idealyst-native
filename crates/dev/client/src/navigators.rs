@@ -43,6 +43,11 @@ pub struct NavigatorAppState<N: Clone + 'static> {
     pub outlet: N,
     /// The drawer's persistent sidebar column. `None` for stack/tab.
     pub sidebar_slot: Option<N>,
+    /// Screen nodes currently mounted, top of stack = last. The outlet
+    /// shows the top. A stack navigator pushes/pops this; drawer/tab
+    /// keep a single entry (the selected screen). Pop re-shows the new
+    /// top — the popped node still lives in `nodes`, just detached.
+    pub screen_stack: Rc<RefCell<Vec<NodeId>>>,
     pub control: Rc<NavigatorControl>,
     pub pending_mount: Rc<RefCell<Option<MountResult<N>>>>,
     pub suppress_release: Rc<RefCell<bool>>,
