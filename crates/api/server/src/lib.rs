@@ -51,7 +51,7 @@ pub use server_macros::server;
 // =============================================================================
 
 mod extract;
-pub use extract::{Extension, Headers, State};
+pub use extract::{Auth, Cookies, Extension, Headers, State};
 
 // =============================================================================
 // Client-only surface: configuration + the `call()` the macro emits.
@@ -75,11 +75,15 @@ pub use client::{configure, ClientConfig};
 #[cfg(feature = "server")]
 mod extractors;
 #[cfg(feature = "server")]
+mod middleware;
+#[cfg(feature = "server")]
 mod runtime;
 #[cfg(feature = "server")]
 pub use extract::{Context, ContextBuilder, FromContext};
 #[cfg(feature = "server")]
 pub use extractors::{install_state, use_request_header, use_request_headers, use_state};
+#[cfg(feature = "server")]
+pub use middleware::{from_fn, install_middleware, FnMiddleware, Middleware, MiddlewareFuture};
 #[cfg(feature = "server")]
 pub use runtime::{router, serve};
 

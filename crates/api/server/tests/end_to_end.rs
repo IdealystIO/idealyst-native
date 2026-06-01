@@ -137,7 +137,7 @@ pub async fn reserve_stock(qty: u32) -> Result<u32, ServerError<StockError>> {
 // -----------------------------------------------------------------------------
 
 #[cfg(feature = "server")]
-use server::{Headers, State};
+use server::{Auth, Cookies, Headers, State};
 
 #[cfg(feature = "server")]
 #[derive(Debug, Clone)]
@@ -226,6 +226,30 @@ mod custom_extractor {
     ) -> Result<String, ServerError> {
         Ok(format!("{}:{}", label, rid.0))
     }
+}
+
+// -----------------------------------------------------------------------------
+// Middleware / Auth / Cookies fixtures (Phase 2).
+// -----------------------------------------------------------------------------
+
+#[cfg(feature = "server")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Principal {
+    pub id: u64,
+    pub name: String,
+}
+
+/// `Auth<Principal>` reads a principal an auth guard (middleware) put
+/// into the context. Only a ctx param → client stub is `secure_whoami()`.
+#[server]
+pub async fn secure_whoami(user: Auth<Principal>) -> Result<String, ServerError> {
+    Ok(format!("{}#{}", user.name, user.id))
+}
+
+/// `Cookies` parses the request `Cookie` header; always resolves.
+#[server]
+pub async fn current_theme(cookies: Cookies) -> Result<String, ServerError> {
+    Ok(cookies.get("theme").unwrap_or("light").to_string())
 }
 
 // =============================================================================
@@ -634,6 +658,90 @@ mod server_side {
             .await
             .unwrap();
         assert_eq!(response.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn regression_auth_guard_injects_principal_and_rejects() {
+        // A path-scoped guard: only enforces on `secure_whoami`, so the
+        // other server-mode tests' endpoints (which share this global
+        // middleware chain) pass straight through.
+        server::install_middleware(server::from_fn(|ctx| {
+            Box::pin(async move {
+                if ctx.path() != "secure_whoami" {
+                    return Ok(());
+                }
+                // Own the token before mutating ctx, so the header borrow
+                // is released before `ctx.insert`.
+                let token = ctx
+                    .headers()
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                match token.as_deref() {
+                    Some("Bearer good") => {
+                        ctx.insert(Principal {
+                            id: 42,
+                            name: "alice".to_string(),
+                        });
+                        Ok(())
+                    }
+                    _ => Err(server::TransportError::Server {
+                        status: 401,
+                        message: "unauthorized".into(),
+                    }),
+                }
+            })
+        }));
+
+        let addr = boot().await;
+        let client = net::Client::new();
+
+        // Authenticated → guard injects the principal, handler reads it.
+        let response = client
+            .post(format!("http://{addr}/_srv/secure_whoami"))
+            .body(net::Json(&()))
+            .header("authorization", "Bearer good")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let result: Result<String, ServerError> = response.json().await.unwrap();
+        assert_eq!(result, Ok("alice#42".to_string()));
+
+        // Unauthenticated → guard short-circuits 401; handler never runs.
+        let response = client
+            .post(format!("http://{addr}/_srv/secure_whoami"))
+            .body(net::Json(&()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn regression_cookies_extractor_reads_request_cookie() {
+        let addr = boot().await;
+        let client = net::Client::new();
+        let response = client
+            .post(format!("http://{addr}/_srv/current_theme"))
+            .body(net::Json(&()))
+            .header("cookie", "theme=dark; session=xyz")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let result: Result<String, ServerError> = response.json().await.unwrap();
+        assert_eq!(result, Ok("dark".to_string()));
+
+        // No cookie → handler's default.
+        let response = client
+            .post(format!("http://{addr}/_srv/current_theme"))
+            .body(net::Json(&()))
+            .send()
+            .await
+            .unwrap();
+        let result: Result<String, ServerError> = response.json().await.unwrap();
+        assert_eq!(result, Ok("light".to_string()));
     }
 }
 

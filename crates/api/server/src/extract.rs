@@ -1,6 +1,6 @@
 //! Extractor parameters: the keystone that lets a `#[server]` function
 //! declare injected server-side dependencies (app state, request
-//! headers, middleware-set context values) as *parameters* instead of
+//! headers, cookies, middleware-set values) as *parameters* instead of
 //! fetching them ad-hoc inside the body.
 //!
 //! ```ignore
@@ -8,42 +8,36 @@
 //! async fn create_todo(
 //!     input: CreateTodo,      // wire arg — serialized, present in the client stub
 //!     db: State<Db>,          // injected server-side, absent from the client stub
-//!     headers: Headers,       // injected server-side
+//!     user: Auth<Principal>,  // injected by an auth guard (middleware)
 //! ) -> Result<Todo, ServerError<E>> { ... }
 //! ```
 //!
 //! The macro classifies each parameter (see `server-macros`): a
 //! parameter is an **injected extractor** if it is annotated `#[ctx]`
 //! *or* its type is one of the reserved wrapper names (`State`,
-//! `Headers`, `Extension`); otherwise it is a **wire arg**. Injected
-//! params are resolved on the server via [`FromContext`] and stripped
-//! from the client stub's signature.
+//! `Headers`, `Extension`, `Auth`, `Cookies`); otherwise it is a **wire
+//! arg**. Injected params are resolved on the server via [`FromContext`]
+//! and stripped from the client stub's signature.
 //!
 //! # Build split
 //!
-//! The wrapper *types* ([`State`], [`Extension`], [`Headers`]) exist on
-//! both client and server builds, because they appear in the author's
-//! shared function signature. Their resolution machinery ([`Context`],
-//! [`FromContext`]) is server-only — the client stub never resolves
-//! anything; it just omits these params. Authors should import the
-//! wrappers under `#[cfg(feature = "server")]` (the body that uses them
-//! is server-only anyway), which also avoids an unused-import warning on
+//! The wrapper *types* exist on both builds (they appear in the author's
+//! shared signature). Their resolution machinery ([`Context`],
+//! [`FromContext`]) is server-only. Authors should import the wrappers
+//! under `#[cfg(feature = "server")]` (the body that uses them is
+//! server-only anyway), which also avoids unused-import warnings on
 //! client builds.
 
 use std::ops::Deref;
 
 // ---------------------------------------------------------------------------
-// Wrapper types — present on BOTH builds (they appear in the author's
-// shared `#[server]` fn signature). Only their `FromContext` impls are
-// server-only.
+// Wrapper types — present on BOTH builds. Only their `FromContext` impls
+// are server-only.
 // ---------------------------------------------------------------------------
 
 /// App-level state injected from the process-wide registry populated by
-/// [`crate::install_state`]. Derefs to the inner `T`.
-///
-/// Resolution fails (HTTP 500) if no value of type `T` was installed —
-/// a server-misconfiguration, surfaced to the client as
-/// `ServerError::Server { status: 500, .. }`.
+/// [`crate::install_state`]. Derefs to the inner `T`. Missing → HTTP 500
+/// (server misconfiguration).
 pub struct State<T>(pub T);
 
 impl<T> Deref for State<T> {
@@ -53,11 +47,9 @@ impl<T> Deref for State<T> {
     }
 }
 
-/// A value placed into the per-request [`Context`] by middleware (e.g.
-/// an authenticated principal set by an auth guard). Derefs to `T`.
-///
-/// Resolution fails (HTTP 500) if no value of type `T` is present — the
-/// middleware that should have inserted it didn't run.
+/// A value placed into the per-request [`Context`] by middleware. Derefs
+/// to `T`. Missing → HTTP 500 (the middleware that should have inserted
+/// it didn't run).
 pub struct Extension<T>(pub T);
 
 impl<T> Deref for Extension<T> {
@@ -67,10 +59,33 @@ impl<T> Deref for Extension<T> {
     }
 }
 
-/// The incoming request's HTTP headers.
-///
-/// On client builds this is a placeholder (it is never constructed —
-/// the stub omits the param); on server builds it carries the real
+/// An authenticated principal placed into the [`Context`] by an auth
+/// guard (middleware). Like [`Extension`], but a missing value is HTTP
+/// **401** — the request is unauthenticated — rather than 500. Derefs to
+/// `T`.
+pub struct Auth<T>(pub T);
+
+impl<T> Deref for Auth<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+/// Parsed request cookies. Always resolves (empty when there is no
+/// `Cookie` header). Holds only `String`s, so it is portable across both
+/// builds.
+pub struct Cookies(pub std::collections::HashMap<String, String>);
+
+impl Cookies {
+    /// The value of cookie `name`, if present.
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.0.get(name).map(|s| s.as_str())
+    }
+}
+
+/// The incoming request's HTTP headers. On client builds this is a
+/// placeholder (never constructed); on server builds it carries the real
 /// [`HeaderMap`](axum::http::HeaderMap) and derefs to it.
 #[cfg(feature = "server")]
 pub struct Headers(pub std::sync::Arc<axum::http::HeaderMap>);
@@ -93,7 +108,7 @@ pub struct Headers;
 
 #[cfg(feature = "server")]
 mod server_impl {
-    use super::{Extension, Headers, State};
+    use super::{Auth, Cookies, Extension, Headers, State};
 
     use std::any::{Any, TypeId};
     use std::collections::HashMap;
@@ -104,34 +119,37 @@ mod server_impl {
 
     use crate::error::TransportError;
 
-    /// Per-request context handed to every [`FromContext`] resolver.
+    /// Per-request context handed to every [`FromContext`] resolver and
+    /// to middleware.
     ///
-    /// Holds the request headers plus a typed extension map (an
-    /// `anymap` keyed by `TypeId`). Middleware writes into the map via
-    /// [`ContextBuilder`]; extractors read from it. Cheap to clone — the
-    /// headers and the map are both `Arc`-shared — which the batch
-    /// dispatcher relies on to re-enter the same context per entry.
+    /// Holds the request headers, the matched wire path, and a typed
+    /// extension map (an `anymap` keyed by `TypeId`). Middleware mutates
+    /// the map via [`Context::insert`] before the handler resolves its
+    /// extractors. Cloning clones the (small) extension map plus two
+    /// `Arc`s — cheap enough for the batch dispatcher to re-enter the
+    /// same context per entry.
     #[derive(Clone)]
     pub struct Context {
         headers: Arc<HeaderMap>,
-        extensions: Arc<HashMap<TypeId, Box<dyn Any + Send + Sync>>>,
+        path: Arc<str>,
+        extensions: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     }
 
     impl Context {
-        /// Build a context from request headers with an empty extension
-        /// map. The single/batch dispatchers use this; middleware that
-        /// needs to seed extensions uses [`ContextBuilder`].
-        pub fn new(headers: Arc<HeaderMap>) -> Self {
+        /// Build a context from request headers + the matched path, with
+        /// an empty extension map.
+        pub fn new(headers: Arc<HeaderMap>, path: impl Into<Arc<str>>) -> Self {
             Self {
                 headers,
-                extensions: Arc::new(HashMap::new()),
+                path: path.into(),
+                extensions: HashMap::new(),
             }
         }
 
-        /// An empty context (no headers, no extensions). Returned by
-        /// `current_context()` when called outside a request scope.
+        /// An empty context. Returned by `current_context()` when called
+        /// outside a request scope.
         pub fn empty() -> Self {
-            Self::new(Arc::new(HeaderMap::new()))
+            Self::new(Arc::new(HeaderMap::new()), "")
         }
 
         /// The request's headers.
@@ -139,14 +157,25 @@ mod server_impl {
             &self.headers
         }
 
-        /// Shared handle to the headers (used by the legacy
-        /// `use_request_headers` accessor).
+        /// The matched wire path (e.g. `"todos::list"`). Lets middleware
+        /// scope itself to particular endpoints.
+        pub fn path(&self) -> &str {
+            &self.path
+        }
+
         pub(crate) fn headers_arc(&self) -> Arc<HeaderMap> {
             self.headers.clone()
         }
 
-        /// Read a cloned `T` out of the extension map, or `None` if no
-        /// value of that type was inserted.
+        /// Insert a value into the extension map, keyed by its type. The
+        /// primary tool for middleware: an auth guard validates the
+        /// request and `ctx.insert(principal)`, which a downstream
+        /// `Auth<Principal>` / `Extension<Principal>` extractor reads.
+        pub fn insert<T: Send + Sync + 'static>(&mut self, value: T) {
+            self.extensions.insert(TypeId::of::<T>(), Arc::new(value));
+        }
+
+        /// Read a cloned `T` out of the extension map.
         pub fn get<T: Clone + 'static>(&self) -> Option<T> {
             self.extensions
                 .get(&TypeId::of::<T>())?
@@ -155,12 +184,13 @@ mod server_impl {
         }
     }
 
-    /// Builder for a [`Context`]. Middleware and tests use it to seed
-    /// headers and extension values before dispatch.
+    /// Builder for a [`Context`]. Tests use it to seed headers and
+    /// extension values without a running server.
     #[derive(Default)]
     pub struct ContextBuilder {
         headers: HeaderMap,
-        extensions: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
+        path: String,
+        extensions: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     }
 
     impl ContextBuilder {
@@ -168,7 +198,11 @@ mod server_impl {
             Self::default()
         }
 
-        /// Replace the whole header map.
+        pub fn path(mut self, path: impl Into<String>) -> Self {
+            self.path = path.into();
+            self
+        }
+
         pub fn headers(mut self, headers: HeaderMap) -> Self {
             self.headers = headers;
             self
@@ -186,33 +220,30 @@ mod server_impl {
             self
         }
 
-        /// Insert an extension value, keyed by its type. A later insert
-        /// of the same type replaces the earlier one.
         pub fn extension<T: Send + Sync + 'static>(mut self, value: T) -> Self {
-            self.extensions.insert(TypeId::of::<T>(), Box::new(value));
+            self.extensions.insert(TypeId::of::<T>(), Arc::new(value));
             self
         }
 
         pub fn build(self) -> Context {
             Context {
                 headers: Arc::new(self.headers),
-                extensions: Arc::new(self.extensions),
+                path: self.path.into(),
+                extensions: self.extensions,
             }
         }
     }
 
     /// Resolve `Self` from the per-request [`Context`].
     ///
-    /// Implemented by every injected extractor type. The error half is a
-    /// [`TransportError`] (no domain payload): an extraction failure is
-    /// infrastructure — missing state, missing header, failed auth — and
-    /// surfaces to the client as `ServerError::Server { status, .. }`,
-    /// distinct from the body's own domain `Failed`.
-    ///
-    /// The returned future is `Send` so the boxed handler future stays
-    /// `Send`. Resolvers that touch the borrowed `ctx` should do so
-    /// synchronously and move owned data into the async block (see the
-    /// built-in impls) to avoid borrowing `ctx` across the await.
+    /// The error half is a [`TransportError`] (no domain payload): an
+    /// extraction failure is infrastructure — missing state, missing
+    /// header, unauthenticated — and surfaces to the client as
+    /// `ServerError::Server { status, .. }`, distinct from the body's own
+    /// domain `Failed`. The returned future is `Send` so the boxed
+    /// handler future stays `Send`; resolvers touching the borrowed
+    /// `ctx` should do so synchronously and move owned data into the
+    /// async block.
     pub trait FromContext: Sized {
         fn from_context(
             ctx: &Context,
@@ -223,8 +254,6 @@ mod server_impl {
         fn from_context(
             _ctx: &Context,
         ) -> impl Future<Output = Result<Self, TransportError>> + Send {
-            // Read from the global registry synchronously; the future is
-            // immediately ready.
             let found = crate::extractors::use_state::<T>();
             async move {
                 found.map(State).ok_or_else(|| TransportError::Server {
@@ -261,6 +290,42 @@ mod server_impl {
                     ),
                 })
             }
+        }
+    }
+
+    impl<T: Clone + Send + Sync + 'static> FromContext for Auth<T> {
+        fn from_context(
+            ctx: &Context,
+        ) -> impl Future<Output = Result<Self, TransportError>> + Send {
+            let found = ctx.get::<T>();
+            async move {
+                // Missing principal = unauthenticated → 401, not 500.
+                found.map(Auth).ok_or_else(|| TransportError::Server {
+                    status: 401,
+                    message: format!(
+                        "Auth<{}>: request is not authenticated (no guard inserted a principal)",
+                        std::any::type_name::<T>()
+                    ),
+                })
+            }
+        }
+    }
+
+    impl FromContext for Cookies {
+        fn from_context(
+            ctx: &Context,
+        ) -> impl Future<Output = Result<Self, TransportError>> + Send {
+            // Parse `Cookie: a=1; b=2` synchronously; always succeeds.
+            let mut map = HashMap::new();
+            if let Some(raw) = ctx.headers.get("cookie").and_then(|v| v.to_str().ok()) {
+                for pair in raw.split(';') {
+                    let pair = pair.trim();
+                    if let Some((k, v)) = pair.split_once('=') {
+                        map.insert(k.trim().to_string(), v.trim().to_string());
+                    }
+                }
+            }
+            async move { Ok(Cookies(map)) }
         }
     }
 }
@@ -334,5 +399,33 @@ mod tests {
             panic!("missing extension must fail");
         };
         assert!(matches!(err, TransportError::Server { status: 500, .. }));
+    }
+
+    #[tokio::test]
+    async fn auth_missing_is_401() {
+        #[derive(Clone)]
+        struct User(u64);
+        let ctx = ContextBuilder::new().build();
+        let result = <Auth<User> as FromContext>::from_context(&ctx).await;
+        let Err(err) = result else {
+            panic!("missing auth must fail");
+        };
+        assert!(
+            matches!(err, TransportError::Server { status: 401, .. }),
+            "expected 401, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cookies_parse_from_header() {
+        let ctx = ContextBuilder::new()
+            .header("cookie", "session=abc; theme=dark")
+            .build();
+        let c = <Cookies as FromContext>::from_context(&ctx)
+            .await
+            .expect("cookies always resolve");
+        assert_eq!(c.get("session"), Some("abc"));
+        assert_eq!(c.get("theme"), Some("dark"));
+        assert_eq!(c.get("missing"), None);
     }
 }

@@ -79,7 +79,14 @@ async fn dispatch(headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> 
     };
 
     let body_vec = body.to_vec();
-    let ctx = Context::new(Arc::new(headers));
+    let mut ctx = Context::new(Arc::new(headers), path);
+
+    // Run the middleware chain (auth guards, etc.) before the handler.
+    // A short-circuit becomes the HTTP response; the handler never runs.
+    if let Err(e) = crate::middleware::run_middlewares(&mut ctx).await {
+        return transport_error_response(e);
+    }
+
     let result = CURRENT_CONTEXT
         .scope(ctx, (entry.handler)(body_vec))
         .await;
@@ -168,10 +175,10 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
         }
     };
 
-    // Build the request context once and re-enter it per handler.
-    // `Context` is cheap to clone (Arc-shared headers + extensions), so
-    // re-entering it for each of N batch entries is free.
-    let ctx = Context::new(Arc::new(headers));
+    // Share the headers across entries; each entry gets its own
+    // `Context` (its own matched path + a fresh extension map for
+    // middleware to populate independently).
+    let headers = Arc::new(headers);
 
     let mut results: Vec<BatchOutputEntry> = Vec::with_capacity(calls.len());
     for call in calls {
@@ -198,8 +205,16 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
             }
         };
 
+        // Run the middleware chain for this entry; a short-circuit is
+        // this slot's failure, not the whole batch's.
+        let mut ctx = Context::new(headers.clone(), call.path.clone());
+        if let Err(e) = crate::middleware::run_middlewares(&mut ctx).await {
+            results.push(BatchOutputEntry::Result(Err(e.into_domain())));
+            continue;
+        }
+
         let handler_outcome = CURRENT_CONTEXT
-            .scope(ctx.clone(), (entry.handler)(arg_bytes))
+            .scope(ctx, (entry.handler)(arg_bytes))
             .await;
         let slot = match handler_outcome {
             Ok(result_bytes) => {

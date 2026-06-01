@@ -391,7 +391,12 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
   (`impl Future + Send`), `State<T>`/`Headers`/`Extension<T>`, `#[ctx]` +
   reserved-name macro classification, extraction-failure → HTTP status. Tested
   both modes + extractor unit tests. (items 2, 7)
-- **Phase 2 — Middleware + guards.** Adds `Auth<T>`/`Cookies` named aliases. (item 4)
+- **Phase 2 — Middleware + guards. ✅ DONE.** `Middleware` trait + `from_fn` +
+  `install_middleware`; the dispatcher runs the chain (single + per batch entry)
+  before the handler, short-circuiting on error with its HTTP status. `Context`
+  gained mutable `insert` + the matched `path` (for guard scoping). Added
+  `Auth<T>` (missing → 401) and `Cookies` extractors. Tested both modes + unit
+  tests. Post-handler wrapping (timing/logging) noted as a follow-on. (item 4)
 - **Phase 3 — Identity + versioning.** module-path paths, boot-time collision
   panic, `SchemaHash` derive, negotiation, `IncompatibleVersion`, multi-version
   registration. (items 5, 6)

@@ -24,7 +24,7 @@
 //!   [`Context`] via `FromContext`, and *omitted* from the client stub.
 //!   A parameter is an extractor if it is annotated `#[ctx]` **or** its
 //!   type is one of the reserved wrapper names (`State`, `Headers`,
-//!   `Extension`).
+//!   `Extension`, `Auth`, `Cookies`).
 //!
 //! Because a proc-macro sees syntax, not resolved trait impls, the
 //! classification is syntactic: the reserved names cover the built-in
@@ -131,7 +131,10 @@ fn has_ctx_attr(attrs: &[Attribute]) -> bool {
 fn is_reserved_extractor(ty: &Type) -> bool {
     if let Type::Path(tp) = ty {
         if let Some(seg) = tp.path.segments.last() {
-            return matches!(seg.ident.to_string().as_str(), "State" | "Headers" | "Extension");
+            return matches!(
+                seg.ident.to_string().as_str(),
+                "State" | "Headers" | "Extension" | "Auth" | "Cookies"
+            );
         }
     }
     false
