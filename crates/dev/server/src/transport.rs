@@ -575,10 +575,11 @@ fn accept_new(
                         if let Some(slot) = sidecar_slot {
                             if let Ok(guard) = slot.lock() {
                                 if let Some(sidecar) = guard.as_ref() {
-                                    sidecar.send(crate::SidecarIn::CreateSession {
-                                        session: session_id.clone(),
-                                        viewport,
-                                    });
+                                    // Route through ensure_session so the
+                                    // create is recorded on this sidecar
+                                    // generation; the event-forward path
+                                    // re-sends if this raced an empty slot.
+                                    sidecar.ensure_session(&session_id, viewport);
                                 }
                             }
                         }
@@ -826,6 +827,20 @@ fn handle_app_msg(
         if let Some(slot) = sidecar_slot {
             if let Ok(guard) = slot.lock() {
                 if let Some(sidecar) = guard.as_ref() {
+                    // Lazily (re)create the session on the CURRENT
+                    // sidecar generation before forwarding. A
+                    // `CreateSession` can miss the live sidecar
+                    // (connect-before-ready, or the serve loop
+                    // outracing replay after a respawn), after which
+                    // every event for this session was dropped forever
+                    // at the sidecar's "Event for unknown session;
+                    // dropping" guard — the symptom where sidebar taps
+                    // over the wire silently did nothing. ensure_session
+                    // sends CreateSession at most once per generation
+                    // and the sidecar treats dups idempotently.
+                    let viewport =
+                        tracker.and_then(|t| t.viewport(client_session));
+                    sidecar.ensure_session(client_session, viewport);
                     sidecar.send(crate::SidecarIn::Event {
                         session: client_session.to_string(),
                         event: msg,
@@ -1065,3 +1080,73 @@ impl std::fmt::Display for TransportError {
 }
 
 impl std::error::Error for TransportError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Sidecar, SessionTracker, SidecarIn};
+    use std::sync::{Arc, Mutex};
+    use wire::{EventArgs, HandlerId};
+
+    /// Regression: an event for a session whose `CreateSession` never
+    /// reached the live sidecar (connect-before-ready, or the serve
+    /// loop outracing replay after a respawn) used to forward the
+    /// `Event` straight through — and the sidecar dropped it at its
+    /// "Event for unknown session; dropping" guard, forever. Sidebar
+    /// taps over the wire silently did nothing. `handle_app_msg` now
+    /// lazily `ensure_session`s first, so the create lands ahead of
+    /// the event and the sidecar knows the session.
+    #[test]
+    fn event_for_uncreated_session_lazily_creates_before_forwarding() {
+        let (sidecar, fake_in_rx, _fake_out_tx) = Sidecar::for_test_with_channels();
+        let slot = Arc::new(Mutex::new(Some(sidecar)));
+
+        // Host-side state exists for the session (it was accepted), but
+        // the sidecar was NEVER told about it — exactly the race.
+        let mut sessions = SessionTable::new();
+        let _ = sessions.get_or_create("ios_00000001");
+        let tracker = SessionTracker::new();
+        tracker.insert("ios_00000001");
+
+        handle_app_msg(
+            "ios_00000001",
+            AppToDev::Event { handler: HandlerId(7), args: EventArgs::Unit },
+            Some(&slot),
+            false,
+            &sessions,
+            Some(&tracker),
+        );
+
+        // The sidecar must see CreateSession FIRST, then the Event.
+        let first = fake_in_rx.try_recv().expect("a frame was forwarded");
+        assert!(
+            matches!(&first, SidecarIn::CreateSession { session, .. } if session == "ios_00000001"),
+            "expected CreateSession first, got {first:?}",
+        );
+        let second = fake_in_rx.try_recv().expect("the Event follows the create");
+        assert!(
+            matches!(&second, SidecarIn::Event { session, .. } if session == "ios_00000001"),
+            "expected Event second, got {second:?}",
+        );
+
+        // A second event for the same session must NOT re-create it:
+        // ensure_session dedups per sidecar generation.
+        handle_app_msg(
+            "ios_00000001",
+            AppToDev::Event { handler: HandlerId(8), args: EventArgs::Unit },
+            Some(&slot),
+            false,
+            &sessions,
+            Some(&tracker),
+        );
+        let only = fake_in_rx.try_recv().expect("the second event forwards");
+        assert!(
+            matches!(&only, SidecarIn::Event { .. }),
+            "second event must forward directly, got {only:?}",
+        );
+        assert!(
+            fake_in_rx.try_recv().is_err(),
+            "no extra CreateSession on an already-created session",
+        );
+    }
+}

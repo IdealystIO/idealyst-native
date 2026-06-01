@@ -47,6 +47,7 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command as ProcCommand, Stdio};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -191,6 +192,17 @@ pub struct Sidecar {
     /// hot-patch builder reads it to compute the ASLR slide for
     /// each patch. Zero until the first Hello arrives.
     aslr_reference: AtomicU64,
+    /// Session ids for which this `Sidecar` instance has already been
+    /// sent a `CreateSession`. Scopes "has the sidecar been told about
+    /// this session" to the CURRENT sidecar generation: a respawn
+    /// replaces the whole `Sidecar` (and this set resets to empty), so
+    /// `replay_sessions_to_sidecar` re-creates every live session on
+    /// the fresh process. `ensure_session` consults + populates this
+    /// so a `CreateSession` that raced the live sidecar (connect-
+    /// before-ready, or respawn) is re-sent before the session's first
+    /// event is forwarded — closing the "Event for unknown session;
+    /// dropping" black hole where dropped taps never reached the app.
+    created_sessions: Mutex<HashSet<String>>,
     reader_thread: Option<JoinHandle<()>>,
     writer_thread: Option<JoinHandle<()>>,
 }
@@ -220,6 +232,7 @@ impl Sidecar {
             outbound_tx: Some(outbound_tx),
             inbound_rx: Mutex::new(inbound_rx),
             aslr_reference: AtomicU64::new(0),
+            created_sessions: Mutex::new(HashSet::new()),
             reader_thread: Some(reader_thread),
             writer_thread: Some(writer_thread),
         })
@@ -250,6 +263,7 @@ impl Sidecar {
             outbound_tx: Some(outbound_tx),
             inbound_rx: Mutex::new(inbound_rx),
             aslr_reference: AtomicU64::new(0),
+            created_sessions: Mutex::new(HashSet::new()),
             reader_thread: None,
             writer_thread: None,
         };
@@ -278,6 +292,38 @@ impl Sidecar {
         if let Some(tx) = self.outbound_tx.as_ref() {
             let _ = tx.send(msg);
         }
+    }
+
+    /// Ensure the sidecar's CURRENT generation knows about `session`,
+    /// sending `CreateSession` exactly once per `Sidecar` instance.
+    ///
+    /// Every event-forwarding path calls this before forwarding, and
+    /// every explicit create/replay routes through it too. Without
+    /// this, a `CreateSession` that missed the live sidecar — the slot
+    /// was empty mid-spawn at connect time, or the serve loop outran
+    /// `replay_sessions_to_sidecar` after a respawn — left the session
+    /// permanently unknown to the sidecar, so every subsequent event
+    /// was dropped at the "Event for unknown session; dropping" guard
+    /// (taps over the wire silently died). Re-sending is safe: the
+    /// sidecar treats a duplicate `CreateSession` for an existing id
+    /// idempotently. A respawn builds a fresh `Sidecar` with an empty
+    /// set, so the next `ensure_session`/replay re-creates the session
+    /// on the new process generation.
+    pub fn ensure_session(&self, session: &str, viewport: Option<wire::WireViewport>) {
+        {
+            let Ok(mut created) = self.created_sessions.lock() else {
+                return;
+            };
+            // `insert` returns false when the id was already present —
+            // already created on this generation, nothing to do.
+            if !created.insert(session.to_string()) {
+                return;
+            }
+        }
+        self.send(SidecarIn::CreateSession {
+            session: session.to_string(),
+            viewport,
+        });
     }
 
 
@@ -394,6 +440,17 @@ impl SessionTracker {
         if let Ok(mut g) = self.inner.lock() {
             g.insert(id.to_string(), viewport);
         }
+    }
+
+    /// Last-known viewport for `id`, flattening "session not tracked"
+    /// and "tracked but viewport unknown" to the same `None`. Used by
+    /// the lazy `ensure_session` event-forward path so a re-sent
+    /// `CreateSession` carries the size the client last reported.
+    pub fn viewport(&self, id: &str) -> Option<wire::WireViewport> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|g| g.get(id).copied().flatten())
     }
 
     /// Snapshot of the current session set as `(id, viewport)` pairs.

@@ -380,7 +380,10 @@ fn replay_sessions_to_sidecar(slot: &SidecarSlot, tracker: &SessionTracker) {
         sessions.len(),
     );
     for (s, viewport) in sessions {
-        sidecar.send(SidecarIn::CreateSession { session: s, viewport });
+        // ensure_session records the create on this (fresh, post-
+        // respawn) sidecar generation so the event-forward path won't
+        // redundantly re-create it on every subsequent event.
+        sidecar.ensure_session(&s, viewport);
     }
 }
 
