@@ -56,6 +56,14 @@ pub struct NavigatorAppState<N: Clone + 'static> {
     pub initial_path: String,
     pub mounted_urls: Rc<RefCell<Vec<String>>>,
     pub replay_pos: Rc<RefCell<usize>>,
+    /// `true` when this navigator was reconstructed by driving the
+    /// client's REAL backend `create_navigator` (the registered SDK
+    /// handler builds native chrome). In that mode `sidebar_slot` is a
+    /// holder the handler mounts and the wire sidebar inserts into, and
+    /// the initial screen is attached via `Backend::navigator_attach_initial`
+    /// rather than inserted into a dev-client-managed outlet. `false` =
+    /// the structural-reconstruction fallback (no factory registered).
+    pub native: bool,
 }
 
 /// Box<dyn Any> placeholder for unused params slots.

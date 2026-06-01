@@ -346,7 +346,7 @@ pub fn protocol_mismatch(server_version: u32) -> bool {
 
 /// Decide what to do with one inbound `DevToApp` message. Split out
 /// of [`RuntimeServerShell::drain`] so per-message handling stays trivial.
-fn apply_dev_msg<B: Backend>(client: &mut RuntimeServerClient<B>, msg: DevToApp) {
+fn apply_dev_msg<B: Backend + 'static>(client: &mut RuntimeServerClient<B>, msg: DevToApp) {
     match msg {
         DevToApp::Hello { session, protocol_version, .. } => {
             // A protocol mismatch means the commands that follow may

@@ -1490,6 +1490,92 @@ pub enum WireViewportPlacement {
     FullScreen,
 }
 
+pub use nav_registry::{
+    build_drawer_presentation, register_drawer_factory, WireDrawerConfig, WireNavBuild,
+};
+
+/// Client-side navigator presentation-factory registry.
+///
+/// Native chrome (UIKit slide-over, the web `ui-nav-drawer-*` CSS
+/// structure, …) is built by each navigator SDK's per-backend
+/// `NavigatorHandler`, which only runs when the app's `app()` runs
+/// on-device (`--local`). Under runtime-server mode the device is a
+/// passive wire replayer, so `dev-client` must drive the client's REAL
+/// backend `create_navigator` for that handler to run and produce real
+/// chrome.
+///
+/// `dev-client` is SDK-agnostic — it cannot construct an SDK's
+/// presentation type (e.g. drawer-navigator's `DrawerPresentation`). So
+/// each SDK registers a factory here at client startup (from its
+/// `register(&mut backend)` fn); `dev-client` looks the factory up by
+/// nav kind, calls it with the wire config, and hands the resulting
+/// presentation to `Backend::create_navigator`. This is the ONE
+/// SDK-specific seam in the otherwise-generic replay engine.
+///
+/// Lives in `wire` (not `runtime-core`) to keep core minimal — it is a
+/// dev/replay concern, which is exactly wire's role. The registry holds
+/// runtime closures, so it is the one part of this crate that is not
+/// "pure data"; it is fenced into this submodule to keep the protocol
+/// types clean.
+mod nav_registry {
+    use super::{WireDrawerSide, WireDrawerType, WireMountPolicy};
+    use std::any::{Any, TypeId};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// The serializable subset of `DrawerPresentation` that crosses the
+    /// wire in `Command::CreateDrawerNavigator`. Handed to the
+    /// registered factory to rebuild the real presentation client-side.
+    #[derive(Debug, Clone, Copy)]
+    pub struct WireDrawerConfig {
+        pub side: WireDrawerSide,
+        pub drawer_type: WireDrawerType,
+        pub drawer_width: f32,
+        pub swipe_to_open: bool,
+        pub mount_policy: WireMountPolicy,
+    }
+
+    /// An SDK-built navigator presentation plus its dispatch identity.
+    /// `type_id` / `type_name` are what `Backend::create_navigator` uses
+    /// to route to the registered `NavigatorHandler`; `presentation` is
+    /// the boxed SDK presentation that handler downcasts.
+    pub struct WireNavBuild {
+        pub type_id: TypeId,
+        pub type_name: &'static str,
+        pub presentation: Rc<dyn Any>,
+    }
+
+    impl std::fmt::Debug for WireNavBuild {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("WireNavBuild")
+                .field("type_name", &self.type_name)
+                .finish_non_exhaustive()
+        }
+    }
+
+    type DrawerFactory = Rc<dyn Fn(WireDrawerConfig) -> WireNavBuild>;
+
+    thread_local! {
+        static DRAWER_FACTORY: RefCell<Option<DrawerFactory>> = RefCell::new(None);
+    }
+
+    /// Register the client-side factory that builds a drawer
+    /// presentation from wire config. Called by
+    /// `drawer_navigator::register(&mut backend)` on the wire client
+    /// (web / iOS / Android). Idempotent — last write wins.
+    pub fn register_drawer_factory(f: impl Fn(WireDrawerConfig) -> WireNavBuild + 'static) {
+        DRAWER_FACTORY.with(|c| *c.borrow_mut() = Some(Rc::new(f)));
+    }
+
+    /// Look up + invoke the registered drawer factory. Returns `None`
+    /// when no SDK registered one (an app without the drawer SDK, or a
+    /// headless backend with no native chrome) — the caller falls back
+    /// to structural reconstruction.
+    pub fn build_drawer_presentation(cfg: WireDrawerConfig) -> Option<WireNavBuild> {
+        DRAWER_FACTORY.with(|c| c.borrow().as_ref().map(|f| f(cfg)))
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum WireElementSide {
     Above,
@@ -1863,6 +1949,32 @@ mod tests {
         let t = Command::UnregisterTypeface { id: TypefaceId(2) };
         let _: Command = codec::decode(&codec::encode(&a).unwrap()).unwrap();
         let _: Command = codec::decode(&codec::encode(&t).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn drawer_factory_register_and_build() {
+        struct DummyPresentation;
+        register_drawer_factory(|cfg| {
+            // Config crosses through verbatim.
+            assert_eq!(cfg.drawer_width, 280.0);
+            assert!(cfg.swipe_to_open);
+            WireNavBuild {
+                type_id: std::any::TypeId::of::<DummyPresentation>(),
+                type_name: "DummyPresentation",
+                presentation: std::rc::Rc::new(DummyPresentation),
+            }
+        });
+        let cfg = WireDrawerConfig {
+            side: WireDrawerSide::Left,
+            drawer_type: WireDrawerType::Front,
+            drawer_width: 280.0,
+            swipe_to_open: true,
+            mount_policy: WireMountPolicy::EagerPersistent,
+        };
+        let build = build_drawer_presentation(cfg).expect("factory registered");
+        assert_eq!(build.type_name, "DummyPresentation");
+        assert_eq!(build.type_id, std::any::TypeId::of::<DummyPresentation>());
+        assert!(build.presentation.downcast::<DummyPresentation>().is_ok());
     }
 }
 

@@ -198,7 +198,7 @@ where
     attached_states: std::collections::HashSet<NodeId>,
 }
 
-impl<B: Backend> WireBackend<B>
+impl<B: Backend + 'static> WireBackend<B>
 where
     B::Node: 'static,
 {
@@ -872,6 +872,23 @@ where
                     }
                 }
                 let screen_node = self.lookup_node(screen)?;
+                if state.native {
+                    // Native path: hand the pre-built screen to the
+                    // registered handler, which mounts it into its own
+                    // native body outlet (e.g.
+                    // `web_navigator_helpers::attach_initial`). The
+                    // handler ignores the structural `state.outlet`.
+                    self.backend.borrow_mut().navigator_attach_initial(
+                        &state.node,
+                        screen_node,
+                        scope.0,
+                        Box::new(()),
+                    );
+                    state.screen_stack.borrow_mut().push(screen);
+                    state.mounted_urls.borrow_mut().push(url);
+                    *state.replay_pos.borrow_mut() = state.mounted_urls.borrow().len();
+                    return Ok(());
+                }
                 let _opts = convert::wire_screen_options(&options, |id| self.handler_unit(id));
                 let _ = scope;
                 // Mount the initial screen subtree into the navigator's
@@ -1275,6 +1292,7 @@ where
             initial_path,
             mounted_urls,
             replay_pos,
+            native: false,
         });
 
         self.nodes.insert(id, nav_node);
@@ -1324,6 +1342,7 @@ where
             initial_path,
             mounted_urls,
             replay_pos,
+            native: false,
         });
 
         self.nodes.insert(id, container);
@@ -1401,6 +1420,31 @@ where
             return;
         }
 
+        let a11y_props = self.a11y_props(a11y);
+
+        // Native path: if an SDK registered a drawer factory on this
+        // client backend (via `register_extensions` → e.g.
+        // `drawer_navigator::register`), drive the client's REAL
+        // `create_navigator` so the registered handler builds native
+        // chrome (UIKit slide-over, web `ui-nav-drawer-*` CSS, …). The
+        // factory rebuilds the SDK's `DrawerPresentation` from the wire
+        // config; everything else (the generic `NavigatorHost`, the
+        // sidebar holder, command routing) lives here. Falls back to
+        // structural reconstruction below when no factory is registered
+        // (headless backends, apps without the SDK, the mock-backend
+        // tests).
+        let cfg = wire::WireDrawerConfig {
+            side,
+            drawer_type,
+            drawer_width,
+            swipe_to_open,
+            mount_policy,
+        };
+        if let Some(build) = wire::build_drawer_presentation(cfg) {
+            self.create_drawer_navigator_native(id, build, initial_path, &a11y_props);
+            return;
+        }
+
         // `drawer_type` / `swipe_to_open` / `mount_policy` describe the
         // *modal* slide-in behavior of the real per-platform drawer. The
         // wire client reconstructs a **persistent sidebar + outlet**
@@ -1411,7 +1455,6 @@ where
         // navigation — and it matches rule #7 (backends converge in
         // observable behavior; the dev client is one such backend).
         let _ = (initial_route, drawer_type, swipe_to_open, mount_policy);
-        let a11y_props = self.a11y_props(a11y);
 
         let (container, sidebar, outlet) =
             self.build_drawer_layout(drawer_width, side, &a11y_props);
@@ -1434,9 +1477,121 @@ where
             initial_path,
             mounted_urls,
             replay_pos,
+            native: false,
         });
 
         self.nodes.insert(id, container);
+        self.navigators.insert(id, final_state);
+    }
+
+    /// Drive the client's REAL `Backend::create_navigator` so the SDK's
+    /// registered native drawer handler builds real chrome.
+    ///
+    /// The handler expects a `NavigatorHost` whose closures *pull*
+    /// screens by route and *materialize* the sidebar from an `Element`.
+    /// The wire model is the opposite — content arrives pre-materialized
+    /// as primitive subtrees. We bridge with **colluding closures we
+    /// fully own**:
+    ///
+    /// - `build_node` ignores the `Element` it's handed and returns a
+    ///   stable **holder** view. The handler's `build_content` calls
+    ///   `build_node(sidebar_element)`, so the helper mounts the holder
+    ///   as the sidebar. `DrawerAttachSidebar` then inserts the wire
+    ///   sidebar subtree into that holder — timing-independent, since
+    ///   the holder is created here and the helper builds the sidebar in
+    ///   a microtask.
+    /// - `mount_screen` is never used to pull the initial screen
+    ///   (`defer_initial_mount = true`); the wire's `NavigatorAttachInitial`
+    ///   drives it via `Backend::navigator_attach_initial`. A stray
+    ///   deep-link probe just gets a fresh empty view.
+    ///
+    /// `build.presentation` is the SDK's real `DrawerPresentation`,
+    /// rebuilt from the wire config by the factory registered in
+    /// `wire`. We only construct the generic `NavigatorHost<B::Node>`.
+    fn create_drawer_navigator_native(
+        &mut self,
+        id: NodeId,
+        build: wire::WireNavBuild,
+        initial_path: String,
+        a11y_props: &runtime_core::accessibility::AccessibilityProps,
+    ) {
+        use runtime_core::primitives::navigator::{
+            MountResult, NavState, NavigatorControl, NavigatorHost,
+        };
+
+        // Stable holder the handler mounts as the sidebar; the wire
+        // sidebar subtree is inserted into it by `DrawerAttachSidebar`.
+        let holder = self.backend.borrow_mut().create_view(a11y_props);
+
+        let control = Rc::new(NavigatorControl::new());
+        let nav_state = NavState {
+            active_route: runtime_core::Signal::new(""),
+            active_path: runtime_core::Signal::new(initial_path.clone()),
+            depth: runtime_core::Signal::new(0usize),
+            can_go_back: runtime_core::Signal::new(false),
+        };
+
+        let backend_for_mount = self.backend.clone();
+        let backend_for_screen = self.backend.clone();
+        let holder_for_build = holder.clone();
+
+        let host = NavigatorHost {
+            initial_route: "",
+            initial_path: "",
+            defer_initial_mount: true,
+            mount_screen: Rc::new(move |_name, _params, _restore| {
+                let node = backend_for_mount
+                    .borrow_mut()
+                    .create_view(&runtime_core::accessibility::AccessibilityProps::default());
+                MountResult {
+                    node,
+                    scope_id: 0,
+                    options: Box::new(()),
+                }
+            }),
+            release_screen: Rc::new(|_| {}),
+            match_path: Rc::new(|_| None),
+            nav_state: nav_state.clone(),
+            depth_changed: Rc::new(|_| {}),
+            active_changed: Rc::new(|_, _| {}),
+            control: control.clone(),
+            build_node: Rc::new(move |_el| holder_for_build.clone()),
+            build_node_into: Rc::new(|_, _| {}),
+            build_in_screen: Rc::new(move |_scope, _el| {
+                backend_for_screen
+                    .borrow_mut()
+                    .create_view(&runtime_core::accessibility::AccessibilityProps::default())
+            }),
+        };
+
+        let nav_node = self.backend.borrow_mut().create_navigator(
+            build.type_id,
+            build.type_name,
+            build.presentation,
+            host,
+            a11y_props,
+        );
+
+        let final_state = Rc::new(navigators::NavigatorAppState {
+            kind: navigators::NavigatorKind::Drawer,
+            node: nav_node.clone(),
+            // Unused in native mode — the handler owns the body outlet;
+            // initial screens flow through `navigator_attach_initial`.
+            outlet: nav_node.clone(),
+            sidebar_slot: Some(holder),
+            screen_stack: Rc::new(RefCell::new(Vec::new())),
+            control,
+            pending_mount: Rc::new(RefCell::new(None)),
+            suppress_release: Rc::new(RefCell::new(false)),
+            outbound: self.outbound.clone(),
+            navigator_id: id,
+            initial_path,
+            mounted_urls: Rc::new(RefCell::new(Vec::new())),
+            replay_pos: Rc::new(RefCell::new(0usize)),
+            native: true,
+        });
+
+        self.nodes.insert(id, nav_node);
         self.navigators.insert(id, final_state);
     }
 
