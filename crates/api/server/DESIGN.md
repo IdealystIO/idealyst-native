@@ -1,11 +1,18 @@
 # Server functions — full-stack architecture (v1 design)
 
-Status: design. The v0 proof-of-concept (the `#[server]` macro, JSON-over-HTTP
-via the `net` SDK, inventory dispatch, tick-coalesced batching) is shipped and
-documented in the crate headers. This document specifies the v1 expansion into a
-foundation for full-stack development. It is the contract the implementation
-phases below must satisfy; each phase lands with tests per the repo's testing
-rules.
+Status: in progress. The v0 proof-of-concept (the `#[server]` macro,
+JSON-over-HTTP via the `net` SDK, inventory dispatch, batching) is shipped. This
+document specifies the v1 expansion into a foundation for full-stack development;
+each phase lands with tests per the repo's testing rules.
+
+**Done (tested, both feature modes):** Phase 0 typed errors · Phase 1 extractor
+keystone (`Context`/`FromContext`/`State`/`Headers`/`Extension`) · Phase 2
+middleware + auth guards (`Auth`/`Cookies`) · Phase 3 collision detection +
+schema versioning (`strict_version`, `IncompatibleVersion`) · Phase 4 deliberate
+batching · Phase 5a client credentials · Phase 5b `storage` crate.
+**Remaining:** `net` cookie support + per-platform `storage` backends (device
+testing), Phase 6 enforcement scaffolding (CLI templates), GraphQL BFF recipe.
+See the per-phase list near the end for detail.
 
 The full-stack API layer lives under `crates/api/` (`server`, `server-macros`,
 and the future middleware / `storage` crates), kept separate from the UI-facing
