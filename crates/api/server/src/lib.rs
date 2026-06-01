@@ -64,6 +64,8 @@ mod cancel;
 #[cfg(not(feature = "server"))]
 mod client;
 #[cfg(not(feature = "server"))]
+pub use batch::{batch, BatchScope};
+#[cfg(not(feature = "server"))]
 pub use cancel::{with_cancel, with_cancel_token, WithCancel};
 #[cfg(not(feature = "server"))]
 pub use client::{configure, ClientConfig};

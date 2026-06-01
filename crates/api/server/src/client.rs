@@ -80,10 +80,16 @@ where
         Err(e) => return Ret::from_server_error(ServerError::Codec(e.to_string())),
     };
 
-    let response_value = match crate::batch::enqueue(path, args_value).await {
+    // Direct single call by default; coalesce only inside a `batch(...)`
+    // scope. Either way the queue/HTTP layer fails only in transport ways,
+    // folded into the caller's domain error type `Ret::Error`.
+    let outcome = if crate::batch::in_scope() {
+        crate::batch::enqueue(path, args_value).await
+    } else {
+        crate::batch::send_direct(path, args_value).await
+    };
+    let response_value = match outcome {
         Ok(v) => v,
-        // The queue/HTTP layer fails only in transport ways; fold that into the
-        // caller's domain error type `Ret::Error`.
         Err(e) => return Ret::from_server_error(e.into_domain()),
     };
 

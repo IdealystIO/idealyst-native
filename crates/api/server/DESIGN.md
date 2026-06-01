@@ -400,7 +400,10 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
 - **Phase 3 — Identity + versioning.** module-path paths, boot-time collision
   panic, `SchemaHash` derive, negotiation, `IncompatibleVersion`, multi-version
   registration. (items 5, 6)
-- **Phase 4 — Deliberate batching.** `server::batch(…)` scope; direct-by-default. (item 8)
+- **Phase 4 — Deliberate batching. ✅ DONE.** Direct single call by default;
+  coalescing happens only inside a `server::batch(future)` scope (a per-poll
+  thread-local mirroring `cancel.rs`). Tested: in-scope concurrent calls →
+  one `/_srv/_batch`; out-of-scope → N direct requests. (item 8)
 - **Phase 5 — Auth primitives.** client credential source; `net` credentials +
   cookies; new `storage`/`secure_storage` crate. (item 3)
 - **Phase 6 — Enforcement scaffolding.** layered `api`/`ui`/`server-bin` CLI

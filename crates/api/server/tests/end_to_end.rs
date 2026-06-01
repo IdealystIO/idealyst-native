@@ -966,10 +966,12 @@ mod client_side {
 
     #[tokio::test]
     async fn regression_concurrent_calls_coalesce_into_single_batch_request() {
-        // Three calls awaited via `join!` from one task — the inline
-        // flusher's yield_once gives all three a chance to enqueue
-        // before the queue is drained, so the mock should see ONE
-        // POST /_srv/_batch (not three single calls).
+        // Three calls awaited via `join!` INSIDE a `server::batch(...)`
+        // scope — the inline flusher's yield_once gives all three a chance
+        // to enqueue before the queue is drained, so the mock should see
+        // ONE POST /_srv/_batch (not three single calls). Coalescing is
+        // opt-in: without the batch scope these would be three direct
+        // requests (see regression_direct_by_default_no_coalescing).
         let request_count = Arc::new(Mutex::new(0u32));
         let request_count_clone = request_count.clone();
         let mock = mock_server(Arc::new(move |call| {
@@ -1010,14 +1012,17 @@ mod client_side {
         .await;
         let _guard = configure_for(mock.addr).await;
 
-        let (a, b, c) = tokio::join!(
-            add(1, 2),
-            add(10, 20),
-            echo_struct(Echo {
-                name: "alice".into(),
-                n: 5,
-            }),
-        );
+        let (a, b, c) = server::batch(async {
+            tokio::join!(
+                add(1, 2),
+                add(10, 20),
+                echo_struct(Echo {
+                    name: "alice".into(),
+                    n: 5,
+                }),
+            )
+        })
+        .await;
         assert_eq!(a, Ok(3));
         assert_eq!(b, Ok(30));
         assert_eq!(
@@ -1031,7 +1036,32 @@ mod client_side {
         let count = *request_count.lock().unwrap();
         assert_eq!(
             count, 1,
-            "three concurrent server-fn calls must coalesce into 1 HTTP request, got {count}"
+            "three concurrent server-fn calls in a batch scope must coalesce into 1 HTTP request, got {count}"
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_direct_by_default_no_coalescing() {
+        // OUTSIDE a batch scope, three concurrent calls must each be their
+        // own direct POST /_srv/<path> — never coalesced. Proves batching
+        // is opt-in.
+        let request_count = Arc::new(Mutex::new(0u32));
+        let request_count_clone = request_count.clone();
+        let mock = mock_server(Arc::new(move |call| {
+            *request_count_clone.lock().unwrap() += 1;
+            assert_ne!(call.path, "_batch", "calls must NOT coalesce outside a batch scope");
+            let body = serde_json::to_vec(&Result::<i32, ServerError>::Ok(0)).unwrap();
+            (StatusCode::OK, body)
+        }))
+        .await;
+        let _guard = configure_for(mock.addr).await;
+
+        let _ = tokio::join!(add(1, 2), add(3, 4), add(5, 6));
+
+        let count = *request_count.lock().unwrap();
+        assert_eq!(
+            count, 3,
+            "three concurrent calls without a batch scope must be 3 direct requests, got {count}"
         );
     }
 
@@ -1075,13 +1105,16 @@ mod client_side {
         }))
         .await;
         let _guard = configure_for(mock.addr).await;
-        let (a, b) = tokio::join!(
-            add(0, 0),
-            echo_struct(Echo {
-                name: "y".into(),
-                n: 0,
-            }),
-        );
+        let (a, b) = server::batch(async {
+            tokio::join!(
+                add(0, 0),
+                echo_struct(Echo {
+                    name: "y".into(),
+                    n: 0,
+                }),
+            )
+        })
+        .await;
         assert_eq!(a, Ok(7));
         assert_eq!(
             b,
@@ -1167,10 +1200,13 @@ mod client_side {
         let (_handle_b, token_b) = net::cancel_token();
         handle_a.cancel(); // A short-circuits before enqueue
 
-        let (a, b) = tokio::join!(
-            server::with_cancel_token(token_a, add(1, 2)),
-            server::with_cancel_token(token_b, add(10, 20)),
-        );
+        let (a, b) = server::batch(async {
+            tokio::join!(
+                server::with_cancel_token(token_a, add(1, 2)),
+                server::with_cancel_token(token_b, add(10, 20)),
+            )
+        })
+        .await;
 
         match a {
             Err(ServerError::Cancelled) => {}

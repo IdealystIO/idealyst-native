@@ -29,6 +29,7 @@
 //! Compiled only when the `server` feature is OFF (client builds);
 //! the server build never enqueues, it receives.
 
+use std::cell::Cell;
 use std::future::{poll_fn, Future};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -76,6 +77,86 @@ fn queue() -> &'static Mutex<Vec<PendingCall>> {
 /// its first poll (or is currently draining). Prevents N enqueues
 /// from spawning N redundant flushers.
 static FLUSH_SCHEDULED: AtomicBool = AtomicBool::new(false);
+
+// -----------------------------------------------------------------------------
+// Deliberate batching scope.
+//
+// Batching is OPT-IN: by default each server-fn call is a direct
+// `POST /_srv/<path>`. Coalescing into one `/_srv/_batch` request happens
+// only for calls made inside a `server::batch(...)` scope. This makes the
+// latency-coupling trade-off (a slow call delaying a fast one in the same
+// request) a visible, opted-into choice rather than a silent default.
+//
+// The scope is a per-poll thread-local, restored across yield points the
+// same way `cancel.rs` scopes `CURRENT_CANCEL` — no tokio dependency.
+// -----------------------------------------------------------------------------
+
+thread_local! {
+    /// `true` while the current poll is inside a `batch(...)` scope.
+    static IN_BATCH_SCOPE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// `true` if the current call should coalesce (i.e. we're inside a
+/// `batch(...)` scope). Read by `client::call_impl`.
+pub(crate) fn in_scope() -> bool {
+    IN_BATCH_SCOPE.with(|c| c.get())
+}
+
+/// Coalesce every `#[server]` call made while `future` is polled into
+/// batched `POST /_srv/_batch` requests. Calls made outside this scope
+/// are direct single requests.
+///
+/// ```ignore
+/// let (todos, me) = server::batch(async {
+///     futures::join!(list_todos(), whoami())   // one HTTP request
+/// }).await;
+/// ```
+pub fn batch<F: Future>(future: F) -> BatchScope<F> {
+    BatchScope { future }
+}
+
+/// Future returned by [`batch`]. Sets the batch-scope thread-local for
+/// the duration of each poll, restoring the previous value on yield /
+/// completion (RAII, panic-safe) — mirroring [`crate::cancel::WithCancel`].
+pub struct BatchScope<F> {
+    future: F,
+}
+
+impl<F: Future> Future for BatchScope<F> {
+    type Output = F::Output;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        // SAFETY: `future` is structurally pinned (never moved out).
+        let this = unsafe { self.get_unchecked_mut() };
+        let future = unsafe { Pin::new_unchecked(&mut this.future) };
+        let prev = IN_BATCH_SCOPE.with(|c| c.replace(true));
+        let _guard = BatchScopeGuard { prev };
+        future.poll(cx)
+    }
+}
+
+struct BatchScopeGuard {
+    prev: bool,
+}
+
+impl Drop for BatchScopeGuard {
+    fn drop(&mut self) {
+        IN_BATCH_SCOPE.with(|c| c.set(self.prev));
+    }
+}
+
+/// Direct single-call dispatch (the default, outside a batch scope).
+/// Bypasses the coalescing queue entirely: one call, one
+/// `POST /_srv/<path>`, with cancellation honoured via the request's
+/// own abort (no shared-HTTP race needed for a solo call).
+pub(crate) async fn send_direct(path: &str, args: Value) -> Result<Value, TransportError> {
+    let cancel = crate::cancel::current_cancel();
+    if let Some(t) = &cancel {
+        if t.is_cancelled() {
+            return Err(TransportError::Cancelled);
+        }
+    }
+    send_single(path, &args, cancel).await
+}
 
 // -----------------------------------------------------------------------------
 // Public entry point — used by `__private::call`.
