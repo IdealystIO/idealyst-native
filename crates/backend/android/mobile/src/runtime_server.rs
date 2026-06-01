@@ -175,6 +175,25 @@ pub fn attach_with_url_with_register<'l>(
         SHELL.with(|slot| slot.borrow_mut().take());
 
         let viewport = sample_viewport(env, &root);
+
+        // Install the Handler-backed scheduler on the UI thread BEFORE
+        // anything can defer work. Without it,
+        // `runtime_core::schedule_microtask` / `after_ms` run their
+        // closure SYNCHRONOUSLY (scheduling.rs: no installed scheduler
+        // → `f()` inline). The SDK drawer handler defers its sidebar
+        // build via `schedule_microtask` so the `backend.borrow_mut()`
+        // held across `create_navigator` is released before the walker
+        // re-enters via `build_node` → `build_detached` →
+        // `walker/view::build` → `backend.borrow_mut()`. Synchronous
+        // fallback re-enters that borrow mid-`create_navigator` →
+        // `RefCell already borrowed` panic → batch aborts → blank.
+        // With the AndroidScheduler installed, `schedule_microtask`
+        // routes through `Handler.post` on the main looper; since
+        // `drain()` / `apply_batch` runs on that same UI thread, the
+        // deferred build runs in a LATER looper turn, after the borrow
+        // releases. Mirrors the iOS RS fix in `backend-ios-mobile`.
+        crate::install_scheduler();
+
         let mut backend = AndroidBackend::new(context_global, root_global);
         // Register the compiled-in SDK handlers (no-op for the
         // back-compat `attach_with_url`). Must run before the shell
