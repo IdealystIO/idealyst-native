@@ -217,6 +217,112 @@ where
     Owner { scope }
 }
 
+// =============================================================================
+// Detached build + adopt ambient
+//
+// `build_detached` materializes a standalone `Element` subtree under
+// `backend` *outside* any `mount`/`render` call — the runtime-server
+// `dev-client` uses it to build the navigator's chrome (sidebar/screen)
+// from server-pushed primitive subtrees. It mirrors the `mount` body's
+// scope setup (new root `Scope` + `with_scope`) so the External cleanup
+// Effect and any theme subscriptions created during the build have a
+// live scope to adopt; the returned `DetachedScope` must be retained by
+// the caller or those effects fire their cleanups immediately.
+//
+// The `adopt` parameter threads a pre-built backend node into the walk:
+// when the build encounters an `Element::External` whose `type_id`
+// matches `adopt.0`, the external build path returns `adopt.1` instead
+// of calling `create_external` (see `walker::external::build`). This is
+// the wire client's "adopt sentinel" — the SDK's `leading_slot` stamps
+// an `Element::External` with a known marker `TypeId`, and `dev-client`
+// passes its holder node as the adopt node so the handler's wrapper
+// (e.g. iOS's `scroll_view`) materializes for real *around* the holder
+// while the leaf adopts it.
+//
+// Why an ambient thread-local (not a cross-crate global): the writer
+// (`build_detached`) and the reader (`external::build`) are BOTH in
+// runtime-core, so they live in the same `wasm-split` chunk and observe
+// the same thread-local. A prior design staged the holder in a global
+// owned by `wire`/`dev-client` and read it from the `drawer-navigator`
+// SDK — different chunks, and `wasm-split` does not keep a cross-crate
+// mutable global coherent (it duplicates the data), so the reader saw
+// `None`. Keeping both ends inside runtime-core (exactly like the
+// `CURRENT_IDENTITY` ambient, which works fine across chunks) sidesteps
+// that entirely. See [[project_navigator_over_wire_wip]].
+// =============================================================================
+
+thread_local! {
+    // The node `build_detached` staged for the External-adopt path to
+    // return. `RefCell<Option<...>>` (not `Cell`) because the value is
+    // not `Copy`; save/restore the previous value so nesting is safe.
+    static CURRENT_ADOPT: RefCell<Option<(std::any::TypeId, Rc<dyn std::any::Any>)>> =
+        const { RefCell::new(None) };
+}
+
+/// Set the adopt node for the duration of `f`. Restores the previous
+/// value on return (RAII), so nested `build_detached` calls compose.
+fn with_adopt<R>(
+    adopt: Option<(std::any::TypeId, Rc<dyn std::any::Any>)>,
+    f: impl FnOnce() -> R,
+) -> R {
+    let prev = CURRENT_ADOPT
+        .try_with(|c| c.replace(adopt))
+        .unwrap_or(None);
+    struct Guard(Option<(std::any::TypeId, Rc<dyn std::any::Any>)>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _ = CURRENT_ADOPT.try_with(|c| *c.borrow_mut() = self.0.take());
+        }
+    }
+    let _g = Guard(prev);
+    f()
+}
+
+/// Read the currently-staged adopt node, if any. Called from the
+/// External build path before `create_external`.
+pub(super) fn current_adopt() -> Option<(std::any::TypeId, Rc<dyn std::any::Any>)> {
+    CURRENT_ADOPT
+        .try_with(|c| c.borrow().clone())
+        .unwrap_or(None)
+}
+
+/// Owns the reactive `Scope` created by a [`build_detached`] call.
+/// Drop it to dispose the detached subtree's reactive state (cleanup
+/// Effects, theme subscriptions); keep it alive to keep that subtree
+/// reactive. Mirrors [`Owner`] but for a subtree built outside a mount.
+pub struct DetachedScope {
+    #[allow(dead_code)]
+    _scope: Box<reactive::Scope>,
+}
+
+/// Materialize a standalone `Element` subtree under `backend`, outside
+/// any active `mount`/`render`. Returns the root backend node plus a
+/// [`DetachedScope`] the caller MUST retain (dropping it disposes the
+/// subtree's reactive state).
+///
+/// `adopt` optionally threads a pre-built node into the walk: an
+/// `Element::External` whose `type_id` equals `adopt.0` adopts `adopt.1`
+/// instead of calling `Backend::create_external`. See the module-level
+/// comment above for the wire-client adopt-sentinel use case.
+pub fn build_detached<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    element: Element,
+    adopt: Option<(std::any::TypeId, B::Node)>,
+) -> (B::Node, DetachedScope) {
+    let mut scope = Box::new(reactive::Scope::new());
+    let identity = crate::Identity::node(crate::current_identity(), 0, None, None);
+    // Erase the adopt node to `Rc<dyn Any>` so the runtime-core-internal
+    // ambient is backend-agnostic; the External build path downcasts it
+    // back to `B::Node`.
+    let adopt_any = adopt.map(|(tid, node)| (tid, Rc::new(node) as Rc<dyn std::any::Any>));
+    let node = reactive::with_scope(&mut scope, || {
+        with_adopt(adopt_any, || {
+            crate::with_current_identity(identity, || build(backend, 0, element))
+        })
+    });
+    (node, DetachedScope { _scope: scope })
+}
+
 /// Build a `Element` subtree. `slot` is the emission's position in
 /// its parent's children (or its branch index inside a conditional /
 /// switch arm). Combined with the ambient

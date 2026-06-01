@@ -64,6 +64,13 @@ pub struct NavigatorAppState<N: Clone + 'static> {
     /// rather than inserted into a dev-client-managed outlet. `false` =
     /// the structural-reconstruction fallback (no factory registered).
     pub native: bool,
+    /// Reactive scopes for chrome subtrees materialized via
+    /// `runtime_core::build_detached` (native mode only). Retained so
+    /// the External cleanup Effects + theme subscriptions created during
+    /// the detached build survive past `build_node`'s return; dropping a
+    /// scope disposes its subtree's reactive state. Empty in structural
+    /// mode (no detached builds there).
+    pub chrome_scopes: Rc<RefCell<Vec<runtime_core::DetachedScope>>>,
 }
 
 /// Box<dyn Any> placeholder for unused params slots.

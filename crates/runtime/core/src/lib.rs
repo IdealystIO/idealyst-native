@@ -106,7 +106,7 @@ pub use touch::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, Touch
 pub use touch::recognizers::{
     long_press, pan, tap, LongPressRecognizer, PanEvent, PanRecognizer, TapRecognizer,
 };
-pub use walker::{mount, render, Owner};
+pub use walker::{build_detached, mount, render, DetachedScope, Owner};
 pub use primitives::navigator::{
     current_screen_state, match_pattern, MountResult, NavCommand, NavState, NavigatorConfig,
     NavigatorControl, NavigatorHandle, NavigatorHandler, NavigatorHost, NavigatorOps,

@@ -205,6 +205,105 @@ mod tests {
         assert_eq!(text_creates, 2, "exactly two text children created");
     }
 
+    // =========================================================================
+    // build_detached + External adopt sentinel (runtime-server wire client)
+    // =========================================================================
+
+    /// Marker type standing in for `wire::WireSidebarAdopt`.
+    #[derive(Debug)]
+    struct AdoptMarker;
+
+    /// `build_detached` with an `adopt` whose `TypeId` matches an
+    /// `Element::External` returns the pre-built adopt node for that leaf
+    /// instead of calling `create_external`. This is the wire client's
+    /// sidebar-adopt path: dev-client passes its holder node, the SDK's
+    /// `leading_slot` stamps a marker-typed External, and the walker
+    /// adopts the holder. Regression: the prior design routed this
+    /// through an `ExternalRegistry` handler keyed by `type_id` that then
+    /// downcast the `payload` (panicked on a marker-typed `Rc<()>`), and
+    /// a cross-crate global that was incoherent across wasm-split chunks.
+    /// Threading the adopt inside `build_detached` fixes both.
+    #[test]
+    fn build_detached_adopts_matching_external_node() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let backend = Rc::new(RefCell::new(MockBackend::new()));
+
+        // A pre-built "holder" node, as dev-client would hand in.
+        let holder = {
+            let mut b = backend.borrow_mut();
+            <MockBackend as Backend>::create_view(&mut b, &Default::default())
+        };
+
+        // The SDK's leading_slot sentinel: an External with the marker
+        // TypeId. Its payload would normally be downcast by a handler —
+        // here the walker intercepts on type_id first.
+        let sentinel = runtime_core::Element::External {
+            type_id: TypeId::of::<AdoptMarker>(),
+            type_name: std::any::type_name::<AdoptMarker>(),
+            payload: Rc::new(AdoptMarker),
+            children: Vec::new(),
+            style: None,
+            ref_fill: None,
+            accessibility: Default::default(),
+        };
+
+        let (node, _scope) = runtime_core::build_detached(
+            &backend,
+            sentinel,
+            Some((TypeId::of::<AdoptMarker>(), holder)),
+        );
+
+        // The adopted node IS the holder; no External was created.
+        assert_eq!(node, holder, "build_detached returns the adopt holder node");
+        let created = backend
+            .borrow()
+            .events()
+            .iter()
+            .filter(|e| matches!(e, Event::CreateExternal { .. }))
+            .count();
+        assert_eq!(
+            created, 0,
+            "adopt path skips create_external for the matching sentinel"
+        );
+    }
+
+    /// When the adopt `TypeId` does NOT match the External's `type_id`,
+    /// `build_detached` falls through to the normal `create_external`
+    /// path — the adopt is scoped to the one sentinel kind, so a
+    /// non-sentinel External in the same detached build still mounts
+    /// normally. (Also covers `build_detached` with `adopt = None`.)
+    #[test]
+    fn build_detached_does_not_adopt_mismatched_external() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let backend = Rc::new(RefCell::new(MockBackend::new()));
+        let holder = {
+            let mut b = backend.borrow_mut();
+            <MockBackend as Backend>::create_view(&mut b, &Default::default())
+        };
+
+        // External whose TypeId is MapViewProps — different from the
+        // adopt marker, so it must NOT be adopted.
+        let (node, _scope) = runtime_core::build_detached(
+            &backend,
+            external(MapViewProps { lat: 1.0, lon: 2.0 }).into(),
+            Some((TypeId::of::<AdoptMarker>(), holder)),
+        );
+
+        assert_ne!(node, holder, "mismatched external is not the holder");
+        let created = backend
+            .borrow()
+            .events()
+            .iter()
+            .filter(|e| matches!(e, Event::CreateExternal { type_name }
+                if type_name.contains("MapViewProps")))
+            .count();
+        assert_eq!(created, 1, "non-matching external mounts via create_external");
+    }
+
     /// A childless external (the maps/webview leaf case) produces no
     /// Insert events — the framework doesn't assume children exist.
     #[test]

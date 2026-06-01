@@ -1492,6 +1492,7 @@ pub enum WireViewportPlacement {
 
 pub use nav_registry::{
     build_drawer_presentation, register_drawer_factory, WireDrawerConfig, WireNavBuild,
+    WireSidebarAdopt,
 };
 
 /// Client-side navigator presentation-factory registry.
@@ -1552,6 +1553,21 @@ mod nav_registry {
                 .finish_non_exhaustive()
         }
     }
+
+    /// Marker type for the navigator-chrome sidebar "adopt sentinel".
+    ///
+    /// An SDK's `leading_slot` stamps an `Element::External` whose
+    /// `type_id` is `TypeId::of::<WireSidebarAdopt>()`; `dev-client`
+    /// passes that same `TypeId` (paired with its holder node) as the
+    /// `adopt` argument to `runtime_core::build_detached`. The walker's
+    /// External build path then returns the holder for that leaf instead
+    /// of calling `create_external`. There is NO registry handler and NO
+    /// cross-crate global — the adopt is threaded entirely inside the
+    /// runtime-core build (see walker.rs). This type is pure data; only
+    /// its `TypeId` is meaningful (the payload carries an instance for
+    /// safety, but the walker intercepts before any payload downcast).
+    #[derive(Debug)]
+    pub struct WireSidebarAdopt;
 
     type DrawerFactory = Rc<dyn Fn(WireDrawerConfig) -> WireNavBuild>;
 

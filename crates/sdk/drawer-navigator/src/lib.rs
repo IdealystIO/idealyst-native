@@ -581,11 +581,25 @@ pub fn register_wire_drawer_factory() {
             wire::WireMountPolicy::LazyPersistent => MountPolicy::LazyPersistent,
             wire::WireMountPolicy::LazyDisposing => MountPolicy::LazyDisposing,
         };
-        // Stub leading slot — see the doc comment. The returned Element
-        // is never rendered; the client's `build_node` swaps in its
-        // holder node.
-        *p.leading_slot.borrow_mut() =
-            Some(Box::new(|_props: SlotProps| runtime_core::view(Vec::new()).into()));
+        // Adopt-sentinel leading slot — see the doc comment. The handler
+        // builds its real chrome around this leaf (e.g. iOS wraps it in a
+        // `scroll_view`); when `dev-client` materializes the slot via
+        // `build_detached`, the walker's External path returns the
+        // client's holder node for this marker `TypeId` (the wire sidebar
+        // subtree is then inserted into the holder by `DrawerAttachSidebar`).
+        // The payload carries an instance only for type safety; the walker
+        // intercepts on `type_id` before any payload downcast.
+        *p.leading_slot.borrow_mut() = Some(Box::new(|_props: SlotProps| {
+            runtime_core::Element::External {
+                type_id: std::any::TypeId::of::<wire::WireSidebarAdopt>(),
+                type_name: std::any::type_name::<wire::WireSidebarAdopt>(),
+                payload: std::rc::Rc::new(wire::WireSidebarAdopt),
+                children: Vec::new(),
+                style: None,
+                ref_fill: None,
+                accessibility: runtime_core::accessibility::AccessibilityProps::default(),
+            }
+        }));
         wire::WireNavBuild {
             type_id: std::any::TypeId::of::<DrawerPresentation>(),
             type_name: std::any::type_name::<DrawerPresentation>(),

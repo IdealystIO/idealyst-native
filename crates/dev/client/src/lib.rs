@@ -1293,6 +1293,7 @@ where
             mounted_urls,
             replay_pos,
             native: false,
+            chrome_scopes: Rc::new(RefCell::new(Vec::new())),
         });
 
         self.nodes.insert(id, nav_node);
@@ -1343,6 +1344,7 @@ where
             mounted_urls,
             replay_pos,
             native: false,
+            chrome_scopes: Rc::new(RefCell::new(Vec::new())),
         });
 
         self.nodes.insert(id, container);
@@ -1478,6 +1480,7 @@ where
             mounted_urls,
             replay_pos,
             native: false,
+            chrome_scopes: Rc::new(RefCell::new(Vec::new())),
         });
 
         self.nodes.insert(id, container);
@@ -1523,6 +1526,12 @@ where
         // sidebar subtree is inserted into it by `DrawerAttachSidebar`.
         let holder = self.backend.borrow_mut().create_view(a11y_props);
 
+        // Reactive scopes for chrome subtrees `build_node` materializes
+        // via `build_detached` — retained on the nav state so their
+        // cleanup Effects / theme subscriptions survive.
+        let chrome_scopes: Rc<RefCell<Vec<runtime_core::DetachedScope>>> =
+            Rc::new(RefCell::new(Vec::new()));
+
         let control = Rc::new(NavigatorControl::new());
         let nav_state = NavState {
             active_route: runtime_core::Signal::new(""),
@@ -1533,7 +1542,33 @@ where
 
         let backend_for_mount = self.backend.clone();
         let backend_for_screen = self.backend.clone();
-        let holder_for_build = holder.clone();
+
+        // `build_node` is the REAL materializer: it walks the `Element`
+        // the handler hands it (e.g. iOS's `scroll_view` wrapper around
+        // the sidebar slot) via `runtime_core::build_detached`, threading
+        // the holder as the adopt node for the SDK's `WireSidebarAdopt`
+        // sentinel leaf. So the handler's wrapper materializes for real
+        // AROUND the holder, and the leaf adopts the holder (the wire
+        // sidebar subtree is later inserted into it by
+        // `DrawerAttachSidebar`). On web the slot IS the bare sentinel,
+        // so `build_detached` returns the holder directly (same
+        // observable result as the 1b shortcut, but generic). The
+        // adopt is threaded inside runtime-core (no cross-crate global),
+        // so it stays coherent across wasm-split chunks.
+        let build_node: Rc<dyn Fn(runtime_core::Element) -> B::Node> = {
+            let backend = self.backend.clone();
+            let holder = holder.clone();
+            let scopes = chrome_scopes.clone();
+            Rc::new(move |element| {
+                let adopt = Some((
+                    std::any::TypeId::of::<wire::WireSidebarAdopt>(),
+                    holder.clone(),
+                ));
+                let (node, scope) = runtime_core::build_detached(&backend, element, adopt);
+                scopes.borrow_mut().push(scope);
+                node
+            })
+        };
 
         let host = NavigatorHost {
             initial_route: "",
@@ -1555,7 +1590,7 @@ where
             depth_changed: Rc::new(|_| {}),
             active_changed: Rc::new(|_, _| {}),
             control: control.clone(),
-            build_node: Rc::new(move |_el| holder_for_build.clone()),
+            build_node,
             build_node_into: Rc::new(|_, _| {}),
             build_in_screen: Rc::new(move |_scope, _el| {
                 backend_for_screen
@@ -1589,6 +1624,7 @@ where
             mounted_urls: Rc::new(RefCell::new(Vec::new())),
             replay_pos: Rc::new(RefCell::new(0usize)),
             native: true,
+            chrome_scopes,
         });
 
         self.nodes.insert(id, nav_node);
