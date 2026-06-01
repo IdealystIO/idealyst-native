@@ -910,21 +910,9 @@ pub(crate) fn drawer_attach_sidebar(
     sidebar: IosNode,
 ) {
     let key = navigator.view_key();
-    backend_ios_core::ios_log(&format!(
-        "[drawer-diag] drawer_attach_sidebar ENTER nav_key={key}"
-    ));
     let entry = TAB_DRAWER_INSTANCES.with(|m| m.borrow().get(&key).cloned());
-    let Some(entry) = entry else {
-        backend_ios_core::ios_log(
-            "[drawer-diag] drawer_attach_sidebar: NO TAB_DRAWER_INSTANCES entry — bailing",
-        );
-        return;
-    };
+    let Some(entry) = entry else { return };
     let entry = entry.borrow();
-    backend_ios_core::ios_log(&format!(
-        "[drawer-diag] drawer_attach_sidebar: entry.drawer_width={}",
-        entry.drawer_width
-    ));
     let sidebar_view = sidebar.as_view();
 
     // Pin the sidebar's geometry with Auto Layout, not Taffy. The
@@ -1010,11 +998,4 @@ pub(crate) fn drawer_attach_sidebar(
     // `schedule_layout_pass` calls were for screen swaps; the
     // deferred-attach happens outside that path.
     let _ = with_backend(|b| b.run_layout());
-
-    // DRAWER-WIDTH-DIAG: report the sidebar wrapper's Taffy node state
-    // so we can see whether width:280 reached the node and whether the
-    // computed frame honors it (full-viewport = bug).
-    let _ = with_backend(|b| {
-        b.debug_drawer_sidebar(sidebar_view, "after attach run_layout");
-    });
 }

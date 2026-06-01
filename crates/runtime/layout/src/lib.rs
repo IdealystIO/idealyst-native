@@ -189,6 +189,34 @@ impl LayoutTree {
     /// the backend should call this in the same order it would
     /// `addSubview` / `addView`.
     pub fn add_child(&mut self, parent: LayoutNode, child: LayoutNode) {
+        // A node that was previously laid out as a ROOT has had its
+        // `Auto` size axes overwritten with `Length(viewport)` by
+        // `compute()` (so the root gets a definite size for Taffy). When
+        // such a node is now reparented as a child, that baked-in
+        // viewport width/height must revert to `Auto` — otherwise the
+        // child carries a hardcoded full-viewport dimension into its new
+        // parent's flex layout, overriding the cross-axis stretch.
+        //
+        // This bug surfaced on the iOS runtime-server drawer: dev-client
+        // creates a sidebar "holder" view (Taffy root, auto_width), the
+        // first layout pass computes it at the viewport width (393pt) and
+        // bakes `Length(393)` into its style, then the chrome handler
+        // adopts the holder as a child of the 280pt sidebar wrapper. The
+        // baked 393 stuck → the holder (and its `width:100%` content)
+        // rendered full-bleed past the 280pt panel. `auto_width` is the
+        // signal that the node never had an author-set width, so the
+        // baked viewport value is purely a root artifact to undo here.
+        if self.auto_width.contains(&child.0) || self.auto_height.contains(&child.0) {
+            if let Ok(mut style) = self.tree.style(child.0).cloned() {
+                if self.auto_width.contains(&child.0) {
+                    style.size.width = Dimension::Auto;
+                }
+                if self.auto_height.contains(&child.0) {
+                    style.size.height = Dimension::Auto;
+                }
+                let _ = self.tree.set_style(child.0, style);
+            }
+        }
         self.tree
             .add_child(parent.0, child.0)
             .expect("taffy add_child");
@@ -820,6 +848,63 @@ mod tests {
             "wrapper width {} should be ~{} (resolved from height via aspect_ratio)",
             wf.width,
             expected
+        );
+    }
+
+    /// Regression: a node that was laid out as a ROOT (viewport-filled)
+    /// and is later reparented as a child must NOT keep the baked-in
+    /// viewport width — it should revert to flex/stretch sizing under
+    /// its new parent.
+    ///
+    /// Mirrors the iOS runtime-server drawer bug: dev-client builds the
+    /// sidebar "holder" as a standalone Taffy root (auto_width); the
+    /// first layout pass computes it at viewport width and bakes
+    /// `Length(viewport)` into its style; then the drawer handler adopts
+    /// the holder as a child of a 280pt sidebar wrapper. Before the fix
+    /// the holder kept its 393pt root width and rendered full-bleed past
+    /// the panel; after the fix `add_child` reverts the baked viewport
+    /// width to `Auto` so the holder stretches to the 280pt wrapper.
+    #[test]
+    fn regression_reparented_root_drops_baked_viewport_width() {
+        let mut t = LayoutTree::new();
+
+        // Holder: a fresh node (no author width → auto_width) laid out
+        // ONCE as a root against the full viewport. This bakes
+        // Length(393) into its style — exactly what dev-client's
+        // standalone `create_view` + first layout pass does.
+        let holder = t.new_node();
+        t.compute(holder, 393.0, 852.0);
+        assert!(
+            (t.frame_of(holder).width - 393.0).abs() < 0.5,
+            "holder as a root should fill the viewport width (393), got {}",
+            t.frame_of(holder).width
+        );
+
+        // Wrapper: explicit 280pt width, column flow, stretch children
+        // (the iOS drawer's `sized_sidebar`). Adopt the holder as its
+        // child — this is the reparent that must drop the baked 393.
+        let wrapper = t.new_node();
+        let mut wrapper_rules = StyleRules::default();
+        wrapper_rules.width = Some(px(280.0));
+        wrapper_rules.height = Some(pct(100.0));
+        wrapper_rules.flex_direction = Some(FwFlexDirection::Column);
+        t.set_style(wrapper, &wrapper_rules);
+        t.add_child(wrapper, holder);
+
+        t.compute(wrapper, 393.0, 852.0);
+
+        let wf = t.frame_of(wrapper);
+        let hf = t.frame_of(holder);
+        assert!(
+            (wf.width - 280.0).abs() < 0.5,
+            "wrapper should be its explicit 280pt, got {}",
+            wf.width
+        );
+        assert!(
+            (hf.width - 280.0).abs() < 0.5,
+            "reparented holder should stretch to the 280pt wrapper, not \
+             keep its baked 393pt root width — got {}",
+            hf.width
         );
     }
 }

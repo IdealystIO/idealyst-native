@@ -274,9 +274,6 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
             let node_for_attach = node.clone();
             let drawer_width = presentation.drawer_width;
             runtime_core::schedule_microtask(move || {
-                backend_ios::ios_log(&format!(
-                    "[drawer-diag] ios.rs sidebar microtask RUNNING drawer_width={drawer_width}"
-                ));
                 let on_select: Rc<dyn Fn(&'static str)> = {
                     let c = control_for_select;
                     Rc::new(move |name| {
@@ -458,16 +455,9 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
                         ))
                         .into_element();
                 let sidebar_node = build_node(sized_sidebar);
-                backend_ios::ios_log(&format!(
-                    "[drawer-diag] ios.rs built sized_sidebar (width={drawer_width}); calling drawer_attach_sidebar"
-                ));
-                let attached = with_backend(|b| {
+                let _ = with_backend(|b| {
                     helpers::drawer_attach_sidebar(b.mtm(), &node_for_attach, sidebar_node);
                 });
-                backend_ios::ios_log(&format!(
-                    "[drawer-diag] ios.rs drawer_attach_sidebar returned (with_backend Some={})",
-                    attached.is_some()
-                ));
             });
         }
 

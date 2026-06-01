@@ -32,11 +32,6 @@ pub use backend_ios_core::render_loop::install_render_loop;
 #[cfg(target_os = "ios")]
 pub use backend_ios_core::scheduler::install_scheduler;
 
-// DRAWER-WIDTH-DIAG: re-export the NSLog shim so SDK crates that only
-// dep `backend-ios-mobile` (e.g. drawer-navigator) can emit device logs.
-#[cfg(any(target_os = "ios", target_os = "tvos"))]
-pub use backend_ios_core::ios_log;
-
 #[cfg(not(target_os = "ios"))]
 pub use stub::IosBackend;
 
