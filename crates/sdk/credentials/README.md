@@ -14,8 +14,15 @@ rather than faking it.**
 | --- | --- | --- | --- |
 | iOS / macOS | Keychain (Security framework) | yes — OS / Secure-Enclave protected | ✅ host-tested (macOS) |
 | Android | AES-256-GCM keyed by an AndroidKeyStore key (TEE/StrongBox) | yes | ⚠️ compile-checked, **device-unverified** |
+| Windows | Credential Manager (via `keyring`) | yes — OS vault | ⚠️ compile-checked |
+| Linux | Secret Service — GNOME Keyring / KWallet (via `keyring`) | yes — OS vault | ⚠️ compile-checked |
 | web | **errors** — see below | n/a | n/a |
-| Windows / Linux | not yet wired (**errors**) | pending | n/a |
+
+Desktop uses the OS credential vault rather than a hardware enclave: there's no
+browser-XSS surface on a desktop, so the vault (user-session-locked, encrypted
+at rest) is the right bar. On Linux it needs a running Secret Service daemon (a
+desktop login session); on a headless box with none, operations return
+`CredError::Backend` — no secure store to use, and we don't pretend otherwise.
 
 ```rust
 use credentials::{platform_credentials, CredError};
@@ -108,8 +115,11 @@ So you write the auth wiring once; each platform uses its right mechanism.
   *reading* it, but an XSS can still *make authenticated requests* while the
   page is open — defense-in-depth (short sessions, CSRF protection,
   `SameSite`) still matters.
-- **Windows/Linux**: secure storage isn't wired yet; ops error. OS credential
-  vaults (Credential Manager / Secret Service) are the planned backends.
+- **Windows/Linux**: the OS credential vault (Credential Manager / Secret
+  Service). Encrypted at rest and unlocked with the user's login session — no
+  hardware enclave, but there's no browser-XSS surface on a desktop, so the
+  vault is the right bar. It does protect against other users and casual disk
+  inspection; it does not protect against malware running as your user.
 
 ## Verification status
 
@@ -120,7 +130,12 @@ So you write the auth wiring once; each platform uses its right mechanism.
   device-verified** here (JNI method signatures resolve at runtime). Every
   failure returns [`CredError::Backend`] with the JNI message to make an
   on-device diagnosis quick. Test on a device before relying on it.
-- **Web/desktop** — the error-with-guidance path is unit-tested.
+- **Windows / Linux** — the `keyring`-backed vault path compiles for
+  `x86_64-pc-windows-gnu` and `x86_64-unknown-linux-gnu` (Linux uses keyring's
+  async/`zbus` Secret Service, so no `libdbus` C dependency). Not run here
+  (the host is macOS, which uses the Keychain backend) — run a quick
+  set/get/remove on a real Windows/Linux desktop to confirm.
+- **Web** — the error-with-guidance path is unit-tested.
 - **Server `set_cookie`** — an end-to-end test boots the real router and
   asserts a handler's `set_cookie` surfaces a `Set-Cookie:
   session=…; HttpOnly; Secure; SameSite=Lax` response header.

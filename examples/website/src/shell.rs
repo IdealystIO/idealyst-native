@@ -14,7 +14,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::primitives::scroll_view::{scroll_view, ScrollViewHandle};
+use runtime_core::primitives::scroll_view::ScrollViewHandle;
 use runtime_core::{
     component, derived, effect, icon, pressable, signal, text, ui, view, when, Easing,
     IntoElement, Element, Ref, Route, Signal, StrokeAnimation, StyleApplication, ViewHandle,
@@ -172,19 +172,19 @@ pub fn layout_with_toc(content: Element, entries: Vec<TocEntry>) -> Element {
     // single `absolute_frame().height` reads the total content height.
     let content_col_style = PageScrollColumn();
     ui! {
-        view(style = viewport_wrap_style).bind(viewport_ref) {
+        view(style = viewport_wrap_style) {
             scroll_view(style = body_style) {
-                view(style = content_col_style).bind(content_ref) {
+                view(style = content_col_style) {
                     view(style = row_style) {
                         view(style = column_style) { content }
                         toc
                     }
                     footer()
-                }
+                }.bind(content_ref)
             }
                 .bind(scroll_ref)
                 .on_scroll(move |_x, y| scroll_y.set(y))
-        }
+        }.bind(viewport_ref)
     }
 }
 

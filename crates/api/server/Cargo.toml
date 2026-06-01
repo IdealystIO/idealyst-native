@@ -65,3 +65,5 @@ runtime-core = { workspace = true, features = ["async-driver"] }
 # Raw WS counterpart for the typed-socket client-mode test.
 tokio-tungstenite = "0.21"
 futures-util = "0.3"
+# Streaming HTTP client for the #[sse] test (reads text/event-stream).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }

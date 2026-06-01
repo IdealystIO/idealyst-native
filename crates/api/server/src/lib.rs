@@ -53,6 +53,10 @@ pub use server_macros::channel;
 /// [`server_macros::subscription`].
 pub use server_macros::subscription;
 
+/// The `#[sse]` attribute macro — a server→client stream over HTTP
+/// Server-Sent Events. See [`server_macros::sse`].
+pub use server_macros::sse;
+
 // =============================================================================
 // Extractor wrappers — present on BOTH builds (they appear in the
 // author's shared `#[server]` fn signature). The resolution machinery
@@ -69,9 +73,12 @@ mod socket;
 pub use socket::{Socket, SocketError};
 #[cfg(feature = "server")]
 pub use socket::accept;
-// Client-only: the cloneable sender + the scope-bound `use_socket` hook.
+// Client-only: the cloneable sender + the scope-bound `use_socket`
+// (WebSocket) and `use_sse` (Server-Sent Events) reactive hooks.
 #[cfg(not(feature = "server"))]
-pub use socket::{use_socket, SocketSender, SocketStatus, UseSocket};
+pub use socket::{
+    use_socket, use_sse, SocketSender, SocketStatus, SseStatus, UseSocket, UseSse,
+};
 
 // =============================================================================
 // Client-only surface: configuration + the `call()` the macro emits.
@@ -216,7 +223,8 @@ pub mod __private {
 
     #[cfg(feature = "server")]
     pub use crate::runtime::{
-        decode_ws_args, ws_error_response, ws_open_context, ws_run_middlewares, WsArgsQuery,
+        decode_ws_args, sse_response, ws_error_response, ws_open_context, ws_run_middlewares,
+        WsArgsQuery,
     };
 
     /// Re-exported so the `#[subscription]` macro's generated handler can
@@ -241,6 +249,10 @@ pub mod __private {
     #[cfg(not(feature = "server"))]
     pub fn ws_url_args(path: &str, args_hex: &str) -> String {
         crate::client::ws_url_args(path, args_hex)
+    }
+    #[cfg(not(feature = "server"))]
+    pub fn sse_url_args(path: &str, args_hex: &str) -> String {
+        crate::client::sse_url_args(path, args_hex)
     }
 
     /// The client-side call function. The macro's client-side

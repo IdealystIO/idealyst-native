@@ -29,7 +29,9 @@ drop into `ui!`.
 | Crate | Path | What it adds |
 | --- | --- | --- |
 | `net` | [`net/`](./net) | Async HTTP client over each platform's native stack. |
-| `storage` | [`storage/`](./storage) | Async key-value persistence. |
+| `storage` | [`storage/`](./storage) | Plaintext key-value persistence (preferences, cache). The `AsyncStorage` half. |
+| `credentials` | [`credentials/`](./credentials) | **Secure** key-value for secrets — Keychain / Android Keystore / Windows Credential Manager / Linux Secret Service; web errors (use a server httpOnly cookie). The `SecureStore` half. |
+| `files` | [`files/`](./files) | Binary blob/file storage by path — real filesystem on native (per-app dir), IndexedDB on web. For recordings, images, downloads. |
 | `microphone` | [`microphone/`](./microphone) | Live microphone capture — a raw f32 PCM stream via cpal (desktop/iOS), `getUserMedia`+Web Audio (web), and `AudioRecord`/JNI (Android). |
 
 ## Declaring platform permissions (capabilities)

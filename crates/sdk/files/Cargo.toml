@@ -1,0 +1,44 @@
+[package]
+name = "files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform blob/file storage — read/write binary data in a per-app
+# private directory, addressed by relative path. The third storage primitive,
+# alongside `storage` (plaintext key-value) and `credentials` (secrets):
+# this one is for BYTES — recordings, images, downloads, caches.
+#
+#   - iOS / macOS / Windows / Linux / Android : the real filesystem, rooted in
+#       the app's private data directory (sandbox / Application Support /
+#       %APPDATA% / XDG data dir / getFilesDir()).
+#   - web (wasm32) : IndexedDB (a browser has no filesystem), blobs keyed by
+#       their path.
+#
+# One async object-safe `FileStore` trait, so an app holds an
+# `Arc<dyn FileStore>` and the backend is chosen per platform. Async because
+# blob I/O can be large and shouldn't block; `local_path()` hands back a real
+# filesystem path on native (for handing to other native libs) and `None` on
+# web.
+
+[dependencies]
+thiserror = "1"
+
+# iOS: resolve the app sandbox's Application Support dir via NSFileManager.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString"] }
+
+# Android: resolve Context.getFilesDir() via JNI.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+# Web: IndexedDB via the `idb` async wrapper (a browser has no filesystem).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+idb = "0.6"
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

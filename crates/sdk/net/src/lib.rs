@@ -35,6 +35,7 @@ mod body;
 mod cancel;
 mod client;
 mod error;
+mod eventsource;
 mod headers;
 mod method;
 mod request;
@@ -53,6 +54,7 @@ pub use headers::Headers;
 pub use method::Method;
 pub use request::RequestBuilder;
 pub use response::Response;
+pub use eventsource::{EventSource, EventSourceCloser};
 pub use websocket::{WebSocket, WsMessage, WsSender};
 
 // Platform-specific transport. Exactly one of these is compiled per

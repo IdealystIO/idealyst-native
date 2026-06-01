@@ -629,11 +629,21 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
   `futures-channel`, `onclose` ends the stream). Native is runtime-tested;
   iOS / Android / wasm are compile-verified on their real targets. Concurrent
   duplex is covered by the cloneable `sender()` (held sender sends while the
-  socket recvs — unit-tested), so no separate `split()`. Follow-ons (not
+  socket recvs — unit-tested), so no separate `split()`. ✅ **`#[sse]` (server
+  side)** — a server→client stream over HTTP Server-Sent Events: same family as
+  `#[subscription]` (extractors + open args), but the handler returns an axum
+  `Sse` response serializing each item as a `data:` event, auto-mounted at
+  `GET /_srv/_sse/<path>`; e2e-tested (a raw HTTP client reads the event stream).
+  The client stub returns the event-stream URL. ✅ **SSE client consumer** —
+  `net::EventSource` (native: blocking `reqwest` read on a worker thread + SSE
+  frame parse, bridged to async, runtime-tested; web: `web_sys::EventSource`,
+  compile-verified on `wasm32`; iOS/Android stubbed — WS `#[subscription]` covers
+  mobile streaming) + a typed `use_sse::<T>(url)` reactive hook (scope-bound:
+  connects on mount, closes on unmount via `on_cleanup`, decodes each event into
+  `T` → reactive `incoming()` signal), mirroring `use_socket`. Follow-ons (not
   correctness gaps): platform-native `URLSessionWebSocketTask` / OkHttp for OS
-  proxy/background integration; Android `wss://`; and **SSE** as its own package
-  (needs streaming-response support in `net`). Sibling transport; shares the
-  spine; decoupled from the dev wire. §9.0 / §9.
+  proxy/background integration; Android `wss://`; native SSE arm for iOS/Android.
+  Sibling transport; shares the spine; decoupled from the dev wire. §9.0 / §9.
 - **Later — GraphQL BFF recipe.** server fns as a typed gateway over an existing
   GraphQL/REST system; DTOs codegen'd from the upstream schema.
 

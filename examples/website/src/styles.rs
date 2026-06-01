@@ -20,11 +20,12 @@ use idea_ui::IdeaThemeRef;
 use crate::typeface::INTER;
 
 // =============================================================================
-// Layout root — the View that wraps `mobile_header` + the screen's
-// ScrollView. Fills the screen so the ScrollView's `height: 100%`
-// has a real reference; `position: Relative` (framework default,
-// stated explicitly) makes it the positioning context for the
-// `position: Absolute` mobile header.
+// Layout root — a full-screen flex-column root. Fills the screen and
+// is the `position: Relative` positioning context for any
+// `position: Absolute` chrome. Retained as a reusable layout
+// primitive; the page scroll surface itself is now the website's own
+// `scroll_view` (see `ScreenScroll` + `shell::layout`), not the
+// navigator body.
 // =============================================================================
 
 stylesheet! {
@@ -859,8 +860,8 @@ stylesheet! {
             background: Tokenized::token("color-surface", Color("#ffffff".into())),
             border_top_width: 1.0,
             border_top_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
-            // Drawer-bottom slot doesn't inherit the page-body's font;
-            // set Inter on the footer root so every Text child picks it up.
+            // Set Inter on the footer root so every Text child picks it
+            // up regardless of the surrounding scroll/page font chain.
             font_family: &INTER,
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,

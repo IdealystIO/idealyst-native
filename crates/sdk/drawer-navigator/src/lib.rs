@@ -312,15 +312,10 @@ pub enum TopSlot {
 /// `SlotProps` it hands in.
 pub type SlotBuilder = Box<dyn Fn(SlotProps) -> Element>;
 
-// Screens / SDK-foreign code that want to react to the drawer's
-// scroll surface should call
-// [`runtime_core::primitives::navigator::ambient_scroll_context`]
-// — the framework owns the ambient lookup. This SDK no longer
-// publishes its own thread-locals (an earlier version did,
-// duplicating what's now the framework primitive); the web
-// handler still measures the body and constructs a
-// [`ScrollContext`] at `init`, then hands it to the framework
-// via the per-backend handler's setup.
+// The Drawer no longer owns scroll, so it does NOT publish a
+// `ScrollContext` — `ambient_scroll_context()` returns `None` under a
+// drawer and `SlotProps::scroll` is always `None`. Screens own their own
+// scrolling via the `scroll_view` primitive and read its handle directly.
 
 // =============================================================================
 // DrawerScreenOptions — per-screen typed options

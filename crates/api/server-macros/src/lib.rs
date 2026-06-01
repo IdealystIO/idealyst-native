@@ -749,3 +749,129 @@ fn expand_subscription(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStrea
         #client_fn
     })
 }
+
+// ===========================================================================
+// #[sse] — a server → client stream over HTTP Server-Sent Events.
+// ===========================================================================
+
+/// Like `#[subscription]`, but the transport is a plain HTTP
+/// `text/event-stream` response (Server-Sent Events) instead of a
+/// WebSocket. Cheaper one-way streaming that rides ordinary HTTP (works
+/// through proxies that block WS upgrades; browsers reconnect natively).
+///
+/// Server build: resolves extractors + open args at request time, then
+/// returns an axum `Sse` response that serializes each `M` the stream
+/// yields as a `data:` event; auto-registered at `GET /_srv/_sse/<path>`.
+/// Client build: emits `fn name(args…) -> String` returning the
+/// event-stream URL — pass it to the scope-bound `server::use_sse::<M>`
+/// hook (typed, JSON-decoded, closes on unmount) or a browser
+/// `EventSource`.
+///
+/// ```ignore
+/// #[sse]
+/// async fn notifications(user: Auth<Principal>) -> impl Stream<Item = Note> { … }
+/// ```
+#[proc_macro_attribute]
+pub fn sse(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr = parse_macro_input!(attr as ServerAttr);
+    let func = parse_macro_input!(item as ItemFn);
+    match expand_sse(attr, func) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+fn expand_sse(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
+    if func.sig.asyncness.is_none() {
+        return Err(syn::Error::new_spanned(func.sig.fn_token, "#[sse] requires an async function"));
+    }
+    let vis = &func.vis;
+    let attrs = &func.attrs;
+    let sig = &func.sig;
+    let ident = &sig.ident;
+    let output = &sig.output;
+    let body = &func.block;
+    let inputs = &sig.inputs;
+
+    let wire_path = attr.path.unwrap_or_else(|| ident.to_string());
+    let route = format!("/_srv/_sse/{wire_path}");
+    let _item_ty = parse_stream_item(output)?;
+
+    let p = classify_stream_params(inputs.iter(), "sse")?;
+    let StreamParams {
+        server_inputs,
+        wire_inputs,
+        wire_pats,
+        wire_tys,
+        wire_binds,
+        ctx_tys,
+        ctx_binds,
+        call_exprs,
+    } = &p;
+
+    let handler_mod = format_ident!("__sse_{}", ident);
+
+    let server_fn = quote! {
+        #[cfg(feature = "server")]
+        #(#attrs)*
+        #vis async fn #ident(#(#server_inputs),*) #output #body
+    };
+
+    let server_register = quote! {
+        #[cfg(feature = "server")]
+        #[doc(hidden)]
+        mod #handler_mod {
+            use super::*;
+            use ::server::__private::axum::{
+                extract::Query, http::HeaderMap, response::Response, routing::get, Router,
+            };
+
+            async fn __handler(
+                headers: HeaderMap,
+                Query(__q): Query<::server::__private::WsArgsQuery>,
+            ) -> Response {
+                let mut __ctx = ::server::__private::ws_open_context(headers, #wire_path);
+                if let Err(__resp) = ::server::__private::ws_run_middlewares(&mut __ctx).await {
+                    return __resp;
+                }
+                let ( #( #wire_binds, )* ): ( #( #wire_tys, )* ) =
+                    match ::server::__private::decode_ws_args(__q.args) {
+                        Ok(__t) => __t,
+                        Err(__resp) => return __resp,
+                    };
+                #(
+                    let #ctx_binds = match <#ctx_tys as ::server::FromContext>::from_context(&__ctx).await {
+                        Ok(__v) => __v,
+                        Err(__e) => return ::server::__private::ws_error_response(__e),
+                    };
+                )*
+                let __stream = super::#ident( #( #call_exprs ),* ).await;
+                ::server::__private::sse_response(__stream)
+            }
+
+            ::server::__private::inventory::submit! {
+                ::server::__private::WsEntry {
+                    path: #wire_path,
+                    register: |__r: Router| __r.route(#route, get(__handler)),
+                }
+            }
+        }
+    };
+
+    // Client stub: the event-stream URL, consumed by `server::use_sse`.
+    let client_fn = quote! {
+        #[cfg(not(feature = "server"))]
+        #(#attrs)*
+        #vis fn #ident(#(#wire_inputs),*) -> ::std::string::String {
+            let __args: ( #( #wire_tys, )* ) = ( #( #wire_pats, )* );
+            let __hex = ::server::__private::encode_ws_args(&__args);
+            ::server::__private::sse_url_args(#wire_path, &__hex)
+        }
+    };
+
+    Ok(quote! {
+        #server_fn
+        #server_register
+        #client_fn
+    })
+}

@@ -22,16 +22,11 @@ async fn main() {
     // App-level state. Real apps install a DB pool here.
     server::install_state(Arc::new(AppState::new()));
 
-    // Project root — when running via `cargo run -p server-fn-demo`
-    // the CWD is the workspace root, so the example's directory
-    // lives at this fixed relative path. Resolving from
-    // `CARGO_MANIFEST_DIR` would also work, but that requires
-    // the build-time path to match the runtime path; relative
-    // is simpler for a demo.
-    let project_dir: PathBuf = std::env::current_dir()
-        .unwrap()
-        .join("examples")
-        .join("server-fn-demo");
+    // Absolute crate directory, baked in at compile time — robust to the CWD
+    // the server is launched from (workspace root, the example folder, or
+    // whatever `idealyst dev` uses). Resolving from `current_dir()` only works
+    // when run from the workspace root, which is the 404-on-root trap.
+    let project_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
     // The CLI writes the wasm bundle to `pkg/` next to the
     // crate's index.html.

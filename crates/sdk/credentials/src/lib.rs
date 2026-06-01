@@ -11,8 +11,9 @@
 //! | --- | --- | --- |
 //! | iOS / macOS | Keychain (Security framework) | yes — OS/Secure-Enclave protected |
 //! | Android | AES-GCM keyed by an AndroidKeyStore key (TEE/StrongBox) | yes |
+//! | Windows | Credential Manager (via `keyring`) | yes — OS vault |
+//! | Linux | Secret Service / GNOME Keyring / KWallet (via `keyring`) | yes — OS vault |
 //! | web | **errors** — see below | n/a |
-//! | Windows / Linux | not yet wired (**errors**) | pending |
 //!
 //! # Why web errors (and what to do instead)
 //!
@@ -107,6 +108,11 @@ mod android;
 #[cfg(target_os = "android")]
 pub use android::KeystoreCredentials;
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod desktop;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+pub use desktop::DesktopCredentials;
+
 /// A [`Credentials`] whose every operation fails with
 /// [`CredError::Unsupported`]. Used on web (no secure client store) and on
 /// desktop platforms whose OS vault isn't wired yet — so a misplaced
@@ -142,13 +148,20 @@ const WEB_REASON: &str = "a browser has no secure client-side store (anything re
     code is readable by any script on your origin). Keep secrets server-side: use a server \
     function that sets an httpOnly session cookie (the BFF pattern), not client storage.";
 
-/// The desktop reason string — secure desktop vaults are a planned backend.
+/// Reason string for desktop platforms with no wired OS vault (i.e. not
+/// Windows or Linux — e.g. a BSD). Windows/Linux use the real vault.
 #[cfg(all(
     not(target_arch = "wasm32"),
-    not(any(target_os = "ios", target_os = "macos", target_os = "android"))
+    not(any(
+        target_os = "ios",
+        target_os = "macos",
+        target_os = "android",
+        target_os = "windows",
+        target_os = "linux"
+    ))
 ))]
-const DESKTOP_REASON: &str = "secure credential storage is not yet implemented on this desktop \
-    platform (Windows Credential Manager / Linux Secret Service are the planned backends).";
+const DESKTOP_REASON: &str = "secure credential storage isn't wired for this OS yet (Windows \
+    Credential Manager and Linux Secret Service are supported; others are not).";
 
 /// An `Arc<dyn Credentials>` over the current platform's secure store,
 /// namespaced by `name` (the Keychain service / Keystore alias / prefs
@@ -162,6 +175,9 @@ pub fn platform_credentials(name: &str) -> Arc<dyn Credentials> {
     #[cfg(target_os = "android")]
     return Arc::new(android::KeystoreCredentials::new(name));
 
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    return Arc::new(desktop::DesktopCredentials::new(name));
+
     #[cfg(target_arch = "wasm32")]
     {
         let _ = name;
@@ -170,7 +186,13 @@ pub fn platform_credentials(name: &str) -> Arc<dyn Credentials> {
 
     #[cfg(all(
         not(target_arch = "wasm32"),
-        not(any(target_os = "ios", target_os = "macos", target_os = "android"))
+        not(any(
+            target_os = "ios",
+            target_os = "macos",
+            target_os = "android",
+            target_os = "windows",
+            target_os = "linux"
+        ))
     ))]
     {
         let _ = name;

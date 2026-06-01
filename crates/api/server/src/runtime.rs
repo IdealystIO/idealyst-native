@@ -145,6 +145,20 @@ fn from_hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// Wrap a `Stream<Item = T>` as an axum Server-Sent Events response,
+/// serializing each item as a JSON `data:` event. Used by the `#[sse]`
+/// macro's generated handler.
+pub fn sse_response<S, T>(stream: S) -> Response
+where
+    S: futures_util::Stream<Item = T> + Send + 'static,
+    T: serde::Serialize,
+{
+    use axum::response::sse::{Event, Sse};
+    use futures_util::StreamExt;
+    let events = stream.map(|item| Event::default().json_data(item));
+    Sse::new(events).into_response()
+}
+
 /// Bind a TCP listener on `addr` and serve the registered server
 /// functions. Convenience for the common "just run the server"
 /// case; authors who need to compose with their own routes should

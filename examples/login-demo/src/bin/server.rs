@@ -26,10 +26,11 @@ async fn main() {
         "http://localhost:3000",
     ]));
 
-    let project_dir: PathBuf = std::env::current_dir()
-        .unwrap()
-        .join("examples")
-        .join("login-demo");
+    // Absolute crate directory, baked in at compile time — robust to the CWD
+    // the server is launched from (workspace root, the example folder, or
+    // whatever `idealyst dev` uses). Resolving from `current_dir()` only works
+    // when run from the workspace root, which is the 404-on-root trap.
+    let project_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let pkg_dir = project_dir.join("pkg");
     let static_dir = project_dir.clone();
 

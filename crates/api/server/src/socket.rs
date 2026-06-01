@@ -385,3 +385,140 @@ where
         sender,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Client-only: the `use_sse` reactive hook (Server-Sent Events consumer).
+// ---------------------------------------------------------------------------
+
+/// Lifecycle of a [`use_sse`] connection.
+#[cfg(not(feature = "server"))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SseStatus {
+    Connecting,
+    Open,
+    Closed,
+    Error,
+}
+
+#[cfg(not(feature = "server"))]
+struct SseCloseCoord {
+    cancelled: bool,
+    closer: Option<net::EventSourceCloser>,
+}
+
+#[cfg(not(feature = "server"))]
+impl SseCloseCoord {
+    fn close(&mut self) {
+        self.cancelled = true;
+        if let Some(c) = &self.closer {
+            c.close();
+        }
+    }
+}
+
+/// The reactive handle from [`use_sse`]. Cheap (`Copy`) — two signal ids.
+#[cfg(not(feature = "server"))]
+pub struct UseSse<T> {
+    incoming: runtime_core::Signal<Option<T>>,
+    status: runtime_core::Signal<SseStatus>,
+}
+
+#[cfg(not(feature = "server"))]
+impl<T> Clone for UseSse<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+#[cfg(not(feature = "server"))]
+impl<T> Copy for UseSse<T> {}
+
+#[cfg(not(feature = "server"))]
+impl<T: Clone + 'static> UseSse<T> {
+    /// The latest-event signal — read it in `ui!`/`rx!` to re-render per
+    /// event. `None` until the first arrives.
+    pub fn incoming(&self) -> runtime_core::Signal<Option<T>> {
+        self.incoming
+    }
+    /// The latest decoded event, if any (non-reactive read).
+    pub fn latest(&self) -> Option<T> {
+        self.incoming.get()
+    }
+    /// The connection's current [`SseStatus`] (reactive read).
+    pub fn status(&self) -> SseStatus {
+        self.status.get()
+    }
+}
+
+/// Subscribe to a Server-Sent Events stream (a `#[sse]` endpoint), bound
+/// to the current component scope: connects on mount, **closes on
+/// unmount** (`on_cleanup` → the `EventSource` closer ends the read
+/// loop), with each event's `data:` payload JSON-decoded into `T` and
+/// pushed to the reactive `incoming()` signal. The receive-only SSE
+/// counterpart of [`use_socket`].
+///
+/// ```ignore
+/// #[component]
+/// fn notifications() -> Element {
+///     let feed = use_sse::<Note>(notifications_url());   // a #[sse] client stub returns the URL
+///     ui! { text(move || format!("{:?}", feed.incoming().get())) }
+/// }
+/// ```
+#[cfg(not(feature = "server"))]
+pub fn use_sse<T>(url: impl Into<String>) -> UseSse<T>
+where
+    T: serde::de::DeserializeOwned + Clone + 'static,
+{
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let incoming: runtime_core::Signal<Option<T>> = runtime_core::signal!(None);
+    let status: runtime_core::Signal<SseStatus> = runtime_core::signal!(SseStatus::Connecting);
+
+    let coord = Rc::new(RefCell::new(SseCloseCoord {
+        cancelled: false,
+        closer: None,
+    }));
+
+    {
+        let coord = coord.clone();
+        runtime_core::on_cleanup(move || coord.borrow_mut().close());
+    }
+
+    let url = url.into();
+    runtime_core::driver::spawn_async(async move {
+        match net::EventSource::connect(&url).await {
+            Ok(mut es) => {
+                let closer = es.closer();
+                {
+                    let mut c = coord.borrow_mut();
+                    if c.cancelled {
+                        closer.close();
+                        status.set(SseStatus::Closed);
+                        return;
+                    }
+                    c.closer = Some(closer);
+                }
+                status.set(SseStatus::Open);
+
+                while let Some(res) = es.recv().await {
+                    match res {
+                        Ok(data) => {
+                            if let Ok(value) = serde_json::from_str::<T>(&data) {
+                                incoming.set(Some(value));
+                            }
+                        }
+                        Err(_) => {
+                            status.set(SseStatus::Error);
+                            return;
+                        }
+                    }
+                }
+                status.set(SseStatus::Closed);
+            }
+            Err(_) => status.set(SseStatus::Error),
+        }
+    });
+
+    UseSse { incoming, status }
+}

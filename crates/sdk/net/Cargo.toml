@@ -42,7 +42,7 @@ thiserror = "1"
 # Native desktop HTTP: reqwest with rustls (no native-tls, no OpenSSL).
 # Mobile uses the platform-native HTTP stacks below instead.
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2", "blocking"] }
 
 # WebSocket on ALL native targets (desktop + iOS + Android): sync
 # `tungstenite` driven on a blocking I/O worker thread (no async runtime —
@@ -80,6 +80,7 @@ web-sys = { version = "0.3", features = [
     "CloseEvent",
     "ErrorEvent",
     "Event",
+    "EventSource",
 ] }
 
 # iOS / macOS / tvOS target: NSURLSession via objc2 + block2.

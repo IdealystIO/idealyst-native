@@ -163,6 +163,20 @@ pub(crate) fn ws_url_args(path: &str, args_hex: &str) -> String {
     }
 }
 
+/// The `http(s)://…/_srv/_sse/<path>` event-stream URL (SSE rides plain
+/// HTTP, so no `ws` scheme swap), with optional hex-encoded open args.
+pub(crate) fn sse_url_args(path: &str, args_hex: &str) -> String {
+    let base = snapshot_config()
+        .map(|c| c.base_url.clone())
+        .unwrap_or_default();
+    let url = format!("{}/_srv/_sse/{}", base.trim_end_matches('/'), path);
+    if args_hex.is_empty() {
+        url
+    } else {
+        format!("{url}?args={args_hex}")
+    }
+}
+
 fn to_hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     let mut s = String::with_capacity(bytes.len() * 2);

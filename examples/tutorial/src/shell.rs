@@ -18,11 +18,12 @@ use crate::styles::{
     SidebarSection,
 };
 
-/// Wrap a step page in the screen-scroll surface (background, text
-/// color). The drawer navigator's body is the scroll context.
+/// Wrap a step page in its own scroll surface (background, text color).
+/// The drawer navigator no longer owns scroll — the screen owns it, so
+/// each page provides its own `scroll_view`.
 pub fn layout(content: Element) -> Element {
     let style = ScreenScroll();
-    ui! { view(style = style) { content } }
+    ui! { scroll_view(style = style) { content } }
 }
 
 /// Build the persistent sidebar. Runs once at navigator init; its

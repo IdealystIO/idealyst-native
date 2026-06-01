@@ -79,6 +79,17 @@ async fn count_from(start: u32) -> impl futures_util::Stream<Item = u32> {
     futures_util::stream::iter(vec![start, start + 1, start + 2])
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Ping(u32);
+
+// An #[sse] endpoint: server→client stream over HTTP Server-Sent Events.
+// The macro returns an axum Sse response (server build) and generates
+// `fn pings() -> String` (the event-stream URL) on the client build.
+#[server::sse]
+async fn pings() -> impl futures_util::Stream<Item = Ping> {
+    futures_util::stream::iter(vec![Ping(1), Ping(2), Ping(3)])
+}
+
 // ===========================================================================
 // Server mode: the typed `accept` handler, hit by a raw net::WebSocket.
 // ===========================================================================
@@ -256,6 +267,41 @@ mod server_mode {
             got.push(serde_json::from_str::<u32>(&json).unwrap());
         }
         assert_eq!(got, vec![10, 11, 12]);
+    }
+
+    #[tokio::test]
+    async fn sse_macro_streams_events() {
+        use super::Ping;
+        use futures_util::StreamExt;
+
+        let addr = boot_router().await;
+        let resp = reqwest::Client::new()
+            .get(format!("http://{addr}/_srv/_sse/pings"))
+            .send()
+            .await
+            .unwrap();
+        // It's a real event stream.
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.starts_with("text/event-stream"), "got {ct}");
+
+        // Read the body stream and parse `data: <json>\n\n` events.
+        let mut stream = resp.bytes_stream();
+        let mut buf = String::new();
+        let mut events: Vec<Ping> = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            buf.push_str(&String::from_utf8_lossy(&chunk.unwrap()));
+            while let Some(idx) = buf.find("\n\n") {
+                let frame = buf[..idx].to_string();
+                buf.drain(..idx + 2);
+                if let Some(data) = frame.lines().find_map(|l| l.strip_prefix("data:")) {
+                    events.push(serde_json::from_str::<Ping>(data.trim()).unwrap());
+                }
+            }
+            if events.len() >= 3 {
+                break;
+            }
+        }
+        assert_eq!(events, vec![Ping(1), Ping(2), Ping(3)]);
     }
 }
 

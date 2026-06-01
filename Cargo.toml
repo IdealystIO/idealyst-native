@@ -92,6 +92,7 @@ members = [
     "crates/sdk/storage",
     "crates/sdk/microphone",
     "crates/sdk/credentials",
+    "crates/sdk/files",
 
     # API — full-stack server-functions layer (server fns, transport,
     # auth/middleware, storage). See crates/api/server/DESIGN.md.
@@ -277,6 +278,7 @@ net = { path = "crates/sdk/net" }
 storage = { path = "crates/sdk/storage" }
 microphone = { path = "crates/sdk/microphone" }
 credentials = { path = "crates/sdk/credentials" }
+files = { path = "crates/sdk/files" }
 server = { path = "crates/api/server" }
 server-macros = { path = "crates/api/server-macros" }
 stack-navigator = { path = "crates/sdk/stack-navigator" }
