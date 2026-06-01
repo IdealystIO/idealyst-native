@@ -413,8 +413,14 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
   coalescing happens only inside a `server::batch(future)` scope (a per-poll
   thread-local mirroring `cancel.rs`). Tested: in-scope concurrent calls →
   one `/_srv/_batch`; out-of-scope → N direct requests. (item 8)
-- **Phase 5 — Auth primitives.** client credential source; `net` credentials +
-  cookies; new `storage`/`secure_storage` crate. (item 3)
+- **Phase 5 — Auth primitives. ◑ PARTIAL.** ✅ Client credential source
+  (`ClientConfig::with_credentials` + `bearer` / `credentials_from_fn`), attached
+  to every request (single + batch), tested. ✅ `storage` crate (`crates/sdk/`):
+  async object-safe `Storage` trait + `MemoryStorage` (all targets) +
+  `FileStorage` (native JSON file), tested. Remaining: `net` cookie support
+  (`credentials: 'include'` on web fetch; native cookie jars) and per-platform
+  storage backends (web `localStorage`, iOS UserDefaults/Keychain, Android
+  SharedPreferences/Keystore) — these are per-platform and need device testing. (item 3)
 - **Phase 6 — Enforcement scaffolding.** layered `api`/`ui`/`server-bin` CLI
   templates; clippy `disallowed-types`; colocation cfg-gating recipe. (item 0)
 - **Later — GraphQL BFF recipe.** server fns as a typed gateway over an existing

@@ -1,0 +1,24 @@
+[package]
+name = "storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform persistent key-value storage — the primitive auth needs
+# for token persistence (and apps need for preferences) on every target.
+#
+# An async `Storage` trait with built-in backends:
+#   - MemoryStorage  : in-process (tests, ephemeral) — all targets
+#   - FileStorage    : a JSON file on disk            — native only
+#
+# Per-platform persistent/secure backends (web localStorage, iOS
+# UserDefaults/Keychain, Android SharedPreferences/Keystore) plug into
+# the same trait and are the next step; the trait + the two portable
+# backends are what's implemented and tested today.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
