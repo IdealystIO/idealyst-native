@@ -33,8 +33,15 @@ serde_urlencoded = { version = "0.7", optional = true }
 thiserror = "1"
 
 # Native targets: reqwest with rustls (no native-tls dep, no OpenSSL).
+# WebSocket: sync `tungstenite` driven on a blocking I/O worker thread
+# (no async runtime — see the execution-model invariant), with inbound
+# messages bridged to async via `futures-channel`. `ws://` works today;
+# `wss://` needs a tungstenite TLS feature, added when the platform arms land.
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
+tungstenite = "0.21"
+futures-channel = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # Web (wasm) target: fetch via gloo-net + AbortController for cancel.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -79,3 +86,6 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
+# Echo server for the WebSocket round-trip test.
+tokio-tungstenite = "0.21"
+futures-util = "0.3"

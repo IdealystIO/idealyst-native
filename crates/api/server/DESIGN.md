@@ -379,6 +379,39 @@ registration, `Context`/`FromContext` extractors, middleware, `ServerError<E>`,
 and the schema-hash drift diagnostic. The author's mental model does not fork;
 only the return shape and the transport differ.
 
+### 9.0 Execution model — one scheduler, no per-transport runtime (cross-cutting)
+
+This rule governs `net` HTTP, WebSockets, and future web-worker multithreading
+alike, so it's stated once here:
+
+> **All asynchrony funnels through `runtime_core::driver`. Transports and workers
+> are *event sources* that marshal readiness into the one scheduler installed via
+> `install_scheduler`; at most one executor ever exists, and no transport brings
+> its own runtime.**
+
+The reactive runtime is `!Send` (Rc-based, single-threaded), so the scheduler is
+the *only legal door* into it — I/O may happen on any thread or OS facility, but
+the hand-off that touches signals must cross to the runtime's thread through a
+`Send` wakeup queue (what `install_scheduler` abstracts). Consequences:
+
+- **web / Apple / Android** add **no Rust runtime** — `web_sys::WebSocket`
+  callbacks (browser loop), `URLSessionWebSocketTask` completions (libdispatch),
+  and OkHttp callbacks (Android looper) each ride the OS event loop and marshal
+  into the scheduler. The OS *is* the runtime.
+- **native desktop** is the only target without an OS callback loop the framework
+  already rides: a **blocking I/O worker thread** does the socket reads/writes and
+  hands off to the scheduler via a `Send` channel — a worker, not an executor.
+  If fanning out many sockets ever needs a real executor, install **exactly one**
+  behind `install_scheduler`, shared by HTTP + WS + timers — never a second.
+- **web multithreading** fits without a second runtime: Web Workers / wasm threads
+  are auxiliary compute that post results back (`postMessage` / shared memory +
+  atomics) into the same main-thread scheduler. The reactive runtime never leaves
+  the main thread; a worker is just another event source.
+
+Concretely for WS: the async `recv()` is backed by a `futures_channel` the I/O
+source feeds; its cross-thread waker re-polls under the framework driver — no
+tokio, one scheduler.
+
 ### 9.1 Author primitives
 
 Two front doors, one mechanism. `#[subscription]` is the server→client case;

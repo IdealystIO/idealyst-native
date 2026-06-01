@@ -39,6 +39,7 @@ mod headers;
 mod method;
 mod request;
 mod response;
+mod websocket;
 
 pub use body::{FromBody, IntoBody};
 #[cfg(feature = "form")]
@@ -52,6 +53,7 @@ pub use headers::Headers;
 pub use method::Method;
 pub use request::RequestBuilder;
 pub use response::Response;
+pub use websocket::{WebSocket, WsMessage};
 
 // Platform-specific transport. Exactly one of these is compiled per
 // target; each one supplies the `transport` submodule that `client.rs`
