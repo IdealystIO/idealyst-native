@@ -582,12 +582,21 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
   one `/_srv/_batch`; out-of-scope → N direct requests. (item 8)
 - **Phase 5 — Auth primitives. ◑ PARTIAL.** ✅ Client credential source
   (`ClientConfig::with_credentials` + `bearer` / `credentials_from_fn`), attached
-  to every request (single + batch), tested. ✅ `storage` crate (`crates/sdk/`):
-  async object-safe `Storage` trait + `MemoryStorage` (all targets) +
-  `FileStorage` (native JSON file), tested. Remaining: `net` cookie support
-  (`credentials: 'include'` on web fetch; native cookie jars) and per-platform
-  storage backends (web `localStorage`, iOS UserDefaults/Keychain, Android
-  SharedPreferences/Keystore) — these are per-platform and need device testing. (item 3)
+  to every request (single + batch), tested. ✅ **Response cookies**:
+  `server::set_cookie(Cookie)` / `clear_cookie(name)` — handlers attach a
+  `Set-Cookie` (httpOnly/Secure/SameSite=Lax by default) via a per-request cookie
+  jar the dispatcher drains (single + batch paths); e2e-tested. This is the server
+  half of the web BFF auth pattern. ✅ **Storage split into two honest SDKs**:
+  `storage` (`crates/sdk/storage`) is now plaintext-only KV (`localStorage` /
+  `UserDefaults` / `SharedPreferences` / file, via `platform_storage`); secrets
+  moved to the new `credentials` SDK (`crates/sdk/credentials`): sync object-safe
+  `Credentials` trait + Keychain (apple, host-tested) + AndroidKeyStore AES-GCM
+  (JNI, device-unverified) + web/desktop error-with-guidance. The credential
+  plugs into bearer auth via `server::bearer(|| creds.get("token").ok().flatten())`
+  — native sends a bearer, web sends nothing (the httpOnly cookie carries auth).
+  Remaining: cross-origin `credentials: 'include'` on web fetch + CORS (same-origin
+  BFF already works via fetch's default `same-origin` mode); native cookie jars;
+  Windows/Linux secure backends. (item 3)
 - **Phase 6 — Enforcement scaffolding.** layered `api`/`ui`/`server-bin` CLI
   templates; clippy `disallowed-types`; colocation cfg-gating recipe. (item 0)
 - **Phase 7 — Streaming & WebSockets. ◑ IN PROGRESS.** ✅ `net::WebSocket`
@@ -600,10 +609,31 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
   ends), inbound lands in a reactive `incoming()` signal. All tested both modes
   (the hook's teardown primitive — sender-close-ends-recv — is unit-tested in
   net; the full reactive lifecycle runs in-app under the platform scheduler).
-  Remaining: `#[subscription]`/`#[channel]` macros, per-platform arms
-  (`web_sys`/`URLSessionWebSocketTask`/OkHttp — device-tested), `wss://`
-  (tungstenite TLS feature), and SSE as the cheap one-way option. Sibling
-  transport; shares the spine; decoupled from the dev wire. §9.0 / §9.
+  ✅ **`#[channel]` macro** — generates the axum upgrade handler (runs middleware
+  + resolves extractors at upgrade) and **auto-registers the route**
+  (`router()` folds a `WsEntry` inventory → `GET /_srv/_ws/<path>`); client emits
+  `fn name() -> UseSocket<Out, In>`. ✅ **`#[subscription]` macro** — `async fn …
+  -> impl Stream<Item = M>`; server pumps each item to the socket, client gets a
+  receive-only `UseSocket<M, ()>`. Both reuse the HTTP spine
+  (Context/middleware/extractors/inventory) and are e2e-tested both modes (server
+  round-trips via `router()`; client stubs compile). ✅ **Open (wire) args** on
+  both macros — params after the socket (channel) / any params (subscription)
+  that aren't extractors are encoded as hex JSON in `?args=` on the connect URL,
+  decoded server-side at upgrade (`WsArgsQuery` / `decode_ws_args`); e2e-tested
+  (a prefixed channel, a parameterized stream). ✅ **All platform arms** —
+  `net::WebSocket` compiles and is wired on every target: desktop + iOS/macOS/
+  tvOS run the proven native `tungstenite` arm **with `wss://`** (rustls);
+  **Android** runs plain `tungstenite` **`ws://`-only** (no `ring`/TLS — keeps
+  Android's no-second-TLS-stack posture, mirroring its JNI HTTP); **web** uses
+  `web_sys::WebSocket` (callback-driven, marshalled into async via
+  `futures-channel`, `onclose` ends the stream). Native is runtime-tested;
+  iOS / Android / wasm are compile-verified on their real targets. Concurrent
+  duplex is covered by the cloneable `sender()` (held sender sends while the
+  socket recvs — unit-tested), so no separate `split()`. Follow-ons (not
+  correctness gaps): platform-native `URLSessionWebSocketTask` / OkHttp for OS
+  proxy/background integration; Android `wss://`; and **SSE** as its own package
+  (needs streaming-response support in `net`). Sibling transport; shares the
+  spine; decoupled from the dev wire. §9.0 / §9.
 - **Later — GraphQL BFF recipe.** server fns as a typed gateway over an existing
   GraphQL/REST system; DTOs codegen'd from the upstream schema.
 

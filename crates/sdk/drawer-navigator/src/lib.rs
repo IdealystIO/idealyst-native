@@ -186,22 +186,18 @@ pub struct SlotProps {
     pub close_drawer: Rc<dyn Fn()>,
     /// Pop the stack. No-op on navigators without a stack.
     pub pop: Rc<dyn Fn()>,
-    /// The navigator's scroll surface, when the drawer's body is
-    /// itself the scroll context (default `bottom_in_scroll`
-    /// mode). All the dimension + offset signals (viewport top,
-    /// height/width, scroll x/y, scroll-height/width) plus the
-    /// programmatic `scroll_to` dispatcher live on this typed
-    /// bundle — see [`runtime_core::primitives::navigator::ScrollContext`].
+    /// The navigator's scroll surface, for navigators that own a
+    /// single scroll context. All the dimension + offset signals
+    /// (viewport top, height/width, scroll x/y, scroll-height/width)
+    /// plus the programmatic `scroll_to` dispatcher live on this
+    /// typed bundle — see
+    /// [`runtime_core::primitives::navigator::ScrollContext`].
     ///
-    /// `None` for navigators / modes that don't own a single
-    /// scroll surface (legacy `bottom_pinned` drawer mode, where
-    /// each screen carries its own `ScrollView`). Slots should
-    /// guard accordingly.
-    ///
-    /// Author code in **screens** can read the same bundle via
-    /// the framework-level
-    /// [`runtime_core::primitives::navigator::ambient_scroll_context`]
-    /// — no `SlotProps` plumbing needed.
+    /// **Always `None` for the Drawer navigator** — the drawer never
+    /// owns scroll. Screens (and chrome slots) own their own scroll
+    /// via the `scroll_view` primitive and read its handle directly.
+    /// Other navigators may populate this; slots should guard
+    /// accordingly.
     pub scroll: Option<ScrollContext>,
 }
 
@@ -508,16 +504,6 @@ pub struct DrawerPresentation {
     /// [`DrawerBuilder::trailing_with`]. Uncommon but available
     /// for utility-panel layouts.
     pub trailing_slot: RefCell<Option<SlotBuilder>>,
-    /// When `true` (the default), the drawer's body div is the
-    /// scroll context and the bottom slot mounts inside it as a
-    /// flow sibling AFTER the screen — the footer scrolls with
-    /// content. Screens drop their own `ScrollView` wrappers and
-    /// render directly. Set to `false` via
-    /// [`DrawerBuilder::bottom_pinned`] for the historical
-    /// behavior: body has `overflow: hidden`, each screen owns
-    /// its own scroll context via `ScrollView`, and the bottom
-    /// slot pins to the viewport bottom.
-    pub bottom_in_scroll: bool,
     /// When `true` (the default), drawer screens render the backend's
     /// native header chrome (iOS `UINavigationController` nav bar,
     /// Android `Toolbar`) seeded from each screen's
@@ -577,7 +563,6 @@ impl DrawerPresentation {
             top_slot: RefCell::new(None),
             bottom_slot: RefCell::new(None),
             trailing_slot: RefCell::new(None),
-            bottom_in_scroll: true,
             native_header: true,
         }
     }
@@ -878,22 +863,6 @@ pub trait DrawerBuilder: Sized {
     /// keyboard shortcut, or unit tests setting state directly.
     fn is_open(self, sig: Signal<bool>) -> Self;
 
-    /// Switch the drawer to "bottom slot pins to the viewport"
-    /// mode (the legacy behavior). The default is
-    /// `bottom_in_scroll`: the body div is the scroll context,
-    /// the bottom slot mounts inside it, and the footer scrolls
-    /// with content — typical for docs sites and content-heavy
-    /// drawers. Use `bottom_pinned()` when the footer must stay
-    /// visible regardless of scroll position (e.g., a persistent
-    /// command bar / status strip).
-    ///
-    /// Effect on screens: in `bottom_pinned` mode the body is
-    /// `overflow: hidden` and each screen must provide its own
-    /// scroll context (typically a `ScrollView` wrapper). In the
-    /// default `bottom_in_scroll` mode the body provides
-    /// scrolling and screens render as flow content.
-    fn bottom_pinned(self) -> Self;
-
     /// Suppress the backend's native header chrome (iOS nav bar,
     /// Android `Toolbar`) on every screen so the app owns its header at
     /// the page level. Pass `false` to opt the whole navigator out;
@@ -1143,13 +1112,6 @@ impl DrawerBuilder for Bound<DrawerHandle> {
         // mutability.
         with_presentation_mut(&mut self, |p| {
             p.is_open = sig;
-        });
-        self
-    }
-
-    fn bottom_pinned(mut self) -> Self {
-        with_presentation_mut(&mut self, |p| {
-            p.bottom_in_scroll = false;
         });
         self
     }

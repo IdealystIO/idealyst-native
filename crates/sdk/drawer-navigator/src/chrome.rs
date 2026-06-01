@@ -15,11 +15,10 @@
 //! Structure (mirrors `web-navigator-helpers`):
 //! `column[ top?, row[ sidebar?, body-outlet, trailing? ], bottom? ]`.
 //! Wrappers are created only when their slot is set (no empty gutters).
-//! The body outlet carries `ui-nav-drawer-body` plus
-//! `ui-nav-drawer-body-scrolls` in the default `bottom_in_scroll` mode,
-//! where the footer is the body's last child (after the screen) and
-//! scrolls with it; in `bottom_pinned` mode the footer is a sibling of
-//! the middle row and stays pinned.
+//! The body outlet carries `ui-nav-drawer-body` — a plain flex container,
+//! never a scroll context. The navigator never owns scroll; screens own
+//! their own via the `scroll_view` primitive. The bottom slot is always a
+//! pinned sibling of the middle row.
 //!
 //! Each chrome slot is an author closure producing an `Element`, so it's
 //! materialized via `host.build_node_into` — deferred to a microtask
@@ -50,14 +49,11 @@ use std::rc::Rc;
 pub struct DrawerChromeHandler<B: Backend> {
     /// Where the path-matched screen mounts (the body outlet).
     outlet: Option<B::Node>,
-    /// In `bottom_in_scroll` mode the footer is already the body's last
-    /// child, so the screen must mount BEFORE it (index 0).
-    screen_at_front: bool,
 }
 
 impl<B: Backend> DrawerChromeHandler<B> {
     pub fn new() -> Self {
-        Self { outlet: None, screen_at_front: false }
+        Self { outlet: None }
     }
 }
 
@@ -160,15 +156,13 @@ impl<B: Backend + 'static> NavigatorHandler<B> for DrawerChromeHandler<B> {
         let mut middle = backend.create_view(&a11y);
         backend.attach_html_class(&middle, cls::DRAWER_MIDDLE);
 
-        // body outlet — always present; the screen mounts here.
+        // body outlet — always present; the screen mounts here. A plain
+        // flex container, never a scroll context (the navigator doesn't
+        // own scroll; screens do, via the `scroll_view` primitive).
         let outlet = backend.create_view(&a11y);
         backend.attach_html_class(&outlet, cls::DRAWER_BODY);
 
         let pres = presentation.downcast_ref::<DrawerPresentation>();
-        let bottom_in_scroll = pres.map(|p| p.bottom_in_scroll).unwrap_or(true);
-        if bottom_in_scroll {
-            backend.attach_html_class(&outlet, cls::DRAWER_BODY_SCROLLS);
-        }
 
         if let Some(pres) = pres {
             let bni = &host.build_node_into;
@@ -216,20 +210,14 @@ impl<B: Backend + 'static> NavigatorHandler<B> for DrawerChromeHandler<B> {
             // middle is always present (holds the body outlet).
             backend.insert(&mut root, middle);
 
-            // --- Bottom (optional) ---
+            // --- Bottom (optional) — always a pinned sibling of the
+            // middle row. The navigator never scrolls, so the footer can't
+            // "scroll with content"; an app that wants that puts the footer
+            // inside its own screen `scroll_view`.
             if let Some(builder) = pres.bottom_slot.borrow_mut().take() {
                 let bottom = backend.create_view(&a11y);
                 backend.attach_html_class(&bottom, cls::DRAWER_BOTTOM);
-                if bottom_in_scroll {
-                    // Footer is the body's last child and scrolls with the
-                    // content; the screen mounts before it (see
-                    // `attach_initial`), matching the web layout.
-                    backend.insert(&mut outlet.clone(), bottom.clone());
-                    self.screen_at_front = true;
-                } else {
-                    // Pinned footer: sibling of the middle row.
-                    backend.insert(&mut root, bottom.clone());
-                }
+                backend.insert(&mut root, bottom.clone());
                 defer_slot::<B>(bni, control, bottom, make_slot_props(nav), builder);
             }
         } else {
@@ -250,13 +238,7 @@ impl<B: Backend + 'static> NavigatorHandler<B> for DrawerChromeHandler<B> {
         _options: Box<dyn Any>,
     ) {
         if let Some(mut outlet) = self.outlet.clone() {
-            if self.screen_at_front {
-                // Footer is already the body's last child; the screen
-                // mounts before it so order is [screen, footer].
-                backend.insert_at(&mut outlet, screen, 0);
-            } else {
-                backend.insert(&mut outlet, screen);
-            }
+            backend.insert(&mut outlet, screen);
         }
     }
 }

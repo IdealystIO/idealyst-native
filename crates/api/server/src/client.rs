@@ -145,6 +145,33 @@ pub(crate) fn ws_url(path: &str) -> String {
     format!("{}/_srv/_ws/{}", ws_base.trim_end_matches('/'), path)
 }
 
+/// Encode a channel/subscription's open-args tuple as hex JSON for the
+/// connect URL's `?args=` param. Hex is URL-safe (no escaping needed)
+/// and the args are tiny.
+pub(crate) fn encode_ws_args<T: serde::Serialize>(args: &T) -> String {
+    let bytes = serde_json::to_vec(args).unwrap_or_default();
+    to_hex(&bytes)
+}
+
+/// Append the hex-encoded open args to the `ws://…/_srv/_ws/<path>` URL.
+pub(crate) fn ws_url_args(path: &str, args_hex: &str) -> String {
+    let base = ws_url(path);
+    if args_hex.is_empty() {
+        base
+    } else {
+        format!("{base}?args={args_hex}")
+    }
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
 /// Lazily-constructed shared [`net::Client`]. One per process — the
 /// inner reqwest pool reuses connections across calls.
 static NET_CLIENT: OnceLock<net::Client> = OnceLock::new();

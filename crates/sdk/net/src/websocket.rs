@@ -100,10 +100,12 @@ impl WsSender {
 }
 
 // ---------------------------------------------------------------------------
-// Native arm: sync tungstenite on a blocking I/O worker thread.
+// Native arm: sync tungstenite on a blocking I/O worker thread. Used on
+// every native target (desktop + iOS + Android) — all have TCP sockets
+// and threads.
 // ---------------------------------------------------------------------------
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod imp {
     use super::WsMessage;
     use crate::error::Error;
@@ -327,8 +329,13 @@ mod imp {
     ) -> std::io::Result<()> {
         match socket.get_mut() {
             MaybeTlsStream::Plain(s) => s.set_nonblocking(true),
-            // TLS variants are only present with a tungstenite TLS feature
-            // (not yet enabled); the catch-all keeps this exhaustive.
+            // `wss://` via rustls: set non-blocking on the underlying TCP
+            // socket beneath the TLS layer. The `Rustls` variant only
+            // exists where tungstenite's TLS feature is on (everywhere but
+            // Android — see Cargo.toml).
+            #[cfg(not(target_os = "android"))]
+            MaybeTlsStream::Rustls(s) => s.get_ref().set_nonblocking(true),
+            // Non-exhaustive enum; any other variant defaults to blocking.
             _ => Ok(()),
         }
     }
@@ -373,43 +380,158 @@ mod imp {
 }
 
 // ---------------------------------------------------------------------------
-// Other platforms: stub so the crate compiles everywhere. Real arms
-// (web_sys / URLSessionWebSocketTask / OkHttp) land per platform.
+// Web arm: web_sys::WebSocket (callback-driven, no Rust runtime).
 // ---------------------------------------------------------------------------
 
-#[cfg(any(target_arch = "wasm32", target_os = "ios", target_os = "android"))]
+#[cfg(target_arch = "wasm32")]
 mod imp {
     use super::WsMessage;
     use crate::error::Error;
 
-    pub struct WebSocketImpl;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
-    pub async fn connect(_url: &str) -> Result<WebSocketImpl, Error> {
-        Err(Error::Other(
-            "WebSocket is not yet implemented on this platform".into(),
-        ))
+    use futures_channel::mpsc as fut_mpsc;
+    use futures_channel::oneshot;
+    use futures_util::StreamExt;
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::{JsCast, JsValue};
+    use web_sys::{BinaryType, CloseEvent, Event, MessageEvent, WebSocket as WebSysWs};
+
+    /// Single inbound sender, shared by the event closures. `onclose`
+    /// drops it (sets `None`) so the consumer's `recv()` yields `None`.
+    type SenderCell = Rc<RefCell<Option<fut_mpsc::UnboundedSender<Result<WsMessage, Error>>>>>;
+
+    pub struct WebSocketImpl {
+        ws: WebSysWs,
+        inbound: fut_mpsc::UnboundedReceiver<Result<WsMessage, Error>>,
+        // Closures must outlive the socket so the browser can call them.
+        _onmessage: Closure<dyn FnMut(MessageEvent)>,
+        _onclose: Closure<dyn FnMut(CloseEvent)>,
+        _onerror: Closure<dyn FnMut(Event)>,
+    }
+
+    pub async fn connect(url: &str) -> Result<WebSocketImpl, Error> {
+        let ws = WebSysWs::new(url).map_err(js_err)?;
+        ws.set_binary_type(BinaryType::Arraybuffer);
+
+        let (in_tx, in_rx) = fut_mpsc::unbounded::<Result<WsMessage, Error>>();
+        let sender: SenderCell = Rc::new(RefCell::new(Some(in_tx)));
+        let (open_tx, open_rx) = oneshot::channel::<Result<(), Error>>();
+        let open_tx = Rc::new(RefCell::new(Some(open_tx)));
+
+        // onmessage → decode + push into the inbound channel.
+        let onmessage = {
+            let sender = sender.clone();
+            Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
+                let data = e.data();
+                let msg = if let Some(txt) = data.as_string() {
+                    Some(WsMessage::Text(txt))
+                } else if let Ok(buf) = data.dyn_into::<js_sys::ArrayBuffer>() {
+                    Some(WsMessage::Binary(js_sys::Uint8Array::new(&buf).to_vec()))
+                } else {
+                    None
+                };
+                if let (Some(m), Some(tx)) = (msg, sender.borrow().as_ref()) {
+                    let _ = tx.unbounded_send(Ok(m));
+                }
+            })
+        };
+        ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+
+        // onopen → resolve `connect` once.
+        let onopen = {
+            let open_tx = open_tx.clone();
+            Closure::<dyn FnMut(Event)>::new(move |_| {
+                if let Some(t) = open_tx.borrow_mut().take() {
+                    let _ = t.send(Ok(()));
+                }
+            })
+        };
+        ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
+
+        // onclose → drop the sender so `recv()` ends with `None`.
+        let onclose = {
+            let sender = sender.clone();
+            Closure::<dyn FnMut(CloseEvent)>::new(move |_| {
+                *sender.borrow_mut() = None;
+            })
+        };
+        ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
+
+        // onerror → fail `connect` if still pending; otherwise it precedes
+        // an onclose which ends the stream.
+        let onerror = {
+            let open_tx = open_tx.clone();
+            Closure::<dyn FnMut(Event)>::new(move |_| {
+                if let Some(t) = open_tx.borrow_mut().take() {
+                    let _ = t.send(Err(Error::Network("websocket error".into())));
+                }
+            })
+        };
+        ws.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+
+        // Await the handshake. `onopen` is only needed until this resolves.
+        let result = open_rx
+            .await
+            .unwrap_or_else(|_| Err(Error::Network("websocket open cancelled".into())));
+        drop(onopen);
+        result?;
+
+        Ok(WebSocketImpl {
+            ws,
+            inbound: in_rx,
+            _onmessage: onmessage,
+            _onclose: onclose,
+            _onerror: onerror,
+        })
     }
 
     impl WebSocketImpl {
-        pub fn send(&self, _msg: WsMessage) -> Result<(), Error> {
-            Err(Error::Other("WebSocket unimplemented on this platform".into()))
+        pub fn send(&self, msg: WsMessage) -> Result<(), Error> {
+            send_on(&self.ws, msg)
         }
         pub async fn recv(&mut self) -> Option<Result<WsMessage, Error>> {
-            None
+            self.inbound.next().await
         }
-        pub fn close(&self) {}
+        pub fn close(&self) {
+            let _ = self.ws.close();
+        }
         pub fn sender(&self) -> WsSenderImpl {
-            WsSenderImpl
+            WsSenderImpl {
+                ws: self.ws.clone(),
+            }
         }
     }
 
+    /// Cloneable send handle — a clone of the JS `WebSocket` (a handle).
     #[derive(Clone)]
-    pub struct WsSenderImpl;
+    pub struct WsSenderImpl {
+        ws: WebSysWs,
+    }
 
     impl WsSenderImpl {
-        pub fn send(&self, _msg: WsMessage) -> Result<(), Error> {
-            Err(Error::Other("WebSocket unimplemented on this platform".into()))
+        pub fn send(&self, msg: WsMessage) -> Result<(), Error> {
+            send_on(&self.ws, msg)
         }
-        pub fn close(&self) {}
+        pub fn close(&self) {
+            let _ = self.ws.close();
+        }
+    }
+
+    fn send_on(ws: &WebSysWs, msg: WsMessage) -> Result<(), Error> {
+        match msg {
+            WsMessage::Text(s) => ws.send_with_str(&s).map_err(js_err),
+            WsMessage::Binary(b) => ws.send_with_u8_array(&b).map_err(js_err),
+        }
+    }
+
+    fn js_err(e: JsValue) -> Error {
+        Error::Network(format!("{e:?}"))
     }
 }
+
+// iOS and Android use the native `tungstenite` arm above (they're native
+// Rust targets with TCP sockets + threads). A platform-native arm
+// (`URLSessionWebSocketTask` / OkHttp) for OS proxy/background integration
+// is a documented follow-on, not a correctness gap.

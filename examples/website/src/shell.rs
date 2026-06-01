@@ -33,7 +33,8 @@ use crate::routes::{
 use crate::styles::{
     Footer, FooterBottom, FooterBrand, FooterColumn, FooterCopy, FooterGrid, FooterLink,
     FooterTagline, FooterTitle, FooterWordmark, MobileHeader, MobileHeaderButton,
-    MobileHeaderTitle, MobileHeaderTitleWrap, NavLink, NavLinkActive, PageColumn, PageRow, ScreenScroll,
+    MobileHeaderTitle, MobileHeaderTitleWrap, NavLink, NavLinkActive, PageColumn, PageRow,
+    PageScrollColumn, ScreenScroll,
     SidebarBody, SidebarBrandRow, SidebarBrandText, SidebarFooter, SidebarHeader, SidebarLogo,
     SidebarSection, TocHeader, TocLink, TocPanel,
 };
@@ -52,23 +53,25 @@ pub struct TocEntry {
     pub label: &'static str,
 }
 
-/// Render a screen's content directly — no `ScrollView` wrapper.
+/// Wrap a screen's content in the website's OWN `scroll_view`.
 ///
-/// The drawer navigator's default `bottom_in_scroll` mode makes
-/// the navigator's body div the scroll context. Screens render as
-/// flow content; the body scrolls them along with the persistent
-/// footer (in the `bottom` slot) as a single column. Wrapping in
-/// a per-screen `ScrollView` would create a nested scroll surface
-/// and the footer would never come into view.
+/// The drawer navigator no longer owns scroll — its body is a
+/// non-scrolling flex child and `ambient_scroll_context()` always
+/// returns `None`. So each page provides its own scroll surface: a
+/// `scroll_view` that fills the navigator body and scrolls the page
+/// content together with the site footer as a single column. The
+/// footer is the LAST child INSIDE the `scroll_view`, so it scrolls
+/// into view at the end of the page rather than being a pinned slot.
 ///
-/// The mobile header and site footer live in the navigator's
-/// `top` and `bottom` slots — see `lib.rs`'s `.top_with(...)` /
-/// `.bottom_with(...)`. This function just returns the page
-/// content wrapped in a styled `View` (background, font).
+/// The mobile header still lives in the navigator's `top` slot — see
+/// `lib.rs`'s `.top_with(...)`. There is no `bottom` slot anymore.
 pub fn layout(content: Element) -> Element {
     let style = ScreenScroll();
     ui! {
-        view(style = style) { content }
+        scroll_view(style = style) {
+            content
+            footer()
+        }
     }
 }
 
@@ -115,18 +118,28 @@ pub fn layout_with_toc(content: Element, entries: Vec<TocEntry>) -> Element {
     let row_style = crate::responsive::responsive_style(PageRow::sheet());
     let column_style = PageColumn();
 
-    // Read the navigator's scroll signal directly via the
-    // framework's ambient scroll context. No per-screen
-    // `ScrollView` needed since the drawer's body is the scroll
-    // context. Falls back to a local signal if the ambient isn't
-    // published yet (very early build); in practice it's
-    // published by the time any screen builds.
-    let scroll_y: Signal<f32> = runtime_core::primitives::navigator::ambient_scroll_context()
-        .map(|ctx| ctx.scroll_y)
-        .unwrap_or_else(|| signal!(0.0_f32));
+    // The website owns its own scroll now (the drawer navigator no
+    // longer publishes a scroll context). Drive `scroll_y` from the
+    // page `scroll_view`'s `on_scroll` callback instead of reading
+    // `ambient_scroll_context()`.
+    let scroll_y: Signal<f32> = signal!(0.0_f32);
     let active_idx: Signal<Option<usize>> = signal!(None);
 
-    install_scroll_spy(entries.clone(), scroll_y, active_idx);
+    // Geometry handles, all in WINDOW coordinates via
+    // `ViewHandle::absolute_frame()`:
+    //   - `viewport_ref`  → the scroll viewport wrapper. Its frame's
+    //     `.y` is the body's top edge (`body_viewport_top`) and its
+    //     `.height` is the visible (client) height.
+    //   - `content_ref`   → the inner content column wrapping the
+    //     whole scrolled tree (page row + footer). Its frame's
+    //     `.height` is the total scrollable content height.
+    //   - `scroll_ref`    → the `scroll_view` handle, used by TOC
+    //     clicks to `scroll_to(0, target)`.
+    let viewport_ref: Ref<ViewHandle> = Ref::<ViewHandle>::new();
+    let content_ref: Ref<ViewHandle> = Ref::<ViewHandle>::new();
+    let scroll_ref: Ref<ScrollViewHandle> = Ref::<ScrollViewHandle>::new();
+
+    install_scroll_spy(entries.clone(), scroll_y, active_idx, viewport_ref, content_ref);
 
     // The TOC ("On this page") column is only rendered at Lg or
     // wider — below that it crowds the prose. `when(...)` swaps
@@ -138,17 +151,39 @@ pub fn layout_with_toc(content: Element, entries: Vec<TocEntry>) -> Element {
         move || {
             matches!(current_breakpoint().get(), Breakpoint::Lg | Breakpoint::Xl)
         },
-        move || render_toc(toc_entries.clone(), active_idx, scroll_y),
+        move || render_toc(
+            toc_entries.clone(),
+            active_idx,
+            scroll_y,
+            scroll_ref,
+            viewport_ref,
+            content_ref,
+        ),
         || view(Vec::<Element>::new()).into_element(),
     );
 
     let body_style = ScreenScroll();
+    // The scroll viewport wrapper tightly wraps the `scroll_view`
+    // (which fills it via `ScreenScroll`'s flex_grow), so the
+    // wrapper's `absolute_frame()` reports the visible scroll box.
+    let viewport_wrap_style = ScreenScroll();
+    // `content_col_style` is a plain content-sized flex column that
+    // holds the entire scrolled tree (the page row + the footer) so a
+    // single `absolute_frame().height` reads the total content height.
+    let content_col_style = PageScrollColumn();
     ui! {
-        view(style = body_style) {
-            view(style = row_style) {
-                view(style = column_style) { content }
-                toc
+        view(style = viewport_wrap_style).bind(viewport_ref) {
+            scroll_view(style = body_style) {
+                view(style = content_col_style).bind(content_ref) {
+                    view(style = row_style) {
+                        view(style = column_style) { content }
+                        toc
+                    }
+                    footer()
+                }
             }
+                .bind(scroll_ref)
+                .on_scroll(move |_x, y| scroll_y.set(y))
         }
     }
 }
@@ -216,11 +251,13 @@ pub fn FooterLinkInternal(props: FooterLinkInternalProps) -> Element {
     }
 }
 
-/// Build the site-wide footer. Inlined into every screen by
-/// [`layout`] / [`layout_with_toc`] inside the screen's ScrollView,
-/// so it scrolls with content. Mounted unconditionally; CSS variant
-/// switching handles narrow-viewport stacking via the `size`
-/// variant on the footer stylesheets.
+/// Build the site-wide footer. Rendered as the LAST child inside the
+/// page's own `scroll_view` by [`layout`] / [`layout_with_toc`], so
+/// it scrolls in at the end of the page content (it is no longer a
+/// pinned navigator `bottom` slot — the drawer no longer owns
+/// scroll). Mounted unconditionally; CSS variant switching handles
+/// narrow-viewport stacking via the `size` variant on the footer
+/// stylesheets.
 pub fn footer() -> Element {
     let footer_style = crate::responsive::responsive_style(Footer::sheet());
     let grid_style = crate::responsive::responsive_style(FooterGrid::sheet());
@@ -334,13 +371,17 @@ pub fn mobile_header(slot: SlotProps) -> Element {
 }
 
 /// Render the TOC panel. The active highlight is driven by
-/// `active_idx`; clicks call the navigator's ambient
-/// [`ScrollContext::scroll_to`] dispatcher to scroll the body to
-/// the matching section.
+/// `active_idx`; clicks call the page `scroll_view`'s
+/// [`ScrollViewHandle::scroll_to`] (via `scroll_ref`) to scroll the
+/// body to the matching section. `viewport_ref` / `content_ref`
+/// supply the body geometry the click target math needs.
 fn render_toc(
     entries: Vec<TocEntry>,
     active_idx: Signal<Option<usize>>,
     scroll_y: Signal<f32>,
+    scroll_ref: Ref<ScrollViewHandle>,
+    viewport_ref: Ref<ViewHandle>,
+    content_ref: Ref<ViewHandle>,
 ) -> Element {
     let panel_style = TocPanel();
     let header_style = TocHeader();
@@ -350,7 +391,7 @@ fn render_toc(
         text(style = header_style) { "On this page" }
     });
     for (i, entry) in entries.iter().enumerate() {
-        children.push(toc_link(i, *entry, active_idx, scroll_y));
+        children.push(toc_link(i, *entry, active_idx, scroll_y, scroll_ref, viewport_ref, content_ref));
     }
 
     ui! { view(style = panel_style) { children } }
@@ -358,13 +399,16 @@ fn render_toc(
 
 /// One TOC link. The style closure reads `active_idx` reactively
 /// to flip the `active` variant. Click computes the target Y in
-/// the navigator-body's scroll coords and dispatches via the
-/// ambient `ScrollContext`.
+/// the page `scroll_view`'s scroll coords and dispatches via the
+/// bound [`ScrollViewHandle`] (`scroll_ref`).
 fn toc_link(
     index: usize,
     entry: TocEntry,
     active_idx: Signal<Option<usize>>,
     scroll_y: Signal<f32>,
+    scroll_ref: Ref<ScrollViewHandle>,
+    viewport_ref: Ref<ViewHandle>,
+    content_ref: Ref<ViewHandle>,
 ) -> Element {
     let label_text = entry.label.to_string();
     let style = move || {
@@ -396,12 +440,10 @@ fn toc_link(
             .map(|r| r.y)
             .unwrap_or(0.0);
         let current_scroll = scroll_y.get();
-        let dims = read_body_scroll_dims(current_scroll);
+        let dims = read_body_scroll_dims(current_scroll, viewport_ref, content_ref);
         let section_body_y = section_window_y - dims.body_viewport_top;
         let target = (current_scroll + section_body_y - dims.band_y).max(0.0);
-        if let Some(ctx) = runtime_core::primitives::navigator::ambient_scroll_context() {
-            (ctx.scroll_to)(0.0, target);
-        }
+        scroll_ref.with(|h| h.scroll_to(0.0, target));
     });
     runtime_core::IntoElement::into_element(bound)
 }
@@ -416,19 +458,25 @@ fn toc_link(
 /// One author tree, every backend \u{2014} the per-platform plumbing
 /// is the `ScrollView::on_scroll` callback and
 /// `ViewHandle::absolute_frame()`, both Backend-trait primitives.
-/// Snapshot of the navigator-body metrics needed for scroll-spy
-/// math, derived from the framework-level
-/// [`runtime_core::primitives::navigator::ambient_scroll_context`].
-/// No `web_sys`, no `cfg(target_arch)` — the navigator is the
-/// abstraction boundary.
+/// Snapshot of the scroll-surface metrics needed for scroll-spy
+/// math, reconstructed app-side from `ViewHandle::absolute_frame()`
+/// (the website owns its scroll now — there's no navigator scroll
+/// context to read). `ScrollViewHandle` is write-only, so the
+/// viewport height, content height, and viewport top all come from
+/// two bound `ViewHandle`s:
+///   - `viewport_ref` → the scroll viewport wrapper: `.y` is the
+///     body's top edge, `.height` is the visible (client) height.
+///   - `content_ref`  → the content column: `.height` is the total
+///     scrollable content height.
+/// No `web_sys`, no `cfg(target_arch)` — `absolute_frame()` is a
+/// Backend-trait primitive, uniform across every backend.
 ///
-/// Returns sane defaults when the ambient scroll context isn't
-/// published yet (no scrollable navigator mounted): a 160 px
-/// fixed band, "never near bottom", and a zero viewport top.
-/// These never run in practice on a real page (by the time a
-/// screen mounts, the drawer's web handler has run its initial
-/// measurement) — they exist so the spy effect's first read is
-/// well-defined.
+/// Returns sane defaults when either frame isn't measured yet
+/// (`absolute_frame()` is `None` on the very first build pass before
+/// layout has run): a 160 px fixed band, "never near bottom", and a
+/// zero viewport top. These exist so the spy effect's first read is
+/// well-defined; a real page re-runs the effect once layout reports
+/// frames.
 struct ScrollDims {
     band_y: f32,
     near_bottom: bool,
@@ -438,13 +486,24 @@ struct ScrollDims {
     body_viewport_top: f32,
 }
 
-fn read_body_scroll_dims(current_scroll: f32) -> ScrollDims {
-    let Some(ctx) = runtime_core::primitives::navigator::ambient_scroll_context() else {
+fn read_body_scroll_dims(
+    current_scroll: f32,
+    viewport_ref: Ref<ViewHandle>,
+    content_ref: Ref<ViewHandle>,
+) -> ScrollDims {
+    let viewport = viewport_ref.with(|h| h.absolute_frame()).flatten();
+    let Some(viewport) = viewport else {
         return ScrollDims { band_y: 160.0, near_bottom: false, body_viewport_top: 0.0 };
     };
-    let height = ctx.height.get();
-    let scroll_h = ctx.scroll_height.get();
-    let viewport_top = ctx.viewport_top.get();
+    let height = viewport.height;
+    let viewport_top = viewport.y;
+    // Content height = the scrolled column's frame height. Falls back
+    // to the viewport height (→ "never near bottom") until measured.
+    let scroll_h = content_ref
+        .with(|h| h.absolute_frame())
+        .flatten()
+        .map(|r| r.height)
+        .unwrap_or(height);
     let band_y = if height > 0.0 {
         (height * ACTIVE_BAND_FRACTION).max(80.0)
     } else {
@@ -459,6 +518,8 @@ fn install_scroll_spy(
     entries: Vec<TocEntry>,
     scroll_y: Signal<f32>,
     active_idx: Signal<Option<usize>>,
+    viewport_ref: Ref<ViewHandle>,
+    content_ref: Ref<ViewHandle>,
 ) {
     effect!({
         // Subscribe to scroll position. The `get()` registers this
@@ -474,7 +535,7 @@ fn install_scroll_spy(
         // cross a fixed band), and (b) detect "at the bottom of
         // scroll" so the last entry force-selects even if it's
         // shorter than the band-to-bottom gap.
-        let dims = read_body_scroll_dims(current_scroll);
+        let dims = read_body_scroll_dims(current_scroll, viewport_ref, content_ref);
 
         if dims.near_bottom && !entries.is_empty() {
             let last = Some(entries.len() - 1);

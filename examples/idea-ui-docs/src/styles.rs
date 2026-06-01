@@ -17,12 +17,34 @@ stylesheet! {
         base(_t) {
             flex_direction: FlexDirection::Column,
             width: Length::pct(100.0),
+            // Fill the remaining height under the (conditional) top bar
+            // so the page body scrolls inside its own region.
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            flex_basis: 0.0,
             background: Tokenized::token("color-background", Color("#f7f8fb".into())),
             color: Tokenized::token("color-text", Color("#1a1a1f".into())),
         }
         transitions {
             background: 250ms EaseInOut,
             color: 250ms EaseInOut,
+        }
+    }
+}
+
+// Outer column for each screen: the (conditional) hamburger top bar
+// stacked over the scrolling page body. Fills the navigator's body
+// outlet so the scroll view can take the leftover height.
+stylesheet! {
+    pub PageColumn<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            width: Length::pct(100.0),
+            height: Length::pct(100.0),
+            background: Tokenized::token("color-background", Color("#f7f8fb".into())),
+        }
+        transitions {
+            background: 250ms EaseInOut,
         }
     }
 }
@@ -51,6 +73,43 @@ stylesheet! {
         breakpoint md(_t) {
             padding: 48.0,
             gap: 28.0,
+        }
+    }
+}
+
+// ---- Mobile top bar + hamburger -------------------------------------------
+
+// Persistent top strip that hosts the hamburger on narrow viewports.
+// Only rendered when the drawer is collapsed (below the pin width), so
+// it never shows on wide layouts where the sidebar is pinned.
+stylesheet! {
+    pub TopBar<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_bottom_width: 1.0,
+            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_bottom_color: 250ms EaseInOut,
+        }
+    }
+}
+
+// The hamburger itself — a square pressable that tints the menu glyph
+// with the theme's text color.
+stylesheet! {
+    pub MenuButton<()> {
+        base(_t) {
+            width: Length::Px(40.0),
+            height: Length::Px(40.0),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
         }
     }
 }

@@ -42,8 +42,6 @@ pub mod nav_class {
     pub const DRAWER_TRAILING: &str = "ui-nav-drawer-trailing";
     /// Body outlet (screens mount here).
     pub const DRAWER_BODY: &str = "ui-nav-drawer-body";
-    /// Body outlet in `bottom_in_scroll` mode (body is the scroll context).
-    pub const DRAWER_BODY_SCROLLS: &str = "ui-nav-drawer-body-scrolls";
 }
 
 /// The canonical navigator layout stylesheet **base** — the structural
@@ -69,9 +67,11 @@ pub mod nav_class {
 /// first paint matches the live web layout exactly (no style-flash on
 /// hydration).
 ///
-/// See [`nav_class`] for the class names. Scrolling here is expressed as
-/// `overflow-y: auto` on the chrome wrappers (a layout concern owned by
-/// the navigator), distinct from the framework's `ScrollView` primitive.
+/// See [`nav_class`] for the class names. The chrome wrappers (sidebar,
+/// trailing) scroll their own overflow via `overflow-y: auto` — that's
+/// navigator chrome. The body outlet does NOT scroll: the navigator never
+/// owns the screen's scroll, screens own theirs via the `ScrollView`
+/// primitive.
 pub const NAVIGATOR_LAYOUT_CSS: &str = concat!(
     ".ui-nav-root{position:relative;width:100%;height:100%;}",
     ".ui-nav-screen{position:absolute!important;inset:0!important;width:100%;height:100%;}",
@@ -92,9 +92,11 @@ pub const NAVIGATOR_LAYOUT_CSS: &str = concat!(
     // Body fills the full width in the mobile base (the sidebar is fixed /
     // out of flow). The `@media` overlay drops `width:100%` so the pinned
     // sidebar reclaims its track.
-    ".ui-nav-drawer-body{flex:1 1 auto;position:relative;height:100%;overflow:hidden;width:100%;}",
-    ".ui-nav-drawer-body-scrolls{flex:1 1 auto;position:relative;height:100%;overflow-y:auto;display:flex;flex-direction:column;}",
-    ".ui-nav-drawer-body-scrolls>*{flex-shrink:0;}",
+    // A plain flex container, never a scroll context. The navigator does
+    // not own scroll; screens own theirs via the `scroll_view` primitive.
+    // `overflow:hidden` clips a non-scrolling screen to the body rather
+    // than letting it overflow the shell.
+    ".ui-nav-drawer-body{flex:1 1 auto;position:relative;height:100%;overflow:hidden;width:100%;display:flex;flex-direction:column;}",
 );
 
 /// The pinned-sidebar overlay rules — wrapped in `@media (min-width: …)`

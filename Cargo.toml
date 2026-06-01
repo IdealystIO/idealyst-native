@@ -148,6 +148,7 @@ members = [
     "examples/stack-demo",
     "examples/server-fn-demo",
     "examples/mic-demo",
+    "examples/login-demo",
     "examples/mcp-demo",
     "examples/fiddle",
     "examples/website",

@@ -1,0 +1,62 @@
+[package]
+name = "login-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Full-stack login demo: a #[server] login sets an httpOnly session cookie (the BFF pattern), an auth-guard middleware reads it for Auth<Principal>, and a CSRF Origin guard + SameSite cookie defend against cross-site requests. Run with `idealyst build --web` + `cargo run --bin server --features server`."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+server = ["server/server", "dep:axum", "dep:tokio", "dep:tower-http"]
+# Enabled only by the CLI-generated native sidecar wrapper.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+server = { workspace = true }
+dev-server = { workspace = true, optional = true }
+net = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+serde = { version = "1", features = ["derive"] }
+idea-ui = { workspace = true }
+# Native session-token storage (Keychain / AndroidKeyStore). On web it's the
+# error-only stub and goes unused — the cookie is the web mechanism.
+credentials = { workspace = true }
+
+# wasm client needs the page origin for same-origin server-fn calls.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Location"] }
+
+# Server-only deps. Gated by `server` so the wasm build skips axum/tokio.
+[dependencies.axum]
+version = "0.7"
+optional = true
+[dependencies.tokio]
+version = "1"
+features = ["macros", "rt-multi-thread", "sync"]
+optional = true
+[dependencies.tower-http]
+version = "0.6"
+features = ["fs"]
+optional = true
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
+required-features = ["server"]
+
+[package.metadata.idealyst.app]
+name      = "Login Demo"
+bundle_id = "ai.truday.idealyst.logindemo"
+version   = "0.0.1"
+# Run THIS crate's `server` bin (which serves both /_srv/* and the static
+# bundle) for `idealyst dev --web`, instead of the static-only dev server.
+# Without this, the login POST hits a server with no /_srv routes → 405.
+server_bin = "server"
+# Web uses the BFF / httpOnly-cookie flow; native (iOS/Android) authenticates
+# with a bearer token stored in the `credentials` Keychain/Keystore. Both hit
+# the same server. (Android's INTERNET permission is injected automatically
+# via the `internet` capability `net` declares.)
+targets   = ["web", "android", "ios"]

@@ -167,11 +167,12 @@ pub fn app() -> Element {
         // the menu icon, title, etc. don't rebuild on every nav.
         // The closure renders a reactive `when()` that mounts the
         // header only at narrow widths and empty otherwise.
-        .top_with(TopSlot::Custom(Box::new(|slot| shell::mobile_header(slot))))
-        // Bottom slot — site footer. Always shown; provides
-        // scroll space for the TOC at long pages and link grid
-        // for project / resource pages.
-        .bottom_with(|_slot| shell::footer());
+        .top_with(TopSlot::Custom(Box::new(|slot| shell::mobile_header(slot))));
+    // No `bottom_with(...)`: the site footer is no longer a pinned
+    // navigator slot. The drawer navigator no longer owns scroll, so
+    // the footer lives as the last child of each page's own
+    // `scroll_view` (see `shell::layout` / `layout_with_toc`) and
+    // scrolls with the page content.
 
     ui! { builder.bind(nav) }
 }

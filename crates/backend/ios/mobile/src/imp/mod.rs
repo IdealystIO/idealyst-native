@@ -2580,6 +2580,56 @@ impl IosBackend {
         self.run_layout_pass_global();
     }
 
+    /// DRAWER-WIDTH-DIAG: log the Taffy state of a drawer sidebar
+    /// wrapper view (and its first child = the holder) so we can pin
+    /// whether `width:280` reached the node and whether the computed
+    /// frame honors it. Temporary diagnostic.
+    pub fn debug_drawer_sidebar(&self, view: &UIView, ctx: &str) {
+        // Force UIKit to settle Auto Layout so the reported frames are
+        // the on-screen ones, not the pre-constraint values.
+        if let Some(sv) = unsafe {
+            let s: *const NSObject = msg_send![view, superview];
+            if s.is_null() { None } else { Some(s) }
+        } {
+            let _: () = unsafe { msg_send![sv, layoutIfNeeded] };
+        }
+        let (vw, vh) = self.viewport_size();
+        // Walk the wrapper + its first 2 descendants, logging actual
+        // UIView frames (in superview coords) + Taffy node frames.
+        self.debug_view_node(view, ctx, "WRAPPER", vw, vh);
+        let subs = view.subviews();
+        if subs.len() > 0 {
+            let holder = &subs[0];
+            self.debug_view_node(holder, ctx, "HOLDER", vw, vh);
+            let hsubs = holder.subviews();
+            if hsubs.len() > 0 {
+                self.debug_view_node(&hsubs[0], ctx, "CONTENT", vw, vh);
+            }
+        }
+    }
+
+    fn debug_view_node(&self, view: &UIView, ctx: &str, tag: &str, vw: f32, vh: f32) {
+        let key = view as *const UIView as usize;
+        let uiframe: objc2_foundation::CGRect = unsafe { msg_send![view, frame] };
+        let translates: bool = unsafe { msg_send![view, translatesAutoresizingMaskIntoConstraints] };
+        match self.view_to_layout.get(&key) {
+            None => backend_ios_core::ios_log(&format!(
+                "[drawer-diag] ({ctx}) {tag}: NOT in view_to_layout uiview_frame=({:.1},{:.1},{:.1}x{:.1}) translatesAM={translates} viewport=({vw},{vh})",
+                uiframe.origin.x, uiframe.origin.y, uiframe.size.width, uiframe.size.height
+            )),
+            Some((_, node)) => {
+                let frame = self.layout.frame_of(*node);
+                let is_root = self.layout.is_root(*node);
+                let style = self.layout.debug_style(*node);
+                backend_ios_core::ios_log(&format!(
+                    "[drawer-diag] ({ctx}) {tag}: root={is_root} taffy=({:.1},{:.1},{:.1}x{:.1}) uiview_frame=({:.1},{:.1},{:.1}x{:.1}) translatesAM={translates} style[{style}]",
+                    frame.x, frame.y, frame.width, frame.height,
+                    uiframe.origin.x, uiframe.origin.y, uiframe.size.width, uiframe.size.height
+                ));
+            }
+        }
+    }
+
     /// Run layout for the whole registry. Called from `finish()` for
     /// the initial render and from `schedule_layout_pass()` whenever
     /// new views land after that (navigation pushes, drawer mounts).
@@ -2770,6 +2820,46 @@ impl IosBackend {
         self.applied_frames.retain(|k, _| still_present.contains(k));
         }
         backend_ios_core::ios_log(&format!("[layout] apply_frames done: applied={}", applied));
+
+        // DRAWER-WIDTH-DIAG: after applying frames, for any root narrower
+        // than the viewport (a sized panel like the 280pt drawer sidebar),
+        // dump its ACTUAL UIView frame + first 2 descendant frames so we
+        // can see whether the on-screen geometry matches the 280pt Taffy
+        // frame or got expanded to viewport.
+        {
+            let narrow_roots: Vec<(usize, runtime_layout::LayoutNode)> = self
+                .view_to_layout
+                .iter()
+                .filter(|(_, (_, n))| self.layout.is_root(*n))
+                .filter(|(_, (_, n))| {
+                    let f = self.layout.frame_of(*n);
+                    f.width > 0.0 && f.width < vw - 1.0
+                })
+                .map(|(k, (_, n))| (*k, *n))
+                .collect();
+            for (k, node) in narrow_roots {
+                if let Some((view, _)) = self.view_to_layout.get(&k) {
+                    let view = view.clone();
+                    let tf = self.layout.frame_of(node);
+                    let vf: objc2_foundation::CGRect = unsafe { msg_send![&*view, frame] };
+                    let tam: bool =
+                        unsafe { msg_send![&*view, translatesAutoresizingMaskIntoConstraints] };
+                    backend_ios_core::ios_log(&format!(
+                        "[drawer-diag] NARROW-ROOT taffy=({:.1},{:.1},{:.1}x{:.1}) uiview_frame=({:.1},{:.1},{:.1}x{:.1}) tAM={tam}",
+                        tf.x, tf.y, tf.width, tf.height,
+                        vf.origin.x, vf.origin.y, vf.size.width, vf.size.height
+                    ));
+                    let subs = view.subviews();
+                    for (i, sub) in subs.iter().enumerate().take(2) {
+                        let sf: objc2_foundation::CGRect = unsafe { msg_send![&*sub, frame] };
+                        backend_ios_core::ios_log(&format!(
+                            "[drawer-diag]   sub[{i}] uiview_frame=({:.1},{:.1},{:.1}x{:.1})",
+                            sf.origin.x, sf.origin.y, sf.size.width, sf.size.height
+                        ));
+                    }
+                }
+            }
+        }
 
         // Sync UIScrollView contentSize: walk each scroll view's
         // Taffy children, compute the bounding box, set

@@ -57,8 +57,8 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
-    parse_macro_input, Attribute, FnArg, GenericArgument, Ident, ItemFn, Pat, PatType,
-    PathArguments, ReturnType, Type,
+    parse_macro_input, AssocType, Attribute, FnArg, GenericArgument, Ident, ItemFn, Pat, PatType,
+    PathArguments, ReturnType, Type, TypeParamBound,
 };
 
 /// Parses `#[server(path = "...", strict_version)]` attribute arguments.
@@ -410,6 +410,60 @@ fn parse_socket_param(arg: Option<&FnArg>) -> syn::Result<(Pat, Type, Type)> {
     Ok(((*pt.pat).clone(), in_ty, out_ty))
 }
 
+/// The result of splitting a streaming endpoint's params (after the
+/// socket, for `#[channel]`; all of them, for `#[subscription]`) into
+/// **open/wire args** (sent in the connect URL, present in the client
+/// stub) and **extractors** (resolved server-side at upgrade).
+#[derive(Default)]
+struct StreamParams {
+    /// Cleaned params for the real server fn signature (in order).
+    server_inputs: Vec<FnArg>,
+    /// Wire-arg params for the client stub signature.
+    wire_inputs: Vec<FnArg>,
+    /// Wire-arg patterns (the args tuple the client encodes).
+    wire_pats: Vec<Pat>,
+    wire_tys: Vec<Type>,
+    /// Server-side decode bindings for the wire args (`__w0`, …).
+    wire_binds: Vec<Ident>,
+    ctx_tys: Vec<Type>,
+    ctx_binds: Vec<Ident>,
+    /// The non-socket call args in declaration order (interleaved wire +
+    /// ctx bindings) — the caller prepends `__sock` for `#[channel]`.
+    call_exprs: Vec<TokenStream2>,
+}
+
+fn classify_stream_params<'a>(
+    params: impl Iterator<Item = &'a FnArg>,
+    what: &str,
+) -> syn::Result<StreamParams> {
+    let mut s = StreamParams::default();
+    for input in params {
+        let pt = match input {
+            FnArg::Receiver(r) => {
+                return Err(syn::Error::new_spanned(r, format!("#[{what}] cannot have a `self` receiver")));
+            }
+            FnArg::Typed(pt) => pt,
+        };
+        s.server_inputs.push(without_ctx_attr(pt));
+        let is_ctx = has_ctx_attr(&pt.attrs) || is_reserved_extractor(&pt.ty);
+        if is_ctx {
+            let bind = format_ident!("__c{}", s.ctx_binds.len());
+            s.ctx_tys.push((*pt.ty).clone());
+            s.ctx_binds.push(bind.clone());
+            s.call_exprs.push(quote!(#bind));
+        } else {
+            // An open (wire) arg: sent in the connect URL, decoded server-side.
+            let bind = format_ident!("__w{}", s.wire_binds.len());
+            s.wire_inputs.push(without_ctx_attr(pt));
+            s.wire_pats.push((*pt.pat).clone());
+            s.wire_tys.push((*pt.ty).clone());
+            s.wire_binds.push(bind.clone());
+            s.call_exprs.push(quote!(#bind));
+        }
+    }
+    Ok(s)
+}
+
 fn expand_channel(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
     if func.sig.asyncness.is_none() {
         return Err(syn::Error::new_spanned(func.sig.fn_token, "#[channel] requires an async function"));
@@ -426,42 +480,28 @@ fn expand_channel(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
     let route = format!("/_srv/_ws/{wire_path}");
 
     let mut params = inputs.iter();
-    let (_socket_pat, in_ty, out_ty) = parse_socket_param(params.next())?;
+    let socket_arg = params.next();
+    let (_socket_pat, in_ty, out_ty) = parse_socket_param(socket_arg)?;
 
-    // Remaining params must be extractors (no wire/open args yet). The
-    // socket is passed positionally via a fresh `__sock` binding (not the
-    // author's pattern, which may be `mut ch` — invalid as a call arg).
-    let mut server_inputs: Vec<FnArg> = Vec::new();
-    server_inputs.push(without_ctx_attr(match inputs.iter().next() {
+    // Params after the socket: open (wire) args + extractors. The socket
+    // is passed positionally via a fresh `__sock` binding (the author's
+    // pattern may be `mut ch`, invalid as a call arg).
+    let p = classify_stream_params(params, "channel")?;
+    let mut server_inputs: Vec<FnArg> = vec![without_ctx_attr(match socket_arg {
         Some(FnArg::Typed(pt)) => pt,
         _ => unreachable!("validated above"),
-    }));
-    let mut ctx_tys: Vec<Type> = Vec::new();
-    let mut ctx_binds: Vec<Ident> = Vec::new();
-    let mut call_exprs: Vec<proc_macro2::TokenStream> = Vec::new();
-    call_exprs.push(quote!(__sock));
-
-    for input in params {
-        let pt = match input {
-            FnArg::Receiver(r) => {
-                return Err(syn::Error::new_spanned(r, "#[channel] cannot have a `self` receiver"));
-            }
-            FnArg::Typed(pt) => pt,
-        };
-        let is_ctx = has_ctx_attr(&pt.attrs) || is_reserved_extractor(&pt.ty);
-        if !is_ctx {
-            return Err(syn::Error::new_spanned(
-                &pt.ty,
-                "#[channel] open args aren't supported yet — only extractor params (State/Auth/…/#[ctx]) \
-                 may follow the Socket. Send open args as the first message after connect.",
-            ));
-        }
-        let bind = format_ident!("__c{}", ctx_binds.len());
-        server_inputs.push(without_ctx_attr(pt));
-        ctx_tys.push((*pt.ty).clone());
-        ctx_binds.push(bind.clone());
-        call_exprs.push(quote!(#bind));
-    }
+    })];
+    server_inputs.extend(p.server_inputs.iter().cloned());
+    let StreamParams {
+        wire_inputs,
+        wire_pats,
+        wire_tys,
+        wire_binds,
+        ctx_tys,
+        ctx_binds,
+        call_exprs,
+        ..
+    } = &p;
 
     let handler_mod = format_ident!("__channel_{}", ident);
 
@@ -477,15 +517,24 @@ fn expand_channel(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
         mod #handler_mod {
             use super::*;
             use ::server::__private::axum::{
-                extract::ws::WebSocketUpgrade, http::HeaderMap, response::Response,
-                routing::get, Router,
+                extract::ws::WebSocketUpgrade, extract::Query, http::HeaderMap,
+                response::Response, routing::get, Router,
             };
 
-            async fn __handler(headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
+            async fn __handler(
+                headers: HeaderMap,
+                Query(__q): Query<::server::__private::WsArgsQuery>,
+                ws: WebSocketUpgrade,
+            ) -> Response {
                 let mut __ctx = ::server::__private::ws_open_context(headers, #wire_path);
                 if let Err(__resp) = ::server::__private::ws_run_middlewares(&mut __ctx).await {
                     return __resp;
                 }
+                let ( #( #wire_binds, )* ): ( #( #wire_tys, )* ) =
+                    match ::server::__private::decode_ws_args(__q.args) {
+                        Ok(__t) => __t,
+                        Err(__resp) => return __resp,
+                    };
                 #(
                     let #ctx_binds = match <#ctx_tys as ::server::FromContext>::from_context(&__ctx).await {
                         Ok(__v) => __v,
@@ -493,7 +542,7 @@ fn expand_channel(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
                     };
                 )*
                 ::server::accept(ws, move |__sock: ::server::Socket<#in_ty, #out_ty>| async move {
-                    let _ = super::#ident( #(#call_exprs),* ).await;
+                    let _ = super::#ident( __sock, #( #call_exprs ),* ).await;
                 })
             }
 
@@ -506,12 +555,191 @@ fn expand_channel(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
         }
     };
 
-    // Client stub: mirrored handle. The client receives `Out` and sends `In`.
+    // Client stub: mirrored handle. The client receives `Out` and sends
+    // `In`; open args are encoded into the connect URL.
     let client_fn = quote! {
         #[cfg(not(feature = "server"))]
         #(#attrs)*
-        #vis fn #ident() -> ::server::UseSocket<#out_ty, #in_ty> {
-            ::server::use_socket::<#out_ty, #in_ty>(::server::__private::ws_url(#wire_path))
+        #vis fn #ident(#(#wire_inputs),*) -> ::server::UseSocket<#out_ty, #in_ty> {
+            let __args: ( #( #wire_tys, )* ) = ( #( #wire_pats, )* );
+            let __hex = ::server::__private::encode_ws_args(&__args);
+            ::server::use_socket::<#out_ty, #in_ty>(
+                ::server::__private::ws_url_args(#wire_path, &__hex),
+            )
+        }
+    };
+
+    Ok(quote! {
+        #server_fn
+        #server_register
+        #client_fn
+    })
+}
+
+// ===========================================================================
+// #[subscription] — a server → client stream (the common case).
+// ===========================================================================
+
+/// Turns an `async fn … -> impl Stream<Item = M>` into a server→client
+/// subscription. Server build: resolves extractor params, upgrades, and
+/// pumps each `M` the stream yields to the client. Client build: emits
+/// `fn name() -> UseSocket<M, ()>` — a receive-only scope-bound handle
+/// (`incoming()` updates per item, closes on unmount).
+///
+/// ```ignore
+/// #[subscription]
+/// async fn ticks(db: State<Clock>) -> impl Stream<Item = Tick> { db.stream() }
+/// ```
+///
+/// Params are extractors (`#[ctx]` / reserved wrappers). Open args aren't
+/// supported yet. The `Item` type is what the client receives — make it
+/// `Result<T, E>` if the stream can fail.
+#[proc_macro_attribute]
+pub fn subscription(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr = parse_macro_input!(attr as ServerAttr);
+    let func = parse_macro_input!(item as ItemFn);
+    match expand_subscription(attr, func) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// Pull `M` from a `-> impl Stream<Item = M>` return type.
+fn parse_stream_item(output: &ReturnType) -> syn::Result<Type> {
+    let ty = match output {
+        ReturnType::Type(_, ty) => ty,
+        ReturnType::Default => {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "#[subscription] must return `impl Stream<Item = ...>`",
+            ));
+        }
+    };
+    let Type::ImplTrait(it) = &**ty else {
+        return Err(syn::Error::new_spanned(ty, "expected `impl Stream<Item = ...>`"));
+    };
+    for bound in &it.bounds {
+        let TypeParamBound::Trait(tb) = bound else { continue };
+        let Some(seg) = tb.path.segments.last() else { continue };
+        if seg.ident != "Stream" {
+            continue;
+        }
+        let PathArguments::AngleBracketed(ab) = &seg.arguments else { continue };
+        for arg in &ab.args {
+            if let GenericArgument::AssocType(AssocType { ident, ty, .. }) = arg {
+                if ident == "Item" {
+                    return Ok(ty.clone());
+                }
+            }
+        }
+    }
+    Err(syn::Error::new_spanned(
+        ty,
+        "expected `impl Stream<Item = ...>` with an explicit `Item =` binding",
+    ))
+}
+
+fn expand_subscription(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
+    if func.sig.asyncness.is_none() {
+        return Err(syn::Error::new_spanned(
+            func.sig.fn_token,
+            "#[subscription] requires an async function",
+        ));
+    }
+    let vis = &func.vis;
+    let attrs = &func.attrs;
+    let sig = &func.sig;
+    let ident = &sig.ident;
+    let output = &sig.output;
+    let body = &func.block;
+    let inputs = &sig.inputs;
+
+    let wire_path = attr.path.unwrap_or_else(|| ident.to_string());
+    let route = format!("/_srv/_ws/{wire_path}");
+    let item_ty = parse_stream_item(output)?;
+
+    // Params are open (wire) args + extractors.
+    let p = classify_stream_params(inputs.iter(), "subscription")?;
+    let StreamParams {
+        server_inputs,
+        wire_inputs,
+        wire_pats,
+        wire_tys,
+        wire_binds,
+        ctx_tys,
+        ctx_binds,
+        call_exprs,
+    } = &p;
+
+    let handler_mod = format_ident!("__subscription_{}", ident);
+
+    let server_fn = quote! {
+        #[cfg(feature = "server")]
+        #(#attrs)*
+        #vis async fn #ident(#(#server_inputs),*) #output #body
+    };
+
+    let server_register = quote! {
+        #[cfg(feature = "server")]
+        #[doc(hidden)]
+        mod #handler_mod {
+            use super::*;
+            use ::server::__private::axum::{
+                extract::ws::WebSocketUpgrade, extract::Query, http::HeaderMap,
+                response::Response, routing::get, Router,
+            };
+
+            async fn __handler(
+                headers: HeaderMap,
+                Query(__q): Query<::server::__private::WsArgsQuery>,
+                ws: WebSocketUpgrade,
+            ) -> Response {
+                let mut __ctx = ::server::__private::ws_open_context(headers, #wire_path);
+                if let Err(__resp) = ::server::__private::ws_run_middlewares(&mut __ctx).await {
+                    return __resp;
+                }
+                let ( #( #wire_binds, )* ): ( #( #wire_tys, )* ) =
+                    match ::server::__private::decode_ws_args(__q.args) {
+                        Ok(__t) => __t,
+                        Err(__resp) => return __resp,
+                    };
+                #(
+                    let #ctx_binds = match <#ctx_tys as ::server::FromContext>::from_context(&__ctx).await {
+                        Ok(__v) => __v,
+                        Err(__e) => return ::server::__private::ws_error_response(__e),
+                    };
+                )*
+                ::server::accept(ws, move |mut __sock: ::server::Socket<(), #item_ty>| async move {
+                    let __stream = super::#ident( #( #call_exprs ),* ).await;
+                    let mut __stream = ::std::pin::pin!(__stream);
+                    use ::server::__private::futures_util::StreamExt as _;
+                    while let Some(__item) = __stream.next().await {
+                        if __sock.send(__item).await.is_err() {
+                            break;
+                        }
+                    }
+                })
+            }
+
+            ::server::__private::inventory::submit! {
+                ::server::__private::WsEntry {
+                    path: #wire_path,
+                    register: |__r: Router| __r.route(#route, get(__handler)),
+                }
+            }
+        }
+    };
+
+    // Client stub: receive-only handle; open args encoded into the URL.
+    let client_fn = quote! {
+        #[cfg(not(feature = "server"))]
+        #(#attrs)*
+        #vis fn #ident(#(#wire_inputs),*) -> ::server::UseSocket<#item_ty, ()> {
+            let __args: ( #( #wire_tys, )* ) = ( #( #wire_pats, )* );
+            let __hex = ::server::__private::encode_ws_args(&__args);
+            ::server::use_socket::<#item_ty, ()>(
+                ::server::__private::ws_url_args(#wire_path, &__hex),
+            )
         }
     };
 

@@ -25,6 +25,11 @@ pub mod font;
 // link the same scope-guard type without needing their own copy.
 pub mod phase_record;
 
+// Border-routing decision (uniform → CALayer stroke vs. asymmetric →
+// per-side bars). Cross-target so the routing logic is unit-testable
+// on the host, where the UIKit-only `style` module compiles to nothing.
+pub mod border;
+
 #[cfg(any(target_os = "ios", target_os = "tvos"))]
 pub mod style;
 

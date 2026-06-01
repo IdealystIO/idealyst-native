@@ -347,73 +347,6 @@ fn make_frame_layout(backend: &AndroidBackend) -> GlobalRef {
 /// [Toolbar, screen] stacked top-to-bottom. The Toolbar is added by
 /// [`attach_initial`] from `AndroidScreenOptions`; the screen view is
 /// the framework-built navigator content. Using a vertical LinearLayout
-/// Wrap a screen view in an `android.widget.ScrollView`. The drawer
-/// body is a vertical `LinearLayout` whose children (Toolbar +
-/// Screen) get sized to their measured height — a screen taller than
-/// the available viewport gets clipped because LinearLayout itself
-/// doesn't scroll. Wrapping the screen in a ScrollView gives it
-/// vertical scroll affordance, matching iOS's body_scroll +
-/// web's drawer body div.
-///
-/// The wrapper is what we hand back to the caller; cache it in
-/// `MountedScreen.view` so swap_body's `removeView(m.view)` removes
-/// the wrapper (and its inner screen by hierarchy). Visibility flips
-/// on the wrapper hide the inner content too.
-fn wrap_in_scroll_view(env: &mut jni::JNIEnv, context: &GlobalRef, screen: &GlobalRef) -> Option<GlobalRef> {
-    let class = env.find_class("android/widget/ScrollView").ok()?;
-    let scroll = env
-        .new_object(
-            &class,
-            "(Landroid/content/Context;)V",
-            &[JValue::Object(&context.as_obj())],
-        )
-        .ok()?;
-    // Default LayoutParams (`WRAP_CONTENT, WRAP_CONTENT`) on the
-    // ScrollView would size it to its child — no scrolling. The
-    // parent LinearLayout uses `layout_weight=1` semantics via
-    // `setLayoutParams(LinearLayout.LayoutParams(MATCH_PARENT, 0,
-    // weight=1))` to make it fill the leftover vertical space below
-    // the Toolbar. ScrollView's child stays at its Taffy-assigned
-    // height; ScrollView is whatever the LinearLayout gives it.
-    if let Ok(lp_class) = env.find_class("android/widget/LinearLayout$LayoutParams") {
-        if let Ok(lp) = env.new_object(
-            &lp_class,
-            "(IIF)V",
-            &[
-                JValue::Int(-1), // MATCH_PARENT width
-                JValue::Int(0),  // 0 height — weight takes over
-                JValue::Float(1.0),
-            ],
-        ) {
-            let _ = env.call_method(
-                &scroll,
-                "setLayoutParams",
-                "(Landroid/view/ViewGroup$LayoutParams;)V",
-                &[JValue::Object(&lp)],
-            );
-        }
-    }
-    // Add the screen as the (only) child. The screen's own
-    // LayoutParams (set by apply_frame) determine its scrollable
-    // height inside the ScrollView's content area.
-    if env
-        .call_method(
-            &scroll,
-            "addView",
-            "(Landroid/view/View;)V",
-            &[JValue::Object(&screen.as_obj())],
-        )
-        .is_err()
-    {
-        if env.exception_check().unwrap_or(false) {
-            let _ = env.exception_describe();
-            let _ = env.exception_clear();
-        }
-        return None;
-    }
-    env.new_global_ref(&scroll).ok()
-}
-
 /// (not a FrameLayout) lets the Toolbar reserve its measured height
 /// at the top without overlapping the screen.
 fn make_body_linear(backend: &AndroidBackend) -> GlobalRef {
@@ -665,17 +598,14 @@ fn swap_body(
                 );
             }
         }
-        // Wrap the screen in a ScrollView so content taller than the
-        // viewport (the website's hero + simulator + sections) is
-        // actually scrollable. Without this, body's LinearLayout
-        // clips at the viewport edge — visible bug: can't scroll
-        // past the embedded simulator to see content below. Drawer
-        // only — tabs don't have per-screen scroll semantics yet.
-        let body_child = if is_drawer {
-            wrap_in_scroll_view(env, &context, &new_view).unwrap_or_else(|| new_view.clone())
-        } else {
-            new_view.clone()
-        };
+        // Add the raw screen view directly to the body for both drawer
+        // and tab. The navigator never owns scroll — screens scroll
+        // themselves via their own inner `scroll_view` primitive. The
+        // screen is a Taffy root sized to the full viewport by
+        // `apply_frame_to_layout_params`, so the raw view fills the body;
+        // any LinearLayout weight LP would be overwritten each layout
+        // pass anyway, so we don't set one.
+        let body_child = new_view.clone();
         if let Err(e) = env.call_method(
             body.as_obj(),
             "addView",
@@ -819,13 +749,11 @@ pub(crate) fn attach_initial(
         } else {
             None
         };
-        // Mirror swap_body: wrap the screen in a ScrollView for
-        // drawer navigators so taller-than-viewport content scrolls.
-        let body_child = if is_drawer {
-            wrap_in_scroll_view(env, &context, &screen).unwrap_or_else(|| screen.clone())
-        } else {
-            screen.clone()
-        };
+        // Mirror swap_body: add the raw screen view directly for both
+        // drawer and tab. The navigator never owns scroll — screens
+        // scroll via their own inner `scroll_view` primitive, and the
+        // full-viewport Taffy frame fills the body.
+        let body_child = screen.clone();
         let _ = env.call_method(
             body.as_obj(),
             "addView",

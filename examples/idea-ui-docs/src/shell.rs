@@ -22,8 +22,8 @@ use crate::routes::SECTIONS;
 use crate::styles::{
     Callout as CalloutBox, CodePanel as CodePanelBox, CodeText, ControlsBox, DemoRow,
     DemoSurface as DemoSurfaceBox, NavLink, NavLinkActive, NavLinkText, NavLinkTextActive,
-    PagePad, PreviewBox, PreviewSlot, ScreenScroll, SidebarBody, SidebarFooter, SidebarHeader,
-    SidebarSection,
+    PageColumn, PagePad, PreviewBox, PreviewSlot, ScreenScroll, SidebarBody, SidebarFooter,
+    SidebarHeader, SidebarSection,
 };
 
 // =============================================================================
@@ -46,7 +46,68 @@ pub fn layout(content: Element) -> Element {
     // status-bar inset; horizontal insets aren't an issue here
     // because the page never bleeds into them.
     let style = ScreenScroll();
-    ui! { scroll_view(style = style) { content }.safe_area(SafeAreaSides::BOTTOM) }
+    // The hamburger sits above the scroll surface so it stays pinned
+    // while the page body scrolls. It renders itself reactively (only
+    // when the drawer is collapsed), so on wide/pinned layouts this
+    // column is just the scroll view. The outer column fills the
+    // screen; the scroll view grows to take the remaining height under
+    // the (conditionally-rendered) top bar.
+    ui! {
+        view(style = PageColumn()) {
+            menu_button()
+            scroll_view(style = style) { content }
+                .safe_area(SafeAreaSides::BOTTOM)
+        }
+    }
+}
+
+// =============================================================================
+// Menu button (hamburger) — consumes `ambient_drawer()` and opens the
+// collapsed drawer. Renders ONLY when the viewport is narrower than the
+// navigator's pin width (so the drawer is modal/off-canvas); at wide
+// viewports the sidebar is pinned and no hamburger is needed.
+//
+// This is the documented `DrawerChrome` consumer pattern
+// (`runtime_core::primitives::navigator::ambient_drawer`): screens are
+// mounted as navigator *content* (not slot closures), so they reach the
+// "open the drawer" action through this thread-local ambient. The
+// reactive `viewport_size().get()` read inside the `ui!` `if` keeps the
+// region live, so the button appears/disappears as the viewport crosses
+// the pin breakpoint.
+// =============================================================================
+
+fn menu_button() -> Element {
+    use runtime_core::primitives::navigator::ambient_drawer;
+    use runtime_core::viewport_size;
+
+    // No drawer chrome published (e.g. headless/non-navigator render) —
+    // render nothing.
+    let Some(chrome) = ambient_drawer() else {
+        return ui! { view {} };
+    };
+
+    let open = chrome.open.clone();
+    let below = chrome.collapse_below;
+
+    ui! {
+        if viewport_size().get().width < below {
+            view(style = crate::styles::TopBar()) {
+                hamburger(open.clone())
+            }
+        }
+    }
+}
+
+// The pressable glyph itself. Built with `runtime_core::pressable` (not
+// a `ui!` tag — pressable has no macro tag) wrapping the Lucide `MENU`
+// icon, mirroring idea-ui's `IconButton` construction.
+fn hamburger(open: Rc<dyn Fn()>) -> Element {
+    let glyph = runtime_core::icon(icons_lucide::MENU)
+        .color(idea_ui::idea_color(|c| c.text.clone()))
+        .into_element();
+    runtime_core::pressable(vec![glyph], move || (open)())
+        .with_style(move || runtime_core::StyleApplication::new(crate::styles::MenuButton::sheet()))
+        .into_element()
 }
 
 // =============================================================================

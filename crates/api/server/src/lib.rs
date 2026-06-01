@@ -48,6 +48,11 @@ pub use server_macros::server;
 /// streaming sibling of `#[server]`. See [`server_macros::channel`].
 pub use server_macros::channel;
 
+/// The `#[subscription]` attribute macro — a server→client stream over a
+/// WebSocket (`async fn … -> impl Stream<Item = M>`). See
+/// [`server_macros::subscription`].
+pub use server_macros::subscription;
+
 // =============================================================================
 // Extractor wrappers — present on BOTH builds (they appear in the
 // author's shared `#[server]` fn signature). The resolution machinery
@@ -95,6 +100,8 @@ pub use client::{
 #[cfg(feature = "server")]
 mod cookie;
 #[cfg(feature = "server")]
+mod csrf;
+#[cfg(feature = "server")]
 mod extractors;
 #[cfg(feature = "server")]
 mod middleware;
@@ -102,6 +109,8 @@ mod middleware;
 mod runtime;
 #[cfg(feature = "server")]
 pub use cookie::{clear_cookie, set_cookie, Cookie, SameSite};
+#[cfg(feature = "server")]
+pub use csrf::csrf_guard;
 #[cfg(feature = "server")]
 pub use extract::{Context, ContextBuilder, FromContext};
 #[cfg(feature = "server")]
@@ -206,13 +215,32 @@ pub mod __private {
     inventory::collect!(WsEntry);
 
     #[cfg(feature = "server")]
-    pub use crate::runtime::{ws_error_response, ws_open_context, ws_run_middlewares};
+    pub use crate::runtime::{
+        decode_ws_args, ws_error_response, ws_open_context, ws_run_middlewares, WsArgsQuery,
+    };
+
+    /// Re-exported so the `#[subscription]` macro's generated handler can
+    /// pump the author's `Stream` (`StreamExt::next`) without the author
+    /// crate depending on futures-util.
+    #[cfg(feature = "server")]
+    pub use futures_util;
 
     /// Build the `ws(s)://…/_srv/_ws/<path>` URL from the configured
     /// client base URL. Used by the `#[channel]` client stub.
     #[cfg(not(feature = "server"))]
     pub fn ws_url(path: &str) -> String {
         crate::client::ws_url(path)
+    }
+
+    /// Encode a channel/subscription's open args + append them to the
+    /// connect URL. Used by the `#[channel]`/`#[subscription]` client stubs.
+    #[cfg(not(feature = "server"))]
+    pub fn encode_ws_args<T: serde::Serialize>(args: &T) -> String {
+        crate::client::encode_ws_args(args)
+    }
+    #[cfg(not(feature = "server"))]
+    pub fn ws_url_args(path: &str, args_hex: &str) -> String {
+        crate::client::ws_url_args(path, args_hex)
     }
 
     /// The client-side call function. The macro's client-side

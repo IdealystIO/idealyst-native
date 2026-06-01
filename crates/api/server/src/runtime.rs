@@ -113,6 +113,38 @@ pub fn ws_error_response(e: TransportError) -> Response {
     transport_error_response(e)
 }
 
+/// Query string of a channel/subscription upgrade: the open (wire) args,
+/// hex-encoded JSON in `?args=<hex>`. `Option` so a no-arg endpoint
+/// (no query) decodes to the unit tuple.
+#[derive(Deserialize)]
+pub struct WsArgsQuery {
+    #[serde(default)]
+    pub args: Option<String>,
+}
+
+/// Decode the open-args tuple `T` from the connect URL's hex-encoded
+/// JSON. Absent args decode as `null` (→ the unit tuple). A bad hex /
+/// JSON payload is a 400.
+pub fn decode_ws_args<T: serde::de::DeserializeOwned>(args: Option<String>) -> Result<T, Response> {
+    let bytes = match &args {
+        Some(hex) => from_hex(hex)
+            .ok_or_else(|| (StatusCode::BAD_REQUEST, "malformed ws args (hex)").into_response())?,
+        None => b"null".to_vec(),
+    };
+    serde_json::from_slice(&bytes)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("ws args decode: {e}")).into_response())
+}
+
+fn from_hex(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
 /// Bind a TCP listener on `addr` and serve the registered server
 /// functions. Convenience for the common "just run the server"
 /// case; authors who need to compose with their own routes should

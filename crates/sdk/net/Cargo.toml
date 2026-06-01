@@ -21,6 +21,13 @@ license.workspace = true
 # is built on, but is independently useful for any author hitting an
 # external API.
 
+# Networking needs Android's INTERNET permission in the manifest. Declaring
+# the `internet` capability makes the CLI inject it automatically for any app
+# that (transitively) depends on `net` — so a local Android build can reach
+# the network without the author hand-editing AndroidManifest.xml.
+[package.metadata.idealyst]
+capabilities = ["internet"]
+
 [features]
 default = ["json", "form"]
 json = ["dep:serde_json"]
@@ -32,22 +39,48 @@ serde_json = { version = "1", optional = true }
 serde_urlencoded = { version = "0.7", optional = true }
 thiserror = "1"
 
-# Native targets: reqwest with rustls (no native-tls dep, no OpenSSL).
-# WebSocket: sync `tungstenite` driven on a blocking I/O worker thread
-# (no async runtime — see the execution-model invariant), with inbound
-# messages bridged to async via `futures-channel`. `ws://` works today;
-# `wss://` needs a tungstenite TLS feature, added when the platform arms land.
+# Native desktop HTTP: reqwest with rustls (no native-tls, no OpenSSL).
+# Mobile uses the platform-native HTTP stacks below instead.
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
-tungstenite = "0.21"
+
+# WebSocket on ALL native targets (desktop + iOS + Android): sync
+# `tungstenite` driven on a blocking I/O worker thread (no async runtime —
+# see the execution-model invariant), inbound bridged to async via
+# `futures-channel`. iOS/Android are native Rust targets with TCP sockets,
+# so they reuse this proven arm; platform-native `URLSessionWebSocketTask`
+# / OkHttp (OS proxy/background integration) is a documented optimization.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
+# WS with TLS (`wss://`) — all native EXCEPT Android. Android's HTTP stack
+# is JNI (no reqwest/rustls) precisely to avoid bundling a second TLS stack
+# (+ `ring` needs the NDK C toolchain); we keep that posture for WS too, so
+# Android is `ws://`-only via plain tungstenite, with platform-native
+# (OkHttp) as the eventual `wss://` path.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
+
 # Web (wasm) target: fetch via gloo-net + AbortController for cancel.
+# WebSocket via web_sys::WebSocket (callback-driven, marshalled into
+# async through futures-channel — the browser event loop is the runtime).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gloo-net = { version = "0.6", features = ["http"] }
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["AbortController", "AbortSignal"] }
+wasm-bindgen = "0.2"
+futures-channel = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+web-sys = { version = "0.3", features = [
+    "AbortController",
+    "AbortSignal",
+    "WebSocket",
+    "MessageEvent",
+    "BinaryType",
+    "CloseEvent",
+    "ErrorEvent",
+    "Event",
+] }
 
 # iOS / macOS / tvOS target: NSURLSession via objc2 + block2.
 # `futures-channel` bridges the completion callback to async/await.
@@ -75,11 +108,13 @@ futures-channel = "0.3"
 
 # Android target: HttpURLConnection via JNI on a worker thread.
 # `ndk-context` exposes the host's JavaVM; `futures-channel` bridges
-# the worker thread's blocking call back to async.
+# the worker thread's blocking call back to async. Plain `tungstenite`
+# (no TLS / no `ring`) drives the WebSocket — `ws://` only on Android.
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 ndk-context = "0.1"
 futures-channel = "0.3"
+tungstenite = "0.21"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }

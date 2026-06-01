@@ -590,14 +590,25 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         unsafe { view.setClipsToBounds(true) };
     }
 
-    // Border — always rendered via per-side UIView subviews, never
-    // CALayer's uniform `borderWidth`. CALayer can only stroke all
-    // four sides with the same width, which doesn't match the
-    // framework's per-side `border_{top,right,bottom,left}_width` API
-    // (CSS-style). Even when the author sets all four equal we route
-    // through the same path so the code has one branch and the rules
-    // are consistent — author specifying `border_bottom_width: 1.0`
-    // produces exactly one bar at the bottom, never a four-sided box.
+    // Border. The framework exposes a CSS-style per-side API
+    // (`border_{top,right,bottom,left}_{width,color}`), but the two
+    // rendering mechanisms available on UIKit have a sharp split:
+    //
+    //   * `CALayer.borderWidth`/`borderColor` strokes ONE uniform
+    //     border that follows the layer's `cornerRadius` exactly —
+    //     the stroke curves around rounded corners with no seams.
+    //   * Per-side `UIView` bars can express asymmetric widths/colors,
+    //     but each bar is a straight rectangle. With a corner radius
+    //     the parent's `clipsToBounds` rounded-corner mask slices the
+    //     ends off every bar, leaving notches/gaps at each corner —
+    //     a straight bar can't trace a curve. See the regression test
+    //     `regression_ios_uniform_rounded_border_uses_calayer`.
+    //
+    // So: when the border is *uniform* (all four sides the same width
+    // and the same effective color) route it through CALayer, which is
+    // both simpler and the only path that renders rounded corners
+    // cleanly. Fall back to per-side bars only for the genuinely
+    // asymmetric case that CALayer can't represent.
     let widths = [
         style.border_top_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
         style.border_right_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
@@ -607,30 +618,51 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // Tear down any previous per-side border subviews so reapplies
     // (state overlays, theme swap) replace rather than stack them.
     remove_border_subviews(view);
-    // CALayer's own border (potentially set by an earlier apply that
-    // predates this change, or by a `Card` SDK call that touches the
-    // layer directly) must be cleared — otherwise it would paint a
-    // ghost frame underneath the per-side bars.
-    let _: () = unsafe { msg_send![&layer, setBorderWidth: 0.0_f64] };
-    if widths.iter().any(|w| *w > 0.0) {
+    let any_width = widths.iter().any(|w| *w > 0.0);
+    if any_width {
         let colors: [Option<Color>; 4] = [
             style.border_top_color.as_ref().map(|t| t.resolve()),
             style.border_right_color.as_ref().map(|t| t.resolve()),
             style.border_bottom_color.as_ref().map(|t| t.resolve()),
             style.border_left_color.as_ref().map(|t| t.resolve()),
         ];
-        let fallback_color = colors.iter().find_map(|c| c.clone());
-        let parent_bounds: CGRect = unsafe { msg_send![view, bounds] };
-        for (idx, &w) in widths.iter().enumerate() {
-            if w <= 0.0 {
-                continue;
+        if let Some((width, color)) = crate::border::uniform_border(widths, &colors) {
+            // Uniform border → CALayer stroke. Follows `cornerRadius`
+            // (set above, or synced later for percent-sized views)
+            // with no corner seams.
+            let ui_color = color_to_uicolor(&color);
+            let cg: CGColorRef = unsafe { msg_send![&ui_color, CGColor] };
+            if !cg.0.is_null() {
+                let _: () = unsafe { msg_send![&layer, setBorderColor: cg] };
             }
-            let Some(color) = colors[idx].clone().or_else(|| fallback_color.clone())
-            else {
-                continue;
-            };
-            install_border_side(view, idx, w as CGFloat, &color, parent_bounds);
+            let _: () =
+                unsafe { msg_send![&layer, setBorderWidth: width as f64] };
+        } else {
+            // Asymmetric border → per-side bars. Clear any CALayer
+            // stroke a prior uniform apply may have left, then paint
+            // each non-zero side. (Rounded corners with an asymmetric
+            // border remain imperfect — the bars are straight — but
+            // this case has no clean UIKit primitive and is vanishingly
+            // rare; the common uniform card takes the branch above.)
+            let _: () = unsafe { msg_send![&layer, setBorderWidth: 0.0_f64] };
+            let fallback_color = colors.iter().find_map(|c| c.clone());
+            let parent_bounds: CGRect = unsafe { msg_send![view, bounds] };
+            for (idx, &w) in widths.iter().enumerate() {
+                if w <= 0.0 {
+                    continue;
+                }
+                let Some(color) = colors[idx].clone().or_else(|| fallback_color.clone())
+                else {
+                    continue;
+                };
+                install_border_side(view, idx, w as CGFloat, &color, parent_bounds);
+            }
         }
+    } else {
+        // No border requested — clear any CALayer stroke a prior apply
+        // (or a `Card` SDK call touching the layer directly) may have
+        // left, so it doesn't paint a ghost frame.
+        let _: () = unsafe { msg_send![&layer, setBorderWidth: 0.0_f64] };
     }
 
     // Shadow

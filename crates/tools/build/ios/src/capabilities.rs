@@ -79,6 +79,21 @@ pub const REGISTRY: &[Capability] = &[
         android_permissions: &["android.permission.CAMERA"],
         default_reason: "This app uses the camera.",
     },
+    // Outbound network access. Android gates it behind a (normal, no-prompt)
+    // permission that must be in the manifest; iOS/macOS don't gate outbound
+    // network, so there's no plist key and no user-facing reason. Declared by
+    // the `net` SDK so every networking app gets it automatically.
+    Capability {
+        name: "internet",
+        ios_plist_key: None,
+        macos_plist_key: None,
+        macos_entitlement: None,
+        android_permissions: &[
+            "android.permission.INTERNET",
+            "android.permission.ACCESS_NETWORK_STATE",
+        ],
+        default_reason: "",
+    },
 ];
 
 /// Look up a capability by the name an SDK declared.
@@ -199,18 +214,27 @@ pub fn resolve(
             continue;
         };
 
-        // Reason: an app override wins; otherwise the registry default,
-        // and a loud warning because a generic reason is a stopgap.
-        let reason = match app_reasons.get(&d.name) {
-            Some(r) => r.clone(),
-            None => {
-                out.warnings.push(format!(
-                    "capability `{}` (requested by {}) has no reason string — using a generic \
-                     default. Add `[package.metadata.idealyst.app.permissions]` with `{} = \"…\"`; \
-                     generic iOS usage strings risk App Store rejection.",
-                    d.name, requesters, d.name
-                ));
-                cap.default_reason.to_string()
+        // A reason is only meaningful for capabilities that surface a
+        // user-facing iOS/macOS usage-description prompt. Permissions with
+        // no plist key (e.g. Android `INTERNET`, a normal no-prompt
+        // permission) need none — don't demand or warn about one.
+        let needs_reason = cap.ios_plist_key.is_some() || cap.macos_plist_key.is_some();
+        let reason = if !needs_reason {
+            String::new()
+        } else {
+            // An app override wins; otherwise the registry default, and a
+            // loud warning because a generic reason is a stopgap.
+            match app_reasons.get(&d.name) {
+                Some(r) => r.clone(),
+                None => {
+                    out.warnings.push(format!(
+                        "capability `{}` (requested by {}) has no reason string — using a generic \
+                         default. Add `[package.metadata.idealyst.app.permissions]` with `{} = \"…\"`; \
+                         generic iOS usage strings risk App Store rejection.",
+                        d.name, requesters, d.name
+                    ));
+                    cap.default_reason.to_string()
+                }
             }
         };
 
@@ -316,6 +340,21 @@ mod tests {
         assert_eq!(r.ios_plist[0].1, "This app uses the microphone to capture audio.");
         assert_eq!(r.warnings.len(), 1, "must warn about the generic reason");
         assert!(r.warnings[0].contains("App Store"));
+    }
+
+    #[test]
+    fn resolve_internet_adds_android_perms_without_reason_warning() {
+        let discovered = vec![DiscoveredCapability {
+            name: "internet".into(),
+            requested_by: vec!["net".into()],
+        }];
+        let r = resolve(&discovered, &BTreeMap::new());
+        assert!(r
+            .android_permissions
+            .contains(&"android.permission.INTERNET".to_string()));
+        // No plist key → no usage-description, no missing-reason warning.
+        assert!(r.ios_plist.is_empty());
+        assert!(r.warnings.is_empty(), "internet must not warn: {:?}", r.warnings);
     }
 
     #[test]

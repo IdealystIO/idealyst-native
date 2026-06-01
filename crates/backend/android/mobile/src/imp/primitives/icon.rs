@@ -29,8 +29,12 @@ pub(crate) fn create(b: &AndroidBackend, data: &IconData, color: Option<&Color>)
             )
             .unwrap();
 
-        // Build the drawable from icon path data.
-        let drawable = build_icon_drawable(env, data, color);
+        // Build the drawable from icon path data. Pass the display
+        // density so the drawable's intrinsic size is the real render
+        // size in device pixels (24dp) — the Taffy measure_fn reads that
+        // intrinsic size, so it must be dp-correct, not viewBox units.
+        let density = get_density(env, &b.context);
+        let drawable = build_icon_drawable(env, data, color, density);
         env.call_method(
             &image_view,
             "setImageDrawable",
@@ -55,21 +59,17 @@ pub(crate) fn create(b: &AndroidBackend, data: &IconData, color: Option<&Color>)
             );
         }
 
+        // Margin-capable default LayoutParams (FrameLayout.LayoutParams /
+        // MarginLayoutParams) so the layout pass can position the icon via
+        // `leftMargin`/`topMargin` from its Taffy frame. We deliberately do
+        // NOT overwrite this with a fixed `ViewGroup.LayoutParams(24,24)`:
+        // that base class has no margin fields, so a centered Taffy frame
+        // (e.g. (6,6,24,24) inside a 36×36 menu button) couldn't be applied
+        // and the icon pinned to the parent's top-left corner. The 24dp
+        // size now comes from the Taffy measure_fn (`install_external_measure_fn`,
+        // which reads the drawable's intrinsic size) + the apply-frames
+        // width/height, exactly like every other view.
         apply_default_layout_params(env, &image_view);
-
-        // Default 24dp size via layout params.
-        let density: f32 = get_density(env, &b.context);
-        let size_px = (24.0 * density) as i32;
-        let lp_class = env.find_class("android/view/ViewGroup$LayoutParams").unwrap();
-        let lp = env
-            .new_object(&lp_class, "(II)V", &[JValue::Int(size_px), JValue::Int(size_px)])
-            .unwrap();
-        let _ = env.call_method(
-            &image_view,
-            "setLayoutParams",
-            "(Landroid/view/ViewGroup$LayoutParams;)V",
-            &[JValue::Object(&lp)],
-        );
 
         env.new_global_ref(image_view).unwrap()
     })
@@ -179,10 +179,17 @@ pub(crate) fn animate_stroke(
 
 /// Build a ShapeDrawable-based icon from path data.
 /// Uses android.graphics.drawable.ShapeDrawable with a custom PathShape.
+/// Default icon edge length in dp (matches iOS `icon::DEFAULT_SIZE`).
+/// The drawable's intrinsic size is this many device pixels so the
+/// Taffy measure_fn sizes the icon to 24dp; the SVG paths are scaled
+/// from the viewBox to the drawable's bounds at draw time.
+const DEFAULT_ICON_DP: f32 = 24.0;
+
 fn build_icon_drawable<'a>(
     env: &mut jni::JNIEnv<'a>,
     data: &IconData,
     color: Option<&Color>,
+    density: f32,
 ) -> JObject<'a> {
     let (vw, vh) = data.view_box;
 
@@ -304,18 +311,24 @@ fn build_icon_drawable<'a>(
     };
     let _ = env.call_method(&paint, "setColor", "(I)V", &[JValue::Int(argb)]);
 
-    // Set intrinsic size to viewBox.
+    // Intrinsic size = the icon's render size (24dp) in device pixels.
+    // The Taffy measure_fn reads this via `View.measure`, so it has to be
+    // the real dp-scaled size, NOT the viewBox units (which would make
+    // the icon ~7dp). The paths are scaled from the viewBox to the
+    // drawable's bounds at draw time, so the viewBox only drives the path
+    // geometry, not the display size.
+    let intrinsic_px = (DEFAULT_ICON_DP * density).round() as i32;
     let _ = env.call_method(
         &drawable,
         "setIntrinsicWidth",
         "(I)V",
-        &[JValue::Int(vw as i32)],
+        &[JValue::Int(intrinsic_px)],
     );
     let _ = env.call_method(
         &drawable,
         "setIntrinsicHeight",
         "(I)V",
-        &[JValue::Int(vh as i32)],
+        &[JValue::Int(intrinsic_px)],
     );
 
     drawable

@@ -99,13 +99,54 @@ fn drawer_ssr_renders_new_slot_chrome() {
         "expected the pinned (wide-viewport) sidebar rule in the shipped sheet, got: {sheet}"
     );
 
-    // Default mode is `bottom_in_scroll`: the body is the scroll context
-    // and the footer mounts after the screen inside it.
+    // The navigator never owns scroll: the body is a plain flex container,
+    // NOT a scroll context. The `-scrolls` class must be gone entirely.
     assert!(
-        html.contains("ui-nav-drawer-body-scrolls"),
-        "expected scroll-mode body class, got: {html}"
+        !html.contains("ui-nav-drawer-body-scrolls"),
+        "body must not be a scroll context (no -scrolls class), got: {html}"
     );
+
+    // The footer (bottom slot) is a PINNED SIBLING of the middle row —
+    // inserted into the root after the middle — not a child of the body.
+    // So in source order the whole middle subtree (sidebar + body +
+    // screen) precedes the bottom slot.
+    let middle = html.find("ui-nav-drawer-middle").unwrap();
+    let body = html.find("ui-nav-drawer-body").unwrap();
+    let bottom = html.find("ui-nav-drawer-bottom").unwrap();
     let screen = html.find("ABOUT BODY").unwrap();
     let footer = html.find("SITE FOOTER").unwrap();
-    assert!(screen < footer, "screen should render before the footer, got: {html}");
+    assert!(middle < bottom, "bottom slot must come after the middle row, got: {html}");
+    assert!(body < bottom, "bottom slot must come after the body outlet, got: {html}");
+    assert!(screen < footer, "footer renders after the screen content, got: {html}");
+}
+
+/// Locks the de-opinionated structure: regardless of builder config the
+/// bottom slot is a pinned sibling of the middle row (in the root), never
+/// nested inside the scrolling body — because the navigator no longer
+/// owns scroll. Host-testable via the SSR chrome handler (no device).
+#[test]
+fn drawer_ssr_bottom_slot_is_pinned_sibling() {
+    let page = render_path_with(
+        "/",
+        |b| drawer_navigator::chrome::register(b),
+        || {
+            DrawerNavigator::new(&HOME)
+                .leading_with(|_slot| view(vec![text("SIDE").into()]).into())
+                .bottom_with(|_slot| view(vec![text("FOOT").into()]).into())
+                .screen(HOME, |_| Screen::new(view(vec![text("home body").into()])))
+                .into()
+        },
+    );
+    let html = &page.html;
+
+    // No scroll context anywhere on the body.
+    assert!(
+        !html.contains("ui-nav-drawer-body-scrolls"),
+        "body must not be a scroll context, got: {html}"
+    );
+
+    // The bottom slot sits as a root-level sibling after the middle row.
+    let middle = html.find("ui-nav-drawer-middle").expect("middle row");
+    let bottom = html.find("ui-nav-drawer-bottom").expect("bottom slot");
+    assert!(middle < bottom, "bottom slot must be a sibling after the middle row, got: {html}");
 }

@@ -280,15 +280,21 @@ stylesheet! {
 stylesheet! {
     pub ScreenScroll<IdeaThemeRef> {
         base(_t) {
-            // Screen container — flow content inside the drawer
-            // navigator's scrollable body. No `height: 100%` (that
-            // would clip content above body height and prevent
-            // body-level scroll). `width: 100%` ensures full-bleed
-            // children (hero, footer) span the viewport.
-            // Background + font are inherited by every Text/View
-            // descendant of the screen.
+            // The website's OWN scroll surface (and the wrapper that
+            // fills the navigator body around it). The drawer
+            // navigator no longer owns scroll — its body is a plain
+            // non-scrolling flex child — so this `scroll_view` must
+            // grow to claim the leftover height under the (conditional)
+            // mobile header and scroll its content internally.
+            // `flex_grow/shrink/basis` fill the body; `width: 100%`
+            // ensures full-bleed children (hero, footer) span the
+            // viewport. Background + font are inherited by every
+            // Text/View descendant of the screen.
             flex_direction: FlexDirection::Column,
             width: Length::pct(100.0),
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            flex_basis: 0.0,
             background: Tokenized::token("color-background", Color("#f7f5ef".into())),
             color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             font_family: &INTER,
@@ -296,6 +302,21 @@ stylesheet! {
         transitions {
             background: 250ms EaseInOut,
             color: 250ms EaseInOut,
+        }
+    }
+}
+
+/// Content-sized column that wraps the WHOLE scrolled tree (page row
+/// + footer) inside `layout_with_toc`'s `scroll_view`. Bound to a
+/// `Ref<ViewHandle>` whose `absolute_frame().height` the scroll-spy
+/// reads as the total scrollable content height. Deliberately has NO
+/// `flex_grow` (it must size to its content, not fill the viewport)
+/// and no `max_width` (the footer is full-bleed).
+stylesheet! {
+    pub PageScrollColumn<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            width: Length::pct(100.0),
         }
     }
 }

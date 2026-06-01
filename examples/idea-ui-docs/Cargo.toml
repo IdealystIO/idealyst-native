@@ -54,6 +54,9 @@ idea-codeblock = { workspace = true }
 # Real HTML <table> on web via Element::External; flex fallback on
 # native. Powers PropsTable on every component page.
 table = { workspace = true }
+# Lucide icon pack — provides the `MENU` glyph for the mobile
+# hamburger that opens the collapsed drawer.
+icons-lucide = { workspace = true }
 
 # Web-only deps. The cross-platform `app()` tree never references
 # these; the wasm-bindgen entry in the CLI-generated wrapper is gated

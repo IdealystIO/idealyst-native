@@ -148,16 +148,6 @@ pub struct WebDrawerCallbacks<N: Clone + 'static> {
     pub active_changed: Rc<dyn Fn(&'static str, String)>,
     pub open_changed: Rc<dyn Fn(bool)>,
     pub background_color: Option<String>,
-    /// When `true` (the default), the drawer's `body` div becomes
-    /// the scroll context and the bottom slot mounts INSIDE the
-    /// body, as a flow sibling AFTER the screen — so the footer
-    /// scrolls with content. Screens drop their own
-    /// `ScrollView` wrappers and render directly as flow content
-    /// of the body. When `false`, the body has `overflow: hidden`
-    /// and the bottom slot mounts as a viewport-pinned sibling
-    /// of the middle row (historical behavior). Authors set this
-    /// via [`DrawerBuilder::bottom_pinned`] in the SDK.
-    pub bottom_in_scroll: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -270,10 +260,12 @@ pub struct NavigatorInstance {
     pub outlet: Option<Node>,
     /// When set, screen mounts call `insertBefore(screen, anchor)`
     /// instead of `appendChild(screen)`. The anchor stays in the
-    /// outlet across navigations — a typical use is a persistent
-    /// footer node parked after the screen-mount position so each
-    /// new screen lands above it. Set by the SDK at create time
-    /// (e.g., drawer's `bottom_in_scroll` mode).
+    /// outlet across navigations — a generic hook for a navigator
+    /// that parks a persistent node after the screen-mount position
+    /// so each new screen lands above it. The Drawer no longer uses
+    /// it (its footer is a pinned sibling of the middle row, not a
+    /// child of the body), so for the Drawer this stays `None` and
+    /// screens append into the body outlet.
     pub screen_anchor: Option<Node>,
     /// Active stack — top is the visible screen. Always non-empty
     /// while the navigator exists; `pop` of the only entry is a no-op.
@@ -351,11 +343,10 @@ impl NavigatorInstance {
     }
 
     /// Mount a screen node into `mount_point()`. When `screen_anchor`
-    /// is set (e.g., drawer's `bottom_in_scroll` mode parks a
-    /// footer node at the end of the outlet), the screen is
-    /// inserted *before* the anchor so persistent chrome stays
-    /// after the screen content. When no anchor is set, this is
-    /// equivalent to `appendChild`.
+    /// is set, the screen is inserted *before* the anchor so persistent
+    /// chrome stays after the screen content. When no anchor is set (the
+    /// Drawer's case — its footer is a pinned sibling, not a body child),
+    /// this is equivalent to `appendChild`.
     fn insert_screen_node(&self, node: &Node) -> Result<Node, wasm_bindgen::JsValue> {
         self.mount_point().insert_before(node, self.screen_anchor.as_ref())
     }
@@ -466,12 +457,10 @@ impl NavigatorInstance {
         self.insert_screen_node(&node)
             .expect("insert screen failed");
         // Reset the outlet's scroll position to the top — standard
-        // web/iOS UX is "a fresh screen starts at the top," but
-        // when the navigator owns a persistent scroll container
-        // (drawer's `bottom_in_scroll` mode, where the body
-        // outlives every push) the previous screen's scroll
-        // position would otherwise carry over and the user would
-        // land mid-page.
+        // web/iOS UX is "a fresh screen starts at the top." Relevant
+        // for any navigator whose persistent outlet is itself a scroll
+        // container; for the Drawer (a plain `overflow: hidden` body)
+        // this is a no-op (screens own their own scroll).
         //
         // Browser back/forward restores scroll by overwriting this
         // AFTER `mount_internal` returns — see `pop_in_place` /
@@ -988,7 +977,6 @@ pub fn create_drawer(
         build_top,
         build_bottom,
         build_trailing,
-        bottom_in_scroll,
         ..
     } = callbacks;
     // Rewrite default `Link` activation to `Select` — without this
@@ -1157,14 +1145,10 @@ pub fn create_drawer(
         None
     };
 
-    // Body outlet — always present. Adoption matches the base
-    // `ui-nav-drawer-body` token (server node may also carry `-scrolls`).
-    let body_class = if bottom_in_scroll {
-        "ui-nav-drawer-body ui-nav-drawer-body-scrolls"
-    } else {
-        "ui-nav-drawer-body"
-    };
-    let body_div = frame_div(b, &doc, &middle_node, "ui-nav-drawer-body", body_class);
+    // Body outlet — always present. A plain flex container, never a scroll
+    // context: the navigator doesn't own scroll, screens own theirs via the
+    // `scroll_view` primitive.
+    let body_div = frame_div(b, &doc, &middle_node, "ui-nav-drawer-body", "ui-nav-drawer-body");
     let body_node: Node = body_div.unchecked_into();
 
     // Trailing slot (optional).
@@ -1176,20 +1160,12 @@ pub fn create_drawer(
 
     // --- BOTTOM slot (optional) ---
     //
-    // In `bottom_in_scroll` mode, the footer mounts INSIDE the
-    // body (as the last child) and screens insert_before it via
-    // `NavigatorInstance::screen_anchor`. The body's overflow:auto
-    // (set on `.ui-nav-drawer-body-scrolls`) makes both the
-    // screen and footer scroll together — the footer slides up
-    // from below as the user scrolls down through the content,
-    // matching the iOS / Safari / docs-site convention.
-    //
-    // In `bottom_pinned` mode (legacy), the footer is a sibling
-    // of `.ui-nav-drawer-middle` and stays pinned at the viewport
-    // bottom regardless of scroll.
+    // Always a pinned sibling of `.ui-nav-drawer-middle`, anchored at the
+    // viewport bottom regardless of scroll. The navigator never scrolls, so
+    // there's no "footer scrolls with content" mode — an app that wants that
+    // puts the footer inside its own screen `scroll_view`.
     let bottom_div = if build_bottom.is_some() {
-        let parent: &Node = if bottom_in_scroll { &body_node } else { &container };
-        Some(frame_div(b, &doc, parent, "ui-nav-drawer-bottom", "ui-nav-drawer-bottom"))
+        Some(frame_div(b, &doc, &container, "ui-nav-drawer-bottom", "ui-nav-drawer-bottom"))
     } else {
         None
     };
@@ -1201,16 +1177,9 @@ pub fn create_drawer(
     {
         let mut inst = instance_rc.borrow_mut();
         inst.outlet = Some(body_node.clone());
-        if bottom_in_scroll {
-            // Park the footer node as the insertion anchor so
-            // every subsequent screen mount lands BEFORE it. New
-            // screens flow naturally above the footer; the footer
-            // node itself is never detached.
-            inst.screen_anchor = bottom_div.as_ref().map(|d| {
-                let n: Node = d.clone().unchecked_into();
-                n
-            });
-        }
+        // No `screen_anchor`: the footer is a pinned sibling of the middle
+        // row, not a child of the body, so screens mount directly into the
+        // body outlet (append) rather than before a footer node.
     }
 
     // Mount every slot's content in a single microtask so the
@@ -1571,21 +1540,11 @@ fn ensure_navigator_css(_b: &mut WebBackend) {
         // wrappers. Authors that only use `sidebar_with` get the
         // same visual result with one extra wrapper div (the
         // middle row).
-        // Drawer body has two modes:
-        //   - `.ui-nav-drawer-body` (default `bottom_pinned` mode)
-        //     keeps the historical `overflow: hidden` behavior;
-        //     screens fill the body via their own `ScrollView`,
-        //     and the footer pins to the viewport bottom as a
-        //     sibling of `.ui-nav-drawer-middle`.
-        //   - `.ui-nav-drawer-body-scrolls` (new default
-        //     `bottom_in_scroll` mode) makes the body the scroll
-        //     context; the footer is a flow sibling AFTER the
-        //     screen inside the body. Screens drop their inner
-        //     `ScrollView` since the body now provides scrolling.
-        //
-        // The new mode's `min-height: 100%` ensures short screens
-        // still fill the viewport vertically so the footer sits at
-        // the bottom of the visible area (not floating mid-screen).
+        // The drawer body (`.ui-nav-drawer-body`) is a plain
+        // `overflow: hidden` flex container — the navigator never owns
+        // scroll. Screens fill the body and provide their own scrolling
+        // via the `scroll_view` primitive; the footer pins to the viewport
+        // bottom as a sibling of `.ui-nav-drawer-middle`.
         // Single source of truth — the same sheet the generic SSR chrome
         // handlers ship via `Backend::register_raw_css`, so the live web
         // layout and the server's first paint are identical.

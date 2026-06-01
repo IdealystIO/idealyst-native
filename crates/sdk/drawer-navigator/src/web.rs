@@ -21,9 +21,7 @@ use crate::{
     DrawerCmd, DrawerPresentation, DrawerSide, DrawerSlotProps, DrawerType, LeadingIntent,
     MountPolicy, SlotProps, TopSlot, TrailingIntent,
 };
-use runtime_core::primitives::navigator::ScrollContext;
 use runtime_core::Signal;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use backend_web::WebBackend;
 use runtime_core::primitives::navigator::{
@@ -195,59 +193,10 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
         let trailing_intent_sig = Signal::new(TrailingIntent::None);
         let screen_title_sig = Signal::new(String::new());
 
-        // Build the framework-level `ScrollContext` bundle. All
-        // dimensions + offsets are populated from the navigator's
-        // body div via `scroll` + `resize` listeners installed
-        // below (after the helpers create the body DOM). Reads see
-        // `0.0` until the first event fires; the initial-measurement
-        // call inside the microtask sets the real values before any
-        // dependent effect runs.
-        //
-        // Horizontal-axis fields (`scroll_x`, `scroll_width`,
-        // `viewport_left`, `width`) are allocated but never written
-        // — the drawer body is `overflow-y: auto` only. The slots
-        // are present so author code (and future horizontally-
-        // scrolling navigator SDKs) can use the same
-        // `ScrollContext` shape uniformly.
-        let scroll_y_sig = Signal::new(0.0_f32);
-        let viewport_top_sig = Signal::new(0.0_f32);
-        let height_sig = Signal::new(0.0_f32);
-        let scroll_height_sig = Signal::new(0.0_f32);
-        let scroll_x_sig = Signal::new(0.0_f32);
-        let viewport_left_sig = Signal::new(0.0_f32);
-        let width_sig = Signal::new(0.0_f32);
-        let scroll_width_sig = Signal::new(0.0_f32);
-        let scroll_to_fn: Rc<dyn Fn(f32, f32)> = Rc::new(|_x: f32, y: f32| {
-            if let Some(win) = web_sys::window() {
-                if let Some(doc) = win.document() {
-                    if let Ok(Some(body)) =
-                        doc.query_selector(".ui-nav-drawer-body-scrolls,.ui-nav-drawer-body")
-                    {
-                        body.set_scroll_top(y as i32);
-                    }
-                }
-            }
-        });
-        let scroll_ctx = ScrollContext {
-            viewport_top: viewport_top_sig,
-            viewport_left: viewport_left_sig,
-            height: height_sig,
-            width: width_sig,
-            scroll_y: scroll_y_sig,
-            scroll_x: scroll_x_sig,
-            scroll_height: scroll_height_sig,
-            scroll_width: scroll_width_sig,
-            scroll_to: scroll_to_fn,
-        };
-
-        // Publish the framework-level ambient scroll context so
-        // screens (which don't have direct `SlotProps` access) can
-        // drive scroll-spy effects via
-        // `runtime_core::primitives::navigator::ambient_scroll_context()`.
-        runtime_core::primitives::navigator::scroll::_set_ambient_scroll_context(
-            Some(scroll_ctx.clone()),
-        );
-
+        // The drawer never owns scroll — the navigator's body is a plain
+        // flex container. Screens (and chrome slots) own their own scroll
+        // via the `scroll_view` primitive and read its handle directly, so
+        // there's no navigator `ScrollContext` to build or publish.
         let slot_props = SlotProps {
             active_route: nav_state.active_route,
             active_path: nav_state.active_path.clone(),
@@ -261,7 +210,7 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
             open_drawer: open_drawer_fn.clone(),
             close_drawer: close_drawer_fn.clone(),
             pop: pop_fn.clone(),
-            scroll: Some(scroll_ctx.clone()),
+            scroll: None,
         };
 
         // Publish ambient drawer chrome so screen content (not just slot
@@ -395,7 +344,6 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
             active_changed,
             open_changed,
             background_color: None,
-            bottom_in_scroll: presentation.bottom_in_scroll,
         };
 
         let node = web_navigator_helpers::create_drawer(backend, drawer_callbacks, control);
@@ -431,85 +379,6 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
             });
         }
 
-        // Install the body-scroll + dimension listeners once the
-        // helpers have created the body DOM. Defer to a microtask:
-        // the helpers' microtask runs the layout-build closures
-        // (which run the slot builders) before the navigator's
-        // first mount; we hook the body's `scroll` event +
-        // window's `resize` afterward so slot-mount doesn't race
-        // the listener.
-        runtime_core::schedule_microtask(move || {
-            let Some(win) = web_sys::window() else { return };
-            let Some(doc) = win.document() else { return };
-            // Either class identifies the body — whichever mode is
-            // active. The `,` selector matches either.
-            let Ok(Some(body_el)) =
-                doc.query_selector(".ui-nav-drawer-body-scrolls,.ui-nav-drawer-body")
-            else {
-                return;
-            };
-
-            // Refresh every body-derived signal from the live DOM.
-            // Defined as a `Fn()` so it can be reused by scroll,
-            // resize, and the one-shot initial measurement below.
-            let refresh = {
-                let scroll_y = scroll_y_sig;
-                let viewport_top = viewport_top_sig;
-                let height = height_sig;
-                let scroll_height = scroll_height_sig;
-                Rc::new(move || {
-                    let Some(win) = web_sys::window() else { return };
-                    let Some(doc) = win.document() else { return };
-                    let Ok(Some(body)) =
-                        doc.query_selector(".ui-nav-drawer-body-scrolls,.ui-nav-drawer-body")
-                    else {
-                        return;
-                    };
-                    let rect = body.get_bounding_client_rect();
-                    let st = body.scroll_top() as f32;
-                    let ch = body.client_height() as f32;
-                    let sh = body.scroll_height() as f32;
-                    let top = rect.top() as f32;
-                    // Compare-then-set so unchanged values don't
-                    // notify dependents.
-                    if scroll_y.get() != st { scroll_y.set(st); }
-                    if viewport_top.get() != top { viewport_top.set(top); }
-                    if height.get() != ch { height.set(ch); }
-                    if scroll_height.get() != sh { scroll_height.set(sh); }
-                })
-            };
-
-            // Initial measurement — important so the first read
-            // (before any scroll/resize event) sees real values.
-            refresh();
-
-            // Scroll listener on the body. Updates scroll_y (and
-            // re-syncs scrollHeight in case content reflowed since
-            // the last measurement).
-            let refresh_scroll = refresh.clone();
-            let scroll_cb = Closure::wrap(Box::new(move |_: web_sys::Event| {
-                refresh_scroll();
-            }) as Box<dyn FnMut(web_sys::Event)>);
-            let _ = body_el.add_event_listener_with_callback(
-                "scroll",
-                scroll_cb.as_ref().unchecked_ref(),
-            );
-            scroll_cb.forget();
-
-            // Resize listener on the window. Updates body height /
-            // viewport_top when the browser window resizes,
-            // orientation changes, or the chrome (e.g., mobile
-            // header) shows/hides.
-            let refresh_resize = refresh.clone();
-            let resize_cb = Closure::wrap(Box::new(move |_: web_sys::Event| {
-                refresh_resize();
-            }) as Box<dyn FnMut(web_sys::Event)>);
-            let _ = win.add_event_listener_with_callback(
-                "resize",
-                resize_cb.as_ref().unchecked_ref(),
-            );
-            resize_cb.forget();
-        });
         self.container = Some(node.clone());
         node
     }
