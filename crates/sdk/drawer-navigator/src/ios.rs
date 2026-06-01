@@ -525,4 +525,11 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
 
 pub fn register(backend: &mut IosBackend) {
     backend.register_navigator::<DrawerPresentation, _>(|| Box::new(IosDrawerHandler::new()));
+    // Runtime-server client path: lets `dev-client` rebuild the
+    // presentation from wire config and drive this same handler, so the
+    // real UIKit drawer chrome renders over the wire (not the old
+    // structural fallback). The sidebar leaf adopts via the
+    // `WireSidebarAdopt` sentinel materialized by the walker. No-op cost
+    // under `--local`.
+    crate::register_wire_drawer_factory();
 }

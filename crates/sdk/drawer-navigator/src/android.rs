@@ -439,4 +439,11 @@ fn drawer_options_to_android(
 
 pub fn register(backend: &mut AndroidBackend) {
     backend.register_navigator::<DrawerPresentation, _>(|| Box::new(AndroidDrawerHandler::new()));
+    // Runtime-server client path: lets `dev-client` rebuild the
+    // presentation from wire config and drive this same handler, so the
+    // real DrawerLayout chrome renders over the wire (not the old
+    // structural fallback). The sidebar leaf adopts via the
+    // `WireSidebarAdopt` sentinel materialized by the walker. No-op cost
+    // under `--local`.
+    crate::register_wire_drawer_factory();
 }
