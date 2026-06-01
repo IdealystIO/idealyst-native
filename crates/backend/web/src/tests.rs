@@ -1281,3 +1281,115 @@ fn regression_filled_icon_paints_fill_not_stroke() {
         "update_color must not paint fill on an outlined icon",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Portal focus-trap re-entrancy
+// ---------------------------------------------------------------------------
+
+/// REGRESSION TEST.
+///
+/// The portal focus trap installs a `focusin` listener on `document`
+/// that bounces escaping focus back into the portal via `.focus()`.
+/// That `.focus()` SYNCHRONOUSLY re-dispatches `focusin`, re-entering
+/// the very same listener before the outer call returns.
+///
+/// When the listener was a `Closure<dyn FnMut>`, wasm-bindgen's
+/// exclusive-borrow guard threw "closure invoked recursively or after
+/// being dropped" at the FFI boundary on that re-entrant call —
+/// BEFORE the Rust body (and its `in_progress` short-circuit) could
+/// run. The throw escaped as an uncaught exception inside the inner
+/// `focusin` dispatch and surfaced as a console error on every focus
+/// bounce (and on teardown, when removing a focused portal moves
+/// focus through the trap). The fix makes the listener a
+/// `Closure<dyn Fn>`, which carries no re-entrancy guard (re-entry is
+/// memory-safe through the `RefCell`), so the inner call runs the body
+/// and `in_progress` bails it cleanly with no throw.
+///
+/// This test drives a focus escape through a real trap and asserts (a)
+/// no uncaught error is reported to `window`, and (b) the trap still
+/// works (focus lands back on the portal's first focusable child).
+/// Against the old `FnMut` listener, assertion (a) fails; the fix
+/// makes both hold.
+#[wasm_bindgen_test]
+fn portal_focus_trap_bounce_does_not_throw_on_reentrant_focusin() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use wasm_bindgen::closure::Closure;
+
+    install_mount();
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let body = doc.body().expect("body");
+
+    // A portal subtree with two focusable children, plus an element
+    // OUTSIDE the portal to focus first (so the next focus escape
+    // triggers the bounce).
+    let portal_root = doc.create_element("div").expect("portal root");
+    let inside_a = doc.create_element("button").expect("inside a");
+    let inside_b = doc.create_element("button").expect("inside b");
+    portal_root.append_child(&inside_a).unwrap();
+    portal_root.append_child(&inside_b).unwrap();
+    let outside = doc.create_element("button").expect("outside");
+    body.append_child(&portal_root).unwrap();
+    body.append_child(&outside).unwrap();
+
+    // Count uncaught errors reported to `window`. The re-entrant
+    // FnMut throw escapes the inner `focusin` dispatch and is
+    // reported here synchronously ("report the exception"). We
+    // `prevent_default` so a captured error doesn't also trip the
+    // test runner's own handler — our assertion below is the signal.
+    let errors: Rc<Cell<u32>> = Rc::new(Cell::new(0));
+    let errors_for_cb = errors.clone();
+    let on_error: Closure<dyn FnMut(web_sys::Event)> =
+        Closure::wrap(Box::new(move |ev: web_sys::Event| {
+            errors_for_cb.set(errors_for_cb.get() + 1);
+            ev.prevent_default();
+        }) as Box<dyn FnMut(web_sys::Event)>);
+    let window = web_sys::window().unwrap();
+    window
+        .add_event_listener_with_callback_and_bool(
+            "error",
+            on_error.as_ref().unchecked_ref(),
+            true, // capture phase — run before any runner-installed handler
+        )
+        .unwrap();
+
+    // Arm the trap (keep the returned Closure alive for the duration).
+    let _trap = crate::primitives::portal::install_focus_trap(&doc, portal_root.clone())
+        .expect("install_focus_trap returns the listener closure");
+
+    // Move focus OUTSIDE the portal. This fires `focusin`
+    // (target = outside) → the trap calls `.focus()` on `inside_a`
+    // → that synchronously re-dispatches `focusin` (target = inside_a),
+    // re-entering the listener. The old `FnMut` listener threw here.
+    let outside_html: web_sys::HtmlElement = outside.unchecked_into();
+    outside_html.focus().expect("focus outside");
+
+    // (a) No uncaught error must have been reported.
+    assert_eq!(
+        errors.get(),
+        0,
+        "focus-trap bounce re-entered its own `focusin` listener and threw \
+         (closure invoked recursively) — the listener must be `Fn`, not `FnMut`",
+    );
+
+    // (b) The trap actually worked: focus landed back inside the portal.
+    let active = doc.active_element();
+    let landed_inside = active
+        .as_ref()
+        .map(|a| portal_root.contains(Some(a.as_ref())))
+        .unwrap_or(false);
+    assert!(
+        landed_inside,
+        "focus trap must bounce focus back into the portal subtree; active element was {:?}",
+        active.map(|a| a.tag_name()),
+    );
+
+    // Cleanup so later tests don't inherit the document `error`
+    // listener.
+    let _ = window.remove_event_listener_with_callback_and_bool(
+        "error",
+        on_error.as_ref().unchecked_ref(),
+        true,
+    );
+    drop(on_error);
+}

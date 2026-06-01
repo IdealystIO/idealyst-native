@@ -85,8 +85,16 @@ pub(crate) struct PortalInstance {
     /// populated when `trap_focus = true`. Routes focus back to the
     /// first focusable child of the portal when it tries to leave
     /// the subtree.
+    ///
+    /// `Fn`, not `FnMut`: the handler's own `.focus()` call
+    /// synchronously re-dispatches `focusin`, re-entering this very
+    /// closure. wasm-bindgen's exclusive-borrow guard would throw
+    /// "closure invoked recursively or after being dropped" on a
+    /// `FnMut`; an `Fn` closure is re-entry-safe, so the inner call
+    /// runs the body and the `in_progress` flag short-circuits it.
+    /// See [`install_focus_trap`].
     #[allow(dead_code)]
-    focus_trap_handler: Option<Closure<dyn FnMut(web_sys::Event)>>,
+    focus_trap_handler: Option<Closure<dyn Fn(web_sys::Event)>>,
 }
 
 /// All live portal instances, keyed by `data-portal-id`.
@@ -628,16 +636,30 @@ const FOCUSABLE_SELECTOR: &str = concat!(
 
 /// Install a `focusin` listener on `document` that bounces focus
 /// back to the portal's first focusable child whenever it escapes
-/// the portal subtree. Re-entry guard via `RefCell<bool>` prevents
-/// the forced `.focus()` call from looping the handler against
-/// itself.
-fn install_focus_trap(
+/// the portal subtree.
+///
+/// ## Why this is an `Fn` closure, not `FnMut`
+///
+/// The handler's own `.focus()` call (below) synchronously
+/// re-dispatches a `focusin` event, which re-enters THIS closure
+/// before the outer invocation returns. wasm-bindgen guards
+/// `Closure<dyn FnMut>` with an exclusive-borrow check at the FFI
+/// boundary: a re-entrant call throws "closure invoked recursively
+/// or after being dropped" *before* the Rust body runs — so the
+/// `in_progress` flag never gets a chance to short-circuit it, and
+/// the throw surfaces as an uncaught console error during any focus
+/// bounce (and on teardown, when removing a focused portal moves
+/// focus and triggers the handler). An `Fn` closure carries no such
+/// guard — re-entry is memory-safe through the `RefCell` interior
+/// mutability — so the inner call runs the body and the
+/// `in_progress` flag cleanly bails it out.
+pub(crate) fn install_focus_trap(
     doc: &web_sys::Document,
     portal_root: web_sys::Element,
-) -> Option<Closure<dyn FnMut(web_sys::Event)>> {
+) -> Option<Closure<dyn Fn(web_sys::Event)>> {
     let in_progress: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
     let portal_root_for_listener = portal_root.clone();
-    let closure: Closure<dyn FnMut(web_sys::Event)> =
+    let closure: Closure<dyn Fn(web_sys::Event)> =
         Closure::wrap(Box::new(move |ev: web_sys::Event| {
             // Re-entry guard: our own `.focus()` triggers another
             // `focusin`. Bail without recursing.
@@ -674,7 +696,7 @@ fn install_focus_trap(
                 let _ = h.focus();
             }
             *in_progress.borrow_mut() = false;
-        }) as Box<dyn FnMut(web_sys::Event)>);
+        }) as Box<dyn Fn(web_sys::Event)>);
 
     // `tabindex="-1"` lets the portal root itself receive focus
     // programmatically (so the fallback `portal_root.focus()` works)
