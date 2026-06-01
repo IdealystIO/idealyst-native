@@ -426,15 +426,28 @@ where
             }
             Command::CreateExternal { id, type_name, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
-                // Payload couldn't cross the wire. Fall back to a plain
-                // View placeholder so the tree stays well-formed; the
-                // user gets a visible "External primitive: <name>" via
-                // the surrounding app code if they want a richer
-                // placeholder, this code path leaves room for client-
-                // side external-registry lookup as future work.
-                let _ = type_name;
+                // The server emitted an external primitive whose handler
+                // is not registered on this client. On native the RS
+                // client links a FIXED set of compiled-in SDK handlers
+                // (like React Native native modules); a payload that
+                // reaches this generic fallback means the server's SDK
+                // set and the client's are desynced. Surface it loudly
+                // (RN-style) rather than silently rendering a blank box.
+                runtime_core::log(
+                    runtime_core::LogLevel::Warn,
+                    &format!(
+                        "[wire] external '{}' is not registered on this client \
+                         — server/client SDK sets are desynced; hard-reload the client",
+                        type_name
+                    ),
+                );
                 let a11y = self.a11y_props(a11y);
-                let node = self.backend.borrow_mut().create_view(&a11y);
+                let mut node = self.backend.borrow_mut().create_view(&a11y);
+                // Make the desync visible in the tree.
+                let label = format!("Component not available: {}", type_name);
+                let text_a11y = runtime_core::accessibility::AccessibilityProps::default();
+                let text_node = self.backend.borrow_mut().create_text(&label, &text_a11y);
+                self.backend.borrow_mut().insert(&mut node, text_node);
                 self.nodes.insert(id, node);
             }
             Command::CreateToggle {
