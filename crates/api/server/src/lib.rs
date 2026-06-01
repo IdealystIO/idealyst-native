@@ -53,6 +53,14 @@ pub use server_macros::server;
 mod extract;
 pub use extract::{Auth, Cookies, Extension, Headers, State};
 
+// Typed streaming transport (WebSocket). The `Socket<In, Out>` type +
+// `SocketError` exist on both builds (client wraps `net::WebSocket`,
+// server wraps the axum WS); `accept` is the server-side upgrade helper.
+mod socket;
+pub use socket::{Socket, SocketError};
+#[cfg(feature = "server")]
+pub use socket::accept;
+
 // =============================================================================
 // Client-only surface: configuration + the `call()` the macro emits.
 // =============================================================================

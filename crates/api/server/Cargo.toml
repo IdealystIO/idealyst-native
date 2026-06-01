@@ -48,8 +48,8 @@ thiserror = "1"
 inventory = "0.3"
 futures-channel = "0.3"
 
-# Server-only deps.
-axum = { version = "0.7", optional = true }
+# Server-only deps. axum `ws` enables WebSocket upgrades for `Socket`.
+axum = { version = "0.7", features = ["ws"], optional = true }
 tokio = { version = "1", features = ["net", "rt", "macros"], optional = true }
 tower = { version = "0.5", optional = true }
 http-body-util = { version = "0.1", optional = true }
@@ -60,3 +60,6 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 runtime-core = { workspace = true, features = ["async-driver"] }
+# Raw WS counterpart for the typed-socket client-mode test.
+tokio-tungstenite = "0.21"
+futures-util = "0.3"

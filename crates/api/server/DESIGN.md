@@ -590,12 +590,16 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
   SharedPreferences/Keystore) — these are per-platform and need device testing. (item 3)
 - **Phase 6 — Enforcement scaffolding.** layered `api`/`ui`/`server-bin` CLI
   templates; clippy `disallowed-types`; colocation cfg-gating recipe. (item 0)
-- **Phase 7 — Streaming & WebSockets.** `#[subscription]`/`#[channel]` macros +
-  `Channel<In, Out>`; multiplexed `/_srv/_ws` over a per-platform `net::WebSocket`;
-  connection-scoped auth; `use_subscription` reactive handle; SSE as the cheap
-  one-way option. Sibling transport, shares the extractor/auth/error/versioning
-  spine; decoupled from the dev wire. See §9. (new — sized as the per-platform WS
-  client + macros + axum upgrade dispatcher)
+- **Phase 7 — Streaming & WebSockets. ◑ IN PROGRESS.** ✅ `net::WebSocket`
+  (native arm: sync `tungstenite` on a blocking I/O thread, no tokio; web/iOS/
+  Android stubbed). ✅ Typed `Socket<In, Out>` (client wraps `net::WebSocket`,
+  server wraps axum WS; JSON frames; shared enum = the contract) + `server::accept`
+  upgrade helper. Both tested end-to-end, both modes. Remaining: `use_socket`
+  reactive hook (scope-tied close), `#[subscription]`/`#[channel]` macros,
+  per-platform arms (`web_sys`/`URLSessionWebSocketTask`/OkHttp — device-tested),
+  `wss://` (tungstenite TLS feature), a `split()` for concurrent duplex, and SSE
+  as the cheap one-way option. Sibling transport; shares the spine; decoupled
+  from the dev wire. Execution-model invariant in §9.0; design in §9.
 - **Later — GraphQL BFF recipe.** server fns as a typed gateway over an existing
   GraphQL/REST system; DTOs codegen'd from the upstream schema.
 
