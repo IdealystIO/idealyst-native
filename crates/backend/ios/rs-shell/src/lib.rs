@@ -49,10 +49,13 @@ pub unsafe extern "C" fn ios_main(root_view: *mut c_void, endpoint_utf8: *const 
 }
 
 /// C-exported teardown. Delegates to the backend's implementation.
+/// This crate is the sole definer of the `ios_teardown` C symbol (the
+/// backend's `#[no_mangle]` version is gated off via `entry-symbols`),
+/// so there's no duplicate-symbol clash at the swiftc link step.
 ///
 /// # Safety
-/// Same contract as `backend_ios::ios_teardown`.
+/// Same contract as `backend_ios::ios_teardown_impl`.
 #[no_mangle]
 pub unsafe extern "C" fn ios_teardown() {
-    unsafe { backend_ios::ios_teardown() }
+    unsafe { backend_ios::ios_teardown_impl() }
 }

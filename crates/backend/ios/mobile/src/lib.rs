@@ -58,7 +58,13 @@ mod runtime_server;
 // only retains symbols that are reachable from the crate's own
 // items, and the consumer crate is otherwise empty.
 #[cfg(all(target_os = "ios", feature = "runtime-server"))]
-pub use runtime_server::{ios_main, ios_main_with_register, ios_teardown};
+pub use runtime_server::{ios_main_with_register, ios_teardown_impl};
+
+// Back-compat C entry symbols, only when a direct consumer (no
+// RS-shell crate) needs them. The RS-shell defines its own, so these
+// stay gated off to avoid duplicate `#[no_mangle]` symbols.
+#[cfg(all(target_os = "ios", feature = "runtime-server", feature = "entry-symbols"))]
+pub use runtime_server::{ios_main, ios_teardown};
 
 /// No-op stub for `install_global_self` on non-iOS hosts so the
 /// host-platform cross-compile of consumer code still type-checks.

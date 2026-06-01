@@ -20,6 +20,13 @@ debug-stats = ["runtime-core/debug-stats", "backend-ios-core/debug-stats"]
 # When on, it pulls `dev-client` and exposes `ios_main` + supporting
 # C-ABI entry points the Swift host uses.
 runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-native/runtime-server"]
+# Emit the `#[no_mangle] ios_main` / `ios_teardown` C entry symbols.
+# OFF by default: the RS-shell crate (`backend-ios-rs-shell`) defines
+# its own C symbols (calling `ios_main_with_register` +
+# `ios_teardown_impl`), and emitting them here too would duplicate the
+# symbol at the swiftc link step. Enable only for a consumer that
+# links this backend directly without the shell.
+entry-symbols = []
 # Compile in this backend's NSTimer-based `RenderLoopDriver`. The
 # driver itself lives in `backend-ios-core` (shared with TV); this
 # feature just turns it on and forwards `runtime-core/async-driver`

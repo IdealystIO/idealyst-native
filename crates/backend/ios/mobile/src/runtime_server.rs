@@ -51,16 +51,22 @@ thread_local! {
 ///   UTF-8 string of the form `ws://host:port`. The Swift host reads
 ///   it from the Info.plist `IdealystDevEndpoint` key the CLI bakes
 ///   in at `idealyst dev` time.
+// The `#[no_mangle]` C entry symbols (`ios_main` / `ios_teardown`)
+// are gated behind `entry-symbols` (OFF by default). The RS-shell
+// crate (`backend-ios-rs-shell`) defines its OWN `ios_main` /
+// `ios_teardown` C symbols (calling `ios_main_with_register` +
+// `ios_teardown_impl` below), so if THIS crate also emitted them the
+// final swiftc link would hit a duplicate-symbol error. The shell is
+// the sole linked staticlib now, so it owns the C symbols; this
+// feature exists only for a hypothetical consumer that links
+// `backend-ios-mobile` directly without the shell.
+#[cfg(feature = "entry-symbols")]
 #[no_mangle]
 pub unsafe extern "C" fn ios_main(
     root_view: *mut std::ffi::c_void,
     endpoint_utf8: *const c_char,
 ) {
-    // Back-compat entry: no SDK handlers registered. The dedicated
-    // RS-shell crate (which links the first-party SDKs) calls
-    // `ios_main_with_register` with a closure that runs the SDK
-    // `register` calls so native chrome (Drawer, etc.) renders over
-    // the wire. See `mobile-rs-shell`.
+    // Back-compat entry: no SDK handlers registered.
     unsafe { ios_main_with_register(root_view, endpoint_utf8, |_backend| {}) }
 }
 
@@ -182,10 +188,11 @@ pub unsafe fn ios_main_with_register(
     }
 }
 
-/// Tear down the active mount. Called by the Swift host from
-/// `applicationWillTerminate` or wherever the app shuts down.
-#[no_mangle]
-pub unsafe extern "C" fn ios_teardown() {
+/// Tear down the active mount. The shared implementation; the C entry
+/// symbol (gated `ios_teardown`) and the RS-shell's `ios_teardown`
+/// both call this so there's only ever ONE `#[no_mangle] ios_teardown`
+/// in the final link.
+pub unsafe fn ios_teardown_impl() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         SHELL.with(|slot| slot.borrow_mut().take());
         HOST_VIEW.with(|slot| slot.borrow_mut().take());
@@ -195,6 +202,15 @@ pub unsafe extern "C" fn ios_teardown() {
         eprintln!("[backend-ios::aas] ios_teardown panicked: {msg}");
         std::process::abort();
     }
+}
+
+/// Tear down the active mount. Called by the Swift host from
+/// `applicationWillTerminate` or wherever the app shuts down. Gated —
+/// see the note on `ios_main`.
+#[cfg(feature = "entry-symbols")]
+#[no_mangle]
+pub unsafe extern "C" fn ios_teardown() {
+    unsafe { ios_teardown_impl() }
 }
 
 /// Read the UIView's current bounds as a `WireViewport`. Returns
