@@ -70,19 +70,47 @@ pub fn router() -> Router {
     // fails loudly at server startup (router build) rather than silently
     // shadowing one handler at request time.
     let _ = entry_map();
-    Router::new()
+    let mut app = Router::new()
         // Batch route is declared first so axum's path matcher prefers
         // the exact `/_srv/_batch` over the catch-all `/_srv/*path`.
-        // Without the explicit ordering axum still matches correctly
-        // (more-specific wins) but being explicit avoids subtle
-        // regressions if the route table grows.
-        .route("/_srv/_batch", post(batch_dispatch))
-        .route("/_srv/*path", post(dispatch))
+        .route("/_srv/_batch", post(batch_dispatch));
+
+    // Mount each #[channel]'s WebSocket route (`GET /_srv/_ws/<path>`)
+    // before the catch-all so the specific paths win.
+    for entry in inventory::iter::<crate::__private::WsEntry> {
+        app = (entry.register)(app);
+    }
+
+    app.route("/_srv/*path", post(dispatch))
     // Intentionally no `.fallback(...)`: composing this router with
     // a static-file `ServeDir` (the demo's typical setup) needs the
     // caller to install their own fallback. Unknown server-fn paths
     // are still handled — the catch-all `/_srv/*path` matches them,
     // and `dispatch` returns 404 when no inventory entry is found.
+}
+
+// ---------------------------------------------------------------------------
+// #[channel] (WebSocket) upgrade helpers, used by the macro's generated
+// handler. They reuse the same Context / middleware / extractor machinery
+// as the HTTP dispatch, run at upgrade time.
+// ---------------------------------------------------------------------------
+
+/// Build the request [`Context`] for a channel upgrade from its headers.
+pub fn ws_open_context(headers: HeaderMap, path: &'static str) -> Context {
+    Context::new(Arc::new(headers), path)
+}
+
+/// Run the middleware chain at upgrade; a short-circuit becomes the HTTP
+/// response (so e.g. an auth guard rejects with 401 *without* upgrading).
+pub async fn ws_run_middlewares(ctx: &mut Context) -> Result<(), Response> {
+    crate::middleware::run_middlewares(ctx)
+        .await
+        .map_err(transport_error_response)
+}
+
+/// Map an extractor-resolution failure at upgrade to an HTTP response.
+pub fn ws_error_response(e: TransportError) -> Response {
+    transport_error_response(e)
 }
 
 /// Bind a TCP listener on `addr` and serve the registered server
@@ -126,6 +154,11 @@ async fn dispatch(headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> 
     let body_vec = body.to_vec();
     let mut ctx = Context::new(Arc::new(headers), path.clone());
 
+    // Seed the per-request cookie jar so handler `set_cookie` calls have
+    // somewhere to land; keep a handle to drain into response headers.
+    let jar = crate::cookie::CookieJar::default();
+    ctx.insert(jar.clone());
+
     // Run the middleware chain (auth guards, etc.) before the handler.
     // A short-circuit becomes the HTTP response; the handler never runs.
     if let Err(e) = crate::middleware::run_middlewares(&mut ctx).await {
@@ -147,6 +180,7 @@ async fn dispatch(headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> 
             if let Ok(v) = HeaderValue::from_str(&format!("{:x}", entry.schema)) {
                 resp.headers_mut().insert(HeaderName::from_static(SCHEMA_HEADER), v);
             }
+            apply_set_cookies(&mut resp, jar.take());
             resp
         }
         // A decode failure the schemas disagree on is version drift, not a
@@ -157,6 +191,17 @@ async fn dispatch(headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> 
             version_mismatch_response(&path, client_schema.unwrap_or(0), entry.schema)
         }
         Err(e) => transport_error_response(e),
+    }
+}
+
+/// Append accumulated `Set-Cookie` headers (one per cookie, never folded)
+/// to a response. No-op when the handler set none.
+fn apply_set_cookies(resp: &mut Response, cookies: Vec<String>) {
+    for c in cookies {
+        if let Ok(v) = HeaderValue::from_str(&c) {
+            resp.headers_mut()
+                .append(axum::http::header::SET_COOKIE, v);
+        }
     }
 }
 
@@ -316,6 +361,9 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
     let headers = Arc::new(headers);
 
     let mut results: Vec<BatchOutputEntry> = Vec::with_capacity(calls.len());
+    // Cookies from every entry's handler accumulate onto the single batch
+    // response (each entry runs in its own context + jar).
+    let mut batch_cookies: Vec<String> = Vec::new();
     for call in calls {
         let entry = match find_entry(&call.path) {
             Some(e) => e,
@@ -354,6 +402,8 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
         // Run the middleware chain for this entry; a short-circuit is
         // this slot's failure, not the whole batch's.
         let mut ctx = Context::new(headers.clone(), call.path.clone());
+        let jar = crate::cookie::CookieJar::default();
+        ctx.insert(jar.clone());
         if let Err(e) = crate::middleware::run_middlewares(&mut ctx).await {
             results.push(BatchOutputEntry::Result(Err(e.into_domain())));
             continue;
@@ -362,6 +412,7 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
         let handler_outcome = CURRENT_CONTEXT
             .scope(ctx, (entry.handler)(arg_bytes))
             .await;
+        batch_cookies.extend(jar.take());
         let slot = match handler_outcome {
             Ok(result_bytes) => {
                 // The handler returned a JSON-encoded
@@ -404,10 +455,12 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
         }
     };
 
-    (
+    let mut resp = (
         StatusCode::OK,
         [("content-type", "application/json")],
         body,
     )
-        .into_response()
+        .into_response();
+    apply_set_cookies(&mut resp, batch_cookies);
+    resp
 }

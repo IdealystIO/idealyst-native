@@ -252,6 +252,16 @@ pub async fn current_theme(cookies: Cookies) -> Result<String, ServerError> {
     Ok(cookies.get("theme").unwrap_or("light").to_string())
 }
 
+/// Sets an httpOnly session cookie on the response — the server half of
+/// the web BFF auth pattern. The `set_cookie` call is only compiled into
+/// the server-side body.
+#[cfg(feature = "server")]
+#[server]
+pub async fn issue_session(token: String) -> Result<(), ServerError> {
+    server::set_cookie(server::Cookie::new("session", token));
+    Ok(())
+}
+
 // -----------------------------------------------------------------------------
 // Versioning fixture (Phase 3): a strict-version endpoint.
 // -----------------------------------------------------------------------------
@@ -296,6 +306,29 @@ mod server_side {
             .unwrap();
         let result: Result<i32, ServerError> = response.json().await.unwrap();
         assert_eq!(result, Ok(5));
+    }
+
+    #[tokio::test]
+    async fn set_cookie_reaches_http_response_header() {
+        // A handler calling `server::set_cookie` must surface a real
+        // `Set-Cookie` header on the HTTP response (the web BFF mechanism).
+        let addr = boot().await;
+        let client = net::Client::new();
+        let response = client
+            .post(format!("http://{addr}/_srv/issue_session"))
+            .body(net::Json(&("tok-123".to_string(),)))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let set_cookie = response
+            .header("set-cookie")
+            .expect("Set-Cookie header should be present");
+        assert!(set_cookie.contains("session=tok-123"), "got: {set_cookie}");
+        // Secure session defaults must be applied.
+        assert!(set_cookie.contains("HttpOnly"), "got: {set_cookie}");
+        assert!(set_cookie.contains("Secure"), "got: {set_cookie}");
+        assert!(set_cookie.contains("SameSite=Lax"), "got: {set_cookie}");
     }
 
     #[tokio::test]

@@ -144,6 +144,28 @@ pub unsafe fn ios_main_with_register(
 
         let initial_viewport = sample_viewport(&view);
 
+        // Install the libdispatch-backed scheduler on the main thread
+        // BEFORE anything that can defer work. Without it,
+        // `runtime_core::schedule_microtask` / `after_ms` fall back to
+        // running their closure SYNCHRONOUSLY (scheduling.rs: no
+        // installed scheduler → `f()` inline). The SDK drawer handler
+        // defers its sidebar build via `schedule_microtask` precisely
+        // so the `backend.borrow_mut()` window held across
+        // `create_navigator` is released before the walker re-enters
+        // via `build_node` → `build_detached` → `walker/view::build` →
+        // `backend.borrow_mut()`. Synchronous fallback re-enters that
+        // borrow mid-`create_navigator` → `RefCell already borrowed`
+        // panic → `catch_unwind` aborts the batch mid-apply →
+        // incomplete tree → blank white. With the AppleScheduler
+        // installed, `schedule_microtask` routes through
+        // `dispatch_async(main_q)`; since `apply_batch` runs on the
+        // main queue's serial FIFO, the deferred build runs in a LATER
+        // turn, after the borrow releases. Tokens (installed on the
+        // apply thread by the `InstallThemeVariables` replay) stay
+        // valid: the deferred build runs on the SAME main thread, so
+        // the thread-local token registry is the same one.
+        crate::install_scheduler();
+
         let mut backend = IosBackend::new(mtm);
         backend.set_host_root(view.clone());
 

@@ -44,6 +44,10 @@ pub use error::{ServerError, ServerFnReturn, TransportError};
 /// directly.
 pub use server_macros::server;
 
+/// The `#[channel]` attribute macro — a WebSocket duplex endpoint, the
+/// streaming sibling of `#[server]`. See [`server_macros::channel`].
+pub use server_macros::channel;
+
 // =============================================================================
 // Extractor wrappers — present on BOTH builds (they appear in the
 // author's shared `#[server]` fn signature). The resolution machinery
@@ -89,11 +93,15 @@ pub use client::{
 // =============================================================================
 
 #[cfg(feature = "server")]
+mod cookie;
+#[cfg(feature = "server")]
 mod extractors;
 #[cfg(feature = "server")]
 mod middleware;
 #[cfg(feature = "server")]
 mod runtime;
+#[cfg(feature = "server")]
+pub use cookie::{clear_cookie, set_cookie, Cookie, SameSite};
 #[cfg(feature = "server")]
 pub use extract::{Context, ContextBuilder, FromContext};
 #[cfg(feature = "server")]
@@ -172,6 +180,39 @@ pub mod __private {
     #[cfg(feature = "server")]
     pub fn current_context() -> crate::extract::Context {
         crate::extractors::current_context()
+    }
+
+    // ---- #[channel] (WebSocket) macro support ----
+
+    /// Re-exported so the `#[channel]` macro's generated handler/route can
+    /// name axum types without the author crate depending on axum.
+    #[cfg(feature = "server")]
+    pub use axum;
+
+    /// One registered WebSocket channel. The `#[channel]` macro emits one
+    /// per endpoint; [`router`](crate::router) folds each `register` over
+    /// the axum `Router` to mount `GET /_srv/_ws/<path>`.
+    #[cfg(feature = "server")]
+    pub struct WsEntry {
+        pub path: &'static str,
+        pub register: fn(axum::Router) -> axum::Router,
+    }
+    // SAFETY: a &'static str + a fn pointer, both trivially Send + Sync.
+    #[cfg(feature = "server")]
+    unsafe impl Send for WsEntry {}
+    #[cfg(feature = "server")]
+    unsafe impl Sync for WsEntry {}
+    #[cfg(feature = "server")]
+    inventory::collect!(WsEntry);
+
+    #[cfg(feature = "server")]
+    pub use crate::runtime::{ws_error_response, ws_open_context, ws_run_middlewares};
+
+    /// Build the `ws(s)://…/_srv/_ws/<path>` URL from the configured
+    /// client base URL. Used by the `#[channel]` client stub.
+    #[cfg(not(feature = "server"))]
+    pub fn ws_url(path: &str) -> String {
+        crate::client::ws_url(path)
     }
 
     /// The client-side call function. The macro's client-side

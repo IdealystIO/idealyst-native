@@ -127,6 +127,24 @@ pub(crate) fn snapshot_config() -> Result<Arc<ClientConfig>, TransportError> {
     Ok(slot.read().unwrap().clone())
 }
 
+/// Build the `ws(s)://…/_srv/_ws/<path>` URL for a `#[channel]` client
+/// stub from the configured base URL (swapping the http→ws scheme). If
+/// unconfigured, the empty base yields a malformed URL that fails to
+/// connect — the same loud-failure posture as [`snapshot_config`].
+pub(crate) fn ws_url(path: &str) -> String {
+    let base = snapshot_config()
+        .map(|c| c.base_url.clone())
+        .unwrap_or_default();
+    let ws_base = if let Some(rest) = base.strip_prefix("https") {
+        format!("wss{rest}")
+    } else if let Some(rest) = base.strip_prefix("http") {
+        format!("ws{rest}")
+    } else {
+        base
+    };
+    format!("{}/_srv/_ws/{}", ws_base.trim_end_matches('/'), path)
+}
+
 /// Lazily-constructed shared [`net::Client`]. One per process — the
 /// inner reqwest pool reuses connections across calls.
 static NET_CLIENT: OnceLock<net::Client> = OnceLock::new();

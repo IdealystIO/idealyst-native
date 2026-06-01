@@ -1007,6 +1007,23 @@ impl AndroidBackend {
             final_insets.top = 24.0;
             final_insets.bottom = 24.0;
         }
+        // INTERIM (non-edge-to-edge): this Android activity lays its
+        // content out BELOW the status bar already — the window insets
+        // are effectively consumed at the top. So a `.safe_area(TOP)`
+        // surface (e.g. the drawer sidebar) must NOT re-add the
+        // status-bar inset, or it double-insets (~2× the bar height; the
+        // sidebar brand sat far too low). Zero the top so `.safe_area(TOP)`
+        // is a no-op here and the system's own layout inset is the single
+        // source of top spacing. The bottom is intentionally KEPT: the
+        // gesture / navigation pill overlays content even when not
+        // edge-to-edge, so a bottom inset is genuinely needed.
+        //
+        // When the app adopts edge-to-edge (deferred to a dedicated
+        // effort), this must instead report the view's real *unconsumed*
+        // top inset — matching iOS's per-view `safeAreaInsets`, which is
+        // already correct because iOS surfaces are full-screen under the
+        // notch. iOS is a separate backend and unaffected by this.
+        final_insets.top = 0.0;
         final_insets
     }
 

@@ -30,6 +30,22 @@ fn reply_to(msg: ClientMsg) -> ServerMsg {
     }
 }
 
+// A #[channel] endpoint. On the server build the macro generates the
+// axum upgrade handler + auto-registers the route (server::router()
+// mounts it at GET /_srv/_ws/echo_channel); on the client build it
+// generates `fn echo_channel() -> UseSocket<ServerMsg, ClientMsg>`.
+#[server::channel]
+async fn echo_channel(
+    mut ch: server::Socket<ClientMsg, ServerMsg>,
+) -> Result<(), server::ServerError> {
+    while let Some(Ok(msg)) = ch.recv().await {
+        if ch.send(reply_to(msg)).await.is_err() {
+            break;
+        }
+    }
+    Ok(())
+}
+
 // ===========================================================================
 // Server mode: the typed `accept` handler, hit by a raw net::WebSocket.
 // ===========================================================================
@@ -87,6 +103,31 @@ mod server_mode {
         assert_eq!(
             decode_text(ws.recv().await.unwrap().unwrap()),
             ServerMsg::Pong
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_macro_mounts_route_and_echoes() {
+        // server::router() folds the #[channel]'s WsEntry → mounts
+        // GET /_srv/_ws/echo_channel. A raw client round-trips through it.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = server::router();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut ws = net::WebSocket::connect(&format!("ws://{addr}/_srv/_ws/echo_channel"))
+            .await
+            .expect("connect");
+
+        ws.send(net::WsMessage::Text(
+            serde_json::to_string(&ClientMsg::Echo("yo".into())).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(
+            decode_text(ws.recv().await.unwrap().unwrap()),
+            ServerMsg::Echo("yo".into())
         );
     }
 }
