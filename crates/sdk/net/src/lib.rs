@@ -53,7 +53,7 @@ pub use headers::Headers;
 pub use method::Method;
 pub use request::RequestBuilder;
 pub use response::Response;
-pub use websocket::{WebSocket, WsMessage};
+pub use websocket::{WebSocket, WsMessage, WsSender};
 
 // Platform-specific transport. Exactly one of these is compiled per
 // target; each one supplies the `transport` submodule that `client.rs`

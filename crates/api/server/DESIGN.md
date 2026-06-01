@@ -594,12 +594,16 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
   (native arm: sync `tungstenite` on a blocking I/O thread, no tokio; web/iOS/
   Android stubbed). ✅ Typed `Socket<In, Out>` (client wraps `net::WebSocket`,
   server wraps axum WS; JSON frames; shared enum = the contract) + `server::accept`
-  upgrade helper. Both tested end-to-end, both modes. Remaining: `use_socket`
-  reactive hook (scope-tied close), `#[subscription]`/`#[channel]` macros,
-  per-platform arms (`web_sys`/`URLSessionWebSocketTask`/OkHttp — device-tested),
-  `wss://` (tungstenite TLS feature), a `split()` for concurrent duplex, and SSE
-  as the cheap one-way option. Sibling transport; shares the spine; decoupled
-  from the dev wire. Execution-model invariant in §9.0; design in §9.
+  upgrade helper. ✅ Cloneable `WsSender`/`SocketSender` (so a UI scope sends while
+  a recv loop owns the socket) + `use_socket` reactive hook — connects on mount,
+  **closes on unmount** via `on_cleanup` (scope drop → sender close → recv loop
+  ends), inbound lands in a reactive `incoming()` signal. All tested both modes
+  (the hook's teardown primitive — sender-close-ends-recv — is unit-tested in
+  net; the full reactive lifecycle runs in-app under the platform scheduler).
+  Remaining: `#[subscription]`/`#[channel]` macros, per-platform arms
+  (`web_sys`/`URLSessionWebSocketTask`/OkHttp — device-tested), `wss://`
+  (tungstenite TLS feature), and SSE as the cheap one-way option. Sibling
+  transport; shares the spine; decoupled from the dev wire. §9.0 / §9.
 - **Later — GraphQL BFF recipe.** server fns as a typed gateway over an existing
   GraphQL/REST system; DTOs codegen'd from the upstream schema.
 

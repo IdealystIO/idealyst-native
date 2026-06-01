@@ -60,6 +60,9 @@ mod socket;
 pub use socket::{Socket, SocketError};
 #[cfg(feature = "server")]
 pub use socket::accept;
+// Client-only: the cloneable sender + the scope-bound `use_socket` hook.
+#[cfg(not(feature = "server"))]
+pub use socket::{use_socket, SocketSender, SocketStatus, UseSocket};
 
 // =============================================================================
 // Client-only surface: configuration + the `call()` the macro emits.

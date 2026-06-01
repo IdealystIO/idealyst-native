@@ -96,3 +96,60 @@ async fn connect_error_surfaces() {
     let result = net::WebSocket::connect("ws://127.0.0.1:1").await;
     assert!(result.is_err(), "connecting to a dead port must error");
 }
+
+#[tokio::test]
+async fn sender_sends_while_socket_recvs() {
+    // A cloned WsSender can send while the WebSocket is parked in recv() —
+    // the split the use_socket hook relies on (recv loop owns the socket,
+    // the UI scope holds a sender).
+    let url = echo_server().await;
+    let mut sock = net::WebSocket::connect(&url).await.unwrap();
+    let tx = sock.sender();
+
+    // Drive recv concurrently with sends from the independent handle.
+    let recv_task = tokio::spawn(async move {
+        let mut got = Vec::new();
+        for _ in 0..5 {
+            match sock.recv().await {
+                Some(Ok(net::WsMessage::Text(s))) => got.push(s),
+                other => panic!("unexpected: {other:?}"),
+            }
+        }
+        got
+    });
+
+    for i in 0..5u32 {
+        tx.send(net::WsMessage::Text(format!("s{i}"))).unwrap();
+    }
+
+    let got = recv_task.await.unwrap();
+    assert_eq!(got, vec!["s0", "s1", "s2", "s3", "s4"]);
+}
+
+#[tokio::test]
+async fn sender_close_ends_recv_loop() {
+    // The exact teardown `use_socket` performs on unmount: a held sender
+    // closes the connection, which makes the recv loop's recv() return
+    // None and the loop (and thus the spawned task) end.
+    let url = echo_server().await;
+    let mut sock = net::WebSocket::connect(&url).await.unwrap();
+    let tx = sock.sender();
+
+    let recv_loop = tokio::spawn(async move {
+        loop {
+            match sock.recv().await {
+                None => break true,         // closed — the loop ends here
+                Some(Ok(_)) => continue,    // straggler echo; keep draining
+                Some(Err(_)) => break true, // error also ends the loop
+            }
+        }
+    });
+
+    tx.close(); // what on_cleanup calls via the CloseCoord
+
+    let ended = tokio::time::timeout(Duration::from_secs(2), recv_loop).await;
+    assert!(
+        matches!(ended, Ok(Ok(true))),
+        "sender.close() must end the recv loop"
+    );
+}

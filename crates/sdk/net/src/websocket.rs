@@ -68,6 +68,35 @@ impl WebSocket {
     pub fn close(&self) {
         self.inner.close();
     }
+
+    /// A cheap, cloneable send handle. Lets one task own the socket for
+    /// `recv` (which needs `&mut self`) while other holders `send`
+    /// concurrently — the basis for a split / `use_socket` hook.
+    pub fn sender(&self) -> WsSender {
+        WsSender {
+            inner: self.inner.sender(),
+        }
+    }
+}
+
+/// A cloneable send half of a [`WebSocket`]. Sending is independent of
+/// the receive loop, so it can be held by a UI scope while the socket is
+/// driven elsewhere.
+#[derive(Clone)]
+pub struct WsSender {
+    inner: imp::WsSenderImpl,
+}
+
+impl WsSender {
+    /// Queue a message for sending. Errors only if the connection closed.
+    pub fn send(&self, msg: WsMessage) -> Result<(), Error> {
+        self.inner.send(msg)
+    }
+
+    /// Close the connection.
+    pub fn close(&self) {
+        self.inner.close();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +172,35 @@ mod imp {
 
         pub async fn recv(&mut self) -> Option<Result<WsMessage, Error>> {
             self.inbound.next().await
+        }
+
+        pub fn close(&self) {
+            self.closed.store(true, Ordering::Relaxed);
+            let _ = self.outbound.send(Outbound::Close);
+        }
+
+        pub fn sender(&self) -> WsSenderImpl {
+            WsSenderImpl {
+                outbound: self.outbound.clone(),
+                closed: self.closed.clone(),
+            }
+        }
+    }
+
+    /// Cloneable send handle: the outbound channel + the shared closed
+    /// flag. `std_mpsc::Sender` is `Clone`, so many senders feed the one
+    /// I/O thread; it stops when the last sender drops or `closed` is set.
+    #[derive(Clone)]
+    pub struct WsSenderImpl {
+        outbound: std_mpsc::Sender<Outbound>,
+        closed: Arc<AtomicBool>,
+    }
+
+    impl WsSenderImpl {
+        pub fn send(&self, msg: WsMessage) -> Result<(), Error> {
+            self.outbound
+                .send(Outbound::Msg(msg))
+                .map_err(|_| Error::Network("websocket is closed".into()))
         }
 
         pub fn close(&self) {
@@ -338,6 +396,19 @@ mod imp {
         }
         pub async fn recv(&mut self) -> Option<Result<WsMessage, Error>> {
             None
+        }
+        pub fn close(&self) {}
+        pub fn sender(&self) -> WsSenderImpl {
+            WsSenderImpl
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct WsSenderImpl;
+
+    impl WsSenderImpl {
+        pub fn send(&self, _msg: WsMessage) -> Result<(), Error> {
+            Err(Error::Other("WebSocket unimplemented on this platform".into()))
         }
         pub fn close(&self) {}
     }
