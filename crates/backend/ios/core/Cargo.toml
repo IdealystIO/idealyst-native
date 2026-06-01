@@ -18,7 +18,9 @@ crate-type = ["rlib"]
 # Compile in the NSTimer-based `RenderLoopDriver`. Forwards to
 # `runtime-core/async-driver` so `runtime_core::driver::*` is
 # in scope. The leaf crates' `async-driver` feature turns this on.
-async-driver = ["runtime-core/async-driver"]
+# Also forwards to `backend-apple-core/async-driver` so the cooperative
+# main-thread async executor compiles and `install_scheduler` installs it.
+async-driver = ["runtime-core/async-driver", "backend-apple-core/async-driver"]
 # Opt-in `PhaseTimer` instrumentation. Mirrors `backend-web`'s
 # feature of the same name — enables a thin `phase_record::scope`
 # guard that the leaf `backend-ios-mobile` crate bridges into

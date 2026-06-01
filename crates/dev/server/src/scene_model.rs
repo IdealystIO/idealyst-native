@@ -113,6 +113,12 @@ pub struct SceneModel {
     /// `project_aas_state_snapshot` — fresh runtime-server clients receive a
     /// `SceneModel` snapshot, NOT the command log.
     node_a11y: HashMap<NodeId, (WireAccessibilityProps, Option<WireRole>)>,
+    /// Per-node safe-area opt-in command (`ApplySafeAreaPadding` /
+    /// `ApplyScrollViewSafeAreaInset`). Replayed after the node's
+    /// `Create*` so a late-joining client re-applies the device inset
+    /// (the opt-in is idempotent and resolved client-side). See
+    /// `project_aas_state_snapshot`.
+    node_safe_area: HashMap<NodeId, Command>,
 }
 
 /// One entry in a navigator's mounted-screen stack.
@@ -490,6 +496,7 @@ impl SceneModel {
                 self.node_icon_stroke.remove(node);
                 self.node_icon_anim.remove(node);
                 self.node_a11y.remove(node);
+                self.node_safe_area.remove(node);
                 // Released drawer navigator: clear its open-state so a
                 // post-release snapshot doesn't replay `OpenDrawer` for
                 // a node the client side no longer has.
@@ -528,6 +535,13 @@ impl SceneModel {
                 inferred_role,
             } => {
                 self.node_a11y.insert(*id, (a11y.clone(), *inferred_role));
+            }
+            // -- Safe-area opt-in. Persist per node so a fresh client's
+            //    snapshot re-applies it (resolved against the client's
+            //    own device insets).
+            Command::ApplySafeAreaPadding { node, .. }
+            | Command::ApplyScrollViewSafeAreaInset { node, .. } => {
+                self.node_safe_area.insert(*node, cmd.clone());
             }
             // Live-region announcements are transient — they fire once
             // when posted and don't have a persistent identity to
@@ -696,6 +710,14 @@ impl SceneModel {
                     a11y: a11y.clone(),
                     inferred_role: *inferred_role,
                 });
+            }
+        }
+        // 4g. Safe-area opt-in. Re-applied after Create so the client
+        // backend resolves the current device inset (the recorder has
+        // none). Idempotent — replaying it just re-sets the same extra.
+        for id in &node_ids {
+            if let Some(cmd) = self.node_safe_area.get(id) {
+                out.push(cmd.clone());
             }
         }
         // 5. Navigators.

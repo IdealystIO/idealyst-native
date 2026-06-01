@@ -180,6 +180,96 @@ fn robot_finds_and_clicks_button_via_server_registry() {
     assert_eq!(click_count.get(), 2, "click handler is re-invocable");
 }
 
+/// **Regression: robot snapshot/find must reflect LIVE reactive text,
+/// not the value captured at mount.**
+///
+/// Before the `label_fn` fix the registry cached the reactive text's
+/// string once at walker registration. A bound signal could change
+/// (the reactive Effect updated the backend's view), but `find(...)`
+/// and `get_snapshot` kept reporting the mount-time string — an MCP /
+/// AI client reading the snapshot to verify a UI update would see
+/// stale text. This test mutates the signal a reactive `text(...)`
+/// reads and asserts every robot read path reports the new value.
+///
+/// Fails before the fix (label stuck at "count: 0"), passes after.
+#[test]
+fn regression_robot_snapshot_reflects_reactive_text() {
+    use runtime_core::{text, view};
+
+    // Created at top-level test scope (no active owner) so the signal
+    // outlives `render`'s tree-build, exactly like an app-owned signal.
+    let count = signal!(0_i32);
+
+    let tree: Element = view(vec![text(move || format!("count: {}", count.get()))
+        .test_id("count-label")
+        .into()])
+    .into();
+
+    let recorder = WireRecordingBackend::new();
+    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
+    let _owner = render(backend_rc, tree);
+
+    let robot = Robot::new();
+
+    // Mount-time value is correct via every read path.
+    let el = robot
+        .find(Query::test_id("count-label"))
+        .expect("reactive text registered");
+    assert_eq!(el.label.as_deref(), Some("count: 0"), "initial find()");
+    assert_eq!(
+        tree_label(&robot.snapshot(), "count-label").as_deref(),
+        Some("count: 0"),
+        "initial snapshot()"
+    );
+
+    // Mutate the signal the reactive text reads.
+    count.set(3);
+
+    // find() by test_id (from_registry path).
+    let el2 = robot
+        .find(Query::test_id("count-label"))
+        .expect("still registered after update");
+    assert_eq!(
+        el2.label.as_deref(),
+        Some("count: 3"),
+        "find() must report the live reactive label, not the mount-time value"
+    );
+
+    // get_snapshot() tree path (build_tree_node).
+    assert_eq!(
+        tree_label(&robot.snapshot(), "count-label").as_deref(),
+        Some("count: 3"),
+        "snapshot() must report the live reactive label"
+    );
+
+    // find_by_label path: the new text is findable, the stale one isn't.
+    assert!(
+        robot.find(Query::label("count: 3")).is_some(),
+        "find(Label) resolves the live text"
+    );
+    assert!(
+        robot.find(Query::label("count: 0")).is_none(),
+        "the stale mount-time label no longer matches"
+    );
+}
+
+/// Depth-first search a robot `snapshot()` tree for the node with the
+/// given `test_id`, returning its (live-resolved) label.
+fn tree_label(
+    nodes: &[runtime_core::robot::TreeNode],
+    test_id: &str,
+) -> Option<String> {
+    for n in nodes {
+        if n.test_id == Some(test_id) {
+            return n.label.clone();
+        }
+        if let Some(found) = tree_label(&n.children, test_id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// **Regression test for the audit's wire-protocol `release_*` not-emitted
 /// finding.** When a primitive whose backend `release_*` is wired (Portal,
 /// Virtualizer, Navigator, …) unmounts on the dev side, the recorder must

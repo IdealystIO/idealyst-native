@@ -130,7 +130,16 @@ thread_local! {
 
 fn insets_signal() -> Signal<EdgeInsets> {
     INSETS.with(|cell| {
-        *cell.get_or_init(|| Signal::new(EdgeInsets::ZERO))
+        // Root-anchor this thread-lifetime cached signal so it isn't owned
+        // by whatever transient scope first touches it (e.g. a navigator
+        // screen reading `safe_area_insets()` during its mount, or a
+        // deferred chrome build). Without `unscope`, that scope owns the
+        // signal; when the screen is released — every drawer/tab `select`
+        // over the runtime-server wire releases the outgoing screen scope —
+        // the cached `SignalId` dangles and the next read panics with
+        // "signal used after its scope was dropped". Mirrors
+        // `crate::viewport_size` and `crate::current_breakpoint`.
+        *cell.get_or_init(|| crate::reactive::unscope(|| Signal::new(EdgeInsets::ZERO)))
     })
 }
 
@@ -322,5 +331,46 @@ mod tests {
         // panic and the value must still match.
         set_safe_area_insets(new_insets);
         assert_eq!(safe_area_insets().get(), new_insets);
+    }
+
+    /// Regression: the insets signal must survive when its FIRST access
+    /// happens inside a transient render scope that then drops — exactly
+    /// what every drawer/tab `select` over the runtime-server wire does
+    /// (the recording handler releases the outgoing screen's scope, and
+    /// iOS screens/sidebars read `safe_area_insets()` during their build).
+    /// Before root-anchoring with `unscope`, the transient scope owned the
+    /// signal, freed its slot on drop, and the next read panicked with
+    /// "signal used after its scope was dropped" — the second-navigation
+    /// crash. Runs on a fresh thread so the thread-local cache starts
+    /// uninitialized and the first touch is the one inside the scope.
+    #[test]
+    fn insets_signal_survives_first_access_in_transient_scope() {
+        std::thread::spawn(|| {
+            use crate::reactive::{with_scope, Scope, Signal};
+            let id = {
+                let mut scope = Scope::new();
+                with_scope(&mut scope, || safe_area_insets().id())
+            };
+            // Churn the arena so the freed slot (pre-fix) gets recycled to
+            // a different-typed signal, turning the dangle into a loud
+            // panic on read rather than silently reading stale bytes.
+            {
+                let mut churn = Scope::new();
+                with_scope(&mut churn, || {
+                    for _ in 0..64 {
+                        let _ = Signal::new(0u8);
+                    }
+                });
+            }
+            // Cache intact (same id) AND the slot still holds EdgeInsets:
+            // these reads panic pre-fix.
+            assert_eq!(safe_area_insets().id(), id);
+            assert_eq!(safe_area_insets().get(), EdgeInsets::ZERO);
+            // And a post-drop update still lands.
+            set_safe_area_insets(EdgeInsets { top: 44.0, right: 0.0, bottom: 34.0, left: 0.0 });
+            assert_eq!(safe_area_insets().get().top, 44.0);
+        })
+        .join()
+        .expect("insets signal survives transient-scope first access");
     }
 }

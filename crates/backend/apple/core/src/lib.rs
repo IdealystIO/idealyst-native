@@ -29,6 +29,17 @@ pub mod log;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub mod scheduler;
 
+/// Cooperative main-thread async executor — drives `spawn_async` futures
+/// on the main run loop instead of `runtime-core`'s blocking `pollster`
+/// fallback, so long-running futures (SSE / WebSocket `recv` loops) don't
+/// freeze the UI. Installed by [`scheduler::install_scheduler`]. Gated on
+/// `async-driver` since it needs `runtime_core::driver`.
+#[cfg(all(
+    any(target_os = "ios", target_os = "tvos", target_os = "macos"),
+    feature = "async-driver"
+))]
+pub mod async_executor;
+
 /// SVG path parser, gated on Apple targets only so the host-build
 /// path stays empty. Pure-Rust logic — no platform dependencies —
 /// but kept inside the cfg to match the rest of the crate's

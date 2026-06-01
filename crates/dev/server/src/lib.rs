@@ -1591,6 +1591,7 @@ impl Backend for WireRecordingBackend {
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
+        wrap: bool,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
@@ -1610,6 +1611,7 @@ impl Backend for WireRecordingBackend {
             id,
             initial_value: initial_value.to_string(),
             placeholder: placeholder.map(str::to_string),
+            wrap,
             on_change: handler,
             a11y: wire_a11y,
         });
@@ -1896,6 +1898,30 @@ impl Backend for WireRecordingBackend {
     fn on_node_unstyled(&mut self, node: &Self::Node) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::OnNodeUnstyled { node: *node });
+    }
+
+    // Safe-area opt-in: cross only the `sides` flag. The recorder is
+    // headless (no device insets), so it can't resolve the actual
+    // padding — the CLIENT backend reads its own platform insets when it
+    // replays this. The framework's `attach_safe_area` Effect calls this
+    // once during the build (the dev-side insets signal is a stable ZERO),
+    // so a single command is emitted per opted-in node.
+    fn apply_safe_area_padding(
+        &mut self,
+        node: &Self::Node,
+        sides: runtime_core::SafeAreaSides,
+    ) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::ApplySafeAreaPadding { node: *node, sides: sides.0 });
+    }
+
+    fn apply_scroll_view_safe_area_inset(
+        &mut self,
+        node: &Self::Node,
+        sides: runtime_core::SafeAreaSides,
+    ) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::ApplyScrollViewSafeAreaInset { node: *node, sides: sides.0 });
     }
 
     fn apply_presence(

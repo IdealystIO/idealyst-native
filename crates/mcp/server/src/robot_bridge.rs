@@ -1,9 +1,9 @@
 //! Async TCP client for the running app's Robot bridge.
 //!
-//! Mirror of the sync client in `crates/robot-mcp-proxy/src/main.rs`,
-//! but tokio-flavored so it shares the rmcp server's runtime instead
-//! of standing up a second IO thread. Wire format is unchanged —
-//! newline-delimited JSON `{ id, cmd, args }` ⇄ `{ id, ok/err }`.
+//! Tokio-flavored so it shares the rmcp server's runtime instead of
+//! standing up a second IO thread. Wire format is the bridge's
+//! newline-delimited JSON `{ id, cmd, args }` ⇄ `{ id, ok/err }`
+//! (see `runtime_core::robot::bridge`).
 //!
 //! Connection is **lazy and self-healing**: the first tool call
 //! `connect()`s; subsequent calls reuse the socket; if the app

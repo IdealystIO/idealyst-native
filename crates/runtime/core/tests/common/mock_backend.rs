@@ -68,7 +68,7 @@ pub enum Event {
     CreateImage { src: String, alt: Option<String> },
     CreateIcon,
     CreateTextInput { placeholder: Option<String>, has_key_handler: bool },
-    CreateTextArea { placeholder: Option<String>, has_key_handler: bool },
+    CreateTextArea { placeholder: Option<String>, wrap: bool, has_key_handler: bool },
     CreateToggle { value: bool },
     CreateScrollView { horizontal: bool, has_on_scroll: bool },
     CreateSlider { value: f32, min: f32, max: f32, step: Option<f32> },
@@ -699,6 +699,7 @@ impl Backend for MockBackend {
         &mut self,
         _initial_value: &str,
         placeholder: Option<&str>,
+        wrap: bool,
         _on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         _a11y: &runtime_core::accessibility::AccessibilityProps,
@@ -706,6 +707,7 @@ impl Backend for MockBackend {
         let id = self.core.mint();
         self.core.record(Event::CreateTextArea {
             placeholder: placeholder.map(|s| s.to_string()),
+            wrap,
             has_key_handler: on_key_down.is_some(),
         });
         if let Some(h) = on_key_down {

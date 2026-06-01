@@ -34,7 +34,7 @@ use idea_theme::extensible::{tone as tones, RefBuiltins, ResolutionCtx, ToneRef}
 use idea_theme::theme::{IdeaTheme, IdeaThemeRef};
 
 use crate::stylesheets::{FieldGroup, FieldLabel};
-pub use crate::stylesheets::FieldSize;
+pub use crate::stylesheets::{FieldAppearance, FieldSize};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct FieldProps {
@@ -56,6 +56,9 @@ pub struct FieldProps {
     /// `Into<Option<ToneRef>>`.
     pub tone: Option<ToneRef>,
     pub size: FieldSize,
+    /// Visual shell: `Outline` (bordered, default), `Contained` (filled),
+    /// or `Bare` (no chrome). All three keep a focus ring.
+    pub variant: FieldAppearance,
 }
 
 impl Default for FieldProps {
@@ -69,6 +72,7 @@ impl Default for FieldProps {
             error: Reactive::Static(None),
             tone: None,
             size: FieldSize::default(),
+            variant: FieldAppearance::default(),
         }
     }
 }
@@ -167,6 +171,35 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
             ..Default::default()
         });
 
+    // Appearance axis — the input shell. Declared BEFORE the tone arms so
+    // an explicit tone (e.g. Danger on error) repaints a visible border
+    // over contained/bare's transparent one. Border WIDTH stays 1 (set on
+    // the base) in every variant so the focused-state ring renders.
+    //   - outline: bordered surface (the base look) — no override.
+    //   - contained: filled, borderless.
+    //   - bare: no fill, no border.
+    let surface_alt =
+        || Tokenized::token("color-surface-alt", runtime_core::Color("#eef0f7".into()));
+    let clear = || Tokenized::Literal(runtime_core::Color("transparent".into()));
+    sheet = sheet
+        .variant("appearance", "outline", |_vs| StyleRules::default())
+        .variant("appearance", "contained", move |_vs| StyleRules {
+            background: Some(surface_alt()),
+            border_top_color: Some(clear()),
+            border_right_color: Some(clear()),
+            border_bottom_color: Some(clear()),
+            border_left_color: Some(clear()),
+            ..Default::default()
+        })
+        .variant("appearance", "bare", move |_vs| StyleRules {
+            background: Some(clear()),
+            border_top_color: Some(clear()),
+            border_right_color: Some(clear()),
+            border_bottom_color: Some(clear()),
+            border_left_color: Some(clear()),
+            ..Default::default()
+        });
+
     // Tone arms — "default" = neutral base border; each tone overrides
     // the border color with its stroke color.
     sheet = sheet.variant("tone", "default", |_vs| StyleRules::default());
@@ -213,7 +246,8 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
 
     sheet = sheet
         .variant_default("size", "md")
-        .variant_default("tone", "default");
+        .variant_default("tone", "default")
+        .variant_default("appearance", "outline");
 
     Rc::new(sheet)
 }
@@ -281,6 +315,7 @@ pub fn Field(props: &FieldProps) -> Element {
     // STATIC styles — no per-node Effect, no first-paint flicker.
     let input_style = StyleApplication::new(field_input_sheet())
         .with("size", size_key(size).to_string())
+        .with("appearance", props.variant.as_variant_str().to_string())
         .with("tone", tone_key.clone());
     let help_style = StyleApplication::new(field_help_sheet()).with("tone", tone_key);
 

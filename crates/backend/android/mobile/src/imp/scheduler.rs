@@ -333,6 +333,19 @@ impl Drop for RafLoopHandle {
     }
 }
 
+/// Post a one-shot runnable and leak its handle so it actually fires
+/// (dropping the handle cancels the post — see
+/// [[project_android_scheduler_handle_leak]]). Use when the caller has no
+/// reason to cancel. Keeps `ScheduledHandle` private to this module.
+///
+/// Currently unused — the only caller was the old Dialog-portal
+/// deferred-`show()` band-aid, removed when portals became view
+/// overlays. Kept as generic fire-and-forget scheduling infra.
+#[allow(dead_code)]
+pub(crate) fn post_runnable(delay_ms: i32, f: Box<dyn FnOnce() + 'static>) {
+    std::mem::forget(schedule_runnable(delay_ms, f));
+}
+
 fn schedule_runnable(
     delay_ms: i32,
     f: Box<dyn FnOnce() + 'static>,

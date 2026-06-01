@@ -28,13 +28,15 @@ async fn main() {
     // when run from the workspace root, which is the 404-on-root trap.
     let project_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-    // The CLI writes the wasm bundle to `pkg/` next to the
-    // crate's index.html.
-    let pkg_dir = project_dir.join("pkg");
-    let static_dir = project_dir.clone();
+    // `idealyst build --web` emits a self-contained static bundle at
+    // `dist/web/` (its own `index.html` + a `pkg/` subdir with the wasm).
+    // Serve that directory as the site root, and its `pkg/` at `/pkg`.
+    let dist_dir = project_dir.join("dist").join("web");
+    let pkg_dir = dist_dir.join("pkg");
+    let static_dir = dist_dir.clone();
 
     if !pkg_dir.exists() {
-        eprintln!("warning: {} doesn't exist yet — run", pkg_dir.display());
+        eprintln!("warning: {} doesn't exist yet — run", dist_dir.display());
         eprintln!("  idealyst build --web examples/server-fn-demo");
         eprintln!("to produce the wasm bundle before opening the page.");
     }
@@ -42,7 +44,7 @@ async fn main() {
     // Compose the router:
     //   /_srv/_batch and /_srv/*path  → server::router()
     //   /pkg/*                        → ServeDir(pkg_dir)
-    //   everything else (e.g. /)      → ServeDir(project_dir) which
+    //   everything else (e.g. /)      → ServeDir(dist/web) which
     //                                    serves index.html on a path
     //                                    miss because of `not_found_service`.
     let app: Router = server::router()
@@ -53,7 +55,15 @@ async fn main() {
             ),
         );
 
-    let addr: std::net::SocketAddr = "127.0.0.1:3000".parse().unwrap();
+    // Port is overridable via `PORT` (default 3000) so the demo can run
+    // alongside another server without a clash. Note: on the Android
+    // emulator the client targets `10.0.2.2:3000` (see `configure_server`),
+    // so keep the default unless you also update the client base URL.
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(3000);
+    let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
     println!("server-fn-demo:");
     println!("  UI       → http://{addr}/");
     println!("  API      → http://{addr}/_srv/<fn-name>");

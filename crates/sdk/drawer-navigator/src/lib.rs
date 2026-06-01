@@ -600,11 +600,17 @@ pub fn register_wire_drawer_factory() {
         };
         p.drawer_width = cfg.drawer_width;
         p.swipe_to_open = cfg.swipe_to_open;
-        p.mount_policy = match cfg.mount_policy {
-            wire::WireMountPolicy::EagerPersistent => MountPolicy::EagerPersistent,
-            wire::WireMountPolicy::LazyPersistent => MountPolicy::LazyPersistent,
-            wire::WireMountPolicy::LazyDisposing => MountPolicy::LazyDisposing,
-        };
+        // Over the wire the SERVER owns screen lifecycle: its recording
+        // drawer handler rebuilds the screen subtree and ships a fresh
+        // node on every Select, releasing the previous scope. So the client
+        // must dispose the outgoing view on each switch rather than cache
+        // it — a cached client view would go stale (the server already
+        // rebuilt it) and, keyed by the unique-per-select route, could
+        // never be re-surfaced anyway, just accumulating hidden subviews.
+        // Force `LazyDisposing` regardless of the app's local-mode policy
+        // (`cfg.mount_policy`), which the server does not honor anyway.
+        let _ = cfg.mount_policy;
+        p.mount_policy = MountPolicy::LazyDisposing;
         // Adopt-sentinel leading slot — see the doc comment. The handler
         // builds its real chrome around this leaf (e.g. iOS wraps it in a
         // `scroll_view`); when `dev-client` materializes the slot via

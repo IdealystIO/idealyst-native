@@ -1094,6 +1094,7 @@ impl Backend for IosBackend {
         &mut self,
         initial_value: &str,
         _placeholder: Option<&str>,
+        wrap: bool,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
@@ -1109,6 +1110,22 @@ impl Backend for IosBackend {
         let ns_val = NSString::from_str(initial_value);
         unsafe { view.setText(Some(&ns_val)) };
 
+        // Wrapping: UITextView wraps by default. For the code-editor
+        // shape (`wrap == false`) the text container must stop tracking
+        // the view width and the layout must not break lines, so long
+        // lines extend horizontally (UITextView then scrolls them).
+        if !wrap {
+            unsafe {
+                let container: Retained<NSObject> = msg_send_id![&view, textContainer];
+                let _: () = msg_send![&container, setWidthTracksTextView: false];
+                let huge = objc2_foundation::CGSize { width: f64::MAX, height: f64::MAX };
+                let _: () = msg_send![&container, setSize: huge];
+                // `NSLineBreakByClipping` (= 2): don't wrap, clip the
+                // line — the container scrolls to reveal the rest.
+                let _: () = msg_send![&container, setLineBreakMode: 2isize];
+            }
+        }
+
         // One delegate carries BOTH on_change (via textViewDidChange:)
         // and on_key_down (via shouldChangeTextInRange:). UITextView
         // has no target/action editing-changed event; the delegate is
@@ -1116,6 +1133,46 @@ impl Backend for IosBackend {
         let delegate = TextKeyDelegate::new(self.mtm, on_key_down, Some(on_change));
         let _: () = unsafe { msg_send![&view, setDelegate: &*delegate] };
         self.retain_target(&delegate);
+
+        // Intrinsic content sizing (only in wrap mode — a code editor
+        // is a fixed-height scroller, like the web `wrap == off` path).
+        // Drive the view's height from its content via a Taffy
+        // `measure_fn` (`sizeThatFits:`), exactly the UILabel / UIButton
+        // intrinsic-size pattern. With no height pinned the box grows to
+        // fit; with a `max_height` on the style Taffy clamps it and the
+        // content scrolls (UITextView keeps its default
+        // `scrollEnabled = true`, which only bites once the frame is
+        // shorter than the content); with a pinned `height` Taffy
+        // ignores the measured height entirely. `update_text_area_value`
+        // re-measures on change, exactly like `update_text` for labels.
+        if wrap {
+            let layout = self.layout_for_view(&view);
+            let view_for_measure = view.clone();
+            self.layout.set_measure_fn(
+                layout,
+                std::rc::Rc::new(move |known_dimensions, available_space| {
+                    let avail_w = known_dimensions
+                        .width
+                        .unwrap_or(match available_space.width {
+                            runtime_layout::AvailableSpace::Definite(w) => w,
+                            runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
+                            runtime_layout::AvailableSpace::MinContent => 0.0,
+                        });
+                    // Ask for the height the text needs at this width,
+                    // height unbounded — Taffy applies the max clamp.
+                    let target = objc2_foundation::CGSize {
+                        width: if avail_w.is_finite() { avail_w as f64 } else { f64::MAX },
+                        height: f64::MAX,
+                    };
+                    let fitted: objc2_foundation::CGSize =
+                        unsafe { msg_send![&view_for_measure, sizeThatFits: target] };
+                    runtime_layout::Size {
+                        width: known_dimensions.width.unwrap_or((fitted.width as f32).ceil()),
+                        height: known_dimensions.height.unwrap_or((fitted.height as f32).ceil()),
+                    }
+                }),
+            );
+        }
 
         let node = IosNode::TextView(view);
         a11y::apply(&node, a11y, None);
@@ -1130,6 +1187,18 @@ impl Backend for IosBackend {
                 let ns = NSString::from_str(value);
                 unsafe { view.setText(Some(&ns)) };
             }
+        }
+        // Same invalidation as `update_text`: setting the text changes
+        // the widget's intrinsic content size, but UIKit doesn't tell
+        // Taffy. Mark the node dirty so its `measure_fn` re-runs on the
+        // next (coalesced) layout pass. This is what makes a content-
+        // sized (wrapping) textview track its text; a code-mode textview
+        // has no measure_fn, so the re-layout reproduces its style-given
+        // size — harmless.
+        let view = node.as_view();
+        if let Some(layout) = self.layout_of(view) {
+            self.layout.mark_dirty(layout);
+            schedule_layout_pass();
         }
     }
 
@@ -1426,6 +1495,11 @@ impl Backend for IosBackend {
         //     changes, for animated row mutations.
         //   - Overscan tuning: UIKit's built-in prefetch covers the
         //     common case; revisit if a list needs finer control.
+        // Clone the size-driving closures before `callbacks` moves into
+        // `create`, so the measure_fn below can report the list's total
+        // content size to Taffy.
+        let item_count = callbacks.item_count.clone();
+        let item_size = callbacks.item_size.clone();
         let view = virtualizer::create(
             self.mtm,
             &mut self.virtualizer_instances,
@@ -1436,7 +1510,41 @@ impl Backend for IosBackend {
         // Stage in the layout tree so Taffy gives the collection view
         // an outer frame. Cells inside the collection view are NOT
         // Taffy-managed — UICollectionViewLayout owns their layout.
-        let _ = self.layout_for_view(&view);
+        let layout = self.layout_for_view(&view);
+        // Give the node a measure_fn that returns the list's total content
+        // size along the scroll axis (sum of item sizes), mirroring the web
+        // backend's content-driven height. A `UICollectionView` has no
+        // intrinsic Taffy size, so without this the list collapses to 0 in a
+        // flex column and renders nothing even with data. The cross axis
+        // fills the parent-provided / available extent. Re-measured on data
+        // change (see `virtualizer_data_changed`).
+        self.layout.set_measure_fn(
+            layout,
+            std::rc::Rc::new(move |known: runtime_layout::Size<Option<f32>>,
+                                   available: runtime_layout::Size<runtime_layout::AvailableSpace>| {
+                let count = (item_count)();
+                let total: f32 = (0..count).map(|i| (item_size)(i)).sum();
+                let avail_w = match available.width {
+                    runtime_layout::AvailableSpace::Definite(w) => w,
+                    _ => 0.0,
+                };
+                let avail_h = match available.height {
+                    runtime_layout::AvailableSpace::Definite(h) => h,
+                    _ => 0.0,
+                };
+                if horizontal {
+                    runtime_layout::Size {
+                        width: known.width.unwrap_or(total),
+                        height: known.height.unwrap_or(avail_h),
+                    }
+                } else {
+                    runtime_layout::Size {
+                        width: known.width.unwrap_or(avail_w),
+                        height: known.height.unwrap_or(total),
+                    }
+                }
+            }),
+        );
         // Register for origin-preservation in `apply_frames` (so the
         // user's scroll position survives every relayout) but NOT in
         // `scroll_views` because that would also pull the view into
@@ -1463,7 +1571,32 @@ impl Backend for IosBackend {
         // whose data churns rarely, that cost is fine; for live
         // streams it's the obvious next thing to optimize.
         let view = node.as_view();
-        virtualizer::data_changed(view);
+        // Defer the UICollectionView `reloadData`. It synchronously fires
+        // `didEndDisplayingCell` for every currently-visible cell, and our
+        // handler calls `release_item` — which DROPS the per-item reactive
+        // Scope. But `virtualizer_data_changed` is invoked from WITHIN the
+        // reactive update that changed the data signal, so dropping a Scope
+        // here re-enters the reactive runtime mid-update and panics (the
+        // panic then aborts across UIKit's Obj-C frame). Hop to the next
+        // main-loop turn so the current update finishes before any cell is
+        // recycled. (This bug only surfaces once the list actually renders
+        // cells — see the content-size measure_fn in `create_virtualizer`.)
+        let view_retained: Retained<UIView> = unsafe {
+            Retained::retain(view as *const UIView as *mut UIView).expect("retain UIView")
+        };
+        runtime_core::scheduling::schedule_microtask(move || {
+            virtualizer::data_changed(&view_retained);
+        });
+        // The item count changed, so the list's content size changed. Mark
+        // the Taffy node dirty and schedule a layout pass so the measure_fn
+        // re-runs and the node resizes to the new content height — otherwise
+        // a list that loaded its rows after first layout (e.g. an async
+        // fetch) would stay sized to its initial (often empty → 0) extent.
+        // `mark_dirty` only flags the node; the layout pass is itself
+        // deferred, so this is safe to do synchronously.
+        let layout = self.layout_for_view(view);
+        self.layout.mark_dirty(layout);
+        schedule_layout_pass();
     }
 
     fn release_virtualizer(&mut self, node: &Self::Node) {

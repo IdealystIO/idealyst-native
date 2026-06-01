@@ -13,11 +13,11 @@
 //!   and trampolines every lifecycle event back to the
 //!   `VirtualizerCallbacks` the framework handed us. It also tracks
 //!   the orientation so `sizeForItemAt` returns axis-correct sizes.
-//! - A custom `UICollectionViewCell` subclass [`VirtualizerCell`] hosts
-//!   a single child UIView produced by `callbacks.mount_item(idx)`.
-//!   On reuse / display-end, the cell's host child is removed and
-//!   `callbacks.release_item(scope_id)` fires so the per-item Scope
-//!   drops (freeing every Signal / Effect nested inside the item).
+//! - A stock `UICollectionViewCell` hosts a single child UIView produced
+//!   by `callbacks.mount_item(idx)`. On reuse / display-end, the cell's
+//!   host child is removed and `callbacks.release_item(scope_id)` fires so
+//!   the per-item Scope drops (freeing every Signal / Effect nested inside
+//!   the item).
 //!
 //! ## Cell hosting
 //!
@@ -110,7 +110,7 @@ pub(crate) struct VirtualizerDataSourceIvars {
     /// cleanly instead of reaching into a freed framework Scope.
     callbacks: Rc<RefCell<Option<VirtualizerCallbacks<IosNode>>>>,
     /// Map from cell pointer to its current mount. UIKit reuses
-    /// cells (the same `VirtualizerCell` instance gets handed out
+    /// cells (the same `UICollectionViewCell` instance gets handed out
     /// for different indices over time), so we key by the cell's
     /// own address to know which scope to release on reuse.
     mounts: Rc<RefCell<HashMap<usize, CellMount>>>,
@@ -423,38 +423,12 @@ impl VirtualizerDataSource {
     }
 }
 
-// =========================================================================
-// VirtualizerCell — plain UICollectionViewCell subclass. We don't
-// override anything yet; the data source handles all mounting via
-// `cellForItemAt` and `didEndDisplayingCell`. The subclass exists
-// solely to give us a stable class name to register with the collection
-// view's `registerClass:forCellWithReuseIdentifier:` and to mark cells
-// produced by us versus default UICollectionViewCells.
-// =========================================================================
-
-declare_class!(
-    pub(crate) struct VirtualizerCell;
-
-    unsafe impl ClassType for VirtualizerCell {
-        // UICollectionViewCell is the proper superclass, but objc2-ui-kit's
-        // re-export of that type would force a Cargo feature; we instead
-        // declare the super as `NSObject` and let the ObjC runtime resolve
-        // method dispatch against UICollectionViewCell at registration
-        // time. Practically: this struct is opaque to Rust callers and
-        // only ever instantiated by UIKit via the registered class name.
-        //
-        // EDIT: we DO use UICollectionViewCell as super via the runtime —
-        // see the override of `ClassType::class()` below — by adjusting
-        // the metaclass before any `+alloc` happens. For now this stays
-        // an NSObject subclass which works because we never `dequeueReusable`
-        // call directly; UIKit does.
-        type Super = NSObject;
-        type Mutability = mutability::MainThreadOnly;
-        const NAME: &'static str = "IdealystVirtualizerCell";
-    }
-
-    impl DeclaredClass for VirtualizerCell {}
-);
+// Cells are stock `UICollectionViewCell`s (registered in `create`). We host
+// the user's view inside the dequeued cell's `contentView` and override no
+// cell behavior, so no custom subclass is needed. (A prior `NSObject`-super
+// subclass tripped `registerClass:forCellWithReuseIdentifier:`'s assertion
+// that the class be a `UICollectionViewCell` subclass — a hard crash that
+// meant `flat_list` never actually ran on iOS.)
 
 // =========================================================================
 // Public entry points (called from imp::mod's Backend impl).
@@ -524,8 +498,14 @@ pub(crate) fn create(
     };
     let _: () = unsafe { msg_send![&cv, setBackgroundColor: &*clear] };
 
-    // 3) Register our cell subclass against a stable reuse identifier.
-    let cell_cls: &objc2::runtime::AnyClass = VirtualizerCell::class();
+    // 3) Register the stock `UICollectionViewCell` class against a stable
+    //    reuse identifier. We host the user's view inside the dequeued cell's
+    //    `contentView` (see `cell_for_item_impl`) and need no custom cell
+    //    behavior, so the built-in class is exactly right — and crucially,
+    //    `registerClass:forCellWithReuseIdentifier:` ASSERTS the class is a
+    //    `UICollectionViewCell` subclass, so registering an `NSObject`
+    //    subclass crashes at register time (UICollectionView.m assertion).
+    let cell_cls: &objc2::runtime::AnyClass = objc2::class!(UICollectionViewCell);
     let reuse_id = cell_reuse_identifier();
     let _: () = unsafe {
         msg_send![

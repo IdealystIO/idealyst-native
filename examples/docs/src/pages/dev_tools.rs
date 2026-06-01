@@ -253,15 +253,15 @@ docs! {
            JSON-RPC over a TCP socket can drive the app: list components, \
            click buttons, type into inputs, invoke ", code("methods!"),
           " methods, read frames."),
-        p(code("robot-mcp-proxy"), " is a small binary that bridges this \
-           bridge to MCP. MCP — the Model Context Protocol — is the protocol \
-           Claude Desktop and similar tools use to expose tools to a model. \
-           The proxy speaks MCP on stdio and the Robot bridge protocol over \
-           TCP, translating between them."),
+        p(code("idealyst mcp"), " is the server that bridges this bridge to \
+           MCP. MCP — the Model Context Protocol — is the protocol Claude Code, \
+           Claude Desktop, and similar tools use to expose tools to a model. \
+           It speaks MCP on stdio and the Robot bridge protocol over TCP, \
+           translating between them (and serves the component catalog too)."),
         p("The flow:"),
         code(text, r##"
             ┌───────────────┐         stdio          ┌───────────────────┐
-            │ Claude        │ ───────── MCP ───────► │ robot-mcp-proxy   │
+            │ Claude Code / │ ───────── MCP ───────► │ idealyst mcp      │
             │ Desktop       │ ◄────── (JSON-RPC) ─── │ (translates)      │
             └───────────────┘                        └──────────┬────────┘
                                                                 │
@@ -273,14 +273,16 @@ docs! {
                                                      │  (--features robot)│
                                                      └───────────────────┘
         "##),
-        p("To wire it up, point the MCP client at the proxy binary. For \
-           Claude Desktop, that's a few lines in its config:"),
+        p("To wire it up, point the MCP client at the ", code("idealyst"),
+          " binary (", code("idealyst mcp install"), " writes this into \
+           ", code(".mcp.json"), " for you). For Claude Desktop, that's a few \
+           lines in its config:"),
         code(json, r##"
             {
                 "mcpServers": {
-                    "my-app": {
-                        "command": "robot-mcp-proxy",
-                        "args": ["--port", "9718"]
+                    "idealyst": {
+                        "command": "idealyst",
+                        "args": ["mcp"]
                     }
                 }
             }

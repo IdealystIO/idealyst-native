@@ -555,4 +555,18 @@ pub fn register(backend: &mut IosBackend) {
     // `WireSidebarAdopt` sentinel materialized by the walker. No-op cost
     // under `--local`.
     crate::register_wire_drawer_factory();
+    // Programmatic `drawer.open()/close()/toggle()` on the dev side ride
+    // `Command::OpenDrawer`/`CloseDrawer`/`ToggleDrawer` over the wire.
+    // `dev-client` can't name the helper `DrawerCmd`, so translate the
+    // generic verb into the `Custom` payload this handler's dispatcher
+    // downcasts (see `tab_drawer`'s `Custom` arm). Navigation auto-close
+    // doesn't come through here — it rides the `Select` dispatch.
+    wire::register_drawer_state_translator(|verb| {
+        let cmd = match verb {
+            wire::DrawerStateVerb::Open => HelpersDrawerCmd::Open,
+            wire::DrawerStateVerb::Close => HelpersDrawerCmd::Close,
+            wire::DrawerStateVerb::Toggle => HelpersDrawerCmd::Toggle,
+        };
+        std::rc::Rc::new(cmd) as std::rc::Rc<dyn std::any::Any>
+    });
 }

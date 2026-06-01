@@ -372,6 +372,7 @@ pub(super) fn build_inner<B: Backend + 'static>(
                 kind: meta.kind,
                 test_id: meta.test_id,
                 label: meta.label,
+                label_fn: meta.label_fn,
                 actions: meta.actions,
                 parent,
                 children: Vec::new(),
@@ -553,9 +554,9 @@ fn dispatch_text_input<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Ele
 
 #[inline(never)]
 fn dispatch_text_area<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
-    let Element::TextArea { value, on_change, on_key_down, placeholder, style, ref_fill, accessibility, .. } = node
+    let Element::TextArea { value, on_change, on_key_down, placeholder, wrap, style, ref_fill, accessibility, .. } = node
     else { unreachable!() };
-    text_input::build_text_area(backend, value, on_change, on_key_down, placeholder, style, ref_fill, accessibility)
+    text_input::build_text_area(backend, value, on_change, on_key_down, placeholder, wrap, style, ref_fill, accessibility)
 }
 
 #[inline(never)]

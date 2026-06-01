@@ -338,6 +338,19 @@ impl NavigatorHandler<WireRecordingBackend> for RecordingDrawerHandler {
                 );
                 *current.borrow_mut() = Some((result.scope_id, name));
                 active_changed(name, url);
+                // Auto-close the drawer on selection — navigating shuts
+                // the drawer (matches the web handler at
+                // web-navigator-helpers `Select`). Flip the dev-side signal
+                // only so server-built reactive sidebars stay coherent; the
+                // CLIENT closes its own drawer when it replays this Select
+                // through its native handler's dispatcher (the handler's
+                // Select arm auto-closes), so emitting a wire CloseDrawer
+                // here would be a redundant second animation. Guarded on
+                // actually-open to avoid churn on a programmatic select
+                // while already closed.
+                if is_open.get() {
+                    is_open.set(false);
+                }
                 if let Some((prev_scope, _)) = prev {
                     release_screen(prev_scope);
                 }

@@ -35,7 +35,8 @@ pub(crate) fn create(b: &AndroidBackend) -> GlobalRef {
 ///   container) — see [`super::scroll_view`] for the rationale.
 /// - If `child` is a registered portal content holder, the insert
 ///   is **skipped**. The portal's content holder is already parented
-///   to the dialog window via `Dialog.setContentView`; attempting
+///   (a viewport overlay was added to the Activity `root`; a popup
+///   owns its own content view); attempting
 ///   `parent.addView(portal_child)` would throw
 ///   `IllegalStateException("The specified child already has a parent")`.
 ///   The walker calls `insert(presence_placeholder, portal_node)`

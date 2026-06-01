@@ -719,6 +719,12 @@ impl Backend for SsrBackend {
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
+        // Soft-wrap (default) vs. the code-editor no-wrap shape. SSR
+        // emits the `wrap="off"` attribute for the latter so the
+        // server-rendered first paint matches what the web backend
+        // adopts on hydration. (Content-height growth needs no SSR
+        // attribute — it's intrinsic sizing the client reproduces.)
+        wrap: bool,
         _on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,
@@ -727,6 +733,9 @@ impl Backend for SsrBackend {
         node.text = Some(initial_value.to_string());
         if let Some(p) = placeholder {
             node.attrs.push(("placeholder", p.to_string()));
+        }
+        if !wrap {
+            node.attrs.push(("wrap", "off".to_string()));
         }
         nref(node)
     }

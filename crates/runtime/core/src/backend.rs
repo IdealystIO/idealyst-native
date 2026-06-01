@@ -1063,11 +1063,25 @@ pub trait Backend {
     /// `create_text_input` (the framework wraps `value` in an effect
     /// that calls `update_text_area_value` on change); the only
     /// semantic difference is that Enter inserts a newline.
+    ///
+    /// `wrap` soft-wraps long lines at the box edge (`true`) or keeps
+    /// them unwrapped with horizontal scroll (`false`, the code-editor
+    /// shape).
+    ///
+    /// The textarea is intrinsically sized to its content: like the
+    /// text primitive, a backend reports the height its text needs to
+    /// the layout engine (via an intrinsic measure function on native
+    /// toolkits, or the equivalent on web), and the style's
+    /// `height` / `min_height` / `max_height` constrain it. There is no
+    /// "autogrow" flag — growing to fit is simply what an unconstrained
+    /// height does; a pinned height (or sized parent) yields a fixed,
+    /// scrolling box.
     #[allow(unused_variables)]
     fn create_text_area(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
+        wrap: bool,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<primitives::key::KeyDownHandler>,
         a11y: &crate::accessibility::AccessibilityProps,

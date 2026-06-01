@@ -32,9 +32,15 @@ pub struct ServerOptions {
     /// are advertised. Routing is file-discovery only — the server's
     /// `DiscoveryTable` scans `~/.idealyst/apps/<name>-<pid>.json`
     /// registration files written by the running app's Robot bridge,
-    /// and the resolver picks one per call. When false the Robot
-    /// tools are omitted from the tool list entirely.
+    /// and the resolver picks one per call. When false, robot control
+    /// is fully off: no discovery thread, no bridge contact (control
+    /// OR catalog), and the Robot tools return a clear error.
     robot_enabled: bool,
+    /// Explicit `host:port` of a Robot bridge to target directly,
+    /// skipping `~/.idealyst/apps/` discovery. Set via
+    /// [`Self::with_robot_address`] (the CLI's `--robot-port` /
+    /// `--robot-host`). Implies `robot_enabled`. `None` → discovery.
+    robot_addr: Option<String>,
     /// Command factory for the subprocess catalog extractor. When
     /// set, the server invokes the command at startup (and on each
     /// source change if `watch_paths` is also set) and parses its
@@ -55,6 +61,15 @@ impl ServerOptions {
     /// no explicit bridge address needed.
     pub fn with_robot_discovery(mut self) -> Self {
         self.robot_enabled = true;
+        self
+    }
+
+    /// Enable Robot tools against an explicit bridge `host:port`,
+    /// skipping discovery. Use when the connection is known up front
+    /// (the CLI can establish it for you). Implies robot enabled.
+    pub fn with_robot_address(mut self, addr: impl Into<String>) -> Self {
+        self.robot_enabled = true;
+        self.robot_addr = Some(addr.into());
         self
     }
 
@@ -86,20 +101,24 @@ impl ServerOptions {
 /// [`run_stdio_with_options`]).
 pub async fn run_stdio_with_full_options(opts: ServerOptions) -> Result<()> {
     init_tracing();
+    let robot_desc = match (opts.robot_enabled, opts.robot_addr.as_deref()) {
+        (false, _) => "disabled".to_string(),
+        (true, Some(addr)) => format!("explicit({addr})"),
+        (true, None) => "discovery".to_string(),
+    };
     tracing::info!(
         "starting MCP server (robot={}, subprocess={}, watch_paths={})",
-        if opts.robot_enabled { "discovery" } else { "disabled" },
+        robot_desc,
         if opts.subprocess.is_some() { "yes" } else { "no" },
         opts.watch_paths.len(),
     );
 
-    let svc = CatalogService::new();
-    // The CatalogService unconditionally instantiates the Robot tools
-    // today (rmcp's `#[tool]` is a compile-time attribute), so
-    // "disabled" means every Robot call returns "no app running" via
-    // the empty-table path. Acceptable surface for now; a follow-up
-    // could gate the tools at type level.
-    let _ = opts.robot_enabled;
+    // rmcp's `#[tool]` is a compile-time attribute, so the Robot tools
+    // are always present in the tool list. The robot MODE gates their
+    // behavior: Disabled → they return a "robot is off" error and no
+    // discovery thread runs; Explicit → they hit the pinned bridge;
+    // Discovery → per-call `~/.idealyst/apps/` routing.
+    let svc = CatalogService::with_robot_mode(opts.robot_enabled, opts.robot_addr.clone());
 
     // Pre-serve subprocess load: do this BEFORE binding to stdio so
     // the very first `tools/call list_components` sees the populated

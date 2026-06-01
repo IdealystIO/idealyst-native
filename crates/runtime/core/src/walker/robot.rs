@@ -7,6 +7,8 @@
 
 #![cfg(feature = "robot")]
 
+use std::rc::Rc;
+
 use crate::element::Element;
 use crate::primitives;
 use crate::sources::TextSource;
@@ -15,7 +17,40 @@ pub(super) struct RobotMeta {
     pub(super) kind: crate::robot::ElementKind,
     pub(super) test_id: Option<&'static str>,
     pub(super) label: Option<String>,
+    /// Lazy recompute for reactive labels — `Some` only for
+    /// `TextSource::Bound` / `JsBinding`. See `RegistryEntry::label_fn`.
+    pub(super) label_fn: Option<Rc<dyn Fn() -> Option<String>>>,
     pub(super) actions: crate::robot::ElementActions,
+}
+
+/// Compute the mount-time label for any `TextSource`. Used as the
+/// cached `label` (a snapshot for static sources, a starting value for
+/// reactive ones that `label_recompute` then keeps fresh).
+fn label_now(source: &TextSource) -> Option<String> {
+    match source {
+        TextSource::Static(s) => Some(s.clone()),
+        TextSource::Bound(d) => Some((d.compute)()),
+        TextSource::JsBinding(spec) => Some((spec.compute_fallback)()),
+    }
+}
+
+/// Build a recompute closure for reactive text sources so the robot
+/// registry reports the *live* label, not the value frozen at mount.
+/// Returns `None` for static text (the cached `label` is authoritative).
+/// The read is untracked — querying the robot must never subscribe the
+/// caller's scope to the underlying signals.
+fn label_recompute(source: &TextSource) -> Option<Rc<dyn Fn() -> Option<String>>> {
+    match source {
+        TextSource::Static(_) => None,
+        TextSource::Bound(d) => {
+            let compute = d.compute.clone();
+            Some(Rc::new(move || Some(crate::reactive::untrack(|| (compute)()))))
+        }
+        TextSource::JsBinding(spec) => {
+            let compute = spec.compute_fallback.clone();
+            Some(Rc::new(move || Some(crate::reactive::untrack(|| (compute)()))))
+        }
+    }
 }
 
 /// Extract robot-relevant metadata from a primitive *before* the move
@@ -30,27 +65,17 @@ pub(super) fn robot_extract_meta(node: &Element) -> Option<RobotMeta> {
             kind: ElementKind::View,
             test_id: *test_id,
             label: None,
+            label_fn: None,
             actions: ElementActions::empty(),
         }),
-        Element::Text { source, test_id, .. } => {
-            let label = match source {
-                TextSource::Static(s) => Some(s.clone()),
-                TextSource::Bound(d) => Some((d.compute)()),
-                TextSource::JsBinding(spec) => Some((spec.compute_fallback)()),
-            };
-            Some(RobotMeta {
-                kind: ElementKind::Text,
-                test_id: *test_id,
-                label,
-                actions: ElementActions::empty(),
-            })
-        }
+        Element::Text { source, test_id, .. } => Some(RobotMeta {
+            kind: ElementKind::Text,
+            test_id: *test_id,
+            label: label_now(source),
+            label_fn: label_recompute(source),
+            actions: ElementActions::empty(),
+        }),
         Element::Button { label, on_click, test_id, .. } => {
-            let label_text = match label {
-                TextSource::Static(s) => Some(s.clone()),
-                TextSource::Bound(d) => Some((d.compute)()),
-                TextSource::JsBinding(spec) => Some((spec.compute_fallback)()),
-            };
             // `on_click` is an `Action` (not a bare `Rc<dyn Fn()>`)
             // since the generator migration. The robot's
             // `ElementActions.click` still wants the underlying
@@ -60,7 +85,8 @@ pub(super) fn robot_extract_meta(node: &Element) -> Option<RobotMeta> {
             Some(RobotMeta {
                 kind: ElementKind::Button,
                 test_id: *test_id,
-                label: label_text,
+                label: label_now(label),
+                label_fn: label_recompute(label),
                 actions: ElementActions {
                     click: Some(click),
                     ..ElementActions::empty()
@@ -73,6 +99,7 @@ pub(super) fn robot_extract_meta(node: &Element) -> Option<RobotMeta> {
                 kind: ElementKind::Pressable,
                 test_id: *test_id,
                 label: None,
+                label_fn: None,
                 actions: ElementActions {
                     click: Some(click),
                     ..ElementActions::empty()
@@ -83,6 +110,7 @@ pub(super) fn robot_extract_meta(node: &Element) -> Option<RobotMeta> {
             kind: ElementKind::Image,
             test_id: *test_id,
             label: None,
+            label_fn: None,
             actions: ElementActions::empty(),
         }),
         Element::TextInput { on_change, test_id, .. } => {
@@ -91,6 +119,7 @@ pub(super) fn robot_extract_meta(node: &Element) -> Option<RobotMeta> {
                 kind: ElementKind::TextInput,
                 test_id: *test_id,
                 label: None,
+                label_fn: None,
                 actions: ElementActions {
                     set_text: Some(set_text),
                     ..ElementActions::empty()
@@ -108,6 +137,7 @@ pub(super) fn robot_extract_meta(node: &Element) -> Option<RobotMeta> {
                 kind: ElementKind::TextInput,
                 test_id: *test_id,
                 label: None,
+                label_fn: None,
                 actions: ElementActions {
                     set_text: Some(set_text),
                     ..ElementActions::empty()
@@ -120,6 +150,7 @@ pub(super) fn robot_extract_meta(node: &Element) -> Option<RobotMeta> {
                 kind: ElementKind::Toggle,
                 test_id: *test_id,
                 label: None,
+                label_fn: None,
                 actions: ElementActions {
                     set_toggle: Some(set_toggle),
                     ..ElementActions::empty()
@@ -132,6 +163,7 @@ pub(super) fn robot_extract_meta(node: &Element) -> Option<RobotMeta> {
                 kind: ElementKind::Slider,
                 test_id: *test_id,
                 label: None,
+                label_fn: None,
                 actions: ElementActions {
                     set_slider: Some(set_slider),
                     ..ElementActions::empty()
@@ -153,6 +185,7 @@ pub(super) fn robot_extract_meta(node: &Element) -> Option<RobotMeta> {
                 kind: ElementKind::Link,
                 test_id: None,
                 label: None,
+                label_fn: None,
                 actions: ElementActions {
                     click: Some(click),
                     ..ElementActions::empty()
@@ -163,6 +196,7 @@ pub(super) fn robot_extract_meta(node: &Element) -> Option<RobotMeta> {
             kind: ElementKind::Navigator,
             test_id: None,
             label: None,
+            label_fn: None,
             actions: ElementActions::empty(),
         }),
         // Structural/reactive primitives don't get registered.

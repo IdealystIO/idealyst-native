@@ -196,6 +196,22 @@ where
     /// transition would fire the wire callback twice (or N times after
     /// N reconnects). Same shape as `drawer_sidebars_attached`.
     attached_states: std::collections::HashSet<NodeId>,
+    /// Nodes that opted into safe-area insets over the wire
+    /// (`ApplySafeAreaPadding` / `ApplyScrollViewSafeAreaInset`), with the
+    /// resolved client node, the `SafeAreaSides` flag, and whether it's the
+    /// scroll-view (contentInset) variant. The dev side ships only the
+    /// opt-in — it's headless and has no device insets — so the CLIENT
+    /// backend resolves the real platform inset. A single shared effect
+    /// (`safe_area_effect`) re-applies all of these whenever the client's
+    /// `safe_area_insets()` signal changes (rotation / sheet adaptation),
+    /// mirroring the framework's per-node `attach_safe_area` for the
+    /// local-render path.
+    #[allow(clippy::type_complexity)]
+    safe_area_nodes: Rc<RefCell<Vec<(NodeId, B::Node, runtime_core::SafeAreaSides, bool)>>>,
+    /// The shared re-application effect, created lazily on the first
+    /// safe-area opt-in. Owns its arena slot (created outside any scope),
+    /// so it lives until this backend drops.
+    safe_area_effect: Option<runtime_core::Effect>,
 }
 
 impl<B: Backend + 'static> WireBackend<B>
@@ -231,6 +247,8 @@ where
             text_content: HashMap::new(),
             button_labels: HashMap::new(),
             attached_states: std::collections::HashSet::new(),
+            safe_area_nodes: Rc::new(RefCell::new(Vec::new())),
+            safe_area_effect: None,
         }
     }
 
@@ -409,6 +427,7 @@ where
                 id,
                 initial_value,
                 placeholder,
+                wrap,
                 on_change,
                 a11y,
             } => {
@@ -418,6 +437,7 @@ where
                 let node = self.backend.borrow_mut().create_text_area(
                     &initial_value,
                     placeholder.as_deref(),
+                    wrap,
                     cb,
                     None,
                     &a11y,
@@ -743,6 +763,12 @@ where
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
                 self.backend.borrow_mut().set_disabled(&n, disabled);
             }
+            Command::ApplySafeAreaPadding { node, sides } => {
+                self.register_safe_area(node, sides, false)?;
+            }
+            Command::ApplyScrollViewSafeAreaInset { node, sides } => {
+                self.register_safe_area(node, sides, true)?;
+            }
 
             // --- Animation ticks (per-frame, high-frequency) ---
             //
@@ -1049,17 +1075,13 @@ where
                 }
             }
             Command::OpenDrawer { navigator } => {
-                // Drawer open/close/toggle were enum variants on the
-                // pre-refactor `NavCommand`; the new model moves these
-                // to SDK-specific Custom payloads. Stubbed pending the
-                // wire-protocol redesign.
-                let _ = navigator;
+                self.dispatch_drawer_state(navigator, wire::DrawerStateVerb::Open)?;
             }
             Command::CloseDrawer { navigator } => {
-                let _ = navigator;
+                self.dispatch_drawer_state(navigator, wire::DrawerStateVerb::Close)?;
             }
             Command::ToggleDrawer { navigator } => {
-                let _ = navigator;
+                self.dispatch_drawer_state(navigator, wire::DrawerStateVerb::Toggle)?;
             }
 
             // --- Navigator chrome styles ---
@@ -1125,6 +1147,9 @@ where
                     .retain(|(parent, child)| *parent != node && *child != node);
                 self.drawer_sidebars_attached
                     .retain(|(nav, sidebar)| *nav != node && *sidebar != node);
+                self.safe_area_nodes
+                    .borrow_mut()
+                    .retain(|(id, ..)| *id != node);
             }
             Command::InstallThemeVariables { tokens } => {
                 // Populate THIS (wire-replay) thread's thread-local token
@@ -1592,6 +1617,19 @@ where
         let backend_for_mount = self.backend.clone();
         let backend_for_screen = self.backend.clone();
 
+        // Staging slot for wire-driven screen swaps. `dispatch_push_like`
+        // sets the pre-built (wire-shipped) screen node here, then
+        // dispatches a `NavCommand` to `control`; the registered handler's
+        // installed dispatcher calls `mount_screen` (below), which hands
+        // back the staged node. This reuses the handler's REAL
+        // navigate-and-auto-close logic — the same path local (non-wire)
+        // mode drives — instead of dev-client re-implementing screen swaps
+        // by stuffing the structural outlet (which native handlers ignore).
+        // `None` until the first select; the empty-view fallback keeps the
+        // handler sane if a dispatch ever arrives without a staged node.
+        let pending_mount: Rc<RefCell<Option<MountResult<B::Node>>>> =
+            Rc::new(RefCell::new(None));
+
         // `build_node` is the REAL materializer: it walks the `Element`
         // the handler hands it (e.g. iOS's `scroll_view` wrapper around
         // the sidebar slot) via `runtime_core::build_detached`, threading
@@ -1623,16 +1661,26 @@ where
             initial_route: "",
             initial_path: "",
             defer_initial_mount: true,
-            mount_screen: Rc::new(move |_name, _params, _restore| {
-                let node = backend_for_mount
-                    .borrow_mut()
-                    .create_view(&runtime_core::accessibility::AccessibilityProps::default());
-                MountResult {
-                    node,
-                    scope_id: 0,
-                    options: Box::new(()),
-                }
-            }),
+            mount_screen: {
+                let pending = pending_mount.clone();
+                Rc::new(move |_name, _params, _state| {
+                    // Hand back the screen node `dispatch_push_like` staged
+                    // for this dispatch. The wire ships pre-built screen
+                    // subtrees, so the client never builds from a route
+                    // registry — it just surfaces the staged node.
+                    if let Some(staged) = pending.borrow_mut().take() {
+                        return staged;
+                    }
+                    let node = backend_for_mount
+                        .borrow_mut()
+                        .create_view(&runtime_core::accessibility::AccessibilityProps::default());
+                    MountResult {
+                        node,
+                        scope_id: 0,
+                        options: Box::new(()),
+                    }
+                })
+            },
             release_screen: Rc::new(|_| {}),
             match_path: Rc::new(|_| None),
             nav_state: nav_state.clone(),
@@ -1665,7 +1713,7 @@ where
             sidebar_slot: Some(holder),
             screen_stack: Rc::new(RefCell::new(Vec::new())),
             control,
-            pending_mount: Rc::new(RefCell::new(None)),
+            pending_mount,
             suppress_release: Rc::new(RefCell::new(false)),
             outbound: self.outbound.clone(),
             navigator_id: id,
@@ -1752,6 +1800,106 @@ where
         // first.
     }
 
+    /// Register a wire safe-area opt-in: resolve the node, apply the inset
+    /// once via the client backend (which reads its OWN device insets — the
+    /// dev side is headless and ships only `sides`), and ensure the shared
+    /// re-application effect exists so rotation / sheet adaptation re-apply.
+    /// Idempotent: snapshot replay re-emits this on every reconnect, so a
+    /// prior entry for the node is replaced rather than stacked.
+    fn register_safe_area(
+        &mut self,
+        node: NodeId,
+        sides: u8,
+        is_scroll: bool,
+    ) -> Result<(), ReplayError> {
+        let n = self
+            .nodes
+            .get(&node)
+            .ok_or(ReplayError::UnknownNode(node))?
+            .clone();
+        let sides = runtime_core::SafeAreaSides(sides);
+        {
+            let mut list = self.safe_area_nodes.borrow_mut();
+            list.retain(|(id, ..)| *id != node);
+            list.push((node, n.clone(), sides, is_scroll));
+        }
+        {
+            let mut b = self.backend.borrow_mut();
+            if is_scroll {
+                b.apply_scroll_view_safe_area_inset(&n, sides);
+            } else {
+                b.apply_safe_area_padding(&n, sides);
+            }
+        }
+        self.ensure_safe_area_effect();
+        Ok(())
+    }
+
+    /// Create — once — the shared effect that re-applies every registered
+    /// safe-area opt-in whenever the CLIENT's `safe_area_insets()` signal
+    /// changes (rotation, sheet adaptation, dynamic island). This is the
+    /// device-side analogue of the framework's per-node `attach_safe_area`
+    /// Effect, which over the wire only ran on the headless (ZERO-inset)
+    /// dev side. The effect owns its arena slot (created with no active
+    /// scope), so it lives until this backend drops.
+    fn ensure_safe_area_effect(&mut self) {
+        if self.safe_area_effect.is_some() {
+            return;
+        }
+        let backend = self.backend.clone();
+        let nodes = self.safe_area_nodes.clone();
+        self.safe_area_effect = Some(runtime_core::Effect::new(move || {
+            // Subscribe to the device insets; the backend reads the
+            // concrete platform value itself inside the apply calls.
+            let _ = runtime_core::safe_area_insets().get();
+            let mut b = backend.borrow_mut();
+            for (_, node, sides, is_scroll) in nodes.borrow().iter() {
+                if *is_scroll {
+                    b.apply_scroll_view_safe_area_inset(node, *sides);
+                } else {
+                    b.apply_safe_area_padding(node, *sides);
+                }
+            }
+        }));
+    }
+
+    /// Drive a programmatic drawer open/close/toggle (`drawer.open()` etc.
+    /// on the dev side, arriving as `Command::OpenDrawer`/`CloseDrawer`/
+    /// `ToggleDrawer`) into the native handler. Like navigation, this goes
+    /// through the navigator's own `NavigatorControl` so the registered
+    /// handler runs its real animation — dev-client stays SDK-agnostic by
+    /// asking the SDK-registered translator (see
+    /// `wire::register_drawer_state_translator`) to build the
+    /// `NavCommand::Custom` payload the handler downcasts.
+    ///
+    /// Navigation auto-close does NOT come through here — the client closes
+    /// itself off the `Select` dispatch (see `dispatch_push_like`), so the
+    /// server no longer emits a redundant wire close on select. These
+    /// commands are purely author-initiated drawer control.
+    ///
+    /// No-op for a structural (non-native) drawer — it has no animated
+    /// open/close model — and when no SDK translator is registered.
+    fn dispatch_drawer_state(
+        &mut self,
+        navigator: NodeId,
+        verb: wire::DrawerStateVerb,
+    ) -> Result<(), ReplayError> {
+        let state = self
+            .navigators
+            .get(&navigator)
+            .cloned()
+            .ok_or(ReplayError::UnknownNode(navigator))?;
+        if !state.native {
+            return Ok(());
+        }
+        if let Some(payload) = wire::translate_drawer_state(verb) {
+            state
+                .control
+                .dispatch(runtime_core::primitives::navigator::NavCommand::Custom(payload));
+        }
+        Ok(())
+    }
+
     fn dispatch_push_like(
         &mut self,
         navigator: NodeId,
@@ -1774,6 +1922,95 @@ where
             .get(&navigator)
             .cloned()
             .ok_or(ReplayError::UnknownNode(navigator))?;
+
+        if state.native {
+            // Native handler owns the body outlet AND the navigate +
+            // auto-close logic (the registered SDK handler installed a
+            // dispatcher on `state.control` at create time). So drive that
+            // dispatcher — the SAME path local (non-wire) mode uses —
+            // rather than inserting into the structural `state.outlet`,
+            // which native handlers ignore (mirrors the `state.native`
+            // branch in `NavigatorAttachInitial`). Stage the wire-built
+            // screen node; the handler's `mount_screen` (wired to
+            // `pending_mount`) hands it back, and for a drawer the Select
+            // dispatcher closes the drawer on its own — no wire
+            // OpenDrawer/CloseDrawer needed for navigation.
+            use runtime_core::primitives::navigator::{MountResult, NavCommand};
+            let screen_node = self.lookup_node(screen)?;
+            // The server rebuilds + ships a fresh node per select and owns
+            // screen lifecycle, so the client must not reuse a cached view.
+            // The interned URL is a stable route key for active-route
+            // bookkeeping; the wire drawer factory pins `LazyDisposing`, so
+            // the handler's persistence cache is never populated and the
+            // key can't trigger a stale cache-hit.
+            let name: &'static str = Box::leak(url.clone().into_boxed_str());
+            *state.pending_mount.borrow_mut() = Some(MountResult {
+                node: screen_node,
+                scope_id: scope.0,
+                // Screen options don't cross the wire for native nav (the
+                // initial-mount path passes unit options too); the handler
+                // falls back to defaults. Wiring per-screen options through
+                // is a separate gap, tracked with the navigator-over-wire
+                // work.
+                options: Box::new(()),
+            });
+            let cmd = match op {
+                NavOp::Push => NavCommand::Push {
+                    name,
+                    url: url.clone(),
+                    params: Box::new(()),
+                    state: None,
+                },
+                NavOp::Replace => NavCommand::Replace {
+                    name,
+                    url: url.clone(),
+                    params: Box::new(()),
+                    state: None,
+                },
+                NavOp::Reset => NavCommand::Reset {
+                    name,
+                    url: url.clone(),
+                    params: Box::new(()),
+                    state: None,
+                },
+                NavOp::Select => NavCommand::Select {
+                    name,
+                    url: url.clone(),
+                    params: Box::new(()),
+                    state: None,
+                },
+            };
+            state.control.dispatch(cmd);
+            // Keep screen_stack / mounted_urls / replay_pos coherent so
+            // NavigatorPop and Push-dedup behave across reconnects.
+            match op {
+                NavOp::Push => {
+                    state.screen_stack.borrow_mut().push(screen);
+                    state.mounted_urls.borrow_mut().push(url);
+                    *state.replay_pos.borrow_mut() = state.mounted_urls.borrow().len();
+                }
+                NavOp::Replace => {
+                    let mut st = state.screen_stack.borrow_mut();
+                    st.pop();
+                    st.push(screen);
+                }
+                NavOp::Reset => {
+                    let mut st = state.screen_stack.borrow_mut();
+                    st.clear();
+                    st.push(screen);
+                    drop(st);
+                    state.mounted_urls.borrow_mut().push(url);
+                    *state.replay_pos.borrow_mut() = state.mounted_urls.borrow().len();
+                }
+                NavOp::Select => {
+                    let mut st = state.screen_stack.borrow_mut();
+                    st.clear();
+                    st.push(screen);
+                }
+            }
+            return Ok(());
+        }
+
         if matches!(op, NavOp::Push) {
             let urls = state.mounted_urls.borrow();
             let pos = *state.replay_pos.borrow();

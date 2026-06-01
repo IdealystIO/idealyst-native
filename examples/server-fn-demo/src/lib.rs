@@ -8,6 +8,9 @@
 //!   `toggle_todo`, `delete_todo`, `whoami`, `slow_op`) — bodies
 //!   compile only with `--features server`; client builds get
 //!   RPC stubs.
+//! - **`#[server::sse]` endpoint** (`ticks`) — a live Server-Sent
+//!   Events stream consumed by `use_sse` in `app()`; on iOS/Android
+//!   it exercises the device's native `net::EventSource` arm.
 //! - **`app()`** — the idealyst UI the client renders in the
 //!   browser, talking to those server fns over `_srv/_batch`.
 //!
@@ -23,9 +26,11 @@
 use idea_ui::{
     install_idea_theme, light_theme, Stack, StackGap, StackPadding, Typography,
 };
+use std::rc::Rc;
+
 use runtime_core::{
     async_reducer, component, fixed_size, flat_list, signal, ui, AsyncReducer, AsyncStatus,
-    Effect, IntoElement, Element, Signal,
+    Effect, Element, FlexDirection, IntoElement, Length, Signal, StyleRules, StyleSheet,
 };
 use serde::{Deserialize, Serialize};
 use server::{server, ServerError};
@@ -45,6 +50,16 @@ pub struct Todo {
 pub struct CreateTodo {
     pub title: String,
 }
+
+/// One Server-Sent Event from the `ticks` stream. The server emits one
+/// every `TICK_INTERVAL_MS`; the client renders the latest via `use_sse`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Tick {
+    pub seq: u64,
+}
+
+/// Cadence of the live SSE demo stream (server emits, client observes).
+pub const TICK_INTERVAL_MS: u64 = 500;
 
 // ============================================================================
 // Server-only state.
@@ -161,6 +176,28 @@ pub async fn slow_op(ms: u64) -> Result<String, ServerError> {
 }
 
 // ============================================================================
+// Live Server-Sent Events endpoint.
+//
+// `#[server::sse]` mounts `GET /_srv/_sse/ticks` on the server build (it
+// serializes each yielded `Tick` as a `data:` event) and emits a
+// `fn ticks() -> String` URL stub on the client build. The stream ticks an
+// incrementing counter forever at `TICK_INTERVAL_MS`; axum drops it when the
+// client disconnects (which `use_sse` does on scope teardown).
+//
+// On the client this is consumed by `use_sse::<Tick>(ticks())` in `app()`,
+// which on iOS/Android drives the native `net::EventSource` streaming arm —
+// the whole point of this demo.
+// ============================================================================
+
+#[server::sse]
+pub async fn ticks() -> impl futures_util::Stream<Item = Tick> {
+    futures_util::stream::unfold(0u64, |seq| async move {
+        tokio::time::sleep(std::time::Duration::from_millis(TICK_INTERVAL_MS)).await;
+        Some((Tick { seq }, seq + 1))
+    })
+}
+
+// ============================================================================
 // Point the `server` SDK at the API host. On wasm we use the
 // browser's `window.location.origin`, which lines up with the
 // server bin serving the bundle and the API from the same port.
@@ -169,17 +206,35 @@ pub async fn slow_op(ms: u64) -> Result<String, ServerError> {
 // ============================================================================
 
 fn configure_server() {
-    // Only the wasm client needs this — the server bin compiles
-    // the lib too (for inventory registration etc.) but never calls
-    // `app()`, and `server::configure` doesn't exist on the server
-    // feature build anyway (it's gated under `#[cfg(not(feature = "server"))]`
-    // in the SDK).
+    // The server bin compiles the lib too (for inventory registration etc.)
+    // but never calls `app()`, and `server::configure` doesn't exist on the
+    // server-feature build anyway (it's gated `#[cfg(not(feature = "server"))]`
+    // in the SDK) — so every arm here is also implicitly client-only.
+
+    // Web: same-origin as the page (the server bin serves the bundle + API
+    // from one port).
     #[cfg(target_arch = "wasm32")]
     {
         let origin = web_sys::window()
             .and_then(|w| w.location().origin().ok())
             .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
         server::configure(server::ClientConfig::new(origin));
+    }
+
+    // Native client (iOS / Android / desktop dev): point at the host machine
+    // running `cargo run -p server-fn-demo --bin server --features server`.
+    // The iOS simulator and desktop share the host's loopback; the Android
+    // emulator reaches the host loopback via the special `10.0.2.2` alias.
+    // For a *physical* device, replace this with the host's LAN IP
+    // (e.g. `http://192.168.x.y:3000`).
+    #[cfg(all(not(feature = "server"), not(target_arch = "wasm32")))]
+    {
+        let base = if cfg!(target_os = "android") {
+            "http://10.0.2.2:3000"
+        } else {
+            "http://127.0.0.1:3000"
+        };
+        server::configure(server::ClientConfig::new(base));
     }
 }
 
@@ -295,6 +350,25 @@ pub fn app() -> Element {
     let on_add_dog = make_adder(create.clone(), "Walk the dog");
     let on_add_demo = make_adder(create.clone(), "Demo idealyst");
 
+    // Live Server-Sent Events line. `use_sse` opens `GET /_srv/_sse/ticks`
+    // and re-renders this text on every event — on iOS/Android that runs the
+    // device's native `net::EventSource` streaming arm. Client-only: the SDK
+    // gates `use_sse` behind `#[cfg(not(feature = "server"))]`, and `app()`
+    // is compiled (never called) on the server build, so it must still build
+    // there — hence the placeholder arm.
+    #[cfg(not(feature = "server"))]
+    let sse_line: Element = {
+        let live = server::use_sse::<Tick>(ticks());
+        runtime_core::text(move || match live.latest() {
+            Some(t) => format!("live SSE — tick #{} (status {:?})", t.seq, live.status()),
+            None => format!("live SSE — connecting… (status {:?})", live.status()),
+        })
+        .into_element()
+    };
+    #[cfg(feature = "server")]
+    let sse_line: Element =
+        ui! { Typography(content = "live SSE (client builds only)".to_string(), muted = true) };
+
     let header: Vec<Element> = vec![
         ui! { Typography(content = "Server-fn todos".to_string(), kind = idea_ui::typography_kind::H1) },
         ui! {
@@ -306,6 +380,7 @@ pub fn app() -> Element {
             )
         },
         status_line,
+        sse_line,
         ui! { button(label = "Refresh".to_string(), on_click = on_refresh) },
         ui! { button(label = "Add: Buy milk".to_string(), on_click = on_add_milk) },
         ui! { button(label = "Add: Walk the dog".to_string(), on_click = on_add_dog) },
@@ -332,10 +407,29 @@ pub fn app() -> Element {
         list,
     ];
 
+    // Wrap in a viewport-filling root. The iOS/Android backends size the
+    // mounted root to the window only if the root node declares it — a bare
+    // flex `Stack` shrinks to content and renders blank on native (web hides
+    // this because the DOM body already fills the viewport). This mirrors the
+    // `welcome` example's `page_sheet` and the navigator SDK's default fill.
     ui! {
-        Stack(gap = StackGap::Sm, padding = StackPadding::None) { body }
+        view(style = root_fill()) {
+            Stack(gap = StackGap::Sm, padding = StackPadding::None) { body }
+        }
     }
 }
+
+/// Full-screen column root: `width:100% height:100%` so the mounted tree
+/// fills the native window (see the wrap in `app()`).
+fn root_fill() -> Rc<StyleSheet> {
+    Rc::new(StyleSheet::r#static(StyleRules {
+        width: Some(Length::pct(100.0).into()),
+        height: Some(Length::pct(100.0).into()),
+        flex_direction: Some(FlexDirection::Column),
+        ..Default::default()
+    }))
+}
+
 
 /// One row in the list. Tapping the toggle button fires the
 /// shared `toggle` reducer; the delete button fires `delete`.

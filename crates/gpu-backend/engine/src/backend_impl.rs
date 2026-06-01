@@ -569,6 +569,12 @@ impl Backend for WgpuBackend {
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
+        // No-wrap (code) vs. soft-wrap. The wgpu text path is still a
+        // single-line MVP (multi-line wrap + caret are pending the
+        // text-shaping work noted below), so `wrap` is accepted and
+        // honored as a follow-up. No `auto_grow`: content-height growth
+        // is intrinsic sizing, which lands with the same shaping work.
+        _wrap: bool,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
@@ -2983,6 +2989,7 @@ mod a11y_tests {
         let node = b.create_text_area(
             "initial",
             Some("placeholder"),
+            true,
             on_change,
             None,
             &AccessibilityProps::default(),

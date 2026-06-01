@@ -163,14 +163,40 @@ pub(crate) struct RegistryEntry {
     /// Author-assigned stable identifier (via `.test_id("...")`).
     pub test_id: Option<&'static str>,
     /// Human-readable label. For buttons this is the initial label
-    /// text; for text nodes the content; for others `None`.
+    /// text; for text nodes the content; for others `None`. For
+    /// reactive text/labels this holds the *mount-time* value and is
+    /// only a fallback — `label_fn` recomputes the live value.
     pub label: Option<String>,
+    /// Recompute the current label on demand. `Some` only for reactive
+    /// text/labels (`TextSource::Bound` / `JsBinding`); `None` for
+    /// static labels, where `label` is authoritative.
+    ///
+    /// Why this exists: the registry entry is built once at walker
+    /// registration and is NOT re-registered when a bound signal
+    /// changes (the reactive Effect updates the backend's view, not the
+    /// robot registry). Caching the string at registration made
+    /// `get_snapshot` / `find(Label)` report stale text after the UI
+    /// updated — see `regression_robot_snapshot_reflects_reactive_text`.
+    /// Resolving lazily at query time keeps the introspection surface
+    /// honest without hooking the reactive update path.
+    pub label_fn: Option<Rc<dyn Fn() -> Option<String>>>,
     /// Actions available on this element.
     pub actions: ElementActions,
     /// Parent element, if any.
     pub parent: Option<ElementId>,
     /// Children elements.
     pub children: Vec<ElementId>,
+}
+
+impl RegistryEntry {
+    /// The label to report right now: the live value from `label_fn`
+    /// when this is a reactive label, else the cached static `label`.
+    pub(crate) fn current_label(&self) -> Option<String> {
+        match &self.label_fn {
+            Some(f) => f(),
+            None => self.label.clone(),
+        }
+    }
 }
 
 // =============================================================================
@@ -232,7 +258,7 @@ impl Registry {
 
     fn find_by_label(&self, label: &str) -> Option<ElementId> {
         self.entries.iter().flatten().enumerate().find_map(|(i, e)| {
-            if e.label.as_deref() == Some(label) {
+            if e.current_label().as_deref() == Some(label) {
                 Some(ElementId(i as u32))
             } else {
                 None
@@ -290,7 +316,7 @@ impl Element {
             id,
             kind: entry.kind,
             test_id: entry.test_id,
-            label: entry.label.clone(),
+            label: entry.current_label(),
         }
     }
 }
@@ -415,7 +441,7 @@ impl Robot {
                 Query::LabelContains(ref text) => {
                     reg.entries.iter().enumerate().find_map(|(i, slot)| {
                         let entry = slot.as_ref()?;
-                        if entry.label.as_ref().map_or(false, |l| l.contains(text.as_str())) {
+                        if entry.current_label().map_or(false, |l| l.contains(text.as_str())) {
                             Some(Element::from_registry(ElementId(i as u32), entry))
                         } else {
                             None
@@ -453,7 +479,7 @@ impl Robot {
                         .enumerate()
                         .filter_map(|(i, slot)| {
                             let entry = slot.as_ref()?;
-                            if entry.label.as_deref() == Some(text.as_str()) {
+                            if entry.current_label().as_deref() == Some(text.as_str()) {
                                 Some(Element::from_registry(ElementId(i as u32), entry))
                             } else {
                                 None
@@ -467,7 +493,7 @@ impl Robot {
                         .enumerate()
                         .filter_map(|(i, slot)| {
                             let entry = slot.as_ref()?;
-                            if entry.label.as_ref().map_or(false, |l| l.contains(text.as_str())) {
+                            if entry.current_label().map_or(false, |l| l.contains(text.as_str())) {
                                 Some(Element::from_registry(ElementId(i as u32), entry))
                             } else {
                                 None
@@ -711,7 +737,7 @@ impl Robot {
             id,
             kind: entry.kind,
             test_id: entry.test_id,
-            label: entry.label.clone(),
+            label: entry.current_label(),
             children,
         })
     }

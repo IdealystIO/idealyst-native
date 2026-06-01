@@ -482,4 +482,15 @@ pub fn register(backend: &mut AndroidBackend) {
     // `WireSidebarAdopt` sentinel materialized by the walker. No-op cost
     // under `--local`.
     crate::register_wire_drawer_factory();
+    // Programmatic `drawer.open()/close()/toggle()` over the wire. See the
+    // iOS handler's `register` for the rationale — `dev-client` can't name
+    // the helper `DrawerCmd`, so translate the generic verb here.
+    wire::register_drawer_state_translator(|verb| {
+        let cmd = match verb {
+            wire::DrawerStateVerb::Open => HelpersDrawerCmd::Open,
+            wire::DrawerStateVerb::Close => HelpersDrawerCmd::Close,
+            wire::DrawerStateVerb::Toggle => HelpersDrawerCmd::Toggle,
+        };
+        std::rc::Rc::new(cmd) as std::rc::Rc<dyn std::any::Any>
+    });
 }

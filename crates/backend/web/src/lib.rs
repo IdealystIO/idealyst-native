@@ -2338,12 +2338,19 @@ impl Backend for WebBackend {
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
+        wrap: bool,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        let node =
-            primitives::text_area::create(self, initial_value, placeholder, on_change, on_key_down);
+        let node = primitives::text_area::create(
+            self,
+            initial_value,
+            placeholder,
+            wrap,
+            on_change,
+            on_key_down,
+        );
         // `<textarea>` is implicitly a multiline textbox; no inference.
         a11y::apply(&node, a11y, None);
         node

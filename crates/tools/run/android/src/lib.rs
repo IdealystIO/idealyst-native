@@ -1001,3 +1001,21 @@ fn xml_escape(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ANDROID_MANIFEST_LOCAL_XML;
+
+    /// The dev/run manifest must enable cleartext HTTP so a dev build can
+    /// reach a server-function / `#[sse]` host running over `http://` on the
+    /// developer's machine (the emulator's `http://10.0.2.2:<port>` loopback
+    /// alias). Release packaging is generated elsewhere and keeps the secure
+    /// default, so this is local-development only.
+    #[test]
+    fn local_manifest_enables_cleartext_for_dev() {
+        assert!(
+            ANDROID_MANIFEST_LOCAL_XML.contains("android:usesCleartextTraffic=\"true\""),
+            "dev manifest must allow cleartext so the app can reach a local http dev server"
+        );
+    }
+}

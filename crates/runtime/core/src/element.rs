@@ -273,6 +273,19 @@ pub enum Element {
     /// `inputType="textMultiLine"`. The wgpu render backend currently
     /// renders an Unsupported placeholder; a native multi-line editor
     /// on that side is a follow-up.
+    ///
+    /// Like every other measured primitive (see `Text`), a textarea is
+    /// **intrinsically sized to its content**: it reports the height
+    /// its text needs (at the laid-out width) to the layout engine, and
+    /// the style's `height` / `min_height` / `max_height` constrain that
+    /// the usual way. So "grow to fit content" isn't a mode — it's just
+    /// the default when no height is pinned; a fixed box comes from a
+    /// pinned `height` (or a sized parent, e.g. an absolutely-positioned
+    /// editor), and "grow then scroll" from a `max_height`.
+    ///
+    /// The one genuinely textarea-specific knob is `wrap`, a rendering
+    /// mode the layout can't derive: whether long lines soft-wrap or run
+    /// off and scroll horizontally (the code-editor shape).
     TextArea {
         value: Signal<String>,
         on_change: Rc<dyn Fn(String)>,
@@ -281,6 +294,10 @@ pub enum Element {
         /// surface is identical between the two primitives.
         on_key_down: Option<Rc<dyn Fn(&crate::primitives::key::KeyEvent) -> crate::primitives::key::KeyOutcome>>,
         placeholder: Option<String>,
+        /// Soft-wrap long lines at the box edge (`true`, the standard
+        /// textarea behaviour) or keep lines unwrapped and scroll
+        /// horizontally (`false`, the code-editor shape).
+        wrap: bool,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,

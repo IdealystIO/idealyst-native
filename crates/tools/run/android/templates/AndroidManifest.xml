@@ -8,8 +8,16 @@
     <!-- Capability-derived permissions, injected from SDKs declared in
          the dependency graph (`[package.metadata.idealyst].capabilities`). -->
     {{USES_PERMISSIONS}}
+    <!-- `usesCleartextTraffic`: Android 9+ blocks plain HTTP by default,
+         which stops a dev build from reaching a server-function / `#[sse]`
+         host running over `http://` on the developer's machine (the emulator
+         reaches the host loopback via `http://10.0.2.2:<port>`). This manifest
+         is GENERATED only by `idealyst run android` (the dev/run path) — a
+         release build is packaged separately and keeps the secure default —
+         so cleartext is enabled for local development only. -->
     <application
         android:label="{{APP_NAME}}"
+        android:usesCleartextTraffic="true"
         android:hasCode="true"{{ICON_ATTRS}}>
         <!-- `configChanges` keeps the Activity alive across rotation,
              multi-window resize, keyboard show/hide, dark-mode toggle,

@@ -103,6 +103,12 @@ objc2-foundation = { version = "0.2", features = [
     "NSEnumerator",
     "NSObject",
     "NSValue",
+    # SSE streaming (eventsource.rs): the `NSURLSessionDataDelegate` arm needs
+    # `sessionWithConfiguration:delegate:delegateQueue:` (gated on NSOperation,
+    # for the delegate's NSOperationQueue) and `setTimeoutIntervalForRequest:`
+    # (gated on NSDate, for the long-lived-stream inactivity timeout).
+    "NSOperation",
+    "NSDate",
 ] }
 block2 = "0.5"
 futures-channel = "0.3"

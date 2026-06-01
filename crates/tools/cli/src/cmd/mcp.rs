@@ -36,8 +36,22 @@ pub struct Args {
 
     /// Skip the Robot tools, leaving only the catalog. Pass this when
     /// you specifically want a catalog-only server (CI doc-gen, etc.).
+    /// Fully disables robot control: no `~/.idealyst/apps/` discovery,
+    /// no bridge contact at all, and the Robot tools error out.
     #[arg(long)]
     pub no_robot: bool,
+
+    /// Connect the Robot tools to an explicit bridge port instead of
+    /// discovering the running app via `~/.idealyst/apps/`. Use when
+    /// the port is known up front (e.g. `idealyst dev` established it).
+    /// Ignored when `--no-robot` is set.
+    #[arg(long, value_name = "PORT")]
+    pub robot_port: Option<u16>,
+
+    /// Host for `--robot-port`. Defaults to 127.0.0.1 (the bridge and
+    /// MCP server run on the same machine).
+    #[arg(long, value_name = "HOST", default_value = "127.0.0.1")]
+    pub robot_host: String,
 
     /// Lint the catalog and exit non-zero on findings instead of
     /// starting the server. Useful as a CI gate.
@@ -122,7 +136,10 @@ pub fn run(args: Args) -> Result<()> {
     // live app, or by `app` arg when multiple are running. Off when
     // `--no-robot` is set.
     if !args.no_robot {
-        opts = opts.with_robot_discovery();
+        opts = match args.robot_port {
+            Some(port) => opts.with_robot_address(format!("{}:{}", args.robot_host, port)),
+            None => opts.with_robot_discovery(),
+        };
     }
 
     // Catalog binary resolution:

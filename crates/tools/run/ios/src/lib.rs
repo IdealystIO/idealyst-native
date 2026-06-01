@@ -473,17 +473,34 @@ fn render_info_plist(
             endpoint = xml_escape(mode.endpoint()),
         ),
     };
+    // ATS local-networking exception. App Transport Security otherwise blocks
+    // cleartext HTTP, which stops a dev build from reaching a server function /
+    // `#[sse]` host running over plain `http://` on the host machine (the iOS
+    // simulator shares the host's loopback, so `http://127.0.0.1:<port>` is the
+    // usual dev target). `NSAllowsLocalNetworking` relaxes ATS for loopback and
+    // `.local` hosts ONLY — it does not permit arbitrary-internet cleartext.
+    //
+    // This is dev-scoped by construction: `render_info_plist` only runs in the
+    // `idealyst run`/`dev` path (keyed off `RunMode`), never release/distribution
+    // packaging, so production builds keep full ATS.
+    let dev_ats_entry = "<key>NSAppTransportSecurity</key>\n    <dict>\n        \
+        <key>NSAllowsLocalNetworking</key>\n        <true/>\n    </dict>";
     // The Info.plist template has one `{{EXTRA_PLIST_ENTRIES}}`
     // splice point, so multiple plist additions (icon block,
-    // runtime-server endpoint) get concatenated here. Newline +
-    // 4-space indent keeps the rendered plist consistent with the
+    // runtime-server endpoint, dev ATS exception) get concatenated here.
+    // Newline + 4-space indent keeps the rendered plist consistent with the
     // template's existing entries.
-    let extra_entries = [icon_entries, endpoint_entry.as_str(), permission_entries]
-        .iter()
-        .filter(|s| !s.is_empty())
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n    ");
+    let extra_entries = [
+        icon_entries,
+        endpoint_entry.as_str(),
+        permission_entries,
+        dev_ats_entry,
+    ]
+    .iter()
+    .filter(|s| !s.is_empty())
+    .copied()
+    .collect::<Vec<_>>()
+    .join("\n    ");
     // Resolve bundle id eagerly so misconfigured manifests fail before
     // we render the plist (used to gate-keep IdealystAppId; now just
     // a sanity check).
@@ -694,5 +711,66 @@ fn title_case_for_executable(s: &str) -> String {
         "App".to_string()
     } else {
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use build_ios::{AppMetadata, Manifest, SplashConfig};
+
+    fn fake_manifest() -> Manifest {
+        Manifest {
+            name: "demo".to_string(),
+            lib_name: "demo".to_string(),
+            app: AppMetadata {
+                name: "Demo".to_string(),
+                bundle_id: Some("ai.example.demo".to_string()),
+                version: "0.0.1".to_string(),
+                splash: SplashConfig {
+                    background: "#000000".to_string(),
+                    title: "Demo".to_string(),
+                    title_color: "#ffffff".to_string(),
+                    duration_ms: 0,
+                },
+                targets: Vec::new(),
+                server_bin: None,
+                web: Default::default(),
+                permissions: Default::default(),
+            },
+        }
+    }
+
+    /// The dev/run Info.plist must carry the `NSAllowsLocalNetworking` ATS
+    /// exception so a dev build can reach a cleartext `http://127.0.0.1` server
+    /// function / `#[sse]` host (the iOS simulator shares the host loopback).
+    /// It must NOT blanket-allow arbitrary cleartext loads — that would relax
+    /// ATS for the whole internet, not just local dev.
+    #[test]
+    fn dev_plist_allows_local_networking_but_not_arbitrary_loads() {
+        for mode in [
+            RunMode::Local,
+            RunMode::RuntimeServer {
+                endpoint: "ws://127.0.0.1:4000".to_string(),
+            },
+        ] {
+            let plist = render_info_plist(&fake_manifest(), "demo", &mode, "", "")
+                .expect("render plist");
+            assert!(
+                plist.contains("<key>NSAppTransportSecurity</key>"),
+                "ATS dict missing for {mode:?}"
+            );
+            assert!(
+                plist.contains("<key>NSAllowsLocalNetworking</key>"),
+                "local-networking exception missing for {mode:?}"
+            );
+            assert!(
+                !plist.contains("NSAllowsArbitraryLoads"),
+                "must not blanket-allow arbitrary cleartext for {mode:?}"
+            );
+            // Exactly one ATS dict — no accidental duplication across the
+            // concatenated extra-entry list.
+            assert_eq!(plist.matches("NSAppTransportSecurity").count(), 1);
+        }
     }
 }

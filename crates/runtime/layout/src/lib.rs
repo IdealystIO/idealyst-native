@@ -185,6 +185,26 @@ impl LayoutTree {
         LayoutNode(id)
     }
 
+    /// Opt a root node out of the viewport auto-fill on the named axes,
+    /// so `compute()` leaves those `Auto` axes alone and the root wraps to
+    /// its content instead of filling the viewport.
+    ///
+    /// Used by content-sized portal roots that the platform sizes and
+    /// positions itself — e.g. a centered modal-card Dialog on Android
+    /// (`WRAP_CONTENT` + `gravity=CENTER`): if Taffy force-fills the
+    /// holder to the viewport, the card lands top-left inside a fullscreen
+    /// holder instead of being centered. Wrapping the holder lets the
+    /// window gravity do the centering. Per-axis because edge sheets fill
+    /// one axis and wrap the other (a Top sheet is full-width, wrap-height).
+    pub fn set_root_axes_wrap(&mut self, node: LayoutNode, wrap_width: bool, wrap_height: bool) {
+        if wrap_width {
+            self.auto_width.remove(&node.0);
+        }
+        if wrap_height {
+            self.auto_height.remove(&node.0);
+        }
+    }
+
     /// Add `child` to `parent`'s child list. Order matches insertion;
     /// the backend should call this in the same order it would
     /// `addSubview` / `addView`.
@@ -905,6 +925,79 @@ mod tests {
             "reparented holder should stretch to the 280pt wrapper, not \
              keep its baked 393pt root width — got {}",
             hf.width
+        );
+    }
+
+    /// Regression for the Android portal view-overlay rewrite
+    /// ([[project_android_portal_is_dialog_smell]]): a viewport portal is
+    /// now a full-bleed overlay registered as a fresh Taffy ROOT (both
+    /// axes `Auto` → viewport-filled by `compute`), and the idea-ui
+    /// `Modal` centers its card with a `width:100% height:100%`
+    /// flex-center wrapper (`justify/align center`) holding the card.
+    ///
+    /// The old Dialog path needed `set_root_axes_wrap(overlay, true,
+    /// true)` so a `WRAP_CONTENT` Dialog window's gravity could center
+    /// the card; with a full-bleed overlay there is NO gravity and NO
+    /// wrap — centering must be pure flex inside the viewport-filled
+    /// overlay. This test asserts that without any `set_root_axes_wrap`
+    /// the overlay fills the viewport AND a fixed-size card centers
+    /// inside it. If a future change reintroduces root-wrap for portals,
+    /// the overlay would collapse to the card's size and the card would
+    /// land top-left — this test catches that.
+    #[test]
+    fn regression_android_portal_overlay_centers_card_without_root_wrap() {
+        let mut t = LayoutTree::new();
+        let (vw, vh) = (393.0_f32, 852.0_f32);
+
+        // Overlay: a fresh root (auto on both axes, NO set_root_axes_wrap).
+        let overlay = t.new_node();
+
+        // Flex-center wrapper: 100% × 100%, center on both axes. This is
+        // the idea-ui Modal's content wrapper.
+        let wrapper = t.new_node();
+        let mut wrapper_rules = StyleRules::default();
+        wrapper_rules.width = Some(pct(100.0));
+        wrapper_rules.height = Some(pct(100.0));
+        wrapper_rules.justify_content = Some(FwJustifyContent::Center);
+        wrapper_rules.align_items = Some(FwAlignItems::Center);
+        t.set_style(wrapper, &wrapper_rules);
+        t.add_child(overlay, wrapper);
+
+        // Card: a fixed 300 × 200 box (the modal surface).
+        let card = t.new_node();
+        let mut card_rules = StyleRules::default();
+        card_rules.width = Some(px(300.0));
+        card_rules.height = Some(px(200.0));
+        t.set_style(card, &card_rules);
+        t.add_child(wrapper, card);
+
+        t.compute(overlay, vw, vh);
+
+        let of = t.frame_of(overlay);
+        let cf = t.frame_of(card);
+
+        // 1. The overlay fills the viewport (root auto-fill still applies
+        //    — no root-wrap collapsed it to the card).
+        assert!(
+            (of.width - vw).abs() < 0.5 && (of.height - vh).abs() < 0.5,
+            "overlay root should fill the viewport {vw}x{vh}, got {}x{}",
+            of.width,
+            of.height
+        );
+
+        // 2. The card is centered by flex (NOT pinned top-left). Center
+        //    x = (393-300)/2 = 46.5, center y = (852-200)/2 = 326.
+        let expected_x = (vw - 300.0) / 2.0;
+        let expected_y = (vh - 200.0) / 2.0;
+        // Tolerance 1.0: Taffy rounds frames to the pixel grid, so the
+        // 46.5 center lands at 47 — still centered, not top-left (0).
+        assert!(
+            (cf.x - expected_x).abs() < 1.0 && (cf.y - expected_y).abs() < 1.0,
+            "card should center at ({expected_x}, {expected_y}) via flex, \
+             got ({}, {}) — a top-left landing means the overlay collapsed \
+             (root-wrap reintroduced) or the wrapper didn't fill",
+            cf.x,
+            cf.y
         );
     }
 }

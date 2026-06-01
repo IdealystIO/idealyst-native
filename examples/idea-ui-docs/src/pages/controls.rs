@@ -5,8 +5,9 @@ use std::rc::Rc;
 
 use runtime_core::{signal, ui, Element};
 use idea_ui::{
-    tone, Breadcrumbs, Card, Checkbox, Crumb, Grid, Image, List, ListItem, Pagination, Progress,
-    RadioGroup, RadioOption, Stack, StackGap, Switch, Link, Textarea, Typography,
+    tone, Breadcrumbs, Card, Checkbox, Crumb, FieldAppearance, Grid, Image, List, ListItem,
+    Pagination, Progress, RadioGroup, RadioOption, Stack, StackGap, Switch, Link, Textarea,
+    Typography,
 };
 
 use crate::shell::{self, ComponentPage, DemoSurface, P, Section};
@@ -31,6 +32,16 @@ pub fn controls() -> Element {
 
     let bio = signal!(String::new());
     let on_bio: Rc<dyn Fn(String)> = Rc::new(move |s| bio.set(s));
+
+    let note = signal!(String::new());
+    let on_note: Rc<dyn Fn(String)> = Rc::new(move |s| note.set(s));
+
+    let v_outline = signal!(String::new());
+    let on_v_outline: Rc<dyn Fn(String)> = Rc::new(move |s| v_outline.set(s));
+    let v_contained = signal!(String::new());
+    let on_v_contained: Rc<dyn Fn(String)> = Rc::new(move |s| v_contained.set(s));
+    let v_bare = signal!(String::new());
+    let on_v_bare: Rc<dyn Fn(String)> = Rc::new(move |s| v_bare.set(s));
 
     shell::layout(ui! {
         ComponentPage(
@@ -75,6 +86,9 @@ pub fn controls() -> Element {
             }
 
             Section(title = "Textarea".to_string()) {
+                P(content = "Multi-line input that wraps long lines and grows to fit \
+                    its content — it's sized to the text, the same way the text primitive \
+                    is. `rows` sets the resting floor.".to_string())
                 DemoSurface {
                     Textarea(
                         label = Some("Bio".to_string()),
@@ -83,6 +97,55 @@ pub fn controls() -> Element {
                         placeholder = Some("Tell us about yourself…".to_string()),
                         rows = 4u32,
                     )
+                }
+            }
+
+            Section(title = "Textarea — autogrow with a cap".to_string()) {
+                P(content = "Starts at 2 lines, grows as you type, and stops at 8 lines \
+                    — past that it scrolls. `max_rows` is the ceiling.".to_string())
+                DemoSurface {
+                    Textarea(
+                        label = Some("Release notes".to_string()),
+                        value = note,
+                        on_change = on_note,
+                        placeholder = Some("Type a few lines and watch it grow…".to_string()),
+                        rows = 2u32,
+                        max_rows = 8u32,
+                    )
+                }
+            }
+
+            Section(title = "Textarea — variants".to_string()) {
+                P(content = "`outline` (bordered, default), `contained` (filled), and \
+                    `bare` (no chrome). All three show a focus ring when active. The same \
+                    `variant` prop applies to Field.".to_string())
+                DemoSurface {
+                    Stack(gap = StackGap::Md) {
+                        Textarea(
+                            label = Some("Outline".to_string()),
+                            value = v_outline,
+                            on_change = on_v_outline,
+                            placeholder = Some("Bordered surface".to_string()),
+                            variant = FieldAppearance::Outline,
+                            rows = 2u32,
+                        )
+                        Textarea(
+                            label = Some("Contained".to_string()),
+                            value = v_contained,
+                            on_change = on_v_contained,
+                            placeholder = Some("Filled, borderless".to_string()),
+                            variant = FieldAppearance::Contained,
+                            rows = 2u32,
+                        )
+                        Textarea(
+                            label = Some("Bare".to_string()),
+                            value = v_bare,
+                            on_change = on_v_bare,
+                            placeholder = Some("No chrome".to_string()),
+                            variant = FieldAppearance::Bare,
+                            rows = 2u32,
+                        )
+                    }
                 }
             }
 

@@ -23,19 +23,22 @@ pub(crate) fn create(
     on_change: Rc<dyn Fn(String)>,
     on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
 ) -> GlobalRef {
-    create_inner(b, initial_value, placeholder, on_change, on_key_down, false)
+    create_inner(b, initial_value, placeholder, on_change, on_key_down, false, true)
 }
 
 /// Multi-line variant — same widget, multiline input-type flag set.
-/// `Element::TextArea` on Android materialises through here.
+/// `Element::TextArea` on Android materialises through here. `wrap`
+/// soft-wraps long lines (the default); `wrap == false` is the
+/// code-editor shape — lines stay unwrapped and scroll horizontally.
 pub(crate) fn create_multiline(
     b: &AndroidBackend,
     initial_value: &str,
     placeholder: Option<&str>,
+    wrap: bool,
     on_change: Rc<dyn Fn(String)>,
     on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
 ) -> GlobalRef {
-    create_inner(b, initial_value, placeholder, on_change, on_key_down, true)
+    create_inner(b, initial_value, placeholder, on_change, on_key_down, true, wrap)
 }
 
 fn create_inner(
@@ -45,6 +48,7 @@ fn create_inner(
     on_change: Rc<dyn Fn(String)>,
     on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
     multiline: bool,
+    wrap: bool,
 ) -> GlobalRef {
     // EditText with a TextWatcher dispatched through Kotlin
     // `RustTextWatcher`. Same lifecycle/leak pattern as
@@ -83,6 +87,19 @@ fn create_inner(
                 "(I)V",
                 &[JValue::Int(0x00800033)],
             );
+            if !wrap {
+                // Code-editor shape: don't soft-wrap; let long lines run
+                // off and scroll horizontally. `setHorizontallyScrolling`
+                // is the TextView switch for unwrapped, horizontally-
+                // scrollable content (pairs with the multi-line flag, so
+                // newlines still split lines).
+                let _ = env.call_method(
+                    &local,
+                    "setHorizontallyScrolling",
+                    "(Z)V",
+                    &[JValue::Bool(1)],
+                );
+            }
         }
         if let Some(p) = placeholder {
             let java_str = env.new_string(p).unwrap();

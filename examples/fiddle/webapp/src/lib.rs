@@ -628,6 +628,11 @@ fn editor_panel(
         }
     };
     let textarea = text_area(buffer, on_change)
+        // Code-editor shape: no soft-wrap (long lines scroll
+        // horizontally, matching the `code_block` overlay), and a fixed
+        // height from the absolutely-positioned `textarea_style` rather
+        // than growing to the file length.
+        .code_mode()
         .on_key_down(on_key_down)
         .bind(textarea_ref)
         .with_style(textarea_style());

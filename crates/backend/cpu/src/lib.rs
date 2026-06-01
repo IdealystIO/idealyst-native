@@ -851,6 +851,7 @@ impl Backend for CpuBackend {
         &mut self,
         _initial_value: &str,
         _placeholder: Option<&str>,
+        _wrap: bool,
         _on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,

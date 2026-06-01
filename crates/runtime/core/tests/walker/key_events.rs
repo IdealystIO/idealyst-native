@@ -124,6 +124,33 @@ fn text_area_on_key_down_prevent_default_propagates() {
     assert_eq!(outcome, Some(KeyOutcome::PreventDefault));
 }
 
+/// The `wrap` flag threads from the primitive builder through the
+/// walker into `create_text_area`. A bare `text_area` defaults to
+/// soft-wrap (`wrap: true`) — the standard textarea shape. Without
+/// this wiring every textarea would render with whatever the backend
+/// hard-codes, ignoring the primitive's intent.
+#[test]
+fn text_area_defaults_to_wrap() {
+    let rt = TestRuntime::new();
+    let value: Signal<String> = signal!(String::new());
+    let _owner = rt.render(text_area(value, |_: String| {}).into());
+    rt.backend()
+        .assert_any(|e| matches!(e, Event::CreateTextArea { wrap: true, .. }));
+}
+
+/// `code_mode()` (alias `wrap(false)`) flips the flag for the
+/// unwrapped, horizontally-scrolling code-editor shape. Regression:
+/// the fiddle editor relies on this reaching the backend — a wrapping
+/// code editor would misalign against its syntax-highlight overlay.
+#[test]
+fn text_area_code_mode_disables_wrap() {
+    let rt = TestRuntime::new();
+    let value: Signal<String> = signal!(String::new());
+    let _owner = rt.render(text_area(value, |_: String| {}).code_mode().into());
+    rt.backend()
+        .assert_any(|e| matches!(e, Event::CreateTextArea { wrap: false, .. }));
+}
+
 /// Omitting `on_key_down` leaves the create event recording
 /// `has_key_handler: false` and registers no handler — so
 /// `fire_key_event` returns `None`.

@@ -62,10 +62,9 @@ members = [
     "crates/dev/mock-backend",
     "crates/dev/headless-screenshot",
 
-    # MCP — project-aware catalog, stdio server, robot proxy.
+    # MCP — project-aware catalog + stdio server (catalog + Robot tools).
     "crates/mcp/catalog",
     "crates/mcp/server",
-    "crates/mcp/robot-proxy",
 
     # UI — component library + extras.
     "crates/ui/idea-theme",

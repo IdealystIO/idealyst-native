@@ -30,6 +30,7 @@ server = [
     "dep:axum",
     "dep:tokio",
     "dep:tower-http",
+    "dep:futures-util",
 ]
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
 # (build-runtime-server). Pulls `dev-server` so
@@ -55,8 +56,10 @@ idea-ui = { workspace = true }
 # Server-only deps. Gated by the `server` feature so the wasm build
 # never compiles axum/tokio/tower-http.
 axum = { version = "0.7", optional = true }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"], optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"], optional = true }
 tower-http = { version = "0.6", features = ["fs"], optional = true }
+# Server-only: builds the timed `Stream` the `#[sse] ticks` endpoint yields.
+futures-util = { version = "0.3", optional = true }
 
 # Web-only client extra. `register_extensions` is generic over `Backend`
 # (no SDKs), so no backend dep is needed — the CLI wrappers bring their own.
@@ -72,9 +75,13 @@ required-features = ["server"]
 
 [package.metadata.idealyst.app]
 name      = "Server Fn Demo"
-bundle_id = "ai.truday.idealyst.server-fn-demo"
+bundle_id = "ai.truday.idealyst.server_fn_demo"
 version   = "0.0.1"
-targets   = ["web"]
+# `ios`/`android` added so the live-SSE demo can be exercised on a
+# simulator/emulator (`idealyst dev --ios --local` / `--android --local`),
+# which is the only mode that runs `use_sse` on the device's native
+# EventSource arm (runtime-server mode runs the tree on the host).
+targets   = ["web", "ios", "android"]
 # Full-stack: `idealyst dev --web` runs THIS bin instead of the
 # default static-file dev server. The bin serves both the wasm
 # bundle (from `pkg/`) and the `/_srv/*` API.

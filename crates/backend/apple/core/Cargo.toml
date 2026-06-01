@@ -20,6 +20,10 @@ crate-type = ["rlib"]
 
 [features]
 default = []
+# Forwards to `runtime-core/async-driver` so `runtime_core::driver::*` is in
+# scope, enabling the cooperative main-thread `async_executor`. The leaf
+# backends' own `async-driver` feature turns this on (ios-core → apple-core).
+async-driver = ["runtime-core/async-driver"]
 
 [dependencies]
 # `embed-font-bytes`: CoreText registers fonts from their raw bytes

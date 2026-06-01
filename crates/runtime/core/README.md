@@ -56,10 +56,10 @@ in app code.
 - **`robot`**. Enables the [`robot::`](./src/robot) module: the
   introspection registry that exposes every mounted primitive (`test_id`,
   label, kind, control handle) plus the component-method registry that
-  `#[component] methods!` populates. The
-  [`robot-mcp-proxy`](../../robot-mcp-proxy) binary turns this into an MCP
-  server agents can drive. Off by default; production builds shouldn't pay
-  for the per-node registry overhead.
+  `#[component] methods!` populates. The `idealyst mcp` command
+  ([`mcp-server`](../../mcp/server)) turns this into MCP tools agents can
+  drive. Off by default; production builds shouldn't pay for the per-node
+  registry overhead.
 - **`hot-reload`**. Wires the `dev-hot` substrate into the walker
   (catches `HotFnPanic` at the render boundary).
 

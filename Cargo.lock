@@ -5839,13 +5839,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "robot-mcp-proxy"
-version = "0.0.1"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
 name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6351,6 +6344,7 @@ version = "0.0.1"
 dependencies = [
  "axum",
  "dev-server",
+ "futures-util",
  "idea-ui",
  "net",
  "runtime-core",

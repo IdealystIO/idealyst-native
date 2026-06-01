@@ -28,9 +28,9 @@ idealyst build --release -- --features robot
 The app then exposes a TCP bridge on port `9718` by default. Any
 process that speaks the bridge protocol can connect and start
 issuing commands. The typical consumer is the **MCP server**
-(`robot-mcp-proxy`) bundled with the framework — see the [Dev
-tools](#) page for how to wire it into Claude Desktop or another
-MCP client.
+(`idealyst mcp`) bundled with the framework — see the [Dev
+tools](#) page for how to wire it into Claude Code, Claude Desktop,
+or another MCP client.
 
 You don't have to use the MCP proxy. The bridge protocol is small
 enough that you can write your own client in a few hundred lines of
@@ -204,33 +204,35 @@ Things people use Robot for:
   (or another MCP client) to your running app, and the model can
   drive it via natural language.
 
-## The MCP proxy
+## The MCP server
 
-`robot-mcp-proxy` is a small binary that ships with the framework.
+`idealyst mcp` is the stdio MCP server that ships with the framework.
 It speaks the [Model Context Protocol](https://modelcontextprotocol.io)
-on stdin/stdout and the Robot bridge protocol over TCP. Point it
-at a running app (the default is `127.0.0.1:9718`) and any MCP
-client can drive that app through it.
+on stdin/stdout and the Robot bridge protocol over TCP. It finds a
+running app via the per-process registration files under
+`~/.idealyst/apps/`, or you can point it at a known bridge with
+`--robot-port`. Any MCP client can then drive that app through it.
 
-Wiring it into Claude Desktop is a config change:
+Wiring it into Claude Code or Claude Desktop is a config change
+(`idealyst mcp install` writes this for you):
 
 ```json
 {
     "mcpServers": {
-        "my-app": {
-            "command": "robot-mcp-proxy",
-            "args": ["--port", "9718"]
+        "idealyst": {
+            "command": "idealyst",
+            "args": ["mcp"]
         }
     }
 }
 ```
 
 …and the model gets every tool on this page as a callable
-function.
+function, plus the static component catalog.
 
-The full set of MCP tools the proxy exposes mirrors the bridge
-surface above: `find_element`, `click`, `type_text`,
-`get_snapshot`, `invoke_method`, and so on.
+The full set of Robot MCP tools mirrors the bridge surface above:
+`find_element`, `click`, `type_text`, `get_snapshot`,
+`invoke_method`, and so on.
 
 ## Constraints and notes
 

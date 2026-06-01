@@ -303,17 +303,17 @@ Anything that can connect and issue JSON-RPC over a TCP socket
 can drive the app: list components, click buttons, type into
 inputs, invoke `methods!` methods, read frames.
 
-`robot-mcp-proxy` is a small binary that **bridges this bridge to
-MCP**. MCP — the Model Context Protocol — is the protocol Claude
-Desktop and similar tools use to expose tools to a model. The
-proxy speaks MCP on stdio and the Robot bridge protocol over TCP,
-translating between them.
+`idealyst mcp` is the server that **bridges this bridge to MCP**.
+MCP — the Model Context Protocol — is the protocol Claude Code,
+Claude Desktop, and similar tools use to expose tools to a model.
+It speaks MCP on stdio and the Robot bridge protocol over TCP,
+translating between them (and serves the component catalog too).
 
 The flow:
 
 ```
 ┌───────────────┐         stdio          ┌───────────────────┐
-│ Claude        │ ───────── MCP ───────► │ robot-mcp-proxy   │
+│ Claude Code / │ ───────── MCP ───────► │ idealyst mcp      │
 │ Desktop       │ ◄────── (JSON-RPC) ─── │ (translates)      │
 └───────────────┘                        └──────────┬────────┘
                                                     │
@@ -326,15 +326,16 @@ The flow:
                                          └───────────────────┘
 ```
 
-To wire it up, point the MCP client at the proxy binary. For
+To wire it up, point the MCP client at the `idealyst` binary
+(`idealyst mcp install` writes this into `.mcp.json` for you). For
 Claude Desktop, that's a few lines in its config:
 
 ```json
 {
     "mcpServers": {
-        "my-app": {
-            "command": "robot-mcp-proxy",
-            "args": ["--port", "9718"]
+        "idealyst": {
+            "command": "idealyst",
+            "args": ["mcp"]
         }
     }
 }

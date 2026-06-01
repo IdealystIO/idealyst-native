@@ -99,6 +99,11 @@ pub struct MockNode {
     /// `("{prop:?}", value)`. Lets animation-over-wire tests assert that
     /// tween deltas arrive.
     pub animated: Vec<(String, f32)>,
+    /// Latest safe-area opt-in applied to this node (`.safe_area(sides)`),
+    /// and how many times it's been (re)applied. Lets tests assert the
+    /// opt-in crossed the wire AND that a device-insets change re-applies.
+    pub safe_area_sides: Option<runtime_core::SafeAreaSides>,
+    pub safe_area_apply_count: u32,
 }
 
 impl MockNode {
@@ -114,6 +119,8 @@ impl MockNode {
             children: Vec::new(),
             styles_applied: 0,
             animated: Vec::new(),
+            safe_area_sides: None,
+            safe_area_apply_count: 0,
         }
     }
 }
@@ -130,11 +137,44 @@ pub struct MockBackend {
     roots: Vec<u64>,
     /// Total `finish` calls — a hot-reload re-render bumps this.
     pub finish_count: usize,
+    /// Registered native navigator handler factories, keyed by the SDK
+    /// presentation's `TypeId` (e.g. `DrawerPresentation`). Lets the mock
+    /// exercise the dev-client's NATIVE navigator reconstruction path
+    /// (`create_drawer_navigator_native`) — the path real iOS/Android/web
+    /// backends take — instead of only the structural fallback. Empty by
+    /// default, so tests that don't register a handler still hit the
+    /// fallback exactly as before.
+    #[allow(clippy::type_complexity)]
+    nav_factories: HashMap<
+        std::any::TypeId,
+        Rc<dyn Fn() -> Box<dyn runtime_core::NavigatorHandler<MockBackend>>>,
+    >,
+    /// Live handler instances keyed by their navigator node id, so
+    /// `navigator_attach_initial` / `release_navigator` can route back to
+    /// the handler that owns the node.
+    #[allow(clippy::type_complexity)]
+    nav_instances:
+        HashMap<u64, Rc<RefCell<Box<dyn runtime_core::NavigatorHandler<MockBackend>>>>>,
 }
 
 impl MockBackend {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Register a native navigator handler factory, keyed by the SDK
+    /// presentation type `P` (mirrors `WireRecordingBackend::register_navigator`
+    /// and the real backends' registries). Call this on the client's
+    /// MockBackend BEFORE the first wire `sync`, alongside the SDK's
+    /// `register_wire_*_factory`, so `create_navigator` finds the handler
+    /// and the dev-client takes its native reconstruction path.
+    pub fn register_navigator<P, F>(&mut self, factory: F)
+    where
+        P: 'static,
+        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<MockBackend>> + 'static,
+    {
+        self.nav_factories
+            .insert(std::any::TypeId::of::<P>(), Rc::new(factory));
     }
 
     fn mint(&mut self, kind: NodeKind) -> u64 {
@@ -158,6 +198,15 @@ impl MockBackend {
     /// Look up a node by id.
     pub fn node(&self, id: u64) -> Option<&MockNode> {
         self.nodes.get(&id)
+    }
+
+    /// The first node (if any) that had a safe-area opt-in applied, as
+    /// `(sides, apply_count)`. Tests opt in on exactly one node, so this
+    /// is unambiguous; `None` means the opt-in never reached the client.
+    pub fn safe_area_applied(&self) -> Option<(runtime_core::SafeAreaSides, u32)> {
+        self.nodes
+            .values()
+            .find_map(|n| n.safe_area_sides.map(|s| (s, n.safe_area_apply_count)))
     }
 
     /// Child ids of `id`, in render order.
@@ -390,6 +439,7 @@ impl Backend for MockBackend {
         &mut self,
         initial_value: &str,
         _placeholder: Option<&str>,
+        _wrap: bool,
         _on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         a11y: &AccessibilityProps,
@@ -593,6 +643,20 @@ impl Backend for MockBackend {
         }
     }
 
+    fn apply_safe_area_padding(&mut self, node: &u64, sides: runtime_core::SafeAreaSides) {
+        if let Some(n) = self.node_mut(*node) {
+            n.safe_area_sides = Some(sides);
+            n.safe_area_apply_count += 1;
+        }
+    }
+
+    fn apply_scroll_view_safe_area_inset(&mut self, node: &u64, sides: runtime_core::SafeAreaSides) {
+        if let Some(n) = self.node_mut(*node) {
+            n.safe_area_sides = Some(sides);
+            n.safe_area_apply_count += 1;
+        }
+    }
+
     fn set_animated_f32(&mut self, node: &u64, prop: AnimProp, value: f32) {
         if let Some(n) = self.node_mut(*node) {
             n.animated.push((format!("{prop:?}"), value));
@@ -605,6 +669,58 @@ impl Backend for MockBackend {
             // assertion surface is "did an animated color write arrive,"
             // not the exact channel values.
             n.animated.push((format!("{prop:?}"), value[3]));
+        }
+    }
+
+    // ----- native navigators ----------------------------------------------
+    //
+    // Routes `create_navigator` / `navigator_attach_initial` to a handler
+    // registered via [`MockBackend::register_navigator`], so the dev-client
+    // takes its native reconstruction path (the one real backends use).
+    // With no handler registered, `create_navigator` falls back to a text
+    // node — the same graceful fallback the recorder uses — keeping older
+    // structural-path tests unaffected.
+
+    fn create_navigator(
+        &mut self,
+        type_id: std::any::TypeId,
+        type_name: &'static str,
+        presentation: Rc<dyn std::any::Any>,
+        host: runtime_core::primitives::navigator::NavigatorHost<u64>,
+        a11y: &AccessibilityProps,
+    ) -> u64 {
+        let factory = self.nav_factories.get(&type_id).cloned();
+        let Some(factory) = factory else {
+            return self.create_text(
+                &format!("Navigator \"{type_name}\" not registered on the mock"),
+                a11y,
+            );
+        };
+        let mut handler = factory();
+        let node = handler.init(self, host, presentation);
+        self.nav_instances
+            .insert(node, Rc::new(RefCell::new(handler)));
+        node
+    }
+
+    fn navigator_attach_initial(
+        &mut self,
+        navigator: &u64,
+        screen: u64,
+        scope_id: u64,
+        options: Box<dyn std::any::Any>,
+    ) {
+        let handler = self.nav_instances.get(navigator).cloned();
+        if let Some(handler) = handler {
+            handler
+                .borrow_mut()
+                .attach_initial(self, screen, scope_id, options);
+        }
+    }
+
+    fn release_navigator(&mut self, node: &u64) {
+        if let Some(handler) = self.nav_instances.remove(node) {
+            handler.borrow_mut().release(self);
         }
     }
 

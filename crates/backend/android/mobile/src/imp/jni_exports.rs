@@ -544,6 +544,38 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustOverlayDismissListene
     }
 }
 
+/// `RustOverlayKeyListener.onKey` dispatch — view-overlay portals'
+/// (modals') hardware/gesture back-button trampoline. Replaces the old
+/// `Dialog.OnCancelListener` back routing; the contract is identical
+/// (invoke the user's `on_dismiss` if `inner` is still set, no-op once
+/// `release_portal` blanks it), only the JVM-side trigger differs (a
+/// `View.OnKeyListener` on the focusable overlay instead of a
+/// `DialogInterface.OnCancelListener`).
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Box<OverlayDismissCallback>` produced by
+/// `create_portal`. Stays valid until `release_portal` (which blanks
+/// the inner closure but does NOT free the box).
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustOverlayKeyListener_nativeDismiss(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+) {
+    if ptr == 0 {
+        return;
+    }
+    let cb = &*(ptr as *const OverlayDismissCallback);
+    // Clone out of the RefCell so we release the borrow before invoking
+    // the user closure — it flips a Signal which may re-enter framework
+    // code that also reads backend state.
+    let maybe_cb = cb.inner.borrow().clone();
+    if let Some(dismiss) = maybe_cb {
+        run_void_callback("overlay-back-dismiss", std::panic::AssertUnwindSafe(|| dismiss()));
+    }
+}
+
 /// `RustPopupDismissListener.onDismiss` dispatch — element-anchored
 /// portals' `PopupWindow.OnDismissListener` trampoline. Same
 /// contract as the Dialog-flow dispatch above: invokes the user's

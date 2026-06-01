@@ -209,6 +209,24 @@ pub fn attach_with_url_with_register<'l>(
                 viewport,
             },
         );
+        // Install the backend self-handle so SDK code reached outside
+        // the framework's normal call paths can drive a layout pass. The
+        // runtime-server `AndroidBackend` is owned by the client (an
+        // `Rc<RefCell<AndroidBackend>>`), so a usable weak ref exists.
+        // Without this, `with_backend(...)` (the drawer handler's
+        // deferred `drawer_attach_sidebar` → `b.run_layout()` in
+        // android-navigator-helpers) returns `None` and the freshly-
+        // attached, parentless sidebar Taffy node is never computed → its
+        // View stays 0×0 → the drawer scrim darkens on open but the
+        // sidebar panel is invisible. The sidebar is attached in a
+        // `schedule_microtask`-deferred build that runs in a LATER looper
+        // turn, AFTER the per-batch `run_layout` the shell tick performs —
+        // so only an explicit post-attach layout pass (via this handle)
+        // sizes it. Mirrors the iOS RS fix in `backend-ios-mobile`.
+        let backend_rc = shell.client.borrow().backend().clone();
+        crate::install_global_self(std::rc::Rc::downgrade(&backend_rc));
+        drop(backend_rc);
+
         SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
 
         log::info!(

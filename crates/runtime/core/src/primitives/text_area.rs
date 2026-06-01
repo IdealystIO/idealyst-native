@@ -70,10 +70,19 @@ pub trait TextAreaOps {
 /// Construct a `TextArea`. Controlled — `value` is the source of
 /// truth, `on_change` fires per keystroke with the full new text.
 ///
-/// Long-content authors should wrap the result in a sized parent
-/// (or pass a style with explicit `height` / `width`); the `<textarea>`
-/// otherwise sizes to its default `rows`/`cols` which doesn't fit the
-/// rest of the framework's flex-based layout.
+/// The box is **intrinsically sized to its content** (like `text`):
+/// with no height pinned it grows to fit the text and shrinks as text
+/// is removed. Constrain it through the normal style fields:
+///
+/// - a `height` (or a sized / absolutely-positioned parent) pins it to
+///   a fixed box that scrolls past its bounds;
+/// - a `min_height` sets a resting floor it never shrinks below;
+/// - a `max_height` lets it grow to a cap, then scroll.
+///
+/// The only reshaping knob is wrapping:
+/// [`wrap(false)`](Bound::wrap) / [`code_mode()`](Bound::code_mode)
+/// keeps lines unwrapped and scrolls horizontally — the code-editor
+/// shape (which is fixed-height, not content-grown).
 pub fn text_area<F: Fn(String) + 'static>(
     value: Signal<String>,
     on_change: F,
@@ -83,6 +92,9 @@ pub fn text_area<F: Fn(String) + 'static>(
         on_change: Rc::new(on_change),
         on_key_down: None,
         placeholder: None,
+        // Standard textarea default: soft-wrap on. The code-editor
+        // shape is the explicit opt-out.
+        wrap: true,
         style: None,
         ref_fill: None,
         accessibility: crate::accessibility::AccessibilityProps::default(),
@@ -104,6 +116,26 @@ impl Bound<TextAreaHandle> {
             *ref_fill = Some(RefFill::TextArea(Box::new(move |h| r.fill(h))));
         }
         self
+    }
+
+    /// Toggle soft-wrapping. `true` (the default) wraps long lines at
+    /// the box edge; `false` keeps them unwrapped and scrolls
+    /// horizontally — the code-editor shape. See also
+    /// [`code_mode()`](Self::code_mode).
+    pub fn wrap(mut self, wrap: bool) -> Self {
+        if let Element::TextArea { wrap: w, .. } = &mut self.primitive {
+            *w = wrap;
+        }
+        self
+    }
+
+    /// Convenience for the code-editor shape: unwrapped lines that
+    /// scroll horizontally. Equivalent to `.wrap(false)`. A code editor
+    /// is fixed-height (it scrolls rather than growing to the file
+    /// length), so pair it with a pinned height or a sized parent at
+    /// the call site (see `examples/fiddle`).
+    pub fn code_mode(self) -> Self {
+        self.wrap(false)
     }
 
     /// Attach a keyboard hook that fires on every keydown while the

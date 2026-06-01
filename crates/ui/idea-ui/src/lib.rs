@@ -127,7 +127,7 @@ pub use components::collapsible::{
     CollapsibleTransition,
 };
 pub use components::divider::{Divider, DividerAxis, DividerProps};
-pub use components::field::{Field, FieldProps, FieldSize};
+pub use components::field::{Field, FieldAppearance, FieldProps, FieldSize};
 pub use components::icon_button::{IconButton, IconButtonProps, IconButtonSize};
 pub use components::modal::{Modal, ModalProps};
 pub use components::popover::{Popover, PopoverProps};

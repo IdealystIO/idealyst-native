@@ -1723,6 +1723,17 @@ impl Backend for AndroidBackend {
         for k in to_remove {
             self.pending_sticky.remove(&k);
         }
+
+        // Portals mount dynamically (when their open signal flips), outside
+        // the initial build's `finish()` layout pass — so the portal's Taffy
+        // root never gets `compute()` and its subtree renders with default
+        // LayoutParams (children unsized, overlapping at the origin). Mirror
+        // iOS: kick a coalesced layout pass when inserting into a portal's
+        // content holder. Same root cause as the navigator's `swap_body`
+        // needing `schedule_layout_pass` for a dynamically-swapped screen.
+        if self.portal_instances.contains_key(&Self::node_key_of(parent)) {
+            crate::imp::scheduler::schedule_layout_pass_retry(0);
+        }
     }
 
     fn install_touch_handler(
@@ -1820,17 +1831,36 @@ impl Backend for AndroidBackend {
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
+        wrap: bool,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        let node = primitives::text_input::create_multiline(self, initial_value, placeholder, on_change, on_key_down);
+        let node = primitives::text_input::create_multiline(self, initial_value, placeholder, wrap, on_change, on_key_down);
+        // Intrinsic content sizing in wrap mode (only): give the EditText
+        // a `View.measure`-based measure_fn so Taffy sizes it to the
+        // height the wrapped text needs. With no pinned height it grows
+        // to fit; a `max_height` clamps it (the EditText scrolls past);
+        // a pinned `height` wins. The code-editor shape (`wrap == false`)
+        // is a fixed-height horizontal scroller, so it gets no measure_fn
+        // — mirrors iOS and web.
+        if wrap {
+            install_external_measure_fn(self, &node);
+        }
         a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::TextArea));
         node
     }
 
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
-        primitives::text_input::update_value(node, value)
+        primitives::text_input::update_value(node, value);
+        // The text changed, so the EditText's measured height changed,
+        // but Android doesn't invalidate Taffy. Mark the node dirty so a
+        // wrap-mode textarea's measure_fn re-runs on the next (coalesced)
+        // layout pass; a code-mode textarea has no measure_fn, so this
+        // just reproduces its style-given size. Mirrors iOS.
+        let layout = self.layout_for_view(node);
+        self.layout.mark_dirty(layout);
+        crate::imp::scheduler::schedule_layout_pass_retry(0);
     }
 
     fn make_text_input_handle(

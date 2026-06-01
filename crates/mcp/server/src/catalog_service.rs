@@ -31,15 +31,37 @@ use rmcp::{
 };
 use serde_json::json;
 
+/// How the server reaches a running app's Robot bridge.
+#[derive(Clone)]
+pub(crate) enum RobotMode {
+    /// `--no-robot`: robot control is off entirely. No `~/.idealyst/apps/`
+    /// scan, no bridge connection, robot tools return a clear error, and
+    /// catalog tools never reach out over a bridge — they serve only the
+    /// in-process / subprocess catalog. "No robot" means no robot.
+    Disabled,
+    /// Default: scan `~/.idealyst/apps/<name>-<pid>.json` registration
+    /// files and route per call, picking the unique live app or by `app`.
+    Discovery,
+    /// `--robot-port` (+ optional `--robot-host`): talk to exactly one
+    /// bridge at this explicit `host:port`. Discovery is skipped — the
+    /// connection is pinned, matching the "explicit on the network"
+    /// model (the CLI can automate establishing it, but the address is
+    /// never guessed via multicast).
+    Explicit { addr: String },
+}
+
 /// The MCP catalog server. Holds the resolved catalog behind an
 /// `Arc<RwLock<...>>` so the watcher thread (phase 5) can swap in
 /// a fresh `ResolvedCatalog` without taking the server down.
 #[derive(Clone)]
 pub struct CatalogService {
     catalog: Arc<RwLock<ResolvedCatalog>>,
+    /// How robot control is reached (off / discovery / explicit addr).
+    robot_mode: RobotMode,
     /// Legacy single-bridge mode — used when the server was
-    /// constructed with `with_robot_bridge(...)`. The registry-aware
-    /// mode (default) ignores this and looks up bridges per-call.
+    /// constructed with `with_robot_bridge(...)`, and for
+    /// [`RobotMode::Explicit`]. The discovery mode ignores this and
+    /// looks up bridges per-call.
     robot: Option<Arc<RobotBridge>>,
     /// Registry-driven resolver: looks up bridges by app name from
     /// `~/.idealyst/registry.json` on each Robot tool call. Bridges
@@ -310,13 +332,41 @@ pub struct SlugRequest {
 
 #[tool_router]
 impl CatalogService {
+    /// Default constructor: Robot discovery on (scans
+    /// `~/.idealyst/apps/`). Equivalent to `with_robot_mode(true, None)`.
     pub fn new() -> Self {
+        Self::with_robot_mode(true, None)
+    }
+
+    /// Construct with an explicit robot policy.
+    ///
+    /// - `enabled == false` → [`RobotMode::Disabled`]: no discovery
+    ///   thread, no bridge contact anywhere (catalog OR control).
+    /// - `explicit_addr == Some(host:port)` → [`RobotMode::Explicit`]:
+    ///   pin that one bridge, skip discovery.
+    /// - otherwise → [`RobotMode::Discovery`]: start the
+    ///   `~/.idealyst/apps/` scanner thread and route per call.
+    pub fn with_robot_mode(enabled: bool, explicit_addr: Option<String>) -> Self {
+        let (robot_mode, robot, mdns) = if !enabled {
+            // Inert table — `DiscoveryTable::default()` never spawns the
+            // scanner thread, so "disabled" really does nothing.
+            (RobotMode::Disabled, None, crate::mdns_discovery::DiscoveryTable::default())
+        } else if let Some(addr) = explicit_addr {
+            (
+                RobotMode::Explicit { addr: addr.clone() },
+                Some(Arc::new(RobotBridge::new(addr))),
+                crate::mdns_discovery::DiscoveryTable::default(),
+            )
+        } else {
+            (RobotMode::Discovery, None, crate::mdns_discovery::start())
+        };
         Self {
             catalog: Arc::new(RwLock::new(ResolvedCatalog::build())),
-            robot: None,
+            robot_mode,
+            robot,
             resolver: Arc::new(RobotResolver::default()),
             catalog_cache: Arc::new(CatalogCache::default()),
-            mdns: crate::mdns_discovery::start(),
+            mdns,
             tool_router: Self::tool_router(),
         }
     }
@@ -328,6 +378,26 @@ impl CatalogService {
     pub fn with_robot_bridge(mut self, bridge: Arc<RobotBridge>) -> Self {
         self.robot = Some(bridge);
         self
+    }
+
+    /// The set of apps the catalog/robot tools should consider live,
+    /// honoring the robot mode:
+    /// - Disabled → none (no bridge is ever contacted).
+    /// - Discovery → whatever the `~/.idealyst/apps/` scanner found.
+    /// - Explicit → a single synthetic entry for the pinned address.
+    fn live_apps(&self) -> Vec<crate::mdns_discovery::DiscoveredApp> {
+        match &self.robot_mode {
+            RobotMode::Disabled => Vec::new(),
+            RobotMode::Discovery => self.mdns.snapshot(),
+            RobotMode::Explicit { addr } => vec![crate::mdns_discovery::DiscoveredApp {
+                name: "app".to_string(),
+                bundle_id: None,
+                project_root: None,
+                catalog_bin: None,
+                pid: 0,
+                bridge_addr: addr.clone(),
+            }],
+        }
     }
 
     /// Swap in a freshly-rebuilt catalog. Used by the file-watch
@@ -351,7 +421,7 @@ impl CatalogService {
     async fn list_components(&self) -> Result<CallToolResult, McpError> {
         let mut json: Vec<serde_json::Value> = Vec::new();
 
-        let live = self.mdns.snapshot();
+        let live = self.live_apps();
 
         for app in &live {
             // Live path: hit the Robot bridge's `get_catalog`.
@@ -712,7 +782,7 @@ impl CatalogService {
 
     #[tool(description = "List every running idealyst app — discovered via per-process registration files at `~/.idealyst/apps/<name>-<pid>.json` that the running app's Robot bridge writes on bind. Each entry includes name, bundle_id, project_root, bridge_addr, and pid. Entries are removed automatically when the app exits (RAII cleanup on graceful shutdown; stale ones get pruned at scan time when `kill(pid, 0)` reports the process is gone).")]
     async fn list_apps(&self) -> Result<CallToolResult, McpError> {
-        let live = self.mdns.snapshot();
+        let live = self.live_apps();
         let json: Vec<serde_json::Value> = live
             .iter()
             .map(|a| {
@@ -741,9 +811,18 @@ impl CatalogService {
         app: Option<&str>,
         args: serde_json::Value,
     ) -> Result<CallToolResult, McpError> {
+        if matches!(self.robot_mode, RobotMode::Disabled) {
+            return Err(McpError::invalid_params(
+                "Robot control is disabled — the MCP server was started with \
+                 --no-robot. Restart it without --no-robot (or pass --robot-port \
+                 to target a known bridge) to drive a running app."
+                    .to_string(),
+                None,
+            ));
+        }
         let bridge: Arc<RobotBridge> = if let Some(b) = &self.robot {
-            // Legacy pinned-bridge mode: ignore `app`. Kept for
-            // back-compat with `with_robot_bridge(...)` callers.
+            // Pinned-bridge mode: `with_robot_bridge(...)` or
+            // `RobotMode::Explicit`. Ignore `app` — there's exactly one.
             b.clone()
         } else {
             match self.resolver.resolve(app, &self.mdns).await {

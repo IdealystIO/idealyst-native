@@ -36,6 +36,16 @@ pub fn install_scheduler() {
     runtime_core::scheduling::install_debug_log(Box::new(|msg| {
         crate::log::apple_log(msg);
     }));
+    // Install the cooperative main-thread async executor alongside the
+    // scheduler. Without it, `runtime_core::driver::spawn_async` falls back
+    // to `pollster::block_on` ON THE MAIN THREAD — fine for short one-shot
+    // futures, but a long-running `recv` loop (`use_sse` / `use_socket`)
+    // would block the main thread forever and freeze the UI. The executor
+    // polls cooperatively on the main queue instead. First-install wins.
+    // Gated on `async-driver` (the feature that brings `runtime_core::driver`
+    // into scope); without it there is no `spawn_async` to host.
+    #[cfg(feature = "async-driver")]
+    crate::async_executor::install_async_executor();
 }
 
 struct AppleScheduler;
@@ -274,8 +284,10 @@ impl ScheduleHandle for NsTimerHandle {
 
 #[link(name = "System", kind = "dylib")]
 extern "C" {
-    fn dispatch_async(queue: *const std::ffi::c_void, block: *const std::ffi::c_void);
-    static _dispatch_main_q: std::ffi::c_void;
+    // `pub(crate)` so the cooperative async executor (`async_executor.rs`)
+    // reuses the exact same main-queue dispatch primitive.
+    pub(crate) fn dispatch_async(queue: *const std::ffi::c_void, block: *const std::ffi::c_void);
+    pub(crate) static _dispatch_main_q: std::ffi::c_void;
 }
 
 fn dispatch_main_async(f: Box<dyn FnOnce() + 'static>) {

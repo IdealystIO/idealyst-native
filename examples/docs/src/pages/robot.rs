@@ -45,9 +45,9 @@ docs! {
 
         p("The app then exposes a TCP bridge on port ", code("9718"), " by default. \
            Any process that speaks the bridge protocol can connect and start \
-           issuing commands. The typical consumer is the ", code("robot-mcp-proxy"),
-          " MCP server bundled with the framework — see the Dev tools page for \
-           how to wire it into Claude Desktop or another MCP client."),
+           issuing commands. The typical consumer is the ", code("idealyst mcp"),
+          " server bundled with the framework — see the Dev tools page for \
+           how to wire it into Claude Code, Claude Desktop, or another MCP client."),
 
         p("You don't have to use the MCP proxy. The bridge protocol is small \
            enough that you can write your own client in a few hundred lines of \
@@ -229,30 +229,33 @@ docs! {
         ),
     },
 
-    section(heading = "The MCP proxy") {
-        p(code("robot-mcp-proxy"), " is a small binary that ships with the \
+    section(heading = "The MCP server") {
+        p(code("idealyst mcp"), " is the stdio MCP server that ships with the \
            framework. It speaks the Model Context Protocol on stdin/stdout and \
-           the Robot bridge protocol over TCP. Point it at a running app (the \
-           default is ", code("127.0.0.1:9718"), ") and any MCP client can \
-           drive that app through it."),
+           the Robot bridge protocol over TCP. It finds a running app via the \
+           per-process registration files under ", code("~/.idealyst/apps/"),
+          ", or you can point it at a known bridge with ", code("--robot-port"),
+          ". Any MCP client can then drive that app through it."),
 
-        p("Wiring it into Claude Desktop is a config change:"),
+        p("Wiring it into Claude Code or Claude Desktop is a config change \
+           (", code("idealyst mcp install"), " writes this for you):"),
 
         code(json, r##"
             {
                 "mcpServers": {
-                    "my-app": {
-                        "command": "robot-mcp-proxy",
-                        "args": ["--port", "9718"]
+                    "idealyst": {
+                        "command": "idealyst",
+                        "args": ["mcp"]
                     }
                 }
             }
         "##),
 
-        p("…and the model gets every tool on this page as a callable function."),
+        p("…and the model gets every tool on this page as a callable function, \
+           plus the static component catalog."),
 
-        p("The full set of MCP tools the proxy exposes mirrors the bridge \
-           surface above: ", code("find_element"), ", ", code("click"), ", ",
+        p("The full set of Robot MCP tools mirrors the bridge surface above: ",
+          code("find_element"), ", ", code("click"), ", ",
           code("type_text"), ", ", code("get_snapshot"), ", ",
           code("invoke_method"), ", and so on."),
     },

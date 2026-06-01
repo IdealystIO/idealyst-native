@@ -632,7 +632,7 @@ docs! {
               intercept patches to log, replay, or transform them."],
             ["Robot. Drive a running app from another process — IDE plugins, \
               accessibility tooling, scripted demos, test runners. The ",
-              code("robot-mcp-proxy"), " crate is one such consumer; you can \
+              code("idealyst mcp"), " server is one such consumer; you can \
               write your own."],
             ["runtime-macros. Write your own front-end syntax. Anything that \
               emits the right runtime-core calls slots in alongside ",

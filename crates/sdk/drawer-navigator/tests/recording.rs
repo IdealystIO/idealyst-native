@@ -158,6 +158,77 @@ fn recording_drawer_dispatcher_emits_open_and_select() {
     );
 }
 
+/// A *second* select must not panic. The first `select` mounts the new
+/// outlet and releases the previously-active screen's reactive scope; a
+/// second select releases the first selection's scope in turn. This is
+/// the path that aborts the runtime-server sidecar (its non-unwinding
+/// drop turns the scope-release panic into a process abort), so navigating
+/// twice in a row killed any drawer app under `idealyst dev`. Reproduces
+/// against `WireRecordingBackend` — the exact backend the sidecar runs.
+#[test]
+fn recording_drawer_second_select_releases_previous_outlet_without_panic() {
+    let (recorder, _owner, nav) = mount_drawer();
+    let _ = recorder.drain_commands(); // discard mount
+
+    let handle = nav.get().expect("DrawerHandle filled after render");
+
+    // 1st nav: HOME → ABOUT.
+    handle.select(&ABOUT, ());
+    let after_first = recorder.drain_commands();
+    assert!(
+        has_text(&after_first, "ABOUT BODY"),
+        "first select records the about body, got: {after_first:?}"
+    );
+
+    // 2nd nav: ABOUT → HOME. Releasing the ABOUT outlet's scope here is
+    // what panicked. Must complete and re-record the home body.
+    handle.select(&HOME, ());
+    let after_second = recorder.drain_commands();
+    assert_eq!(
+        count(&after_second, |c| matches!(c, Command::NavigatorSelect { .. })),
+        1,
+        "second select emits one NavigatorSelect, got: {after_second:?}"
+    );
+    assert!(
+        has_text(&after_second, "HOME BODY"),
+        "second select re-records the home body, got: {after_second:?}"
+    );
+}
+
+/// Selecting a route auto-closes the drawer on the dev side
+/// (`is_open → false`) so server-built reactive sidebars stay coherent —
+/// but it must NOT emit a wire `CloseDrawer`. The CLIENT closes its own
+/// drawer when it replays the `NavigatorSelect` through its native
+/// handler's dispatcher (whose `Select` arm auto-closes), exactly as
+/// local non-wire mode does. Emitting a server-side `CloseDrawer` on top
+/// would animate the drawer shut twice. See the matching client-side
+/// regression in `dev-client` (`native_select_swaps_screen_and_closes_drawer`).
+#[test]
+fn recording_drawer_select_auto_closes_signal_only_no_wire_close() {
+    let (recorder, _owner, nav) = mount_drawer();
+    let _ = recorder.drain_commands();
+
+    let handle = nav.get().expect("DrawerHandle filled after render");
+    handle.open();
+    assert!(handle.is_open(), "drawer open after open()");
+    let _ = recorder.drain_commands();
+
+    // Select while open: the dev-side signal flips so reactive sidebars
+    // recompute, but no wire CloseDrawer is shipped (the client self-closes).
+    handle.select(&ABOUT, ());
+    assert!(
+        !handle.is_open(),
+        "selecting a route must flip the dev-side is_open signal to false"
+    );
+    let after_open_select = recorder.drain_commands();
+    assert_eq!(
+        count(&after_open_select, |c| matches!(c, Command::CloseDrawer { .. })),
+        0,
+        "select must NOT emit a wire CloseDrawer — the client closes itself \
+         via the NavigatorSelect dispatch, got: {after_open_select:?}"
+    );
+}
+
 /// Reverse channel: a client-side drawer gesture
 /// (`DrawerStateChanged`) syncs the dev-side `is_open` signal directly,
 /// WITHOUT echoing an `OpenDrawer`/`CloseDrawer` command back to the

@@ -935,6 +935,14 @@ impl Backend for MacosBackend {
         &mut self,
         initial_value: &str,
         _placeholder: Option<&str>,
+        // `wrap` is the no-wrap / soft-wrap toggle. The macOS NSTextView
+        // path mounts bare today (see the v1 note below) and already
+        // sizes to its content via the intrinsic measure_fn installed
+        // below, so the wrap toggle lands in the same follow-up that
+        // adds the NSScrollView wrapping. (There is no `auto_grow` flag:
+        // content-height growth is just the intrinsic measure with no
+        // pinned height — which this path already does.)
+        _wrap: bool,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         a11y: &runtime_core::accessibility::AccessibilityProps,

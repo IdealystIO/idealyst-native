@@ -479,6 +479,23 @@ stylesheet! {
                 border_color: Tokenized::token("intent-danger-solid-bg", Color("#dc2626".into())),
             }
         }
+        // The input "shell": outline (bordered, the default), contained
+        // (filled, borderless), bare (no chrome). Border width stays 1 in
+        // every arm so the focused-state ring still renders. The live
+        // styling lives in `build_field_input_sheet`; these arms exist to
+        // generate the `FieldAppearance` enum and document the axis.
+        variant appearance {
+            #[default]
+            outline(_t) {}
+            contained(t) {
+                background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+                border_color: Color("transparent".into()),
+            }
+            bare(_t) {
+                background: Color("transparent".into()),
+                border_color: Color("transparent".into()),
+            }
+        }
         state focused(t) {
             border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
         }

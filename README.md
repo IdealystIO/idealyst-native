@@ -28,10 +28,13 @@ registry, three consumers:
 - **E2E test harnesses.** Query by `test_id`, click buttons, type into
   inputs, read signals, snapshot the tree. The same `Robot` API works on
   web, iOS, and Android. No separate platform runners per target.
-- **MCP server.** [`crates/robot-mcp-proxy`](crates/robot-mcp-proxy) speaks
-  stdio JSON-RPC and turns each registry capability into an MCP tool. Drop
-  it into a Claude Desktop config and an LLM can drive a running iOS /
-  Android / web app directly: fill out forms, navigate, assert state.
+- **MCP server.** `idealyst mcp` ([`crates/mcp/server`](crates/mcp/server))
+  speaks stdio JSON-RPC and turns each registry capability into an MCP tool
+  (alongside the static component catalog). Drop it into a Claude Code /
+  Desktop config and an LLM can drive a running iOS / Android / web app
+  directly: fill out forms, navigate, assert state. It reaches the app's
+  Robot bridge by discovery (`~/.idealyst/apps/`) or an explicit
+  `--robot-port`.
 - **`#[component]` methods.** A `methods! { ... }` block inside a component
   is auto-registered as JSON-callable. External automation can invoke
   component methods by name without per-app glue.
@@ -40,8 +43,9 @@ The same model gets you Detox-style E2E, dev tools, and agentic control
 from one architectural seam. See
 [`crates/framework/core/src/robot/`](crates/framework/core/src/robot/) for
 the registry + bridge protocol, and
-[`crates/robot-mcp-proxy/`](crates/robot-mcp-proxy/) for the MCP entry
-point. Gated on the `robot` Cargo feature; production builds leave it off.
+[`crates/mcp/server/`](crates/mcp/server/) (the `idealyst mcp` command) for
+the MCP entry point. Gated on the `robot` Cargo feature; production builds
+leave it off.
 
 ## Installing the CLI
 
@@ -360,8 +364,8 @@ crates/
     server/ http/ reload/ web-host/
 
   port/                 # Source porters (React/Vue/Svelte/Solid → idealyst Rust); see ./port/README.md
-  mcp-server/           # Stdio MCP server exposing the framework's component catalog
-  robot-mcp-proxy/      # Host-side MCP server for robots
+  mcp/                  # Stdio MCP server (`idealyst mcp`): component catalog + Robot tools
+    catalog/ server/
 ```
 
 Where a crate has non-obvious wiring, runtime requirements, or behavioural

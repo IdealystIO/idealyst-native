@@ -97,12 +97,27 @@ use serde::{Deserialize, Serialize};
 /// `SetAnimated*` commands back. Animations now stop when the tab is
 /// backgrounded (browser throttles raf) and adapt to client framerate
 /// — no wasted dev-host CPU on a quiet client.
-pub const PROTOCOL_VERSION: u32 = 9;
+///
+/// Bumped to 10 to carry the textarea wrap mode. `CreateTextArea` grew
+/// `wrap` so a code-editor (`wrap: false`) textarea reproduces on the
+/// client instead of always rendering the default wrapping box. The
+/// field carries `#[serde(default = "wire_true")]` so a v9 sender still
+/// deserializes — `wrap` defaults to `true` (the primitive default).
+/// (Content-height "autogrow" needs no wire field: it's intrinsic
+/// sizing, reproduced by the client's own backend from the style.)
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
 /// integer.
 pub const WIRE_VERSION: u32 = PROTOCOL_VERSION;
+
+/// `#[serde(default = ...)]` helper for `bool` fields whose default is
+/// `true` (e.g. `CreateTextArea::wrap`). The derive's plain `default`
+/// would yield `false`.
+fn wire_true() -> bool {
+    true
+}
 
 // ---------------------------------------------------------------------------
 // ID namespaces
@@ -443,6 +458,10 @@ pub enum Command {
         id: NodeId,
         initial_value: String,
         placeholder: Option<String>,
+        /// Soft-wrap long lines (default) vs. unwrapped code-editor
+        /// scroll. Defaults to `true` for v9-and-earlier senders.
+        #[serde(default = "wire_true")]
+        wrap: bool,
         on_change: HandlerId,
         #[serde(default)]
         a11y: WireAccessibilityProps,
@@ -652,6 +671,25 @@ pub enum Command {
     SetDisabled {
         node: NodeId,
         disabled: bool,
+    },
+
+    // --- Safe area ---
+    /// Author opted a `view` into safe-area padding via
+    /// `.safe_area(sides)`. `sides` is the `SafeAreaSides` bitflag as a
+    /// raw byte. ONLY the opt-in crosses — not resolved inset values: the
+    /// dev side (recorder) is headless and has no device insets, so the
+    /// CLIENT backend resolves the real platform inset when it replays
+    /// this (and re-applies on its own insets-signal change for rotation).
+    ApplySafeAreaPadding {
+        node: NodeId,
+        sides: u8,
+    },
+    /// `scroll_view` variant of [`Self::ApplySafeAreaPadding`] —
+    /// contentInset semantics (background bleeds edge-to-edge, content
+    /// origin insets) rather than outer padding.
+    ApplyScrollViewSafeAreaInset {
+        node: NodeId,
+        sides: u8,
     },
 
     // --- Styles ---
@@ -1491,8 +1529,8 @@ pub enum WireViewportPlacement {
 }
 
 pub use nav_registry::{
-    build_drawer_presentation, register_drawer_factory, WireDrawerConfig, WireNavBuild,
-    WireSidebarAdopt,
+    build_drawer_presentation, register_drawer_factory, register_drawer_state_translator,
+    translate_drawer_state, DrawerStateVerb, WireDrawerConfig, WireNavBuild, WireSidebarAdopt,
 };
 
 /// Client-side navigator presentation-factory registry.
@@ -1589,6 +1627,51 @@ mod nav_registry {
     /// to structural reconstruction.
     pub fn build_drawer_presentation(cfg: WireDrawerConfig) -> Option<WireNavBuild> {
         DRAWER_FACTORY.with(|c| c.borrow().as_ref().map(|f| f(cfg)))
+    }
+
+    /// A programmatic drawer open/close/toggle verb arriving over the
+    /// wire (`Command::OpenDrawer` / `CloseDrawer` / `ToggleDrawer`),
+    /// emitted when app code calls `drawer.open()` etc. on the dev side.
+    /// (Navigation auto-close is handled client-side via the `Select`
+    /// dispatch and does NOT travel as one of these.)
+    #[derive(Debug, Clone, Copy)]
+    pub enum DrawerStateVerb {
+        Open,
+        Close,
+        Toggle,
+    }
+
+    type DrawerStateTranslator = Rc<dyn Fn(DrawerStateVerb) -> Rc<dyn Any>>;
+
+    thread_local! {
+        static DRAWER_STATE_TRANSLATOR: RefCell<Option<DrawerStateTranslator>> =
+            const { RefCell::new(None) };
+    }
+
+    /// Register the SDK-specific translator that maps a generic
+    /// [`DrawerStateVerb`] to the `NavCommand::Custom` payload the
+    /// client's registered drawer handler understands (the per-backend
+    /// helper `DrawerCmd` — `ios_navigator_helpers::DrawerCmd`,
+    /// `android_navigator_helpers::DrawerCmd`, …).
+    ///
+    /// Why a translator instead of dev-client constructing the command:
+    /// `dev-client` is SDK-agnostic and cannot name the helper `DrawerCmd`
+    /// type. So each platform's `drawer_navigator::register(&mut backend)`
+    /// installs this closure (mirrors [`register_drawer_factory`] and
+    /// `NavigatorControl::install_link_activator`). Idempotent — last
+    /// write wins; only one platform's `register` is compiled+called per
+    /// client binary.
+    pub fn register_drawer_state_translator(
+        f: impl Fn(DrawerStateVerb) -> Rc<dyn Any> + 'static,
+    ) {
+        DRAWER_STATE_TRANSLATOR.with(|c| *c.borrow_mut() = Some(Rc::new(f)));
+    }
+
+    /// Translate a wire drawer-state verb into the handler's `Custom`
+    /// payload. `None` when no SDK registered a translator — the caller
+    /// then no-ops (a structural drawer has no animated open/close model).
+    pub fn translate_drawer_state(verb: DrawerStateVerb) -> Option<Rc<dyn Any>> {
+        DRAWER_STATE_TRANSLATOR.with(|c| c.borrow().as_ref().map(|f| f(verb)))
     }
 }
 
