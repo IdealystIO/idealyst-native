@@ -397,9 +397,18 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
   gained mutable `insert` + the matched `path` (for guard scoping). Added
   `Auth<T>` (missing → 401) and `Cookies` extractors. Tested both modes + unit
   tests. Post-handler wrapping (timing/logging) noted as a follow-on. (item 4)
-- **Phase 3 — Identity + versioning.** module-path paths, boot-time collision
-  panic, `SchemaHash` derive, negotiation, `IncompatibleVersion`, multi-version
-  registration. (items 5, 6)
+- **Phase 3 — Identity + versioning. ✅ DONE (core).** Boot-time collision
+  detection (`router()` builds a path→entry `HashMap`, panics on duplicate;
+  dedup logic unit-tested). Per-fn schema hash (macro hashes wire arg + return
+  type spelling via fixed-seed `DefaultHasher`, embedded both sides). Negotiation
+  over `x-srv-schema` header: server runs a drift diagnostic on arg-decode
+  failure (mismatch → 426 `IncompatibleVersion`, else 400) and a `strict_version`
+  pre-decode gate; client echoes the same on response-decode failure (the
+  return-type-drift "your app is outdated" signal). `schema_for(path)`
+  introspection. Tested both modes + unit. Deferred: auto module-path
+  qualification (inventory's const requirement makes `module_path!()`
+  concatenation into a `&'static str` awkward; bare-name default + the boot
+  collision panic is the safety net) and multi-version live registration. (items 5, 6)
 - **Phase 4 — Deliberate batching. ✅ DONE.** Direct single call by default;
   coalescing happens only inside a `server::batch(future)` scope (a per-poll
   thread-local mirroring `cancel.rs`). Tested: in-scope concurrent calls →

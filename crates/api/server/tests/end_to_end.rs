@@ -252,6 +252,17 @@ pub async fn current_theme(cookies: Cookies) -> Result<String, ServerError> {
     Ok(cookies.get("theme").unwrap_or("light").to_string())
 }
 
+// -----------------------------------------------------------------------------
+// Versioning fixture (Phase 3): a strict-version endpoint.
+// -----------------------------------------------------------------------------
+
+/// `strict_version` makes the server reject any client whose wire schema
+/// hash differs from this fn's, up front (426), before decoding.
+#[server(strict_version)]
+pub async fn strict_echo(x: i32) -> Result<i32, ServerError> {
+    Ok(x)
+}
+
 // =============================================================================
 // Server-mode tests: macro emitted real bodies + inventory entries.
 // =============================================================================
@@ -742,6 +753,74 @@ mod server_side {
             .unwrap();
         let result: Result<String, ServerError> = response.json().await.unwrap();
         assert_eq!(result, Ok("light".to_string()));
+    }
+
+    #[tokio::test]
+    async fn regression_strict_version_gates_on_schema_hash() {
+        let addr = boot().await;
+        let client = net::Client::new();
+
+        // The fn's real wire schema hash (what a matching client sends).
+        let good = server::schema_for("strict_echo").expect("strict_echo registered");
+
+        // Matching hash → 200, runs normally.
+        let response = client
+            .post(format!("http://{addr}/_srv/strict_echo"))
+            .header("x-srv-schema", format!("{good:x}"))
+            .body(net::Json(&(5i32,)))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let result: Result<i32, ServerError> = response.json().await.unwrap();
+        assert_eq!(result, Ok(5));
+
+        // Mismatched hash → 426 up front (body never decoded).
+        let response = client
+            .post(format!("http://{addr}/_srv/strict_echo"))
+            .header("x-srv-schema", "deadbeef")
+            .body(net::Json(&(5i32,)))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 426);
+
+        // Absent hash → also 426 (a strict endpoint requires a match).
+        let response = client
+            .post(format!("http://{addr}/_srv/strict_echo"))
+            .body(net::Json(&(5i32,)))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 426);
+    }
+
+    #[tokio::test]
+    async fn regression_arg_decode_drift_yields_426_not_400() {
+        // Non-strict `add`: malformed args that can't decode. With a
+        // mismatched schema header it's attributed to drift (426); with
+        // no header it's an ordinary codec error (400).
+        let addr = boot().await;
+        let client = net::Client::new();
+
+        // Body that won't decode as (i32, i32) + a wrong schema → 426.
+        let response = client
+            .post(format!("http://{addr}/_srv/add"))
+            .header("x-srv-schema", "deadbeef")
+            .body(net::Json(&("not", "ints")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 426);
+
+        // Same malformed body, no schema header → plain 400.
+        let response = client
+            .post(format!("http://{addr}/_srv/add"))
+            .body(net::Json(&("not", "ints")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
     }
 }
 
@@ -1368,5 +1447,56 @@ mod client_side {
         assert_eq!(call.path, "greet_state");
         let decoded: (String,) = serde_json::from_slice(&call.body).unwrap();
         assert_eq!(decoded, ("world".to_string(),));
+    }
+
+    #[tokio::test]
+    async fn regression_response_schema_drift_yields_incompatible_version() {
+        // A server that replies 200 with a return-schema header (0) that
+        // differs from what the stub advertised, plus a body that doesn't
+        // decode into the stub's Ret. The client must report a precise
+        // IncompatibleVersion — the "your app is outdated" signal — not a
+        // vague codec error. (mock_server can't set response headers, so
+        // this uses a bespoke one that does.)
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let svc = service_fn(|_req: Request<Incoming>| async move {
+                        // 200 + a body that's not a valid i32, + a return
+                        // schema of 0 (≠ add's real, nonzero hash).
+                        let body =
+                            serde_json::to_vec(&serde_json::json!({ "Ok": "not-an-int" })).unwrap();
+                        Ok::<_, Infallible>(
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .header("content-type", "application/json")
+                                .header("x-srv-schema", "0")
+                                .body(Full::new(Bytes::from(body)))
+                                .unwrap(),
+                        )
+                    });
+                    let _ = http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        let _guard = configure_for(addr).await;
+
+        match add(1, 2).await {
+            Err(ServerError::IncompatibleVersion {
+                client_schema,
+                server_schema,
+                ..
+            }) => {
+                assert_ne!(client_schema, server_schema);
+                assert_eq!(server_schema, 0);
+            }
+            other => panic!("expected IncompatibleVersion, got {other:?}"),
+        }
     }
 }

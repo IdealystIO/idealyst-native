@@ -98,6 +98,19 @@ impl ServerError<Infallible> {
     }
 }
 
+/// Wire body of a `426 Upgrade Required` response: the details the
+/// server reports when it rejects a request on schema grounds (a
+/// `strict_version` mismatch, or an arg-decode failure attributable to
+/// drift). The client parses it back into
+/// [`ServerError::IncompatibleVersion`]. Defined here so both the server
+/// dispatcher (serialize) and the client transport (deserialize) agree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct VersionMismatch {
+    pub path: String,
+    pub client_schema: u64,
+    pub server_schema: u64,
+}
+
 /// A [`ServerError`] that carries no domain payload.
 ///
 /// The client-side batch queue / HTTP path and the server-side codec layer can

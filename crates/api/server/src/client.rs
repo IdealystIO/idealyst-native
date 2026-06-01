@@ -67,7 +67,7 @@ pub(crate) fn net_client() -> &'static net::Client {
 /// Solo calls (only one in the queue at flush time) still use the
 /// `POST /_srv/<path>` single-call wire — the queue's only cost is
 /// one task yield. See [`crate::batch`] for the full design.
-pub(crate) async fn call_impl<Args, Ret>(path: &str, args: &Args) -> Ret
+pub(crate) async fn call_impl<Args, Ret>(path: &str, schema: u64, args: &Args) -> Ret
 where
     Args: Serialize,
     Ret: DeserializeOwned + ServerFnReturn,
@@ -81,21 +81,36 @@ where
     };
 
     // Direct single call by default; coalesce only inside a `batch(...)`
-    // scope. Either way the queue/HTTP layer fails only in transport ways,
-    // folded into the caller's domain error type `Ret::Error`.
+    // scope. The direct path also surfaces the server's return-schema
+    // hash for the drift diagnostic below; the batch path doesn't thread
+    // per-slot schemas, so it falls back to a plain codec error.
     let outcome = if crate::batch::in_scope() {
-        crate::batch::enqueue(path, args_value).await
+        crate::batch::enqueue(path, schema, args_value)
+            .await
+            .map(|v| (v, None))
     } else {
-        crate::batch::send_direct(path, args_value).await
+        crate::batch::send_direct(path, schema, args_value).await
     };
-    let response_value = match outcome {
-        Ok(v) => v,
+    let (response_value, server_schema) = match outcome {
+        Ok(x) => x,
+        // Transport-layer failure (incl. a 426 IncompatibleVersion from a
+        // strict / drifted server); fold into the caller's `Ret::Error`.
         Err(e) => return Ret::from_server_error(e.into_domain()),
     };
 
     match serde_json::from_value::<Ret>(response_value) {
         Ok(r) => r,
-        Err(e) => Ret::from_server_error(ServerError::Codec(e.to_string())),
+        // The response didn't decode into `Ret`. If the server advertised
+        // a different return schema, this is version drift — report it
+        // precisely; otherwise it's a genuine same-version codec bug.
+        Err(e) => match server_schema {
+            Some(s) if s != schema => Ret::from_server_error(ServerError::IncompatibleVersion {
+                path: path.to_string(),
+                client_schema: schema,
+                server_schema: s,
+            }),
+            _ => Ret::from_server_error(ServerError::Codec(e.to_string())),
+        },
     }
 }
 

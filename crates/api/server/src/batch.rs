@@ -50,6 +50,9 @@ use crate::error::TransportError;
 struct PendingCall {
     /// Wire path of the server fn (e.g. `"add"`).
     path: String,
+    /// Wire schema hash for this call, sent per batch entry so the
+    /// server can run its drift diagnostic on each entry independently.
+    schema: u64,
     /// Pre-serialised args tuple, as a JSON `Value`. Kept as `Value`
     /// rather than `Vec<u8>` so the batch path can re-emit the whole
     /// array in one `serde_json::to_vec` pass without parsing each
@@ -148,14 +151,18 @@ impl Drop for BatchScopeGuard {
 /// Bypasses the coalescing queue entirely: one call, one
 /// `POST /_srv/<path>`, with cancellation honoured via the request's
 /// own abort (no shared-HTTP race needed for a solo call).
-pub(crate) async fn send_direct(path: &str, args: Value) -> Result<Value, TransportError> {
+pub(crate) async fn send_direct(
+    path: &str,
+    schema: u64,
+    args: Value,
+) -> Result<(Value, Option<u64>), TransportError> {
     let cancel = crate::cancel::current_cancel();
     if let Some(t) = &cancel {
         if t.is_cancelled() {
             return Err(TransportError::Cancelled);
         }
     }
-    send_single(path, &args, cancel).await
+    send_single(path, &args, schema, cancel).await
 }
 
 // -----------------------------------------------------------------------------
@@ -174,7 +181,11 @@ pub(crate) async fn send_direct(path: &str, args: Value) -> Result<Value, Transp
 /// - `Err(TransportError)` on transport / codec / 4xx-5xx failure
 ///   (including [`TransportError::Cancelled`] when the call's cancel
 ///   token fired).
-pub(crate) async fn enqueue(path: &str, args: Value) -> Result<Value, TransportError> {
+pub(crate) async fn enqueue(
+    path: &str,
+    schema: u64,
+    args: Value,
+) -> Result<Value, TransportError> {
     // Pick up the cancel token associated with the current `with_cancel`
     // scope, if any. None means this call is not cancellable.
     let cancel = crate::cancel::current_cancel();
@@ -190,6 +201,7 @@ pub(crate) async fn enqueue(path: &str, args: Value) -> Result<Value, TransportE
     let (tx, rx) = oneshot::channel();
     queue().lock().unwrap().push(PendingCall {
         path: path.to_string(),
+        schema,
         args,
         response: tx,
         cancel: cancel.clone(),
@@ -299,7 +311,12 @@ async fn flush(pending: Vec<PendingCall>) {
         // overhead for a lone call. Passes the cancel token through
         // so the HTTP itself aborts if cancel fires mid-flight.
         let call = pending.into_iter().next().unwrap();
-        let result = send_single(&call.path, &call.args, call.cancel).await;
+        // The queue's oneshot carries only the response `Value`; the
+        // server-schema header is dropped here (the batch path doesn't
+        // run the client-side return-drift diagnostic).
+        let result = send_single(&call.path, &call.args, call.schema, call.cancel)
+            .await
+            .map(|(value, _schema)| value);
         let _ = call.response.send(result);
     } else {
         // Batch path: one HTTP request for N calls.
@@ -345,17 +362,21 @@ async fn flush(pending: Vec<PendingCall>) {
 async fn send_single(
     path: &str,
     args: &Value,
+    schema: u64,
     cancel: Option<CancelToken>,
-) -> Result<Value, TransportError> {
+) -> Result<(Value, Option<u64>), TransportError> {
     use crate::client::{net_client, snapshot_config};
 
     let config = snapshot_config()?;
     let url = format!("{}/_srv/{}", config.base_url.trim_end_matches('/'), path);
 
-    // Conditional `.cancel_on(...)` — we don't want to chain it
-    // unconditionally because that would always allocate a token
-    // slot in the builder even for non-cancellable solo calls.
-    let mut request = net_client().post(url).body(net::Json(args));
+    // Advertise our wire schema hash so the server can run its drift
+    // diagnostic (and `strict_version` gate). Conditional `.cancel_on`
+    // avoids allocating a token slot for non-cancellable solo calls.
+    let mut request = net_client()
+        .post(url)
+        .set_header(SCHEMA_HEADER, format!("{schema:x}"))
+        .body(net::Json(args));
     if let Some(token) = cancel {
         request = request.cancel_on(token);
     }
@@ -365,16 +386,43 @@ async fn send_single(
         .await
         .map_err(crate::client::map_net_error)?;
 
+    // 426 Upgrade Required → the server rejected us on schema grounds
+    // (strict mismatch, or an arg-decode failure it attributed to drift).
+    if response.status() == 426 {
+        let server_schema = parse_schema_header(&response);
+        let detail = response
+            .json::<crate::error::VersionMismatch>()
+            .await
+            .ok();
+        return Err(TransportError::IncompatibleVersion {
+            path: path.to_string(),
+            client_schema: schema,
+            server_schema: detail.map(|d| d.server_schema).or(server_schema).unwrap_or(0),
+        });
+    }
+
     if !response.is_success() {
         let status = response.status();
         let message = response.text().await.unwrap_or_default();
         return Err(TransportError::Server { status, message });
     }
 
-    response
+    // Read the server's return-schema header before consuming the body.
+    let server_schema = parse_schema_header(&response);
+    let value = response
         .json::<Value>()
         .await
-        .map_err(|e| TransportError::Codec(e.to_string()))
+        .map_err(|e| TransportError::Codec(e.to_string()))?;
+    Ok((value, server_schema))
+}
+
+/// The request/response header carrying the wire schema hash (hex).
+const SCHEMA_HEADER: &str = "x-srv-schema";
+
+fn parse_schema_header(response: &net::Response) -> Option<u64> {
+    response
+        .header(SCHEMA_HEADER)
+        .and_then(|h| u64::from_str_radix(h, 16).ok())
 }
 
 // -----------------------------------------------------------------------------
@@ -386,6 +434,7 @@ async fn send_single(
 struct BatchEntry<'a> {
     path: &'a str,
     args: &'a Value,
+    schema: u64,
 }
 
 async fn send_batch(
@@ -401,6 +450,7 @@ async fn send_batch(
         .map(|p| BatchEntry {
             path: &p.path,
             args: &p.args,
+            schema: p.schema,
         })
         .collect();
 

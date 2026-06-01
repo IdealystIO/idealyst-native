@@ -58,53 +58,50 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, Attribute, FnArg, Ident, ItemFn, Pat, PatType, ReturnType, Type};
 
-/// Parses `#[server(path = "...")]` attribute arguments.
+/// Parses `#[server(path = "...", strict_version)]` attribute arguments.
 struct ServerAttr {
     path: Option<String>,
+    /// When set, the server rejects any client whose wire schema hash
+    /// differs from this fn's — up front, before decoding — with an
+    /// `IncompatibleVersion` (426). For irreversible / money-movement
+    /// endpoints where "it happened to deserialize" is not good enough.
+    strict: bool,
 }
 
 impl syn::parse::Parse for ServerAttr {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut path = None;
+        let mut strict = false;
         if input.is_empty() {
-            return Ok(Self { path });
+            return Ok(Self { path, strict });
         }
-        // Comma-separated key = "value" pairs. Only `path` is supported.
-        let pairs =
-            syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated(
-                input,
-            )?;
-        for pair in pairs {
-            let key = pair
-                .path
-                .get_ident()
-                .map(|i| i.to_string())
-                .unwrap_or_default();
-            match key.as_str() {
-                "path" => {
-                    let syn::Expr::Lit(lit) = &pair.value else {
-                        return Err(syn::Error::new_spanned(
-                            &pair.value,
-                            "expected string literal",
-                        ));
+        // Comma-separated `Meta`: `path = "..."` (name-value) and the
+        // bare flag `strict_version` (path).
+        let metas =
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated(input)?;
+        for meta in metas {
+            match meta {
+                syn::Meta::NameValue(nv) if nv.path.is_ident("path") => {
+                    let syn::Expr::Lit(lit) = &nv.value else {
+                        return Err(syn::Error::new_spanned(&nv.value, "expected string literal"));
                     };
                     let syn::Lit::Str(s) = &lit.lit else {
-                        return Err(syn::Error::new_spanned(
-                            &pair.value,
-                            "expected string literal",
-                        ));
+                        return Err(syn::Error::new_spanned(&nv.value, "expected string literal"));
                     };
                     path = Some(s.value());
                 }
+                syn::Meta::Path(p) if p.is_ident("strict_version") => {
+                    strict = true;
+                }
                 other => {
                     return Err(syn::Error::new_spanned(
-                        &pair.path,
-                        format!("unknown attribute `{other}`; supported: `path`"),
+                        other,
+                        "unknown attribute; supported: `path = \"...\"`, `strict_version`",
                     ));
                 }
             }
         }
-        Ok(Self { path })
+        Ok(Self { path, strict })
     }
 }
 
@@ -238,6 +235,25 @@ fn expand(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
         }
     };
 
+    // Wire schema hash: a structural fingerprint of the wire contract —
+    // the serialized arg types + the return type. Computed at expansion
+    // time from the type spelling and embedded as a const on BOTH sides.
+    // Identical source → identical hash; a drifted arg/return type → a
+    // different hash, which turns an otherwise-vague decode failure into
+    // a precise `IncompatibleVersion`. Ctx (extractor) params are not on
+    // the wire, so they don't participate. Uses `DefaultHasher`, whose
+    // fixed seed makes the value stable across compilations.
+    let schema_hash: u64 = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for ty in &wire_tys {
+            quote!(#ty).to_string().hash(&mut h);
+        }
+        quote!(#ret_ty).to_string().hash(&mut h);
+        h.finish()
+    };
+    let strict = attr.strict;
+
     // Fresh ident for the handler module, avoids colliding with any
     // user-defined item of the same name.
     let handler_mod = format_ident!("__server_fn_{}", ident);
@@ -278,6 +294,8 @@ fn expand(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
             ::server::__private::inventory::submit! {
                 ::server::__private::ServerFnEntry {
                     path: #wire_path,
+                    schema: #schema_hash,
+                    strict: #strict,
                     handler: |__body_bytes| ::std::boxed::Box::pin(async move {
                         let ( #( #wire_binds, )* ): ( #( #wire_tys, )* ) =
                             ::server::__private::decode_args(&__body_bytes)?;
@@ -301,6 +319,7 @@ fn expand(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
             let __args: ( #( #wire_tys, )* ) = ( #( #wire_pats, )* );
             ::server::__private::call::<( #( #wire_tys, )* ), #ret_ty>(
                 #wire_path,
+                #schema_hash,
                 &__args,
             ).await
         }

@@ -4,21 +4,54 @@
 //! Compiled only when the `server` feature is ON. Pulls in axum +
 //! tokio + tower; the client build sees none of this.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use axum::body::Bytes;
 use axum::extract::Path;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use serde::{Deserialize, Serialize};
 
 use crate::__private::ServerFnEntry;
-use crate::error::{ServerError, TransportError};
+use crate::error::{ServerError, TransportError, VersionMismatch};
 use crate::extract::Context;
 use crate::extractors::CURRENT_CONTEXT;
+
+/// Request/response header carrying the wire schema hash (hex). Mirrors
+/// the client's `batch::SCHEMA_HEADER`.
+const SCHEMA_HEADER: &str = "x-srv-schema";
+
+fn parse_request_schema(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(SCHEMA_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| u64::from_str_radix(s, 16).ok())
+}
+
+/// A `426 Upgrade Required` carrying the schema details. The client maps
+/// it back to `ServerError::IncompatibleVersion`.
+fn version_mismatch_response(path: &str, client_schema: u64, server_schema: u64) -> Response {
+    let body = serde_json::to_vec(&VersionMismatch {
+        path: path.to_string(),
+        client_schema,
+        server_schema,
+    })
+    .unwrap_or_default();
+    let mut resp = (
+        StatusCode::UPGRADE_REQUIRED,
+        [("content-type", "application/json")],
+        body,
+    )
+        .into_response();
+    if let Ok(v) = HeaderValue::from_str(&format!("{server_schema:x}")) {
+        resp.headers_mut().insert(HeaderName::from_static(SCHEMA_HEADER), v);
+    }
+    resp
+}
 
 /// Build an `axum::Router` containing every `#[server]` function
 /// linked into the current binary.
@@ -33,6 +66,10 @@ use crate::extractors::CURRENT_CONTEXT;
 /// a per-call route table rebuild), and keeps the router size flat
 /// regardless of how many server fns the app declares.
 pub fn router() -> Router {
+    // Force the dispatch map to build now, so a duplicate-path collision
+    // fails loudly at server startup (router build) rather than silently
+    // shadowing one handler at request time.
+    let _ = entry_map();
     Router::new()
         // Batch route is declared first so axum's path matcher prefers
         // the exact `/_srv/_batch` over the catch-all `/_srv/*path`.
@@ -78,8 +115,16 @@ async fn dispatch(headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> 
             .into_response();
     };
 
+    let client_schema = parse_request_schema(&headers);
+
+    // strict_version: reject a mismatched (or absent) client schema up
+    // front, before decoding or running the body.
+    if entry.strict && client_schema != Some(entry.schema) {
+        return version_mismatch_response(&path, client_schema.unwrap_or(0), entry.schema);
+    }
+
     let body_vec = body.to_vec();
-    let mut ctx = Context::new(Arc::new(headers), path);
+    let mut ctx = Context::new(Arc::new(headers), path.clone());
 
     // Run the middleware chain (auth guards, etc.) before the handler.
     // A short-circuit becomes the HTTP response; the handler never runs.
@@ -92,12 +137,25 @@ async fn dispatch(headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> 
         .await;
 
     match result {
-        Ok(bytes) => (
-            StatusCode::OK,
-            [("content-type", "application/json")],
-            bytes,
-        )
-            .into_response(),
+        Ok(bytes) => {
+            let mut resp = (
+                StatusCode::OK,
+                [("content-type", "application/json")],
+                bytes,
+            )
+                .into_response();
+            if let Ok(v) = HeaderValue::from_str(&format!("{:x}", entry.schema)) {
+                resp.headers_mut().insert(HeaderName::from_static(SCHEMA_HEADER), v);
+            }
+            resp
+        }
+        // A decode failure the schemas disagree on is version drift, not a
+        // same-version bug → a precise 426 the client can act on.
+        Err(TransportError::Codec(_))
+            if client_schema.is_some_and(|c| c != entry.schema) =>
+        {
+            version_mismatch_response(&path, client_schema.unwrap_or(0), entry.schema)
+        }
         Err(e) => transport_error_response(e),
     }
 }
@@ -125,10 +183,82 @@ async fn not_found() -> Response {
     (StatusCode::NOT_FOUND, "not a server fn route").into_response()
 }
 
+/// Build a path → entry map, rejecting duplicate paths. Factored out of
+/// [`entry_map`] so the collision logic is unit-testable without two
+/// real same-path `#[server]` fns (which would panic the whole suite).
+fn build_entry_map<'a>(
+    entries: impl Iterator<Item = &'a ServerFnEntry>,
+) -> Result<HashMap<&'a str, &'a ServerFnEntry>, String> {
+    let mut map: HashMap<&'a str, &'a ServerFnEntry> = HashMap::new();
+    for entry in entries {
+        if map.insert(entry.path, entry).is_some() {
+            return Err(format!(
+                "duplicate server fn path '{}': two #[server] functions registered the same \
+                 wire path. Disambiguate with #[server(path = \"...\")].",
+                entry.path
+            ));
+        }
+    }
+    Ok(map)
+}
+
+/// The process-wide path → handler map, built once from the inventory.
+/// Panics on a duplicate path (a collision) — fail-fast at startup.
+fn entry_map() -> &'static HashMap<&'static str, &'static ServerFnEntry> {
+    static MAP: OnceLock<HashMap<&'static str, &'static ServerFnEntry>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        build_entry_map(inventory::iter::<ServerFnEntry>.into_iter())
+            .unwrap_or_else(|msg| panic!("{msg}"))
+    })
+}
+
 fn find_entry(path: &str) -> Option<&'static ServerFnEntry> {
-    inventory::iter::<ServerFnEntry>
-        .into_iter()
-        .find(|e| e.path == path)
+    entry_map().get(path).copied()
+}
+
+/// The wire schema hash registered for `path`, or `None` if no server fn
+/// is registered there. Useful for diagnostics and for tooling that
+/// wants to assert client/server compatibility out of band.
+pub fn schema_for(path: &str) -> Option<u64> {
+    find_entry(path).map(|e| e.schema)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::TransportError;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    fn stub_entry(path: &'static str) -> ServerFnEntry {
+        fn handler(
+            _: Vec<u8>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, TransportError>> + Send>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        ServerFnEntry {
+            path,
+            schema: 0,
+            strict: false,
+            handler,
+        }
+    }
+
+    #[test]
+    fn distinct_paths_build_ok() {
+        let entries = [stub_entry("a"), stub_entry("b")];
+        let map = build_entry_map(entries.iter()).expect("distinct paths must build");
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_paths_are_rejected() {
+        let entries = [stub_entry("dup"), stub_entry("dup")];
+        let Err(err) = build_entry_map(entries.iter()) else {
+            panic!("collision must be rejected");
+        };
+        assert!(err.contains("duplicate server fn path 'dup'"), "got: {err}");
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -148,6 +278,11 @@ fn find_entry(path: &str) -> Option<&'static ServerFnEntry> {
 struct BatchInputEntry {
     path: String,
     args: serde_json::Value,
+    /// Per-entry wire schema hash. `Option` (+ default) so a client that
+    /// doesn't send one is treated as "unknown" (no drift diagnostic),
+    /// rather than colliding with a real hash of 0.
+    #[serde(default)]
+    schema: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -195,6 +330,17 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
             }
         };
 
+        // strict_version: reject a mismatched schema for this entry up
+        // front (its own slot's failure, not the whole batch's).
+        if entry.strict && call.schema != Some(entry.schema) {
+            results.push(BatchOutputEntry::Result(Err(ServerError::IncompatibleVersion {
+                path: call.path.clone(),
+                client_schema: call.schema.unwrap_or(0),
+                server_schema: entry.schema,
+            })));
+            continue;
+        }
+
         let arg_bytes = match serde_json::to_vec(&call.args) {
             Ok(b) => b,
             Err(e) => {
@@ -229,6 +375,16 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
                     Ok(r) => r,
                     Err(e) => Err(ServerError::Codec(e.to_string())),
                 }
+            }
+            // A decode failure the schemas disagree on is version drift.
+            Err(TransportError::Codec(_))
+                if call.schema.is_some_and(|c| c != entry.schema) =>
+            {
+                Err(ServerError::IncompatibleVersion {
+                    path: call.path.clone(),
+                    client_schema: call.schema.unwrap_or(0),
+                    server_schema: entry.schema,
+                })
             }
             // Transport-level codec failure from the handler ABI; lift it
             // into the type-erased `ServerError<Value>` slot.

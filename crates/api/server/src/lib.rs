@@ -87,7 +87,7 @@ pub use extractors::{install_state, use_request_header, use_request_headers, use
 #[cfg(feature = "server")]
 pub use middleware::{from_fn, install_middleware, FnMiddleware, Middleware, MiddlewareFuture};
 #[cfg(feature = "server")]
-pub use runtime::{router, serve};
+pub use runtime::{router, schema_for, serve};
 
 // =============================================================================
 // Macro-facing internals. Not stable surface — re-exports here are
@@ -119,6 +119,13 @@ pub mod __private {
     /// the success bytes, never surfaced here).
     pub struct ServerFnEntry {
         pub path: &'static str,
+        /// Wire schema hash (serialized arg types + return type). Used to
+        /// distinguish a version-drift codec failure from a same-version
+        /// one, and for `strict_version` pre-decode gating.
+        pub schema: u64,
+        /// `#[server(strict_version)]`: reject a mismatched client schema
+        /// up front, before decoding.
+        pub strict: bool,
         pub handler: fn(
             Vec<u8>,
         )
@@ -163,11 +170,11 @@ pub mod __private {
     /// implementing the trait) folds network errors into its own
     /// error variant.
     #[cfg(not(feature = "server"))]
-    pub async fn call<Args, Ret>(path: &str, args: &Args) -> Ret
+    pub async fn call<Args, Ret>(path: &str, schema: u64, args: &Args) -> Ret
     where
         Args: Serialize,
         Ret: DeserializeOwned + ServerFnReturn,
     {
-        crate::client::call_impl::<Args, Ret>(path, args).await
+        crate::client::call_impl::<Args, Ret>(path, schema, args).await
     }
 }
