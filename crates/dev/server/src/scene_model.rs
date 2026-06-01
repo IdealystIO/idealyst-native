@@ -85,6 +85,15 @@ pub struct SceneModel {
     /// to closed. Stored separately from `nav_layouts` because tab
     /// navigators don't have a drawer.
     drawer_open: HashMap<NodeId, bool>,
+    /// Latest installed theme tokens (`InstallThemeVariables`). Stored so
+    /// the snapshot replays them FIRST — before any create that resolves
+    /// a token. A fresh runtime-server client replays the snapshot on a
+    /// thread with no theme installed; the moment a device-side handler
+    /// resolves a token (e.g. the drawer's `color-background`), the
+    /// thread-local token registry is empty and `Tokenized::resolve()`
+    /// panics, aborting the apply batch → blank screen. Replaying the
+    /// tokens up front installs the theme on the client's replay thread.
+    theme_tokens: Option<Command>,
     /// Root node from `Backend::finish(root)`. Anchors reachability
     /// — anything not in this subtree (and not a navigator screen)
     /// gets pruned during snapshot.
@@ -487,9 +496,12 @@ impl SceneModel {
                 self.drawer_open.remove(node);
             }
             Command::InstallThemeVariables { .. } => {
-                // Theme variables are broadcast live; not modeled
-                // here. Acceptable for dev — themes rarely change
-                // mid-session.
+                // Store the latest theme tokens so the snapshot can replay
+                // them FIRST (see `theme_tokens` + `snapshot_commands`). A
+                // fresh client must install the theme on its replay thread
+                // before any create that resolves a token (e.g. the drawer
+                // handler's `color-background`), or it panics → blank.
+                self.theme_tokens = Some(cmd.clone());
             }
 
             // -- Assets / typefaces. Stored verbatim so the snapshot
@@ -565,6 +577,14 @@ impl SceneModel {
     pub fn snapshot_commands(&self) -> Vec<Command> {
         let reachable = self.compute_reachable();
         let mut out = Vec::new();
+
+        // Theme tokens FIRST — before any create that resolves a token
+        // (e.g. the drawer handler's `color-background`). The client
+        // installs them on its replay thread; without this a fresh client
+        // panics on the first device-side token resolve → blank screen.
+        if let Some(tokens) = &self.theme_tokens {
+            out.push(tokens.clone());
+        }
 
         // 0. Assets, then typefaces. Snapshot order matters: each
         //    typeface face references an asset by id.

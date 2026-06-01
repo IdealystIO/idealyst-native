@@ -1126,11 +1126,47 @@ where
                 self.drawer_sidebars_attached
                     .retain(|(nav, sidebar)| *nav != node && *sidebar != node);
             }
-            Command::InstallThemeVariables { .. } => {
-                // Backends that care (web) implement this via
-                // install_theme_variables; for the prototype the
-                // mapping requires a TokenEntry conversion we haven't
-                // implemented yet. Skip cleanly.
+            Command::InstallThemeVariables { tokens } => {
+                // Populate THIS (wire-replay) thread's thread-local token
+                // registry so device-side token resolution works. Native
+                // SDK handlers run on the client over the wire — e.g. the
+                // drawer handler's chrome resolves `color-background` via
+                // `Tokenized::resolve()`. The token registry is
+                // thread-local and the app's `install_theme` ran on the
+                // HOST, not here; without installing the forwarded tokens
+                // on this thread, `resolve()` panics (style.rs), which
+                // aborts the apply batch and leaves the tree incomplete
+                // (blank screen). The host forwards its installed tokens
+                // via this command (see dev-server `install_tokens`).
+                // Token names are a small, install-once set, so leaking
+                // them to `&'static str` is fine.
+                let entries: Vec<runtime_core::TokenEntry> = tokens
+                    .into_iter()
+                    .filter_map(|t| {
+                        let value = match t.value {
+                            wire::WireTokenValue::Color(c) => {
+                                runtime_core::TokenValue::Color(convert::wire_color_to_color(c))
+                            }
+                            wire::WireTokenValue::Number(n) => {
+                                runtime_core::TokenValue::Number(n)
+                            }
+                            wire::WireTokenValue::Length(l) => {
+                                runtime_core::TokenValue::Length(convert::wire_length(l))
+                            }
+                            // Core `TokenValue` has no String variant and
+                            // the recorder never emits one — skip cleanly.
+                            wire::WireTokenValue::String(_) => return None,
+                        };
+                        let name: &'static str = Box::leak(t.name.into_boxed_str());
+                        Some(runtime_core::TokenEntry { name, value })
+                    })
+                    .collect();
+                // Thread-local registry (fixes the resolve-on-unthemed-thread
+                // panic), then let the backend apply backend-specific theme
+                // variables too (web sets CSS custom properties; native
+                // backends typically no-op).
+                runtime_core::install_tokens(&entries);
+                self.backend.borrow_mut().install_tokens(&entries);
             }
             Command::RegisterAsset { id, kind, source } => {
                 let core_id = convert::wire_asset_id(id);
