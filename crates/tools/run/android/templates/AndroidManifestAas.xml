@@ -7,6 +7,9 @@
           package="{{PACKAGE}}">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Capability-derived permissions, injected from SDKs declared in
+         the dependency graph (`[package.metadata.idealyst].capabilities`). -->
+    {{USES_PERMISSIONS}}
     <application
         android:label="{{APP_NAME}}"
         android:hasCode="true"{{ICON_ATTRS}}>

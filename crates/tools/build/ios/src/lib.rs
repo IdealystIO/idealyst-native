@@ -37,6 +37,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+pub mod capabilities;
 pub mod source;
 pub mod web_html;
 
@@ -133,6 +134,18 @@ pub struct AppMetadata {
     /// the user didn't declare a `[package.metadata.idealyst.app.web]`
     /// block.
     pub web: WebMetadata,
+    /// User-facing reason strings for capabilities, keyed by capability
+    /// name, from `[package.metadata.idealyst.app.permissions]`:
+    /// ```toml
+    /// [package.metadata.idealyst.app.permissions]
+    /// microphone = "Record voice notes"
+    /// ```
+    /// The *requirement* (which permission) comes from an SDK's
+    /// `capabilities` declaration; this map supplies the *justification*
+    /// the OS prompt shows. A capability with no entry here gets a
+    /// generic default and a build-time warning. See
+    /// [`capabilities`](crate::capabilities).
+    pub permissions: std::collections::BTreeMap<String, String>,
 }
 
 /// Web-target-specific config from `[package.metadata.idealyst.app.web]`.
@@ -377,6 +390,8 @@ struct RawAppMetadata {
     server_bin: Option<String>,
     #[serde(default)]
     web: Option<RawWebMetadata>,
+    #[serde(default)]
+    permissions: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -486,6 +501,7 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         targets,
         server_bin: app_raw.server_bin,
         web,
+        permissions: app_raw.permissions.unwrap_or_default(),
     };
 
     Ok(Manifest {
@@ -747,6 +763,7 @@ mod regression_tests {
                 targets: Vec::new(),
                 server_bin: None,
                 web: WebMetadata::default(),
+                permissions: Default::default(),
             },
         }
     }

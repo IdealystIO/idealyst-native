@@ -416,6 +416,50 @@ pub fn sync_gradient_sublayer(view: &UIView) {
     }
 }
 
+/// Center (and scale-to-fit) a view's `idealyst_icon` CAShapeLayer
+/// within the view's current bounds. Called from the layout pass for
+/// the same reason as [`sync_gradient_sublayer`]: the icon's shape layer
+/// is built at a fixed 24×24 top-left origin, but flex layout may size
+/// the icon view larger than the glyph (cross-axis stretch in a row, or
+/// centered inside a bigger pressable like a menu button). Without this
+/// the glyph hugs the top-left corner instead of sitting centered.
+///
+/// The layer keeps its 24×24 path-space `bounds`; we move its `position`
+/// to the view center (anchorPoint is the default 0.5,0.5) so the glyph
+/// sits centered no matter how flex sized the icon view. No-op for views
+/// with no icon sublayer or zero bounds (pre-layout).
+pub fn sync_icon_sublayer(view: &UIView) {
+    unsafe {
+        let bounds: CGRect = msg_send![view, bounds];
+        let (w, h) = (bounds.size.width, bounds.size.height);
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let layer: Retained<NSObject> = msg_send_id![view, layer];
+        let sublayers_ptr: *mut NSObject = msg_send![&layer, sublayers];
+        if sublayers_ptr.is_null() {
+            return;
+        }
+        let count: usize = msg_send![sublayers_ptr, count];
+        for i in 0..count {
+            let sub_ptr: *mut NSObject = msg_send![sublayers_ptr, objectAtIndex: i];
+            if sub_ptr.is_null() {
+                continue;
+            }
+            let name_ptr: *mut objc2_foundation::NSString = msg_send![sub_ptr, name];
+            if name_ptr.is_null() {
+                continue;
+            }
+            if (&*name_ptr).to_string() != "idealyst_icon" {
+                continue;
+            }
+            // Center the 24×24 path-space layer at the view's midpoint.
+            let center = CGPoint { x: w / 2.0, y: h / 2.0 };
+            let _: () = msg_send![sub_ptr, setPosition: center];
+        }
+    }
+}
+
 pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     let _t = phase_record::scope("apply_style_to_view");
     // Background color -- skip for Metal-backed views

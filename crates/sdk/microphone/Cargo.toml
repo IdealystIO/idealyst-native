@@ -1,0 +1,94 @@
+[package]
+name = "microphone"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform microphone capture SDK.
+#
+# One small API — `Microphone::open(config, |buf| { .. }).await` — that
+# establishes a live PCM input stream on each target using the platform's
+# own audio stack, and fires a raw callback with each chunk of samples.
+# Deliberately unopinionated: it hands you normalized f32 frames and gets
+# out of the way. Saving, encoding, level-metering, and state-binding are
+# left to higher-level SDKs built on top of this one.
+#
+#   - web (wasm32):                getUserMedia + Web Audio (ScriptProcessor)
+#   - iOS / macOS / Windows / Linux: cpal (CoreAudio / WASAPI / ALSA / AudioUnit)
+#   - Android:                     AudioRecord via JNI on a worker thread
+#
+# The platform-agnostic shell (Microphone / MicStream / AudioBuffer,
+# AudioStreamConfig, MicError, the AudioCallback bound) lives in this
+# crate's top-level modules. Each cfg-gated module supplies one backend.
+#
+# Required platform permissions (the app must declare these — see README):
+#   - iOS / macOS: `NSMicrophoneUsageDescription` in Info.plist
+#   - Android:     `<uses-permission android:name="android.permission.RECORD_AUDIO"/>`
+#   - web:         none (the browser prompts on getUserMedia)
+
+# Declares the platform permission this SDK needs. The CLI walks the app's
+# dependency graph, finds this, and injects the right artifacts per platform
+# (iOS/macOS NSMicrophoneUsageDescription + entitlement, Android RECORD_AUDIO).
+# The app supplies the user-facing reason via
+# [package.metadata.idealyst.app.permissions] microphone = "…".
+[package.metadata.idealyst]
+capabilities = ["microphone"]
+
+[dependencies]
+thiserror = "1"
+
+# Native targets (desktop + iOS): cpal wraps the platform audio SDK —
+# CoreAudio on macOS/iOS, WASAPI on Windows, ALSA on Linux. Android is
+# excluded here; it goes through JNI/AudioRecord instead (see below).
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+cpal = "0.15"
+
+# iOS only: cpal opens the input AudioUnit, but iOS additionally requires
+# an active AVAudioSession in a record category and a granted permission
+# before that unit produces anything but silence. We drive AVAudioSession
+# through the Obj-C runtime (objc2 msg_send), no typed framework crate.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString"] }
+block2 = "0.5"
+# Bridges AVAudioSession's `requestRecordPermission:` completion block to
+# async — same callback→future pattern the `net` SDK uses for NSURLSession.
+futures-channel = "0.3"
+
+# Web (wasm) target: getUserMedia for the MediaStream, a Web Audio graph
+# (MediaStreamAudioSourceNode → ScriptProcessorNode) to pull PCM frames.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Navigator",
+    "MediaDevices",
+    "MediaStream",
+    "MediaStreamConstraints",
+    "MediaStreamTrack",
+    "MediaStreamAudioSourceNode",
+    "AudioContext",
+    "AudioContextOptions",
+    "BaseAudioContext",
+    "AudioNode",
+    "AudioDestinationNode",
+    "ScriptProcessorNode",
+    "AudioProcessingEvent",
+    "AudioBuffer",
+    "EventTarget",
+] }
+
+# Android target: AudioRecord via JNI on a dedicated reader thread.
+# `ndk-context` exposes the host JavaVM + Activity (for the runtime
+# permission request), mirroring the `net` SDK's Android transport.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+# Hands the AudioRecord init result (success / permission-denied / build
+# failure) back from the reader thread to the awaiting `open()`.
+futures-channel = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

@@ -18,11 +18,13 @@
 //!   and the `NavigatorHandler<B>` trait SDKs implement per backend.
 //! - `registry` — `NavigatorRegistry<B>` keyed by presentation TypeId.
 
+pub mod chrome;
 pub mod host;
 pub mod registry;
 pub mod scroll;
 pub mod shared;
 
+pub use chrome::{ambient_drawer, DrawerChrome};
 pub use host::{NavigatorHandler, NavigatorHost};
 pub use registry::{NavigatorHandlerFactory, NavigatorRegistry, RegisterNavigator};
 pub use scroll::{ambient_scroll_context, ScrollContext};

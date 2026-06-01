@@ -5,6 +5,9 @@
      `uses-sdk` versions come from aapt2 link flags, not this file. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
           package="{{PACKAGE}}">
+    <!-- Capability-derived permissions, injected from SDKs declared in
+         the dependency graph (`[package.metadata.idealyst].capabilities`). -->
+    {{USES_PERMISSIONS}}
     <application
         android:label="{{APP_NAME}}"
         android:hasCode="true"{{ICON_ATTRS}}>

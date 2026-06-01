@@ -518,6 +518,49 @@ pub struct DrawerPresentation {
     /// its own scroll context via `ScrollView`, and the bottom
     /// slot pins to the viewport bottom.
     pub bottom_in_scroll: bool,
+    /// When `true` (the default), drawer screens render the backend's
+    /// native header chrome (iOS `UINavigationController` nav bar,
+    /// Android `Toolbar`) seeded from each screen's
+    /// [`DrawerScreenOptions::title`]. Set to `false` via
+    /// [`DrawerBuilder::native_header`] to suppress that chrome on
+    /// every screen so the app owns its header at the page level — a
+    /// screen renders its own bar (typically with a menu button via
+    /// [`runtime_core::primitives::navigator::ambient_drawer`]) that
+    /// looks identical across web/iOS/Android.
+    ///
+    /// This is the navigator-wide default; a screen can still opt back
+    /// in or out with [`DrawerScreenExt::header_shown`], which always
+    /// wins (see [`resolve_header_shown`]). Web has no native header to
+    /// suppress, so this flag is a no-op there.
+    pub native_header: bool,
+}
+
+/// Resolve a screen's effective `header_shown` from its per-screen
+/// override and the navigator-wide [`DrawerPresentation::native_header`]
+/// default. A per-screen `Some(_)` always wins; otherwise the navigator
+/// default decides. Shared by the iOS and Android handlers so both
+/// backends agree on the same precedence (and so the precedence is
+/// host-testable without a device).
+///
+/// Returns the value the backend's `header_shown` option carries:
+/// - `Some(false)` → hide native chrome (page owns the header).
+/// - `None` → leave the backend's default (show the native bar).
+/// - `Some(true)` → explicit per-screen opt-in to native chrome.
+pub(crate) fn resolve_header_shown(per_screen: Option<bool>, native_header: bool) -> Option<bool> {
+    match per_screen {
+        // Explicit per-screen choice wins over the navigator default.
+        Some(v) => Some(v),
+        // No per-screen override: defer to the navigator default. When
+        // native headers are on we leave it `None` (the backend's
+        // existing "show" path); when off we force-hide.
+        None => {
+            if native_header {
+                None
+            } else {
+                Some(false)
+            }
+        }
+    }
 }
 
 impl DrawerPresentation {
@@ -535,6 +578,7 @@ impl DrawerPresentation {
             bottom_slot: RefCell::new(None),
             trailing_slot: RefCell::new(None),
             bottom_in_scroll: true,
+            native_header: true,
         }
     }
 }
@@ -706,6 +750,25 @@ impl DrawerNavigator {
 
     fn into_element(self) -> Element {
         let DrawerNavigator { config, presentation, slot_styles, style, ref_fill } = self;
+        // The navigator is the app shell — it must fill its parent box on
+        // every backend. macOS sizes its own container and web fills via
+        // its CSS classes, but the iOS/Android handlers materialize the
+        // navigator container's Taffy node from this `style` field alone.
+        // With `style: None` that container carries no size, so as a
+        // non-grow flex child (e.g. when the app places the navigator
+        // beside a `ToastHost` in a flex column) it collapses to 0 height
+        // and the whole app renders blank — even though web looks fine,
+        // because web's navigator CSS self-fills. Default to a fill style
+        // so the container claims its parent's box uniformly. The walker
+        // applies this via `attach_style` on the container (see
+        // `walker/navigator.rs`), the same path an explicit style takes.
+        let style = style.or_else(|| {
+            let mut fill = StyleRules::default();
+            fill.flex_grow = Some(1.0f32.into());
+            fill.width = Some(runtime_core::Length::pct(100.0).into());
+            fill.height = Some(runtime_core::Length::pct(100.0).into());
+            Some(Rc::new(StyleSheet::r#static(fill)).into_style_source())
+        });
         Element::Navigator {
             type_id: TypeId::of::<DrawerPresentation>(),
             type_name: std::any::type_name::<DrawerPresentation>(),
@@ -830,6 +893,19 @@ pub trait DrawerBuilder: Sized {
     /// default `bottom_in_scroll` mode the body provides
     /// scrolling and screens render as flow content.
     fn bottom_pinned(self) -> Self;
+
+    /// Suppress the backend's native header chrome (iOS nav bar,
+    /// Android `Toolbar`) on every screen so the app owns its header at
+    /// the page level. Pass `false` to opt the whole navigator out;
+    /// `true` is the default. A single screen can still override via
+    /// [`DrawerScreenExt::header_shown`].
+    ///
+    /// With native headers off, screens render their own bar — typically
+    /// a menu button driven by
+    /// [`runtime_core::primitives::navigator::ambient_drawer`], which the
+    /// handler publishes on init — and the result looks identical across
+    /// web (which never had native chrome), iOS, and Android.
+    fn native_header(self, shown: bool) -> Self;
 }
 
 #[derive(Copy, Clone)]
@@ -1077,6 +1153,13 @@ impl DrawerBuilder for Bound<DrawerHandle> {
         });
         self
     }
+
+    fn native_header(mut self, shown: bool) -> Self {
+        with_presentation_mut(&mut self, |p| {
+            p.native_header = shown;
+        });
+        self
+    }
 }
 
 /// Customize the viewport width (px) at which the drawer sidebar flips
@@ -1164,4 +1247,133 @@ pub mod prelude {
         DrawerScreenExt, DrawerScreenOptions, DrawerSide, DrawerSlotProps, DrawerType, HeaderStyle,
         LeadingIntent, MountPolicy, SlotBarButton, SlotBuilder, SlotProps, TopSlot, TrailingIntent,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_core::{Length, Route, VariantSet};
+
+    /// REGRESSION TEST.
+    ///
+    /// A freshly-built `DrawerNavigator` must carry a default outer
+    /// `style` that fills its parent (`flex_grow: 1`, `width: 100%`,
+    /// `height: 100%`). The iOS and Android handlers materialize the
+    /// navigator container's Taffy node from this style alone; with
+    /// `style: None` (the prior behavior) the container collapsed to
+    /// 0 height as a non-grow flex child — so an app that placed the
+    /// navigator beside a sibling (e.g. a `ToastHost`) in a flex column
+    /// rendered a blank screen on both native backends, while web (whose
+    /// navigator CSS self-fills) looked fine and hid the bug.
+    ///
+    /// Asserts the default style resolves to the fill rules. Fails
+    /// against the old `style: None`. The on-device behavior (container
+    /// actually filling) is verified by running the sim/emulator —
+    /// there's no host-side Taffy path for the per-backend navigator
+    /// container to assert against here.
+    #[test]
+    fn navigator_defaults_to_fill_style_so_native_container_doesnt_collapse() {
+        let route: Route<()> = Route::new("home", "/");
+        let mut nav = DrawerNavigator::new(&route);
+
+        let style = match nav.primitive_mut() {
+            Element::Navigator { style, .. } => style.as_ref().expect(
+                "navigator must default to a fill style — without it the iOS/Android \
+                 container has no size and collapses to 0 height",
+            ),
+            _ => panic!("DrawerNavigator::new must produce an Element::Navigator"),
+        };
+        let app = match style {
+            StyleSource::Static(app) => app,
+            _ => panic!("navigator default style must be a static fill style"),
+        };
+
+        let rules = app.sheet.resolve(&VariantSet::new());
+        assert_eq!(
+            rules.flex_grow,
+            Some(1.0f32.into()),
+            "navigator must flex-grow to fill the remaining main-axis space",
+        );
+        assert_eq!(
+            rules.width,
+            Some(Length::pct(100.0).into()),
+            "navigator must be 100% wide",
+        );
+        assert_eq!(
+            rules.height,
+            Some(Length::pct(100.0).into()),
+            "navigator must be 100% tall — this is the dimension that collapsed",
+        );
+    }
+
+    fn native_header_of(nav: &mut Bound<DrawerHandle>) -> bool {
+        match nav.primitive_mut() {
+            Element::Navigator { presentation, .. } => presentation
+                .downcast_ref::<DrawerPresentation>()
+                .expect("DrawerNavigator presentation must be a DrawerPresentation")
+                .native_header,
+            _ => panic!("DrawerNavigator::new must produce an Element::Navigator"),
+        }
+    }
+
+    /// A fresh navigator keeps native headers ON — existing apps that
+    /// never call `.native_header(...)` must see no behavior change.
+    #[test]
+    fn native_header_defaults_on() {
+        let route: Route<()> = Route::new("home", "/");
+        let mut nav = DrawerNavigator::new(&route);
+        assert!(
+            native_header_of(&mut nav),
+            "native_header must default to true so existing drawers keep their nav bar / Toolbar",
+        );
+    }
+
+    /// `.native_header(false)` flips the navigator-wide default that the
+    /// iOS/Android handlers feed into `resolve_header_shown`.
+    #[test]
+    fn native_header_false_suppresses_chrome() {
+        let route: Route<()> = Route::new("home", "/");
+        let mut nav = DrawerNavigator::new(&route).native_header(false);
+        assert!(
+            !native_header_of(&mut nav),
+            ".native_header(false) must record the opt-out on the presentation",
+        );
+    }
+
+    /// REGRESSION TEST for the page-level-header consolidation.
+    ///
+    /// `resolve_header_shown` is the single precedence both native
+    /// backends share. The contract:
+    ///   - a per-screen `header_shown` ALWAYS wins over the navigator
+    ///     default (either direction), and
+    ///   - with no per-screen override, `native_header = false` must
+    ///     force-hide (`Some(false)`) while `native_header = true`
+    ///     leaves the backend's existing "show" path (`None`).
+    ///
+    /// The force-hide arm is the one the consolidation depends on:
+    /// without it, an app that calls `.native_header(false)` would still
+    /// get the native bar on screens that set a `.title(...)` (every
+    /// QuillEMR screen), since title-only screens render a Toolbar / nav
+    /// bar by default.
+    #[test]
+    fn resolve_header_shown_precedence() {
+        // No per-screen override → navigator default decides.
+        assert_eq!(resolve_header_shown(None, true), None, "native on, no override → show (None)");
+        assert_eq!(
+            resolve_header_shown(None, false),
+            Some(false),
+            "native off, no override → force-hide so title-bearing screens drop their bar",
+        );
+        // Per-screen override always wins, regardless of the default.
+        assert_eq!(
+            resolve_header_shown(Some(true), false),
+            Some(true),
+            "a screen can opt back into native chrome even when the navigator suppressed it",
+        );
+        assert_eq!(
+            resolve_header_shown(Some(false), true),
+            Some(false),
+            "a screen can drop its bar even when the navigator keeps native chrome",
+        );
+    }
 }

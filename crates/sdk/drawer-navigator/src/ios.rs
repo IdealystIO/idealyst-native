@@ -33,11 +33,18 @@ pub struct IosDrawerHandler {
     /// author hasn't set one (same fallback the `mount_screen`
     /// closure applies for subsequent pushes).
     active_route: Option<runtime_core::Signal<&'static str>>,
+    /// Navigator-wide native-header default (from
+    /// `DrawerPresentation::native_header`). Stashed at `init` so
+    /// `attach_initial` resolves `header_shown` with the same precedence
+    /// as `mount_screen` — without it the INITIAL screen's nav bar
+    /// stayed visible (only navigated-to screens, which go through
+    /// `mount_2arg`, were hidden).
+    native_header: bool,
 }
 
 impl IosDrawerHandler {
     pub fn new() -> Self {
-        Self { container: None, active_route: None }
+        Self { container: None, active_route: None, native_header: true }
     }
 }
 impl Default for IosDrawerHandler {
@@ -114,11 +121,16 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
             build_in_screen: _,
         } = host;
 
+        // Navigator-wide native-header default — folded into each
+        // screen's `header_shown` below via `resolve_header_shown`, so
+        // `.native_header(false)` hides the nav bar on every screen
+        // (even title-bearing ones) unless a screen overrides.
+        let native_header = presentation.native_header;
         let mount_2arg: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<IosNode>> = {
             let m = mount_screen;
             Rc::new(move |name, params| {
                 let result = m(name, params, None);
-                let new_options: IosScreenOptions = if let Some(opts) =
+                let mut new_options: IosScreenOptions = if let Some(opts) =
                     result.options.downcast_ref::<DrawerScreenOptions>()
                 {
                     translate_options(opts)
@@ -129,6 +141,11 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
                 } else {
                     IosScreenOptions::default()
                 };
+                // Fold in the navigator-wide native-header default. A
+                // per-screen `header_shown` still wins; otherwise
+                // `native_header = false` force-hides the nav bar.
+                new_options.header_shown =
+                    crate::resolve_header_shown(new_options.header_shown, native_header);
                 // No title fallback. Showing `route.name()` (the
                 // short kebab identifier) as the nav-bar title is a
                 // misleading crutch — author intent is "no title".
@@ -202,6 +219,29 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
         let node = helpers::create_drawer(backend.mtm(), drawer_callbacks, control.clone());
         self.container = Some(node.clone());
         self.active_route = Some(nav_state.active_route);
+        self.native_header = native_header;
+
+        // Publish ambient drawer chrome so screen content renders its
+        // own menu button (the page-level header pattern), mirroring the
+        // web handler. On iOS the drawer is always modal — there is no
+        // pinned/wide layout — so `collapse_below = f32::INFINITY`: the
+        // button shows on every viewport. The screen's header reads this
+        // via `runtime_core::primitives::navigator::ambient_drawer()` and
+        // calls `open()` to slide the drawer in (same path the formerly
+        // native hamburger used). Published unconditionally; harmless when
+        // `native_header` is left on (the screen simply won't render a
+        // page-level button).
+        {
+            use runtime_core::primitives::navigator::DrawerChrome;
+            let c = control.clone();
+            let open: Rc<dyn Fn()> = Rc::new(move || {
+                c.dispatch(NavCommand::Custom(Rc::new(HelpersDrawerCmd::Open)));
+            });
+            runtime_core::primitives::navigator::chrome::_set_ambient_drawer(Some(DrawerChrome {
+                open,
+                collapse_below: f32::INFINITY,
+            }));
+        }
 
         // Sidebar build + attach — deferred so the outer
         // `backend.borrow_mut()` window (held across this `init` call)
@@ -376,24 +416,28 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
                 // far more than the 16 pt of breathing room the
                 // author asked for.
                 let sidebar_primitive = sidebar_primitive;
-                // The scroll view carries the theme background, not
-                // just the author's `SidebarBody`. When Taffy clamps
-                // SidebarBody to the scroll view's height (its
-                // `min_height: Percent(100)` pins to viewport),
-                // overflowing children — the dark-mode toggle pinned
-                // at the bottom — render OUTSIDE SidebarBody's
-                // frame but INSIDE the scroll view's content area.
-                // Without a background here those children sit on a
-                // transparent scroll view, so the dimmed body page
-                // (scrim) shows through behind them. Painting
-                // `color-surface` on the scroll view itself keeps
-                // the panel's surface color continuous across the
-                // overflow region. The author's SidebarBody still
-                // paints the same color over the same area; both
-                // sit on the same token so a theme swap repaints
-                // them together.
+                // The sidebar is a plain full-height view — NOT a scroll
+                // view. The drawer makes no assumptions about its content
+                // and imposes no background: the author styles the sidebar
+                // (a background set on it spans the whole panel), and opts
+                // into scrolling by making the sidebar's own child a
+                // full-height `scroll_view`. We impose only the panel
+                // geometry the author can't know: `width = drawer_width`,
+                // `height = 100%`. (The author's sidebar is built via
+                // `build_node` standalone — its Taffy root has no parent —
+                // so without this wrap its children would lay out against
+                // the full viewport width.) `flex_shrink: 0` keeps wide
+                // content from collapsing the fixed width. Matches the
+                // macOS + Android handlers' plain sidebar container.
+                //
+                // Previously this wrapped in a `scroll_view` and painted
+                // `color-surface` on it to cover scroll-overflow children.
+                // With a plain view there's no overflow region — the
+                // author's sidebar fills the panel and owns its surface —
+                // so neither the scroll wrap nor the imposed background is
+                // needed.
                 let sized_sidebar: runtime_core::Element =
-                    runtime_core::primitives::scroll_view::scroll_view(vec![sidebar_primitive])
+                    runtime_core::view(vec![sidebar_primitive])
                         .with_style(std::rc::Rc::new(
                             runtime_core::StyleSheet::r#static(
                                 runtime_core::StyleRules {
@@ -403,35 +447,8 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
                                     height: Some(
                                         runtime_core::Length::pct(100.0).into(),
                                     ),
-                                    background: Some(
-                                        runtime_core::Tokenized::<runtime_core::Color>::token(
-                                            "color-surface",
-                                            runtime_core::Color("#ffffff".into()),
-                                        )
-                                        .into(),
-                                    ),
-                                    // Match the website's SidebarBody
-                                    // transition (250 ms EaseInOut on
-                                    // background). Without this the
-                                    // scroll view's background snaps
-                                    // to the new theme color while the
-                                    // author's SidebarBody crossfades —
-                                    // showing as a one-frame flicker
-                                    // along the safe-area inset zone
-                                    // because the two layers swap
-                                    // colors at different rates. Idea-
-                                    // UI's themes default to 250 ms
-                                    // EaseInOut so this matches the
-                                    // common case; authors with custom
-                                    // theme transitions can re-tune
-                                    // via the existing color-surface
-                                    // token timing in their theme.
-                                    background_transition: Some(
-                                        runtime_core::Transition::new(
-                                            250,
-                                            runtime_core::Easing::EaseInOut,
-                                        ),
-                                    ),
+                                    flex_direction: Some(runtime_core::FlexDirection::Column),
+                                    flex_shrink: Some(0.0f32.into()),
                                     ..Default::default()
                                 },
                             ),
@@ -462,10 +479,16 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
         options: Box<dyn Any>,
     ) {
         let Some(container) = self.container.clone() else { return };
-        let ios_opts = options
+        let mut ios_opts = options
             .downcast_ref::<DrawerScreenOptions>()
             .map(translate_options)
             .unwrap_or_default();
+        // Fold in the navigator-wide native-header default so the INITIAL
+        // screen hides its nav bar too (mount_2arg does this for
+        // navigated-to screens). Without it `.native_header(false)` left
+        // the first screen's native UINavigationController bar visible.
+        ios_opts.header_shown =
+            crate::resolve_header_shown(ios_opts.header_shown, self.native_header);
         helpers::drawer_attach_initial(backend.mtm(), &container, screen, scope_id, &ios_opts);
     }
 

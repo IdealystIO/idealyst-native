@@ -115,32 +115,36 @@ impl<'a> PathEmitter for UIBezierEmitter<'a> {
 
 /// Create a UIView with a CAShapeLayer sublayer rendering the icon paths.
 /// Color is applied via `strokeColor` — instant, no rasterization.
+/// Default icon edge length (points) when the author sets no explicit
+/// `width`/`height`. The CAShapeLayer is built at this size and the
+/// Taffy `measure_fn` (see `install_icon_measure`) reports the same, so
+/// flex layout reserves a real box for the glyph instead of collapsing
+/// it to 0×0 (which let row siblings overlap it) or stretching it.
+pub(crate) const DEFAULT_SIZE: CGFloat = 24.0;
+
 pub(crate) fn create_icon(
     mtm: MainThreadMarker,
     data: &IconData,
     color: Option<&Color>,
 ) -> IosNode {
-    let size: CGFloat = 24.0;
+    let size: CGFloat = DEFAULT_SIZE;
     let (vw, vh) = data.view_box;
     let sx = size / vw as CGFloat;
     let sy = size / vh as CGFloat;
 
     let view = unsafe { UIView::new(mtm) };
-    let _: () = unsafe {
-        msg_send![&view, setTranslatesAutoresizingMaskIntoConstraints: false]
-    };
-
-    // Default 24x24 size constraints (priority 750 — style can override).
-    let width_anchor: Retained<NSObject> = unsafe { msg_send_id![&view, widthAnchor] };
-    let height_anchor: Retained<NSObject> = unsafe { msg_send_id![&view, heightAnchor] };
-    let w_c: Retained<NSObject> =
-        unsafe { msg_send_id![&width_anchor, constraintEqualToConstant: size] };
-    let h_c: Retained<NSObject> =
-        unsafe { msg_send_id![&height_anchor, constraintEqualToConstant: size] };
-    let _: () = unsafe { msg_send![&w_c, setPriority: 750.0f32] };
-    let _: () = unsafe { msg_send![&h_c, setPriority: 750.0f32] };
-    let _: () = unsafe { msg_send![&w_c, setActive: true] };
-    let _: () = unsafe { msg_send![&h_c, setActive: true] };
+    // Manual-frame layout, like every other framework view: the layout
+    // pass (`apply_frames`) writes this view's frame (origin AND size)
+    // from the Taffy node — its size comes from `install_icon_measure`'s
+    // 24×24 default (or an author width/height). We must NOT set
+    // `translatesAutoresizingMaskIntoConstraints = false` + Auto Layout
+    // size constraints here: that hands frame control to Auto Layout,
+    // which has only size constraints (no position), so it pins the icon
+    // to its origin and DISCARDS the centered frame Taffy computed (e.g.
+    // an icon centered in a 36×36 button rendered hard against the
+    // top-left corner). `translatesAutoresizingMaskIntoConstraints`
+    // defaults to `true`, which is exactly the manual-frame behavior we
+    // want, so leave it untouched.
 
     // Build UIBezierPath from icon path data via the shared
     // apple/core SVG parser. The same parser drives macOS's
@@ -162,6 +166,14 @@ pub(crate) fn create_icon(
         let cls = objc2::class!(CAShapeLayer);
         msg_send_id![cls, new]
     };
+    // Name it so the layout pass can recenter it within the view's
+    // bounds (`sync_icon_sublayer`). The path is built at a fixed 24×24
+    // origin; when flex sizes the icon view larger than the glyph (e.g.
+    // a row stretches it on the cross axis, or it sits centered in a
+    // bigger pressable), a fixed top-left layer renders the glyph
+    // off-center. Recentering on every apply_frames keeps it centered.
+    let icon_marker = NSString::from_str("idealyst_icon");
+    let _: () = unsafe { msg_send![&shape_layer, setName: &*icon_marker] };
 
     // Set path.
     let cg_path: CGPathRef = unsafe { msg_send![&bezier, CGPath] };

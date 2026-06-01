@@ -31,7 +31,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use build_ios::{FrameworkSource, Manifest};
+use build_ios::{capabilities, FrameworkSource, Manifest};
 
 mod kotlin_runtime;
 
@@ -219,6 +219,12 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     let icon_attrs =
         sync_android_icons_into_res(&project_dir, &project_res, &build_tools, &project_icon_flat)?;
 
+    // Capability-derived `<uses-permission>` entries, discovered from the
+    // wrapper's dependency graph (the same manifest the Kotlin-runtime
+    // discovery below walks).
+    let uses_permissions =
+        android_permission_entries(&so.wrapper_dir.join("Cargo.toml"), &manifest.app.permissions);
+
     fs::write(
         &manifest_xml,
         render(manifest_tmpl, &[
@@ -227,6 +233,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             ("APP_ID", &xml_escape(manifest.app.require_bundle_id()?)),
             ("AAS_URL", &xml_escape(&aas_url)),
             ("ICON_ATTRS", &icon_attrs),
+            ("USES_PERMISSIONS", &uses_permissions),
         ]),
     )?;
 
@@ -931,6 +938,41 @@ fn adb_launch(adb: &Path, serial: &str, component: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Tiny templating helpers
 // ---------------------------------------------------------------------------
+
+/// Discover the capabilities the app's dependency graph declares and
+/// render the Android `<uses-permission>` entries that the manifest's
+/// `{{USES_PERMISSIONS}}` placeholder expects. Warnings (generic reason,
+/// unknown capability) and a per-permission report are printed so an
+/// auto-added permission is visible. A discovery error degrades to no
+/// entries with a warning rather than failing the run.
+fn android_permission_entries(
+    wrapper_manifest: &Path,
+    app_reasons: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let discovered = match capabilities::discover(wrapper_manifest) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("warning: could not discover app capabilities: {e}");
+            return String::new();
+        }
+    };
+    if discovered.is_empty() {
+        return String::new();
+    }
+    let resolved = capabilities::resolve(&discovered, app_reasons);
+    for w in &resolved.warnings {
+        eprintln!("warning: {w}");
+    }
+    for r in &resolved.report {
+        println!("  Android permission: {r}");
+    }
+    resolved
+        .android_permissions
+        .iter()
+        .map(|p| format!("<uses-permission android:name=\"{}\" />", xml_escape(p)))
+        .collect::<Vec<_>>()
+        .join("\n    ")
+}
 
 fn render(template: &str, vars: &[(&str, &str)]) -> String {
     // Build a HashMap so duplicates don't cause repeated linear

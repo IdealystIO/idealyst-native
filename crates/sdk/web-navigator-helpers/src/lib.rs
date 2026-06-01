@@ -1005,7 +1005,26 @@ pub fn create_drawer(
     control.install_link_activator(select_activator);
 
     let container = create_inner(b, navigator, control.clone(), move |instance| {
-        control.install(Box::new(move |cmd| match cmd {
+        // Wire `is_open` -> the `.drawer-open` class on the root so the
+        // off-canvas modal drawer actually slides in/out. The dispatcher
+        // below only flips the `is_open` signal; without this effect
+        // nothing reflects it to the DOM, so on narrow viewports the
+        // drawer never opens (the pinned-wide layout never needs it,
+        // which is why this gap went unnoticed). The handle is moved into
+        // the dispatcher closure — which lives for the navigator's
+        // lifetime — to keep the effect alive.
+        let drawer_open_effect = {
+            let container_node = instance.borrow().container.clone();
+            runtime_core::Effect::new(move || {
+                let open = is_open.get();
+                if let Some(el) = container_node.dyn_ref::<web_sys::Element>() {
+                    set_class_present(el, "drawer-open", open);
+                }
+            })
+        };
+        control.install(Box::new(move |cmd| {
+            let _ = &drawer_open_effect;
+            match cmd {
             NavCommand::Select { name, url, params, .. } => {
                 {
                     let inst = instance.borrow();
@@ -1090,6 +1109,7 @@ pub fn create_drawer(
                 // `url_history`, same flow as the browser back
                 // button hitting popstate.
                 instance.borrow_mut().pop_in_place();
+            }
             }
         }));
     });

@@ -90,6 +90,7 @@ members = [
     # SDK — utility (non-primitive) crates.
     "crates/sdk/net",
     "crates/sdk/storage",
+    "crates/sdk/microphone",
 
     # API — full-stack server-functions layer (server fns, transport,
     # auth/middleware, storage). See crates/api/server/DESIGN.md.
@@ -145,6 +146,7 @@ members = [
     "examples/welcome",
     "examples/stack-demo",
     "examples/server-fn-demo",
+    "examples/mic-demo",
     "examples/mcp-demo",
     "examples/fiddle",
     "examples/website",
@@ -271,6 +273,7 @@ table = { path = "crates/sdk/table" }
 menu = { path = "crates/sdk/menu" }
 net = { path = "crates/sdk/net" }
 storage = { path = "crates/sdk/storage" }
+microphone = { path = "crates/sdk/microphone" }
 server = { path = "crates/api/server" }
 server-macros = { path = "crates/api/server-macros" }
 stack-navigator = { path = "crates/sdk/stack-navigator" }

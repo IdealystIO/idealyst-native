@@ -874,6 +874,14 @@ fn attach_toolbar_to_body(
     body: &GlobalRef,
     options: &AndroidScreenOptions,
 ) -> Option<GlobalRef> {
+    // Explicit suppression wins over every other field. The drawer SDK
+    // sets `header_shown = Some(false)` when the navigator opts out of
+    // native chrome (`.native_header(false)`) so the app owns its header
+    // at the page level. Without this the auto-injected hamburger
+    // (always a `header_left`) would still build a Toolbar.
+    if options.header_shown == Some(false) {
+        return None;
+    }
     if options.title.is_none()
         && options.header_left.is_none()
         && options.header_background.is_none()

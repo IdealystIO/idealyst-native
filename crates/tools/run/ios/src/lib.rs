@@ -39,7 +39,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use build_ios::{BuildOptions, FrameworkSource, Manifest};
+use build_ios::{capabilities, BuildOptions, FrameworkSource, Manifest};
 
 /// Embedded Swift sources + plist template. Tiny and identical for
 /// every project (modulo splash substitution), so we ship them as
@@ -147,6 +147,11 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
 
     // ── 1. Produce the staticlib for the chosen mode ─────────────
     let target_triple = build_ios::pick_target(false);
+    // Capability-derived Info.plist permission keys. Only the local mode
+    // has a wrapper to walk (and only local mode runs the app's own code
+    // on-device — runtime-server mode runs it on the dev host, so the
+    // device process needs no app permissions).
+    let mut permission_plist = String::new();
     let (lib_dir, lib_name) = match &opts.mode {
         RunMode::Local => {
             let artifact = build_ios::build(
@@ -158,6 +163,10 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
                     user_features: opts.user_features.clone(),
                 },
             )?;
+            permission_plist = ios_permission_entries(
+                &artifact.wrapper_dir.join("Cargo.toml"),
+                &manifest.app.permissions,
+            );
             let dir = artifact
                 .staticlib
                 .parent()
@@ -230,7 +239,13 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // ── 6. Info.plist + PkgInfo ──────────────────────────────────
     fs::write(
         app_bundle.join("Info.plist"),
-        render_info_plist(&manifest, &executable_name, &opts.mode, &icon_plist_entries)?,
+        render_info_plist(
+            &manifest,
+            &executable_name,
+            &opts.mode,
+            &icon_plist_entries,
+            &permission_plist,
+        )?,
     )?;
     fs::write(app_bundle.join("PkgInfo"), b"APPL????")?;
 
@@ -394,11 +409,54 @@ fn sync_ios_icons_into_bundle(project_dir: &Path, app_bundle: &Path) -> Result<S
     ))
 }
 
+/// Discover the capabilities the app's dependency graph declares, resolve
+/// them against the app's reason strings, and render the iOS Info.plist
+/// usage-description entries. Warnings (generic-reason fallback, unknown
+/// capability) and a one-line-per-permission report are printed so an
+/// auto-added permission is never invisible. A discovery error degrades to
+/// no entries with a warning rather than failing the run — a permission
+/// gap shouldn't block `idealyst dev`.
+fn ios_permission_entries(
+    wrapper_manifest: &Path,
+    app_reasons: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let discovered = match capabilities::discover(wrapper_manifest) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("warning: could not discover app capabilities: {e}");
+            return String::new();
+        }
+    };
+    if discovered.is_empty() {
+        return String::new();
+    }
+    let resolved = capabilities::resolve(&discovered, app_reasons);
+    for w in &resolved.warnings {
+        eprintln!("warning: {w}");
+    }
+    for r in &resolved.report {
+        println!("  iOS permission: {r}");
+    }
+    resolved
+        .ios_plist
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                "<key>{}</key>\n    <string>{}</string>",
+                xml_escape(k),
+                xml_escape(v)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n    ")
+}
+
 fn render_info_plist(
     manifest: &Manifest,
     executable_name: &str,
     mode: &RunMode,
     icon_entries: &str,
+    permission_entries: &str,
 ) -> Result<String> {
     // No more network-discovery advertisement: the Robot bridge writes
     // a per-process `~/.idealyst/apps/<name>-<pid>.json` registration
@@ -420,7 +478,7 @@ fn render_info_plist(
     // runtime-server endpoint) get concatenated here. Newline +
     // 4-space indent keeps the rendered plist consistent with the
     // template's existing entries.
-    let extra_entries = [icon_entries, endpoint_entry.as_str()]
+    let extra_entries = [icon_entries, endpoint_entry.as_str(), permission_entries]
         .iter()
         .filter(|s| !s.is_empty())
         .copied()

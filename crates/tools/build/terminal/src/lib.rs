@@ -328,6 +328,7 @@ mod regression_tests {
                 targets,
                 server_bin: None,
                 web: Default::default(),
+                permissions: Default::default(),
             },
         }
     }

@@ -218,6 +218,32 @@ fn create_dialog_portal(
         let _ = env.call_method(&window, "clearFlags", "(I)V", &[JValue::Int(2)]);
         set_transparent_window_background(env, &window);
 
+        // A non-modal overlay (`trap_focus = false`, e.g. a toast host or
+        // banner) MUST NOT behave like a modal dialog. By default an
+        // Android `Dialog` window grabs input focus and is *touch-modal*:
+        // it consumes every pointer event inside its window frame. For a
+        // viewport overlay whose content spans the screen (a bottom toast
+        // host laying its list out full-height to bottom-align), that
+        // frame covers the whole activity — so the dialog silently
+        // swallows EVERY touch and the app beneath becomes completely
+        // unresponsive (this is what made the Android drawer hamburger —
+        // and everything else — untappable). Mark such windows
+        // FLAG_NOT_FOCUSABLE (8) | FLAG_NOT_TOUCHABLE (16) so they neither
+        // steal focus nor receive touch — pointer events fall straight
+        // through to the app. This mirrors how the platform's own `Toast`
+        // window is flagged. Modal overlays (`trap_focus = true`) keep the
+        // default focus-grabbing, touch-blocking behavior below.
+        if !trap_focus {
+            const FLAG_NOT_FOCUSABLE: i32 = 8;
+            const FLAG_NOT_TOUCHABLE: i32 = 16;
+            let _ = env.call_method(
+                &window,
+                "addFlags",
+                "(I)V",
+                &[JValue::Int(FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCHABLE)],
+            );
+        }
+
         // ---- Focus trap (best-effort) ----
         // Android equivalent of an iOS-style focus trap is to mark
         // the portal content as focusable in touch mode so it pulls

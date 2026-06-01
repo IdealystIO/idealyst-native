@@ -4,21 +4,36 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Cross-platform persistent key-value storage — the primitive auth needs
-# for token persistence (and apps need for preferences) on every target.
+# Cross-platform INSECURE (plaintext) key-value storage for non-sensitive
+# app data — preferences, UI state, caches. NOT for secrets; the
+# `credentials` SDK owns that (Keychain/Keystore + httpOnly). This is the
+# AsyncStorage half of the AsyncStorage-vs-SecureStore split.
 #
-# An async `Storage` trait with built-in backends:
-#   - MemoryStorage  : in-process (tests, ephemeral) — all targets
-#   - FileStorage    : a JSON file on disk            — native only
-#
-# Per-platform persistent/secure backends (web localStorage, iOS
-# UserDefaults/Keychain, Android SharedPreferences/Keystore) plug into
-# the same trait and are the next step; the trait + the two portable
-# backends are what's implemented and tested today.
+# An async `Storage` trait + `platform_storage(name)` picking the native
+# plaintext store per target:
+#   - MemoryStorage          : in-process (tests, ephemeral) — all targets
+#   - WebStorage             : localStorage                  — web (wasm32)
+#   - UserDefaultsStorage    : NSUserDefaults                — iOS / macOS
+#   - SharedPrefsStorage     : SharedPreferences             — Android
+#   - FileStorage            : a JSON file on disk           — Windows / Linux
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Web (wasm): localStorage via web-sys.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Storage"] }
+
+# iOS / macOS / tvOS: NSUserDefaults via the Obj-C runtime (objc2).
+[target.'cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString"] }
+
+# Android: SharedPreferences via JNI on the host Activity context.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

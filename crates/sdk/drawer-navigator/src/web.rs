@@ -264,6 +264,25 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
             scroll: Some(scroll_ctx.clone()),
         };
 
+        // Publish ambient drawer chrome so screen content (not just slot
+        // closures) can render its own menu button — the page-level
+        // header pattern. The consumer compares `viewport_size()` against
+        // `collapse_below` inside a `ui!` region, so the menu button shows
+        // only when the sidebar is collapsed to a modal drawer (narrow
+        // viewports). On wide viewports the sidebar is pinned and the
+        // button stays hidden.
+        {
+            use runtime_core::primitives::navigator::DrawerChrome;
+            let open = open_drawer_fn.clone();
+            // Same breakpoint the responsive sidebar `@media` query uses,
+            // so the menu button toggles in lockstep with the pin/modal
+            // switch.
+            let collapse_below = crate::navigator_pin_width();
+            runtime_core::primitives::navigator::chrome::_set_ambient_drawer(Some(
+                DrawerChrome { open, collapse_below },
+            ));
+        }
+
         // ---- Slot builder factory ----
         //
         // Each slot's `Fn(SlotProps) -> Element` closure is
@@ -380,6 +399,37 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
         };
 
         let node = web_navigator_helpers::create_drawer(backend, drawer_callbacks, control);
+
+        // Re-assert the navigator's framework classes. The helper sets
+        // `ui-nav-root ui-nav-drawer-root` on this container at creation,
+        // but the walker applies the navigator's `style` AFTER `init`
+        // returns via `apply_style`, which on web SWAPS the element's
+        // className — clobbering those classes. They drive the responsive
+        // pin/modal layout AND the `.drawer-open` toggle that slides the
+        // off-canvas drawer in, so losing them silently breaks opening the
+        // drawer on narrow viewports. This microtask runs after the
+        // (synchronous) attach_style and adds them back alongside whatever
+        // style class was minted.
+        {
+            let node = node.clone();
+            runtime_core::schedule_microtask(move || {
+                if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+                    let cur = el.get_attribute("class").unwrap_or_default();
+                    let mut next = cur.clone();
+                    for c in ["ui-nav-root", "ui-nav-drawer-root"] {
+                        if !next.split_whitespace().any(|x| x == c) {
+                            if !next.is_empty() {
+                                next.push(' ');
+                            }
+                            next.push_str(c);
+                        }
+                    }
+                    if next != cur {
+                        let _ = el.set_attribute("class", &next);
+                    }
+                }
+            });
+        }
 
         // Install the body-scroll + dimension listeners once the
         // helpers have created the body DOM. Defer to a microtask:

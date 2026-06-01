@@ -70,16 +70,33 @@ fn drawer_ssr_renders_new_slot_chrome() {
     assert!(html.contains("ui-nav-drawer-bottom"), "expected bottom slot class, got: {html}");
 
     // The matching stylesheet is shipped for the document <head> (single
-    // source of truth shared with the web backend) — the fixed sidebar +
-    // row layout lives there, not inline on the nodes.
+    // source of truth shared with the web backend) — the responsive
+    // sidebar + row layout lives there, not inline on the nodes.
     let sheet = &page.head_css;
     assert!(
         sheet.contains(".ui-nav-drawer-middle{flex:1 1 auto;display:flex;flex-direction:row"),
         "expected the row layout in the shipped sheet, got: {sheet}"
     );
+    // The sidebar is responsive: an off-canvas modal at the base
+    // (narrow) — `position:fixed` + `translateX(-100%)`, slid in by the
+    // `.drawer-open` class — and pinned in-flow at the large breakpoint
+    // via the `@media (min-width: 1024px)` block (`position:static`,
+    // fixed `width`). This replaced the old always-pinned
+    // `flex:0 0 auto;height:100%` rule when the web drawer gained its
+    // narrow-viewport modal behavior.
     assert!(
-        sheet.contains(".ui-nav-drawer-sidebar{flex:0 0 auto;height:100%;overflow-y:auto"),
-        "expected the fixed sidebar rule in the shipped sheet, got: {sheet}"
+        sheet.contains(".ui-nav-drawer-sidebar{position:fixed;")
+            && sheet.contains("transform:translateX(-100%)"),
+        "expected the off-canvas modal sidebar rule in the shipped sheet, got: {sheet}"
+    );
+    assert!(
+        sheet.contains(".ui-nav-drawer-root.drawer-open .ui-nav-drawer-sidebar{transform:translateX(0)"),
+        "expected the drawer-open slide-in rule in the shipped sheet, got: {sheet}"
+    );
+    assert!(
+        sheet.contains("@media (min-width: 1024px)")
+            && sheet.contains(".ui-nav-drawer-sidebar{position:static"),
+        "expected the pinned (wide-viewport) sidebar rule in the shipped sheet, got: {sheet}"
     );
 
     // Default mode is `bottom_in_scroll`: the body is the scroll context

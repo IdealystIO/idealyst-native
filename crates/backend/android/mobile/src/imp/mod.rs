@@ -386,6 +386,16 @@ thread_local! {
     /// JNI calls behind a fresh density read add up fast on big trees.
     static CACHED_DENSITY: std::cell::Cell<Option<f32>> =
         std::cell::Cell::new(None);
+
+    /// Last viewport size (dp) mirrored into the reactive
+    /// `runtime_core::viewport_size()` signal. `viewport_size()` is
+    /// called every layout pass to feed Taffy; we only want to *notify*
+    /// reactive subscribers when the size actually changes, and we must
+    /// do it OUTSIDE the layout pass (see `viewport_size` for why), so
+    /// this dedups repeated same-size samples and coalesces the deferred
+    /// mirror to one microtask per real change.
+    static LAST_MIRRORED_VIEWPORT: std::cell::Cell<Option<(f32, f32)>> =
+        std::cell::Cell::new(None);
 }
 
 /// Get the display density, computing on the first call and reusing
@@ -825,16 +835,34 @@ impl AndroidBackend {
         });
         // Mirror into the framework's reactive viewport signal so
         // `viewport_size()` subscribers (breakpoint hooks, responsive
-        // containers) re-fire on size changes. Dedup-by-equality
-        // inside `set_viewport_size` keeps the per-layout-pass sample
-        // cheap when the host didn't actually resize. Skip pushing
-        // when both dims are zero — pre-layout reads shouldn't
-        // overwrite a previously-valid value.
+        // containers, a page-level drawer menu button) re-fire on size
+        // changes. Skip pushing when both dims are zero — pre-layout
+        // reads shouldn't overwrite a previously-valid value.
+        //
+        // CRITICAL: this method is called from `run_layout_pass` to feed
+        // Taffy, so we are INSIDE a layout pass here. Calling
+        // `set_viewport_size` synchronously would notify reactive
+        // subscribers re-entrantly mid-layout — an effect that rebuilds
+        // (and thus schedules another layout / borrows backend state the
+        // pass already holds) panics, and the panic-during-notify aborts
+        // the process (observed as a startup SIGABRT once any screen read
+        // `viewport_size()`). So defer the mirror to a microtask: the
+        // notify then runs AFTER the pass completes, the same way iOS
+        // mirrors the viewport from a UIKit resize callback rather than
+        // inside layout (see `callbacks.rs`). Dedup by last-mirrored size
+        // so a resize schedules exactly one microtask and the steady
+        // state (unchanged size every pass) schedules none.
         if w > 0.0 && h > 0.0 {
-            runtime_core::set_viewport_size(runtime_core::ViewportSize {
-                width: w,
-                height: h,
-            });
+            let changed = LAST_MIRRORED_VIEWPORT.with(|c| c.get()) != Some((w, h));
+            if changed {
+                LAST_MIRRORED_VIEWPORT.with(|c| c.set(Some((w, h))));
+                runtime_core::schedule_microtask(move || {
+                    runtime_core::set_viewport_size(runtime_core::ViewportSize {
+                        width: w,
+                        height: h,
+                    });
+                });
+            }
         }
         (w, h)
     }
@@ -1719,6 +1747,16 @@ impl Backend for AndroidBackend {
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::icon::create(self, data, color);
+        // Give the icon a Taffy intrinsic size. The ImageView's drawable
+        // has a 24dp intrinsic size and `FIT_CENTER` scaling, but Taffy
+        // overwrites the create-time LayoutParams during apply_frames, so
+        // without a measure_fn the icon collapsed to 0 width in a flex
+        // row (letting the sibling label overlap it) and stretched on the
+        // cross axis. The generic `View.measure`-based measure_fn reports
+        // the drawable's intrinsic 24dp (and an explicit style
+        // width/height still wins); FIT_CENTER then scales the glyph to
+        // whatever box Taffy assigns. Mirrors iOS `install_icon_measure`.
+        install_external_measure_fn(self, &node);
         a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Image));
         node
     }

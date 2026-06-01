@@ -42,11 +42,16 @@ pub struct AndroidDrawerHandler {
     /// screen swaps; Android rebuilds the Toolbar per-screen so we
     /// inject the button at options-translation time.
     control: Option<Rc<runtime_core::NavigatorControl>>,
+    /// Navigator-wide native-header default (from
+    /// `DrawerPresentation::native_header`). Stashed at `init` so the
+    /// `attach_initial` path — which doesn't see the presentation —
+    /// resolves `header_shown` with the same precedence as `mount_screen`.
+    native_header: bool,
 }
 
 impl AndroidDrawerHandler {
     pub fn new() -> Self {
-        Self { container: None, control: None }
+        Self { container: None, control: None, native_header: true }
     }
 }
 
@@ -116,13 +121,18 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
             // persistent UINavigationController, Android needs it
             // baked into every per-screen Toolbar.
             let control = control.clone();
+            // Navigator-wide native-header default — folded into each
+            // screen's `header_shown` so `.native_header(false)` drops
+            // the Toolbar on every screen (even title-bearing ones).
+            let native_header = presentation.native_header;
             Rc::new(move |name, params| {
                 let raw = m(name, params, None);
                 let drawer_opts = raw
                     .options
                     .downcast::<DrawerScreenOptions>()
                     .ok();
-                let android_opts = drawer_options_to_android(drawer_opts, Some(&control));
+                let android_opts =
+                    drawer_options_to_android(drawer_opts, Some(&control), native_header);
                 MountResult {
                     node: raw.node,
                     scope_id: raw.scope_id,
@@ -165,6 +175,28 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
         let node = android_navigator_helpers::create_drawer(backend, drawer_callbacks, control.clone());
         self.container = Some(node.clone());
         self.control = Some(control.clone());
+        self.native_header = presentation.native_header;
+
+        // Publish ambient drawer chrome so screen content renders its
+        // own menu button (the page-level header pattern), mirroring the
+        // web + iOS handlers. The Android drawer is always modal (no
+        // pinned/wide layout), so `collapse_below = f32::INFINITY`: the
+        // button shows on every viewport. The screen's header reads this
+        // via `runtime_core::primitives::navigator::ambient_drawer()` and
+        // calls `open()` — the same dispatch the auto-injected Toolbar
+        // hamburger used. Harmless when `native_header` stays on (the
+        // screen simply won't render a page-level button).
+        {
+            use runtime_core::primitives::navigator::DrawerChrome;
+            let c = control.clone();
+            let open: Rc<dyn Fn()> = Rc::new(move || {
+                c.dispatch(NavCommand::Custom(Rc::new(HelpersDrawerCmd::Open)));
+            });
+            runtime_core::primitives::navigator::chrome::_set_ambient_drawer(Some(DrawerChrome {
+                open,
+                collapse_below: f32::INFINITY,
+            }));
+        }
 
         // Materialize the SDK's sidebar Element, deferred to a
         // microtask so the outer `backend.borrow_mut()` (held across
@@ -287,48 +319,47 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
                         return;
                     };
 
-                // Mirror the iOS path: wrap the author's sidebar in
-                // a `scroll_view` sized to exactly `drawer_width`.
-                // Two reasons:
+                // The sidebar is a plain full-height view — NOT a
+                // scroll view. The drawer makes no assumptions about its
+                // content; the author styles it (a background set here
+                // spans the whole panel) and opts into scrolling by
+                // making the sidebar's own child a full-height
+                // `scroll_view`. We only impose the panel geometry the
+                // author can't know: `width = drawer_width`, `height =
+                // 100%`. (The author's sidebar is built via `build_node`
+                // standalone — its Taffy root has no parent — so without
+                // this wrap its children would lay out against the full
+                // viewport width.) `flex_shrink: 0` keeps wide content
+                // from collapsing the fixed width; `Column` stacks the
+                // sidebar's children. Matches the macOS handler's plain
+                // sidebar container.
                 //
-                // 1. **Sizing.** The author's sidebar is built via
-                //    `build_node` standalone — its Taffy root has no
-                //    parent, so the framework's layout pass computes
-                //    it against the full viewport width. Children
-                //    stretch to viewport width and then get visually
-                //    clipped by the DrawerLayout panel (which is
-                //    `drawer_width` wide via our `attachDrawer` LP
-                //    write). Wrapping in a view with explicit
-                //    `width: drawer_width` constrains Taffy to lay
-                //    children out at the correct width.
-                //
-                // 2. **Scrolling.** A long sidebar (many nav links)
-                //    needs to scroll vertically. The author's
-                //    `SidebarBody` is a plain View — overflowing
-                //    children just clip. `scroll_view` adds the
-                //    vertical scroll affordance the same way iOS
-                //    handles it.
+                // This used to wrap in a `scroll_view`, which broke the
+                // fill: an Android ScrollView sizes its content to the
+                // content's own height, so a short sidebar left the
+                // panel transparent below it (the background didn't reach
+                // the bottom). A plain view gives the author's sidebar a
+                // definite full-height box to fill.
                 //
                 // The DrawerLayout's panel LP (set in `attachDrawer`)
-                // and this view's Taffy width are both `drawer_width`
-                // — they agree on the panel size. `is_drawer_panel_child`
-                // in `backend-android-mobile` keeps the layout pass
-                // from overwriting the LP, so the Kotlin side and the
-                // Taffy side stay in sync.
+                // and this view's Taffy width are both `drawer_width`,
+                // so they agree on the panel size. `is_drawer_panel_child`
+                // in `backend-android-mobile` keeps the layout pass from
+                // overwriting the LP.
                 let sized_sidebar: runtime_core::Element =
-                    runtime_core::primitives::scroll_view::scroll_view(vec![
-                        sidebar_primitive,
-                    ])
-                    .with_style(std::rc::Rc::new(runtime_core::StyleSheet::r#static(
-                        runtime_core::StyleRules {
-                            width: Some(
-                                runtime_core::Length::Px(drawer_width).into(),
-                            ),
-                            height: Some(runtime_core::Length::pct(100.0).into()),
-                            ..Default::default()
-                        },
-                    )))
-                    .into_element();
+                    runtime_core::view(vec![sidebar_primitive])
+                        .with_style(std::rc::Rc::new(runtime_core::StyleSheet::r#static(
+                            runtime_core::StyleRules {
+                                width: Some(
+                                    runtime_core::Length::Px(drawer_width).into(),
+                                ),
+                                height: Some(runtime_core::Length::pct(100.0).into()),
+                                flex_direction: Some(runtime_core::FlexDirection::Column),
+                                flex_shrink: Some(0.0f32.into()),
+                                ..Default::default()
+                            },
+                        )))
+                        .into_element();
                 let sidebar = build_node(sized_sidebar);
                 android_navigator_helpers::drawer_attach_sidebar(
                     &container_for_microtask,
@@ -351,6 +382,7 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
         let android_options = drawer_options_to_android(
             options.downcast::<DrawerScreenOptions>().ok(),
             self.control.as_ref(),
+            self.native_header,
         );
         android_navigator_helpers::attach_initial(&container, screen, scope_id, &android_options);
     }
@@ -398,6 +430,7 @@ impl NavigatorOps for NoopDrawerOps {}
 fn drawer_options_to_android(
     opts: Option<Box<DrawerScreenOptions>>,
     control: Option<&Rc<runtime_core::NavigatorControl>>,
+    native_header: bool,
 ) -> AndroidScreenOptions {
     let opts = opts.map(|b| *b).unwrap_or_default();
     // Auto-inject a hamburger BarButton when the screen doesn't
@@ -424,7 +457,10 @@ fn drawer_options_to_android(
     }));
     AndroidScreenOptions {
         title: opts.title.clone(),
-        header_shown: opts.header_shown,
+        // Fold in the navigator-wide native-header default. A per-screen
+        // `header_shown` still wins; otherwise `native_header = false`
+        // force-hides so even title-bearing screens drop their Toolbar.
+        header_shown: crate::resolve_header_shown(opts.header_shown, native_header),
         header_left,
         header_right: opts.header_right.as_ref().map(|btn| BarButton {
             icon: btn.icon.clone(),

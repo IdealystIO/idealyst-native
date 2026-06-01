@@ -663,6 +663,29 @@ impl IosBackend {
         );
     }
 
+    /// Install a Taffy `measure_fn` for a standalone icon view so flex
+    /// layout reserves the icon's intrinsic box. Without it the icon
+    /// node had no size Taffy understood (the 24×24 Auto Layout
+    /// constraints in `icon::create_icon` are invisible to Taffy): in a
+    /// flex row the glyph collapsed to 0 width — letting the sibling
+    /// label overlap it — and stretched on the cross axis. We report the
+    /// CAShapeLayer's build size (`icon::DEFAULT_SIZE`) as the intrinsic
+    /// size. An explicit `width`/`height` in the author's style still
+    /// wins — Taffy uses a definite size over the measure result.
+    pub(crate) fn install_icon_measure(&mut self, view: &objc2::rc::Retained<UIView>) {
+        let layout = self.layout_for_view(view);
+        self.layout.set_measure_fn(
+            layout,
+            std::rc::Rc::new(move |known_dimensions, _available_space| {
+                let d = icon::DEFAULT_SIZE as f32;
+                runtime_layout::Size {
+                    width: known_dimensions.width.unwrap_or(d),
+                    height: known_dimensions.height.unwrap_or(d),
+                }
+            }),
+        );
+    }
+
     fn retain_target<T: objc2::Message>(&mut self, target: &Retained<T>) {
         let obj: Retained<NSObject> = unsafe {
             let ptr = Retained::as_ptr(target) as *mut NSObject;
@@ -1299,6 +1322,12 @@ impl Backend for IosBackend {
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = icon::create_icon(self.mtm, data, color);
+        // Give the icon a Taffy intrinsic size so flex layout reserves
+        // its box (otherwise the glyph collapses to 0 width and row
+        // siblings overlap it — see `install_icon_measure`).
+        if let IosNode::View(ref view) = node {
+            self.install_icon_measure(view);
+        }
         a11y::apply(
             &node,
             a11y,
@@ -2708,6 +2737,13 @@ impl IosBackend {
             // doesn't auto-resize sublayers from `autoresizingMask`
             // on iOS in practice).
             backend_ios_core::style::sync_gradient_sublayer(view);
+            // Recenter any `idealyst_icon` CAShapeLayer within the new
+            // bounds. The icon's path is built at a fixed 24×24 top-left
+            // origin; when flex sizes the icon view larger than the glyph
+            // (cross-axis stretch in a row, or centered in a bigger
+            // pressable like the drawer menu button) the glyph would hug
+            // the top-left without this recenter.
+            backend_ios_core::style::sync_icon_sublayer(view);
             // Re-clamp cornerRadius against the now-known bounds.
             // `apply_style_to_view` stashes the requested radius
             // when the view's size is percent-based; this call reads

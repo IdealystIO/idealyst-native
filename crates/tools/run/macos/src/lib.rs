@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use anyhow::{Context, Result};
-use build_ios::{parse_manifest, FrameworkSource};
+use build_ios::{capabilities, parse_manifest, FrameworkSource};
 
 /// Which build path to spawn. `Local` mounts the user's `app()`
 /// in-process via `host_appkit::run`; `Aas` connects to a dev-server
@@ -94,7 +94,17 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // Terminal icon. The wrapping always re-runs (cheap: a copy
     // and a few small file writes), so editing the icon and
     // re-launching always picks up the new icns.
-    let spawn_target = match maybe_wrap_in_app_bundle(project_dir, &built.binary)? {
+    // Capability-derived Info.plist usage-description keys (e.g.
+    // NSMicrophoneUsageDescription). Discovered from the wrapper's
+    // dependency graph; their presence also forces a `.app` bundle even
+    // when the project declares no icon, because a bare binary has no
+    // Info.plist for the OS to read the usage string from.
+    let permission_pairs = macos_permission_pairs(
+        &built.wrapper_dir.join("Cargo.toml"),
+        &parse_manifest(project_dir)?.app.permissions,
+    );
+
+    let spawn_target = match maybe_wrap_in_app_bundle(project_dir, &built.binary, &permission_pairs)? {
         Some(path) => path,
         None => built.binary.clone(),
     };
@@ -155,19 +165,23 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
 /// binary INSIDE the bundle (which is what gets launched so macOS
 /// reads the parent `.app`'s metadata for dock chrome).
 ///
-/// Returns `Ok(None)` when the project has no `[icon]` block — the
-/// caller falls back to the bare-binary launch path. Errors out on
-/// genuinely broken icon configs (missing source file, invalid
-/// gradient stops, etc.) because users typing them want loud
-/// feedback, not a silently iconless app.
+/// Returns `Ok(None)` when the project has neither an `[icon]` block nor
+/// any capability-derived permission keys — the caller falls back to the
+/// bare-binary launch path. A project with permissions but no icon is
+/// still wrapped, because the usage-description strings have to live in an
+/// `Info.plist` for the OS to show them. Errors out on genuinely broken
+/// icon configs (missing source file, invalid gradient stops, etc.)
+/// because users typing them want loud feedback, not a silently iconless
+/// app.
 fn maybe_wrap_in_app_bundle(
     project_dir: &Path,
     binary: &Path,
+    permissions: &[(String, String)],
 ) -> Result<Option<PathBuf>> {
-    let Some(config) = icon_gen::load_config_from_manifest(project_dir)? else {
+    let config = icon_gen::load_config_from_manifest(project_dir)?;
+    if config.is_none() && permissions.is_empty() {
         return Ok(None);
-    };
-    let block = config.resolved_for(icon_gen::Target::Macos);
+    }
     let manifest = parse_manifest(project_dir)?;
 
     // Bundle sits next to the cargo-emitted binary so a `cargo
@@ -188,16 +202,21 @@ fn maybe_wrap_in_app_bundle(
     fs::create_dir_all(&macos_dir).with_context(|| format!("create {}", macos_dir.display()))?;
     fs::create_dir_all(&resources).with_context(|| format!("create {}", resources.display()))?;
 
-    // Generate `.icns` straight into Resources/. icon-gen's cache
-    // skips work when the icon source hasn't changed, so this is
-    // near-free on subsequent runs.
-    let icns_outs = icon_gen::sync_macos_icns(Some(&block), &resources)?;
-    let icon_file_stem = match icns_outs {
-        Some(outs) => outs
-            .icns
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(str::to_string),
+    // Generate `.icns` straight into Resources/ when the project has an
+    // icon block. icon-gen's cache skips work when the source hasn't
+    // changed, so this is near-free on subsequent runs. Skipped entirely
+    // for a permissions-only bundle (no icon declared).
+    let icon_file_stem = match &config {
+        Some(config) => {
+            let block = config.resolved_for(icon_gen::Target::Macos);
+            let icns_outs = icon_gen::sync_macos_icns(Some(&block), &resources)?;
+            icns_outs.and_then(|outs| {
+                outs.icns
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_string)
+            })
+        }
         None => None,
     };
 
@@ -215,7 +234,13 @@ fn maybe_wrap_in_app_bundle(
     // Info.plist. Minimal; carries icon ref + identity. Future
     // additions (NSPrincipalClass, NSHighResolutionCapable) layer
     // on top.
-    let plist = render_info_plist(&display_name, &manifest.app, &bin_name, icon_file_stem.as_deref());
+    let plist = render_info_plist(
+        &display_name,
+        &manifest.app,
+        &bin_name,
+        icon_file_stem.as_deref(),
+        permissions,
+    );
     fs::write(contents.join("Info.plist"), plist)
         .with_context(|| format!("write {}/Info.plist", contents.display()))?;
     // `PkgInfo` is historical but still required by some tooling
@@ -225,11 +250,51 @@ fn maybe_wrap_in_app_bundle(
     Ok(Some(dest_binary))
 }
 
+/// Escape text for inclusion in a plist XML `<string>`. Reason strings
+/// are author-supplied, so an unescaped `&` or `<` would corrupt the
+/// plist; this keeps the generated file well-formed.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// Discover the app's declared capabilities and resolve them to macOS
+/// `Info.plist` usage-description `(key, reason)` pairs. Prints warnings +
+/// a per-permission report; a discovery error degrades to no entries with
+/// a warning rather than failing the run.
+fn macos_permission_pairs(
+    wrapper_manifest: &Path,
+    app_reasons: &std::collections::BTreeMap<String, String>,
+) -> Vec<(String, String)> {
+    let discovered = match capabilities::discover(wrapper_manifest) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("warning: could not discover app capabilities: {e}");
+            return Vec::new();
+        }
+    };
+    if discovered.is_empty() {
+        return Vec::new();
+    }
+    let resolved = capabilities::resolve(&discovered, app_reasons);
+    for w in &resolved.warnings {
+        eprintln!("warning: {w}");
+    }
+    for r in &resolved.report {
+        println!("  macOS permission: {r}");
+    }
+    resolved.macos_plist
+}
+
 fn render_info_plist(
     display_name: &str,
     app: &build_ios::AppMetadata,
     executable: &str,
     icon_stem: Option<&str>,
+    permissions: &[(String, String)],
 ) -> String {
     let bundle_id = app
         .bundle_id
@@ -242,12 +307,25 @@ fn render_info_plist(
         ),
         None => String::new(),
     };
+    // Capability usage-description keys, spliced into the dict alongside
+    // the icon entry. XML-escaped because reason strings are author text.
+    let permission_entries = permissions
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                "    <key>{}</key>\n    <string>{}</string>\n",
+                xml_escape(k),
+                xml_escape(v)
+            )
+        })
+        .collect::<String>();
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
          \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
          <plist version=\"1.0\">\n<dict>\n\
          {icon_entry}\
+         {permission_entries}\
              <key>CFBundleExecutable</key>\n    <string>{executable}</string>\n\
              <key>CFBundleIdentifier</key>\n    <string>{bundle_id}</string>\n\
              <key>CFBundleName</key>\n    <string>{display_name}</string>\n\
