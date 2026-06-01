@@ -788,7 +788,16 @@ fn start_aas() {{
         &format!("[dev-client] runtime-server mode: connecting to {{}}", url).into(),
     );
 
-    let backend = WebBackend::new("#app");
+    let mut backend = WebBackend::new("#app");
+    // Register SDK extensions on the REAL backend BEFORE wrapping it in
+    // the WireBackend. The wire client replays navigator commands by
+    // driving this backend's `create_navigator`, which dispatches to the
+    // SDK handler registered here — that handler builds the real native
+    // chrome (e.g. the web drawer's `ui-nav-drawer-*` CSS structure).
+    // `register` also installs each SDK's wire presentation-factory so
+    // `dev-client` can rebuild the presentation from wire config. Without
+    // this the client falls back to a structural sidebar (no chrome).
+    {lib}::register_extensions(&mut backend);
     let outbound = dev_client::OutboundSender::new();
     let wire = Rc::new(RefCell::new(dev_client::WireBackend::new(backend, outbound)));
     AAS_WIRE.with(|slot| *slot.borrow_mut() = Some(wire.clone()));

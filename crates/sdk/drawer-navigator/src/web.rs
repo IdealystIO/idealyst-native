@@ -516,4 +516,9 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
 
 pub fn register(backend: &mut WebBackend) {
     backend.register_navigator::<DrawerPresentation, _>(|| Box::new(WebDrawerHandler::new()));
+    // Runtime-server client path: lets `dev-client` rebuild the
+    // presentation from wire config and drive this same handler, so the
+    // real `ui-nav-drawer-*` chrome renders over the wire (not the old
+    // structural fallback). No-op cost under `--local`.
+    crate::register_wire_drawer_factory();
 }

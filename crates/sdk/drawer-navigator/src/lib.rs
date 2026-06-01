@@ -539,6 +539,61 @@ impl DrawerPresentation {
     }
 }
 
+/// Register the client-side wire factory that rebuilds a
+/// `DrawerPresentation` from the wire's drawer config.
+///
+/// Called from each platform's `register(&mut backend)` on the
+/// runtime-server **client**. The wire client (`dev-client`) is
+/// SDK-agnostic — it can't construct a `DrawerPresentation` — so it
+/// looks this factory up by nav kind and hands the result to the
+/// client's real `Backend::create_navigator`, which dispatches to the
+/// platform `NavigatorHandler` registered on the same `register` call.
+/// That handler builds the real native chrome.
+///
+/// Only the serializable config crosses the wire; the sidebar/screen
+/// *content* arrives separately as primitive subtrees. So `leading_slot`
+/// is a stub builder whose `Element` the client's `build_node` ignores
+/// (it returns a holder the wire sidebar mounts into) — but it must be
+/// `Some` so the helper creates the sidebar region and calls
+/// `build_node`. `is_open` is a fresh client-side signal; the recorder
+/// syncs it over the reverse channel.
+///
+/// Registered on every backend (harmless where `dev-client` is absent,
+/// e.g. `--local`, since `build_drawer_presentation` is then never
+/// called). Idempotent — last write wins.
+pub fn register_wire_drawer_factory() {
+    wire::register_drawer_factory(|cfg| {
+        let mut p = DrawerPresentation::new();
+        p.side = match cfg.side {
+            wire::WireDrawerSide::Left => DrawerSide::Start,
+            wire::WireDrawerSide::Right => DrawerSide::End,
+        };
+        p.drawer_type = match cfg.drawer_type {
+            wire::WireDrawerType::Slide => DrawerType::Slide,
+            // Front / Back both present as an overlay-style drawer on
+            // the client; the SDK only models Front / Slide.
+            wire::WireDrawerType::Front | wire::WireDrawerType::Back => DrawerType::Front,
+        };
+        p.drawer_width = cfg.drawer_width;
+        p.swipe_to_open = cfg.swipe_to_open;
+        p.mount_policy = match cfg.mount_policy {
+            wire::WireMountPolicy::EagerPersistent => MountPolicy::EagerPersistent,
+            wire::WireMountPolicy::LazyPersistent => MountPolicy::LazyPersistent,
+            wire::WireMountPolicy::LazyDisposing => MountPolicy::LazyDisposing,
+        };
+        // Stub leading slot — see the doc comment. The returned Element
+        // is never rendered; the client's `build_node` swaps in its
+        // holder node.
+        *p.leading_slot.borrow_mut() =
+            Some(Box::new(|_props: SlotProps| runtime_core::view(Vec::new()).into()));
+        wire::WireNavBuild {
+            type_id: std::any::TypeId::of::<DrawerPresentation>(),
+            type_name: std::any::type_name::<DrawerPresentation>(),
+            presentation: std::rc::Rc::new(p),
+        }
+    });
+}
+
 // =============================================================================
 // Drawer NavCommand verbs — SDK-specific, packed in NavCommand::Custom
 // =============================================================================

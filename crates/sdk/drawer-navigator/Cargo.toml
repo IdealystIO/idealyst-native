@@ -20,7 +20,7 @@ license.workspace = true
 # sidecar builds (build-runtime-server) — emits navigator wire commands
 # instead of rendering. Off by default so device/web/SSR builds never
 # pull the host-side dev-server dep.
-runtime-server = ["dep:dev-server", "dep:wire"]
+runtime-server = ["dep:dev-server"]
 
 [dependencies]
 runtime-core = { workspace = true }
@@ -29,12 +29,18 @@ runtime-core = { workspace = true }
 # the single source of truth shared with the live web navigator.
 css = { workspace = true }
 
-# Recording handler deps (feature `runtime-server`, host-side only).
-# `dev-server` owns `WireRecordingBackend` + `NavRecorder`; `wire` is
-# the shared command/enum vocabulary the recorder emits. Optional +
-# off by default — a wasm/iOS/Android/macOS build never compiles them.
+# `wire` is the shared command/enum vocabulary. Non-optional because it
+# is needed on TWO paths: the host-side recording handler (feature
+# `runtime-server`) AND every CLIENT build, where `register(&mut backend)`
+# registers the wire drawer presentation-factory so the runtime-server
+# wire client can drive the real `create_navigator` (native chrome over
+# the wire). It is platform-pure data + a small registry, so it compiles
+# on wasm / iOS / Android / macOS / terminal at negligible cost.
+wire = { workspace = true }
+
+# Recording handler dep (feature `runtime-server`, host-side only).
+# `dev-server` owns `WireRecordingBackend` + `NavRecorder`.
 dev-server = { workspace = true, optional = true }
-wire = { workspace = true, optional = true }
 
 # Only the SSR integration tests need backend-ssr (to register the
 # generic `chrome` handler on a concrete SsrBackend). The handler is
