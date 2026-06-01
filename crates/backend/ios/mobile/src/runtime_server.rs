@@ -184,6 +184,26 @@ pub unsafe fn ios_main_with_register(
                 viewport: initial_viewport,
             },
         ));
+
+        // Install the backend self-handle so SDK code reached outside
+        // the framework's normal call paths can drive a layout pass.
+        // The runtime-server `IosBackend` is owned by the client (an
+        // `Rc<RefCell<IosBackend>>`), NOT moved by value as the
+        // surrounding comments imply — so a usable weak ref DOES exist.
+        // Without this, `with_backend(...)` (e.g. the drawer handler's
+        // deferred `drawer_attach_sidebar` → `b.run_layout()` at
+        // ios-navigator-helpers/tab_drawer.rs) returns `None` and the
+        // sidebar's standalone (parentless) Taffy node is never
+        // computed → its UIView frame stays 0×0 → the drawer scrim
+        // darkens on open but the sidebar panel is invisible. The
+        // sidebar is attached in a `schedule_microtask`-deferred build
+        // that runs in a LATER main-queue turn, AFTER the per-batch
+        // `run_layout` the shell tick performs — so only an explicit
+        // post-attach layout pass (via this handle) sizes it.
+        let backend_rc = shell.client.borrow().backend().clone();
+        crate::install_global_self(Rc::downgrade(&backend_rc));
+        drop(backend_rc);
+
         SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
         HOST_VIEW.with(|slot| *slot.borrow_mut() = Some(view));
 

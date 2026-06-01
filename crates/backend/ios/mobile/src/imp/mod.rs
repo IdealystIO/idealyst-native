@@ -2953,3 +2953,59 @@ fn external_placeholder_node(b: &mut IosBackend, type_name: &'static str) -> Ios
 // (`stack_navigator::ios::IosStackHandler`, etc.) now call into that
 // crate directly, and the framework reaches the handlers through the
 // per-instance map stashed on `nav_handler_instances`.
+
+#[cfg(test)]
+mod backend_self_handle_tests {
+    //! Regression coverage for the runtime-server drawer "scrim shows
+    //! but sidebar panel is invisible" bug. Per CLAUDE.md §8 the test
+    //! is named after the bug, not the function.
+    //!
+    //! Root cause: the runtime-server iOS shell (`runtime_server::
+    //! ios_main_with_register`) spawned the `RuntimeServerShell` but
+    //! never called `install_global_self`. SDK code reached outside
+    //! the framework's normal call path — specifically the drawer
+    //! handler's `schedule_microtask`-deferred `drawer_attach_sidebar`,
+    //! which calls `with_backend(|b| b.run_layout())` to size the
+    //! freshly-attached, *parentless* sidebar Taffy node — therefore
+    //! found NO installed self, so `with_backend` returned `None` and
+    //! the layout pass never ran. The sidebar UIView stayed 0×0: on
+    //! open the modal scrim darkened (its node is part of the
+    //! create_navigator batch the shell's per-tick `run_layout`
+    //! covers) but the sidebar panel slid in invisibly.
+    //!
+    //! A tighter test would drive the real spawn path, but
+    //! `IosBackend::new` needs a `MainThreadMarker` (only available on
+    //! a live UIKit main thread) and the shell starts a WS worker
+    //! thread — neither fits `cargo test`. So this asserts the precise
+    //! mechanism that broke: `with_backend` is a no-op until a self
+    //! handle is installed, and resolves once one is. The end-to-end
+    //! behavior (panel visible on open over the wire) is covered by an
+    //! on-simulator `idealyst dev --ios` screenshot, logged in
+    //! [[project_navigator_over_wire_wip]].
+
+    /// With no self installed, `with_backend` must short-circuit to
+    /// `None` (never panic, never run the closure) — this IS the
+    /// broken pre-fix runtime-server state, reproduced deterministically.
+    #[test]
+    fn regression_rs_drawer_sidebar_with_backend_noops_until_self_installed() {
+        // Fresh thread → guaranteed-empty `IOS_BACKEND_SELF`
+        // thread-local (the spawn path runs on its own thread too).
+        std::thread::spawn(|| {
+            let mut ran = false;
+            let out = super::with_backend(|_b| {
+                ran = true;
+                42u32
+            });
+            assert!(
+                out.is_none(),
+                "with_backend must return None when no self is installed (pre-fix RS state)",
+            );
+            assert!(
+                !ran,
+                "the closure must NOT run when no self is installed — the silent no-op that left the drawer sidebar unsized",
+            );
+        })
+        .join()
+        .expect("test thread panicked");
+    }
+}
