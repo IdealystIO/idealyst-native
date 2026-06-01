@@ -333,6 +333,17 @@ fn generate_wrapper(
         "crates/backend/android/mobile",
         &["runtime-server", "async-driver"],
     );
+    // First-party SDKs bundled into the runtime-server client so their
+    // native chrome (Drawer navigator, code block, table) renders over
+    // the wire on device. They depend on `backend-android-mobile`, so
+    // the backend can't depend on them (Cargo cycle) — they're pulled
+    // in here at the generated wrapper, which sits above both. The
+    // wrapper calls each SDK's `register` via
+    // `attach_with_url_with_register`. Mirrors the per-app web wrapper's
+    // `register_extensions` and the iOS `backend-ios-rs-shell`.
+    let drawer_navigator_dep = source.dep("crates/sdk/drawer-navigator", &[]);
+    let idea_codeblock_dep = source.dep("crates/sdk/idea-codeblock", &[]);
+    let table_dep = source.dep("crates/sdk/table", &[]);
 
     let cargo_toml = match mode {
         BuildMode::Local => format!(
@@ -399,11 +410,21 @@ runtime-core = {fcore_dep}
 # drain, detach}}` Rust helpers — the JNI bridge below is a thin
 # trampoline over those.
 backend-android-mobile = {bandroid_dep}
+# First-party SDKs bundled into the runtime-server client so their
+# native chrome renders over the wire on device. The JNI bridge below
+# registers them on the RS client backend via
+# `attach_with_url_with_register`.
+drawer-navigator = {drawer_navigator_dep}
+idea-codeblock = {idea_codeblock_dep}
+table = {table_dep}
 jni = "0.21"
 log = "0.4"
 "#,
             fcore_dep = fcore_dep,
             bandroid_dep = bandroid_aas_dep,
+            drawer_navigator_dep = drawer_navigator_dep,
+            idea_codeblock_dep = idea_codeblock_dep,
+            table_dep = table_dep,
         ),
     };
 
@@ -572,7 +593,24 @@ pub extern "system" fn Java_{jni}_NativeBridge_attachRuntimeServerUrl<'local>(
                 return;
             }}
         }};
-        backend_android::runtime_server::attach_with_url(&mut env, context, root, &url_str);
+        // Register the compiled-in first-party SDK handlers on the RS
+        // client backend so their native chrome (Drawer navigator, code
+        // block, table) renders over the wire. The backend staticlib is
+        // SDK-free (the SDKs depend on it), so the SDK set is bundled +
+        // registered here — the Android analogue of the per-app web
+        // wrapper's `register_extensions`.
+        fn register_first_party_sdks(backend: &mut backend_android::AndroidBackend) {{
+            drawer_navigator::register(backend);
+            idea_codeblock::register(backend);
+            table::register(backend);
+        }}
+        backend_android::runtime_server::attach_with_url_with_register(
+            &mut env,
+            context,
+            root,
+            &url_str,
+            register_first_party_sdks,
+        );
     }}));
 }}
 

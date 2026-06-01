@@ -56,6 +56,42 @@ pub unsafe extern "C" fn ios_main(
     root_view: *mut std::ffi::c_void,
     endpoint_utf8: *const c_char,
 ) {
+    // Back-compat entry: no SDK handlers registered. The dedicated
+    // RS-shell crate (which links the first-party SDKs) calls
+    // `ios_main_with_register` with a closure that runs the SDK
+    // `register` calls so native chrome (Drawer, etc.) renders over
+    // the wire. See `mobile-rs-shell`.
+    unsafe { ios_main_with_register(root_view, endpoint_utf8, |_backend| {}) }
+}
+
+/// Like [`ios_main`] but lets the caller register SDK extension
+/// handlers on the freshly-built [`IosBackend`] before the shell
+/// spawns. This is the seam the RS-shell crate uses to bundle the
+/// first-party SDKs into the (otherwise app-agnostic) runtime-server
+/// client: the web RS client registers SDKs via the generated
+/// per-app wrapper's `register_extensions`, but the iOS RS client is
+/// a fixed staticlib that links no user code — so the SDK set is
+/// compiled in here, fixed at build time (like React Native native
+/// modules). `register` runs after `IosBackend::new` and before
+/// `RuntimeServerShell::spawn_with_options`, matching the local-mount
+/// ordering where `register_extensions` runs before the first mount.
+///
+/// `backend-ios-mobile` itself stays SDK-free (the SDKs depend on it,
+/// so it can't depend back without a cycle); the `register` closure
+/// is supplied by a crate above both.
+///
+/// Not a `#[no_mangle] extern "C"` symbol — the only caller is the
+/// Rust-side RS-shell crate, and the `fn(&mut IosBackend)` argument
+/// isn't FFI-safe. Swift never calls this directly; it calls the
+/// shell's `ios_main`, which forwards here.
+///
+/// # Safety
+/// Same contract as [`ios_main`].
+pub unsafe fn ios_main_with_register(
+    root_view: *mut std::ffi::c_void,
+    endpoint_utf8: *const c_char,
+    register: fn(&mut IosBackend),
+) {
     // Wrap the whole body in `catch_unwind` — this is an
     // `extern "C"` boundary into Swift/UIKit code that is not built
     // for Rust unwind ABI. A panic propagating out is undefined
@@ -104,6 +140,12 @@ pub unsafe extern "C" fn ios_main(
 
         let mut backend = IosBackend::new(mtm);
         backend.set_host_root(view.clone());
+
+        // Register the compiled-in SDK handlers (no-op for the
+        // back-compat `ios_main`). Must run before the shell spawns so
+        // the first wire `create_navigator` / `create_external` finds
+        // the handler + the wire presentation factory.
+        register(&mut backend);
 
         let shell = Rc::new(RuntimeServerShell::spawn_with_options(
             backend,

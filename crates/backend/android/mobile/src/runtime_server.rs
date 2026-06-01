@@ -134,6 +134,35 @@ pub fn attach_with_url<'l>(
     root: JObject<'l>,
     url: &str,
 ) {
+    // Back-compat entry: no SDK handlers registered. The generated
+    // runtime-server wrapper (which links the first-party SDKs) calls
+    // `attach_with_url_with_register` instead, passing a closure that
+    // runs the SDK `register` calls so native chrome renders over the
+    // wire.
+    attach_with_url_with_register(env, context, root, url, |_backend| {})
+}
+
+/// Like [`attach_with_url`] but lets the caller register SDK
+/// extension handlers on the freshly-built [`AndroidBackend`] before
+/// the shell spawns. This is the seam the generated runtime-server
+/// wrapper uses to bundle the first-party SDKs into the (otherwise
+/// app-agnostic) runtime-server client: the iOS/Android RS client is
+/// a fixed binary that links no user code — so the SDK set is
+/// compiled in here, fixed at build time (like React Native native
+/// modules). `register` runs after `AndroidBackend::new` and before
+/// `RuntimeServerShell::spawn_with_options`, matching the local-mount
+/// ordering.
+///
+/// `backend-android-mobile` itself stays SDK-free (the SDKs depend on
+/// it, so it can't depend back without a cycle); the `register`
+/// closure is supplied by a crate above both.
+pub fn attach_with_url_with_register<'l>(
+    env: &mut JNIEnv<'l>,
+    context: JObject<'l>,
+    root: JObject<'l>,
+    url: &str,
+    register: fn(&mut AndroidBackend),
+) {
     install_panic_hook_once();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let context_global = env
@@ -146,7 +175,12 @@ pub fn attach_with_url<'l>(
         SHELL.with(|slot| slot.borrow_mut().take());
 
         let viewport = sample_viewport(env, &root);
-        let backend = AndroidBackend::new(context_global, root_global);
+        let mut backend = AndroidBackend::new(context_global, root_global);
+        // Register the compiled-in SDK handlers (no-op for the
+        // back-compat `attach_with_url`). Must run before the shell
+        // spawns so the first wire `create_navigator` / `create_external`
+        // finds the handler + the wire presentation factory.
+        register(&mut backend);
         let shell = RuntimeServerShell::spawn_with_options(
             backend,
             url.to_string(),

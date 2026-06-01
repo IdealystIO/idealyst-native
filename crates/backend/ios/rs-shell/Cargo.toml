@@ -1,0 +1,39 @@
+# iOS runtime-server SHELL crate.
+#
+# This is the fixed, app-agnostic staticlib the Swift glue links when
+# you run `idealyst dev --ios` (default = runtime-server). It exists
+# ABOVE `backend-ios-mobile` so it can depend on the first-party SDK
+# crates (drawer-navigator / idea-codeblock / table) — which themselves
+# depend on `backend-ios-mobile`, so the backend crate can't depend on
+# them (Cargo cycle). The shell bundles the SDK handlers in at build
+# time (like React Native native modules) and registers them on the RS
+# client backend via `ios_main_with_register`, so native SDK chrome
+# (the Drawer navigator) renders over the wire on device.
+#
+# It re-exports the same `#[no_mangle] ios_main` / `ios_teardown` C
+# symbols the Swift host references, so `run-ios` just repoints
+# `IOS_AAS_SHELL_PACKAGE` here. The `[lib] name = "backend_ios"` keeps
+# the Swift `-lbackend_ios` link flag unchanged.
+[package]
+name = "backend-ios-rs-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# Preserve the staticlib filename the Swift link step expects
+# (`libbackend_ios.a`) so `run-ios` only has to change the package,
+# not the `-l` flag.
+name = "backend_ios"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+backend-ios-mobile = { workspace = true, features = ["runtime-server"] }
+# First-party SDKs bundled into the RS client. These depend on
+# backend-ios-mobile; this shell sits above both so there's no cycle.
+drawer-navigator = { workspace = true }
+idea-codeblock = { workspace = true }
+table = { workspace = true }

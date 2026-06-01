@@ -516,6 +516,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-ios-rs-shell"
+version = "0.0.1"
+dependencies = [
+ "backend-ios-mobile",
+ "drawer-navigator",
+ "idea-codeblock",
+ "runtime-core",
+ "table",
+]
+
+[[package]]
 name = "backend-ios-stack"
 version = "0.0.1"
 dependencies = [

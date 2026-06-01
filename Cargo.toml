@@ -16,6 +16,7 @@ members = [
     "crates/backend/macos",
     "crates/backend/ios/core",
     "crates/backend/ios/mobile",
+    "crates/backend/ios/rs-shell",
     "crates/backend/ios/tv",
     "crates/backend/ios-stack",
     "crates/backend/android/core",
@@ -219,6 +220,7 @@ backend-apple-core = { path = "crates/backend/apple/core" }
 backend-macos = { path = "crates/backend/macos" }
 backend-ios-core = { path = "crates/backend/ios/core" }
 backend-ios-mobile = { path = "crates/backend/ios/mobile" }
+backend-ios-rs-shell = { path = "crates/backend/ios/rs-shell" }
 backend-ios-tv = { path = "crates/backend/ios/tv" }
 backend-ios-stack = { path = "crates/backend/ios-stack" }
 backend-android-core = { path = "crates/backend/android/core" }

@@ -66,7 +66,17 @@ const INFO_PLIST_TMPL: &str = include_str!("../templates/Info.plist.tmpl");
 /// `libbackend_ios.a`), which is preserved by `[lib] name =
 /// "backend_ios"` in that crate so the Xcode link step doesn't have
 /// to know about the package rename.
-const IOS_AAS_SHELL_PACKAGE: &str = "backend-ios-mobile";
+/// The runtime-server shell crate built + linked for `--ios` (default
+/// runtime-server mode). This is `backend-ios-rs-shell`, NOT
+/// `backend-ios-mobile`: the shell sits ABOVE the backend so it can
+/// depend on (and register) the first-party SDK crates
+/// (drawer-navigator / idea-codeblock / table), which themselves
+/// depend on `backend-ios-mobile`. Bundling those SDK handlers into
+/// the fixed RS client is what makes native SDK chrome (the Drawer
+/// navigator) render over the wire on device. The shell re-exports the
+/// same `ios_main` / `ios_teardown` C symbols and keeps `[lib] name =
+/// "backend_ios"`, so the Swift glue + `-l` flag are unchanged.
+const IOS_AAS_SHELL_PACKAGE: &str = "backend-ios-rs-shell";
 const IOS_AAS_SHELL_LIB: &str = "backend_ios";
 
 /// Whether the iOS process runs the user's app locally or acts as a
@@ -250,21 +260,18 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
 fn build_runtime_server_shell(workspace_root: &Path, target: &str, release: bool) -> Result<()> {
     let manifest = workspace_root.join("Cargo.toml");
     let mut cmd = Command::new("cargo");
+    // The shell crate enables `backend-ios-mobile/runtime-server`
+    // unconditionally via its dep declaration, so there's no
+    // `--features runtime-server` to pass here (the old
+    // `backend-ios-mobile` package had its own such feature).
     cmd.args(["build", "--manifest-path"])
         .arg(&manifest)
-        .args([
-            "-p",
-            IOS_AAS_SHELL_PACKAGE,
-            "--features",
-            "runtime-server",
-            "--target",
-            target,
-        ]);
+        .args(["-p", IOS_AAS_SHELL_PACKAGE, "--target", target]);
     if release {
         cmd.arg("--release");
     }
     eprintln!(
-        "[run-ios] cargo build -p {IOS_AAS_SHELL_PACKAGE} --features runtime-server --target {target}{}",
+        "[run-ios] cargo build -p {IOS_AAS_SHELL_PACKAGE} --target {target}{}",
         if release { " --release" } else { "" },
     );
     let status = cmd
