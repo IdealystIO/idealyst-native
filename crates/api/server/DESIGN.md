@@ -11,8 +11,9 @@ middleware + auth guards (`Auth`/`Cookies`) · Phase 3 collision detection +
 schema versioning (`strict_version`, `IncompatibleVersion`) · Phase 4 deliberate
 batching · Phase 5a client credentials · Phase 5b `storage` crate.
 **Remaining:** `net` cookie support + per-platform `storage` backends (device
-testing), Phase 6 enforcement scaffolding (CLI templates), GraphQL BFF recipe.
-See the per-phase list near the end for detail.
+testing), Phase 6 enforcement scaffolding (CLI templates), **Phase 7 streaming &
+WebSockets** (§9 — sibling transport for subscriptions/duplex), GraphQL BFF
+recipe. See the per-phase list near the end for detail.
 
 The full-stack API layer lives under `crates/api/` (`server`, `server-macros`,
 and the future middleware / `storage` crates), kept separate from the UI-facing
@@ -37,8 +38,9 @@ app crate that holds their `#[server]` fns, not this repo's `crates/api/` home.
    actually needs (header injection, cookies, secure storage).
 8. **Deliberate batching** — opt-in, not a silent default.
 
-Non-goals for v1: streaming/subscriptions, exposing idealyst fns *as* GraphQL.
-GraphQL *consumption* is addressed as a BFF recipe, not framework surface.
+Non-goals for the HTTP layer (Phases 0–6): streaming/subscriptions (now their own
+transport — see §9 and Phase 7), exposing idealyst fns *as* GraphQL. GraphQL
+*consumption* is addressed as a BFF recipe, not framework surface.
 
 ---
 
@@ -365,6 +367,131 @@ header on native), and the primitives make both expressible.
 
 ---
 
+## 9. Streaming & WebSockets (planned)
+
+The HTTP layer above is request/response. Bidirectional and streamed
+communication (live queries, notifications, progress, LLM tokens, chat/presence)
+is a **sibling transport** in `crates/api/`, deliberately separate from the
+dev/AAS scene-replay wire (`crates/dev/wire`): that socket carries
+runtime commands, this one carries author streams, and they share no protocol.
+What this layer *does* share is the spine — the cfg-split model, `inventory`
+registration, `Context`/`FromContext` extractors, middleware, `ServerError<E>`,
+and the schema-hash drift diagnostic. The author's mental model does not fork;
+only the return shape and the transport differ.
+
+### 9.1 Author primitives
+
+Two front doors, one mechanism. `#[subscription]` is the server→client case;
+`#[channel]` is full duplex. They cfg-split exactly like `#[server]` (server
+build keeps the body + registers a handler; client build emits a stub returning
+a stream/channel handle).
+
+```rust
+// server → client stream (the common case)
+#[subscription]
+async fn watch_tasks(filter: TaskFilter, user: Auth<Principal>, db: State<Db>)
+    -> impl Stream<Item = Result<TaskEvent, ServerError>>
+{
+    db.tasks(&user).watch(filter)        // author returns a Stream; the framework pumps it
+}
+
+// full duplex (chat, presence, collab)
+#[channel]
+async fn room(mut ch: Channel<ClientMsg, ServerMsg>, id: RoomId, user: Auth<Principal>)
+    -> Result<(), ServerError>
+{
+    while let Some(msg) = ch.recv().await? { ch.send(ServerMsg::from(msg)).await?; }
+    Ok(())
+}
+```
+
+`#[subscription]` is the special case of `#[channel]` with no client→server
+payload after open. Same codegen, same wire. Non-stream params (`filter`, `id`)
+are wire args carried in the open frame; extractor params (`Auth`/`State`/…)
+resolve server-side via `FromContext` at open time, identically to HTTP.
+
+### 9.2 Connection model + frame protocol
+
+ONE WebSocket per client, lazily opened on first use, multiplexing many logical
+streams keyed by a client-minted `id` (so N live subscriptions share a single
+socket — essential for connection limits and reconnect):
+
+```
+Open  { id, path, args, schema }     client → server   start a logical stream
+Msg   { id, payload }                either direction   stream items / channel sends
+Close { id, error? }                 either direction   completion or error
+```
+
+- The **schema hash rides `Open`**, so a drifted payload type surfaces as the
+  same `IncompatibleVersion` (§5) the HTTP path produces — versioning carries
+  over for free.
+- **Connection-level** frames (hello/auth at upgrade, ping/pong) sit alongside.
+  Auth runs **once at upgrade**; the principal is cached on a connection-scoped
+  `Context`, and per-stream extractors resolve at each `Open` against that
+  context + the open args.
+
+### 9.3 Transport
+
+- **Server — modest.** axum already does upgrades (`axum::extract::ws::
+  WebSocketUpgrade`). One handler at `GET /_srv/_ws` owns the socket, demuxes by
+  `id`, spawns a task per logical stream driving the author's `Stream`/`Channel`,
+  and muxes frames back. The collision map, middleware, and extractor resolution
+  apply unchanged.
+- **Client — the lift.** `net` is HTTP-only, so this needs a new per-platform
+  `net::WebSocket` (`web_sys::WebSocket`, `URLSessionWebSocketTask`, OkHttp
+  `WebSocket`, `tokio-tungstenite`) — the same per-platform tax the HTTP client
+  paid once. A `WsConnection` manager in the API SDK owns the socket, hands out
+  logical-stream handles, and re-opens live streams after a reconnect. Write a
+  fresh `net::WebSocket`; the dev wire may migrate onto it later but stays
+  decoupled for now.
+
+### 9.4 Reactive integration
+
+The client handle plugs into reactivity and ties to a component scope:
+
+- **Subscription** → `use_subscription(...)` yields a `Signal<Option<T>>` (or
+  feeds a live `Collection<T>` that applies each event). The UI re-renders per
+  frame; dropping the scope sends `Close` and the server aborts the stream task —
+  the same `ResourceCancel`-style cleanup as HTTP server fns.
+- **Channel** → a `(Sender<ClientMsg>, Signal<ServerMsg>)` pair bound to the scope.
+
+This is the payoff: "live task list that updates when anyone edits" is
+`use_subscription(watch_tasks(filter))` feeding a `Collection`, composing with
+the controller/hook patterns.
+
+### 9.5 Reuse vs. net-new
+
+| Reused from the HTTP layer | Net-new for WS |
+|---|---|
+| cfg-split, `inventory` registration | `#[subscription]`/`#[channel]` macros + a `WsEntry` |
+| `Context`/`FromContext`/`State`/`Auth` | connection-scoped auth (guard at upgrade) |
+| `ServerError<E>`, schema-hash → `IncompatibleVersion` | the multiplexed frame protocol |
+| shared `api` crate layout, middleware | `net::WebSocket` per-platform client (the bulk) |
+
+### 9.6 The hard parts (decide up front)
+
+1. **Backpressure.** A server stream faster than the socket drains needs bounded
+   per-stream channels so the author's `Stream` is polled only as fast as the
+   wire accepts. Design in bounded mpsc per `id` from the start.
+2. **Reconnect/resume.** Re-opening idempotent *subscriptions* (server re-sends
+   current state on `Open`) is easy; resuming a stateful *channel* mid-stream is
+   the AAS-snapshot problem. v1: auto-reopen subscriptions; surface a channel
+   reconnect as an explicit "interrupted" event the author handles — no pretend
+   seamless resume.
+3. **Ordering/delivery.** Per-`id` ordering is free (single socket). The contract
+   is at-most-once, per-stream-ordered; cross-stream ordering and
+   delivery-across-reconnect are the author's to build on top (acks).
+
+### 9.7 SSE — the cheap one-way option
+
+Much "streamed content" (progress, tokens, notifications) is server→client only.
+Server-Sent Events ride the **existing HTTP transport** (axum supports them
+directly), need no new client transport or bidirectional protocol, and cover the
+unidirectional cases. Ship SSE alongside WS; reach for WS only when the
+client→server direction (chat/presence/collab) is genuinely needed.
+
+---
+
 ## Wire protocol v1 (delta from v0)
 
 - Path: `/_srv/<module::path>` (was bare fn name).
@@ -430,6 +557,12 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
   SharedPreferences/Keystore) — these are per-platform and need device testing. (item 3)
 - **Phase 6 — Enforcement scaffolding.** layered `api`/`ui`/`server-bin` CLI
   templates; clippy `disallowed-types`; colocation cfg-gating recipe. (item 0)
+- **Phase 7 — Streaming & WebSockets.** `#[subscription]`/`#[channel]` macros +
+  `Channel<In, Out>`; multiplexed `/_srv/_ws` over a per-platform `net::WebSocket`;
+  connection-scoped auth; `use_subscription` reactive handle; SSE as the cheap
+  one-way option. Sibling transport, shares the extractor/auth/error/versioning
+  spine; decoupled from the dev wire. See §9. (new — sized as the per-platform WS
+  client + macros + axum upgrade dispatcher)
 - **Later — GraphQL BFF recipe.** server fns as a typed gateway over an existing
   GraphQL/REST system; DTOs codegen'd from the upstream schema.
 
