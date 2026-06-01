@@ -39,7 +39,7 @@ use futures_channel::oneshot;
 use net::CancelToken;
 use serde_json::Value;
 
-use crate::error::ServerError;
+use crate::error::TransportError;
 
 // -----------------------------------------------------------------------------
 // Pending queue
@@ -56,7 +56,7 @@ struct PendingCall {
     args: Value,
     /// One-shot the flusher resolves with this call's result slot.
     /// The caller awaits the receiver half.
-    response: oneshot::Sender<Result<Value, ServerError>>,
+    response: oneshot::Sender<Result<Value, TransportError>>,
     /// Cancellation token observed both before flush (filtered out
     /// of the batch) and during flight (solo path aborts HTTP; batch
     /// path resolves the awaiter early but lets the shared HTTP run).
@@ -86,14 +86,14 @@ static FLUSH_SCHEDULED: AtomicBool = AtomicBool::new(false);
 /// siblings, drains the queue, and dispatches. Other callers just
 /// await their oneshot slot.
 ///
-/// The returned `Result<Value, ServerError>` is whatever the server
+/// The returned `Result<Value, TransportError>` is whatever the server
 /// produced for this slot:
 /// - `Ok(value)` on success — the caller still needs to
 ///   `serde_json::from_value::<Ret>` it.
-/// - `Err(ServerError)` on transport / codec / 4xx-5xx failure
-///   (including [`ServerError::Cancelled`] when the call's cancel
+/// - `Err(TransportError)` on transport / codec / 4xx-5xx failure
+///   (including [`TransportError::Cancelled`] when the call's cancel
 ///   token fired).
-pub(crate) async fn enqueue(path: &str, args: Value) -> Result<Value, ServerError> {
+pub(crate) async fn enqueue(path: &str, args: Value) -> Result<Value, TransportError> {
     // Pick up the cancel token associated with the current `with_cancel`
     // scope, if any. None means this call is not cancellable.
     let cancel = crate::cancel::current_cancel();
@@ -102,7 +102,7 @@ pub(crate) async fn enqueue(path: &str, args: Value) -> Result<Value, ServerErro
     // here, don't even enqueue. Saves the queue insert + flush yield.
     if let Some(t) = &cancel {
         if t.is_cancelled() {
-            return Err(ServerError::Cancelled);
+            return Err(TransportError::Cancelled);
         }
     }
 
@@ -140,7 +140,7 @@ pub(crate) async fn enqueue(path: &str, args: Value) -> Result<Value, ServerErro
     // fired} wins. Without a token this is just `rx.await`.
     let recv_future = async move {
         rx.await.unwrap_or_else(|_| {
-            Err(ServerError::Network(
+            Err(TransportError::Network(
                 "batch flusher dropped without responding".into(),
             ))
         })
@@ -153,21 +153,21 @@ pub(crate) async fn enqueue(path: &str, args: Value) -> Result<Value, ServerErro
 }
 
 /// Race a `recv_future` against the cancel token. If cancel wins,
-/// return [`ServerError::Cancelled`] immediately — the flusher /
+/// return [`TransportError::Cancelled`] immediately — the flusher /
 /// HTTP request continues in the background but the caller has
 /// moved on. For solo calls (queue size 1 at flush time) the HTTP
 /// is also aborted via `net::RequestBuilder::cancel_on`; for
 /// batched calls the shared HTTP runs to completion so other
 /// non-cancelled siblings still get their results.
-async fn race_recv_vs_cancel<F>(recv_future: F, token: CancelToken) -> Result<Value, ServerError>
+async fn race_recv_vs_cancel<F>(recv_future: F, token: CancelToken) -> Result<Value, TransportError>
 where
-    F: Future<Output = Result<Value, ServerError>>,
+    F: Future<Output = Result<Value, TransportError>>,
 {
     let mut fut = Box::pin(recv_future);
     let mut cancel_fut = Box::pin(token.cancelled());
     poll_fn(|cx| {
         if let Poll::Ready(()) = Pin::new(&mut cancel_fut).poll(cx) {
-            return Poll::Ready(Err(ServerError::Cancelled));
+            return Poll::Ready(Err(TransportError::Cancelled));
         }
         if let Poll::Ready(result) = Pin::new(&mut fut).poll(cx) {
             return Poll::Ready(result);
@@ -200,7 +200,7 @@ async fn flush(pending: Vec<PendingCall>) {
                 .map(|t| t.is_cancelled())
                 .unwrap_or(false)
             {
-                let _ = call.response.send(Err(ServerError::Cancelled));
+                let _ = call.response.send(Err(TransportError::Cancelled));
                 None
             } else {
                 Some(call)
@@ -225,10 +225,10 @@ async fn flush(pending: Vec<PendingCall>) {
         let outcome = send_batch(&pending).await;
         match outcome {
             Ok(slots) => {
-                // Each slot is the raw `Result<T, ServerError>` JSON
-                // value for that call. Wrap as `Ok(value)` in the
-                // oneshot — `call_impl` deserializes the typed
-                // `Result<T, ServerError>` from it.
+                // Each slot is the raw `Result<T, ServerError<E>>` JSON
+                // value for that call (the author's typed result, opaque
+                // here). Wrap as `Ok(value)` in the oneshot — `call_impl`
+                // deserializes the typed `Result<T, ServerError<E>>` from it.
                 //
                 // Server is contractually required to return
                 // `slots.len() == pending.len()`. If it doesn't,
@@ -239,7 +239,7 @@ async fn flush(pending: Vec<PendingCall>) {
                 for call in pending {
                     let r = match slots.next() {
                         Some(v) => Ok(v),
-                        None => Err(ServerError::Codec(
+                        None => Err(TransportError::Codec(
                             "batch response missing entry for this call".into(),
                         )),
                     };
@@ -265,7 +265,7 @@ async fn send_single(
     path: &str,
     args: &Value,
     cancel: Option<CancelToken>,
-) -> Result<Value, ServerError> {
+) -> Result<Value, TransportError> {
     use crate::client::{net_client, snapshot_config};
 
     let config = snapshot_config()?;
@@ -287,13 +287,13 @@ async fn send_single(
     if !response.is_success() {
         let status = response.status();
         let message = response.text().await.unwrap_or_default();
-        return Err(ServerError::Server { status, message });
+        return Err(TransportError::Server { status, message });
     }
 
     response
         .json::<Value>()
         .await
-        .map_err(|e| ServerError::Codec(e.to_string()))
+        .map_err(|e| TransportError::Codec(e.to_string()))
 }
 
 // -----------------------------------------------------------------------------
@@ -309,7 +309,7 @@ struct BatchEntry<'a> {
 
 async fn send_batch(
     pending: &[PendingCall],
-) -> Result<Vec<Value>, ServerError> {
+) -> Result<Vec<Value>, TransportError> {
     use crate::client::{net_client, snapshot_config};
 
     let config = snapshot_config()?;
@@ -333,21 +333,21 @@ async fn send_batch(
     if !response.is_success() {
         let status = response.status();
         let message = response.text().await.unwrap_or_default();
-        return Err(ServerError::Server { status, message });
+        return Err(TransportError::Server { status, message });
     }
 
-    // Each slot is the raw JSON `Result<T, ServerError>` produced by
+    // Each slot is the raw JSON `Result<T, ServerError<E>>` produced by
     // the server-side handler — e.g. `{"Ok": 5}` or `{"Err": {...}}`.
     // We keep slots as `Value` (rather than deserializing to
-    // `Result<Value, ServerError>` here) so the single-call wire
+    // `Result<Value, ServerError<E>>` here) so the single-call wire
     // path and the batch wire path return symmetric shapes through
     // the queue: both put the full Result JSON into the
     // `oneshot` channel, and `call_impl` deserializes the typed
-    // `Result<T, ServerError>` once at the consumer site.
+    // `Result<T, ServerError<E>>` once at the consumer site.
     response
         .json::<Vec<Value>>()
         .await
-        .map_err(|e| ServerError::Codec(e.to_string()))
+        .map_err(|e| TransportError::Codec(e.to_string()))
 }
 
 // -----------------------------------------------------------------------------

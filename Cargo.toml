@@ -88,8 +88,11 @@ members = [
 
     # SDK — utility (non-primitive) crates.
     "crates/sdk/net",
-    "crates/sdk/server",
-    "crates/sdk/server-macros",
+
+    # API — full-stack server-functions layer (server fns, transport,
+    # auth/middleware, storage). See crates/api/server/DESIGN.md.
+    "crates/api/server",
+    "crates/api/server-macros",
 
     # SDK — navigator-kind extensions (Primitive::NavigatorExt).
     "crates/sdk/stack-navigator",
@@ -264,8 +267,8 @@ form = { path = "crates/sdk/form" }
 table = { path = "crates/sdk/table" }
 menu = { path = "crates/sdk/menu" }
 net = { path = "crates/sdk/net" }
-server = { path = "crates/sdk/server" }
-server-macros = { path = "crates/sdk/server-macros" }
+server = { path = "crates/api/server" }
+server-macros = { path = "crates/api/server-macros" }
 stack-navigator = { path = "crates/sdk/stack-navigator" }
 tab-navigator = { path = "crates/sdk/tab-navigator" }
 drawer-navigator = { path = "crates/sdk/drawer-navigator" }

@@ -16,8 +16,9 @@ use axum::Router;
 use serde::{Deserialize, Serialize};
 
 use crate::__private::ServerFnEntry;
-use crate::error::ServerError;
-use crate::extractors::{RequestContext, REQUEST_CONTEXT};
+use crate::error::{ServerError, TransportError};
+use crate::extract::Context;
+use crate::extractors::CURRENT_CONTEXT;
 
 /// Build an `axum::Router` containing every `#[server]` function
 /// linked into the current binary.
@@ -78,10 +79,8 @@ async fn dispatch(headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> 
     };
 
     let body_vec = body.to_vec();
-    let ctx = RequestContext {
-        headers: Arc::new(headers),
-    };
-    let result = REQUEST_CONTEXT
+    let ctx = Context::new(Arc::new(headers));
+    let result = CURRENT_CONTEXT
         .scope(ctx, (entry.handler)(body_vec))
         .await;
 
@@ -92,12 +91,26 @@ async fn dispatch(headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> 
             bytes,
         )
             .into_response(),
-        // Codec failure inside the handler (decoding args, encoding
-        // result) is a 400 — the client sent something the server
-        // couldn't make sense of (or vice versa for encoding,
-        // technically a 500, but we treat both as schema-drift and
-        // surface them under 400 for v0).
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => transport_error_response(e),
+    }
+}
+
+/// Map a handler-level [`TransportError`] to an HTTP response.
+///
+/// An extractor failure carries an intended status in
+/// `Server { status, .. }` (e.g. 500 for missing `State`, 401 for a
+/// failed auth guard); honour it. A `Codec` failure is a malformed
+/// request/response — a 400. Other transport variants can't originate
+/// server-side; treat them as 500.
+fn transport_error_response(e: TransportError) -> Response {
+    match e {
+        TransportError::Server { status, message } => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            message,
+        )
+            .into_response(),
+        TransportError::Codec(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+        other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()).into_response(),
     }
 }
 
@@ -136,9 +149,14 @@ enum BatchOutputEntry {
     /// Always emitted; carries either `Ok(value)` or `Err(error)`
     /// depending on the handler's outcome. Serialised flat
     /// (untagged) so the wire format matches what
-    /// `serde_json::to_vec(&Result<Value, ServerError>::Ok(v))`
+    /// `serde_json::to_vec(&Result<Value, ServerError<Value>>::Ok(v))`
     /// would produce: `{"Ok": v}` / `{"Err": ...}`.
-    Result(Result<serde_json::Value, ServerError>),
+    ///
+    /// The error half is `ServerError<Value>`: the dispatcher is
+    /// type-erased over each fn's domain error `E`, so it re-parses the
+    /// handler's already-serialized error into a generic `Value` payload
+    /// rather than the concrete `E` (which it can't name here).
+    Result(Result<serde_json::Value, ServerError<serde_json::Value>>),
 }
 
 async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
@@ -151,11 +169,9 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
     };
 
     // Build the request context once and re-enter it per handler.
-    // Sharing the `Arc<HeaderMap>` avoids cloning headers N times
-    // for a batch of N entries.
-    let ctx = RequestContext {
-        headers: Arc::new(headers),
-    };
+    // `Context` is cheap to clone (Arc-shared headers + extensions), so
+    // re-entering it for each of N batch entries is free.
+    let ctx = Context::new(Arc::new(headers));
 
     let mut results: Vec<BatchOutputEntry> = Vec::with_capacity(calls.len());
     for call in calls {
@@ -182,23 +198,26 @@ async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
             }
         };
 
-        let handler_outcome = REQUEST_CONTEXT
+        let handler_outcome = CURRENT_CONTEXT
             .scope(ctx.clone(), (entry.handler)(arg_bytes))
             .await;
         let slot = match handler_outcome {
             Ok(result_bytes) => {
                 // The handler returned a JSON-encoded
-                // `Result<T, ServerError>`. Re-parse it as
-                // `Result<Value, ServerError>` so we can embed it into
-                // the outer array without re-stringifying.
-                match serde_json::from_slice::<Result<serde_json::Value, ServerError>>(
+                // `Result<T, ServerError<E>>`. Re-parse it as
+                // `Result<Value, ServerError<Value>>` so we can embed it
+                // into the outer array without re-stringifying or naming
+                // the concrete `E`.
+                match serde_json::from_slice::<Result<serde_json::Value, ServerError<serde_json::Value>>>(
                     &result_bytes,
                 ) {
                     Ok(r) => r,
                     Err(e) => Err(ServerError::Codec(e.to_string())),
                 }
             }
-            Err(codec_err) => Err(codec_err),
+            // Transport-level codec failure from the handler ABI; lift it
+            // into the type-erased `ServerError<Value>` slot.
+            Err(codec_err) => Err(codec_err.into_domain()),
         };
         results.push(BatchOutputEntry::Result(slot));
     }

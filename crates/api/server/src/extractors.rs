@@ -75,33 +75,37 @@ pub fn use_state<T: Clone + Send + Sync + 'static>() -> Option<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Per-request data
+// Per-request context
 // ---------------------------------------------------------------------------
 
-/// Bundle the dispatcher sets via `tokio::task_local` before
-/// invoking a handler's future. The handler reads from it via the
-/// `use_request_*` accessors.
-#[derive(Clone)]
-pub struct RequestContext {
-    /// Raw HTTP headers from the incoming request. `Arc` so the
-    /// dispatcher can build it once per request and the handler
-    /// clones cheaply.
-    pub headers: Arc<HeaderMap>,
-}
+use crate::extract::Context;
 
 tokio::task_local! {
-    /// Set by the dispatcher; read by `use_request_*`. The
-    /// task-local lookup is O(1) and confined to the dispatching
-    /// task — concurrent requests on different tasks see their own
-    /// scope.
-    pub(crate) static REQUEST_CONTEXT: RequestContext;
+    /// The current request's [`Context`], set by the dispatcher around
+    /// each handler future. Read by `use_request_*` (legacy convenience
+    /// accessors) and by [`current_context`] (which the macro's handler
+    /// uses to resolve `FromContext` extractor params). The task-local
+    /// lookup is O(1) and confined to the dispatching task — concurrent
+    /// requests on different tasks see their own scope.
+    pub(crate) static CURRENT_CONTEXT: Context;
+}
+
+/// Clone the current request's [`Context`]. Returns
+/// [`Context::empty`](crate::extract::Context::empty) when called
+/// outside a request scope (utility code, background tasks). The macro's
+/// generated handler calls this once, then resolves each injected
+/// extractor against the result.
+pub(crate) fn current_context() -> Context {
+    CURRENT_CONTEXT
+        .try_with(|c| c.clone())
+        .unwrap_or_else(|_| Context::empty())
 }
 
 /// Read the current request's HTTP headers, or `None` if called
 /// outside an active handler context (e.g. from app startup or a
 /// background task).
 pub fn use_request_headers() -> Option<Arc<HeaderMap>> {
-    REQUEST_CONTEXT.try_with(|c| c.headers.clone()).ok()
+    CURRENT_CONTEXT.try_with(|c| c.headers_arc()).ok()
 }
 
 /// Read a single header by name from the current request.

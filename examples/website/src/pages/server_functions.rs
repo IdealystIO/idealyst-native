@@ -1,6 +1,6 @@
 //! Server functions — one async fn, two compilations. The body runs
 //! on the server; the client call site compiles into a typed HTTP
-//! stub. Companion to the `#[server]` macro + `crates/sdk/server`.
+//! stub. Companion to the `#[server]` macro + `crates/api/server`.
 
 use runtime_core::{ui, Element, Ref, ViewHandle};
 use idea_ui::{Stack, Typography, StackGap};

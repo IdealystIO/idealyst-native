@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::error::{ServerError, ServerFnReturn};
+use crate::error::{ServerError, ServerFnReturn, TransportError};
 
 /// Author-supplied configuration for the client side of server
 /// functions. Install once at app start via [`configure`].
@@ -43,9 +43,9 @@ pub fn configure(config: ClientConfig) {
 /// [`configure`] was never called — that's a programmer error and we
 /// surface it loudly through the same error channel a real network
 /// failure would use.
-pub(crate) fn snapshot_config() -> Result<Arc<ClientConfig>, ServerError> {
+pub(crate) fn snapshot_config() -> Result<Arc<ClientConfig>, TransportError> {
     let slot = CONFIG.get().ok_or_else(|| {
-        ServerError::Network(
+        TransportError::Network(
             "server::configure(...) was never called; the client doesn't know where the server lives".into(),
         )
     })?;
@@ -82,7 +82,9 @@ where
 
     let response_value = match crate::batch::enqueue(path, args_value).await {
         Ok(v) => v,
-        Err(e) => return Ret::from_server_error(e),
+        // The queue/HTTP layer fails only in transport ways; fold that into the
+        // caller's domain error type `Ret::Error`.
+        Err(e) => return Ret::from_server_error(e.into_domain()),
     };
 
     match serde_json::from_value::<Ret>(response_value) {
@@ -91,17 +93,17 @@ where
     }
 }
 
-pub(crate) fn map_net_error(e: net::Error) -> ServerError {
+pub(crate) fn map_net_error(e: net::Error) -> TransportError {
     match e {
-        net::Error::Timeout => ServerError::Network("timeout".into()),
-        net::Error::Offline => ServerError::Network("device offline".into()),
-        net::Error::InvalidUrl(s) => ServerError::Network(format!("invalid url: {s}")),
-        net::Error::Network(s) | net::Error::Other(s) => ServerError::Network(s),
-        net::Error::Serialize(s) | net::Error::Deserialize(s) => ServerError::Codec(s),
-        net::Error::Status { code, body } => ServerError::Server {
+        net::Error::Timeout => TransportError::Network("timeout".into()),
+        net::Error::Offline => TransportError::Network("device offline".into()),
+        net::Error::InvalidUrl(s) => TransportError::Network(format!("invalid url: {s}")),
+        net::Error::Network(s) | net::Error::Other(s) => TransportError::Network(s),
+        net::Error::Serialize(s) | net::Error::Deserialize(s) => TransportError::Codec(s),
+        net::Error::Status { code, body } => TransportError::Server {
             status: code,
             message: body.unwrap_or_default(),
         },
-        net::Error::Cancelled => ServerError::Cancelled,
+        net::Error::Cancelled => TransportError::Cancelled,
     }
 }

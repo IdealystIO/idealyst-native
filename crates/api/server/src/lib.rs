@@ -36,13 +36,22 @@
 
 mod error;
 
-pub use error::{ServerError, ServerFnReturn};
+pub use error::{ServerError, ServerFnReturn, TransportError};
 
 /// The `#[server]` attribute macro. See [`server_macros::server`] for
 /// the parsing rules and emitted shape; re-exported here so authors
 /// `use server::server;` rather than depending on the macro crate
 /// directly.
 pub use server_macros::server;
+
+// =============================================================================
+// Extractor wrappers — present on BOTH builds (they appear in the
+// author's shared `#[server]` fn signature). The resolution machinery
+// they rely on is server-only (see below).
+// =============================================================================
+
+mod extract;
+pub use extract::{Extension, Headers, State};
 
 // =============================================================================
 // Client-only surface: configuration + the `call()` the macro emits.
@@ -68,9 +77,9 @@ mod extractors;
 #[cfg(feature = "server")]
 mod runtime;
 #[cfg(feature = "server")]
-pub use extractors::{
-    install_state, use_request_header, use_request_headers, use_state, RequestContext,
-};
+pub use extract::{Context, ContextBuilder, FromContext};
+#[cfg(feature = "server")]
+pub use extractors::{install_state, use_request_header, use_request_headers, use_state};
 #[cfg(feature = "server")]
 pub use runtime::{router, serve};
 
@@ -83,7 +92,7 @@ pub use runtime::{router, serve};
 pub mod __private {
     pub use inventory;
 
-    use crate::error::ServerError;
+    use crate::error::TransportError;
     #[cfg(not(feature = "server"))]
     use crate::error::ServerFnReturn;
     use serde::{de::DeserializeOwned, Serialize};
@@ -98,15 +107,16 @@ pub mod __private {
     /// served at `POST /_srv/add`).
     ///
     /// `handler` takes the raw request body, decodes the args tuple,
-    /// awaits the function, and encodes the `Result` for the wire. It
-    /// returns its own `Err` only when the input/output codec itself
-    /// fails (the user's `Err` is encoded into the success bytes).
+    /// awaits the function, and encodes the `Result` for the wire. Its
+    /// error half is a [`TransportError`] — it fails only when the
+    /// input/output codec itself fails (the user's `Err` is encoded into
+    /// the success bytes, never surfaced here).
     pub struct ServerFnEntry {
         pub path: &'static str,
         pub handler: fn(
             Vec<u8>,
         )
-            -> Pin<Box<dyn Future<Output = Result<Vec<u8>, ServerError>> + Send>>,
+            -> Pin<Box<dyn Future<Output = Result<Vec<u8>, TransportError>> + Send>>,
     }
 
     // SAFETY: ServerFnEntry holds only static data + a fn pointer; both
@@ -118,14 +128,23 @@ pub mod __private {
 
     /// Decode the args tuple from the request body. Used by the macro's
     /// server-side expansion.
-    pub fn decode_args<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ServerError> {
-        serde_json::from_slice(bytes).map_err(|e| ServerError::Codec(e.to_string()))
+    pub fn decode_args<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, TransportError> {
+        serde_json::from_slice(bytes).map_err(|e| TransportError::Codec(e.to_string()))
     }
 
     /// Encode the function's `Result` for the wire. Used by the macro's
     /// server-side expansion.
-    pub fn encode_result<T: Serialize>(value: &T) -> Result<Vec<u8>, ServerError> {
-        serde_json::to_vec(value).map_err(|e| ServerError::Codec(e.to_string()))
+    pub fn encode_result<T: Serialize>(value: &T) -> Result<Vec<u8>, TransportError> {
+        serde_json::to_vec(value).map_err(|e| TransportError::Codec(e.to_string()))
+    }
+
+    /// Clone the current request's [`Context`](crate::extract::Context).
+    /// The macro's server-side handler calls this once, then resolves
+    /// each `#[ctx]` / reserved-wrapper extractor param against it via
+    /// [`FromContext`](crate::extract::FromContext).
+    #[cfg(feature = "server")]
+    pub fn current_context() -> crate::extract::Context {
+        crate::extractors::current_context()
     }
 
     /// The client-side call function. The macro's client-side
