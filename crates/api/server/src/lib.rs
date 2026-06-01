@@ -68,7 +68,10 @@ pub use batch::{batch, BatchScope};
 #[cfg(not(feature = "server"))]
 pub use cancel::{with_cancel, with_cancel_token, WithCancel};
 #[cfg(not(feature = "server"))]
-pub use client::{configure, ClientConfig};
+pub use client::{
+    bearer, configure, credentials_from_fn, BearerCredentials, ClientConfig, CredentialProvider,
+    FnCredentials,
+};
 
 // =============================================================================
 // Server-only surface: axum router + bind/serve.

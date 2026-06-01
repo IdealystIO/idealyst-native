@@ -179,7 +179,7 @@ fn configure_server() {
         let origin = web_sys::window()
             .and_then(|w| w.location().origin().ok())
             .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
-        server::configure(server::ClientConfig { base_url: origin });
+        server::configure(server::ClientConfig::new(origin));
     }
 }
 

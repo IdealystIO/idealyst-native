@@ -371,12 +371,18 @@ async fn send_single(
     let url = format!("{}/_srv/{}", config.base_url.trim_end_matches('/'), path);
 
     // Advertise our wire schema hash so the server can run its drift
-    // diagnostic (and `strict_version` gate). Conditional `.cancel_on`
+    // diagnostic (and `strict_version` gate), then attach any configured
+    // credential headers (bearer token, etc.). Conditional `.cancel_on`
     // avoids allocating a token slot for non-cancellable solo calls.
     let mut request = net_client()
         .post(url)
-        .set_header(SCHEMA_HEADER, format!("{schema:x}"))
-        .body(net::Json(args));
+        .set_header(SCHEMA_HEADER, format!("{schema:x}"));
+    if let Some(creds) = &config.credentials {
+        for (name, value) in creds.headers() {
+            request = request.set_header(name, value);
+        }
+    }
+    request = request.body(net::Json(args));
     if let Some(token) = cancel {
         request = request.cancel_on(token);
     }
@@ -454,8 +460,13 @@ async fn send_batch(
         })
         .collect();
 
-    let response = net_client()
-        .post(url)
+    let mut request = net_client().post(url);
+    if let Some(creds) = &config.credentials {
+        for (name, value) in creds.headers() {
+            request = request.set_header(name, value);
+        }
+    }
+    let response = request
         .body(net::Json(&body))
         .send()
         .await

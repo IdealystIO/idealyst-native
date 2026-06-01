@@ -12,12 +12,87 @@ use crate::error::{ServerError, ServerFnReturn, TransportError};
 
 /// Author-supplied configuration for the client side of server
 /// functions. Install once at app start via [`configure`].
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ClientConfig {
     /// Base URL of the server (no trailing `/_srv/`; e.g.
     /// `https://api.example.com` or `http://localhost:3000`). The
     /// SDK appends `/_srv/<path>` per call.
     pub base_url: String,
+    /// Optional credential source whose headers are attached to every
+    /// outgoing server-fn request (e.g. a bearer token). `None` means
+    /// no credentials are injected (cookie-based auth, or unauthenticated).
+    pub(crate) credentials: Option<Arc<dyn CredentialProvider>>,
+}
+
+impl ClientConfig {
+    /// Config pointing at `base_url`, with no credentials.
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            credentials: None,
+        }
+    }
+
+    /// Attach a credential source (see [`bearer`], [`credentials_from_fn`]).
+    pub fn with_credentials(mut self, provider: impl CredentialProvider) -> Self {
+        self.credentials = Some(Arc::new(provider));
+        self
+    }
+}
+
+/// Supplies authentication headers attached to every outgoing server-fn
+/// request. The SDK stays auth-scheme-agnostic — bearer / JWT / custom
+/// header schemes compose from this; cookie-based auth needs no provider
+/// (the platform's cookie jar handles it).
+pub trait CredentialProvider: Send + Sync + 'static {
+    /// Headers to attach to the next request. Called per request, so a
+    /// rotated / refreshed token (e.g. read from secure storage) is
+    /// picked up without reconfiguring.
+    fn headers(&self) -> Vec<(String, String)>;
+}
+
+/// A bearer-token credential: attaches `Authorization: Bearer <token>`
+/// when the closure yields a token. The closure runs per request.
+pub fn bearer<F>(token: F) -> BearerCredentials<F>
+where
+    F: Fn() -> Option<String> + Send + Sync + 'static,
+{
+    BearerCredentials(token)
+}
+
+/// Credential source from [`bearer`].
+pub struct BearerCredentials<F>(F);
+
+impl<F> CredentialProvider for BearerCredentials<F>
+where
+    F: Fn() -> Option<String> + Send + Sync + 'static,
+{
+    fn headers(&self) -> Vec<(String, String)> {
+        match (self.0)() {
+            Some(token) => vec![("authorization".to_string(), format!("Bearer {token}"))],
+            None => Vec::new(),
+        }
+    }
+}
+
+/// Adapt a closure returning arbitrary headers into a [`CredentialProvider`].
+pub fn credentials_from_fn<F>(f: F) -> FnCredentials<F>
+where
+    F: Fn() -> Vec<(String, String)> + Send + Sync + 'static,
+{
+    FnCredentials(f)
+}
+
+/// Credential source from [`credentials_from_fn`].
+pub struct FnCredentials<F>(F);
+
+impl<F> CredentialProvider for FnCredentials<F>
+where
+    F: Fn() -> Vec<(String, String)> + Send + Sync + 'static,
+{
+    fn headers(&self) -> Vec<(String, String)> {
+        (self.0)()
+    }
 }
 
 /// Process-wide config slot. `OnceLock<RwLock<...>>` so the value is

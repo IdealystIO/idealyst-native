@@ -847,6 +847,16 @@ mod client_side {
     struct MockCall {
         path: String,
         body: Vec<u8>,
+        headers: Vec<(String, String)>,
+    }
+
+    impl MockCall {
+        fn header(&self, name: &str) -> Option<&str> {
+            self.headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v.as_str())
+        }
     }
 
     type Replier =
@@ -890,6 +900,13 @@ mod client_side {
                                 .strip_prefix("/_srv/")
                                 .unwrap_or(parts.uri.path())
                                 .to_string();
+                            let headers = parts
+                                .headers
+                                .iter()
+                                .filter_map(|(k, v)| {
+                                    v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string()))
+                                })
+                                .collect();
                             let body_bytes = body
                                 .collect()
                                 .await
@@ -898,6 +915,7 @@ mod client_side {
                             let call = MockCall {
                                 path,
                                 body: body_bytes,
+                                headers,
                             };
                             let (status, reply_body) = (reply)(&call);
                             calls.lock().unwrap().push(call);
@@ -930,9 +948,15 @@ mod client_side {
         addr: std::net::SocketAddr,
     ) -> tokio::sync::MutexGuard<'static, ()> {
         let guard = TEST_LOCK.lock().await;
-        server::configure(server::ClientConfig {
-            base_url: format!("http://{addr}"),
-        });
+        server::configure(server::ClientConfig::new(format!("http://{addr}")));
+        guard
+    }
+
+    /// Like [`configure_for`] but takes a fully-built config (e.g. one
+    /// carrying a credential provider).
+    async fn configure_with(config: server::ClientConfig) -> tokio::sync::MutexGuard<'static, ()> {
+        let guard = TEST_LOCK.lock().await;
+        server::configure(config);
         guard
     }
 
@@ -1498,5 +1522,25 @@ mod client_side {
             }
             other => panic!("expected IncompatibleVersion, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn regression_credential_provider_attaches_bearer_header() {
+        // A configured credential source must attach its header to every
+        // outgoing request — the client half of the auth story (the
+        // server half is the Phase 2 guard).
+        let mock = mock_server(Arc::new(|_call| {
+            let body = serde_json::to_vec(&Result::<i32, ServerError>::Ok(1)).unwrap();
+            (StatusCode::OK, body)
+        }))
+        .await;
+        let config = server::ClientConfig::new(format!("http://{}", mock.addr))
+            .with_credentials(server::bearer(|| Some("xyz".to_string())));
+        let _guard = configure_with(config).await;
+
+        let _ = add(1, 2).await;
+
+        let call = &mock.calls()[0];
+        assert_eq!(call.header("authorization"), Some("Bearer xyz"));
     }
 }
