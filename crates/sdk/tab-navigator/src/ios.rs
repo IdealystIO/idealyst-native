@@ -170,6 +170,9 @@ impl NavigatorHandler<IosBackend> for IosTabHandler {
     }
 }
 
+/// Install the tab navigator handler on an iOS backend. Call once at
+/// startup so `Element::Navigator`s carrying a [`TabPresentation`]
+/// resolve to this backend's chrome.
 pub fn register(backend: &mut IosBackend) {
     backend.register_navigator::<TabPresentation, _>(|| Box::new(IosTabHandler::new()));
 }

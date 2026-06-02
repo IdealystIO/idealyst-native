@@ -221,6 +221,9 @@ fn with_backend<F: FnOnce(&mut TerminalBackend)>(f: F) {
     backend_terminal::with_global_backend(|b| f(b));
 }
 
+/// Install the stack navigator handler on the terminal backend (also the
+/// fallback for any primitive backend). Call once at startup so
+/// `Element::Navigator`s carrying a [`StackPresentation`] resolve.
 pub fn register(backend: &mut TerminalBackend) {
     backend.register_navigator::<StackPresentation, _>(|| {
         Box::new(TerminalStackHandler::new())

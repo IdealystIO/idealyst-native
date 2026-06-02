@@ -18,6 +18,7 @@
 //! `MapViewProps`. That derive is a no-op without the `catalog`
 //! feature, so the "zero platform deps" property is preserved in a
 //! normal build.
+#![deny(missing_docs)]
 
 use runtime_core::IdealystSchema;
 

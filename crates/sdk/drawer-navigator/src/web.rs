@@ -433,6 +433,9 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
     }
 }
 
+/// Install the drawer navigator handler on a web backend. Call once
+/// at startup so `Element::Navigator`s carrying a [`DrawerPresentation`]
+/// resolve to this backend's chrome.
 pub fn register(backend: &mut WebBackend) {
     backend.register_navigator::<DrawerPresentation, _>(|| Box::new(WebDrawerHandler::new()));
     // Runtime-server client path: lets `dev-client` rebuild the

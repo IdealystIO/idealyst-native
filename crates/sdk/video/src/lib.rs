@@ -46,6 +46,7 @@
 //!   backend handler closure — the per-backend impl subscribes itself
 //!   when it builds the native view. No framework-level
 //!   `update_video_src` plumbing involved.
+#![deny(missing_docs)]
 
 use runtime_core::{Bound, Element, IdealystSchema, Ref, RefFill};
 use std::any::{Any, TypeId};
@@ -108,7 +109,12 @@ pub fn src<S: IntoVideoSrc>(s: S) -> Box<dyn Fn() -> String> {
     s.into_video_src()
 }
 
+/// Coercion target for [`src`]. Implemented for `&str`, `String`, and
+/// any `Fn() -> String`, so the call site can pass a static or reactive
+/// source URL interchangeably.
 pub trait IntoVideoSrc {
+    /// Box the receiver into the `Fn() -> String` closure that
+    /// [`VideoProps::src`] stores.
     fn into_video_src(self) -> Box<dyn Fn() -> String>;
 }
 
@@ -154,14 +160,19 @@ pub struct VideoHandle {
 }
 
 impl VideoHandle {
+    /// Wrap a type-erased native node + backend ops into a handle.
+    /// Called by the `RefFill::External` closure that [`VideoBind::bind`]
+    /// installs; user code receives the handle through `Ref::with`.
     pub fn new(node: Rc<dyn Any>, ops: &'static dyn VideoOps) -> Self {
         Self { node, ops }
     }
 
+    /// Start (or resume) playback.
     pub fn play(&self) {
         self.ops.play(&*self.node);
     }
 
+    /// Pause playback, leaving the current position intact.
     pub fn pause(&self) {
         self.ops.pause(&*self.node);
     }
@@ -181,8 +192,11 @@ impl VideoHandle {
 /// VideoOps` slot per backend module, which Rust requires to be `Sync`.
 /// The ZST impls each backend ships are trivially `Sync`.
 pub trait VideoOps: Sync {
+    /// Start (or resume) playback. Default no-op.
     fn play(&self, _node: &dyn Any) {}
+    /// Pause playback. Default no-op.
     fn pause(&self, _node: &dyn Any) {}
+    /// Seek to the given offset in seconds. Default no-op.
     fn seek(&self, _node: &dyn Any, _seconds: f32) {}
 }
 

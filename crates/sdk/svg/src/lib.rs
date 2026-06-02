@@ -44,6 +44,7 @@
 //! - `SvgHandle` is the typed ref-target. It carries a type-erased
 //!   `Rc<dyn Any>` to the native node plus a `&'static dyn SvgOps`
 //!   pointer that the active backend module exposes as a static.
+#![deny(missing_docs)]
 
 use runtime_core::{Bound, Element, IdealystSchema, Ref, RefFill};
 use std::any::{Any, TypeId};
@@ -104,7 +105,12 @@ pub fn markup<U: IntoSvgMarkup>(u: U) -> Box<dyn Fn() -> String> {
     u.into_svg_markup()
 }
 
+/// Coercion target for [`markup`]. Implemented for `&str`, `String`,
+/// and any `Fn() -> String`, so the call site can pass static or
+/// reactive markup interchangeably.
 pub trait IntoSvgMarkup {
+    /// Box the receiver into the `Fn() -> String` closure that
+    /// [`SvgProps::markup`] stores.
     fn into_svg_markup(self) -> Box<dyn Fn() -> String>;
 }
 
@@ -149,6 +155,9 @@ pub struct SvgHandle {
 }
 
 impl SvgHandle {
+    /// Wrap a type-erased native node + backend ops into a handle.
+    /// Called by the `RefFill::External` closure that [`SvgBind::bind`]
+    /// installs; user code receives the handle through `Ref::with`.
     pub fn new(node: Rc<dyn Any>, ops: &'static dyn SvgOps) -> Self {
         Self { node, ops }
     }
@@ -171,6 +180,9 @@ impl SvgHandle {
 /// slot per backend module, which Rust requires to be `Sync`. The ZST
 /// impls each backend ships are trivially `Sync`.
 pub trait SvgOps: Sync {
+    /// The SVG's natural `(width, height)` in pixels once parsed, or
+    /// `None` before the first successful render. Default returns
+    /// `None`.
     fn intrinsic_size(&self, _node: &dyn Any) -> Option<(f32, f32)> {
         None
     }
@@ -210,6 +222,10 @@ pub fn Svg(props: SvgProps) -> Bound<SvgHandle> {
 /// `Bound` is foreign. Bring this trait into scope to use the builder
 /// `.bind(...)` on the value [`Svg`] returns.
 pub trait SvgBind {
+    /// Bind a `Ref<SvgHandle>` for imperative access. At mount time the
+    /// framework calls the `RefFill::External` closure with the
+    /// type-erased native node; we wrap it in an `SvgHandle` using the
+    /// cfg-selected backend's `OPS` static and fill the ref.
     fn bind(self, r: Ref<SvgHandle>) -> Self;
 }
 

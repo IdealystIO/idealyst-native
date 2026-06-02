@@ -176,6 +176,9 @@ impl NavigatorHandler<WebBackend> for WebTabHandler {
     }
 }
 
+/// Install the tab navigator handler on a web backend. Call once at
+/// startup so `Element::Navigator`s carrying a [`TabPresentation`]
+/// resolve to this backend's chrome.
 pub fn register(backend: &mut WebBackend) {
     backend.register_navigator::<TabPresentation, _>(|| Box::new(WebTabHandler::new()));
 }

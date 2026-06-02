@@ -48,6 +48,7 @@
 //!   backend handler closure — the per-backend impl subscribes itself
 //!   when it builds the native view. No framework-level
 //!   `update_web_view_url` plumbing involved.
+#![deny(missing_docs)]
 
 use runtime_core::{Bound, Element, IdealystSchema, Ref, RefFill};
 use std::any::{Any, TypeId};
@@ -113,7 +114,12 @@ pub fn url<U: IntoWebViewUrl>(u: U) -> Box<dyn Fn() -> String> {
     u.into_web_view_url()
 }
 
+/// Coercion target for [`url`]. Implemented for `&str`, `String`, and
+/// any `Fn() -> String`, so the call site can pass a static or reactive
+/// URL interchangeably.
 pub trait IntoWebViewUrl {
+    /// Box the receiver into the `Fn() -> String` closure that
+    /// [`WebViewProps::url`] stores.
     fn into_web_view_url(self) -> Box<dyn Fn() -> String>;
 }
 
@@ -159,6 +165,9 @@ pub struct WebViewHandle {
 }
 
 impl WebViewHandle {
+    /// Wrap a type-erased native node + backend ops into a handle.
+    /// Called by the `RefFill::External` closure that [`WebViewBind::bind`]
+    /// installs; user code receives the handle through `Ref::with`.
     pub fn new(node: Rc<dyn Any>, ops: &'static dyn WebViewOps) -> Self {
         Self { node, ops }
     }
@@ -196,8 +205,12 @@ impl WebViewHandle {
 /// WebViewOps` slot per backend module, which Rust requires to be
 /// `Sync`. The ZST impls each backend ships are trivially `Sync`.
 pub trait WebViewOps: Sync {
+    /// Post a message into the embedded content. Default no-op.
     fn post_message(&self, _node: &dyn Any, _msg: &str) {}
+    /// Reload the embedded content from its current URL. Default no-op.
     fn reload(&self, _node: &dyn Any) {}
+    /// Synchronously evaluate JS in the embedded content and return its
+    /// JSON-stringified result. Default returns an unsupported error.
     fn execute_js(&self, _node: &dyn Any, _code: &str) -> Result<String, String> {
         Err("execute_js not supported by this backend".into())
     }

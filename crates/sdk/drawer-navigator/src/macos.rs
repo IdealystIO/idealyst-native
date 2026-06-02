@@ -416,6 +416,9 @@ impl NavigatorHandler<MacosBackend> for MacosDrawerHandler {
     }
 }
 
+/// Install the drawer navigator handler on a macOS backend. Call once
+/// at startup so `Element::Navigator`s carrying a [`DrawerPresentation`]
+/// resolve to this backend's chrome.
 pub fn register(backend: &mut MacosBackend) {
     backend.register_navigator::<DrawerPresentation, _>(|| {
         Box::new(MacosDrawerHandler::new())

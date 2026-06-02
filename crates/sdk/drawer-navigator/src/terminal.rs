@@ -409,6 +409,9 @@ impl NavigatorHandler<TerminalBackend> for TerminalDrawerHandler {
     }
 }
 
+/// Install the drawer navigator handler on the terminal backend (also
+/// the fallback for any primitive backend). Call once at startup so
+/// `Element::Navigator`s carrying a [`DrawerPresentation`] resolve.
 pub fn register(backend: &mut TerminalBackend) {
     backend.register_navigator::<DrawerPresentation, _>(|| {
         Box::new(TerminalDrawerHandler::new())

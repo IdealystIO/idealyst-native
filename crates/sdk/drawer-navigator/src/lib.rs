@@ -79,6 +79,8 @@
 //! [`ios-navigator-helpers`]: https://docs.rs/ios-navigator-helpers
 //! [`android-navigator-helpers`]: https://docs.rs/android-navigator-helpers
 
+#![deny(missing_docs)]
+
 use runtime_core::primitives::navigator::{
     NavCommand, NavigatorConfig, NavigatorHandle, NavigatorOps, Route, RouteEntry, RouteParams,
     Screen, ScreenBuilder, ScrollContext,
@@ -189,12 +191,20 @@ impl BarButton {
 /// signals so a reactive sidebar can highlight the active route,
 /// observe open/close state, etc.
 pub struct DrawerSlotProps {
+    /// Static route key of the currently active screen.
     pub active_route: Signal<&'static str>,
+    /// Resolved path string of the active screen (route + params).
     pub active_path: Signal<String>,
+    /// Stack depth of the active screen (drawer screens are co-equal,
+    /// so this is typically the navigator's depth, not per-screen).
     pub depth: Signal<usize>,
+    /// Whether a back navigation is currently possible.
     pub can_go_back: Signal<bool>,
+    /// Whether the drawer panel is currently open.
     pub is_open: Signal<bool>,
+    /// Dispatch a `Select` to switch to the given route key.
     pub on_select: Rc<dyn Fn(&'static str)>,
+    /// Close the drawer panel.
     pub on_close: Rc<dyn Fn()>,
 }
 
@@ -242,9 +252,13 @@ pub type SidebarBuilder = Rc<dyn Fn(DrawerSlotProps) -> Element>;
 /// navigator init and clones into each slot's closure invocation.
 #[derive(Clone)]
 pub struct SlotProps {
+    /// Static route key of the currently active screen.
     pub active_route: Signal<&'static str>,
+    /// Resolved path string of the active screen (route + params).
     pub active_path: Signal<String>,
+    /// Navigation depth of the active screen.
     pub depth: Signal<usize>,
+    /// Whether a back navigation is currently possible.
     pub can_go_back: Signal<bool>,
     /// Drawer's open/close state. Const-false on non-drawer
     /// navigators — present so slot signatures stay uniform.
@@ -312,7 +326,9 @@ pub enum LeadingIntent {
 /// put a button on the right populate `Custom` with their tag.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TrailingIntent {
+    /// No conventional trailing button on this screen (the common case).
     None,
+    /// SDK-extension hook — string is the third-party SDK's chosen tag.
     Custom(&'static str),
 }
 
@@ -327,16 +343,21 @@ pub enum TrailingIntent {
 /// unchanged.
 #[derive(Clone)]
 pub struct SlotBarButton {
+    /// Typed icon to render (the same vocabulary `idea-ui`'s `Icon` uses).
     pub icon: runtime_core::IconData,
+    /// Tap handler, invoked on press. `Rc` so the button is cheap to clone.
     pub on_press: Rc<dyn Fn()>,
+    /// Optional per-button tint override. `None` inherits the bar tint.
     pub tint: Option<Color>,
 }
 
 impl SlotBarButton {
+    /// Build a slot bar button from a typed icon and a press handler.
     pub fn new(icon: runtime_core::IconData, on_press: impl Fn() + 'static) -> Self {
         Self { icon, on_press: Rc::new(on_press), tint: None }
     }
 
+    /// Override the bar tint for just this button.
     pub fn tint(mut self, color: Color) -> Self {
         self.tint = Some(color);
         self
@@ -378,11 +399,18 @@ impl Default for BarTitle {
 /// native nav bar — the handler honors the closure and disables
 /// UIKit/Material chrome for that navigator.
 pub enum TopSlot {
+    /// Structured bar that maps to native chrome: leading buttons,
+    /// a center title, and trailing buttons.
     Filled {
+        /// Buttons rendered at the leading (left in LTR) edge.
         leading: Vec<SlotBarButton>,
+        /// What to render in the bar's center.
         title: BarTitle,
+        /// Buttons rendered at the trailing (right in LTR) edge.
         trailing: Vec<SlotBarButton>,
     },
+    /// Author-owned bar layout; receives [`SlotProps`] to wire intents
+    /// and dispatchers itself. Replaces native chrome on iOS/Android.
     Custom(Box<dyn Fn(SlotProps) -> Element>),
 }
 
@@ -566,11 +594,20 @@ fn with_drawer_options(
 // DrawerPresentation — SDK's typed payload riding on Element::Navigator
 // =============================================================================
 
+/// SDK-owned payload carried by the `Element::Navigator` this crate
+/// produces. The per-backend [`register`]ed handler downcasts to this
+/// type to drive drawer-specific behavior (panel side/width, slot
+/// chrome, open-state signal).
 pub struct DrawerPresentation {
+    /// Edge the panel anchors to.
     pub side: DrawerSide,
+    /// Reveal style (overlay vs. push-aside).
     pub drawer_type: DrawerType,
+    /// Panel width in logical pixels.
     pub drawer_width: f32,
+    /// Whether an edge swipe can open the drawer.
     pub swipe_to_open: bool,
+    /// When and how screen subtrees are mounted/disposed.
     pub mount_policy: MountPolicy,
     /// Sidebar Element builder. Author sets via `.sidebar(prim)` or
     /// `.sidebar_with(closure)`. SDK handler invokes during `init` (via
@@ -1358,6 +1395,9 @@ pub use terminal::register;
 // Prelude
 // =============================================================================
 
+/// Convenience re-exports of the crate's public surface — glob-import
+/// (`use drawer_navigator::prelude::*;`) to bring the builder, handle,
+/// screen options, and value types into scope.
 pub mod prelude {
     pub use super::{
         install_navigator_pin_width, navigator_pin_width, register, BarButton, BarTitle,

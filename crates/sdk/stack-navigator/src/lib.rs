@@ -68,6 +68,8 @@
 //! [`ios-navigator-helpers`]: https://docs.rs/ios-navigator-helpers
 //! [`android-navigator-helpers`]: https://docs.rs/android-navigator-helpers
 
+#![deny(missing_docs)]
+
 use runtime_core::primitives::navigator::{
     NavCommand, NavigatorConfig, NavigatorHandle, NavigatorOps, Route, RouteEntry, RouteParams,
     Screen, ScreenBuilder,
@@ -638,6 +640,9 @@ pub use terminal::register;
 // Prelude
 // =============================================================================
 
+/// Convenience re-exports of the crate's public surface — glob-import
+/// (`use stack_navigator::prelude::*;`) to bring the navigator builder,
+/// handle, screen options, and value types into scope.
 pub mod prelude {
     pub use super::{
         register, BarButton, HeaderStyle, Navigator, StackBuilder, StackHandle, StackPresentation,

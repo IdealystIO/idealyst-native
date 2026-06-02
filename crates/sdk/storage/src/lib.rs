@@ -39,6 +39,8 @@
 //! assert_eq!(store.get("theme").await?, Some("dark".to_string()));
 //! ```
 
+#![deny(missing_docs)]
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -161,6 +163,7 @@ pub struct MemoryStorage {
 }
 
 impl MemoryStorage {
+    /// Create an empty in-memory store.
     pub fn new() -> Self {
         Self::default()
     }

@@ -51,6 +51,8 @@
 //! header is sent, which is correct: the httpOnly session cookie carries
 //! auth there instead.
 
+#![deny(missing_docs)]
+
 use std::sync::Arc;
 
 /// A secure-storage failure.
@@ -123,6 +125,8 @@ pub struct UnsupportedCredentials {
 }
 
 impl UnsupportedCredentials {
+    /// Build an unsupported store whose errors carry `reason`, explaining
+    /// why secure credential storage isn't available on this target.
     pub fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),

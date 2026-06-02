@@ -222,6 +222,9 @@ impl NavigatorHandler<IosBackend> for IosStackHandler {
     }
 }
 
+/// Install the stack navigator handler on an iOS backend. Call once at
+/// startup so `Element::Navigator`s carrying a [`StackPresentation`]
+/// resolve to this backend's chrome.
 pub fn register(backend: &mut IosBackend) {
     backend.register_navigator::<StackPresentation, _>(|| Box::new(IosStackHandler::new()));
 }

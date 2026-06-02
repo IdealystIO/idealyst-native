@@ -126,11 +126,11 @@ pub fn performance() -> Element {
                     creates. A theme swap writes around fifty token signals at once. A typical \
                     styled node reads two to five of them. Fan out every write the moment it \
                     happens and each node's style effect re-runs once per token it read \u{2014} \
-                    two to five full re-applies per node, each redoing real work: re-minting a CSS \
-                    class on web, msg_send-ing every property and scheduling animators on native. \
-                    On a docs-sized tree \u{2014} ~490 views, hundreds of effects \u{2014} that's \
-                    the difference between a snappy toggle and one that hangs the main thread for \
-                    hundreds of milliseconds.".to_string()
+                    two to five full re-applies per node, each re-resolving every property and \
+                    pushing it onto the live view (on native, a msg_send per property plus \
+                    animator scheduling). On a docs-sized tree \u{2014} ~490 views, hundreds of \
+                    effects \u{2014} that's the difference between a snappy toggle and one that \
+                    hangs the main thread for hundreds of milliseconds.".to_string()
             )
 
             Typography(
@@ -155,6 +155,41 @@ batch(|| {
     assert_eq!(first.get(), 1); // the WRITE is visible immediately…
     second.set(2);
 }); // …but an effect reading both re-runs ONCE here, not twice"##.to_string())
+
+            Typography(
+                content = "On the web, a theme change is a variable write".to_string(),
+                kind = typography_kind::H2,
+            )
+            Typography(
+                content = "Batching is the native story \u{2014} coalesced re-applies onto live \
+                    views. The web takes an even shorter path. A token compiles to a CSS custom \
+                    property, so a stylesheet rule that reads it emits var(--token, fallback) into \
+                    the element's class. That class carries the reference, so it stays valid across \
+                    every theme and never has to be recomputed.".to_string()
+            )
+            CodePanel(src = r##"/* a token reference compiles to a CSS variable, baked in once: */
+.card-a1b2 { background: var(--color-surface, #ffffff); }
+
+/* a theme switch rewrites only the :root variables — N writes, total: */
+:root { --color-surface: #14161c; --color-text: #e8eaf0; }
+
+/* every .card-* recolors through the cascade. No element is touched. */"##.to_string())
+            Typography(
+                content = "Switching the theme updates the :root variables with one setProperty \
+                    per changed token, and the browser's cascade repaints every element that reads \
+                    them. No class is recomputed, no element's style attribute is rewritten, no \
+                    node is added or removed. The only DOM mutation is that handful of variable \
+                    writes on a single rule, however many thousands of elements depend on \
+                    them.".to_string()
+            )
+            Callout(label = "Cost scales with tokens".to_string()) {
+                Typography(
+                    content = "A web theme swap costs the number of changed tokens and stays flat \
+                        as the tree grows. Ten elements or ten thousand, the work is the same few \
+                        variable writes; the browser's cascade does the rest.".to_string(),
+                    muted = true,
+                )
+            }
 
             Typography(
                 content = "You rarely call it yourself".to_string(),

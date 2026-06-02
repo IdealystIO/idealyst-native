@@ -101,6 +101,10 @@ static NOOP_DRAWER_OPS: NoopDrawerOps = NoopDrawerOps;
 /// `attach_initial` (which seeds it) so the same-route guard works.
 type Current = Rc<RefCell<Option<(u64, &'static str)>>>;
 
+/// Drawer navigator handler for the wire-recording backend. Mirrors the
+/// native handlers but records `NavCommand`s into a [`NavRecorder`] so the
+/// sidecar can replay drawer navigation over the wire instead of rendering
+/// native chrome.
 pub struct RecordingDrawerHandler {
     rec: Option<NavRecorder>,
     nav: Option<NodeId>,
@@ -115,6 +119,8 @@ pub struct RecordingDrawerHandler {
 }
 
 impl RecordingDrawerHandler {
+    /// Create an unattached handler; recorder, nav node, and control are
+    /// wired in when the navigator initializes.
     pub fn new() -> Self {
         Self {
             rec: None,

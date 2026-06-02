@@ -66,6 +66,7 @@
 //! component's `style` prop (a normal stylesheet), same as any other
 //! primitive. The web backend layers `<table>`'s native column-fits-
 //! widest algorithm on top.
+#![deny(missing_docs)]
 
 use std::rc::Rc;
 
@@ -130,8 +131,12 @@ pub struct TableCellProps {
 // Handles
 // ============================================================================
 
+/// Typed handle for a `Table` external element; lets callers attach
+/// styles/refs to the table container via the `Bound<TableHandle>` builder.
 pub type TableHandle = ExternalHandle<TableProps>;
+/// Typed handle for a `TableRow` external element.
 pub type TableRowHandle = ExternalHandle<TableRowProps>;
+/// Typed handle for a `TableCell` external element.
 pub type TableCellHandle = ExternalHandle<TableCellProps>;
 
 // ============================================================================
@@ -151,6 +156,9 @@ pub fn table(mut props: TableProps) -> Bound<TableHandle> {
              children)
 }
 
+/// Build a `Table` container. On native lowers to a plain `view` column
+/// with the SDK's default table styling (web builds the `Element::External`
+/// variant in the `wasm32` arm above).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn table(mut props: TableProps) -> Bound<TableHandle> {
     let children = std::mem::take(&mut props.children);
@@ -167,6 +175,8 @@ pub fn table_row(mut props: TableRowProps) -> Bound<TableRowHandle> {
              children)
 }
 
+/// Build a table row. On native lowers to a plain `view` row laid out
+/// horizontally with the SDK's default row styling.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn table_row(mut props: TableRowProps) -> Bound<TableRowHandle> {
     let children = std::mem::take(&mut props.children);
@@ -185,6 +195,9 @@ pub fn table_cell(mut props: TableCellProps) -> Bound<TableCellHandle> {
              children)
 }
 
+/// Build a table cell. On native lowers to a plain `view` claiming equal
+/// width via the SDK's default cell styling; `header` has no visual effect
+/// here (web emits a `<th>` in the `wasm32` arm above).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn table_cell(mut props: TableCellProps) -> Bound<TableCellHandle> {
     let children = std::mem::take(&mut props.children);
@@ -347,8 +360,12 @@ mod native_styles {
 // `Element`. Each Props struct gets a matching alias + impl below.
 // ============================================================================
 
+/// `ui!` tag alias for the table container — `ui! { Table { … } }`
+/// resolves to this type and dispatches through `BuildElement`.
 pub type Table = TableProps;
+/// `ui!` tag alias for a table row.
 pub type TableRow = TableRowProps;
+/// `ui!` tag alias for a table cell.
 pub type TableCell = TableCellProps;
 
 impl BuildElement for TableProps {
@@ -373,6 +390,8 @@ impl BuildElement for TableCellProps {
 // Prelude
 // ============================================================================
 
+/// Glob-importable bundle of the table tags, props, handles, and
+/// constructors for use at `ui!` call sites.
 pub mod prelude {
     pub use super::{
         table, table_cell, table_row, Table, TableCell, TableCellHandle, TableCellProps,

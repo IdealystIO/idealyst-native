@@ -45,6 +45,10 @@ struct NoopStackOps;
 impl NavigatorOps for NoopStackOps {}
 static NOOP_STACK_OPS: NoopStackOps = NoopStackOps;
 
+/// Stack navigator handler for the wire-recording backend. Mirrors the
+/// native handlers but records `NavCommand`s into a [`NavRecorder`] so the
+/// sidecar can replay push/pop/reset over the wire instead of rendering
+/// native chrome.
 pub struct RecordingStackHandler {
     rec: Option<NavRecorder>,
     nav: Option<NodeId>,
@@ -56,6 +60,8 @@ pub struct RecordingStackHandler {
 }
 
 impl RecordingStackHandler {
+    /// Create an unattached handler; recorder, nav node, and control are
+    /// wired in when the navigator initializes.
     pub fn new() -> Self {
         Self {
             rec: None,

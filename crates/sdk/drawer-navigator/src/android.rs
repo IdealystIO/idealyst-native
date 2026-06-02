@@ -473,6 +473,9 @@ fn drawer_options_to_android(
     }
 }
 
+/// Install the drawer navigator handler on an Android backend. Call once
+/// at startup so `Element::Navigator`s carrying a [`DrawerPresentation`]
+/// resolve to this backend's chrome.
 pub fn register(backend: &mut AndroidBackend) {
     backend.register_navigator::<DrawerPresentation, _>(|| Box::new(AndroidDrawerHandler::new()));
     // Runtime-server client path: lets `dev-client` rebuild the

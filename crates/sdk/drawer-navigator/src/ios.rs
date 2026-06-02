@@ -546,6 +546,9 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
     }
 }
 
+/// Install the drawer navigator handler on an iOS backend. Call once
+/// at startup so `Element::Navigator`s carrying a [`DrawerPresentation`]
+/// resolve to this backend's chrome.
 pub fn register(backend: &mut IosBackend) {
     backend.register_navigator::<DrawerPresentation, _>(|| Box::new(IosDrawerHandler::new()));
     // Runtime-server client path: lets `dev-client` rebuild the

@@ -266,6 +266,9 @@ impl NavigatorHandler<MacosBackend> for MacosTabHandler {
     }
 }
 
+/// Install the tab navigator handler on a macOS backend. Call once at
+/// startup so `Element::Navigator`s carrying a [`TabPresentation`]
+/// resolve to this backend's chrome.
 pub fn register(backend: &mut MacosBackend) {
     backend.register_navigator::<TabPresentation, _>(|| {
         Box::new(MacosTabHandler::new())

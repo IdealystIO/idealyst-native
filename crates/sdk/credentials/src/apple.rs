@@ -24,6 +24,9 @@ pub struct KeychainCredentials {
 }
 
 impl KeychainCredentials {
+    /// Create a Keychain-backed store whose items are scoped to the
+    /// `namespace` (used as the Keychain service attribute) so different
+    /// apps/components don't collide on key names.
     pub fn new(namespace: &str) -> Self {
         Self {
             service: namespace.to_string(),

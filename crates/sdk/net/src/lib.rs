@@ -72,6 +72,8 @@
 //!
 //! [`reqwest`]: https://crates.io/crates/reqwest
 
+#![deny(missing_docs)]
+
 mod body;
 mod cancel;
 mod client;

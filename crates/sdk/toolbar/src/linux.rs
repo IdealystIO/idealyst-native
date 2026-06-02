@@ -33,6 +33,8 @@ use std::rc::Rc;
 
 pub(crate) static OPS: &dyn ToolbarOps = &LinuxToolbarOps;
 
+/// Register the Linux `Toolbar` external handler on `backend`. Call once
+/// at app boot so `Toolbar` elements lower to the native toolbar.
 pub fn register(backend: &mut LinuxBackend) {
     backend.register_external::<ToolbarProps, _>(|props, b| build_toolbar(props, b));
 }

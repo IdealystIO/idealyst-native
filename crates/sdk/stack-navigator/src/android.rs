@@ -176,6 +176,9 @@ fn stack_options_to_android(opts: Option<Box<StackScreenOptions>>) -> AndroidScr
     }
 }
 
+/// Install the stack navigator handler on an Android backend. Call once at
+/// startup so `Element::Navigator`s carrying a [`StackPresentation`]
+/// resolve to this backend's chrome.
 pub fn register(backend: &mut AndroidBackend) {
     backend.register_navigator::<StackPresentation, _>(|| Box::new(AndroidStackHandler::new()));
 }

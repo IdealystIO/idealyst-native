@@ -34,6 +34,8 @@
 //! meant for; a high-throughput caller should front it with its own
 //! offloading); on web it's genuinely async IndexedDB.
 
+#![deny(missing_docs)]
+
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;

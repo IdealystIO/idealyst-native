@@ -58,6 +58,8 @@ const TOOLBAR_IDENTIFIER: &str = "com.idealyst.toolbar";
 /// stable index within the most recent `items()` evaluation.
 const ITEM_IDENTIFIER_PREFIX: &str = "com.idealyst.toolbar.item.";
 
+/// Register the macOS `Toolbar` external handler on `backend`. Call once
+/// at app boot so `Toolbar` elements lower to a native `NSToolbar`.
 pub fn register(backend: &mut MacosBackend) {
     backend.register_external::<ToolbarProps, _>(|props, b| build_toolbar(props, b));
 }

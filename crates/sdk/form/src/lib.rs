@@ -63,6 +63,7 @@
 //!   submit button calling `on_submit` directly. (Keyboard return /
 //!   IME-action submit is a *field-level* affordance and belongs on the
 //!   input.)
+#![deny(missing_docs)]
 
 use runtime_core::{Bound, Element, IdealystSchema, Ref, RefFill};
 use std::any::{Any, TypeId};
@@ -134,6 +135,9 @@ impl FormHandle {
 /// backend module, which Rust requires to be `Sync`. The ZST impls are
 /// trivially `Sync`.
 pub trait FormOps: Sync {
+    /// Submit the form represented by `node`. The web impl downcasts to
+    /// the concrete `<form>` element and triggers submission; native
+    /// impls leave the default no-op since there's no form machinery.
     fn submit(&self, _node: &dyn Any) {}
 }
 

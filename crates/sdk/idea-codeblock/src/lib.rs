@@ -53,6 +53,7 @@
 //!
 //! On backends without a registered handler, the framework renders a
 //! placeholder per its usual `Element::External` policy.
+#![deny(missing_docs)]
 
 use runtime_core::{Bound, Color, ExternalHandle, IdealystSchema};
 

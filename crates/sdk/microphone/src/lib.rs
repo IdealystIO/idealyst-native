@@ -52,6 +52,8 @@
 //! (and is a no-op where the OS prompts implicitly), but it's optional —
 //! [`Microphone::open`] requests access itself if needed.
 
+#![deny(missing_docs)]
+
 mod buffer;
 mod config;
 mod error;

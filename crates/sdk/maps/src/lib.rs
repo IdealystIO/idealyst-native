@@ -28,6 +28,7 @@
 //! On platforms with no matching leaf crate, `register` is a no-op and
 //! the framework renders a "not supported" placeholder when the
 //! primitive mounts.
+#![deny(missing_docs)]
 
 use runtime_core::{external, Bound, ExternalHandle};
 
@@ -63,6 +64,10 @@ pub use maps_web::register;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub use maps_ios::register;
 
+/// No-op `register` for targets without a `maps` leaf crate. User code
+/// calls this unconditionally; the framework's "External MapViewProps
+/// not supported" placeholder shows up at runtime to make the missing
+/// binding obvious.
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub fn register<B>(_backend: &mut B) {
     // No leaf available for this target — the framework will render

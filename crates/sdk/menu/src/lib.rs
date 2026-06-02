@@ -55,6 +55,7 @@
 //! checkmarks on view modes), use [`install_reactive`] which takes a
 //! closure and re-fires whenever any signal it reads changes. Same
 //! shape as the toolbar SDK's reactive `items` closure.
+#![deny(missing_docs)]
 
 use std::rc::Rc;
 

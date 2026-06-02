@@ -65,6 +65,7 @@
 //! - The in-tree node returned by the backend handler is a 0-size
 //!   transparent view — toolbars are window chrome, not view content,
 //!   so the placeholder is invisible regardless of where it's mounted.
+#![deny(missing_docs)]
 
 use runtime_core::{Bound, Element, IdealystSchema, Ref, RefFill};
 use std::any::{Any, TypeId};
@@ -257,6 +258,9 @@ impl ToolbarHandle {
 /// ToolbarOps` slot per backend module, which Rust requires to be
 /// `Sync`. The ZST impls each backend ships are trivially `Sync`.
 pub trait ToolbarOps: Sync {
+    /// Show or hide the native toolbar represented by `node`. Backends
+    /// downcast `node` to their concrete native type; the default is a
+    /// silent no-op for backends that don't drive toolbar visibility.
     fn set_visible(&self, _node: &dyn Any, _visible: bool) {}
 }
 

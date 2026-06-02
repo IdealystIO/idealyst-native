@@ -50,6 +50,10 @@ struct NoopTabsOps;
 impl NavigatorOps for NoopTabsOps {}
 static NOOP_TABS_OPS: NoopTabsOps = NoopTabsOps;
 
+/// Tab navigator handler for the wire-recording backend. Mirrors the
+/// native handlers but records `NavCommand`s into a [`NavRecorder`] so the
+/// sidecar can replay tab switches over the wire instead of rendering
+/// native chrome.
 pub struct RecordingTabHandler {
     rec: Option<NavRecorder>,
     nav: Option<NodeId>,
@@ -61,6 +65,8 @@ pub struct RecordingTabHandler {
 }
 
 impl RecordingTabHandler {
+    /// Create an unattached handler; recorder, nav node, and control are
+    /// wired in when the navigator initializes.
     pub fn new() -> Self {
         Self {
             rec: None,

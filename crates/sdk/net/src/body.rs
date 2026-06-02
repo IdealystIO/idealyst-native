@@ -14,6 +14,8 @@ use crate::Error;
 /// the caller hasn't set `Content-Type` explicitly via `.header(...)`,
 /// so the trait can't silently overwrite a user-chosen value.
 pub trait IntoBody {
+    /// Serialize `self` into raw request bytes plus an optional default
+    /// `Content-Type`. The `None` content-type means "don't set one".
     fn into_body(self) -> Result<(Vec<u8>, Option<&'static str>), Error>;
 }
 
@@ -24,6 +26,8 @@ pub trait IntoBody {
 /// right `FromBody` — it's available for wrappers that need to
 /// dispatch (e.g. an `Either<Json<T>, Cbor<T>>`).
 pub trait FromBody: Sized {
+    /// Decode the response `bytes` (with the response's `content_type`, if
+    /// present) into `Self`, or return a deserialization [`Error`].
     fn from_body(bytes: Vec<u8>, content_type: Option<&str>) -> Result<Self, Error>;
 }
 

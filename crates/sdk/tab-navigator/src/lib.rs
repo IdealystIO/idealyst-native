@@ -63,6 +63,8 @@
 //! [`ios-navigator-helpers`]: https://docs.rs/ios-navigator-helpers
 //! [`android-navigator-helpers`]: https://docs.rs/android-navigator-helpers
 
+#![deny(missing_docs)]
+
 use runtime_core::primitives::navigator::{
     NavCommand, NavigatorConfig, NavigatorControl, NavigatorHandle, NavigatorOps, Route,
     RouteEntry, RouteParams, Screen, ScreenBuilder,
@@ -457,6 +459,8 @@ pub use macos::register;
 )))]
 mod fallback {
     use runtime_core::Backend;
+    /// No-op tab navigator registration for backends without a dedicated
+    /// handler. Lets host code call `register` unconditionally.
     pub fn register<B: Backend>(_backend: &mut B) {}
 }
 #[cfg(not(any(
@@ -471,6 +475,9 @@ pub use fallback::register;
 // Prelude
 // =============================================================================
 
+/// Convenience re-exports of the crate's public surface — glob-import
+/// (`use tab_navigator::prelude::*;`) to bring the tabs builder, handle,
+/// screen options, and value types into scope.
 pub mod prelude {
     pub use super::{
         register, MountPolicy, TabNavigator, TabPlacement, TabPresentation, TabScreenOptions,

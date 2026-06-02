@@ -25,6 +25,8 @@ pub struct StackChromeHandler<B: Backend> {
 }
 
 impl<B: Backend> StackChromeHandler<B> {
+    /// Create a handler with no root container yet; the root is built
+    /// when the navigator initializes its chrome.
     pub fn new() -> Self {
         Self { root: None }
     }

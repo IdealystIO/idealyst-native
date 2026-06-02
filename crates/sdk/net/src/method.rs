@@ -6,12 +6,19 @@
 /// Java string) without each one re-parsing strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Method {
+    /// HTTP `GET` — retrieve a resource.
     Get,
+    /// HTTP `POST` — submit data, typically creating a resource.
     Post,
+    /// HTTP `PUT` — replace a resource at the target URL.
     Put,
+    /// HTTP `PATCH` — apply a partial update to a resource.
     Patch,
+    /// HTTP `DELETE` — remove the target resource.
     Delete,
+    /// HTTP `HEAD` — like `GET` but returns headers only, no body.
     Head,
+    /// HTTP `OPTIONS` — query the communication options for the target.
     Options,
 }
 

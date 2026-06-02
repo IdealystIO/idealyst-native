@@ -52,6 +52,8 @@ pub struct DrawerChromeHandler<B: Backend> {
 }
 
 impl<B: Backend> DrawerChromeHandler<B> {
+    /// Create a handler with no body outlet yet; the outlet is set when
+    /// the navigator initializes its chrome.
     pub fn new() -> Self {
         Self { outlet: None }
     }

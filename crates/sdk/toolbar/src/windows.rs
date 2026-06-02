@@ -52,6 +52,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 pub(crate) static OPS: &dyn ToolbarOps = &WindowsToolbarOps;
 
+/// Register the Windows `Toolbar` external handler on `backend`. Call once
+/// at app boot so `Toolbar` elements lower to the native toolbar.
 pub fn register(backend: &mut WindowsBackend) {
     backend.register_external::<ToolbarProps, _>(|props, b| build_toolbar(props, b));
 }
