@@ -15,13 +15,14 @@ pub struct Headers {
 }
 
 impl Headers {
+    /// An empty header map.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Append a header. Duplicates the entry if the name already exists —
-    /// matches HTTP semantics (e.g. multiple `Set-Cookie`). Use [`set`]
-    /// for replace-or-insert semantics.
+    /// matches HTTP semantics (e.g. multiple `Set-Cookie`). Use
+    /// [`set`](Self::set) for replace-or-insert semantics.
     pub fn append(&mut self, name: impl Into<String>, value: impl Into<String>) {
         self.entries.push((name.into().to_ascii_lowercase(), value.into()));
     }
@@ -59,10 +60,12 @@ impl Headers {
         self.entries.iter().map(|(n, v)| (n.as_str(), v.as_str()))
     }
 
+    /// Number of header entries (counts duplicates separately).
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    /// True if there are no header entries.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

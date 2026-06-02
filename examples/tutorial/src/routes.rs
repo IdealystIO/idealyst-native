@@ -10,6 +10,10 @@ use runtime_core::Route;
 // ---- Intro ----
 pub const HOME_ROUTE: Route<()> = Route::<()>::new("home", "/");
 
+// ---- Idealyst 101: the unifying mental model ----
+pub const CORE_ENGINE_ROUTE: Route<()> = Route::<()>::new("core-engine", "/core/engine");
+pub const CORE_PERF_ROUTE: Route<()> = Route::<()>::new("core-performance", "/core/performance");
+
 // ---- Track 1: Reactivity ----
 pub const RX_SIGNALS_ROUTE: Route<()> = Route::<()>::new("rx-signals", "/reactivity/signals");
 pub const RX_EFFECTS_ROUTE: Route<()> = Route::<()>::new("rx-effects", "/reactivity/effects");
@@ -50,7 +54,14 @@ pub struct IndexSection {
 pub const SECTIONS: &[IndexSection] = &[
     IndexSection {
         title: "",
-        entries: &[IndexEntry { route: &HOME_ROUTE, label: "Start here" }],
+        entries: &[IndexEntry { route: &HOME_ROUTE, label: "Quick start" }],
+    },
+    IndexSection {
+        title: "Foundations",
+        entries: &[
+            IndexEntry { route: &CORE_ENGINE_ROUTE, label: "One reactive engine" },
+            IndexEntry { route: &CORE_PERF_ROUTE, label: "Under the hood: batching" },
+        ],
     },
     IndexSection {
         title: "Reactivity",

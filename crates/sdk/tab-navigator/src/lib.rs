@@ -1,8 +1,44 @@
-//! First-party Tab navigator SDK.
+//! First-party **Tab** navigator SDK — a flat set of co-equal screens
+//! the user switches between, with at most one visible at a time.
 //!
-//! Routes through `Element::Navigator`; the SDK registers a
-//! per-backend `NavigatorHandler` that drives a native tab bar
-//! (UITabBarController, BottomNavigationView, or DOM `role=tablist`).
+//! A tab navigator has no push/pop depth: selecting a tab swaps the
+//! active screen. This crate is one of the three first-party navigator
+//! SDKs (alongside [`stack-navigator`] and [`drawer-navigator`]); like
+//! every SDK under `crates/sdk/`, it is not part of `runtime-core` — an
+//! app opts in by calling [`register`] once at startup.
+//!
+//! # Architecture — the `Element::Navigator` path
+//!
+//! The navigator system has two parallel paths: the legacy
+//! `Element::Navigator` / `Element::TabNavigator` /
+//! `Element::DrawerNavigator` variants, and the newer
+//! `Element::NavigatorExt`. **This SDK rides the `Element::Navigator`
+//! path** — [`TabNavigator::new`] produces an `Element::Navigator`
+//! carrying a [`TabPresentation`] payload, and [`register`] installs a
+//! per-backend `NavigatorHandler` keyed by that presentation type.
+//! Selecting a tab dispatches `NavCommand::Select`; the handler swaps the
+//! active screen. The builder also installs a *link activator* so `Link`
+//! primitives inside tab screens select (not push) by default.
+//!
+//! # Per-backend chrome
+//!
+//! The author tree is uniform; the rendered tab chrome differs per
+//! backend:
+//!
+//! | Backend | Mechanism |
+//! | --- | --- |
+//! | web (wasm32) | Screen-swap; the tab bar itself is author chrome rendered via `.layout(...)` and wired to `handle.select(...)`. `Select` maps to a `Replace` (no URL-stack growth). See [`web-navigator-helpers`]. |
+//! | iOS | Plain `UIView` body that swaps its single child on `Select`. The tab bar is author `.layout(...)`. See [`ios-navigator-helpers`]. |
+//! | Android | `FrameLayout` body with a single active-screen child; tab bar is author chrome. See [`android-navigator-helpers`]. |
+//! | macOS | Tab bar (top/bottom per [`TabPlacement`]) + outlet that swaps on `Select` (no animated transition — see `project_macos_navigator_design`). |
+//! | terminal | No-op `register` — tabs are not rendered on the terminal backend. |
+//! | SSR / any primitive backend | [`chrome`] builds the outlet from primitives for first paint. |
+//!
+//! Note: on web/iOS/Android the **tab bar is not a navigator concern** —
+//! the navigator owns the screen-swap; the visual bar is just a styled
+//! `view` the app (or `idea-ui`) renders and wires to `select`. The
+//! [`TabSpec`] metadata (label, icon, badge) is carried for the app's bar
+//! to consume.
 //!
 //! # Usage
 //!
@@ -16,13 +52,22 @@
 //!     .tab(home.clone(), TabSpec::new("Home").icon("house"), |_| Screen::new(...))
 //!     .placement(TabPlacement::Bottom)
 //!     .bind(nav.clone());
+//!
+//! // From the tab bar's buttons:
+//! // nav.get().select(&home, ());
 //! ```
+//!
+//! [`stack-navigator`]: https://docs.rs/stack-navigator
+//! [`drawer-navigator`]: https://docs.rs/drawer-navigator
+//! [`web-navigator-helpers`]: https://docs.rs/web-navigator-helpers
+//! [`ios-navigator-helpers`]: https://docs.rs/ios-navigator-helpers
+//! [`android-navigator-helpers`]: https://docs.rs/android-navigator-helpers
 
 use runtime_core::primitives::navigator::{
     NavCommand, NavigatorConfig, NavigatorControl, NavigatorHandle, NavigatorOps, Route,
     RouteEntry, RouteParams, Screen, ScreenBuilder,
 };
-use runtime_core::{Bound, IntoStyleSource, Element, Ref, RefFill, StyleSource};
+use runtime_core::{Bound, IntoStyleSource, Element, IdealystSchema, Ref, RefFill, StyleSource};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -31,42 +76,71 @@ use std::rc::Rc;
 // Per-kind value types
 // =============================================================================
 
+/// Display metadata for a single tab — the label, optional icon, and an
+/// optional reactive badge. The navigator carries these so the app's tab
+/// bar can render them; the navigator itself never draws the bar.
+/// Construct with [`TabSpec::new`] and chain [`TabSpec::icon`] /
+/// [`TabSpec::badge`].
 pub struct TabSpec {
+    /// Visible tab label.
     pub label: String,
+    /// Optional icon name (resolved against the framework icon registry).
     pub icon: Option<String>,
+    /// Optional reactive badge text (e.g. an unread count); re-evaluated
+    /// when its dependencies change. `None` ⇒ no badge.
     pub badge: Option<Rc<dyn Fn() -> String>>,
 }
 
 impl TabSpec {
+    /// Start a tab spec from its label.
     pub fn new(label: impl Into<String>) -> Self {
         Self { label: label.into(), icon: None, badge: None }
     }
 
+    /// Set the tab's icon name.
     pub fn icon(mut self, name: impl Into<String>) -> Self {
         self.icon = Some(name.into());
         self
     }
 
+    /// Set a reactive badge — the closure is re-run to produce the badge
+    /// text whenever its reactive dependencies change.
     pub fn badge<F: Fn() -> String + 'static>(mut self, f: F) -> Self {
         self.badge = Some(Rc::new(f));
         self
     }
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+/// Where the tab bar sits relative to the screen content. Advisory for
+/// the app's bar / the macOS handler; `Auto` lets the backend pick the
+/// platform-conventional placement (bottom on mobile, side rail on
+/// desktop/web).
+#[derive(Copy, Clone, Debug, Default, IdealystSchema)]
 pub enum TabPlacement {
+    /// Platform-conventional placement (the default).
     #[default]
     Auto,
+    /// Bar above the content.
     Top,
+    /// Bar below the content (mobile convention).
     Bottom,
+    /// Vertical rail beside the content (desktop / wide convention).
     Sidebar,
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+/// When a tab's screen subtree is materialized and whether it survives a
+/// switch away. The default ([`MountPolicy::LazyPersistent`]) matches
+/// React Navigation's tab default — mount on first visit, keep mounted.
+#[derive(Copy, Clone, Debug, Default, IdealystSchema)]
 pub enum MountPolicy {
+    /// Mount every tab at navigator creation; keep all mounted.
     EagerPersistent,
+    /// Mount a tab on first activation; keep it mounted across switches
+    /// (the default).
     #[default]
     LazyPersistent,
+    /// Mount a tab on first activation; drop its scope (and background
+    /// work) when switched away — re-mounts fresh on return.
     LazyDisposing,
 }
 
@@ -74,13 +148,16 @@ pub enum MountPolicy {
 // TabScreenOptions — per-screen typed options
 // =============================================================================
 
-/// Per-tab-screen options. Tabs aren't header-heavy like stack
-/// navigators, but they may want an accessibility label or per-tab
-/// metadata in the future.
-#[derive(Default, Clone)]
+/// Per-tab-screen options. Currently empty — tabs aren't header-heavy
+/// like stack navigators. Kept as a named type (and stored in
+/// [`Screen::options`](runtime_core::primitives::navigator::Screen)) so
+/// per-tab metadata (accessibility label, etc.) can be added without an
+/// API break.
+#[derive(Default, Clone, IdealystSchema)]
 pub struct TabScreenOptions {}
 
 impl TabScreenOptions {
+    /// Empty options (`Default`).
     pub fn new() -> Self {
         Self::default()
     }
@@ -90,9 +167,16 @@ impl TabScreenOptions {
 // TabPresentation — SDK's typed payload
 // =============================================================================
 
+/// The SDK's typed payload that rides on the `Element::Navigator`
+/// produced by [`TabNavigator::new`]. Its `TypeId` is the registry key
+/// the per-backend handler is registered under (see [`register`]).
 pub struct TabPresentation {
+    /// Registered tabs, in declaration order: `(route_name, spec)`. The
+    /// app's tab bar iterates this to render itself.
     pub tab_order: Vec<(&'static str, TabSpec)>,
+    /// Where the tab bar sits — see [`TabPlacement`].
     pub placement: TabPlacement,
+    /// Tab-screen mount lifecycle — see [`MountPolicy`].
     pub mount_policy: MountPolicy,
 }
 
@@ -110,16 +194,25 @@ impl Default for TabPresentation {
 // TabsHandle — typed handle for `.bind(...)`
 // =============================================================================
 
+/// Typed runtime handle to a live tab navigator, filled into the [`Ref`]
+/// passed to [`TabsBuilder::bind`]. Use it from the app's tab bar to
+/// switch tabs. Cheap to clone — wraps a shared
+/// [`NavigatorHandle`](runtime_core::primitives::navigator::NavigatorHandle).
 #[derive(Clone)]
 pub struct TabsHandle {
     inner: NavigatorHandle,
 }
 
 impl TabsHandle {
+    /// Wrap a raw [`NavigatorHandle`](runtime_core::primitives::navigator::NavigatorHandle)
+    /// in the typed tabs handle. Called by the backend `register` glue;
+    /// authors get a `TabsHandle` from [`TabsBuilder::bind`] instead.
     pub fn from_inner(inner: NavigatorHandle) -> Self {
         Self { inner }
     }
 
+    /// Switch to the tab for `route`, building its URL from `params`.
+    /// Selecting the already-active tab is a no-op.
     pub fn select<P: RouteParams + Clone>(&self, route: &Route<P>, params: P) {
         let url = params.to_path(route.path());
         self.inner.dispatch(NavCommand::Select {
@@ -130,6 +223,8 @@ impl TabsHandle {
         });
     }
 
+    /// Borrow the underlying kind-agnostic
+    /// [`NavigatorHandle`](runtime_core::primitives::navigator::NavigatorHandle).
     pub fn inner(&self) -> &NavigatorHandle {
         &self.inner
     }
@@ -143,6 +238,10 @@ pub(crate) static TABS_OPS: TabsOps = TabsOps;
 // Builder
 // =============================================================================
 
+/// The tab-navigator builder. [`TabNavigator::new`] starts one; the
+/// fluent methods on the [`TabsBuilder`] trait add tabs, set placement,
+/// and bind the `Ref`. The result is a
+/// [`Bound<TabsHandle>`](runtime_core::Bound) you drop into a `ui!` tree.
 pub struct TabNavigator {
     config: NavigatorConfig,
     presentation: TabPresentation,
@@ -152,6 +251,9 @@ pub struct TabNavigator {
 }
 
 impl TabNavigator {
+    /// Start a tab navigator whose initial (selected) tab is `initial`.
+    /// Add tabs via [`TabsBuilder::tab`], then place the returned
+    /// [`Bound`](runtime_core::Bound) in your tree.
     pub fn new(initial: &Route<()>) -> Bound<TabsHandle> {
         let nav = Self {
             config: NavigatorConfig::new(initial.name(), initial.path()),
@@ -202,17 +304,30 @@ pub(crate) fn install_select_link_activator(control: &Rc<NavigatorControl>) {
     control.install_link_activator(activator);
 }
 
+/// Fluent builder methods for the tab navigator, implemented on
+/// [`Bound<TabsHandle>`](runtime_core::Bound). A trait (not inherent
+/// methods) because `Bound` lives in `runtime-core` — the app `use`s the
+/// trait to gain the methods (orphan-rule workaround).
 pub trait TabsBuilder: Sized {
+    /// Register a tab: its route, display [`TabSpec`], and the closure
+    /// that builds the screen from typed params.
     fn tab<P, R, F>(self, route: Route<P>, spec: TabSpec, render: F) -> Self
     where
         P: RouteParams + 'static,
         R: Into<Screen> + 'static,
         F: Fn(P) -> R + 'static;
+    /// Set where the tab bar sits — see [`TabPlacement`].
     fn placement(self, placement: TabPlacement) -> Self;
+    /// Set the tab-screen mount lifecycle — see [`MountPolicy`].
     fn mount_policy(self, policy: MountPolicy) -> Self;
+    /// Style the `"tab_bar"` slot (the app's bar container, where honored).
     fn tab_bar_style(self, s: impl IntoStyleSource) -> Self;
+    /// Style the `"tab_icon"` slot.
     fn tab_icon_style(self, s: impl IntoStyleSource) -> Self;
+    /// Style the `"tab_label"` slot.
     fn tab_label_style(self, s: impl IntoStyleSource) -> Self;
+    /// Bind a [`Ref<TabsHandle>`](runtime_core::Ref) so the app can switch
+    /// tabs imperatively once the navigator mounts.
     fn bind(self, r: Ref<TabsHandle>) -> Self;
 }
 

@@ -36,31 +36,37 @@ impl Client {
         ClientBuilder::default()
     }
 
-    /// Begin building a request with method [`Method::Get`].
+    /// Begin building a `GET` request to `url`.
     pub fn get(&self, url: impl AsRef<str>) -> RequestBuilder {
         self.request(Method::Get, url)
     }
 
+    /// Begin building a `POST` request to `url`.
     pub fn post(&self, url: impl AsRef<str>) -> RequestBuilder {
         self.request(Method::Post, url)
     }
 
+    /// Begin building a `PUT` request to `url`.
     pub fn put(&self, url: impl AsRef<str>) -> RequestBuilder {
         self.request(Method::Put, url)
     }
 
+    /// Begin building a `PATCH` request to `url`.
     pub fn patch(&self, url: impl AsRef<str>) -> RequestBuilder {
         self.request(Method::Patch, url)
     }
 
+    /// Begin building a `DELETE` request to `url`.
     pub fn delete(&self, url: impl AsRef<str>) -> RequestBuilder {
         self.request(Method::Delete, url)
     }
 
+    /// Begin building a `HEAD` request to `url`.
     pub fn head(&self, url: impl AsRef<str>) -> RequestBuilder {
         self.request(Method::Head, url)
     }
 
+    /// Begin building an `OPTIONS` request to `url`.
     pub fn options(&self, url: impl AsRef<str>) -> RequestBuilder {
         self.request(Method::Options, url)
     }
@@ -112,6 +118,7 @@ impl ClientBuilder {
         self
     }
 
+    /// Finish configuration and produce a [`Client`].
     pub fn build(self) -> Client {
         Client {
             inner: Arc::new(ClientInner {

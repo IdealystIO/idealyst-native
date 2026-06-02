@@ -62,6 +62,7 @@ pub struct EventSourceCloser {
 }
 
 impl EventSourceCloser {
+    /// Close the associated [`EventSource`]. Idempotent.
     pub fn close(&self) {
         self.inner.close();
     }

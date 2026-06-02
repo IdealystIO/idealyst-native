@@ -12,6 +12,9 @@ pub struct Response {
 }
 
 impl Response {
+    /// The HTTP status code (e.g. `200`, `404`). 4xx/5xx responses are
+    /// returned normally — use [`Self::error_for_status`] to convert them
+    /// into an [`Error`].
     pub fn status(&self) -> u16 {
         self.status
     }
@@ -21,10 +24,12 @@ impl Response {
         (200..300).contains(&self.status)
     }
 
+    /// The first value of response header `name` (case-insensitive), if present.
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(name)
     }
 
+    /// All response headers.
     pub fn headers(&self) -> &Headers {
         &self.headers
     }

@@ -1376,6 +1376,45 @@ mod regression_tests {
         );
     }
 
+    /// Production-bundle guard: the generated web wrapper must NOT enable
+    /// the catalog (`catalog` / its `mcp` alias / the `dev` umbrella) on
+    /// runtime-core. Those features pull `mcp-catalog` and make every
+    /// `#[component]` / `#[derive(IdealystSchema)]` bake its doc strings +
+    /// prop schema into the wasm as `inventory` statics — pure bundle
+    /// bloat in a shipped app. The catalog is a dev/tooling concern only
+    /// (`idealyst dev` opts in via `--features runtime-core/dev`); the
+    /// release bundle carries none of it. If this test ever fails,
+    /// documentation/catalog data is about to ship to end users.
+    #[test]
+    fn wrapper_does_not_enable_catalog_in_production() {
+        let (wrapper_dir, _tmp) = run_generator();
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        for forbidden in ["runtime-core/catalog", "runtime-core/mcp", "runtime-core/dev"] {
+            assert!(
+                !cargo.contains(forbidden),
+                "production web wrapper must not enable {forbidden} — it pulls \
+                 mcp-catalog and bloats the bundle with doc/catalog data. Got:\n{cargo}",
+            );
+        }
+        // And the runtime-core dep line itself must carry no catalog-ish
+        // feature, however it's spelled.
+        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
+        if let Some(feats) = parsed
+            .get("dependencies")
+            .and_then(|d| d.get("runtime-core"))
+            .and_then(|rc| rc.get("features"))
+            .and_then(|f| f.as_array())
+        {
+            for f in feats {
+                let f = f.as_str().unwrap_or("");
+                assert!(
+                    !matches!(f, "catalog" | "mcp" | "dev"),
+                    "runtime-core dep enables catalog feature {f:?} in the production wrapper",
+                );
+            }
+        }
+    }
+
     #[test]
     fn wrapper_runtime_server_feature_pulls_backend_web_runtime_server() {
         let (wrapper_dir, _tmp) = run_generator();

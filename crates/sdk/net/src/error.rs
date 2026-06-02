@@ -21,8 +21,8 @@ pub enum Error {
     Timeout,
 
     /// A response was received but its status code indicates failure.
-    /// Only produced via [`Response::error_for_status`]; otherwise 4xx
-    /// and 5xx are returned as normal `Response` values.
+    /// Only produced via [`Response::error_for_status`](crate::Response::error_for_status);
+    /// otherwise 4xx and 5xx are returned as normal `Response` values.
     #[error("http error: status {code}")]
     Status {
         /// HTTP status code (4xx or 5xx).

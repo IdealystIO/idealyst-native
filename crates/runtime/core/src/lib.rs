@@ -229,18 +229,18 @@ pub use runtime_macros::{
     component, jsx, lazy, stylesheet, text_fmt, ui,
 };
 
-/// `#[idealyst_tool]` — MCP-only, re-exported with the `mcp` feature.
-#[cfg(feature = "mcp")]
-pub use runtime_macros::idealyst_tool;
-
-/// `#[derive(IdealystSchema)]` — captures a props struct's per-field
-/// docs. Available under `mcp` (it feeds the catalog) AND under
-/// `strict-docs` (which enforces a doc on every field). Either feature
-/// makes the derive — and its `#[schema(...)]` helper attribute —
-/// resolvable; off both, it's not re-exported so production builds carry
-/// no dead `pub use`.
-#[cfg(any(feature = "mcp", feature = "strict-docs"))]
-pub use runtime_macros::IdealystSchema;
+/// `#[idealyst_tool]` and `#[derive(IdealystSchema)]` — the
+/// catalog-registration macros. **Always re-exported**, exactly like
+/// `#[component]`, so author/SDK/idea-ui code can annotate freely
+/// without feature-gating the import: the macros expand to a **no-op**
+/// when neither `catalog` nor `strict-docs` is on (they reference no
+/// `mcp-catalog` symbols in that path), so a normal production build
+/// resolves them, emits nothing, and carries zero catalog data. They
+/// emit catalog registrations only under `catalog`, and doc-enforcement
+/// `compile_error!`s only under `strict-docs`. The `#[schema(...)]`
+/// helper attribute is registered by the derive regardless of feature
+/// (inert when off). A bare `pub use` of a macro has no binary cost.
+pub use runtime_macros::{idealyst_tool, IdealystSchema};
 
 /// Sentinel macro: marks a `text_fmt!` argument as a reactive
 /// signal (rather than a captured value). Has no behavior on its
@@ -301,7 +301,7 @@ pub use dev_hot as __hot;
 // this re-export, every consumer crate would need to declare a
 // direct dep on `mcp-catalog`. Hidden from rustdoc; not part of
 // the author-facing surface. See `docs/mcp-catalog-spec.md`.
-#[cfg(feature = "mcp")]
+#[cfg(feature = "catalog")]
 #[doc(hidden)]
 pub use mcp_catalog as __mcp;
 

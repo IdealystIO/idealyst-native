@@ -47,7 +47,7 @@
 //!   when it builds the native view. No framework-level
 //!   `update_video_src` plumbing involved.
 
-use runtime_core::{Bound, Element, Ref, RefFill};
+use runtime_core::{Bound, Element, IdealystSchema, Ref, RefFill};
 use std::any::{Any, TypeId};
 use std::rc::Rc;
 
@@ -65,11 +65,13 @@ use std::rc::Rc;
 /// `loop_playback` are static at construction time — re-rendering with
 /// different values would tear down and re-mount the view, which is
 /// what the author wants in those cases anyway.
+#[derive(IdealystSchema)]
 pub struct VideoProps {
     /// Initial + reactive video URL. The backend handler subscribes via
     /// `Effect::new(...)`, so changes to the closure's captured signals
     /// swap the source. Use [`src`] to coerce any of `&str` / `String`
     /// / `Fn() -> String` into this shape.
+    #[schema(constraint = "absolute media URL the platform player can fetch")]
     pub src: Box<dyn Fn() -> String>,
     /// Begin playback immediately on mount. Most platforms require the
     /// video to be muted for autoplay to work without a user gesture;

@@ -1,0 +1,112 @@
+- generic [ref=e13]:
+  - generic [ref=e15]:
+    - generic [ref=e16]:
+      - img [ref=e18]
+      - generic [ref=e20]:
+        - generic [ref=e21]: Quill
+        - generic [ref=e22]: EMR
+    - link "Today" [ref=e23] [cursor=pointer]:
+      - /url: /today
+      - generic [ref=e24]:
+        - img [ref=e26]
+        - generic [ref=e29]: Today
+    - link "Patients" [ref=e30] [cursor=pointer]:
+      - /url: /patients
+      - generic [ref=e31]:
+        - img [ref=e33]
+        - generic [ref=e36]: Patients
+    - generic [ref=e37]:
+      - generic [ref=e38]:
+        - link "Encounters" [ref=e40] [cursor=pointer]:
+          - /url: /encounters
+          - generic [ref=e41]:
+            - img [ref=e43]
+            - generic [ref=e45]: Encounters
+        - button "▾" [ref=e46] [cursor=pointer]:
+          - generic [ref=e48]: ▾
+      - generic [ref=e50]:
+        - generic [ref=e51]:
+          - generic [ref=e52]: Today
+          - button "Morning rounds · Maya Okonkwo" [ref=e53] [cursor=pointer]:
+            - generic [ref=e55]: Morning rounds · Maya Okonkwo
+        - generic [ref=e56]:
+          - generic [ref=e57]: Tomorrow
+          - button "Pre-op consult · Lena Ortiz" [ref=e58] [cursor=pointer]:
+            - generic [ref=e60]: Pre-op consult · Lena Ortiz
+    - link "Messages" [ref=e61] [cursor=pointer]:
+      - /url: /messages
+      - generic [ref=e62]:
+        - img [ref=e64]
+        - generic [ref=e66]: Messages
+    - link "Schedule" [ref=e67] [cursor=pointer]:
+      - /url: /schedule
+      - generic [ref=e68]:
+        - img [ref=e70]
+        - generic [ref=e73]: Schedule
+    - generic [ref=e74]:
+      - link "Settings" [ref=e75] [cursor=pointer]:
+        - /url: /settings
+        - generic [ref=e76]:
+          - img [ref=e78]
+          - generic [ref=e81]: Settings
+      - generic [ref=e82]:
+        - generic [ref=e84]: DC
+        - generic [ref=e85]:
+          - generic [ref=e86]: Demo Clinician
+          - generic [ref=e87]: Demo Clinic
+        - button "Sign out" [ref=e88] [cursor=pointer]:
+          - generic [ref=e90]: Sign out
+  - generic [ref=e96]:
+    - generic [ref=e97]:
+      - generic [ref=e98]:
+        - generic [ref=e99]: Encounters
+        - generic [ref=e100]: Your clinic's past visits & consults
+      - textbox "Search by patient, title, or kind…" [ref=e103]
+      - button "New encounter" [ref=e104] [cursor=pointer]:
+        - generic [ref=e105]:
+          - img [ref=e107]
+          - generic [ref=e109]: New encounter
+    - generic [ref=e110]:
+      - button "All" [ref=e111] [cursor=pointer]:
+        - generic [ref=e115]: All
+      - button "Drafts" [ref=e116] [cursor=pointer]:
+        - generic [ref=e120]: Drafts
+      - button "Signed" [ref=e121] [cursor=pointer]:
+        - generic [ref=e125]: Signed
+    - generic [ref=e127]:
+      - generic [ref=e128]:
+        - button "Follow-up visit Maya Okonkwo progress Draft Demo Clinician" [ref=e129] [cursor=pointer]:
+          - generic [ref=e130]:
+            - generic [ref=e131]:
+              - generic [ref=e132]: Follow-up visit
+              - generic [ref=e133]: Maya Okonkwo
+            - generic [ref=e134]: progress
+            - generic [ref=e137]: Draft
+            - generic [ref=e138]: Demo Clinician
+            - img [ref=e140]
+        - button "Delete" [ref=e142] [cursor=pointer]:
+          - generic [ref=e144]: Delete
+      - generic [ref=e145]:
+        - button "Morning rounds Maya Okonkwo progress Draft Demo Clinician" [ref=e146] [cursor=pointer]:
+          - generic [ref=e147]:
+            - generic [ref=e148]:
+              - generic [ref=e149]: Morning rounds
+              - generic [ref=e150]: Maya Okonkwo
+            - generic [ref=e151]: progress
+            - generic [ref=e154]: Draft
+            - generic [ref=e155]: Demo Clinician
+            - img [ref=e157]
+        - button "Delete" [ref=e159] [cursor=pointer]:
+          - generic [ref=e161]: Delete
+      - generic [ref=e162]:
+        - button "Pre-op consult Lena Ortiz progress Draft Demo Clinician" [ref=e163] [cursor=pointer]:
+          - generic [ref=e164]:
+            - generic [ref=e165]:
+              - generic [ref=e166]: Pre-op consult
+              - generic [ref=e167]: Lena Ortiz
+            - generic [ref=e168]: progress
+            - generic [ref=e171]: Draft
+            - generic [ref=e172]: Demo Clinician
+            - img [ref=e174]
+        - button "Delete" [ref=e176] [cursor=pointer]:
+          - generic [ref=e178]: Delete

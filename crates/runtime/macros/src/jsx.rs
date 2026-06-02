@@ -348,12 +348,12 @@ fn parse_for(input: ParseStream) -> syn::Result<JsxNode> {
 ///
 /// Mirrors `ui::collect_component_refs`; see that doc-comment for why
 /// we only capture JSX-position idents.
-#[cfg(feature = "mcp")]
+#[cfg(feature = "catalog")]
 pub(crate) fn collect_component_refs(jsx: &Jsx, out: &mut Vec<(String, u32)>) {
     collect_from_nodes(&jsx.elements, out);
 }
 
-#[cfg(feature = "mcp")]
+#[cfg(feature = "catalog")]
 fn collect_from_nodes(nodes: &[JsxNode], out: &mut Vec<(String, u32)>) {
     for node in nodes {
         match node {

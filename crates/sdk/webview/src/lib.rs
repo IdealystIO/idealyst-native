@@ -49,7 +49,7 @@
 //!   when it builds the native view. No framework-level
 //!   `update_web_view_url` plumbing involved.
 
-use runtime_core::{Bound, Element, Ref, RefFill};
+use runtime_core::{Bound, Element, IdealystSchema, Ref, RefFill};
 use std::any::{Any, TypeId};
 use std::rc::Rc;
 
@@ -66,11 +66,13 @@ use std::rc::Rc;
 /// emits the corresponding event. `url` is reactive too — pass a
 /// closure that reads from a `Signal`/`Source` to drive navigation
 /// from app state.
+#[derive(IdealystSchema)]
 pub struct WebViewProps {
     /// Initial + reactive URL. The backend handler subscribes via
     /// `Effect::new(...)`, so changes to the closure's captured
     /// signals re-navigate the WebView. Use [`url`] to coerce any of
     /// `&str` / `String` / `Fn() -> String` into this shape.
+    #[schema(constraint = "absolute URL (http/https) or file://")]
     pub url: Box<dyn Fn() -> String>,
     /// Fires for each `postMessage` from the embedded content. The
     /// payload is an opaque string — typically a JSON document the

@@ -75,6 +75,9 @@ use std::rc::Rc;
 /// Most apps want `Menu::new("")` as the first entry with the standard
 /// app-menu items inside it.
 pub struct MenuBarSpec {
+    /// The bar's top-level menus, left-to-right. The first entry is
+    /// conventionally the application menu on macOS (see the struct
+    /// docs).
     pub menus: Vec<Menu>,
 }
 
@@ -83,11 +86,16 @@ pub struct MenuBarSpec {
 /// contents.
 #[derive(Clone)]
 pub struct Menu {
+    /// The menu's label — shown in the bar (top-level) or as the
+    /// submenu's row text (when nested).
     pub title: String,
+    /// The dropdown contents, top-to-bottom.
     pub items: Vec<MenuItem>,
 }
 
 impl Menu {
+    /// Create an empty menu with the given title. Add rows with
+    /// [`items`](Self::items) or by pushing onto [`Menu::items`].
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
@@ -108,8 +116,12 @@ impl Menu {
 /// callback), a horizontal separator, or a nested submenu.
 #[derive(Clone)]
 pub enum MenuItem {
+    /// A clickable command with an optional shortcut + handler.
+    /// Construct via [`MenuItem::command`].
     Command(MenuCommand),
+    /// A horizontal divider between command groups.
     Separator,
+    /// A nested submenu (the [`Menu`] becomes a fly-out).
     Submenu(Menu),
 }
 
@@ -125,10 +137,12 @@ impl MenuItem {
         }
     }
 
+    /// A divider [`MenuItem`] between command groups.
     pub fn separator() -> Self {
         Self::Separator
     }
 
+    /// Wrap a [`Menu`] as a nested submenu [`MenuItem`].
     pub fn submenu(menu: Menu) -> Self {
         Self::Submenu(menu)
     }
@@ -145,23 +159,33 @@ impl From<MenuCommand> for MenuItem {
 /// a `MenuItem` for inclusion in a `Vec<MenuItem>`.
 #[derive(Clone)]
 pub struct MenuCommand {
+    /// The row's visible text.
     pub label: String,
+    /// Handler invoked on the main thread when the command is chosen.
+    /// `None` leaves the row inert (but still shown).
     pub on_click: Option<Rc<dyn Fn()>>,
+    /// Optional keyboard shortcut shown alongside the label and wired
+    /// to the OS's accelerator machinery.
     pub shortcut: Option<Shortcut>,
+    /// Whether the command is selectable. `false` greys it out.
     pub enabled: bool,
 }
 
 impl MenuCommand {
+    /// Set the click handler. Fires on the main thread when the command
+    /// is chosen.
     pub fn on_click<F: Fn() + 'static>(mut self, f: F) -> Self {
         self.on_click = Some(Rc::new(f));
         self
     }
 
+    /// Attach a keyboard [`Shortcut`].
     pub fn shortcut(mut self, s: Shortcut) -> Self {
         self.shortcut = Some(s);
         self
     }
 
+    /// Enable or disable the command (`false` greys it out).
     pub fn enabled(mut self, e: bool) -> Self {
         self.enabled = e;
         self
@@ -176,7 +200,10 @@ impl MenuCommand {
 /// abstracts over those backends.
 #[derive(Clone, Copy, Debug)]
 pub struct Shortcut {
+    /// The literal key character (e.g. `'n'`, `'s'`). Combined with
+    /// [`modifiers`](Self::modifiers) to form the accelerator.
     pub key: char,
+    /// The modifier set held with [`key`](Self::key).
     pub modifiers: Modifiers,
 }
 
@@ -191,6 +218,7 @@ impl Shortcut {
         }
     }
 
+    /// `Shift+Cmd+<key>` (`Shift+Ctrl+<key>` on Windows/Linux).
     pub fn shift_cmd(key: char) -> Self {
         Self {
             key,
@@ -198,6 +226,7 @@ impl Shortcut {
         }
     }
 
+    /// `Opt+Cmd+<key>` (`Alt+Ctrl+<key>` on Windows/Linux).
     pub fn opt_cmd(key: char) -> Self {
         Self {
             key,
@@ -205,6 +234,8 @@ impl Shortcut {
         }
     }
 
+    /// `Ctrl+<key>` — the literal Ctrl key on every platform (distinct
+    /// from [`cmd`](Self::cmd), which maps to ⌘ on macOS).
     pub fn ctrl(key: char) -> Self {
         Self {
             key,
@@ -212,6 +243,7 @@ impl Shortcut {
         }
     }
 
+    /// Add extra modifiers to an existing shortcut (OR-combines).
     pub fn with(mut self, m: Modifiers) -> Self {
         self.modifiers = self.modifiers | m;
         self
@@ -227,15 +259,28 @@ impl Shortcut {
 /// `Control` is the literal Ctrl key on every platform; on macOS it
 /// stacks on top of `Command` for less-common shortcuts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Modifiers(pub u32);
+pub struct Modifiers(
+    /// The raw bitmask. Prefer the named constants
+    /// ([`COMMAND`](Self::COMMAND), …) and `|` over constructing this
+    /// directly.
+    pub u32,
+);
 
 impl Modifiers {
+    /// No modifiers.
     pub const NONE: Self = Self(0);
+    /// The primary command modifier — ⌘ on macOS, `Ctrl` on
+    /// Windows/Linux.
     pub const COMMAND: Self = Self(1 << 0);
+    /// The Shift key.
     pub const SHIFT: Self = Self(1 << 1);
+    /// The Option / Alt key.
     pub const OPTION: Self = Self(1 << 2);
+    /// The literal Control key (distinct from [`COMMAND`](Self::COMMAND)
+    /// on macOS).
     pub const CONTROL: Self = Self(1 << 3);
 
+    /// `true` if every bit in `other` is set in `self`.
     pub fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
     }

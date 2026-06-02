@@ -49,9 +49,9 @@ mod styles;
 
 use routes::{
     A11Y_DEFAULTS_ROUTE, A11Y_MODEL_ROUTE, ADV_BACKENDS_ROUTE, ADV_CLI_ROUTE, ADV_EMBEDDED_ROUTE,
-    HOME_ROUTE, MQ_BREAKPOINTS_ROUTE, MQ_MOBILE_FIRST_ROUTE, MQ_SIGNAL_ROUTE, RX_BATCHING_ROUTE,
-    RX_DERIVED_ROUTE, RX_EFFECTS_ROUTE, RX_SIGNALS_ROUTE, ST_STYLESHEETS_ROUTE, ST_TOKENS_ROUTE,
-    ST_VARIANTS_ROUTE,
+    CORE_ENGINE_ROUTE, CORE_PERF_ROUTE, HOME_ROUTE, MQ_BREAKPOINTS_ROUTE, MQ_MOBILE_FIRST_ROUTE,
+    MQ_SIGNAL_ROUTE, RX_BATCHING_ROUTE, RX_DERIVED_ROUTE, RX_EFFECTS_ROUTE, RX_SIGNALS_ROUTE,
+    ST_STYLESHEETS_ROUTE, ST_TOKENS_ROUTE, ST_VARIANTS_ROUTE,
 };
 
 #[component]
@@ -68,6 +68,9 @@ pub fn app() -> Element {
 
     let builder = DrawerNavigator::new(&HOME_ROUTE)
         .screen(HOME_ROUTE, move |_| titled(&HOME_ROUTE, lessons::home::page()))
+        // Idealyst 101
+        .screen(CORE_ENGINE_ROUTE, move |_| titled(&CORE_ENGINE_ROUTE, lessons::foundations::engine()))
+        .screen(CORE_PERF_ROUTE, move |_| titled(&CORE_PERF_ROUTE, lessons::foundations::performance()))
         // Reactivity
         .screen(RX_SIGNALS_ROUTE, move |_| titled(&RX_SIGNALS_ROUTE, lessons::reactivity::signals()))
         .screen(RX_EFFECTS_ROUTE, move |_| titled(&RX_EFFECTS_ROUTE, lessons::reactivity::effects()))

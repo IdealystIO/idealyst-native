@@ -45,7 +45,7 @@
 //!   `Rc<dyn Any>` to the native node plus a `&'static dyn SvgOps`
 //!   pointer that the active backend module exposes as a static.
 
-use runtime_core::{Bound, Element, Ref, RefFill};
+use runtime_core::{Bound, Element, IdealystSchema, Ref, RefFill};
 use std::any::{Any, TypeId};
 use std::rc::Rc;
 
@@ -61,9 +61,11 @@ use std::rc::Rc;
 /// and re-renders whenever signals captured by the closure change.
 /// Callbacks fire once per successful parse + raster (`on_load`) or
 /// once per parse failure (`on_error`).
+#[derive(IdealystSchema)]
 pub struct SvgProps {
     /// Initial + reactive SVG markup. Use [`markup`] to coerce `&str`,
     /// `String`, or `Fn() -> String` into this closure shape.
+    #[schema(constraint = "well-formed SVG document markup")]
     pub markup: Box<dyn Fn() -> String>,
     /// Fires after every successful render. On native backends this
     /// fires once per re-rasterization; on web it fires once per

@@ -22,6 +22,9 @@ pub const CODE_SPLITTING_ROUTE: Route<()> = Route::<()>::new("code-splitting", "
 pub const INSTALL_ROUTE: Route<()> = Route::<()>::new("install", "/install");
 pub const QUICKSTART_ROUTE: Route<()> = Route::<()>::new("quickstart", "/quickstart");
 pub const CONCEPTS_ROUTE: Route<()> = Route::<()>::new("concepts", "/concepts");
+pub const REACTIVITY_ROUTE: Route<()> = Route::<()>::new("reactivity", "/reactivity");
+pub const STYLING_ROUTE: Route<()> = Route::<()>::new("styling", "/styling");
+pub const NAVIGATION_ROUTE: Route<()> = Route::<()>::new("navigation", "/navigation");
 pub const WHY_RUST_ROUTE: Route<()> = Route::<()>::new("why-rust", "/why-rust");
 
 // ---- Demo ----
@@ -130,6 +133,9 @@ pub const SECTIONS: &[IndexSection] = &[
             IndexEntry { route: &INSTALL_ROUTE, label: "Install the CLI" },
             IndexEntry { route: &QUICKSTART_ROUTE, label: "Quickstart" },
             IndexEntry { route: &CONCEPTS_ROUTE, label: "Core concepts" },
+            IndexEntry { route: &REACTIVITY_ROUTE, label: "Reactivity & animation" },
+            IndexEntry { route: &STYLING_ROUTE, label: "Styling & theming" },
+            IndexEntry { route: &NAVIGATION_ROUTE, label: "Navigation" },
             IndexEntry { route: &WHY_RUST_ROUTE, label: "Why Rust" },
         ],
     },

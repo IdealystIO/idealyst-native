@@ -129,7 +129,8 @@ use routes::{
     EXT_DOC_CONTROLS_ROUTE, FIELD_ROUTE, HELLO_ROUTE, ICON_BUTTON_ROUTE, INSTALL_ROUTE,
     INTENTS_ROUTE, LIGHT_DARK_ROUTE, MENUS_ROUTE, MODAL_ROUTE, MODIFIERS_ROUTE, OVERVIEW_ROUTE,
     POPOVER_ROUTE, SELECT_ROUTE, SKELETON_ROUTE, SPACER_ROUTE, SPINNER_ROUTE, STACK_ROUTE,
-    SWITCH_ROUTE, TABLE_ROUTE, TABS_ROUTE, TAG_ROUTE, TOKENS_ROUTE, TYPOGRAPHY_ROUTE,
+    SWITCH_ROUTE, TABLE_ROUTE, TABS_ROUTE, TAG_ROUTE, TOKENS_ROUTE, TOOLTIP_ROUTE,
+    TYPOGRAPHY_ROUTE,
 };
 
 #[component]
@@ -195,6 +196,7 @@ pub fn app() -> Element {
         // Overlays
         .screen(MODAL_ROUTE, move |_| titled(&MODAL_ROUTE, pages::overlays::modal()))
         .screen(POPOVER_ROUTE, move |_| titled(&POPOVER_ROUTE, pages::overlays::popover()))
+        .screen(TOOLTIP_ROUTE, move |_| titled(&TOOLTIP_ROUTE, pages::tooltip::tooltip()))
         .screen(DRAWER_ROUTE, move |_| titled(&DRAWER_ROUTE, pages::overlays::drawer()))
         // Stateful
         .screen(TABS_ROUTE, move |_| titled(&TABS_ROUTE, pages::stateful::tabs()))

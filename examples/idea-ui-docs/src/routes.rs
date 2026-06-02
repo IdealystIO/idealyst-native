@@ -65,6 +65,7 @@ pub const AVATAR_ROUTE: Route<()> = Route::<()>::new("avatar", "/feedback/avatar
 // =============================================================================
 pub const MODAL_ROUTE: Route<()> = Route::<()>::new("modal", "/overlays/modal");
 pub const POPOVER_ROUTE: Route<()> = Route::<()>::new("popover", "/overlays/popover");
+pub const TOOLTIP_ROUTE: Route<()> = Route::<()>::new("tooltip", "/overlays/tooltip");
 pub const DRAWER_ROUTE: Route<()> = Route::<()>::new("drawer-pattern", "/overlays/drawer");
 
 // =============================================================================
@@ -176,6 +177,7 @@ pub const SECTIONS: &[IndexSection] = &[
         entries: &[
             IndexEntry { route: &MODAL_ROUTE, label: "Modal" },
             IndexEntry { route: &POPOVER_ROUTE, label: "Popover" },
+            IndexEntry { route: &TOOLTIP_ROUTE, label: "Tooltip" },
             IndexEntry { route: &DRAWER_ROUTE, label: "Drawer pattern" },
         ],
     },

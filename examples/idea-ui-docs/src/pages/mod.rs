@@ -16,3 +16,4 @@ pub mod stateful;
 pub mod extending;
 pub mod controls;
 pub mod patterns;
+pub mod tooltip;

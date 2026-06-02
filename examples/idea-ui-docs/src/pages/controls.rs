@@ -10,7 +10,7 @@ use idea_ui::{
     Typography,
 };
 
-use crate::shell::{self, ComponentPage, DemoSurface, P, Section};
+use crate::shell::{self, CodePanel, ComponentPage, DemoSurface, P, Prop, PropsTable, Section};
 
 // =============================================================================
 // Selection controls — Switch / Checkbox / Radio / Textarea / Progress
@@ -158,6 +158,89 @@ pub fn controls() -> Element {
                     }
                 }
             }
+
+            Section(title = "Switch — props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "label",     ty: "Reactive<Option<String>>", desc: "Optional label rendered to the left of the toggle." },
+                    Prop { name: "value",     ty: "Signal<bool>",             desc: "Controlled on/off state. The host owns the signal." },
+                    Prop { name: "on_change", ty: "Rc<dyn Fn(bool)>",         desc: "Fires with the new value when the user flips the toggle." },
+                    Prop { name: "tone",      ty: "ToneRef",                  desc: "Semantic palette for the 'on' track fill. Default: Primary." },
+                    Prop { name: "variant",   ty: "VariantRef",              desc: "Surface skeleton. Default: Filled." },
+                    Prop { name: "size",      ty: "ControlSize",             desc: "Sm / Md / Lg track + thumb scale. Default: Md." },
+                ])
+            }
+
+            Section(title = "Checkbox — props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "label",     ty: "Reactive<Option<String>>", desc: "Optional label rendered to the right of the box." },
+                    Prop { name: "value",     ty: "Signal<bool>",             desc: "Controlled checked state. The host owns the signal." },
+                    Prop { name: "on_change", ty: "Rc<dyn Fn(bool)>",         desc: "Fires with the new value when the user toggles the box." },
+                    Prop { name: "tone",      ty: "ToneRef",                  desc: "Semantic palette for the checked fill. Default: Primary." },
+                    Prop { name: "variant",   ty: "VariantRef",              desc: "Surface skeleton for the checked fill. Default: Filled." },
+                    Prop { name: "size",      ty: "ControlSize",             desc: "Sm / Md / Lg box scale. Default: Md." },
+                ])
+                CodePanel(src = r##"let agree = signal!(false);
+let on_agree: Rc<dyn Fn(bool)> = Rc::new(move |v| agree.set(v));
+
+ui! {
+    Checkbox(
+        label = Some("I agree to the terms".into()),
+        value = agree,
+        on_change = on_agree,
+        tone = tone::Primary,
+    )
+}"##.to_string())
+            }
+
+            Section(title = "Radio & RadioGroup — props".to_string()) {
+                P(content = "`RadioGroup` coordinates exclusivity across its options and is \
+                    what you reach for most of the time. A standalone `Radio` is the \
+                    single-row primitive it's built from — use it directly only when you're \
+                    laying out the rows yourself.".to_string())
+                PropsTable(rows = vec![
+                    Prop { name: "value",     ty: "Signal<String>",       desc: "RadioGroup: the selected option's id. The host owns the signal." },
+                    Prop { name: "on_change", ty: "Rc<dyn Fn(String)>",   desc: "RadioGroup: fires with the picked id when the user selects an option." },
+                    Prop { name: "options",   ty: "Vec<RadioOption>",     desc: "RadioGroup: options in render order. RadioOption::new(id, label)." },
+                    Prop { name: "axis",      ty: "RadioAxis",            desc: "RadioGroup: Column (default) or Row layout." },
+                    Prop { name: "tone",      ty: "ToneRef",              desc: "Semantic palette for the selected ring + dot. Default: Primary." },
+                    Prop { name: "variant",   ty: "VariantRef",          desc: "Surface skeleton. Default: Filled." },
+                    Prop { name: "size",      ty: "ControlSize",         desc: "Sm / Md / Lg indicator scale. Default: Md." },
+                    Prop { name: "selected",  ty: "Signal<bool>",        desc: "Standalone Radio only: whether this row is selected." },
+                    Prop { name: "on_select", ty: "Rc<dyn Fn()>",        desc: "Standalone Radio only: fires when the row is clicked. The host coordinates exclusivity." },
+                ])
+            }
+
+            Section(title = "Textarea — props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "label",       ty: "Reactive<Option<String>>", desc: "Optional label above the input." },
+                    Prop { name: "value",       ty: "Signal<String>",           desc: "Controlled input value." },
+                    Prop { name: "on_change",   ty: "Rc<dyn Fn(String)>",        desc: "Fires on every keystroke." },
+                    Prop { name: "placeholder", ty: "Option<String>",            desc: "Hint text shown when value is empty." },
+                    Prop { name: "help",        ty: "Reactive<Option<String>>",  desc: "Helper text below the input." },
+                    Prop { name: "error",       ty: "Reactive<Option<String>>",  desc: "Error text; takes precedence over help and auto-applies the Danger tone." },
+                    Prop { name: "tone",        ty: "Option<ToneRef>",           desc: "Optional border + help-text color overlay." },
+                    Prop { name: "size",        ty: "FieldSize",                 desc: "Sm / Md / Lg." },
+                    Prop { name: "variant",     ty: "FieldAppearance",           desc: "Outline (default) / Contained / Bare." },
+                    Prop { name: "rows",        ty: "u32",                       desc: "Resting height in lines — the floor the box grows from. Default: 3." },
+                    Prop { name: "max_rows",    ty: "u32",                       desc: "Ceiling in lines before it stops growing and scrolls. 0 (default) = uncapped." },
+                ])
+            }
+
+            Section(title = "Progress — props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "value",         ty: "Reactive<f32>",  desc: "Completion in 0.0..=1.0. Ignored when indeterminate." },
+                    Prop { name: "indeterminate", ty: "bool",           desc: "When true, ignore value and show a pulsing indeterminate bar." },
+                    Prop { name: "tone",          ty: "ToneRef",        desc: "Semantic palette for the fill. Default: Primary." },
+                    Prop { name: "variant",       ty: "VariantRef",     desc: "Surface skeleton for the fill. Default: Filled." },
+                    Prop { name: "size",          ty: "ControlSize",    desc: "Sm / Md / Lg bar thickness. Default: Md." },
+                ])
+                CodePanel(src = r##"// Live determinate bar driven by a signal
+let pct = signal!(0.0f32);
+ui! { Progress(value = pct, tone = tone::Primary) }
+
+// Indeterminate (loading, unknown duration)
+ui! { Progress(indeterminate = true, tone = tone::Info) }"##.to_string())
+            }
         }
     })
 }
@@ -230,6 +313,66 @@ pub fn data() -> Element {
                         rounded = true,
                     )
                 }
+            }
+
+            Section(title = "Breadcrumbs — props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "items",     ty: "Vec<Crumb>",  desc: "Trail in order. Crumb::new(label) is plain; Crumb::linked(label, on_press) is clickable." },
+                    Prop { name: "separator", ty: "String",      desc: "Glyph drawn between crumbs. Default: \"/\"." },
+                ])
+                CodePanel(src = r##"Breadcrumbs(items = vec![
+    Crumb::linked("Home", go_home),
+    Crumb::linked("Library", go_library),
+    Crumb::new("Settings"), // current page — not linked
+])"##.to_string())
+            }
+
+            Section(title = "Pagination — props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "page",      ty: "Signal<usize>",        desc: "Current page, 1-based. The host owns the signal." },
+                    Prop { name: "total",     ty: "usize",                desc: "Total number of pages (>= 1)." },
+                    Prop { name: "on_change", ty: "Rc<dyn Fn(usize)>",    desc: "Fires with the requested page when the user navigates." },
+                ])
+            }
+
+            Section(title = "List & ListItem — props".to_string()) {
+                P(content = "`List` is the container; each row is a `ListItem`. A row is \
+                    clickable only when `on_press` is Some.".to_string())
+                PropsTable(rows = vec![
+                    Prop { name: "label",    ty: "Reactive<String>",     desc: "ListItem: row label. Static or live." },
+                    Prop { name: "on_press", ty: "Option<Rc<dyn Fn()>>", desc: "ListItem: when Some, the row is clickable (hover highlight + handler)." },
+                    Prop { name: "leading",  ty: "Option<Element>",      desc: "ListItem: optional leading element (icon, avatar)." },
+                    Prop { name: "trailing", ty: "Option<Element>",      desc: "ListItem: optional trailing element (badge, chevron), pushed right." },
+                    Prop { name: "active",   ty: "bool",                 desc: "ListItem: render the row in its highlighted/selected state." },
+                ])
+            }
+
+            Section(title = "Grid — props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "columns",  ty: "u32",      desc: "Number of columns (>= 1). Default: 2." },
+                    Prop { name: "gap",      ty: "StackGap", desc: "Gap between rows and columns. Default: Md." },
+                    Prop { name: "children", ty: "Vec<Element>", desc: "Cells laid out left-to-right, wrapping into rows." },
+                ])
+            }
+
+            Section(title = "Link — props".to_string()) {
+                P(content = "An external hyperlink (opens a URL). For in-app navigation \
+                    between routes, use the framework's `link` primitive with a `route` \
+                    instead.".to_string())
+                PropsTable(rows = vec![
+                    Prop { name: "label", ty: "Reactive<String>", desc: "Link text. Static or live." },
+                    Prop { name: "url",   ty: "String",           desc: "Destination URL (https:, mailto:, tel:, …)." },
+                ])
+            }
+
+            Section(title = "Image — props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "src",     ty: "String",        desc: "Image source URL or asset path." },
+                    Prop { name: "alt",     ty: "Option<String>", desc: "Accessible description. Maps to alt on web." },
+                    Prop { name: "width",   ty: "Option<f32>",   desc: "Explicit width in px. None = natural / flex-sized." },
+                    Prop { name: "height",  ty: "Option<f32>",   desc: "Explicit height in px." },
+                    Prop { name: "rounded", ty: "bool",          desc: "Clip to a circle (pill radius)." },
+                ])
             }
         }
     })

@@ -1,6 +1,15 @@
 //! Web leaf for the `maps` SDK. Registers a `MapViewProps` handler
 //! against `WebBackend` that renders an OpenStreetMap embed iframe.
 //!
+//! This is one per-backend leaf of the multi-crate `maps` split: it
+//! depends on `maps-core` for the shared [`MapViewProps`](maps_core::MapViewProps)
+//! type and on `backend-web` for the concrete backend it registers
+//! against. The author never names this crate — the umbrella `maps`
+//! crate re-exports this leaf's [`register`] under
+//! `[target.'cfg(target_arch = "wasm32")'.dependencies]`, so app code
+//! calls `maps::register(&mut backend)` and Cargo routes it here on
+//! web.
+//!
 //! Using an `<iframe>` here is a POC choice — it shows a real map
 //! with zero FFI ceremony. A production version would bind to
 //! Leaflet / MapLibre via wasm-bindgen so the map is interactive at

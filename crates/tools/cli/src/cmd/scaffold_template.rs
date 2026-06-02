@@ -180,8 +180,8 @@ fn write_project(
         WELCOME_COMPONENT_CONTENT_LAYER,
     )?;
 
-    // MCP catalog emitter binary — built with the `mcp` feature
-    // (`cargo run --bin catalog --features mcp -- --emit-catalog`).
+    // MCP catalog emitter binary — built with the `catalog` feature
+    // (`cargo run --bin catalog --features catalog -- --emit-catalog`).
     fs::create_dir_all(dir.join("src/bin"))
         .with_context(|| format!("create {}", dir.join("src/bin").display()))?;
     fs::write(dir.join("src/bin/catalog.rs"), catalog_bin_rs(lib_name))?;
@@ -221,17 +221,18 @@ license = "MIT OR Apache-2.0"
 [lib]
 crate-type = ["rlib"]
 
-# Catalog emitter — `cargo run --bin catalog --features mcp -- --emit-catalog`
-# prints this project's MCP catalog (every component, method,
-# animation, type, plus all the framework's built-in primitives /
-# utilities / guides) as JSON to stdout. The MCP server spawns this
-# binary on file changes to refresh its in-memory catalog without
-# restarting. `required-features = ["mcp"]` keeps the bin out of
-# normal builds — only present when the consumer opts in.
+# Catalog emitter — `cargo run --bin catalog --features catalog -- --emit-catalog`
+# prints this project's catalog (every component, method, animation,
+# type, plus all the framework's built-in primitives / utilities /
+# guides) as JSON to stdout. Consumed by the MCP server (for AI) and by
+# doc generators (for humans). `required-features = ["catalog"]` keeps
+# the bin out of normal builds — only present when the consumer opts in.
+# (You usually don't need to build this yourself: `idealyst mcp`
+# generates an equivalent wrapper on demand.)
 [[bin]]
 name = "catalog"
 path = "src/bin/catalog.rs"
-required-features = ["mcp"]
+required-features = ["catalog"]
 
 [features]
 default = []
@@ -239,7 +240,8 @@ default = []
 # `#[derive(IdealystSchema)]` / `#[idealyst_tool]` macros. The
 # catalog binary calls `runtime_core::__mcp::catalog_json()` (a
 # hidden re-export of `mcp-catalog`) so no direct dep is needed.
-mcp = ["runtime-core/mcp"]
+# `mcp` is kept as a backward-compatible alias for `catalog`.
+catalog = ["runtime-core/catalog"]
 
 [dependencies]
 runtime-core = {fcore_dep}
@@ -277,6 +279,11 @@ fn project_index_html(title: &str, lib_name: &str) -> String {
     <style>
       html, body, #app {{ height: 100%; margin: 0; }}
       body {{ background: #f7f8fb; }}
+      /* Mount is a flex column so the app's root view fills the viewport
+         height; without it the root sizes to content and short screens stop
+         short of full height on tall windows. */
+      #app {{ display: flex; flex-direction: column; }}
+      #app > * {{ flex: 1 1 auto; min-height: 0; }}
     </style>
   </head>
   <body>
@@ -518,7 +525,7 @@ fn catalog_bin_rs(lib_name: &str) -> String {
     format!(
         r##"//! MCP catalog emitter.
 //!
-//! Run with `cargo run --bin catalog --features mcp -- --emit-catalog`
+//! Run with `cargo run --bin catalog --features catalog -- --emit-catalog`
 //! to print this project's MCP catalog as JSON on stdout. The
 //! Idealyst MCP server (`idealyst mcp`) spawns this binary on file
 //! changes to refresh its in-memory catalog without process restart.

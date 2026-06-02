@@ -15,3 +15,8 @@ license.workspace = true
 # both can depend on without involving the other.
 
 [dependencies]
+# Pulled in solely for the `IdealystSchema` derive (re-exported from
+# runtime-core). The derive expands to a no-op without the `catalog`
+# feature, so this adds no runtime code or platform deps to a normal
+# build — `maps-core` stays "zero platform deps".
+runtime-core = { workspace = true }

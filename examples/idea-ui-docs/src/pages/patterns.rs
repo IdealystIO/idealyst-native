@@ -12,7 +12,7 @@ use idea_ui::{
     MenuSeparator, Stack, StackGap, SubMenu, ToastHost, ToastPlacement, Typography,
 };
 
-use crate::shell::{self, ComponentPage, DemoSurface, H2, P, Section};
+use crate::shell::{self, CodePanel, ComponentPage, DemoSurface, H2, P, Prop, PropsTable, Section};
 
 const FRUITS: &[&str] = &[
     "Apple", "Apricot", "Banana", "Blackberry", "Blueberry", "Cherry", "Mango", "Peach", "Pear",
@@ -98,6 +98,61 @@ pub fn menus() -> Element {
                     rebuilds it on each open. Top-level Menu contents are composed children \
                     because the Menu mounts them once.".to_string())
             }
+
+            Section(title = "Menu — props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "target",     ty: "Option<AnchorTarget>", desc: "Element to anchor against — AnchorTarget::from(some_ref). Required." },
+                    Prop { name: "on_dismiss", ty: "Option<Rc<dyn Fn()>>", desc: "Fires on click-outside / Escape; flip your open-state signal here." },
+                    Prop { name: "side",       ty: "ElementSide",          desc: "Which side of the anchor the menu opens toward." },
+                    Prop { name: "align",      ty: "ElementAlign",         desc: "Alignment along the anchor edge." },
+                    Prop { name: "offset",     ty: "f32",                  desc: "Gap in px between the anchor and the menu." },
+                    Prop { name: "children",   ty: "Vec<Element>",         desc: "Menu rows — MenuItem / MenuLabel / MenuSeparator / SubMenu." },
+                ])
+            }
+
+            Section(title = "MenuItem — props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "label",     ty: "Reactive<String>", desc: "Row label. Static or live." },
+                    Prop { name: "on_select", ty: "Rc<dyn Fn()>",     desc: "Fires when the row is chosen. Typically also closes the menu." },
+                    Prop { name: "leading",   ty: "Option<Element>",  desc: "Optional leading element (icon, avatar)." },
+                    Prop { name: "trailing",  ty: "Option<Element>",  desc: "Optional trailing element (shortcut hint, badge), pushed right." },
+                    Prop { name: "active",    ty: "bool",             desc: "Renders the row in its highlighted/active state." },
+                ])
+            }
+
+            Section(title = "MenuLabel & MenuSeparator — props".to_string()) {
+                P(content = "`MenuLabel` is a non-interactive section heading; \
+                    `MenuSeparator` is a hairline divider between groups (no props).".to_string())
+                PropsTable(rows = vec![
+                    Prop { name: "text", ty: "Reactive<String>", desc: "MenuLabel: section heading text." },
+                ])
+            }
+
+            Section(title = "SubMenu — props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "label", ty: "Reactive<String>",  desc: "Trigger row label." },
+                    Prop { name: "items", ty: "Vec<MenuEntry>",    desc: "Flyout contents as reconstructable data. MenuEntry::new(label, on_select). Selecting an entry runs its on_select and closes the flyout." },
+                    Prop { name: "side",  ty: "ElementSide",       desc: "Which side the flyout opens toward. Default: End (right in LTR)." },
+                ])
+                CodePanel(src = r##"let open = signal!(false);
+let trigger: Ref<PressableHandle> = Ref::new();
+let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+
+ui! {
+    Button(label = "Actions".into(), on_click = move || open.set(true), bind_to = Some(trigger))
+    if open.get() {
+        Menu(target = Some(AnchorTarget::from(trigger)), on_dismiss = Some(close.clone())) {
+            MenuLabel(text = "Edit")
+            MenuItem(label = "Rename", on_select = close.clone())
+            MenuSeparator()
+            SubMenu(label = "Move to…", items = vec![
+                MenuEntry::new("Inbox", close.clone()),
+                MenuEntry::new("Archive", close.clone()),
+            ])
+        }
+    }
+}"##.to_string())
+            }
         }
     })
 }
@@ -177,6 +232,31 @@ pub fn combos() -> Element {
                     Button(label = "Warning".to_string(), on_click = toast("Check your input", "warning"), tone = tone::Warning, variant = variant::Soft)
                     Button(label = "Error".to_string(), on_click = toast("Something went wrong", "danger"), tone = tone::Danger, variant = variant::Filled)
                 }
+            }
+
+            Section(title = "ToastHost — props".to_string()) {
+                P(content = "Mount one `ToastHost` near the root of the surface you want \
+                    toasts to appear over; it renders + auto-dismisses every toast pushed \
+                    via the global queue.".to_string())
+                PropsTable(rows = vec![
+                    Prop { name: "placement", ty: "ToastPlacement", desc: "Where the stack anchors on the viewport: Top (default) or Bottom." },
+                ])
+            }
+
+            Section(title = "Pushing toasts".to_string()) {
+                P(content = "`push_toast` / `push_toast_with` are free functions — call them \
+                    from anywhere (event handlers, async results). They return the toast id, \
+                    which you can pass to `dismiss_toast` to close it early.".to_string())
+                CodePanel(src = r##"// Default Filled variant
+push_toast("Saved!", tone::Success);
+
+// Explicit variant
+push_toast_with("Heads up", tone::Warning, variant::Soft);
+
+// Dismiss early by id
+let id = push_toast("Uploading…", tone::Info);
+// later:
+dismiss_toast(id);"##.to_string())
             }
         }
     })

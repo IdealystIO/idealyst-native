@@ -54,7 +54,7 @@
 //! On backends without a registered handler, the framework renders a
 //! placeholder per its usual `Element::External` policy.
 
-use runtime_core::{Bound, Color, ExternalHandle};
+use runtime_core::{Bound, Color, ExternalHandle, IdealystSchema};
 
 #[cfg(target_arch = "wasm32")]
 use runtime_core::accessibility::AccessibilityProps;
@@ -76,7 +76,7 @@ mod ios;
 /// on.
 ///
 /// [`TypeId`]: std::any::TypeId
-#[derive(Clone)]
+#[derive(Clone, IdealystSchema)]
 pub struct CodeBlockProps {
     /// Color-run sequence. Each tuple is one run of same-colored
     /// text. Consecutive same-color runs are NOT auto-coalesced —

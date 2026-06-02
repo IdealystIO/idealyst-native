@@ -64,7 +64,7 @@
 //!   IME-action submit is a *field-level* affordance and belongs on the
 //!   input.)
 
-use runtime_core::{Bound, Element, Ref, RefFill};
+use runtime_core::{Bound, Element, IdealystSchema, Ref, RefFill};
 use std::any::{Any, TypeId};
 use std::rc::Rc;
 
@@ -75,7 +75,7 @@ use std::rc::Rc;
 /// Author-supplied props for a `Form`. Owned by the SDK — the framework
 /// type-erases this behind `Element::External` and hands it back to the
 /// registered backend handler on mount.
-#[derive(Default)]
+#[derive(Default, IdealystSchema)]
 pub struct FormProps {
     /// The submit action. On web it fires on the native `<form>` submit
     /// event (Enter in a field or a `type="submit"` descendant) AFTER
@@ -109,6 +109,9 @@ pub struct FormHandle {
 }
 
 impl FormHandle {
+    /// Wrap a type-erased native form node + its backend ops vtable.
+    /// Called by the backend's `RefFill` after the form mounts; you
+    /// don't construct this directly.
     pub fn new(node: Rc<dyn Any>, ops: &'static dyn FormOps) -> Self {
         Self { node, ops }
     }

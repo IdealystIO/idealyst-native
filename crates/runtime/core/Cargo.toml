@@ -40,15 +40,23 @@ debug-stats = ["runtime-macros/debug-stats"]
 # patch dylibs over the wire.
 hot-reload = ["runtime-macros/hot-reload", "dep:dev-hot", "dev-hot/hot"]
 
-# Framework MCP catalog. When enabled, `#[component]` emits an
-# `inventory::submit!` registering each component into
-# `mcp-catalog`'s distributed slice; the catalog surfaces via
-# `runtime_core::__mcp` (a hidden re-export of `mcp-catalog`).
-# Off by default — production builds carry zero MCP code. The
-# feature forwards to `runtime-macros/mcp` (the emission gate)
-# and pulls `mcp-catalog` in as an optional dep so user crates
-# never have to declare it directly. See `docs/mcp-catalog-spec.md`.
-mcp = ["runtime-macros/mcp", "dep:mcp-catalog"]
+# Project catalog capture. When enabled, the macros emit
+# `inventory::submit!`s registering each component / props struct /
+# tool into `mcp-catalog`'s distributed slice; the catalog surfaces via
+# `runtime_core::__mcp` (a hidden re-export of `mcp-catalog`). This is
+# the project's introspection interface — the MCP server renders it for
+# AI, a docs generator renders it for humans. Off by default —
+# production builds carry zero catalog code. Forwards to
+# `runtime-macros/catalog` (the emission gate) and pulls `mcp-catalog`
+# in as an optional dep so user crates never declare it directly.
+# See `docs/mcp-catalog-spec.md`.
+catalog = ["runtime-macros/catalog", "dep:mcp-catalog"]
+
+# Backward-compatible alias. The catalog feature used to be named `mcp`
+# (after its first consumer). MCP now *relies on* the catalog rather than
+# being the gate, so the gate is `catalog`; `runtime-core/mcp` stays as
+# an alias that just turns it on. Existing consumers keep working.
+mcp = ["catalog"]
 
 # Compile-time documentation enforcement. When on, the compiler rejects
 # any `#[component]` without a `///` doc comment and any
@@ -75,11 +83,11 @@ robot = []
 # `dev` umbrella feature — the one `idealyst dev` flips. Bundles
 # every feature that "the user is running locally for development"
 # implies. Today: `robot` (so the MCP server's runtime tools can
-# attach) + `mcp` (so the catalog is populated). When `dev` is on,
-# `runtime_core::mount()` auto-starts the Robot bridge on the
-# default port — no user code needed. Production builds leave this
+# attach) + `catalog` (so the component catalog is populated). When
+# `dev` is on, `runtime_core::mount()` auto-starts the Robot bridge on
+# the default port — no user code needed. Production builds leave this
 # off; they never link `mcp-catalog` or the bridge thread.
-dev = ["robot", "mcp"]
+dev = ["robot", "catalog"]
 
 # Platform-agnostic async + per-frame primitives:
 #

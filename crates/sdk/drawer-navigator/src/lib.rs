@@ -1,8 +1,55 @@
-//! First-party Drawer navigator SDK.
+//! First-party **Drawer** navigator SDK — a hamburger side panel that
+//! switches between co-equal screens, responsive between a modal
+//! (off-canvas) drawer on narrow viewports and a pinned (in-flow)
+//! sidebar on wide ones.
 //!
-//! Routes through `Element::Navigator`; the SDK registers a
-//! per-backend `NavigatorHandler` that drives a slide-in side panel
-//! on iOS/Android and a flex-row sidebar + outlet on web.
+//! Structurally a drawer is "tabs with a side panel": one screen visible
+//! at a time, switched via the sidebar, plus an open/close state for the
+//! panel itself. This crate is one of the three first-party navigator
+//! SDKs (alongside [`stack-navigator`] and [`tab-navigator`]); like every
+//! SDK under `crates/sdk/`, it is not part of `runtime-core` — an app opts
+//! in by calling [`register`] once at startup.
+//!
+//! # Architecture — the `Element::Navigator` path
+//!
+//! The navigator system has two parallel paths: the legacy
+//! `Element::Navigator` / `Element::TabNavigator` /
+//! `Element::DrawerNavigator` variants, and the newer
+//! `Element::NavigatorExt`. **This SDK rides the `Element::Navigator`
+//! path** — [`DrawerNavigator::new`] produces an `Element::Navigator`
+//! carrying a [`DrawerPresentation`] payload, and [`register`] installs a
+//! per-backend `NavigatorHandler` keyed by that presentation type.
+//! Selecting a nav-link dispatches `NavCommand::Select`; opening/closing
+//! the panel rides `NavCommand::Custom` carrying a [`DrawerCmd`].
+//!
+//! ## Two sidebar/chrome APIs
+//!
+//! - The original API: [`DrawerBuilder::sidebar`] /
+//!   [`DrawerBuilder::sidebar_with`] supply the side panel as a single
+//!   closure receiving [`DrawerSlotProps`].
+//! - The next-gen *slot system*: [`DrawerBuilder::leading_with`] /
+//!   `top_with` / `bottom_with` / `trailing_with` mount persistent chrome
+//!   around the screen outlet, each receiving the uniform [`SlotProps`].
+//!   Both coexist; the handler prefers the leading slot when both are set.
+//!   The slot chrome mounts **once** at init and survives screen swaps.
+//!
+//! # Per-backend chrome
+//!
+//! Uniform author tree, native-equivalent rendering:
+//!
+//! | Backend | Mechanism |
+//! | --- | --- |
+//! | web (wasm32) | Flex column: optional top, a middle row [sidebar? · body-outlet · trailing?], optional bottom. Modal⇄pinned collapse is a pure CSS `@media` query keyed to [`navigator_pin_width`] — same for live web and SSR. See [`web-navigator-helpers`]. |
+//! | iOS | `UIView` body wrapped in a self-owned `UINavigationController` (for the native header) + a sidebar `UIView` that slides in. See [`ios-navigator-helpers`]. |
+//! | Android | `RustExactFrameLayout` wrapping a `RustDrawerLayout` (androidx `DrawerLayout`) with a body `LinearLayout` + Toolbar. See [`android-navigator-helpers`]. |
+//! | macOS | Single-window, persistent always-visible sidebar; outlet swaps on `Select` (no scrim / no slide — see `project_macos_navigator_design`). |
+//! | terminal | Persistent sidebar column beside the outlet; no animation / scrim / open-close. |
+//! | SSR / any primitive backend | [`chrome`] builds the same `ui-nav-drawer-*` layout from primitives for a flash-free first paint. |
+//!
+//! Per `native_first_layout_for_web`, header chrome is configured through
+//! screen options ([`DrawerScreenOptions`]) and builder methods, not
+//! `style`. With [`DrawerBuilder::native_header`]`(false)` the app owns
+//! its header at the page level for an identical look across backends.
 //!
 //! # Usage
 //!
@@ -25,14 +72,20 @@
 //!     .side(DrawerSide::Start)
 //!     .bind(nav.clone());
 //! ```
+//!
+//! [`stack-navigator`]: https://docs.rs/stack-navigator
+//! [`tab-navigator`]: https://docs.rs/tab-navigator
+//! [`web-navigator-helpers`]: https://docs.rs/web-navigator-helpers
+//! [`ios-navigator-helpers`]: https://docs.rs/ios-navigator-helpers
+//! [`android-navigator-helpers`]: https://docs.rs/android-navigator-helpers
 
 use runtime_core::primitives::navigator::{
     NavCommand, NavigatorConfig, NavigatorHandle, NavigatorOps, Route, RouteEntry, RouteParams,
     Screen, ScreenBuilder, ScrollContext,
 };
 use runtime_core::{
-    Bound, Color, IntoStyleSource, Element, Ref, RefFill, Signal, StyleApplication, StyleRules,
-    StyleSheet, StyleSource, VariantSet,
+    Bound, Color, IntoStyleSource, Element, IdealystSchema, Ref, RefFill, Signal, StyleApplication,
+    StyleRules, StyleSheet, StyleSource, VariantSet,
 };
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
@@ -43,47 +96,75 @@ use std::rc::Rc;
 // Per-kind value types (SDK-owned — no privilege in core)
 // =============================================================================
 
-#[derive(Copy, Clone, Debug, Default)]
+/// Which edge the drawer panel anchors to. `Start` is the leading edge
+/// (left in LTR, right in RTL); `End` is the trailing edge.
+#[derive(Copy, Clone, Debug, Default, IdealystSchema)]
 pub enum DrawerSide {
+    /// Leading edge (the default).
     #[default]
     Start,
+    /// Trailing edge.
     End,
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+/// How the panel reveals. `Front` slides over the content with a dimming
+/// scrim; `Slide` pushes the content aside with no backdrop.
+#[derive(Copy, Clone, Debug, Default, IdealystSchema)]
 pub enum DrawerType {
+    /// Overlay the content (scrim dims it). The default.
     #[default]
     Front,
+    /// Push the content sideways; no backdrop.
     Slide,
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+/// When a screen's subtree is materialized and whether it survives a
+/// switch away. The default ([`MountPolicy::LazyPersistent`]) matches
+/// React Navigation's behavior — mount on first visit, keep mounted.
+#[derive(Copy, Clone, Debug, Default, IdealystSchema)]
 pub enum MountPolicy {
+    /// Mount every screen at navigator creation; keep all mounted.
     EagerPersistent,
+    /// Mount a screen on first activation; keep it across switches (the
+    /// default).
     #[default]
     LazyPersistent,
+    /// Mount on first activation; drop the scope (and background work)
+    /// when switched away — re-mounts fresh on return.
     LazyDisposing,
 }
 
-/// Bundle of header colors for `DrawerBuilder::header(...)`. Each
-/// field optional — `None` keeps the platform default for that slot.
+/// Bundle of header colors for [`DrawerBuilder::header`]. Each field is
+/// optional — `None` keeps the platform default for that slot.
 #[derive(Default, Clone)]
 pub struct HeaderStyle {
+    /// Header/nav-bar background color. `None` ⇒ platform default.
     pub background: Option<Color>,
+    /// Title-text color. `None` ⇒ platform default.
     pub title: Option<Color>,
+    /// Tint color for bar buttons (hamburger, header buttons).
+    /// `None` ⇒ platform default.
     pub tint: Option<Color>,
+    /// Background of the screen body beneath the header. `None` ⇒
+    /// platform default.
     pub body_background: Option<Color>,
 }
 
-/// Icon-based header bar button.
+/// Icon-based header bar button — the value type for
+/// [`DrawerScreenOptions::header_left`] /
+/// [`DrawerScreenOptions::header_right`]. Construct with [`BarButton::new`].
 #[derive(Clone)]
 pub struct BarButton {
+    /// Icon name (resolved against the framework icon registry).
     pub icon: String,
+    /// Tap handler, invoked on press. `Rc` so the button is cheap to clone.
     pub on_press: Rc<dyn Fn()>,
+    /// Optional per-button tint override. `None` inherits the bar tint.
     pub tint: Option<Color>,
 }
 
 impl BarButton {
+    /// Build a header button from an icon name and a press handler.
     pub fn new(icon: impl Into<String>, on_press: impl Fn() + 'static) -> Self {
         Self {
             icon: icon.into(),
@@ -92,6 +173,7 @@ impl BarButton {
         }
     }
 
+    /// Override the bar tint for just this button.
     pub fn tint(mut self, color: Color) -> Self {
         self.tint = Some(color);
         self
@@ -322,16 +404,26 @@ pub type SlotBuilder = Box<dyn Fn(SlotProps) -> Element>;
 // =============================================================================
 
 /// SDK-defined per-screen options. Authors set fields via the
-/// `DrawerScreenExt` extension trait on `Screen` (or by passing a
-/// `DrawerScreenOptions` to `Screen::with(...)` directly).
-#[derive(Default, Clone)]
+/// [`DrawerScreenExt`] extension trait on
+/// [`Screen`](runtime_core::primitives::navigator::Screen) (or by passing
+/// a `DrawerScreenOptions` to `Screen::with(...)` directly).
+#[derive(Default, Clone, IdealystSchema)]
 pub struct DrawerScreenOptions {
+    /// Title shown in the native header. `None` ⇒ no title.
     pub title: Option<String>,
+    /// Force the native header visible / hidden, overriding the
+    /// navigator-wide [`DrawerPresentation::native_header`]. `None` ⇒
+    /// defer to that default. See [`resolve_header_shown`].
     pub header_shown: Option<bool>,
+    /// Leading (left in LTR) header button.
     pub header_left: Option<BarButton>,
+    /// Trailing (right in LTR) header button.
     pub header_right: Option<BarButton>,
+    /// Reactive header background color; re-resolved on theme swap.
     pub header_background: Option<Rc<dyn Fn() -> Color>>,
+    /// Reactive bar-button tint color; re-resolved on theme swap.
     pub header_tint: Option<Rc<dyn Fn() -> Color>>,
+    /// Reactive title-text color; re-resolved on theme swap.
     pub title_color: Option<Rc<dyn Fn() -> Color>>,
     /// Per-screen override of the navigator's [`DrawerPresentation::mount_policy`].
     /// `None` defers to the navigator-global policy (the default —
@@ -350,45 +442,54 @@ pub struct DrawerScreenOptions {
 }
 
 impl DrawerScreenOptions {
+    /// Empty options (`Default`).
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Set the screen's header title.
     pub fn title(mut self, t: impl Into<String>) -> Self {
         self.title = Some(t.into());
         self
     }
 
+    /// Force the native header visible / hidden for this screen.
     pub fn header_shown(mut self, shown: bool) -> Self {
         self.header_shown = Some(shown);
         self
     }
 
+    /// Set the leading (left in LTR) header button.
     pub fn header_left(mut self, btn: BarButton) -> Self {
         self.header_left = Some(btn);
         self
     }
 
+    /// Set the trailing (right in LTR) header button.
     pub fn header_right(mut self, btn: BarButton) -> Self {
         self.header_right = Some(btn);
         self
     }
 
+    /// Set a reactive header background color (re-resolved on theme swap).
     pub fn header_background<F: Fn() -> Color + 'static>(mut self, f: F) -> Self {
         self.header_background = Some(Rc::new(f));
         self
     }
 
+    /// Set a reactive bar-button tint color (re-resolved on theme swap).
     pub fn header_tint<F: Fn() -> Color + 'static>(mut self, f: F) -> Self {
         self.header_tint = Some(Rc::new(f));
         self
     }
 
+    /// Set a reactive title-text color (re-resolved on theme swap).
     pub fn title_color<F: Fn() -> Color + 'static>(mut self, f: F) -> Self {
         self.title_color = Some(Rc::new(f));
         self
     }
 
+    /// Per-screen [`MountPolicy`] override — see the field doc.
     pub fn mount_policy(mut self, policy: MountPolicy) -> Self {
         self.mount_policy = Some(policy);
         self
@@ -396,17 +497,26 @@ impl DrawerScreenOptions {
 }
 
 /// Extension trait adding drawer-specific builder methods to
-/// `Screen`. Authors `use drawer_navigator::DrawerScreenExt;` to
-/// gain `.title(...) / .header_left(...) / .header_right(...)`
-/// directly on `Screen::new(...)` results.
+/// [`Screen`](runtime_core::primitives::navigator::Screen). Authors
+/// `use drawer_navigator::DrawerScreenExt;` to gain `.title(...) /
+/// .header_left(...) / …` directly on `Screen::new(...)` results. Each
+/// method merges into the screen's [`DrawerScreenOptions`].
 pub trait DrawerScreenExt: Sized {
+    /// Set the screen's header title.
     fn title(self, t: impl Into<String>) -> Self;
+    /// Force the native header visible / hidden for this screen.
     fn header_shown(self, shown: bool) -> Self;
+    /// Set the leading (left in LTR) header button.
     fn header_left(self, btn: BarButton) -> Self;
+    /// Set the trailing (right in LTR) header button.
     fn header_right(self, btn: BarButton) -> Self;
+    /// Set a reactive header background color (re-resolved on theme swap).
     fn header_background<F: Fn() -> Color + 'static>(self, f: F) -> Self;
+    /// Set a reactive bar-button tint color (re-resolved on theme swap).
     fn header_tint<F: Fn() -> Color + 'static>(self, f: F) -> Self;
+    /// Set a reactive title-text color (re-resolved on theme swap).
     fn title_color<F: Fn() -> Color + 'static>(self, f: F) -> Self;
+    /// Per-screen [`MountPolicy`] override.
     fn mount_policy(self, policy: MountPolicy) -> Self;
 }
 
@@ -643,11 +753,15 @@ pub fn register_wire_drawer_factory() {
 // =============================================================================
 
 /// Drawer-specific verbs that ride on `NavCommand::Custom`. The SDK
-/// handler's dispatcher downcasts the `Custom` payload to this.
+/// handler's dispatcher downcasts the `Custom` payload to this to drive
+/// the panel's open/close state.
 #[derive(Copy, Clone, Debug)]
 pub enum DrawerCmd {
+    /// Open the panel.
     Open,
+    /// Close the panel.
     Close,
+    /// Flip the panel's open state.
     Toggle,
 }
 
@@ -655,6 +769,13 @@ pub enum DrawerCmd {
 // DrawerHandle — typed handle for `.bind(...)`
 // =============================================================================
 
+/// Typed runtime handle to a live drawer navigator, filled into the
+/// [`Ref`] passed to [`DrawerBuilder::bind`]. Use it to switch screens
+/// ([`select`](DrawerHandle::select)) and drive the panel
+/// ([`open`](DrawerHandle::open) / `close` / `toggle`). Cheap to clone —
+/// wraps a shared
+/// [`NavigatorHandle`](runtime_core::primitives::navigator::NavigatorHandle)
+/// plus a copy of the open-state [`Signal`].
 #[derive(Clone)]
 pub struct DrawerHandle {
     inner: NavigatorHandle,
@@ -665,10 +786,16 @@ pub struct DrawerHandle {
 }
 
 impl DrawerHandle {
+    /// Wrap a raw [`NavigatorHandle`](runtime_core::primitives::navigator::NavigatorHandle)
+    /// + open-state [`Signal`] in the typed handle. Called by the backend
+    /// `register` glue; authors get a `DrawerHandle` from
+    /// [`DrawerBuilder::bind`] instead.
     pub fn from_inner(inner: NavigatorHandle, is_open: Signal<bool>) -> Self {
         Self { inner, is_open }
     }
 
+    /// Switch to the screen for `route` (and auto-close the panel on
+    /// backends that do so), building the URL from `params`.
     pub fn select<P: RouteParams + Clone>(&self, route: &Route<P>, params: P) {
         let url = params.to_path(route.path());
         self.inner.dispatch(NavCommand::Select {
@@ -679,26 +806,34 @@ impl DrawerHandle {
         });
     }
 
+    /// Open the drawer panel.
     pub fn open(&self) {
         self.inner.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Open)));
     }
 
+    /// Close the drawer panel.
     pub fn close(&self) {
         self.inner.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Close)));
     }
 
+    /// Flip the drawer panel's open state.
     pub fn toggle(&self) {
         self.inner.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Toggle)));
     }
 
+    /// Read the current open state (a plain `bool` snapshot).
     pub fn is_open(&self) -> bool {
         self.is_open.get()
     }
 
+    /// The reactive open-state [`Signal`] — subscribe to it to react to
+    /// open/close (e.g. animate a hamburger icon).
     pub fn is_open_signal(&self) -> Signal<bool> {
         self.is_open
     }
 
+    /// Borrow the underlying kind-agnostic
+    /// [`NavigatorHandle`](runtime_core::primitives::navigator::NavigatorHandle).
     pub fn inner(&self) -> &NavigatorHandle {
         &self.inner
     }
@@ -714,6 +849,11 @@ pub(crate) static DRAWER_OPS: DrawerOps = DrawerOps;
 // Builder
 // =============================================================================
 
+/// The drawer-navigator builder. [`DrawerNavigator::new`] starts one;
+/// the fluent methods on the [`DrawerBuilder`] trait add screens, the
+/// sidebar / slot chrome, drawer geometry, and the `Ref` to bind. The
+/// result is a [`Bound<DrawerHandle>`](runtime_core::Bound) you drop
+/// into a `ui!` tree.
 pub struct DrawerNavigator {
     config: NavigatorConfig,
     presentation: DrawerPresentation,
@@ -723,6 +863,10 @@ pub struct DrawerNavigator {
 }
 
 impl DrawerNavigator {
+    /// Start a drawer navigator whose initial (selected) screen is
+    /// `initial`. Add screens via [`DrawerBuilder::screen`] and a sidebar
+    /// via [`DrawerBuilder::sidebar`] / [`DrawerBuilder::leading_with`],
+    /// then place the returned [`Bound`](runtime_core::Bound) in your tree.
     pub fn new(initial: &Route<()>) -> Bound<DrawerHandle> {
         let nav = Self {
             config: NavigatorConfig::new(initial.name(), initial.path()),
@@ -797,15 +941,22 @@ fn with_presentation_mut<F: FnOnce(&mut DrawerPresentation)>(
 /// workaround — `Bound` lives in runtime-core, so the methods ride
 /// on a trait the user `use`s.
 pub trait DrawerBuilder: Sized {
+    /// Register a route + the closure that builds its screen (receiving
+    /// typed params, returning anything `Into<Screen>`).
     fn screen<P, R, F>(self, route: Route<P>, render: F) -> Self
     where
         P: RouteParams + 'static,
         R: Into<Screen> + 'static,
         F: Fn(P) -> R + 'static;
+    /// Set the panel width in logical pixels (default 280).
     fn drawer_width(self, width: f32) -> Self;
+    /// Set which edge the panel anchors to — see [`DrawerSide`].
     fn side(self, side: DrawerSide) -> Self;
+    /// Set the reveal style — see [`DrawerType`].
     fn drawer_type(self, dt: DrawerType) -> Self;
+    /// Enable / disable the swipe-from-edge gesture that opens the panel.
     fn swipe_to_open(self, enabled: bool) -> Self;
+    /// Set the screen mount lifecycle — see [`MountPolicy`].
     fn mount_policy(self, policy: MountPolicy) -> Self;
     /// Pass a pre-built sidebar Element. Used when the sidebar
     /// doesn't need reactive access to nav state.
@@ -817,7 +968,9 @@ pub trait DrawerBuilder: Sized {
     fn sidebar_with<F>(self, f: F) -> Self
     where
         F: Fn(DrawerSlotProps) -> Element + 'static;
+    /// Style the `"sidebar"` slot (the side panel's background, etc.).
     fn sidebar_style(self, s: impl IntoStyleSource) -> Self;
+    /// Style the `"scrim"` slot (the dimming backdrop behind a modal panel).
     fn scrim_style(self, s: impl IntoStyleSource) -> Self;
     /// Bundled header styling — sets background/title/tint/body
     /// colors via per-slot reactive style sources the SDK dispatches
@@ -825,6 +978,8 @@ pub trait DrawerBuilder: Sized {
     fn header<F>(self, f: F) -> Self
     where
         F: Fn() -> HeaderStyle + 'static;
+    /// Bind a [`Ref<DrawerHandle>`](runtime_core::Ref) so the app can
+    /// drive the drawer imperatively once it mounts.
     fn bind(self, r: Ref<DrawerHandle>) -> Self;
 
     // ---- next-gen slot builders ----

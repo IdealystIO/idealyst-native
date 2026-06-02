@@ -28,11 +28,11 @@ mod doc_check;
 mod invocation_macro;
 mod jsx;
 mod lazy;
-#[cfg(feature = "mcp")]
+#[cfg(feature = "catalog")]
 mod mcp_emit;
-#[cfg(feature = "mcp")]
+#[cfg(feature = "catalog")]
 mod schema_emit;
-#[cfg(feature = "mcp")]
+#[cfg(feature = "catalog")]
 mod tool_emit;
 mod methods_block;
 mod path_analysis;
@@ -53,7 +53,7 @@ use syn::ItemFn;
 /// Recognises `#[schema(constraint = "...")]` field attributes for
 /// free-form constraint hints (spec §4.3).
 ///
-/// With the `mcp` feature on, registers the struct's per-field schema
+/// With the `catalog` feature on, registers the struct's per-field schema
 /// into the catalog. With `strict-docs` on, additionally requires a doc
 /// comment on every named field / enum variant (a missing one is a
 /// `compile_error!`). With neither feature this derive expands to
@@ -68,7 +68,7 @@ pub fn derive_idealyst_schema(input: TokenStream) -> TokenStream {
     // `mcp`: the inventory registration carrying the field docs to the
     // catalog. `emit` consumes the input, so clone — `strict-docs` may
     // have already borrowed it above.
-    #[cfg(feature = "mcp")]
+    #[cfg(feature = "catalog")]
     out.extend(schema_emit::emit(parsed.clone()));
     // Keep `parsed` "used" when neither feature touched it.
     let _ = &parsed;
@@ -78,16 +78,16 @@ pub fn derive_idealyst_schema(input: TokenStream) -> TokenStream {
 /// `#[idealyst_tool]` — register a standalone function as an MCP
 /// tool (spec §4.2). The function body is left unchanged; the
 /// attribute only emits an `inventory::submit!` of a `ToolEntry`
-/// alongside it. When the `mcp` feature is off the attribute is a
+/// alongside it. When the `catalog` feature is off the attribute is a
 /// no-op (function emitted unchanged, no registration).
 #[proc_macro_attribute]
 pub fn idealyst_tool(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let item_fn = parse_macro_input!(item as ItemFn);
-    #[cfg(not(feature = "mcp"))]
+    #[cfg(not(feature = "catalog"))]
     {
         return TokenStream::from(quote! { #item_fn });
     }
-    #[cfg(feature = "mcp")]
+    #[cfg(feature = "catalog")]
     {
         let registration = tool_emit::emit(&item_fn);
         TokenStream::from(quote! {
@@ -225,14 +225,14 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let invocation = invocation_macro::generate_build_impl(&item_fn, &attr);
 
-    // When the `mcp` feature is on, emit an inventory submission so the
+    // When the `catalog` feature is on, emit an inventory submission so the
     // component is discoverable through `mcp-catalog`'s catalog. The
     // submission is a sibling of the function so the linker-section
     // magic in `inventory` works as expected. When the feature is off,
     // this expands to an empty token stream — zero overhead.
-    #[cfg(feature = "mcp")]
+    #[cfg(feature = "catalog")]
     let mcp_registration = mcp_emit::emit(&item_fn, &method_infos);
-    #[cfg(not(feature = "mcp"))]
+    #[cfg(not(feature = "catalog"))]
     let mcp_registration = {
         let _ = &method_infos;
         proc_macro2::TokenStream::new()

@@ -8,6 +8,13 @@
 //! Shared web-side machinery for the three first-party navigator SDKs
 //! (stack / tab / drawer).
 //!
+//! **Internal — not author-facing.** This crate is per-platform glue,
+//! not a public API. Apps never depend on it directly; they use
+//! `stack-navigator`, `tab-navigator`, or `drawer-navigator`, which pull
+//! this crate in only on `wasm32` and call into it. The whole crate is
+//! `#![cfg(target_arch = "wasm32")]`, so on non-wasm hosts it compiles to
+//! an empty rlib (keeping `cargo check --workspace` free of `web-sys`).
+//!
 //! # Model
 //!
 //! The web navigator is an SPA router. Each push calls

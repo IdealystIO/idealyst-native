@@ -69,7 +69,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{BuildElement, Bound, Element, ExternalHandle, IntoElement};
+use runtime_core::{BuildElement, Bound, Element, ExternalHandle, IdealystSchema, IntoElement};
 
 #[cfg(target_arch = "wasm32")]
 use std::any::{Any, TypeId};
@@ -90,23 +90,39 @@ use runtime_core::{
 /// returned backend node — on web they become real DOM children of
 /// the `<table>` element so the browser's table-layout algorithm sees
 /// the full row set.
-#[derive(Default)]
+#[derive(Default, IdealystSchema)]
 pub struct TableProps {
+    /// The table's rows (and, later, any `TableHead`/`TableBody`
+    /// wrappers if we surface them). The framework parents these into
+    /// the returned backend node — on web they become real DOM
+    /// children of the `<table>` so the browser's table-layout
+    /// algorithm sees the full row set. Populated by the `ui!`
+    /// children block.
     pub children: Vec<Element>,
 }
 
 /// Props for a single row (`<tr>`).
-#[derive(Default)]
+#[derive(Default, IdealystSchema)]
 pub struct TableRowProps {
+    /// The row's cells. Parented into the `<tr>` on web / the flex row
+    /// on native. Populated by the `ui!` children block.
     pub children: Vec<Element>,
 }
 
 /// Props for a single cell. `header = true` renders `<th>` instead of
 /// `<td>` so the browser applies its default header styling and
 /// assistive tech announces it as a header.
-#[derive(Default)]
+#[derive(Default, IdealystSchema)]
 pub struct TableCellProps {
+    /// When `true`, render a `<th>` (header cell) instead of a `<td>`
+    /// on web — the browser applies its default header styling
+    /// (centered, bold) and assistive tech announces it as a header.
+    /// On native it's a layout passthrough with no visual effect; the
+    /// caller styles header cells via `.with_style(...)`.
     pub header: bool,
+    /// The cell's contents (typically a `text`). Parented into the
+    /// `<td>`/`<th>` on web / the flex item on native. Populated by the
+    /// `ui!` children block.
     pub children: Vec<Element>,
 }
 

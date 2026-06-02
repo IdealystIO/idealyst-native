@@ -50,8 +50,9 @@ use routes::{
     COMPARE_ELECTRON_ROUTE, COMPARE_FLUTTER_ROUTE, COMPARE_REACT_ROUTE,
     COMPARE_WEB_FRAMEWORKS_ROUTE, COMPARE_WHEN_NOT_ROUTE, COMPARISONS_ROUTE, CONCEPTS_ROUTE,
     CROSS_PLATFORM_ROUTE, DEMO_ROUTE, FEATURES_ROUTE, FURTHER_READING_ROUTE, HOME_ROUTE,
-    INSTALL_ROUTE, PERFORMANCE_ROUTE, QUICKSTART_ROUTE, ROADMAP_ROUTE, SERVER_FUNCTIONS_ROUTE,
-    SSR_ROUTE, TARGETS_ROUTE, TYPE_SAFETY_ROUTE, WHY_RUST_ROUTE,
+    INSTALL_ROUTE, NAVIGATION_ROUTE, PERFORMANCE_ROUTE, QUICKSTART_ROUTE, REACTIVITY_ROUTE,
+    ROADMAP_ROUTE, SERVER_FUNCTIONS_ROUTE, SSR_ROUTE, STYLING_ROUTE, TARGETS_ROUTE,
+    TYPE_SAFETY_ROUTE, WHY_RUST_ROUTE,
 };
 
 #[component]
@@ -136,6 +137,9 @@ pub fn app() -> Element {
         .screen(INSTALL_ROUTE, move |_| titled(&INSTALL_ROUTE, pages::install::page()))
         .screen(QUICKSTART_ROUTE, move |_| titled(&QUICKSTART_ROUTE, pages::quickstart::page()))
         .screen(CONCEPTS_ROUTE, move |_| titled(&CONCEPTS_ROUTE, pages::concepts::page()))
+        .screen(REACTIVITY_ROUTE, move |_| titled(&REACTIVITY_ROUTE, pages::reactivity::page()))
+        .screen(STYLING_ROUTE, move |_| titled(&STYLING_ROUTE, pages::styling::page()))
+        .screen(NAVIGATION_ROUTE, move |_| titled(&NAVIGATION_ROUTE, pages::navigation::page()))
         .screen(WHY_RUST_ROUTE, move |_| titled(&WHY_RUST_ROUTE, pages::why_rust::page()))
         .screen(DEMO_ROUTE, move |_| titled(&DEMO_ROUTE, pages::demo::page()))
         .screen(BACKENDS_ROUTE, move |_| titled(&BACKENDS_ROUTE, pages::backends::page()))

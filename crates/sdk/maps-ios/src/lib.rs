@@ -2,6 +2,14 @@
 //! against `IosBackend` that mounts a native `MKMapView` centered on
 //! the requested coordinate.
 //!
+//! This is one per-backend leaf of the multi-crate `maps` split: it
+//! depends on `maps-core` for the shared [`MapViewProps`](maps_core::MapViewProps)
+//! type and on `backend-ios` for the concrete backend it registers
+//! against. The author never names this crate — the umbrella `maps`
+//! crate re-exports this leaf's [`register`] under
+//! `[target.'cfg(target_os = "ios")'.dependencies]`, so app code calls
+//! `maps::register(&mut backend)` and Cargo routes it here on iOS.
+//!
 //! Reaches MKMapView at the Obj-C runtime layer via `AnyClass::get` +
 //! raw `msg_send` rather than going through `objc2-map-kit` — same
 //! rationale as webview-ios (see crates/sdk/webview/Cargo.toml): the

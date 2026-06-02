@@ -8,6 +8,15 @@
 //! Shared Android-side machinery for the three first-party navigator
 //! SDKs (stack / tab / drawer).
 //!
+//! **Internal — not author-facing.** This crate is per-platform glue,
+//! not a public API. Apps never depend on it directly; they use
+//! `stack-navigator`, `tab-navigator`, or `drawer-navigator`, which pull
+//! this crate in only on `target_os = "android"` and call into it. The
+//! whole crate is `#![cfg(all(target_os = "android", not(target_arch =
+//! "wasm32")))]`, so on other hosts it compiles to an empty rlib
+//! (keeping `cargo check --workspace` free of JNI /
+//! `backend-android-mobile`).
+//!
 //! # Model
 //!
 //! Two flavors of native chrome:

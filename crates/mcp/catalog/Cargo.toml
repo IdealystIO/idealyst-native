@@ -14,9 +14,9 @@ serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 # Integration tests define `#[component]` functions to verify the
-# distributed-slice registration round-trips. The `mcp` feature on
-# runtime-core forwards to `runtime-macros/mcp` (the emission
+# distributed-slice registration round-trips. The `catalog` feature on
+# runtime-core forwards to `runtime-macros/catalog` (the emission
 # gate) and re-exports this crate as `runtime_core::__mcp`, which
 # is what `#[component]`'s emission references.
-runtime-core = { workspace = true, features = ["mcp"] }
-runtime-macros = { workspace = true, features = ["mcp"] }
+runtime-core = { workspace = true, features = ["catalog"] }
+runtime-macros = { workspace = true, features = ["catalog"] }

@@ -66,7 +66,7 @@
 //!   transparent view — toolbars are window chrome, not view content,
 //!   so the placeholder is invisible regardless of where it's mounted.
 
-use runtime_core::{Bound, Element, Ref, RefFill};
+use runtime_core::{Bound, Element, IdealystSchema, Ref, RefFill};
 use std::any::{Any, TypeId};
 use std::rc::Rc;
 
@@ -82,10 +82,12 @@ use std::rc::Rc;
 /// `items` is reactive: the backend handler wraps the call in an
 /// `Effect` and rebuilds the native toolbar's item list whenever the
 /// signals captured by the closure change.
+#[derive(IdealystSchema)]
 pub struct ToolbarProps {
     /// Reactive item list. Re-evaluated whenever its captured signals
     /// change; the result is diffed against the current toolbar and
     /// applied via the native toolbar's "set items" call.
+    #[schema(constraint = "reactive: re-runs when captured signals change")]
     pub items: Box<dyn Fn() -> Vec<ToolbarItem>>,
     /// Whether the toolbar is visible initially. Reactive visibility
     /// (driven by a signal) goes through `ToolbarHandle::set_visible`
@@ -116,7 +118,11 @@ impl Default for ToolbarProps {
 /// fields (tooltip, badge, custom view) without breaking existing
 /// call sites.
 pub enum ToolbarItem {
+    /// A clickable button (with optional icon / tooltip / handler).
+    /// Construct via [`ToolbarItem::button`].
     Button(ToolbarButton),
+    /// A vertical divider between item groups. macOS draws an
+    /// `NSToolbarSeparatorItem`.
     Separator,
     /// Fixed-width gap. macOS draws an NSToolbarSpaceItem (~32 px).
     Space,
@@ -138,14 +144,19 @@ impl ToolbarItem {
         }
     }
 
+    /// A vertical divider [`ToolbarItem`]. Use between logical groups
+    /// of buttons.
     pub fn separator() -> Self {
         Self::Separator
     }
 
+    /// A fixed-width gap [`ToolbarItem`] (~32 px on macOS).
     pub fn space() -> Self {
         Self::Space
     }
 
+    /// A flexible gap [`ToolbarItem`] that pushes every following item
+    /// toward the trailing (right) edge of the toolbar.
     pub fn flexible_space() -> Self {
         Self::FlexibleSpace
     }
@@ -156,6 +167,8 @@ impl ToolbarItem {
 /// `Into<ToolbarItem>` so callers can mix builders + raw variants in
 /// the same `vec![...]`.
 pub struct ToolbarButton {
+    /// Visible button label. Required — toolbar buttons without a label
+    /// fail accessibility and look broken under `IconOnly` display mode.
     pub label: String,
     /// Icon name. Interpreted by the active backend:
     /// - **macOS**: SF Symbol name (e.g. `"square.and.arrow.down"`,
@@ -170,6 +183,8 @@ pub struct ToolbarButton {
     /// glyphs can compose a custom-view toolbar item once that
     /// surface lands.
     pub icon: Option<String>,
+    /// Click handler, invoked on the main thread when the user activates
+    /// the button. `None` makes the button inert.
     pub on_click: Option<Rc<dyn Fn()>>,
     /// Hover tooltip text. macOS shows it on the toolbar item's
     /// `label` + `paletteLabel`; both also serve as the
@@ -178,16 +193,21 @@ pub struct ToolbarButton {
 }
 
 impl ToolbarButton {
+    /// Set the button's icon (an SF Symbol name on macOS). See the
+    /// [`icon`](Self::icon) field for per-backend interpretation.
     pub fn icon(mut self, name: impl Into<String>) -> Self {
         self.icon = Some(name.into());
         self
     }
 
+    /// Set the click handler. Fires on the main thread when the button
+    /// is activated.
     pub fn on_click<F: Fn() + 'static>(mut self, f: F) -> Self {
         self.on_click = Some(Rc::new(f));
         self
     }
 
+    /// Set the hover tooltip / accessibility description.
     pub fn tooltip(mut self, text: impl Into<String>) -> Self {
         self.tooltip = Some(text.into());
         self
@@ -214,6 +234,9 @@ pub struct ToolbarHandle {
 }
 
 impl ToolbarHandle {
+    /// Wrap a type-erased native toolbar node + its backend ops vtable.
+    /// Called by the backend's `RefFill` after the toolbar mounts; you
+    /// don't construct this directly.
     pub fn new(node: Rc<dyn Any>, ops: &'static dyn ToolbarOps) -> Self {
         Self { node, ops }
     }
@@ -275,6 +298,9 @@ pub fn Toolbar(props: ToolbarProps) -> Bound<ToolbarHandle> {
 /// Bring this trait into scope to use the builder-style `.bind(...)`
 /// on the value returned by [`Toolbar`].
 pub trait ToolbarBind {
+    /// Bind a `Ref<ToolbarHandle>` for imperative access (e.g.
+    /// `r.with(|h| h.set_visible(false))`). The ref fills once the
+    /// toolbar mounts.
     fn bind(self, r: Ref<ToolbarHandle>) -> Self;
 }
 

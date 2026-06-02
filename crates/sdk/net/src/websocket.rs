@@ -5,12 +5,17 @@
 //! exactly like the HTTP client maps to fetch / NSURLSession /
 //! HttpURLConnection / reqwest:
 //!
-//! | target            | backend                          |
-//! |-------------------|----------------------------------|
-//! | web (wasm32)      | `web_sys::WebSocket`             |
-//! | iOS / macOS / tvOS| `URLSessionWebSocketTask`        |
-//! | Android           | OkHttp `WebSocket` (JNI)         |
-//! | native / terminal | sync `tungstenite` on an I/O thread |
+//! | target                         | backend                              |
+//! |--------------------------------|--------------------------------------|
+//! | web (wasm32)                   | `web_sys::WebSocket`                 |
+//! | iOS / macOS / desktop / terminal | sync `tungstenite` on an I/O thread (`ws://` + `wss://`) |
+//! | Android                        | sync `tungstenite`, `ws://` only (no bundled TLS — see `Cargo.toml`) |
+//!
+//! Two arms ship: web (`web_sys::WebSocket`) and a shared native arm used by
+//! every non-wasm target. iOS/Android reuse the native arm because they're
+//! native Rust targets with TCP sockets; platform-native
+//! `URLSessionWebSocketTask` / OkHttp (for OS proxy / background
+//! integration) is a documented future optimization, not yet wired.
 //!
 //! # Execution model
 //!
@@ -18,12 +23,9 @@
 //! runtime**. On native, a single blocking worker thread owns the socket
 //! and does the reads/writes; inbound messages are bridged to the async
 //! `recv()` through a `futures-channel` whose cross-thread waker re-polls
-//! under the framework's scheduler. On web / Apple / Android the OS event
-//! loop is the runtime and callbacks marshal in the same way. Nothing
-//! here spins up tokio.
-//!
-//! Only the native arm is implemented today; the other targets return an
-//! "unimplemented" error so the crate still compiles everywhere.
+//! under the framework's scheduler. On web the browser's event loop is the
+//! runtime and callbacks marshal in the same way. Nothing here spins up
+//! tokio.
 
 use crate::error::Error;
 
@@ -31,7 +33,9 @@ use crate::error::Error;
 /// the transport and never surface here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WsMessage {
+    /// A UTF-8 text frame.
     Text(String),
+    /// A binary frame.
     Binary(Vec<u8>),
 }
 

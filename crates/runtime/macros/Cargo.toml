@@ -22,14 +22,20 @@ debug-stats = []
 # wrapper, no indirection, zero production overhead.
 hot-reload = []
 
-# Framework MCP — when on, `#[component]` additionally emits an
-# `inventory::submit!` call that registers the component into
-# `mcp-catalog`'s distributed slice. Consuming crates that want a
-# catalog enable this through `mcp-catalog/mcp` or by depending on
-# `runtime-macros` with this feature on directly. When off, the
-# macro emits zero MCP code — no inventory entry, no dependency on
-# `mcp-catalog`. See `docs/mcp-catalog-spec.md`.
-mcp = []
+# Catalog capture — when on, `#[component]`, `#[derive(IdealystSchema)]`,
+# and `#[idealyst_tool]` additionally emit `inventory::submit!` calls
+# that register the item (name, docs, props, composes graph, …) into
+# `mcp-catalog`'s distributed slice. This is the project's introspection
+# surface: the MCP server is one consumer, a docs renderer is another.
+# When off, the macros emit zero catalog code — no inventory entry, no
+# dependency on `mcp-catalog`. See `docs/mcp-catalog-spec.md`.
+catalog = []
+
+# Backward-compatible alias. The catalog used to be called "mcp" (after
+# its first consumer); the gate is now `catalog` since the data feeds
+# docs/tooling too, and MCP merely relies on it. `runtime-macros/mcp`
+# still works and just turns on `catalog`.
+mcp = ["catalog"]
 
 # Compile-time documentation enforcement. When on, `#[component]` errors
 # if the component fn has no `///` doc comment, and

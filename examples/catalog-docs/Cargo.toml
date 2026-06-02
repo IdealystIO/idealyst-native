@@ -1,0 +1,89 @@
+[package]
+name = "catalog-docs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Catalog-driven documentation app — renders the Idealyst component catalog (every #[component], primitive, utility, type, guide) for humans, built with idea-ui + the docs SDKs."
+
+# `cdylib` for the wasm target; `rlib` so CLI-generated native wrappers
+# under `target/idealyst/<platform>/` can depend on this crate as a
+# library (mirrors examples/idea-ui-docs).
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# No-op feature consumed by the auto-generated web wrapper under
+# `target/idealyst/<app>/web/wrapper/`. See examples/idea-ui-docs.
+runtime-server = []
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper.
+sidecar = ["dep:dev-server", "drawer-navigator/runtime-server"]
+
+[dependencies]
+# `catalog` flips on the emission gate in `runtime-macros` AND pulls
+# `mcp-catalog` in transitively, so every `#[component]` expansion
+# across the dep graph (idea-ui's, the shell's, the SDKs') emits a
+# catalog entry. This is what lets the app read its OWN catalog at
+# runtime via `ResolvedCatalog::build()`.
+runtime-core = { workspace = true, features = ["catalog"] }
+# Read the catalog programmatically (typed `ResolvedCatalog` + the
+# entry structs). A pure-consumer app would only need
+# `runtime-core/catalog`, but this app inspects the catalog directly.
+mcp-catalog = { workspace = true }
+# idea-ui provides the layout/typography/cards/tabs/table components the
+# docs chrome is built from. Depending on it (and referencing its
+# components in `app()`) links its rlib, which brings its
+# `inventory::submit!` catalog ctors into the build — so idea-ui's
+# components show up in the runtime catalog. `docs` parity with
+# idea-ui-docs (DocControls impls); not strictly required here but
+# keeps the feature graph identical.
+idea-ui = { workspace = true, features = ["docs"] }
+drawer-navigator = { workspace = true }
+# Theme-aware syntax-highlighted code panels for usage snippets.
+idea-codeblock = { workspace = true }
+# Real HTML <table> on web via Element::External; flex fallback on
+# native. Powers the auto-generated props/fields tables.
+table = { workspace = true }
+# Lucide icon pack — the `MENU` glyph for the mobile hamburger.
+icons-lucide = { workspace = true }
+# Recorder backend for the runtime-server sidecar wrapper. Optional.
+dev-server = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The unit tests build the catalog and exercise the view-model mapping.
+serde_json = "1"
+
+# Web-only deps. The cross-platform `app()` tree never references these.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["console"] }
+console_error_panic_hook = "0.1"
+lol_alloc = "0.4"
+
+# Native backend deps for the CLI-generated wrappers.
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
+backend-terminal = { workspace = true }
+
+# wasm-opt's bundled binaryen rejects bulk-memory ops emitted by recent
+# rustc; the wasm is still LTO'd at link time without the post-pass.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+# Idealyst project config — read by `idealyst build`/`run`/`dev`.
+[package.metadata.idealyst.app]
+name      = "Catalog Docs"
+bundle_id = "io.idealyst.catalog_docs"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]
+
+[package.metadata.idealyst.app.splash]
+duration_ms = 0

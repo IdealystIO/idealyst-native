@@ -432,15 +432,15 @@ impl Parse for Prop {
 /// NOT captured: per the MCP spec (§6.3) a "component" is something
 /// that appears as a child in JSX position, not any function call.
 ///
-/// Used by `mcp_emit` (under `feature = "mcp"`) to build the
+/// Used by `mcp_emit` (under `feature = "catalog"`) to build the
 /// `composes` edge list for each `#[component]` entry. Kept here so
 /// the AST stays encapsulated in this module.
-#[cfg(feature = "mcp")]
+#[cfg(feature = "catalog")]
 pub(crate) fn collect_component_refs(ui: &Ui, out: &mut Vec<(String, u32)>) {
     collect_from_nodes(&ui.elements, out);
 }
 
-#[cfg(feature = "mcp")]
+#[cfg(feature = "catalog")]
 fn collect_from_nodes(nodes: &[UiNode], out: &mut Vec<(String, u32)>) {
     for node in nodes {
         match node {

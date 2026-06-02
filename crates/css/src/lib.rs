@@ -96,7 +96,17 @@ pub const NAVIGATOR_LAYOUT_CSS: &str = concat!(
     // not own scroll; screens own theirs via the `scroll_view` primitive.
     // `overflow:hidden` clips a non-scrolling screen to the body rather
     // than letting it overflow the shell.
-    ".ui-nav-drawer-body{flex:1 1 auto;position:relative;height:100%;overflow:hidden;width:100%;display:flex;flex-direction:column;}",
+    //
+    // Fill the row's full height via `align-self:stretch` (the cross-axis of
+    // the row), NOT `height:100%`. The middle/root are `flex:1 1 auto`, so
+    // their height comes from flex-grow and is INDEFINITE for percentage
+    // resolution — `height:100%` on the body then collapses to the body's
+    // *content* height, and a taller sidebar drives the row past it (the
+    // outlet visibly stops short of full height when the sidebar is the
+    // taller sibling and the screen's content is short). `min-height:0` keeps
+    // the body shrinkable so an inner `scroll_view` scrolls instead of
+    // overflowing. See `body_outlet_fills_via_stretch_not_percent_height`.
+    ".ui-nav-drawer-body{flex:1 1 auto;position:relative;align-self:stretch;min-height:0;overflow:hidden;width:100%;display:flex;flex-direction:column;}",
 );
 
 /// The pinned-sidebar overlay rules — wrapped in `@media (min-width: …)`
@@ -1147,6 +1157,33 @@ mod tests {
         assert!(
             !custom.contains("@media (min-width: 1024px){"),
             "the default boundary must be gone after override; got: {custom}"
+        );
+    }
+
+    #[test]
+    fn body_outlet_fills_via_stretch_not_percent_height() {
+        // Regression: the content outlet must fill the row's full height via
+        // `align-self:stretch`, NOT `height:100%`. The middle/root are
+        // `flex:1 1 auto` (flex-grown → indefinite height), so `height:100%`
+        // on the body can't resolve and collapses to content height — a
+        // taller sidebar then drives the row past the outlet, leaving the
+        // screen visibly short of full height. `align-self:stretch` fills the
+        // row's used cross-size regardless. `min-height:0` keeps it shrinkable
+        // for an inner scroll_view.
+        let base = navigator_layout_css();
+        let start = base.find(".ui-nav-drawer-body{").expect("body rule present");
+        let rule = &base[start..base[start..].find('}').map(|i| start + i + 1).unwrap()];
+        assert!(
+            rule.contains("align-self:stretch"),
+            "body must stretch to the row height; got: {rule}"
+        );
+        assert!(
+            !rule.contains("height:100%"),
+            "body must NOT rely on height:100% (unresolvable against a flex-grown middle); got: {rule}"
+        );
+        assert!(
+            rule.contains("min-height:0"),
+            "body must stay shrinkable so an inner scroll_view scrolls; got: {rule}"
         );
     }
 

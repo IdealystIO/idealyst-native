@@ -589,7 +589,7 @@ fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String
                 std::process::id(),
             ))
         }
-        #[cfg(feature = "mcp")]
+        #[cfg(feature = "catalog")]
         "get_catalog" => {
             // Serve the in-process catalog JSON over the bridge.
             // Removes the need for the MCP server to spawn a
