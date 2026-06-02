@@ -71,9 +71,14 @@ pub fn app() -> Element {
     //     from the served bundle over the network.
     //   - host / native (runtime-server dev, `--local`, SSR): read the pack
     //     straight off disk — there's no browser origin to fetch against.
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(&"i18n-demo: installing pack loader".into());
     i18n::set_pack_loader(|code: &str| {
         #[cfg(target_arch = "wasm32")]
-        i18n::net_pack_loader("/locales")(code);
+        {
+            web_sys::console::log_1(&format!("i18n-demo: loader CALLED for {code}").into());
+            i18n::net_pack_loader("/locales")(code);
+        }
 
         #[cfg(not(target_arch = "wasm32"))]
         {
