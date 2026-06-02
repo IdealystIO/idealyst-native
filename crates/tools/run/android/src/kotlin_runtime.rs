@@ -108,6 +108,12 @@ const RUNTIME_KOTLIN_FILES: &[(&str, &str)] = &[
         ),
     ),
     (
+        "RustFrameCallback.kt",
+        include_str!(
+            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustFrameCallback.kt"
+        ),
+    ),
+    (
         "RustGraphicsCallback.kt",
         include_str!(
             "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustGraphicsCallback.kt"

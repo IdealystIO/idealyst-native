@@ -285,7 +285,7 @@ fn configure_and_start(
 /// `PathInterpolator`, while `EaseInOut` uses the symmetric
 /// `AccelerateDecelerateInterpolator` (which is closer to CSS
 /// `ease-in-out` than to `ease`).
-fn build_interpolator(env: &mut JNIEnv, easing: Easing) -> Option<JObject<'static>> {
+pub(crate) fn build_interpolator(env: &mut JNIEnv, easing: Easing) -> Option<JObject<'static>> {
     // Helper: instantiate `class` with `()V` constructor. The
     // returned JObject is local; we promote to a GlobalRef so the
     // caller can hold it across JNI calls. Returning a local would

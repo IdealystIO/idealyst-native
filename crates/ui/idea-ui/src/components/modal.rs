@@ -46,10 +46,18 @@
 //! to nothing when non-dismissable. Set it to intercept the tap without
 //! assuming dismissal.
 //!
-//! ## Width
+//! ## Width and height
 //! [`ModalProps::width`] is the surface's desired width on a roomy viewport;
 //! it is capped to the viewport width (minus a margin) reactively so the
-//! surface never overflows a phone.
+//! surface never overflows a phone. The surface height is likewise capped to
+//! the viewport height (minus the same margin) — a `max-height`, not a fixed
+//! height, so a short modal stays content-sized. When the content is taller
+//! than the cap, the card clips (`overflow: hidden`, keeping the rounded
+//! corners) and an inner `scroll_view` scrolls the body. The frame keeps
+//! `ModalStyle`'s visuals (bg, radius, border, shadow); its `padding`/`gap`
+//! move to the inner body view so the spacing lives *inside* the scroller.
+//! (v1 scrolls the whole body — a fixed, non-scrolling footer is not split
+//! out yet.)
 
 use std::rc::Rc;
 use std::time::Duration;
@@ -59,8 +67,8 @@ use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
     component, viewport_size, AlignItems, Color, Element, FlexDirection, IntoElement,
-    JustifyContent, Length, Position, Ref, StyleApplication, StyleRules, StyleSheet, Tokenized,
-    VariantSet, ViewHandle,
+    JustifyContent, Length, Overflow, Position, Ref, StyleApplication, StyleRules, StyleSheet,
+    Tokenized, VariantSet, ViewHandle,
 };
 
 use crate::stylesheets::Modal as ModalStyle;
@@ -72,6 +80,10 @@ const DEFAULT_MODAL_WIDTH: f32 = 520.0;
 const MODAL_EDGE_MARGIN: f32 = 16.0;
 /// Don't shrink the surface below this even on a very narrow viewport.
 const MODAL_MIN_FIT: f32 = 280.0;
+/// Don't cap the surface height below this even on a very short viewport
+/// (e.g. a landscape phone). Mirrors [`MODAL_MIN_FIT`] for the height axis
+/// so a tiny viewport still leaves a usable, scrollable surface.
+const MODAL_MIN_HEIGHT_FIT: f32 = 200.0;
 /// Enter animation duration.
 const ENTER_MS: u64 = 180;
 /// How far below its resting position the card starts before sliding up.
@@ -123,6 +135,16 @@ fn effective_modal_width(desired: f32, viewport_width: f32) -> f32 {
     desired.min((viewport_width - MODAL_EDGE_MARGIN * 2.0).max(MODAL_MIN_FIT))
 }
 
+/// The surface's height cap: the viewport height minus a margin on the top
+/// and bottom, but never below [`MODAL_MIN_HEIGHT_FIT`] on a very short
+/// viewport. This is a `max-height`, not a fixed height — a modal whose
+/// content is shorter than the cap stays content-sized; only a taller one
+/// is clamped here (and then scrolls internally). Pure so the cap is
+/// unit-testable without a backend.
+fn effective_modal_max_height(viewport_height: f32) -> f32 {
+    (viewport_height - MODAL_EDGE_MARGIN * 2.0).max(MODAL_MIN_HEIGHT_FIT)
+}
+
 /// The default dimming scrim: a full-bleed, near-black wash matching the
 /// surface shadow's color family. Absolutely positioned with zero insets so
 /// it fills the fullscreen portal behind the centered card.
@@ -134,6 +156,31 @@ fn default_backdrop_sheet() -> Rc<StyleSheet> {
         right: Some(Tokenized::Literal(Length::Px(0.0))),
         bottom: Some(Tokenized::Literal(Length::Px(0.0))),
         background: Some(Tokenized::Literal(Color("rgba(15, 17, 21, 0.45)".into()))),
+        // Start fully transparent so the FIRST painted frame is invisible and
+        // the AnimatedValue fades it up from there. Without this, the view
+        // keeps its default alpha 1 until the first animate *tick* fires —
+        // `AnimatedValue::bind` applies its initial value via
+        // `subscribe_and_apply`, but the bind runs before the ref is filled
+        // (view not mounted yet) so that initial write is silently skipped and
+        // never re-applied. The gap = one frame of full-opacity scrim = the
+        // open flicker. A static `opacity` in the stylesheet is applied at
+        // `apply_style` (pre-paint) and covers it.
+        opacity: Some(Tokenized::Literal(0.0)),
+        ..Default::default()
+    }))
+}
+
+/// Static sheet for the card's animation wrapper: starts at `opacity: 0` so
+/// the card's first painted frame is invisible (the AnimatedValue fades it up
+/// + slides it). Same first-frame-flicker reason as [`default_backdrop_sheet`].
+/// MUST be static (not in the surface's reactive width closure, which re-runs
+/// on viewport change and would re-zero the alpha mid-animation). The AV binds
+/// this view's `ViewHandle` (a pressable can't carry one), so it's a distinct
+/// layer between the touch-consuming card pressable and the visible surface.
+fn card_anim_sheet() -> Rc<StyleSheet> {
+    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+        flex_direction: Some(FlexDirection::Column),
+        opacity: Some(Tokenized::Literal(0.0)),
         ..Default::default()
     }))
 }
@@ -160,6 +207,40 @@ fn backdrop_hit_sheet() -> Rc<StyleSheet> {
 fn card_layer_sheet() -> Rc<StyleSheet> {
     Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
         position: Some(Position::Relative),
+        flex_direction: Some(FlexDirection::Column),
+        ..Default::default()
+    }))
+}
+
+/// The scrolling body's inner layout view. Carries the LAYOUT half of
+/// `ModalStyle` that the frame gives up (flex column + the inter-child
+/// `gap` + the surface `padding`) so the card's look and spacing are
+/// unchanged, while the frame clips and the `scroll_view` between them
+/// handles overflow. Static (token-resolved at apply time) so `padding`
+/// and `gap` emit reliably — the dynamic `with_computed` layer on the
+/// frame is reserved for the viewport-derived width/height caps.
+fn modal_body_sheet() -> Rc<StyleSheet> {
+    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+        flex_direction: Some(FlexDirection::Column),
+        // Mirrors `ModalStyle`'s base `gap`/`padding` (spacing-md / spacing-lg).
+        gap: Some(Tokenized::token("spacing-md", Length::Px(12.0))),
+        padding_top: Some(Tokenized::token("spacing-lg", Length::Px(16.0))),
+        padding_right: Some(Tokenized::token("spacing-lg", Length::Px(16.0))),
+        padding_bottom: Some(Tokenized::token("spacing-lg", Length::Px(16.0))),
+        padding_left: Some(Tokenized::token("spacing-lg", Length::Px(16.0))),
+        ..Default::default()
+    }))
+}
+
+/// The scroll_view that sits between the clipping frame and the body. It
+/// fills the frame (`flex_grow: 1`) so it takes the capped height and
+/// scrolls its single body child when that child is taller. Static so
+/// `flex_grow` emits reliably.
+fn modal_scroll_sheet() -> Rc<StyleSheet> {
+    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+        flex_grow: Some(Tokenized::Literal(1.0)),
+        // The scroller is itself a column so its body child lays out
+        // top-to-bottom and can grow past the visible region.
         flex_direction: Some(FlexDirection::Column),
         ..Default::default()
     }))
@@ -222,8 +303,65 @@ pub fn Modal(props: ModalProps) -> Element {
             .into_element()
     };
 
-    // Card: themed sheet + viewport-capped width, `position: relative` so it
-    // paints above the absolute backdrop on web. Fades in and slides up.
+    // Card: themed sheet + viewport-capped width AND height. The frame keeps
+    // `ModalStyle`'s VISUALS (bg, radius, border, shadow) but gives up its
+    // `padding`/`gap` (overridden to 0 in the computed layer) — those move to
+    // the inner body view so they live *inside* the scroller. `overflow:
+    // hidden` clips the scroll content to the rounded corners. Inside the
+    // frame, a `scroll_view` (flex_grow: 1) takes the capped height and
+    // scrolls its single body child when the content is taller than the cap.
+    //
+    // A content-shorter-than-the-cap modal stays content-sized: `max_height`
+    // is a max, not a fixed height, and the scroll_view only scrolls when its
+    // child overflows. The visible surface itself carries NO animator — the
+    // fade/slide live on a dedicated `anim_view` wrapper below whose static
+    // `opacity: 0` sheet makes the first painted frame invisible (see
+    // `card_anim_sheet`).
+    let viewport = viewport_size();
+    let desired = props.width;
+
+    let body = runtime_core::view(content)
+        .with_style(StyleApplication::new(modal_body_sheet()))
+        .into_element();
+    let scroller = runtime_core::primitives::scroll_view::scroll_view(vec![body])
+        .with_style(StyleApplication::new(modal_scroll_sheet()))
+        .into_element();
+
+    let surface = runtime_core::view(vec![scroller])
+        .with_style(move || {
+            let vp = viewport.get();
+            let effective = effective_modal_width(desired, vp.width);
+            let max_h = effective_modal_max_height(vp.height);
+            StyleApplication::new(ModalStyle::sheet()).with_computed(
+                format!(
+                    "modal-wh-{}-{}",
+                    effective.round() as i32,
+                    max_h.round() as i32
+                ),
+                move || StyleRules {
+                    width: Some(Tokenized::Literal(Length::Px(effective))),
+                    max_height: Some(Tokenized::Literal(Length::Px(max_h))),
+                    // Clip the scroll content to the frame's rounded corners.
+                    overflow: Some(Overflow::Hidden),
+                    // The padding/gap baked into `ModalStyle::sheet()` move to
+                    // the inner body view (inside the scroller); zero them on
+                    // the frame so the scroller fills it edge-to-edge.
+                    padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
+                    padding_right: Some(Tokenized::Literal(Length::Px(0.0))),
+                    padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
+                    padding_left: Some(Tokenized::Literal(Length::Px(0.0))),
+                    gap: Some(Tokenized::Literal(Length::Px(0.0))),
+                    ..Default::default()
+                },
+            )
+        })
+        .into_element();
+
+    // Animation wrapper: opacity 0→1 fade + translateY slide-up. Bound here
+    // (a real `view` with a `ViewHandle`) rather than on the surface so the
+    // static `opacity: 0` base (pre-paint, flicker-free) is separate from the
+    // surface's reactive width style, and so the card pressable below (which
+    // can't carry a `ViewHandle`) stays purely a touch layer.
     let surface_ref: Ref<ViewHandle> = Ref::new();
     let card_opacity = AnimatedValue::new(0.0_f32);
     card_opacity.bind(surface_ref, AnimProp::Opacity);
@@ -231,26 +369,13 @@ pub fn Modal(props: ModalProps) -> Element {
     let card_slide = AnimatedValue::new(CARD_SLIDE_PX);
     card_slide.bind(surface_ref, AnimProp::TranslateY);
     card_slide.animate(TweenTo::new(0.0_f32, Duration::from_millis(ENTER_MS)).ease_out());
-
-    let viewport = viewport_size();
-    let desired = props.width;
-    let surface = runtime_core::view(content)
-        .with_style(move || {
-            let vw = viewport.get().width;
-            let effective = effective_modal_width(desired, vw);
-            StyleApplication::new(ModalStyle::sheet()).with_computed(
-                format!("modal-w-{}", effective.round() as i32),
-                move || StyleRules {
-                    width: Some(Tokenized::Literal(Length::Px(effective))),
-                    ..Default::default()
-                },
-            )
-        })
+    let anim_view = runtime_core::view(vec![surface])
+        .with_style(StyleApplication::new(card_anim_sheet()))
         .bind(surface_ref)
         .into_element();
+
     // Positioned wrapper so the card stacks above the absolute backdrop on
-    // web (see `card_layer_sheet`). The fade/slide animators stay on the
-    // inner surface; this wrapper only fixes stacking.
+    // web (see `card_layer_sheet`).
     //
     // It's a `pressable` (no-op handler), NOT a plain `view`, so a tap that
     // lands on the card itself is CONSUMED here and does not fall through to
@@ -265,7 +390,7 @@ pub fn Modal(props: ModalProps) -> Element {
     // card's own interactive descendants (buttons, inputs) to them; only the
     // empty regions of the card are swallowed here — exactly what a modal
     // surface should do.
-    let card = runtime_core::pressable(vec![surface], || {})
+    let card = runtime_core::pressable(vec![anim_view], || {})
         .with_style(StyleApplication::new(card_layer_sheet()))
         .into_element();
 
@@ -317,6 +442,36 @@ mod tests {
     fn width_never_shrinks_below_min_fit_on_tiny_viewports() {
         let eff = effective_modal_width(520.0, 300.0);
         assert_eq!(eff, MODAL_MIN_FIT);
+    }
+
+    #[test]
+    fn max_height_caps_to_viewport_minus_margin() {
+        // A roomy phone in portrait: the surface may grow to the viewport
+        // height minus the top+bottom margin, then scroll past that.
+        let h = effective_modal_max_height(852.0);
+        assert_eq!(h, 852.0 - MODAL_EDGE_MARGIN * 2.0);
+        assert!(h < 852.0, "the surface must fit within the viewport height");
+    }
+
+    #[test]
+    fn regression_tall_modal_caps_to_viewport_height() {
+        // The bug: `ModalStyle` capped WIDTH (`max_width: 560`) but never
+        // height, so a modal whose content was taller than the screen ran
+        // off the top and bottom edges with no way to reach the clipped
+        // parts. The height cap brings it to viewport - 2*margin so it fits;
+        // the internal scroll_view then reaches the overflow.
+        let short_viewport = 500.0;
+        let h = effective_modal_max_height(short_viewport);
+        assert_eq!(h, short_viewport - MODAL_EDGE_MARGIN * 2.0);
+        assert!(h < short_viewport);
+    }
+
+    #[test]
+    fn max_height_never_shrinks_below_min_on_tiny_viewports() {
+        // A very short viewport (e.g. a landscape phone) still leaves a
+        // usable, scrollable surface rather than collapsing to a sliver.
+        let h = effective_modal_max_height(150.0);
+        assert_eq!(h, MODAL_MIN_HEIGHT_FIT);
     }
 
     /// Regression: the Modal's card layer must be a touch-CONSUMING

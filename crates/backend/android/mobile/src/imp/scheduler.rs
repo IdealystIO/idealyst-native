@@ -1,6 +1,13 @@
 //! Android `Scheduler`: `Handler(Looper.getMainLooper()).postDelayed`
-//! for `after_ms`, `Handler.post` for microtasks, `Choreographer`
-//! (via `postFrameCallback`) for `after_animation_frame` / `raf_loop`.
+//! for `after_ms` / `after_animation_frame` / `raf_loop`, `Handler.post`
+//! (delay 0) for microtasks.
+//!
+//! The layout-pass scheduler is the one exception: its INITIAL attempt
+//! runs on a `Choreographer.FrameCallback` (`postFrameCallback`) so the
+//! Taffy frames it writes land BEFORE the next frame's view traversal —
+//! a `postDelayed` message would run after the traversal and a
+//! dynamically-mounted subtree would paint unlaid-out for one frame. See
+//! `schedule_layout_pass_retry` / `schedule_frame_callback` below.
 //!
 //! `runtime_core::scheduling` falls back to synchronous execution
 //! on native when no scheduler is installed — fine for
@@ -152,15 +159,8 @@ pub(crate) fn schedule_layout_pass_retry(retry_count: u32) {
         LAYOUT_PASS_QUEUED.with(|q| q.set(false));
         return;
     };
-    // Exponential backoff: 16, 32, 64, 128 ms then give up. The
-    // initial 16ms covers the common "first vsync" case; the rest
-    // protect against unusual lifecycles where the activity tree
-    // hasn't yet been measured by the time `finish` runs.
-    let delay = 16i32 << retry_count.min(3);
-    // `ScheduledHandle::Drop` cancels the runnable (and removes the
-    // closure from CALLBACKS), so we must leak the handle for the
-    // post to actually fire. See [[project_android_scheduler_handle_leak]].
-    std::mem::forget(schedule_runnable(delay, Box::new(move || {
+
+    let run_pass = move || {
         // Clear the queued flag BEFORE running so any
         // `schedule_layout_pass_retry(0)` arriving during the pass
         // re-arms a fresh post — matches iOS's coalescing semantics.
@@ -180,7 +180,66 @@ pub(crate) fn schedule_layout_pass_retry(retry_count: u32) {
         if !viewport_ok && retry_count < 4 {
             schedule_layout_pass_retry(retry_count + 1);
         }
-    })));
+    };
+
+    if retry_count == 0 {
+        // INITIAL attempt: run on a `Choreographer` frame callback, NOT
+        // `Handler.postDelayed`. A frame callback fires at the START of
+        // the next frame — in the animation/input callback phase, BEFORE
+        // that frame's measure/layout/draw traversal — so the Taffy
+        // frames this pass writes onto the views' LayoutParams are in
+        // place before the views are drawn. `postDelayed(0/16ms)` posts a
+        // looper message that typically runs AFTER the traversal, so a
+        // dynamically-mounted subtree (a modal/portal mounted when its
+        // open signal flips during input dispatch) paints once
+        // UNLAID-OUT (the card at the origin / top-left) and visibly
+        // snaps into place. Choreographer is the principled fix for that
+        // jank and helps every dynamic mount, not just modals. See
+        // [[project_android_layout_before_paint_choreographer]].
+        schedule_frame_callback(Box::new(run_pass));
+    } else {
+        // RETRY attempts: the previous pass ran while the host was still
+        // 0×0 (process resume, activity tree not yet measured). A frame
+        // callback would just re-fire next frame still-unmeasured; we
+        // need to back off in wall-clock time to give the host a chance
+        // to be measured. Exponential backoff: 32, 64, 128 ms then give
+        // up. `Handler.postDelayed` is correct here (we WANT a delay, and
+        // there is no paint to beat — nothing is laid out yet).
+        let delay = 16i32 << retry_count.min(3);
+        // `ScheduledHandle::Drop` cancels the runnable (and removes the
+        // closure from CALLBACKS), so we must leak the handle for the
+        // post to actually fire. See [[project_android_scheduler_handle_leak]].
+        std::mem::forget(schedule_runnable(delay, Box::new(run_pass)));
+    }
+}
+
+/// Register `f` and post a `Choreographer.FrameCallback` that fires it
+/// at the start of the next frame, before the frame's view traversal.
+/// Reuses the same id→`CALLBACKS`→`nativeInvoke` registry as
+/// `schedule_runnable` (so the closure is owned, fire-or-drop, no leaked
+/// pointer). Frame callbacks are one-shot and we never cancel this one,
+/// so there is no `ScheduleHandle`/`removeCallbacks` path.
+fn schedule_frame_callback(f: Box<dyn FnOnce() + 'static>) {
+    let id = NEXT_ID.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    });
+    CALLBACKS.with(|m| m.borrow_mut().insert(id, f));
+    with_env(|env| {
+        let class = env
+            .find_class("io/idealyst/runtime/RustFrameCallback")
+            .expect("RustFrameCallback class missing — bundle the kotlin runtime");
+        let cb = env
+            .new_object(&class, "(J)V", &[JValue::Long(id as jlong)])
+            .expect("new RustFrameCallback failed");
+        // `RustFrameCallback.post()` calls
+        // `Choreographer.getInstance().postFrameCallback(this)` on the
+        // current (UI) thread. We must hold no extra ref — the
+        // Choreographer retains the callback until it fires, and the
+        // closure removes itself from CALLBACKS on `nativeInvoke`.
+        let _ = env.call_method(&cb, "post", "()V", &[]);
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +471,31 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustScheduledRunnable_nat
             // invariant state that produced the panic.
             log::error!(
                 "scheduled callback (id={}) panicked: {}",
+                id,
+                panic_message(&payload),
+            );
+            std::process::abort();
+        }
+    }
+}
+
+/// `RustFrameCallback.doFrame` → `nativeInvoke(id)`. Identical
+/// semantics to the `RustScheduledRunnable` export: remove the closure
+/// from the thread-local registry and run it inside `catch_unwind`
+/// (panic across JNI is UB → log + abort, crash-loud). Frame callbacks
+/// are one-shot, so once consumed the id is dead.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustFrameCallback_nativeInvoke(
+    _env: JNIEnv,
+    _this: JObject,
+    id: jlong,
+) {
+    let cb = CALLBACKS.with(|m| m.borrow_mut().remove(&(id as i64)));
+    if let Some(f) = cb {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f()));
+        if let Err(payload) = result {
+            log::error!(
+                "frame callback (id={}) panicked: {}",
                 id,
                 panic_message(&payload),
             );

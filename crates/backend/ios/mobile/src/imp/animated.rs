@@ -37,6 +37,7 @@ use runtime_core::Color;
 use objc2::encode::{Encode, Encoding};
 use objc2::msg_send;
 use objc2::rc::Retained;
+use objc2::ClassType;
 use objc2_foundation::{CGFloat, NSObject};
 use objc2_ui_kit::UIView;
 
@@ -506,6 +507,115 @@ impl IosBackend {
     pub(crate) fn impl_drop_animated_state(&mut self, key: usize) {
         self.animated_states.remove(&key);
     }
+
+    /// `Backend::apply_presence` for iOS.
+    ///
+    /// Maps a [`PresenceState`] (opacity + 2D translate + uniform
+    /// scale) onto the node's UIView. Missing fields resolve to the
+    /// resting identity (opacity 1.0, translate 0, scale 1.0) — this
+    /// matches the web backend, where a `None` field clears the inline
+    /// override and the element snaps back to its stylesheet/default
+    /// value.
+    ///
+    /// We reuse the same [`AnimatedTransformState`] slots the
+    /// `AnimatedValue` path writes (`opacity`, `translate_x/y`,
+    /// `scale_x/y`) and the same [`AnimatedTransformState::compose`]
+    /// matrix, so presence and `AnimatedValue` agree on the final
+    /// `setTransform:`/`setAlpha:` output. The presence walker drives
+    /// enter/exit as discrete state writes (apply-before-paint, then
+    /// snap-to-rest one frame later for enter; apply exit-state then
+    /// drop for exit), so we only ever animate from the *current*
+    /// rendered value to the supplied state — no per-frame ticking.
+    ///
+    /// `transition`:
+    /// - `Some((ms, easing))` → wrap the alpha+transform writes in
+    ///   `UIView animateWithDuration:delay:options:animations:completion:`
+    ///   so UIKit interpolates from the current value over `ms`.
+    /// - `None` → write the values directly (instant snap), matching
+    ///   the pre-paint enter setup and the snap path on web.
+    pub(crate) fn impl_apply_presence(
+        &mut self,
+        node: &IosNode,
+        state: runtime_core::PresenceState,
+        transition: Option<(u32, runtime_core::Easing)>,
+    ) {
+        let key = node.view_key();
+        let view = node.as_view().retain();
+        let st = self.animated_states.entry(key).or_default();
+
+        // Resolve each presence field to its target, treating a
+        // missing field as the resting identity. We write these into
+        // the shared transform slots so `compose()` reflects them and
+        // a subsequent `AnimatedValue`/`apply_style` sees consistent
+        // state.
+        let target_alpha = state.opacity.unwrap_or(1.0) as CGFloat;
+        st.opacity = Some(target_alpha as f32);
+        st.translate_x = Some(state.translate_x.unwrap_or(0.0));
+        st.translate_y = Some(state.translate_y.unwrap_or(0.0));
+        let s = state.scale.unwrap_or(1.0);
+        st.scale_x = Some(s);
+        st.scale_y = Some(s);
+        let matrix = st.compose();
+
+        // Block applied either inside UIView.animate (transition) or
+        // immediately (snap). Clone the retained view into the block.
+        let view_for_block = view.clone();
+        let apply = move || {
+            let _: () = unsafe { msg_send![&*view_for_block, setAlpha: target_alpha] };
+            let _: () = unsafe { msg_send![&*view_for_block, setTransform: matrix] };
+        };
+
+        match transition {
+            None => apply(),
+            Some((duration_ms, easing)) => {
+                let duration = (duration_ms as f64) / 1000.0;
+                let options = easing_to_uiview_options(easing);
+                let anim_block = block2::StackBlock::new(move || apply());
+                let cls = objc2::class!(UIView);
+                // animateWithDuration:delay:options:animations:completion:
+                // completion is nullable — pass a null block ptr.
+                let null_completion: *const NSObject = std::ptr::null();
+                let _: () = unsafe {
+                    msg_send![
+                        cls,
+                        animateWithDuration: duration as CGFloat,
+                        delay: 0.0 as CGFloat,
+                        options: options,
+                        animations: &*anim_block,
+                        completion: null_completion
+                    ]
+                };
+            }
+        }
+    }
+}
+
+/// Map a framework [`Easing`](runtime_core::Easing) to UIKit's
+/// `UIViewAnimationOptions` curve bits. The curve lives in bits
+/// 16..18 of the options mask:
+///
+/// - EaseInOut = 0 << 16
+/// - EaseIn    = 1 << 16
+/// - EaseOut   = 2 << 16
+/// - Linear    = 3 << 16
+///
+/// `Ease` (the CSS default — quick start, slow end) has no dedicated
+/// UIKit named curve; its shape is closest to ease-in-out's
+/// symmetric softening for the short fades presence drives, so we map
+/// it there. `CubicBezier` likewise falls back to ease-in-out — a
+/// custom curve would need `CAMediaTimingFunction` + a CATransaction
+/// rather than the `UIView.animate` options path, which presence's
+/// narrow fade/slide vocabulary doesn't warrant.
+fn easing_to_uiview_options(e: runtime_core::Easing) -> u64 {
+    use runtime_core::Easing;
+    match e {
+        Easing::EaseInOut => 0 << 16,
+        Easing::EaseIn => 1 << 16,
+        Easing::EaseOut => 2 << 16,
+        Easing::Linear => 3 << 16,
+        Easing::Ease => 0 << 16,
+        Easing::CubicBezier(..) => 0 << 16,
+    }
 }
 
 /// `[f32; 4]` sRGB → CSS `rgba(...)` string. We round to the
@@ -522,3 +632,40 @@ fn rgba_to_css_string(value: [f32; 4]) -> String {
 }
 
 pub(crate) type AnimatedStateMap = HashMap<usize, AnimatedTransformState>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_core::Easing;
+
+    // The curve lives in bits 16..18 of the UIViewAnimationOptions
+    // mask. These constants are part of UIKit's stable ABI; a
+    // regression here would silently flip presence fades to the wrong
+    // curve on device (the closest reachable test for an objc2-only
+    // crate — device verification covers the actual animation).
+    #[test]
+    fn easing_maps_to_uiview_curve_bits() {
+        assert_eq!(easing_to_uiview_options(Easing::EaseInOut), 0 << 16);
+        assert_eq!(easing_to_uiview_options(Easing::EaseIn), 1 << 16);
+        assert_eq!(easing_to_uiview_options(Easing::EaseOut), 2 << 16);
+        assert_eq!(easing_to_uiview_options(Easing::Linear), 3 << 16);
+        // Ease (CSS default) and CubicBezier fall back to ease-in-out.
+        assert_eq!(easing_to_uiview_options(Easing::Ease), 0 << 16);
+        assert_eq!(
+            easing_to_uiview_options(Easing::CubicBezier(0.1, 0.2, 0.3, 0.4)),
+            0 << 16
+        );
+    }
+
+    #[test]
+    fn presence_missing_fields_resolve_to_identity() {
+        // Mirror the resolution logic in impl_apply_presence without
+        // touching UIKit: a rest() state must produce opacity 1,
+        // translate 0, scale 1.
+        let s = runtime_core::PresenceState::rest();
+        assert_eq!(s.opacity.unwrap_or(1.0), 1.0);
+        assert_eq!(s.translate_x.unwrap_or(0.0), 0.0);
+        assert_eq!(s.translate_y.unwrap_or(0.0), 0.0);
+        assert_eq!(s.scale.unwrap_or(1.0), 1.0);
+    }
+}

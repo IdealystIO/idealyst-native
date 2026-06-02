@@ -834,6 +834,7 @@ impl Backend for MacosBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        secure: bool,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Build an editable NSTextField. `+[NSTextField alloc, init]`
@@ -841,9 +842,19 @@ impl Backend for MacosBackend {
         // as iOS's `UITextField::new` (which starts editable but
         // unbordered; we set `setBorderStyle: 3` for the round-rect
         // bezel on iOS). On macOS the default bezel is appropriate.
-        let field: Retained<objc2_app_kit::NSTextField> = unsafe {
-            msg_send_id![msg_send_id![objc2::class!(NSTextField), alloc], init]
+        //
+        // Password masking: NSSecureTextField is a drop-in NSTextField
+        // subclass that renders bullets for typed characters, so we
+        // instantiate it instead when `secure`. The binding stays typed
+        // as NSTextField (the superclass) since every subsequent
+        // msg_send uses NSTextField/NSControl/NSView API.
+        let cls = if secure {
+            objc2::class!(NSSecureTextField)
+        } else {
+            objc2::class!(NSTextField)
         };
+        let field: Retained<objc2_app_kit::NSTextField> =
+            unsafe { msg_send_id![msg_send_id![cls, alloc], init] };
 
         // Set initial value + placeholder. `setStringValue:` writes
         // the editable string; `setPlaceholderString:` (on the field

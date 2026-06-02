@@ -1105,6 +1105,7 @@ impl Backend for TerminalBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        secure: bool,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let node = self.alloc_node(NodeKind::TextInput, String::new());
@@ -1128,6 +1129,7 @@ impl Backend for TerminalBackend {
                 value: initial_value.to_string(),
                 cursor: initial_value.chars().count(),
                 placeholder: placeholder_owned,
+                secure,
                 on_change,
                 on_key_down,
             }));

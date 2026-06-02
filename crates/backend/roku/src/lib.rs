@@ -666,6 +666,7 @@ impl Backend for RokuBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        secure: bool,
         _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // `_on_key_down` is unused on Roku — the SceneGraph keyboard
@@ -679,6 +680,7 @@ impl Backend for RokuBackend {
             id,
             initial_value: initial_value.to_string(),
             placeholder: placeholder.map(|s| s.to_string()),
+            secure,
             on_change: handler,
         });
         id

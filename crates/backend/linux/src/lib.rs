@@ -423,6 +423,7 @@ impl Backend for LinuxBackend {
         _placeholder: Option<&str>,
         _on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        secure: bool,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // gtk::Entry is the canonical single-line text editor. Wire
@@ -430,6 +431,11 @@ impl Backend for LinuxBackend {
         // PR alongside placeholder string + key handler routing.
         let entry = gtk4::Entry::new();
         entry.set_text(initial_value);
+        // Password masking: GTK's Entry hides typed characters (shows
+        // the invisible-char bullet) when visibility is off.
+        if secure {
+            entry.set_visibility(false);
+        }
         self.wrap(entry.upcast::<gtk4::Widget>())
     }
 

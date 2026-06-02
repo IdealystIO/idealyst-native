@@ -1045,6 +1045,11 @@ pub trait Backend {
     /// cross-platform contract). The framework wraps the controlled
     /// `value` signal in an effect that calls
     /// `update_text_input_value` on signal change.
+    ///
+    /// `secure` masks the entered text (password entry); backends map it to
+    /// their native secure-entry mode (web `type="password"`, UIKit
+    /// `isSecureTextEntry`, etc.). The masked behaviour is identical across
+    /// backends.
     #[allow(unused_variables)]
     fn create_text_input(
         &mut self,
@@ -1052,6 +1057,7 @@ pub trait Backend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<primitives::key::KeyDownHandler>,
+        secure: bool,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_text_input not implemented for this backend")

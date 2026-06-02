@@ -86,6 +86,9 @@ pub struct MockNode {
     pub a11y_label: Option<String>,
     /// Toggle on/off, if this is a `Toggle`.
     pub toggle_value: Option<bool>,
+    /// Password-masking flag captured at create time for a
+    /// `TextInput`. Lets tests assert `secure` crossed the wire.
+    pub secure: bool,
     /// Slider value, if this is a `Slider`.
     pub slider_value: Option<f32>,
     /// Image `src`, if this is an `Image`.
@@ -114,6 +117,7 @@ impl MockNode {
             text: None,
             a11y_label: None,
             toggle_value: None,
+            secure: false,
             slider_value: None,
             image_src: None,
             children: Vec::new(),
@@ -155,6 +159,13 @@ pub struct MockBackend {
     #[allow(clippy::type_complexity)]
     nav_instances:
         HashMap<u64, Rc<RefCell<Box<dyn runtime_core::NavigatorHandler<MockBackend>>>>>,
+    /// `Element::External` payloads the dev-client reconstructed from the
+    /// wire and dispatched here, keyed by node id as `(type_name,
+    /// payload)`. Lets tests assert the External-over-wire serde round-trip
+    /// landed with the right concrete payload. Stored in a side map (not
+    /// `MockNode`) so `MockNode` stays `Debug` (`Rc<dyn Any>` isn't).
+    #[allow(clippy::type_complexity)]
+    external_payloads: HashMap<u64, (String, Rc<dyn std::any::Any>)>,
 }
 
 impl MockBackend {
@@ -207,6 +218,18 @@ impl MockBackend {
         self.nodes
             .values()
             .find_map(|n| n.safe_area_sides.map(|s| (s, n.safe_area_apply_count)))
+    }
+
+    /// The reconstructed `Element::External` payload for the first node
+    /// whose `type_name` contains `needle` (e.g. `"CodeBlockProps"`).
+    /// `None` means no External with that type reached the client with a
+    /// deserialized payload — i.e. the over-the-wire serde didn't round-
+    /// trip. Downcast the returned `Rc<dyn Any>` to the SDK's payload type
+    /// to assert its contents.
+    pub fn external_payload(&self, needle: &str) -> Option<&Rc<dyn std::any::Any>> {
+        self.external_payloads
+            .values()
+            .find_map(|(name, payload)| name.contains(needle).then_some(payload))
     }
 
     /// Child ids of `id`, in render order.
@@ -426,11 +449,13 @@ impl Backend for MockBackend {
         _placeholder: Option<&str>,
         _on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        secure: bool,
         a11y: &AccessibilityProps,
     ) -> u64 {
         let id = self.mint(NodeKind::TextInput);
         let n = self.nodes.get_mut(&id).unwrap();
         n.text = Some(initial_value.to_string());
+        n.secure = secure;
         n.a11y_label = a11y.label.clone();
         id
     }
@@ -641,6 +666,25 @@ impl Backend for MockBackend {
         if let Some(n) = self.node_mut(*node) {
             n.styles_applied += 1;
         }
+    }
+
+    fn create_external(
+        &mut self,
+        _type_id: std::any::TypeId,
+        type_name: &'static str,
+        payload: &Rc<dyn std::any::Any>,
+        a11y: &AccessibilityProps,
+    ) -> u64 {
+        // The dev-client deserialized the wire payload and dispatched here.
+        // Record it so tests can assert the round-trip; render as a plain
+        // view node (the mock doesn't model the SDK's native widget).
+        let id = self.mint(NodeKind::View);
+        if let Some(n) = self.node_mut(id) {
+            n.a11y_label = a11y.label.clone();
+        }
+        self.external_payloads
+            .insert(id, (type_name.to_string(), payload.clone()));
+        id
     }
 
     fn apply_safe_area_padding(&mut self, node: &u64, sides: runtime_core::SafeAreaSides) {

@@ -19,6 +19,10 @@ license.workspace = true
 
 [dependencies]
 runtime-core = { workspace = true }
+# Wire serde for `CodeBlockProps` so a `code_block(...)` external renders
+# over the runtime-server wire (recorder serializes the spans; the device
+# deserializes them back + dispatches to its real per-backend handler).
+serde_json = "1"
 
 # Android handler depends on the Android backend's `register_external`
 # inherent method plus its JNI surface for constructing the

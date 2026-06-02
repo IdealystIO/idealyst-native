@@ -29,7 +29,7 @@ use dev_server::WireRecordingBackend;
 use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
 use runtime_core::robot::{Query, Robot};
 use runtime_core::{
-    render, signal, IntoAction, Element, SafeAreaSides, TextSource,
+    component, mount, render, signal, IntoAction, Element, SafeAreaSides, TextSource,
 };
 use wire::Command;
 
@@ -268,6 +268,79 @@ fn tree_label(
         }
     }
     None
+}
+
+#[derive(Default)]
+struct MethodCounterProps {}
+
+/// A component with a `methods!` block, defined in THIS test crate —
+/// which does not enable its own `robot` feature (only `runtime-core`'s
+/// `robot` is on, via dev-deps). See the regression test below.
+#[component]
+fn MethodCounter(_props: &MethodCounterProps) -> Element {
+    let value = signal!(0_i32);
+    methods! {
+        /// Reset the counter to zero.
+        fn reset(&self) {
+            value.set(0);
+        }
+        /// Bump the counter by `n`.
+        fn bump_by(&self, n: i32) {
+            value.update(|v| *v += n);
+        }
+    }
+    let _ = value; // captured by the methods! closures above
+    runtime_core::view(vec![runtime_core::text("mc").test_id("mc").into()])
+}
+
+/// **Regression for two `methods!` bugs at once:**
+///
+/// 1. The `#[component]` macro used to gate `register_component(...)` on
+///    `#[cfg(feature = "robot")]` — evaluated against the *defining*
+///    crate's features. This crate (like a scaffolded app or idea-ui)
+///    never sets its own `robot` feature, so the registration compiled
+///    to nothing and `list_components` / `invoke_method` saw no methods.
+///    The macro now emits the registration unconditionally; it works
+///    whenever `runtime-core/robot` is on.
+/// 2. The arg-type string rendered the single ident `i32` as `i 3 2`.
+///
+/// Built inside the `mount` closure so the keepalive `Effect` anchors to
+/// the mount owner (a pre-built tree would run the body outside any scope
+/// and drop the registration before we could read it).
+#[test]
+fn regression_component_methods_register_without_local_feature() {
+    let recorder = WireRecordingBackend::new();
+    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
+    let _owner = mount(backend_rc, || {
+        runtime_core::view(vec![MethodCounter(&MethodCounterProps::default())]).into()
+    });
+
+    let comps = runtime_core::robot::list_components();
+    let mc = comps
+        .iter()
+        .find(|c| c.name == "MethodCounter")
+        .expect("MethodCounter's methods! must register without a crate-local robot feature");
+
+    let names: Vec<&str> = mc.methods.iter().map(|(n, _)| *n).collect();
+    assert!(names.contains(&"reset"), "got {:?}", names);
+    assert!(names.contains(&"bump_by"), "got {:?}", names);
+
+    // Finding 2: the arg type renders as `i32`, not `i 3 2`.
+    let bump = mc.methods.iter().find(|(n, _)| *n == "bump_by").unwrap();
+    assert_eq!(
+        bump.1,
+        &[("n", "i32")],
+        "arg type must render as a clean `i32`, not split into chars"
+    );
+
+    // End-to-end: invoke dispatches, and the error paths report cleanly.
+    runtime_core::robot::invoke_method(mc.id, "bump_by", &runtime_core::__serde_json::json!({"n": 5}))
+        .expect("bump_by dispatches");
+    assert!(
+        runtime_core::robot::invoke_method(mc.id, "nope", &runtime_core::__serde_json::json!({}))
+            .is_err(),
+        "unknown method must error"
+    );
 }
 
 /// **Regression test for the audit's wire-protocol `release_*` not-emitted

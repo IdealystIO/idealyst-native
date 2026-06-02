@@ -67,7 +67,7 @@ pub enum Event {
     CreatePressable,
     CreateImage { src: String, alt: Option<String> },
     CreateIcon,
-    CreateTextInput { placeholder: Option<String>, has_key_handler: bool },
+    CreateTextInput { placeholder: Option<String>, has_key_handler: bool, secure: bool },
     CreateTextArea { placeholder: Option<String>, wrap: bool, has_key_handler: bool },
     CreateToggle { value: bool },
     CreateScrollView { horizontal: bool, has_on_scroll: bool },
@@ -682,12 +682,14 @@ impl Backend for MockBackend {
         placeholder: Option<&str>,
         _on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        secure: bool,
         _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateTextInput {
             placeholder: placeholder.map(|s| s.to_string()),
             has_key_handler: on_key_down.is_some(),
+            secure,
         });
         if let Some(h) = on_key_down {
             self.core.key_handlers.borrow_mut().insert(id, h);

@@ -103,6 +103,74 @@ impl<B: Backend + 'static> Default for ExternalRegistry<B> {
     }
 }
 
+// =============================================================================
+// External payload wire-serde registry
+// =============================================================================
+//
+// `Element::External` carries a type-erased `Rc<dyn Any>` payload. In a
+// single process that's fine — the backend's `ExternalRegistry` downcasts
+// it. But over the runtime-server wire the payload must travel from the
+// recorder process to the device, and `Rc<dyn Any>` can't be serialized
+// generically. So an SDK registers a (serialize, deserialize) pair keyed
+// by the payload's `type_name` (a stable string across processes — unlike
+// `TypeId`, which differs per binary). The recorder serializes the payload
+// into `Command::CreateExternal`; the client deserializes it back to a
+// concrete `Rc<dyn Any>` and dispatches to its own `ExternalRegistry`.
+//
+// This lives here (not in `wire`/`dev-*`) so native SDK leaf crates can
+// register their serde with only their existing `runtime-core` dep — and
+// so it sits next to the `Element::External` primitive it serves. The
+// registry stores plain closures; runtime-core takes no serde dependency
+// (the SDK's closure owns the format choice).
+
+type ExternalSerializer = Rc<dyn Fn(&dyn Any) -> Option<Vec<u8>>>;
+type ExternalDeserializer = Rc<dyn Fn(&[u8]) -> Option<Rc<dyn Any>>>;
+
+thread_local! {
+    static EXTERNAL_SERDE: std::cell::RefCell<
+        HashMap<&'static str, (ExternalSerializer, ExternalDeserializer)>,
+    > = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Register the wire (serialize, deserialize) pair for an external
+/// payload type, keyed by `type_name` (use `std::any::type_name::<T>()`
+/// — the same string `external::<T>()` stamps into the element). Called
+/// by an SDK so its `Element::External` can render over the runtime-server
+/// wire. Idempotent — last write wins.
+///
+/// - `serialize`: downcast the `&dyn Any` to the payload type, encode to
+///   bytes (`None` → falls back to the not-available placeholder).
+/// - `deserialize`: decode bytes back to a concrete `Rc<dyn Any>` whose
+///   `TypeId` matches the client's `ExternalRegistry` entry.
+pub fn register_external_serde(
+    type_name: &'static str,
+    serialize: impl Fn(&dyn Any) -> Option<Vec<u8>> + 'static,
+    deserialize: impl Fn(&[u8]) -> Option<Rc<dyn Any>> + 'static,
+) {
+    EXTERNAL_SERDE.with(|c| {
+        c.borrow_mut()
+            .insert(type_name, (Rc::new(serialize), Rc::new(deserialize)));
+    });
+}
+
+/// Serialize an external payload for the wire. `None` when no serde is
+/// registered for `type_name` (sentinel externals like the drawer
+/// sidebar-adopt carry no data) or the serializer declines.
+pub fn serialize_external_payload(type_name: &str, payload: &dyn Any) -> Option<Vec<u8>> {
+    // Clone the closure out before invoking so the SDK closure can't
+    // re-enter the registry borrow.
+    let ser = EXTERNAL_SERDE.with(|c| c.borrow().get(type_name).map(|(s, _)| s.clone()));
+    ser.and_then(|s| s(payload))
+}
+
+/// Deserialize an external payload received over the wire. `None` when no
+/// serde is registered for `type_name` (→ caller renders the placeholder)
+/// or the bytes don't decode.
+pub fn deserialize_external_payload(type_name: &str, bytes: &[u8]) -> Option<Rc<dyn Any>> {
+    let de = EXTERNAL_SERDE.with(|c| c.borrow().get(type_name).map(|(_, d)| d.clone()));
+    de.and_then(|d| d(bytes))
+}
+
 /// Backend-neutral registration seam for third-party `Element::External`
 /// handlers — the external analogue of
 /// [`RegisterNavigator`](crate::primitives::navigator::RegisterNavigator).

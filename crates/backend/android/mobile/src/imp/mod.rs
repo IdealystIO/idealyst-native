@@ -286,6 +286,15 @@ pub struct AndroidBackend {
     /// view is actually in a parent chain. Mirrors iOS's
     /// `pending_sticky`.
     pub(crate) pending_sticky: HashMap<usize, f32>,
+    /// Portal overlays awaiting their first laid-out frame. Each is the
+    /// overlay `FrameLayout`'s `GlobalRef`, set `View.INVISIBLE` at
+    /// `create_overlay_portal` time and flipped back to `View.VISIBLE`
+    /// at the END of the next `run_layout_pass`. Prevents the bug where
+    /// a portal overlay paints one unlaid-out frame at the 0,0 origin on
+    /// mount (children not yet centered) — the overlay literally cannot
+    /// paint until it's been laid out, so the modal is centered from its
+    /// first VISIBLE frame regardless of AV/Choreographer timing.
+    pub(crate) pending_reveal: Vec<jni::objects::GlobalRef>,
 }
 
 /// Read the device's `density` (screen-pixels-per-dp) from the
@@ -738,6 +747,7 @@ impl AndroidBackend {
             scroll_observers: HashMap::new(),
             scroll_listeners: HashMap::new(),
             pending_sticky: HashMap::new(),
+            pending_reveal: Vec::new(),
         }
     }
 
@@ -1115,6 +1125,31 @@ impl AndroidBackend {
                 );
             }
         });
+        // Reveal any portal overlays that were created INVISIBLE and
+        // are now laid out. `create_overlay_portal` sets a fresh overlay
+        // to `View.INVISIBLE` and queues it here; the frames above have
+        // just positioned its content, so flip it to `View.VISIBLE`.
+        // The overlay stays INVISIBLE until its first layout pass
+        // positions its content, else it paints one unlaid-out frame at
+        // the 0,0 origin on mount (children not yet centered) — a
+        // visible snap. `setVisibility` on an overlay that was since
+        // detached from `root` is a harmless no-op, so no guard is
+        // needed beyond not panicking. INVISIBLE (not GONE) keeps the
+        // overlay in the layout pass; only its painting is suppressed.
+        if !self.pending_reveal.is_empty() {
+            let to_reveal = std::mem::take(&mut self.pending_reveal);
+            with_env(|env| {
+                const VISIBLE: i32 = 0; // View.VISIBLE
+                for overlay in &to_reveal {
+                    let _ = env.call_method(
+                        overlay,
+                        "setVisibility",
+                        "(I)V",
+                        &[JValue::Int(VISIBLE)],
+                    );
+                }
+            });
+        }
         drop(_t_total);
         // Drain the per-phase counters accumulated during this pass
         // and the apply-style work that preceded it. Logging here
@@ -2593,6 +2628,117 @@ impl Backend for AndroidBackend {
             | P::ZIndex
             | P::MaxHeight => {}
         }
+    }
+
+    /// `Backend::apply_presence` for Android.
+    ///
+    /// Maps a [`PresenceState`] (opacity + 2D translate + uniform
+    /// scale) onto the node's `View`. Missing fields resolve to the
+    /// resting identity (opacity 1.0, translate 0, scale 1.0) — the
+    /// presence walker only ever supplies the enter/exit/rest states,
+    /// so writing every property each call keeps the view consistent
+    /// (a partial state leaves the unwritten props at identity, never
+    /// at a stale value).
+    ///
+    /// Translates arrive in dp (the same unit as Taffy frames);
+    /// Android's `setTranslationX/Y` and the ViewPropertyAnimator's
+    /// `translationX/Y` take DEVICE PIXELS, so we convert via the
+    /// view's density — see project memory
+    /// `project_android_setTranslation_device_px`. Opacity and scale
+    /// are unitless.
+    ///
+    /// `transition`:
+    /// - `Some((ms, easing))` → drive a `ViewPropertyAnimator`
+    ///   (`view.animate()…start()`) so Android interpolates from the
+    ///   current value over `ms` with the mapped `Interpolator`. The
+    ///   easing mapping reuses [`animation::build_interpolator`] so
+    ///   presence and `AnimatedValue` agree on every curve.
+    /// - `None` → call the per-property setters directly (instant
+    ///   snap), matching the pre-paint enter setup and web's snap path.
+    fn apply_presence(
+        &mut self,
+        node: &Self::Node,
+        state: runtime_core::PresenceState,
+        transition: Option<(u32, runtime_core::Easing)>,
+    ) {
+        let alpha = state.opacity.unwrap_or(1.0);
+        let tx_dp = state.translate_x.unwrap_or(0.0);
+        let ty_dp = state.translate_y.unwrap_or(0.0);
+        let scale = state.scale.unwrap_or(1.0);
+
+        with_env(|env| {
+            let obj = node.as_obj();
+            // dp → device px for the two translate axes (memory:
+            // project_android_setTranslation_device_px).
+            let tx_px = backend_android_core::helpers::dp_to_px(env, obj, tx_dp) as f32;
+            let ty_px = backend_android_core::helpers::dp_to_px(env, obj, ty_dp) as f32;
+
+            match transition {
+                None => {
+                    let mut f = |m: &str, v: f32| {
+                        let _ = env.call_method(obj, m, "(F)V", &[JValue::Float(v)]);
+                    };
+                    f("setAlpha", alpha);
+                    f("setTranslationX", tx_px);
+                    f("setTranslationY", ty_px);
+                    f("setScaleX", scale);
+                    f("setScaleY", scale);
+                }
+                Some((duration_ms, easing)) => {
+                    // ViewPropertyAnimator: `view.animate()` returns it,
+                    // each property setter returns `this` so we chain,
+                    // then `setDuration`/`setInterpolator`/`start`.
+                    let animator = match env
+                        .call_method(obj, "animate", "()Landroid/view/ViewPropertyAnimator;", &[])
+                    {
+                        Ok(v) => match v.l() {
+                            Ok(o) => o,
+                            Err(_) => return,
+                        },
+                        Err(_) => return,
+                    };
+                    // Each of these returns the same ViewPropertyAnimator;
+                    // ignore the returned handle and keep using `animator`.
+                    let vpa_sig = "(F)Landroid/view/ViewPropertyAnimator;";
+                    let _ = env.call_method(&animator, "alpha", vpa_sig, &[JValue::Float(alpha)]);
+                    let _ = env.call_method(
+                        &animator,
+                        "translationX",
+                        vpa_sig,
+                        &[JValue::Float(tx_px)],
+                    );
+                    let _ = env.call_method(
+                        &animator,
+                        "translationY",
+                        vpa_sig,
+                        &[JValue::Float(ty_px)],
+                    );
+                    let _ =
+                        env.call_method(&animator, "scaleX", vpa_sig, &[JValue::Float(scale)]);
+                    let _ =
+                        env.call_method(&animator, "scaleY", vpa_sig, &[JValue::Float(scale)]);
+                    let _ = env.call_method(
+                        &animator,
+                        "setDuration",
+                        "(J)Landroid/view/ViewPropertyAnimator;",
+                        &[JValue::Long(duration_ms as i64)],
+                    );
+                    if let Some(interp) = animation::build_interpolator(env, easing) {
+                        // NB: `ViewPropertyAnimator.setInterpolator` returns
+                        // `ViewPropertyAnimator` (not void, unlike
+                        // `ValueAnimator.setInterpolator`). Using `()V`
+                        // here is a NoSuchMethodError → JNI abort.
+                        let _ = env.call_method(
+                            &animator,
+                            "setInterpolator",
+                            "(Landroid/animation/TimeInterpolator;)Landroid/view/ViewPropertyAnimator;",
+                            &[JValue::Object(&interp)],
+                        );
+                    }
+                    let _ = env.call_method(&animator, "start", "()V", &[]);
+                }
+            }
+        });
     }
 
     fn frame(&self, node: &Self::Node) -> Option<runtime_core::primitives::portal::ViewportRect> {

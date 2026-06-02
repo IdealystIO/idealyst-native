@@ -212,6 +212,9 @@ pub enum RokuCommand {
         id: NodeId,
         initial_value: String,
         placeholder: Option<String>,
+        /// Password masking — the SceneGraph `TextEditBox` renders
+        /// masked glyphs when secure entry is on.
+        secure: bool,
         on_change: HandlerId,
     },
     CreateToggle {

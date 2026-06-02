@@ -34,6 +34,13 @@ use crate::style_convert::parse_color;
 use crate::scheduler::request_redraw;
 use crate::text::TextStore;
 
+/// Bullet glyph rendered per character for `secure` (password) text
+/// inputs. One `•` per source char so the field width still tracks the
+/// typed length.
+fn mask_value(value: &str) -> String {
+    "\u{2022}".repeat(value.chars().count())
+}
+
 pub struct WgpuBackend {
     pub(crate) layout: LayoutTree,
     /// Root node of the rendered tree. The framework's
@@ -506,18 +513,24 @@ impl Backend for WgpuBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        secure: bool,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         // The visible glyph buffer holds whichever of value /
         // placeholder is currently being shown. Empty value =>
-        // placeholder; otherwise => value. The widget renderer
-        // reads `value.is_empty()` from the node to know which
-        // color to use.
-        let visible = if initial_value.is_empty() {
+        // placeholder; otherwise => value (masked when `secure`). The
+        // widget renderer reads `value.is_empty()` from the node to
+        // know which color to use.
+        let masked = if secure && !initial_value.is_empty() {
+            Some(mask_value(initial_value))
+        } else {
+            None
+        };
+        let visible: &str = if initial_value.is_empty() {
             placeholder.unwrap_or("")
         } else {
-            initial_value
+            masked.as_deref().unwrap_or(initial_value)
         };
         {
             let mut text = self.text.borrow_mut();
@@ -532,6 +545,7 @@ impl Backend for WgpuBackend {
             NodeKind::TextInput {
                 value: initial_value.to_string(),
                 placeholder: placeholder.map(|s| s.to_string()),
+                secure,
                 on_change,
             },
             layout,
@@ -545,10 +559,12 @@ impl Backend for WgpuBackend {
         let layout = node.borrow().layout;
         let visible = {
             let mut data = node.borrow_mut();
-            if let NodeKind::TextInput { value: stored, placeholder, .. } = &mut data.kind {
+            if let NodeKind::TextInput { value: stored, placeholder, secure, .. } = &mut data.kind {
                 *stored = value.to_string();
                 if value.is_empty() {
                     placeholder.clone().unwrap_or_default()
+                } else if *secure {
+                    mask_value(value)
                 } else {
                     value.to_string()
                 }

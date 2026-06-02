@@ -446,6 +446,10 @@ pub enum Command {
         initial_value: String,
         placeholder: Option<String>,
         on_change: HandlerId,
+        /// Mask the entered text (password entry). `#[serde(default)]` keeps
+        /// older recordings (without the field) deserializing as `false`.
+        #[serde(default)]
+        secure: bool,
         #[serde(default)]
         a11y: WireAccessibilityProps,
     },
@@ -475,6 +479,14 @@ pub enum Command {
     CreateExternal {
         id: NodeId,
         type_name: String,
+        /// Serialized payload from the SDK's registered external serde
+        /// (`runtime_core::register_external_serde`). Empty for sentinel
+        /// externals that register no serde (e.g. the drawer
+        /// sidebar-adopt) — the client then renders the not-available
+        /// placeholder. Non-empty → the client deserializes it back to a
+        /// concrete payload and dispatches to its real handler.
+        #[serde(default)]
+        payload: Vec<u8>,
         #[serde(default)]
         a11y: WireAccessibilityProps,
     },

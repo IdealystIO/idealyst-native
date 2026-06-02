@@ -237,6 +237,14 @@ impl TerminalBackend {
                             placeholder_fg,
                             true,
                         )
+                    } else if input.secure {
+                        // Password masking: render one `•` per char so
+                        // the typed value is never displayed.
+                        (
+                            "\u{2022}".repeat(input.value.chars().count()),
+                            fg,
+                            false,
+                        )
                     } else {
                         (input.value.clone(), fg, false)
                     };

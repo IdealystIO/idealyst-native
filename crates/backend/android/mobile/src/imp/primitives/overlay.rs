@@ -255,8 +255,29 @@ fn create_overlay_portal(
             &[JValue::Object(&overlay)],
         );
 
+        // Hide the overlay until its first layout pass positions its
+        // content (revealed at the END of `run_layout_pass` via
+        // `pending_reveal`). The overlay stays INVISIBLE until its first
+        // layout pass positions its content, else it paints one unlaid-
+        // out frame at the 0,0 origin on mount (children not yet
+        // centered) — a visible snap when the modal opens. View.INVISIBLE
+        // = 4 (NOT GONE = 8, which would drop it from the layout pass
+        // entirely; INVISIBLE keeps it laid out but unpainted).
+        const INVISIBLE: i32 = 4;
+        let _ = env.call_method(
+            &overlay,
+            "setVisibility",
+            "(I)V",
+            &[JValue::Int(INVISIBLE)],
+        );
+
         env.new_global_ref(overlay).unwrap()
     });
+
+    // Queue the overlay for reveal once the next `run_layout_pass` lays
+    // out its content. See the INVISIBLE set above for the bug this
+    // prevents (one unlaid-out frame at the 0,0 origin on mount).
+    b.pending_reveal.push(overlay.clone());
 
     let key = AndroidBackend::node_key_of(&overlay);
     b.portal_instances.insert(

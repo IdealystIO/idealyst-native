@@ -249,11 +249,17 @@ impl Backend for IosBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        secure: bool,
         _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let field = unsafe { UITextField::new(self.mtm) };
         let ns_val = NSString::from_str(initial_value);
         unsafe { field.setText(Some(&ns_val)) };
+
+        // Password masking: UITextField renders dots for typed chars
+        // when secure text entry is on.
+        let _: () =
+            unsafe { msg_send![&field, setSecureTextEntry: objc2::runtime::Bool::new(secure)] };
 
         if let Some(ph) = placeholder {
             let ns_ph = NSString::from_str(ph);

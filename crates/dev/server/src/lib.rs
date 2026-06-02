@@ -1556,6 +1556,7 @@ impl Backend for WireRecordingBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        secure: bool,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // `_on_key_down` is not yet wired across the runtime-server protocol
@@ -1574,6 +1575,7 @@ impl Backend for WireRecordingBackend {
             initial_value: initial_value.to_string(),
             placeholder: placeholder.map(str::to_string),
             on_change: handler,
+            secure,
             a11y: wire_a11y,
         });
         id
@@ -1638,15 +1640,23 @@ impl Backend for WireRecordingBackend {
         &mut self,
         _type_id: std::any::TypeId,
         type_name: &'static str,
-        _payload: &Rc<dyn std::any::Any>,
+        payload: &Rc<dyn std::any::Any>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
+        // Serialize the payload via the SDK's registered external serde so
+        // it survives the trip to the device. Empty when no serde is
+        // registered (sentinel externals like the drawer sidebar-adopt) —
+        // the client then falls back to the not-available placeholder, as
+        // before.
+        let payload_bytes =
+            runtime_core::serialize_external_payload(type_name, &**payload).unwrap_or_default();
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateExternal {
             id,
             type_name: type_name.to_string(),
+            payload: payload_bytes,
             a11y: wire_a11y,
         });
         id

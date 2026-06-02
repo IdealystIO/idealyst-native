@@ -21,6 +21,7 @@ pub(super) fn build_text_input<B: Backend + 'static>(
     on_change: Rc<dyn Fn(String)>,
     on_key_down: Option<Rc<dyn Fn(&KeyEvent) -> KeyOutcome>>,
     placeholder: Option<String>,
+    secure: bool,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     a11y: AccessibilityProps,
@@ -32,6 +33,7 @@ pub(super) fn build_text_input<B: Backend + 'static>(
             placeholder.as_deref(),
             on_change,
             on_key_down,
+            secure,
             &a11y,
         )
     });

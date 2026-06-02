@@ -409,6 +409,7 @@ where
                 initial_value,
                 placeholder,
                 on_change,
+                secure,
                 a11y,
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
@@ -419,6 +420,7 @@ where
                     placeholder.as_deref(),
                     cb,
                     None,
+                    secure,
                     &a11y,
                 );
                 self.nodes.insert(id, node);
@@ -444,31 +446,52 @@ where
                 );
                 self.nodes.insert(id, node);
             }
-            Command::CreateExternal { id, type_name, a11y } => {
+            Command::CreateExternal { id, type_name, payload, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
-                // The server emitted an external primitive whose handler
-                // is not registered on this client. On native the RS
-                // client links a FIXED set of compiled-in SDK handlers
-                // (like React Native native modules); a payload that
-                // reaches this generic fallback means the server's SDK
-                // set and the client's are desynced. Surface it loudly
-                // (RN-style) rather than silently rendering a blank box.
-                runtime_core::log(
-                    runtime_core::LogLevel::Warn,
-                    &format!(
-                        "[wire] external '{}' is not registered on this client \
-                         — server/client SDK sets are desynced; hard-reload the client",
-                        type_name
-                    ),
-                );
-                let a11y = self.a11y_props(a11y);
-                let mut node = self.backend.borrow_mut().create_view(&a11y);
-                // Make the desync visible in the tree.
-                let label = format!("Component not available: {}", type_name);
-                let text_a11y = runtime_core::accessibility::AccessibilityProps::default();
-                let text_node = self.backend.borrow_mut().create_text(&label, &text_a11y);
-                self.backend.borrow_mut().insert(&mut node, text_node);
-                self.nodes.insert(id, node);
+                let a11y_props = self.a11y_props(a11y);
+                // Reconstruct the payload via the SDK's registered external
+                // serde and dispatch to the REAL handler (the RS client
+                // links a fixed set of compiled-in SDK handlers, RN-style).
+                // The concrete `TypeId` is read off the deserialized
+                // payload, so the backend's `ExternalRegistry` (keyed by
+                // that same payload type) finds the handler.
+                if let Some(payload_any) =
+                    runtime_core::deserialize_external_payload(&type_name, &payload)
+                {
+                    let type_id = (*payload_any).type_id();
+                    // The wire type_name is owned; the backend wants
+                    // `&'static str` (debug/error use only). Lazy-intern.
+                    let type_name_static: &'static str =
+                        Box::leak(type_name.clone().into_boxed_str());
+                    let node = self.backend.borrow_mut().create_external(
+                        type_id,
+                        type_name_static,
+                        &payload_any,
+                        &a11y_props,
+                    );
+                    self.nodes.insert(id, node);
+                } else {
+                    // No serde registered for this external (or empty
+                    // sentinel payload, or decode failed). Either the SDK
+                    // didn't register a wire serde, or the server/client SDK
+                    // sets are desynced. Surface it (RN-style) rather than
+                    // silently rendering a blank box.
+                    runtime_core::log(
+                        runtime_core::LogLevel::Warn,
+                        &format!(
+                            "[wire] external '{}' has no client-side payload serde \
+                             — register one via `runtime_core::register_external_serde`, \
+                             or the server/client SDK sets are desynced",
+                            type_name
+                        ),
+                    );
+                    let mut node = self.backend.borrow_mut().create_view(&a11y_props);
+                    let label = format!("Component not available: {}", type_name);
+                    let text_a11y = runtime_core::accessibility::AccessibilityProps::default();
+                    let text_node = self.backend.borrow_mut().create_text(&label, &text_a11y);
+                    self.backend.borrow_mut().insert(&mut node, text_node);
+                    self.nodes.insert(id, node);
+                }
             }
             Command::CreateToggle {
                 id,

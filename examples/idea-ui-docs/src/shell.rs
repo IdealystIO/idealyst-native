@@ -131,6 +131,14 @@ pub fn sidebar(slot: SlotProps, is_dark: runtime_core::Signal<bool>) -> Element 
 
     let active_route = slot.active_route;
 
+    // The sidebar is a full-height panel that slides over (or pins
+    // beside) the screen, bleeding under the status bar / Dynamic Island
+    // at the top and the home indicator at the bottom. Navigators no
+    // longer apply safe-area insets to slots, so the sidebar opts in
+    // itself: `.safe_area(VERTICAL)` pads the top + bottom by the device
+    // insets (the background still bleeds edge-to-edge — only the header
+    // and footer content inset). The opt-in travels over the
+    // runtime-server wire; the client resolves the real device inset.
     ui! {
         view(style = body_style) {
             view(style = header_style) { header_children }
@@ -145,6 +153,7 @@ pub fn sidebar(slot: SlotProps, is_dark: runtime_core::Signal<bool>) -> Element 
             Spacer()
             theme_toggle(footer_style, is_dark)
         }
+        .safe_area(SafeAreaSides::VERTICAL)
     }
 }
 

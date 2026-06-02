@@ -172,6 +172,10 @@ pub(crate) struct InputState {
     /// Cursor position as a **char index** (not byte). 0..=value.chars().count().
     pub cursor: usize,
     pub placeholder: Option<String>,
+    /// When true, typed characters render as `•` (password masking).
+    /// The stored `value`/`cursor` are unchanged; only the drawn
+    /// glyphs are substituted in the render path.
+    pub secure: bool,
     pub on_change: std::rc::Rc<dyn Fn(String)>,
     pub on_key_down: Option<KeyDownHandler>,
 }

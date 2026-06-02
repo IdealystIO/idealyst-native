@@ -61,6 +61,43 @@ pub mod debug;
 #[cfg(feature = "robot")]
 pub mod robot;
 
+/// Stub `robot` surface compiled when the `robot` feature is OFF.
+///
+/// The `#[component]` macro emits `register_component(...)` + a keepalive
+/// `Effect` for every `methods! { ... }` block UNCONDITIONALLY — gating
+/// it on the *consuming* crate's `robot` feature was a footgun (a
+/// scaffolded app, or idea-ui, never sets that feature, so its component
+/// methods silently never registered; see
+/// `regression_component_methods_register_without_local_feature`). So the
+/// names the macro references must exist in every build. When `robot` is
+/// off these are zero-work stubs: `register_component` builds nothing and
+/// hands back an inert guard, so non-robot builds pay only for
+/// constructing the `Method` vec (which the optimizer can largely strip).
+#[cfg(not(feature = "robot"))]
+pub mod robot {
+    use std::rc::Rc;
+
+    /// Stub mirror of the real [`robot::Method`](crate::robot). Same
+    /// field shape so the macro's struct literal type-checks.
+    pub struct Method {
+        pub name: &'static str,
+        pub args: &'static [(&'static str, &'static str)],
+        pub invoke: Rc<dyn Fn(&serde_json::Value) -> Result<(), String>>,
+    }
+
+    /// Inert registration guard — no registry entry exists to remove.
+    pub struct ComponentRegistration;
+
+    /// No-op when the `robot` feature is off. The real implementation
+    /// inserts into the thread-local component registry the bridge reads.
+    pub fn register_component(
+        _name: &'static str,
+        _methods: Vec<Method>,
+    ) -> ComponentRegistration {
+        ComponentRegistration
+    }
+}
+
 /// Re-export of `serde_json` for use by the `#[component]` macro's
 /// `methods!` auto-registration codegen — proc macros emit absolute
 /// paths and we don't want every consuming crate to take a direct
@@ -127,7 +164,10 @@ pub use primitives::portal::{
     portal, AnchorTarget, AnchorableHandle, ElementAlign, ElementSide, PortalHandle,
     PortalOps, PortalTarget, ViewportPlacement, ViewportRect,
 };
-pub use external::{external, ErasedHandler, ExternalHandle, ExternalRegistry, RegisterExternal};
+pub use external::{
+    deserialize_external_payload, external, register_external_serde, serialize_external_payload,
+    ErasedHandler, ExternalHandle, ExternalRegistry, RegisterExternal,
+};
 pub use primitives::presence::{
     presence, PresenceAnim, PresenceHandle, PresenceOps, PresenceState,
 };

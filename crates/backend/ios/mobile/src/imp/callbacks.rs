@@ -30,8 +30,45 @@ unsafe impl Encode for UIEdgeInsets {
 // CallbackTarget — ObjC action target that calls a Rust closure
 // =========================================================================
 
+extern "C" {
+    fn CACurrentMediaTime() -> f64;
+}
+
+/// Seconds a tap-driven view must have been on-screen before its tap
+/// recognizer is allowed to fire. Prevents the spurious "Pressable
+/// fires `on_click` at mount" bug: UIKit intermittently delivers a
+/// phantom touch sequence to a freshly-mounted view during the same
+/// run-loop turn it enters the window (most visibly the appointment
+/// block under the viewport center on QuillEMR's Schedule, which
+/// auto-opened the detail modal with no user tap). A real user tap
+/// cannot physically occur before the screen has rendered + the
+/// human has reacted, so gating the first ~third of a second after
+/// the view acquires a window discards only synthetic taps. Applies
+/// to both Link and Pressable (they share this target/delegate).
+const TAP_GATE_SETTLE_SECS: f64 = 0.35;
+
+/// Pure decision for the tap gate, factored out so the timing logic is
+/// unit-testable without a live UIKit window. Given the previously
+/// stamped window-entry time (`< 0.0` == not yet stamped) and the
+/// current media time, returns `(allow, new_entry)`:
+///   - first call (`entry < 0.0`): stamp `now`, reject (the synthetic
+///     mount-time tap arrives in this same run-loop turn);
+///   - later call: allow only once `now - entry >= TAP_GATE_SETTLE_SECS`,
+///     leaving the stamp unchanged.
+fn tap_gate_decision(entry: f64, now: f64) -> (bool, f64) {
+    if entry < 0.0 {
+        return (false, now);
+    }
+    (now - entry >= TAP_GATE_SETTLE_SECS, entry)
+}
+
 pub struct CallbackTargetIvars {
     callback: RefCell<Option<Rc<dyn Fn()>>>,
+    /// `CACurrentMediaTime()` stamped the first time this target's
+    /// recognizer is asked `gestureRecognizerShouldBegin:` with its
+    /// view in a window. `< 0.0` = not yet stamped. See
+    /// `TAP_GATE_SETTLE_SECS` for the bug this guards.
+    window_entry: std::cell::Cell<f64>,
 }
 
 declare_class!(
@@ -55,6 +92,37 @@ declare_class!(
                 cb();
             }
         }
+
+        /// `UIGestureRecognizerDelegate.gestureRecognizerShouldBegin:`.
+        /// Rejects taps that begin before the recognizer's view has
+        /// been in a window for `TAP_GATE_SETTLE_SECS` — the
+        /// mount-time phantom-tap guard documented on that constant.
+        /// Recognizers we don't wire as Link/Pressable tap gates never
+        /// reach here (we only set this object as their delegate).
+        #[method(gestureRecognizerShouldBegin:)]
+        fn gesture_recognizer_should_begin(
+            &self,
+            recognizer: &objc2_ui_kit::UIGestureRecognizer,
+        ) -> objc2::runtime::Bool {
+            let view: *mut UIView = unsafe { msg_send![recognizer, view] };
+            if view.is_null() {
+                return objc2::runtime::Bool::NO;
+            }
+            // `-[UIView window]` is nil until the view is in a window.
+            // Typed as a bare object pointer to avoid pulling in the
+            // `UIWindow` objc2 feature for a null check.
+            let window: *mut objc2::runtime::AnyObject =
+                unsafe { msg_send![view, window] };
+            if window.is_null() {
+                // Not on screen yet — no legitimate tap is possible.
+                return objc2::runtime::Bool::NO;
+            }
+            let now = unsafe { CACurrentMediaTime() };
+            let (allow, new_entry) =
+                tap_gate_decision(self.ivars().window_entry.get(), now);
+            self.ivars().window_entry.set(new_entry);
+            objc2::runtime::Bool::new(allow)
+        }
     }
 );
 
@@ -63,6 +131,7 @@ impl CallbackTarget {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(CallbackTargetIvars {
             callback: RefCell::new(Some(callback)),
+            window_entry: std::cell::Cell::new(-1.0),
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -815,5 +884,51 @@ impl ScrollDelegate {
             callback: RefCell::new(Some(callback)),
         });
         unsafe { msg_send_id![super(this), init] }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{tap_gate_decision, TAP_GATE_SETTLE_SECS};
+
+    // Regression: Link/Pressable on iOS fired `on_click` at mount.
+    // UIKit delivered a phantom tap in the same run-loop turn the view
+    // entered the window (QuillEMR Schedule auto-opened the appt detail
+    // modal with no user tap). `tap_gate_decision` must reject that
+    // first, run-loop-zero recognition.
+    #[test]
+    fn regression_ios_pressable_tap_rejected_at_mount() {
+        // First call: window-entry not yet stamped (-1.0). UIKit's
+        // synthetic mount-time tap MUST be rejected, and `now` stamped.
+        let (allow, entry) = tap_gate_decision(-1.0, 100.0);
+        assert!(!allow, "the mount-time phantom tap must be gated");
+        assert_eq!(entry, 100.0, "first call stamps the window-entry time");
+    }
+
+    #[test]
+    fn tap_within_settle_window_is_rejected() {
+        // A tap arriving before the settle window elapses is still the
+        // synthetic-burst tail; reject it. Entry stays put.
+        let now = 100.0 + TAP_GATE_SETTLE_SECS - 0.01;
+        let (allow, entry) = tap_gate_decision(100.0, now);
+        assert!(!allow);
+        assert_eq!(entry, 100.0, "stamp is not moved by later calls");
+    }
+
+    #[test]
+    fn real_tap_after_settle_window_is_allowed() {
+        // A genuine user tap (the screen has rendered and the human has
+        // reacted — well past the settle window) must pass through.
+        let now = 100.0 + TAP_GATE_SETTLE_SECS + 0.5;
+        let (allow, entry) = tap_gate_decision(100.0, now);
+        assert!(allow, "a real post-mount tap must fire on_click");
+        assert_eq!(entry, 100.0);
+    }
+
+    #[test]
+    fn tap_exactly_at_settle_boundary_is_allowed() {
+        let now = 100.0 + TAP_GATE_SETTLE_SECS;
+        let (allow, _) = tap_gate_decision(100.0, now);
+        assert!(allow, "boundary is inclusive (>=)");
     }
 }

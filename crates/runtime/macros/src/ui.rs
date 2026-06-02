@@ -1178,8 +1178,14 @@ fn emit_text_input(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2
     } else {
         quote! {}
     };
+    let secure_call = if let Some(p) = props.iter().find(|p| p.name == "secure") {
+        let v = p.value.to_token_stream();
+        quote! { .secure(#v) }
+    } else {
+        quote! {}
+    };
     quote! {
-        ::runtime_core::primitives::text_input::text_input(#value, #on_change) #placeholder_call
+        ::runtime_core::primitives::text_input::text_input(#value, #on_change) #placeholder_call #secure_call
     }
 }
 

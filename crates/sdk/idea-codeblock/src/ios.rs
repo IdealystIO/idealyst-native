@@ -131,13 +131,14 @@ pub(crate) fn build(props: &Rc<CodeBlockProps>, backend: &mut IosBackend) -> Ios
     // so the framework picks it up.
     unsafe { scroll.addSubview(&label) };
 
-    // Register both views with the framework's Taffy layout tree.
-    // Only the scroll view needs to participate in the layout pass
-    // (it's the External node the framework parents into the
-    // surrounding tree); the label inside is sized by the scroll
-    // view's `contentSize` sync, which reads UILabel's
-    // `intrinsicContentSize` against the attributed text.
-    backend.register_external_view(&scroll);
+    // Register the scroll view with the framework's Taffy layout tree
+    // AND give it a measure_fn driven by the label's `sizeThatFits:` — a
+    // bare `UIScrollView` has no intrinsic size, so without this it
+    // collapses to 0×0 in a flex column (the parent `CodePanel` sets no
+    // height) and the codeblock renders blank. `PADDING_PT` on each side
+    // matches the `contentInset` set above so the box includes the same
+    // breathing room the content scrolls within.
+    backend.install_external_content_measure(&scroll, &label, PADDING_PT as f32);
 
     // We need the label's intrinsic size to actually drive the
     // scroll view's contentSize. Without a layout pass, UILabel

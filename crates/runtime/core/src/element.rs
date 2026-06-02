@@ -261,6 +261,13 @@ pub enum Element {
         /// cross-platform contract.
         on_key_down: Option<Rc<dyn Fn(&crate::primitives::key::KeyEvent) -> crate::primitives::key::KeyOutcome>>,
         placeholder: Option<String>,
+        /// Mask the entered text (password entry). Each backend maps this to
+        /// its native secure-entry mode — web `type="password"`, UIKit
+        /// `isSecureTextEntry`, Android `TYPE_TEXT_VARIATION_PASSWORD`, AppKit
+        /// `NSSecureTextField`, GTK `Entry::set_visibility(false)`, terminal
+        /// bullet-masking. The observable behaviour (characters render masked)
+        /// is identical across backends.
+        secure: bool,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,

@@ -2321,10 +2321,17 @@ impl Backend for WebBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        secure: bool,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        let node =
-            primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down);
+        let node = primitives::text_input::create(
+            self,
+            initial_value,
+            placeholder,
+            on_change,
+            on_key_down,
+            secure,
+        );
         // `<input>` has implicit textbox role; no inference needed.
         a11y::apply(&node, a11y, None);
         node

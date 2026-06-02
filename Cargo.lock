@@ -3433,6 +3433,7 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "runtime-core",
+ "serde_json",
 ]
 
 [[package]]
@@ -4295,6 +4296,7 @@ dependencies = [
  "dev-server",
  "drawer-navigator",
  "headless-screenshot",
+ "idea-codeblock",
  "image",
  "runtime-core",
  "runtime-server-shell-native",

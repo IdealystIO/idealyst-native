@@ -90,6 +90,7 @@ pub fn text_input<F: Fn(String) + 'static>(
         on_change: Rc::new(on_change),
         on_key_down: None,
         placeholder: None,
+        secure: false,
         style: None,
         ref_fill: None,
         accessibility: crate::accessibility::AccessibilityProps::default(),
@@ -103,6 +104,16 @@ impl Bound<TextInputHandle> {
     pub fn placeholder(mut self, text: String) -> Self {
         if let Element::TextInput { placeholder, .. } = &mut self.primitive {
             *placeholder = Some(text);
+        }
+        self
+    }
+
+    /// Mask the entered text (password entry). Maps to each backend's native
+    /// secure-entry mode; the masked-character behaviour is identical
+    /// everywhere. Default `false`.
+    pub fn secure(mut self, is_secure: bool) -> Self {
+        if let Element::TextInput { secure, .. } = &mut self.primitive {
+            *secure = is_secure;
         }
         self
     }

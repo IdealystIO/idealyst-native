@@ -16,6 +16,7 @@ pub(crate) fn create(
     placeholder: Option<&str>,
     on_change: Rc<dyn Fn(String)>,
     on_key_down: Option<KeyDownHandler>,
+    secure: bool,
 ) -> Node {
     // Hydration adoption: reuse the SSR `<input>` if the cursor is on
     // a matching tag. Without this, the walker would build a fresh
@@ -34,7 +35,7 @@ pub(crate) fn create(
         b.hydrate_note_fresh(&node);
         fresh
     };
-    input.set_type("text");
+    input.set_type(if secure { "password" } else { "text" });
     input.set_value(initial_value);
     if let Some(p) = placeholder {
         input.set_placeholder(p);

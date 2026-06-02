@@ -701,9 +701,12 @@ impl Backend for SsrBackend {
         placeholder: Option<&str>,
         _on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        secure: bool,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let mut node = HtmlNode::new("input");
+        node.attrs
+            .push(("type", if secure { "password" } else { "text" }.to_string()));
         node.attrs.push(("value", initial_value.to_string()));
         if let Some(p) = placeholder {
             node.attrs.push(("placeholder", p.to_string()));

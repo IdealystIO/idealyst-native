@@ -307,6 +307,11 @@ pub enum NodeKind {
     TextInput {
         value: String,
         placeholder: Option<String>,
+        /// Password masking: when true, the rendered glyph buffer
+        /// shows `•` per character instead of the real `value`. The
+        /// authoritative `value` is still stored in cleartext so
+        /// `on_change` reports actual keystrokes.
+        secure: bool,
         on_change: Rc<dyn Fn(String)>,
     },
     /// Editable multi-line text area. Same controlled-component

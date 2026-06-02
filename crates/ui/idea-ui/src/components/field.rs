@@ -59,6 +59,9 @@ pub struct FieldProps {
     /// Visual shell: `Outline` (bordered, default), `Contained` (filled),
     /// or `Bare` (no chrome). All three keep a focus ring.
     pub variant: FieldAppearance,
+    /// Mask the entered text (password entry). Forwarded to the underlying
+    /// `text_input` primitive's `secure` flag.
+    pub secure: bool,
 }
 
 impl Default for FieldProps {
@@ -73,6 +76,7 @@ impl Default for FieldProps {
             tone: None,
             size: FieldSize::default(),
             variant: FieldAppearance::default(),
+            secure: false,
         }
     }
 }
@@ -331,12 +335,14 @@ pub fn Field(props: &FieldProps) -> Element {
     };
     let help_node = crate::components::optional_reactive_text(help_combined, help_style);
 
+    let secure = props.secure;
     let input_node: Element = if let Some(p) = placeholder {
         ui! {
             text_input(
                 value = value,
                 on_change = move |v: String| (on_change)(v),
                 placeholder = p,
+                secure = secure,
                 style = input_style
             )
         }
@@ -345,6 +351,7 @@ pub fn Field(props: &FieldProps) -> Element {
             text_input(
                 value = value,
                 on_change = move |v: String| (on_change)(v),
+                secure = secure,
                 style = input_style
             )
         }

@@ -109,7 +109,51 @@ pub type CodeBlockHandle = ExternalHandle<CodeBlockProps>;
 /// ])
 /// ```
 pub fn code_block(spans: Vec<(String, Color)>) -> Bound<CodeBlockHandle> {
+    // Register the wire serde here too: `code_block` runs while the app
+    // builds its tree, including on the runtime-server RECORDER (which
+    // runs app code headless). So the serializer is in place before the
+    // recorder's `create_external` emits the wire command — no app-level
+    // recorder registration needed.
+    ensure_wire_serde();
     runtime_core::external::<CodeBlockProps>(CodeBlockProps { spans })
+}
+
+/// Register the wire (serialize, deserialize) pair for `CodeBlockProps`
+/// so a `code_block(...)` `Element::External` renders over the
+/// runtime-server wire: the recorder serializes the spans into
+/// `CreateExternal`, and the device deserializes them back and dispatches
+/// to its real per-backend handler. Without this, External payloads can't
+/// cross the wire and the device shows the not-available placeholder.
+///
+/// Idempotent + cheap (guarded by a thread-local flag). Called from
+/// [`code_block`] (covers the recorder side) and from every [`register`]
+/// (covers the device client side).
+fn ensure_wire_serde() {
+    thread_local! {
+        static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if DONE.with(|d| d.replace(true)) {
+        return;
+    }
+    runtime_core::register_external_serde(
+        std::any::type_name::<CodeBlockProps>(),
+        |any| {
+            let props = any.downcast_ref::<CodeBlockProps>()?;
+            // `Color` is a `Color(String)` newtype; ship the runs as
+            // (text, color-string) pairs.
+            let plain: Vec<(&str, &str)> = props
+                .spans
+                .iter()
+                .map(|(t, c)| (t.as_str(), c.0.as_str()))
+                .collect();
+            serde_json::to_vec(&plain).ok()
+        },
+        |bytes| {
+            let plain: Vec<(String, String)> = serde_json::from_slice(bytes).ok()?;
+            let spans = plain.into_iter().map(|(t, c)| (t, Color(c))).collect();
+            Some(std::rc::Rc::new(CodeBlockProps { spans }) as std::rc::Rc<dyn std::any::Any>)
+        },
+    );
 }
 
 // =============================================================================
@@ -143,6 +187,7 @@ fn build_code_block<B: Backend>(props: &Rc<CodeBlockProps>, backend: &mut B) -> 
 /// registry.
 #[cfg(target_arch = "wasm32")]
 pub fn register<B: RegisterExternal>(backend: &mut B) {
+    ensure_wire_serde();
     backend.register_external::<CodeBlockProps, _>(build_code_block::<B>);
 }
 
@@ -151,6 +196,7 @@ pub fn register<B: RegisterExternal>(backend: &mut B) {
 /// SpannableString). See `android.rs` for the JNI plumbing.
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 pub fn register(backend: &mut backend_android::AndroidBackend) {
+    ensure_wire_serde();
     backend.register_external::<CodeBlockProps, _>(android::build);
 }
 
@@ -159,6 +205,7 @@ pub fn register(backend: &mut backend_android::AndroidBackend) {
 /// NSAttributedString. See `ios.rs` for the obj-c plumbing.
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub fn register(backend: &mut backend_ios::IosBackend) {
+    ensure_wire_serde();
     backend.register_external::<CodeBlockProps, _>(ios::build);
 }
 
@@ -171,4 +218,9 @@ pub fn register(backend: &mut backend_ios::IosBackend) {
     not(target_os = "android"),
     not(target_os = "ios"),
 ))]
-pub fn register<B: runtime_core::Backend>(_backend: &mut B) {}
+pub fn register<B: runtime_core::Backend>(_backend: &mut B) {
+    // No per-backend native handler here, but still register the wire
+    // serde so the recorder (which falls into this generic variant)
+    // serializes the payload.
+    ensure_wire_serde();
+}

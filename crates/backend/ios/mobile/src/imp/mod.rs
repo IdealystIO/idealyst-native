@@ -663,6 +663,62 @@ impl IosBackend {
         );
     }
 
+    /// Install a Taffy `measure_fn` for an external primitive whose own
+    /// view has no intrinsic size (e.g. a `UIScrollView`) but whose
+    /// `content` subview does (e.g. the codeblock's `UILabel`). Without a
+    /// measure the wrapper collapses to 0×0 in a flex column and the
+    /// primitive renders blank — the bug that made the over-wire codeblock
+    /// "missing outright" once its real handler ran (the old not-available
+    /// placeholder was a self-sizing text node).
+    ///
+    /// We probe the content's `sizeThatFits:` at its natural (unbounded)
+    /// size — single-axis scrollers don't wrap, so this yields the true
+    /// content extent — and add `pad` on each side to match the scroll
+    /// view's `contentInset`. The node fills any parent-known width and
+    /// scrolls content wider than that.
+    pub fn install_external_content_measure(
+        &mut self,
+        node: &objc2_ui_kit::UIView,
+        content: &objc2_ui_kit::UIView,
+        pad: f32,
+    ) {
+        let layout = self.layout_for_view(node);
+        let content: objc2::rc::Retained<objc2_ui_kit::UIView> = unsafe {
+            objc2::rc::Retained::retain(content as *const _ as *mut objc2_ui_kit::UIView)
+                .unwrap()
+        };
+        self.layout.set_measure_fn(
+            layout,
+            std::rc::Rc::new(move |known_dimensions, available_space| {
+                let probe = objc2_foundation::CGSize {
+                    width: f64::MAX,
+                    height: f64::MAX,
+                };
+                let fit: objc2_foundation::CGSize =
+                    unsafe { msg_send![&content, sizeThatFits: probe] };
+                let content_w = (fit.width as f32).max(0.0).ceil();
+                let content_h = (fit.height as f32).max(0.0).ceil();
+                // Fill the parent's offered width (so the scroller spans
+                // the column and scrolls content wider than it); fall back
+                // to the content's own width when the parent leaves it
+                // unconstrained.
+                let avail_w = match available_space.width {
+                    runtime_layout::AvailableSpace::Definite(w) => Some(w),
+                    _ => None,
+                };
+                runtime_layout::Size {
+                    width: known_dimensions
+                        .width
+                        .or(avail_w)
+                        .unwrap_or(content_w + 2.0 * pad),
+                    height: known_dimensions
+                        .height
+                        .unwrap_or(content_h + 2.0 * pad),
+                }
+            }),
+        );
+    }
+
     /// Install a Taffy `measure_fn` for a standalone icon view so flex
     /// layout reserves the icon's intrinsic box. Without it the icon
     /// node had no size Taffy understood (the 24×24 Auto Layout
@@ -1043,11 +1099,17 @@ impl Backend for IosBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        secure: bool,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let field = unsafe { UITextField::new(self.mtm) };
         let ns_val = NSString::from_str(initial_value);
         unsafe { field.setText(Some(&ns_val)) };
+
+        // Password masking: UITextField renders dots for typed chars
+        // when secure text entry is on.
+        let _: () =
+            unsafe { msg_send![&field, setSecureTextEntry: objc2::runtime::Bool::new(secure)] };
 
         if let Some(ph) = placeholder {
             let ns_ph = NSString::from_str(ph);
@@ -1674,6 +1736,11 @@ impl Backend for IosBackend {
                 Some(tap_sel),
             )
         };
+        // Same mount-time phantom-tap gate as `create_pressable` — a
+        // Link sitting under the viewport center must not auto-navigate
+        // on the first run-loop turn it appears. See
+        // `CallbackTarget::gesture_recognizer_should_begin`.
+        let _: () = unsafe { msg_send![&*tap_gr, setDelegate: &*target] };
         let _: () = unsafe { msg_send![&view, addGestureRecognizer: &*tap_gr] };
         self.retain_target(&target);
 
@@ -1725,6 +1792,12 @@ impl Backend for IosBackend {
                 Some(tap_sel),
             )
         };
+        // Gate the tap so a phantom touch UIKit delivers during the
+        // view's first run-loop turn on screen can't fire `on_click`
+        // (the mount-time auto-open bug). `CallbackTarget` doubles as
+        // the recognizer's `UIGestureRecognizerDelegate`; see its
+        // `gestureRecognizerShouldBegin:` + `TAP_GATE_SETTLE_SECS`.
+        let _: () = unsafe { msg_send![&*tap_gr, setDelegate: &*target] };
         let _: () = unsafe { msg_send![&view, addGestureRecognizer: &*tap_gr] };
         self.retain_target(&target);
 
@@ -2245,6 +2318,15 @@ impl Backend for IosBackend {
         value: [f32; 4],
     ) {
         self.impl_set_animated_color(node, prop, value);
+    }
+
+    fn apply_presence(
+        &mut self,
+        node: &Self::Node,
+        state: runtime_core::PresenceState,
+        transition: Option<(u32, runtime_core::Easing)>,
+    ) {
+        self.impl_apply_presence(node, state, transition);
     }
 
     fn frame(&self, node: &Self::Node) -> Option<runtime_core::primitives::portal::ViewportRect> {

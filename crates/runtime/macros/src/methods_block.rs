@@ -344,29 +344,33 @@ fn rewrite_body(
         let method_name_str = m.name.to_string();
         let arg_names_str: Vec<String> = m.args.iter().map(|(n, _)| n.to_string()).collect();
         // Render each arg's Rust type as a source-form string. `quote!`
-        // produces tokens with spaces; collapse runs of whitespace so
-        // `i32` stays `i32` and `Vec < String >` becomes `Vec<String>` —
-        // closer to what authors typed. Token-level formatting isn't
-        // worth the dep on prettyplease for one-line type renderings.
+        // separates every token with a single space; we only want to drop
+        // the spaces that hug punctuation, so `Vec < String >` collapses
+        // to `Vec<String>` and `& 'a str` to `&'a str`, while a real gap
+        // between two word tokens (`dyn Fn`) is preserved. Crucially we
+        // must NOT split a single ident: the old code stripped every space
+        // then re-inserted one between adjacent alphanumerics, turning the
+        // one-token type `i32` into `i 3 2`. Token-level formatting isn't
+        // worth a `prettyplease` dep for one-line type renderings.
         let arg_types_str: Vec<String> = m.args.iter().map(|(_, ty)| {
+            const PUNCT: &[char] = &['<', '>', ',', '(', ')', '&', '\'', ':', ';'];
             let raw = quote!(#ty).to_string();
+            let chars: Vec<char> = raw.chars().collect();
             let mut out = String::with_capacity(raw.len());
-            let mut prev_was_punct = true;
-            for ch in raw.chars() {
-                match ch {
-                    ' ' => continue,
-                    '<' | '>' | ',' | '(' | ')' | '&' | '\'' | ':' => {
-                        out.push(ch);
-                        prev_was_punct = true;
-                    }
-                    _ => {
-                        if !prev_was_punct && out.chars().last().map_or(false, |c| c.is_alphanumeric() || c == '_') {
-                            out.push(' ');
-                        }
-                        out.push(ch);
-                        prev_was_punct = false;
+            for (i, &ch) in chars.iter().enumerate() {
+                if ch == ' ' {
+                    // Drop this space iff the char on either side is
+                    // punctuation; keep it when it sits between two word
+                    // tokens (it's a meaningful separator there).
+                    let prev = out.chars().last();
+                    let next = chars.get(i + 1).copied();
+                    let hugs_punct = prev.map_or(true, |p| PUNCT.contains(&p))
+                        || next.map_or(true, |n| PUNCT.contains(&n));
+                    if hugs_punct {
+                        continue;
                     }
                 }
+                out.push(ch);
             }
             out
         }).collect();
@@ -400,8 +404,15 @@ fn rewrite_body(
         }
     });
 
+    // Emitted UNCONDITIONALLY — the registration surface
+    // (`register_component` / `Method` / `ComponentRegistration`) always
+    // exists in `runtime-core` (a no-op stub when the `robot` feature is
+    // off). Gating this on the *consuming* crate's `robot` feature meant
+    // a scaffolded app / idea-ui (which never declare that feature)
+    // silently never registered their component methods — `invoke_method`
+    // saw nothing. Now methods register whenever `runtime-core/robot` is
+    // on, regardless of the defining crate's features.
     let registration_stmt: Stmt = syn::parse_quote! {
-        #[cfg(feature = "robot")]
         let __robot_component_registration = {
             let __methods: ::std::vec::Vec<::runtime_core::robot::Method> = ::std::vec![
                 #(#method_entries),*
@@ -416,7 +427,6 @@ fn rewrite_body(
     // on scope drop. That ties the component's registration lifetime
     // to its mounted lifetime.
     let keepalive_stmt: Stmt = syn::parse_quote! {
-        #[cfg(feature = "robot")]
         let _ = ::runtime_core::Effect::new(move || {
             let _ = &__robot_component_registration;
         });

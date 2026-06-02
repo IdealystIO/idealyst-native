@@ -92,6 +92,27 @@ fn text_input_on_key_down_registers_and_fires() {
     assert_eq!(received[0].key, "Tab");
 }
 
+/// The `secure` flag threads from the primitive builder through the walker
+/// into `create_text_input`. A bare `text_input` defaults to `secure: false`
+/// (plaintext); `.secure(true)` records `secure: true`. Without this wiring
+/// password fields would render unmasked on every backend.
+#[test]
+fn text_input_secure_flag_threads_to_backend() {
+    // Default: not secure.
+    let rt = TestRuntime::new();
+    let value: Signal<String> = signal!(String::new());
+    let _owner = rt.render(text_input(value, |_: String| {}).into());
+    rt.backend()
+        .assert_any(|e| matches!(e, Event::CreateTextInput { secure: false, .. }));
+
+    // Opted in via the builder.
+    let rt2 = TestRuntime::new();
+    let value2: Signal<String> = signal!(String::new());
+    let _owner2 = rt2.render(text_input(value2, |_: String| {}).secure(true).into());
+    rt2.backend()
+        .assert_any(|e| matches!(e, Event::CreateTextInput { secure: true, .. }));
+}
+
 /// Same for `text_area`. Verifies returning `PreventDefault`
 /// propagates back through `fire_key_event`'s result so a real
 /// backend would call `event.preventDefault()`.
