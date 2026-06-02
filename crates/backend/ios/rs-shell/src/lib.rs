@@ -26,7 +26,7 @@ use backend_ios::IosBackend;
 /// native client = adding its `register` call here.
 fn register_first_party_sdks(backend: &mut IosBackend) {
     drawer_navigator::register(backend);
-    idea_codeblock::register(backend);
+    codeblock::register(backend);
     table::register(backend);
 }
 

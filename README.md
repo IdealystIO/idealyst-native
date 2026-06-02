@@ -353,9 +353,11 @@ crates/
     idea-ui-docs-derive/# #[derive(DocControls)] proc macro powering the docs site
 
   sdk/                  # Third-party-style extensions wired through Element::External
-    maps/ maps-core/ maps-web/   # MapView primitive
+    maps/               # MapView primitive (umbrella + nested core/ ios/ web/ leaves)
     webview/            # WebView primitive (cfg-gated single-crate pattern)
-    idea-codeblock/     # Read-only colored-text panel primitive
+    codeblock/          # Read-only colored-text panel primitive
+    navigators/         # stack/ tab/ drawer/ SDKs + shared helpers/ (android, ios, web)
+    i18n/               # i18n SDK + nested macros/ proc-macro crate
 
   cli/                  # idealyst CLI: scaffold, dev-serve, build, run, doctor
   build/                # Per-target build orchestration (web, ios, android, macos, roku, aas, sim)

@@ -1,0 +1,11 @@
+error: exactly one locale must be marked `(default)` — it is the reference locale and the fallback when a translation is unavailable
+  --> tests/ui/no_default_locale.rs:4:5
+   |
+ 4 | /     i18n::i18n! {
+ 5 | |         // No locale marked `(default)` -> compile error.
+ 6 | |         locales: { En = "en", Fr = "fr" }
+...  |
+12 | |     }
+   | |_____^
+   |
+   = note: this error originates in the macro `i18n::i18n` (in Nightly builds, run with -Z macro-backtrace for more info)

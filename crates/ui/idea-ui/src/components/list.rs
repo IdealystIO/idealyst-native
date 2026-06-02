@@ -17,7 +17,9 @@
 
 use std::rc::Rc;
 
-use runtime_core::{component, ui, ChildList, IntoElement, Element, Reactive, StyleApplication};
+use runtime_core::{
+    component, ui, ChildList, IdealystSchema, IntoElement, Element, Reactive, StyleApplication,
+};
 
 use crate::stylesheets::{Divider, ListContainer, ListItemRow};
 
@@ -26,7 +28,10 @@ use crate::stylesheets::{Divider, ListContainer, ListItemRow};
 // =============================================================================
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct ListProps {
+    /// The rows (typically [`ListItem`]s); hairline dividers are
+    /// inserted between consecutive rows.
     pub children: Vec<Element>,
 }
 
@@ -36,6 +41,8 @@ impl Default for ListProps {
     }
 }
 
+/// Renders a bordered surface wrapping its rows, with a hairline
+/// divider between each consecutive pair.
 #[component(children)]
 pub fn List(props: ListProps) -> Element {
     let mut items: Vec<Element> = Vec::with_capacity(props.children.len());
@@ -60,6 +67,7 @@ pub fn List(props: ListProps) -> Element {
 // =============================================================================
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct ListItemProps {
     /// Row label. `Reactive<String>` — static or live.
     pub label: Reactive<String>,
@@ -93,6 +101,9 @@ fn spacer() -> Element {
         .into_element()
 }
 
+/// A single list row: optional leading element, label, and a trailing
+/// element pushed to the right edge. With `on_press` set the whole row
+/// is tappable with a hover highlight.
 #[component]
 pub fn ListItem(props: ListItemProps) -> Element {
     let active = props.active;

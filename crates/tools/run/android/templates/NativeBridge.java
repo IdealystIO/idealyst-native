@@ -18,4 +18,10 @@ public class NativeBridge {
     /// has already resized it by the time this fires; the framework
     /// just needs to re-run Taffy and reapply the resulting frames.
     public static native void notifyConfigChanged();
+
+    /// Cold-start deep link: seed the navigator's initial path from the
+    /// launch Intent's data URI. Call from `MainActivity.onCreate`
+    /// BEFORE `attach`. `path` is the URI's path component
+    /// (e.g. "/encounters/abc"), or null/empty for no deep link.
+    public static native void setLaunchPath(String path);
 }

@@ -62,6 +62,10 @@ pub mod components;
 #[cfg(feature = "docs")]
 pub mod doc_controls;
 pub mod intent;
+// Compile-checked usage examples for idea-ui components. `recipe!`
+// self-gates on the `catalog` feature, so this module is empty (zero
+// cost) in production and only materializes when the catalog is built.
+mod recipes;
 pub mod stylesheets;
 pub mod theme;
 mod theme_runtime;

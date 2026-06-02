@@ -1,0 +1,5 @@
+error: message `greeting` is missing a translation for bundled locale `Fr` — add `Fr: "…"`, or mark `Fr` as `(lazy)` to load it at runtime
+ --> tests/ui/missing_bundled_locale.rs:8:9
+  |
+8 |         greeting(name) {
+  |         ^^^^^^^^

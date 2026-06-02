@@ -25,7 +25,7 @@ drawer-navigator = { workspace = true }
 dev-server = { workspace = true, optional = true }
 # Theme-aware syntax-highlighted code panels (External primitive on web,
 # placeholder on native). The lessons lean on readable code blocks.
-idea-codeblock = { workspace = true }
+codeblock = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }

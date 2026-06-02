@@ -1,0 +1,21 @@
+[package]
+name = "i18n-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Proc-macro half of the `i18n` SDK. Exposes the `i18n! { … }` macro that
+# parses inline, Rust-native translations and emits a strongly-typed
+# `Locale` enum plus one function per message. Compile errors (spanned at
+# the offending item) fire when a bundled locale is missing a message, when
+# a `{placeholder}` doesn't match a declared argument, or when an argument
+# is never used — the strong-typing guarantees that are the point of this
+# SDK. Re-exported as `i18n::i18n`; depend on `i18n`, not this crate.
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"

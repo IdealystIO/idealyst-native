@@ -16,15 +16,18 @@
 
 use std::rc::Rc;
 
-use runtime_core::{component, ui, IntoElement, Element, Reactive, StyleApplication};
+use runtime_core::{component, ui, IdealystSchema, IntoElement, Element, Reactive, StyleApplication};
 
 use crate::stylesheets::{BreadcrumbItem, BreadcrumbRow, BreadcrumbSeparator};
 
 /// One crumb. `Crumb::new(label)` is a plain (non-clickable) crumb;
 /// `Crumb::linked(label, on_press)` is clickable.
-#[derive(Clone)]
+#[derive(Clone, IdealystSchema)]
 pub struct Crumb {
+    /// Crumb text. `Reactive<String>` — static or live (signal/`rx!`).
     pub label: Reactive<String>,
+    /// When `Some` (and not the last crumb), the crumb is a clickable
+    /// link firing this handler.
     pub on_press: Option<Rc<dyn Fn()>>,
 }
 
@@ -38,7 +41,10 @@ impl Crumb {
 }
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct BreadcrumbsProps {
+    /// The trail, root-first. The last item renders as the current page
+    /// (emphasized, not clickable).
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub items: Vec<Crumb>,
     /// Separator glyph between crumbs. Default `/`.
@@ -58,6 +64,8 @@ fn crumb_style(is_current: bool) -> impl Fn() -> StyleApplication + Clone + 'sta
     }
 }
 
+/// Renders a horizontal trail of crumbs joined by `separator`. Earlier
+/// linked crumbs are clickable; the last crumb is the current page.
 #[component]
 pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
     let n = props.items.len();

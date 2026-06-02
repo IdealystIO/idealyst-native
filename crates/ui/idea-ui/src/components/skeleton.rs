@@ -18,7 +18,7 @@
 //! }
 //! ```
 
-use runtime_core::{component, ui, Length, Element, StyleApplication};
+use runtime_core::{component, ui, IdealystSchema, Length, Element, StyleApplication};
 
 use crate::stylesheets::Skeleton as SkeletonStyle;
 use crate::theme::IdeaThemeRef;
@@ -38,11 +38,16 @@ pub enum SkeletonWidth {
 }
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct SkeletonProps {
+    /// Width preset (Full/Half/ThreeQuarter) or exact pixels. Default Full.
     pub width: SkeletonWidth,
+    /// Block height in px. Default 16.
+    #[schema(constraint = "pixels, > 0")]
     pub height: f32,
     /// Border radius in px. `0.0` for a sharp rectangle, larger
     /// values for a pill or circle.
+    #[schema(constraint = "pixels, >= 0")]
     pub radius: f32,
 }
 
@@ -56,6 +61,8 @@ impl Default for SkeletonProps {
     }
 }
 
+/// Renders a muted, fixed-size placeholder block to reserve space for
+/// loading content (no animation; avoids layout shift on arrival).
 #[component]
 pub fn Skeleton(props: &SkeletonProps) -> Element {
     let height = props.height;

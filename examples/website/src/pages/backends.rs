@@ -105,7 +105,7 @@ fn coverage() -> Element {
                 Android + macOS. Per-SDK leaves: Video (web/iOS/Android), \
                 web_view (web full / iOS full / Android URL-only — Kotlin shim pending), \
                 Maps (web/iOS via MKMapView — Android leaf pending), \
-                idea-codeblock (web only). wgpu / CPU / Win32 / Linux render placeholders \
+                codeblock (web only). wgpu / CPU / Win32 / Linux render placeholders \
                 for any unregistered or unsupported external kind.".to_string())
         },
     ];

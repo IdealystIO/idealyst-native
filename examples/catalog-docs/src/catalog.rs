@@ -92,6 +92,25 @@ pub struct Compose {
     pub target_slug: Option<String>,
 }
 
+/// A usage recipe attached to a component. Owned copy of the relevant
+/// `mcp_catalog::RecipeEntry` fields. A recipe attaches to a component
+/// when it primarily demonstrates it (`primary == true`) or when the
+/// component merely appears in the recipe's `uses` list
+/// (`primary == false`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recipe {
+    /// The recipe fn's name, e.g. `button_basic`.
+    pub name: String,
+    /// Prose docs on the recipe fn. May be empty.
+    pub docs: String,
+    /// The recipe's formatted, copy-pasteable source code.
+    pub source: String,
+    /// True when this component is the recipe's primary subject
+    /// (`recipe.component == component.name`); false when the component
+    /// only appears in the recipe's `uses` list.
+    pub primary: bool,
+}
+
 /// One catalog entry, normalized across kinds. Not every field applies
 /// to every kind (a guide has only `docs` as markdown `body`; a utility
 /// has `return_type` but no `composes`), but a single struct keeps the
@@ -122,6 +141,9 @@ pub struct Entry {
     pub methods: Vec<Method>,
     /// Animated values declared in the body (components only).
     pub animations: Vec<Animation>,
+    /// Usage recipes that demonstrate or reference this component
+    /// (components only). Primary recipes sort first.
+    pub recipes: Vec<Recipe>,
     /// Return type (utilities only). Empty otherwise.
     pub return_type: String,
 }
@@ -258,6 +280,32 @@ impl CatalogModel {
                 })
                 .collect();
 
+            // Recipes attach to a component when they primarily
+            // demonstrate it (`recipe.component == name`) OR merely
+            // reference it (`recipe.uses` contains the name). Primary
+            // recipes sort first so the renderer can flag them.
+            let mut recipes: Vec<Recipe> = cat
+                .recipes()
+                .iter()
+                .filter_map(|r| {
+                    let primary = r.component == c.name;
+                    let used = r.uses.contains(&c.name);
+                    if primary || used {
+                        Some(Recipe {
+                            name: r.name.to_string(),
+                            docs: r.docs.to_string(),
+                            source: r.source.to_string(),
+                            primary,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            recipes.sort_by(|a, b| {
+                (!a.primary, a.name.to_lowercase()).cmp(&(!b.primary, b.name.to_lowercase()))
+            });
+
             entries.push(Entry {
                 kind: Kind::Component,
                 name: c.name.to_string(),
@@ -270,6 +318,7 @@ impl CatalogModel {
                 composes,
                 methods,
                 animations,
+                recipes,
                 return_type: String::new(),
             });
         }
@@ -300,6 +349,7 @@ impl CatalogModel {
                 composes: Vec::new(),
                 methods: Vec::new(),
                 animations: Vec::new(),
+                recipes: Vec::new(),
                 return_type: String::new(),
             });
         }
@@ -328,6 +378,7 @@ impl CatalogModel {
                 composes: Vec::new(),
                 methods: Vec::new(),
                 animations: Vec::new(),
+                recipes: Vec::new(),
                 return_type: u.return_type.to_string(),
             });
         }
@@ -367,6 +418,7 @@ impl CatalogModel {
                 composes: Vec::new(),
                 methods: Vec::new(),
                 animations: Vec::new(),
+                recipes: Vec::new(),
                 return_type: String::new(),
             });
         }
@@ -385,6 +437,7 @@ impl CatalogModel {
                 composes: Vec::new(),
                 methods: Vec::new(),
                 animations: Vec::new(),
+                recipes: Vec::new(),
                 return_type: String::new(),
             });
         }
@@ -536,5 +589,70 @@ mod tests {
         // minimum the props-struct param) and the flag is a clean bool.
         assert!(!button.fields.is_empty(), "Button should surface at least its props param");
         let _ = button.fields_documented; // either state is valid; must not panic
+    }
+
+    #[test]
+    fn recipes_attach_to_their_component() {
+        // Every recipe in the live catalog must surface on the component
+        // it primarily demonstrates: its `component` field names a
+        // component entry, and that entry carries a `primary` recipe with
+        // the matching name. This is the canary that the recipes slice is
+        // both linked (non-empty) and correctly joined by name.
+        let m = model();
+        let cat = ResolvedCatalog::build();
+        let recipes = cat.recipes();
+        assert!(
+            !recipes.is_empty(),
+            "expected at least one recipe in the live catalog (e.g. `button_basic`)"
+        );
+
+        for r in recipes {
+            // Find the component this recipe primarily demonstrates.
+            let Some(comp) = m
+                .of_kind(Kind::Component)
+                .into_iter()
+                .find(|e| e.name == r.component)
+            else {
+                // The primary component may not be in the model (e.g. a
+                // recipe for a non-idea-ui component); skip those.
+                continue;
+            };
+            let attached = comp
+                .recipes
+                .iter()
+                .find(|rec| rec.name == r.name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "recipe `{}` (component `{}`) did not attach to its component; \
+                         component had recipes: {:?}",
+                        r.name,
+                        r.component,
+                        comp.recipes.iter().map(|x| &x.name).collect::<Vec<_>>()
+                    )
+                });
+            assert!(
+                attached.primary,
+                "recipe `{}` should be marked primary on component `{}`",
+                r.name, r.component
+            );
+            assert_eq!(attached.source, r.source, "recipe source should round-trip owned");
+        }
+
+        // A recipe must also attach (non-primary) to every component it
+        // merely `uses`.
+        for r in recipes {
+            for &used_name in r.uses {
+                if let Some(comp) =
+                    m.of_kind(Kind::Component).into_iter().find(|e| e.name == used_name)
+                {
+                    assert!(
+                        comp.recipes.iter().any(|rec| rec.name == r.name),
+                        "recipe `{}` uses `{}` but didn't attach to it",
+                        r.name,
+                        used_name
+                    );
+                }
+            }
+        }
     }
 }

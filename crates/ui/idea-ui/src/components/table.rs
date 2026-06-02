@@ -38,7 +38,9 @@
 //! HTML `<table>` on web) is generic and cross-platform; idea-ui
 //! supplies the opinionated visual that reads the active theme.
 
-use runtime_core::{component, text as text_node, ui, ChildList, Element, IntoElement, Reactive};
+use runtime_core::{
+    component, text as text_node, ui, ChildList, Element, IdealystSchema, IntoElement, Reactive,
+};
 use table::{table as sdk_table, table_cell as sdk_cell, table_row as sdk_row};
 use table::{TableCellProps as SdkTableCellProps, TableProps as SdkTableProps, TableRowProps as SdkTableRowProps};
 
@@ -53,12 +55,16 @@ use crate::stylesheets::{
 /// Themed table container. Wraps the `table` SDK's `<table>` with
 /// idea-ui's surface tokens (rounded corners + hairline border + theme
 /// background). Pass `TableRow`s as children.
-#[derive(Default)]
+#[derive(Default, IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableProps {
+    /// Table rows. Pass `TableRow`s (a header row plus body rows).
     pub children: Vec<Element>,
 }
 
+/// A themed data table — a header row plus body rows. Wraps the
+/// cross-platform `table` SDK: a real HTML `<table>` on web, styled flex
+/// columns on native. Pass `TableRow`s as children.
 #[component(children)]
 pub fn Table(props: TableProps) -> Element {
     let style = TableStyle();
@@ -82,12 +88,15 @@ pub fn Table(props: TableProps) -> Element {
 /// component so future row-level affordances (hover highlight, zebra
 /// striping, density variants) have a place to land without changing
 /// call sites.
-#[derive(Default)]
+#[derive(Default, IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableRowProps {
+    /// Cells in this row. Pass `TableCell`s.
     pub children: Vec<Element>,
 }
 
+/// A row within a [`Table`] — holds `TableCell`s. Use the first row as
+/// the header (its cells set `header = true`).
 #[component(children)]
 pub fn TableRow(props: TableRowProps) -> Element {
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
@@ -111,6 +120,7 @@ pub fn TableRow(props: TableRowProps) -> Element {
 /// using the header/body typography token. To compose richer content
 /// (links, badges, multiple inline pieces) pass `text = None` and
 /// use the `children` block instead.
+#[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableCellProps {
     /// When `true`, render as `<th>` (and use the head-cell surface +
@@ -141,6 +151,8 @@ impl Default for TableCellProps {
     }
 }
 
+/// A cell within a [`TableRow`]. Set `header = true` for a header
+/// (`<th>`) cell; otherwise it renders as a data (`<td>`) cell.
 #[component(children)]
 pub fn TableCell(props: TableCellProps) -> Element {
     let header = props.header;

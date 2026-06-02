@@ -14,13 +14,15 @@
 //! — that needs a typed `Route`, which is app-specific and out of scope
 //! for a generic UI component.
 
-use runtime_core::{component, IntoElement, Element, Reactive};
+use runtime_core::{component, IdealystSchema, IntoElement, Element, Reactive};
 
 use crate::stylesheets::LinkText;
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct LinkProps {
     /// Link text. `Reactive<String>` — static or live.
+    #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub label: Reactive<String>,
     /// Destination URL (`https:`, `mailto:`, `tel:`, …).
     pub url: String,
@@ -32,6 +34,9 @@ impl Default for LinkProps {
     }
 }
 
+/// Renders a styled external/inline navigational link: a styled text node
+/// wrapped in the framework's `external_link` primitive (a real `<a>` on
+/// web, the platform URL opener on native).
 #[component]
 pub fn Link(props: &LinkProps) -> Element {
     let text = runtime_core::text(props.label.clone())

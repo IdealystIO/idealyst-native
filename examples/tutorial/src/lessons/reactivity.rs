@@ -105,7 +105,7 @@ effect!({
     deps.get();                      // re-run when deps changes
 });"##.to_string())
 
-            Callout(label = "untrack is the escape hatch".to_string()) {
+            Callout(label = "Reading without subscribing".to_string()) {
                 Typography(
                     content = "Subscriptions are rebuilt on every run, so a branch that stops \
                         reading a signal stops being notified. Wrap a read in untrack(|| \
@@ -178,8 +178,9 @@ pub fn batching() -> Element {
     shell::layout(ui! {
         LessonPage(
             current = RX_BATCHING_ROUTE.name(),
-            title = "Batching & escape hatches".to_string(),
-            lead = "batch, untrack, and on \u{2014} controlling when and how effects fire.".to_string(),
+            title = "Controlling when effects fire".to_string(),
+            lead = "batch coalesces fan-out; untrack and on control what an effect subscribes \
+                to.".to_string(),
         ) {
             Typography(
                 content = "When several signals change together, batch coalesces the \

@@ -23,19 +23,27 @@
 
 use std::rc::Rc;
 
-use runtime_core::{component, text, IntoElement, Element, StyleApplication, VariantEnum};
+use runtime_core::{component, text, IdealystSchema, IntoElement, Element, StyleApplication, VariantEnum};
 
 use idea_theme::extensible::{installed_icon_button_sheet, tone, variant, ToneRef, VariantRef};
 
 pub use crate::stylesheets::IconButtonSize;
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct IconButtonProps {
+    /// The single glyph/character rendered inside the square (e.g. `"×"`).
     pub glyph: String,
+    /// Fires on press/click.
     pub on_click: Rc<dyn Fn()>,
+    /// Semantic color palette (Neutral, Primary, Danger, …). Default Neutral.
     pub tone: ToneRef,
+    /// Surface treatment (Filled, Ghost, Soft, …). Default Filled.
     pub variant: VariantRef,
+    /// Square dimension preset (Sm, Md, Lg). Default Md.
     pub size: IconButtonSize,
+    /// When `Some`, the closure is polled to drive the disabled state;
+    /// returning `true` blocks the press and dims the button.
     pub disabled: Option<Rc<dyn Fn() -> bool>>,
 }
 
@@ -52,6 +60,8 @@ impl Default for IconButtonProps {
     }
 }
 
+/// Renders a square, single-glyph clickable styled by the tone × variant
+/// × size axes of the installed IconButton sheet.
 #[component]
 pub fn IconButton(props: &IconButtonProps) -> Element {
     let glyph = props.glyph.clone();

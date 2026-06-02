@@ -18,7 +18,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{component, ui, IntoElement, Element, Signal, StyleApplication};
+use runtime_core::{component, ui, IdealystSchema, IntoElement, Element, Signal, StyleApplication};
 
 use crate::stylesheets::{PageButton, PaginationRow};
 
@@ -26,10 +26,12 @@ use crate::stylesheets::{PageButton, PaginationRow};
 const WINDOW_FULL: usize = 7;
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct PaginationProps {
     /// Current page, 1-based. The host owns the signal.
     pub page: Signal<usize>,
     /// Total number of pages (>= 1).
+    #[schema(constraint = ">= 1 (clamped)")]
     pub total: usize,
     /// Fires with the requested page when the user navigates.
     pub on_change: Rc<dyn Fn(usize)>,
@@ -84,6 +86,9 @@ fn nav_button(glyph: &str, target: Option<usize>, on_change: Rc<dyn Fn(usize)>) 
     b.into_element()
 }
 
+/// Renders prev/next chevrons around a windowed run of page buttons,
+/// collapsing the middle to ellipses for large `total`. The button
+/// matching `page` is marked active; navigation fires `on_change`.
 #[component]
 pub fn Pagination(props: PaginationProps) -> Element {
     let page = props.page;

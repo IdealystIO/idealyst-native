@@ -26,7 +26,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{component, text, IntoElement, PressableHandle, Element, Reactive, Ref, StyleApplication};
+use runtime_core::{component, text, IdealystSchema, IntoElement, PressableHandle, Element, Reactive, Ref, StyleApplication};
 
 use idea_theme::extensible::{installed_button_sheet, ButtonSizeRef, ShapeRef, ToneRef, VariantRef};
 
@@ -35,15 +35,24 @@ use idea_theme::extensible::{installed_button_sheet, ButtonSizeRef, ShapeRef, To
 /// `tone: tone::Primary.into()` instead of `Rc::new(...)`. Built-in
 /// defaults route to Filled/Primary/Md/Md.
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct ButtonProps {
     /// Button text. `Reactive<String>` — static for a literal/`String`,
     /// live for a `Signal<String>` or `rx!(…)`.
+    #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub label: Reactive<String>,
+    /// Fires on press/click.
     pub on_click: Rc<dyn Fn()>,
+    /// Semantic color palette (Primary, Neutral, Danger, …). Default Primary.
     pub tone: ToneRef,
+    /// Surface treatment (Filled, Soft, Outline, Ghost, …). Default Filled.
     pub variant: VariantRef,
+    /// Padding/font scale (Sm, Md, Lg). Default Md.
     pub size: ButtonSizeRef,
+    /// Corner-radius scale (Sm, Md, Lg, Pill, …). Default Md.
     pub shape: ShapeRef,
+    /// When `Some`, the closure is polled to drive the disabled state;
+    /// returning `true` blocks the press and dims the button.
     pub disabled: Option<Rc<dyn Fn() -> bool>>,
     /// When `Some`, fills the given `Ref<PressableHandle>` on mount.
     /// Useful for anchoring an `Overlay` to this button.
@@ -65,6 +74,8 @@ impl Default for ButtonProps {
     }
 }
 
+/// Renders a styled, clickable button whose appearance is driven by
+/// the tone × variant × size × shape axes of the installed Button sheet.
 #[component]
 pub fn Button(props: &ButtonProps) -> Element {
     let label = props.label.clone();

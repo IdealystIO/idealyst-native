@@ -682,6 +682,30 @@ pub unsafe extern "C" fn ios_main(root_view: *mut std::ffi::c_void) {{
 pub unsafe extern "C" fn ios_teardown() {{
     OWNER.with(|slot| slot.borrow_mut().take());
 }}
+
+/// Cold-start deep-link hook. The Swift host calls this from
+/// `application(_:didFinishLaunchingWithOptions:)` (custom-scheme /
+/// universal-link launch) BEFORE `ios_main`, passing the URL's PATH
+/// component (e.g. `/encounters/abc`). It seeds the framework's
+/// initial-path slot so the navigator walker's synchronous initial mount
+/// resolves the deep-linked screen and reconstructs the back stack. When
+/// no launch URL is present the host never calls this and behavior is
+/// unchanged.
+///
+/// # Safety
+/// - Must be invoked on the main thread, before `ios_main`.
+/// - `path` must be a non-null, valid, NUL-terminated C string, or null
+///   (treated as "no deep link").
+#[no_mangle]
+pub unsafe extern "C" fn ios_set_launch_path(path: *const std::os::raw::c_char) {{
+    if path.is_null() {{
+        return;
+    }}
+    match unsafe {{ std::ffi::CStr::from_ptr(path) }}.to_str() {{
+        Ok(s) if !s.is_empty() => runtime_core::set_initial_path(Some(s.to_string())),
+        _ => {{}}
+    }}
+}}
 "#,
         lib = manifest.lib_name,
         app_name = manifest.name,

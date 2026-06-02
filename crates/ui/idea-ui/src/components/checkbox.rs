@@ -21,7 +21,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, Element, IntoElement, Reactive, Signal, StyleApplication,
+    component, ui, Element, IdealystSchema, IntoElement, Reactive, Signal, StyleApplication,
 };
 
 use idea_theme::extensible::{installed_checkbox_sheets, ToneRef, VariantRef};
@@ -33,6 +33,7 @@ use crate::stylesheets::{ControlRow, FieldLabel};
 const CHECK_GLYPH: &str = "\u{2713}";
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct CheckboxProps {
     /// Optional label rendered to the right of the box.
     /// `Reactive<Option<String>>` — static or live.
@@ -62,6 +63,9 @@ impl Default for CheckboxProps {
     }
 }
 
+/// Renders a tappable row: a tone/variant-styled box that shows a
+/// checkmark when `value` is true, plus the optional `label`. Tapping
+/// anywhere on the row fires `on_change` with the toggled value.
 #[component]
 pub fn Checkbox(props: &CheckboxProps) -> Element {
     let value = props.value;

@@ -4,3 +4,7 @@
 
 void ios_main(void *root_view);
 void ios_teardown(void);
+// Cold-start deep link: seed the navigator's initial path from a launch
+// URL. Call BEFORE `ios_main`. `path` is the URL's path component
+// (e.g. "/encounters/abc"), NUL-terminated UTF-8, or null for none.
+void ios_set_launch_path(const char *path);

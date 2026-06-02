@@ -1706,6 +1706,13 @@ where
             },
             release_screen: Rc::new(|_| {}),
             match_path: Rc::new(|_| None),
+            // The wire ships pre-built screens and drives mounting via
+            // `NavigatorAttachInitial` (`defer_initial_mount = true`), so the
+            // client never resolves routes itself — deep-link resolution
+            // happens host-side. Mirror `match_path`'s no-op, and carry no
+            // hierarchy base (this proxy is base-agnostic).
+            resolve_entry: Rc::new(|_| None),
+            base: String::new(),
             nav_state: nav_state.clone(),
             depth_changed: Rc::new(|_| {}),
             active_changed: Rc::new(|_, _| {}),

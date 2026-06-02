@@ -16,7 +16,7 @@ crate-type = ["cdylib", "rlib"]
 runtime-core = { workspace = true, features = ["async-driver"] }
 idea-ui = { workspace = true }
 drawer-navigator = { workspace = true }
-idea-codeblock = { workspace = true }
+codeblock = { workspace = true }
 # Embedded `welcome` app — the canonical scaffold from `idealyst new`.
 # Re-mounted inside the home-page Simulator so visitors can preview
 # the scene without installing the CLI. Pure rlib, no platform-specific

@@ -1,0 +1,49 @@
+[package]
+name = "i18n-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Demonstrates the `i18n` SDK:
+#
+#   - A Rust-native, strongly-typed message catalog (`i18n! { … }`).
+#   - Bundled locales (en/fr/es) that switch instantly + offline.
+#   - An opt-in (`lazy`) locale (ja) whose strings live in
+#     `locales/ja.json`, fetched on demand on web via the `net` loader.
+#   - SSG: `cargo run -p i18n-demo --example ssg` renders one static,
+#     fully-localized HTML document per locale (proving the SSR/SSG path).
+#
+# Run the interactive app on web with `idealyst dev --web examples/i18n-demo`.
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+# Enabled only by the CLI-generated runtime-server sidecar wrapper. Pulls
+# `dev-server` so `register_extensions_recorder` compiles against the
+# recorder backend. Never compiled for device/web targets.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+# `lazy-fetch` brings the ready-made network loader for the opt-in locale.
+i18n = { workspace = true, features = ["lazy-fetch"] }
+idea-ui = { workspace = true }
+runtime-core = { workspace = true }
+# Recorder backend for the runtime-server sidecar wrapper. Optional —
+# pulled in only by the `sidecar` feature (host-side build).
+dev-server = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# TEMP instrumentation: trace the opt-in loader path to the browser console.
+web-sys = { version = "0.3", features = ["console"] }
+
+[dev-dependencies]
+# The SSG example renders on the host against the SSR backend.
+backend-ssr = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "i18n Demo"
+bundle_id = "ai.truday.idealyst.i18n_demo"
+version   = "0.0.1"
+targets   = ["web"]

@@ -46,8 +46,9 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, derived, pressable, signal, switch, text, ui, ChildList, Element, IntoElement,
-    LayoutSubscription, Reactive, Ref, Signal, StyleApplication, VariantEnum, ViewHandle,
+    component, derived, pressable, signal, switch, text, ui, ChildList, Element, IdealystSchema,
+    IntoElement, LayoutSubscription, Reactive, Ref, Signal, StyleApplication, VariantEnum,
+    ViewHandle,
 };
 use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use std::time::Duration;
@@ -100,7 +101,7 @@ const MEASURED_CHROME_PX: f32 = 25.0;
 /// Adding new transition flavors lands here as new enum variants
 /// — components select stylesheets + animation strategies per
 /// variant inside, no per-app CSS knowledge required.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema)]
 pub enum CollapsibleTransition {
     /// No animation. State changes apply in one frame. Cheap and
     /// predictable; matches the `prefers-reduced-motion` user
@@ -123,9 +124,11 @@ pub enum CollapsibleTransition {
 
 /// Props for [`Collapsible`].
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct CollapsibleProps {
     /// Header text shown when both open and closed. `Reactive<String>` —
     /// a literal, a `Signal<String>`, or `rx!(...)` all work.
+    #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub title: Reactive<String>,
     /// Controlled open state. Default `false`. The host should pass
     /// its own signal so external triggers (an "Expand all" button,
@@ -143,6 +146,7 @@ pub struct CollapsibleProps {
     /// meaningful when `transition = Measured` (Snap is instant).
     /// Default [`COLLAPSIBLE_DURATION_DEFAULT_MS`] (240). See the
     /// constant docs for the chrome-vs-AV timing caveat.
+    #[schema(constraint = "milliseconds; keep near 240 to match baked chrome transitions")]
     pub duration_ms: u32,
     /// Body contents. Always mounted; visibility flows through the
     /// per-`transition` strategy (variant axis swap for `Snap`,
@@ -163,6 +167,8 @@ impl Default for CollapsibleProps {
     }
 }
 
+/// Renders a controlled disclosure section: a clickable header with an
+/// animated chevron above a body that expands/collapses per `transition`.
 #[component(children)]
 pub fn Collapsible(props: CollapsibleProps) -> Element {
     let container = CollapsibleContainer();
@@ -384,7 +390,7 @@ fn measured_body(value: Signal<bool>, duration_ms: u32, kids: Vec<Element>) -> E
 // =============================================================================
 
 /// Expansion policy for an [`Accordion`].
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, IdealystSchema)]
 pub enum AccordionExpand {
     /// Only one item open at a time. Opening item `i` closes any
     /// previously-open one; clicking the already-open item closes
@@ -398,12 +404,17 @@ pub enum AccordionExpand {
 
 /// One item in an [`Accordion`]. Constructed inline at the call site:
 /// `AccordionItem { title: "Shipping".into(), body: ui!{ ... } }`.
+#[derive(IdealystSchema)]
 pub struct AccordionItem {
+    /// Header text for this item. `Reactive<String>` — static or live.
+    #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub title: Reactive<String>,
+    /// The item's collapsible body content.
     pub body: Element,
 }
 
 /// Props for [`Accordion`].
+#[derive(IdealystSchema)]
 pub struct AccordionProps {
     /// Items rendered in order.
     pub items: Vec<AccordionItem>,
@@ -427,6 +438,7 @@ pub struct AccordionProps {
     /// Forwarded to every item's underlying Collapsible. Default
     /// [`COLLAPSIBLE_DURATION_DEFAULT_MS`] (240). See
     /// [`CollapsibleProps::duration_ms`].
+    #[schema(constraint = "milliseconds; keep near 240 to match baked chrome transitions")]
     pub duration_ms: u32,
     /// Fires after the Accordion mutates `open` in response to a
     /// click. Receives the index that was clicked and that item's
@@ -449,6 +461,9 @@ impl Default for AccordionProps {
     }
 }
 
+/// Renders a vertical stack of [`Collapsible`] sections from `items`,
+/// coordinating their open state per the `expand` policy (single- or
+/// multi-open) and reporting clicks via `on_change`.
 #[component]
 pub fn Accordion(props: AccordionProps) -> Element {
     let container_style = AccordionContainer();

@@ -1,0 +1,51 @@
+- generic [ref=e351]:
+  - generic [ref=e353]:
+    - button [ref=e354] [cursor=pointer]:
+      - img [ref=e355]
+    - generic [ref=e358]: LO
+    - generic [ref=e359]:
+      - generic [ref=e360]: Lena Ortiz
+      - generic [ref=e363]: Pre-op consult · progress · 2026-06-03
+  - generic [ref=e364]:
+    - generic [ref=e368]: Draft
+    - button "Edit details" [ref=e369] [cursor=pointer]:
+      - generic [ref=e370]:
+        - img [ref=e372]
+        - generic [ref=e374]: Edit details
+    - button "Sign" [ref=e376] [cursor=pointer]
+    - button "Delete" [ref=e377] [cursor=pointer]:
+      - generic [ref=e378]:
+        - img [ref=e380]
+        - generic [ref=e382]: Delete
+  - generic [ref=e383]:
+    - generic [ref=e384]:
+      - generic [ref=e385]:
+        - img [ref=e387]
+        - generic [ref=e390]: Live transcript
+      - generic [ref=e392]:
+        - generic [ref=e393]:
+          - generic [ref=e394]: Ready when you are.
+          - generic [ref=e395]: Start the visit
+          - generic [ref=e396]: and I'll listen.
+        - generic [ref=e397]: QuillEMR transcribes the conversation live, then drafts a structured note you can shape in seconds.
+        - button "Start recording" [ref=e398] [cursor=pointer]:
+          - generic [ref=e399]:
+            - img [ref=e401]
+            - generic [ref=e404]: Start recording
+        - generic [ref=e405]:
+          - button "Upload audio" [ref=e406] [cursor=pointer]:
+            - generic [ref=e407]:
+              - img [ref=e409]
+              - generic [ref=e411]: Upload audio
+          - button "Type / dictate" [ref=e412] [cursor=pointer]:
+            - generic [ref=e413]:
+              - img [ref=e415]
+              - generic [ref=e417]: Type / dictate
+    - generic [ref=e420]:
+      - generic [ref=e421]:
+        - img [ref=e423]
+        - generic [ref=e425]: Note
+      - generic [ref=e426]:
+        - img [ref=e428]
+        - generic [ref=e430]: Your note drafts itself here.
+        - generic [ref=e431]: End the visit and QuillEMR turns the conversation into a structured, editable note.

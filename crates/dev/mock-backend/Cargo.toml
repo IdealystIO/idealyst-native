@@ -67,4 +67,4 @@ stack-navigator = { workspace = true, features = ["runtime-server"] }
 tab-navigator = { workspace = true, features = ["runtime-server"] }
 # External-payload-over-wire round-trip test: `code_block(...)` is an
 # `Element::External` whose payload must serialize across the wire.
-idea-codeblock = { workspace = true }
+codeblock = { workspace = true }

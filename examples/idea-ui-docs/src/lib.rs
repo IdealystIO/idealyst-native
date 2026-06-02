@@ -63,12 +63,12 @@ mod styles;
 #[cfg(target_arch = "wasm32")]
 pub fn register_extensions(backend: &mut backend_web::WebBackend) {
     drawer_navigator::register(backend);
-    idea_codeblock::register(backend);
+    codeblock::register(backend);
     table::register(backend);
     backend_web::install_viewport_observer();
 }
 
-// On native, `idea_codeblock::register` and `table::register` are
+// On native, `codeblock::register` and `table::register` are
 // generic no-ops over any `Backend` — the SDKs build their node trees
 // directly from view + text primitives instead of via `Element::External`,
 // so there's nothing per-backend to install. The calls are kept for
@@ -78,21 +78,21 @@ pub fn register_extensions(backend: &mut backend_web::WebBackend) {
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
     drawer_navigator::register(backend);
-    idea_codeblock::register(backend);
+    codeblock::register(backend);
     table::register(backend);
 }
 
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
     drawer_navigator::register(backend);
-    idea_codeblock::register(backend);
+    codeblock::register(backend);
     table::register(backend);
 }
 
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
     drawer_navigator::register(backend);
-    idea_codeblock::register(backend);
+    codeblock::register(backend);
     table::register(backend);
 }
 
@@ -104,7 +104,7 @@ pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
 ))]
 pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
     drawer_navigator::register(backend);
-    idea_codeblock::register(backend);
+    codeblock::register(backend);
     table::register(backend);
 }
 
@@ -112,7 +112,7 @@ pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
 // fn name (not an overload of `register_extensions`) so it never
 // collides with the host target's per-backend overload above when both
 // compile in the sidecar build. Only the drawer navigator needs a
-// recording handler: `idea_codeblock` / `table` build their trees from
+// recording handler: `codeblock` / `table` build their trees from
 // view+text primitives on non-web backends (no `Element::External`), so
 // the recorder captures them as ordinary primitives — nothing to
 // register. Gated by `sidecar` (set only by the generated sidecar

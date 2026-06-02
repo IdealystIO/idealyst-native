@@ -77,6 +77,68 @@ pub fn ambient_navigator() -> Option<Rc<NavigatorControl>> {
     AMBIENT_NAV.with(|s| s.borrow().last().cloned())
 }
 
+// ---------------------------------------------------------------------------
+// Hierarchical base path — a nested navigator's URL prefix
+// ---------------------------------------------------------------------------
+//
+// Navigators form a tree; each owns a URL PREFIX (its "base"). The root's
+// base is empty. When a navigator mounts a screen, it pushes `base +
+// route.path()` here for the duration of building that screen's body, so a
+// child `Element::Navigator` nested in that screen reads its own base. Route
+// patterns are therefore RELATIVE to the navigator they're registered on; the
+// framework composes the full URL up the tree (`join_path`) and peels prefixes
+// down it (`match_prefix`). A single root navigator (base "") is unaffected:
+// `join_path("", p) == p`, so existing apps behave identically.
+
+thread_local! {
+    static NAV_BASE: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// RAII guard pushing the base prefix a nested navigator resolves relative
+/// to. Held by `mount_screen` while building a screen body.
+pub struct NavBaseGuard;
+
+impl NavBaseGuard {
+    pub fn push(base: String) -> Self {
+        NAV_BASE.with(|s| s.borrow_mut().push(base));
+        NavBaseGuard
+    }
+}
+
+impl Drop for NavBaseGuard {
+    fn drop(&mut self) {
+        NAV_BASE.with(|s| {
+            let _ = s.borrow_mut().pop();
+        });
+    }
+}
+
+/// The base prefix the navigator currently being built resolves its routes
+/// relative to. Empty (`""`) for the root navigator.
+pub fn current_nav_base() -> String {
+    NAV_BASE.with(|s| s.borrow().last().cloned().unwrap_or_default())
+}
+
+/// Join a base prefix with a (relative) route path into a full URL path,
+/// collapsing duplicate/empty slashes. `join_path("/encounters", "/abc") ==
+/// "/encounters/abc"`, `join_path("", "/today") == "/today"`,
+/// `join_path("/encounters", "") == "/encounters"`, `join_path("", "") == "/"`.
+pub fn join_path(base: &str, rel: &str) -> String {
+    let b = base.trim_end_matches('/');
+    let r = rel.trim_start_matches('/');
+    if r.is_empty() {
+        if b.is_empty() {
+            "/".to_string()
+        } else {
+            b.to_string()
+        }
+    } else if b.is_empty() {
+        format!("/{r}")
+    } else {
+        format!("{b}/{r}")
+    }
+}
+
 /// Snapshot of the ambient navigator context (nav control, screen
 /// state, screen route) at a point in the build. Reactive regions
 /// (`when`/`switch`/`for`) capture this when first built — inside the
@@ -281,15 +343,21 @@ pub struct MountResult<N> {
 // Path matching — pure-Rust matcher used by web + future SSR
 // ---------------------------------------------------------------------------
 
-/// Match `path` against `pattern`. Returns `Some(map)` if segment
-/// counts agree and every literal segment matches case-sensitively;
-/// `:placeholder` segments become entries in the returned map.
+/// Match `pattern` against the LEADING segments of `path`. Returns the
+/// extracted `:placeholder` segments plus the unconsumed remainder of
+/// `path` (a leading-slash string, or empty `""` when fully consumed).
+/// `None` when a literal segment differs or `path` has fewer segments
+/// than `pattern`.
 ///
-/// Trailing slashes are tolerated; empty path is treated as `/`.
-pub fn match_pattern(path: &str, pattern: &str) -> Option<HashMap<String, String>> {
+/// This is the hierarchical primitive: a parent navigator matches its
+/// route's pattern as a prefix and hands the `remainder` to the child
+/// navigator nested in that screen (which prefix-matches in turn). A
+/// full URL is resolved by peeling one prefix per level down the active
+/// navigator tree. Trailing slashes are tolerated; empty path = `/`.
+pub fn match_prefix(path: &str, pattern: &str) -> Option<(HashMap<String, String>, String)> {
     let path_segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let pat_segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
-    if path_segs.len() != pat_segs.len() {
+    if path_segs.len() < pat_segs.len() {
         return None;
     }
     let mut out = HashMap::new();
@@ -300,7 +368,101 @@ pub fn match_pattern(path: &str, pattern: &str) -> Option<HashMap<String, String
             return None;
         }
     }
-    Some(out)
+    let remainder_segs = &path_segs[pat_segs.len()..];
+    let remainder = if remainder_segs.is_empty() {
+        String::new()
+    } else {
+        format!("/{}", remainder_segs.join("/"))
+    };
+    Some((out, remainder))
+}
+
+/// Match `path` against `pattern` requiring a FULL match (no leftover
+/// segments). Returns `Some(map)` when segment counts agree and every
+/// literal segment matches case-sensitively; `:placeholder` segments
+/// become map entries. Thin wrapper over [`match_prefix`] that rejects
+/// any non-empty remainder.
+///
+/// Trailing slashes are tolerated; empty path is treated as `/`.
+pub fn match_pattern(path: &str, pattern: &str) -> Option<HashMap<String, String>> {
+    match match_prefix(path, pattern) {
+        Some((segs, remainder)) if remainder.is_empty() => Some(segs),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod matcher_tests {
+    use super::{join_path, match_pattern, match_prefix};
+
+    #[test]
+    fn join_path_composes_base_and_relative() {
+        assert_eq!(join_path("", "/today"), "/today"); // root base
+        assert_eq!(join_path("/encounters", "/abc"), "/encounters/abc");
+        assert_eq!(join_path("/encounters", ""), "/encounters"); // index
+        assert_eq!(join_path("", ""), "/");
+        assert_eq!(join_path("/encounters/", "abc"), "/encounters/abc"); // slash tolerance
+        // Round-trip: compose then peel returns the relative remainder.
+        let full = join_path("/encounters", "/abc");
+        let (_, rem) = match_prefix(&full, "/encounters").expect("base prefix");
+        assert_eq!(rem, "/abc");
+    }
+
+    fn seg(segs: &std::collections::HashMap<String, String>, k: &str) -> Option<String> {
+        segs.get(k).cloned()
+    }
+
+    #[test]
+    fn prefix_consumes_leading_segments_and_returns_remainder() {
+        // Parent navigator owns `/encounters`; the child sees `/abc`.
+        let (segs, rem) = match_prefix("/encounters/abc", "/encounters").expect("matches");
+        assert!(segs.is_empty());
+        assert_eq!(rem, "/abc");
+    }
+
+    #[test]
+    fn prefix_extracts_placeholder_and_remainder() {
+        let (segs, rem) = match_prefix("/encounters/abc/notes", "/encounters/:id").expect("matches");
+        assert_eq!(seg(&segs, "id").as_deref(), Some("abc"));
+        assert_eq!(rem, "/notes");
+    }
+
+    #[test]
+    fn prefix_full_match_has_empty_remainder() {
+        let (segs, rem) = match_prefix("/encounters/abc", "/encounters/:id").expect("matches");
+        assert_eq!(seg(&segs, "id").as_deref(), Some("abc"));
+        assert_eq!(rem, "");
+    }
+
+    #[test]
+    fn prefix_rejects_shorter_path_and_literal_mismatch() {
+        // Path shorter than pattern.
+        assert!(match_prefix("/encounters", "/encounters/:id").is_none());
+        // Literal segment differs.
+        assert!(match_prefix("/patients/abc", "/encounters/:id").is_none());
+    }
+
+    #[test]
+    fn pattern_requires_full_match() {
+        // Exact match: ok.
+        assert!(match_pattern("/encounters/abc", "/encounters/:id").is_some());
+        // Leftover segments: rejected (this is the pattern-vs-prefix distinction).
+        assert!(match_pattern("/encounters/abc/notes", "/encounters/:id").is_none());
+        assert!(match_pattern("/encounters/abc", "/encounters").is_none());
+    }
+
+    #[test]
+    fn two_level_descent() {
+        // Root drawer matches `/encounters` prefix; nested stack matches the rest.
+        let (root_segs, rem) = match_prefix("/encounters/abc", "/encounters").expect("root");
+        assert!(root_segs.is_empty());
+        // Child stack's detail route is `/encounters/:id` *relative to root base* —
+        // but the child only ever sees the remainder `/abc`, so its route pattern,
+        // expressed relative to the base, is matched against `/abc`.
+        let (child_segs, child_rem) = match_prefix(&rem, "/:id").expect("child");
+        assert_eq!(seg(&child_segs, "id").as_deref(), Some("abc"));
+        assert_eq!(child_rem, "");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -389,6 +551,11 @@ pub struct NavigatorControl {
     dispatch: RefCell<Option<Box<dyn Fn(NavCommand)>>>,
     depth: RefCell<usize>,
     nav_state: RefCell<Option<NavState>>,
+    /// This navigator's URL prefix in the hierarchy (empty for the root).
+    /// Route patterns are registered RELATIVE to this; `dispatch` composes
+    /// `base + cmd.url` into the full hierarchical path that chrome and the
+    /// platform URL see. Set once at build via [`set_base`](Self::set_base).
+    base: RefCell<String>,
     /// Optional SDK-installed link activation builder. Maps the
     /// triple `(route_name, url, params)` to a `NavCommand`. The
     /// `Link` primitive calls this on activation to pick the right
@@ -406,8 +573,21 @@ impl NavigatorControl {
             dispatch: RefCell::new(None),
             depth: RefCell::new(1),
             nav_state: RefCell::new(None),
+            base: RefCell::new(String::new()),
             link_activator: RefCell::new(None),
         }
+    }
+
+    /// Set this navigator's hierarchy base prefix. Called once at build
+    /// from the navigator walker with [`current_nav_base`]. Empty for the
+    /// root; e.g. `/encounters` for a stack nested under that drawer screen.
+    pub fn set_base(&self, base: String) {
+        *self.base.borrow_mut() = base;
+    }
+
+    /// This navigator's base prefix.
+    pub fn base(&self) -> String {
+        self.base.borrow().clone()
     }
 
     /// Wire the framework's reactive nav-state mirror. Called once
@@ -463,6 +643,13 @@ impl NavigatorControl {
     /// reactive nav-state mirror (for commands that change the active
     /// route) before forwarding to the SDK's installed dispatcher.
     pub fn dispatch(&self, cmd: NavCommand) {
+        // Compose this navigator's base prefix onto the command's
+        // (navigator-relative) url, so the nav-state mirror, chrome, and the
+        // platform URL all see the full hierarchical path. For the root
+        // navigator (base ""), `join_path("", url) == url` — a no-op, so a
+        // single-navigator app is unaffected.
+        let base = self.base.borrow().clone();
+        let cmd = self.compose_url(&base, cmd);
         // Update the active route/path signals before the SDK sees
         // the command, so any effect reading them re-fires while the
         // SDK is still committing the change. Pop and Custom don't
@@ -482,6 +669,25 @@ impl NavigatorControl {
         }
         if let Some(f) = self.dispatch.borrow().as_ref() {
             f(cmd);
+        }
+    }
+
+    /// Rebuild a command with `base + url` as its full hierarchical path.
+    fn compose_url(&self, base: &str, cmd: NavCommand) -> NavCommand {
+        match cmd {
+            NavCommand::Push { name, url, params, state } => {
+                NavCommand::Push { name, url: join_path(base, &url), params, state }
+            }
+            NavCommand::Replace { name, url, params, state } => {
+                NavCommand::Replace { name, url: join_path(base, &url), params, state }
+            }
+            NavCommand::Reset { name, url, params, state } => {
+                NavCommand::Reset { name, url: join_path(base, &url), params, state }
+            }
+            NavCommand::Select { name, url, params, state } => {
+                NavCommand::Select { name, url: join_path(base, &url), params, state }
+            }
+            other => other,
         }
     }
 }
@@ -698,6 +904,17 @@ pub fn set_initial_path(path: Option<String>) {
 /// navigator walker at initial mount.
 pub fn take_initial_path() -> Option<String> {
     INITIAL_PATH.with(|p| p.borrow_mut().take())
+}
+
+/// Non-consuming PEEK of the headless initial-path override. Unlike
+/// [`take_initial_path`], this clones and leaves the slot intact so that
+/// EACH navigator in a synchronous (native/SSR) initial-mount cascade can
+/// independently consult the same full deep-link URL and strip its own
+/// base. The root navigator (detected via `current_nav_base().is_empty()`)
+/// clears the slot with `set_initial_path(None)` once its whole subtree —
+/// including any nested navigators — has finished mounting.
+pub fn peek_initial_path() -> Option<String> {
+    INITIAL_PATH.with(|p| p.borrow().clone())
 }
 
 // ---------------------------------------------------------------------------

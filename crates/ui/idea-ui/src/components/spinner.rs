@@ -8,12 +8,16 @@
 //! closed-enum [`crate::components::spinner`].
 
 use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
-use runtime_core::{component, ui, Element, VariantEnum};
+use runtime_core::{component, ui, Element, IdealystSchema, VariantEnum};
 
+/// Size knob for the [`Spinner`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(IdealystSchema)]
 pub enum SpinnerSize {
+    /// Compact spinner. The default.
     #[default]
     Small,
+    /// Larger spinner for prominent loading states.
     Large,
 }
 
@@ -31,10 +35,14 @@ impl VariantEnum for SpinnerSize {
 
 #[derive(Default)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct SpinnerProps {
+    /// Spinner scale (`Small`/`Large`). Default `Small`.
     pub size: SpinnerSize,
 }
 
+/// Renders an indeterminate loading spinner — a thin passthrough to the
+/// framework's `activity_indicator` primitive with a small/large size knob.
 #[component]
 pub fn Spinner(props: &SpinnerProps) -> Element {
     let native = match props.size {

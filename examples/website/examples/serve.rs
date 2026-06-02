@@ -71,7 +71,7 @@ fn main() {
             // and the bundle hydrates by adoption: navigator chrome +
             // the code-block external (server-rendered `<pre>`).
             drawer_navigator::chrome::register(b);
-            idea_codeblock::register(b);
+            codeblock::register(b);
         },
         website::app,
     )

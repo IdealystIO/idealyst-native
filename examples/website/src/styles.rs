@@ -676,7 +676,7 @@ stylesheet! {
 }
 
 // =============================================================================
-// Code panel — wraps an `idea-codeblock` so it sits on a neutral
+// Code panel — wraps an `codeblock` so it sits on a neutral
 // surface card with monospace font + comfortable padding.
 // =============================================================================
 

@@ -107,6 +107,49 @@ thread_local! {
     /// the runtime-core slot zero-sized.
     static DROP_DEFERRAL: std::cell::Cell<Option<fn(Vec<Box<dyn Any>>)>> =
         const { std::cell::Cell::new(None) };
+
+    /// Re-entrancy depth of in-flight *mutating* reactive operations on
+    /// this thread: a running effect body, or a `with_signal_mut`
+    /// window (which TAKES a signal's box out of the arena, leaving its
+    /// slot `None` for the duration). While nonzero, the reactive arena
+    /// is in an intermediate state — a signal slot may be absent, an
+    /// effect's dep recording may be half-done.
+    ///
+    /// A deferred callback (a scope-anchored `raf_loop`/`after_ms` whose
+    /// browser frame the OS dispatched during this window) that touched
+    /// a signal now would panic: either "signal used after its scope was
+    /// dropped" (the taken slot reads `None`) or corrupt the in-flight
+    /// effect's dep set. The scope-anchored scheduling helpers consult
+    /// [`is_reactive_busy`] and skip the offending invocation, re-arming
+    /// on the next frame instead. See `crates/runtime/core/src/scheduling.rs`.
+    static REACTIVE_BUSY: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// `true` when a mutating reactive operation (an effect body or a
+/// `with_signal_mut` window) is in flight on this thread. Scope-anchored
+/// scheduling callbacks read this to avoid re-entering the reactive arena
+/// while it's mid-mutation — see the `REACTIVE_BUSY` thread-local doc and
+/// the teardown-race regression in `scheduling_scoped.rs`.
+pub fn is_reactive_busy() -> bool {
+    REACTIVE_BUSY.with(|c| c.get()) > 0
+}
+
+/// RAII guard that bumps [`REACTIVE_BUSY`] for the lifetime of a mutating
+/// reactive window. Drop runs on unwind too, so a panic inside the window
+/// doesn't leave the counter stuck high.
+struct ReactiveBusyGuard;
+
+impl ReactiveBusyGuard {
+    fn enter() -> Self {
+        REACTIVE_BUSY.with(|c| c.set(c.get() + 1));
+        ReactiveBusyGuard
+    }
+}
+
+impl Drop for ReactiveBusyGuard {
+    fn drop(&mut self) {
+        REACTIVE_BUSY.with(|c| c.set(c.get().saturating_sub(1)));
+    }
 }
 
 /// Install a backend-specific deferred-drop policy that `Scope::drop` will
@@ -1284,6 +1327,14 @@ fn with_signal_mut<T: 'static, R>(id: SignalId, f: impl FnOnce(&mut SignalInner<
     // popped from that free-list — so a signal created inside `f` can
     // never grab this slot. (Re-entrant access to *this same* signal
     // inside `f` is the one unsupported case; the slot reads as `None`.)
+    // Mark the arena as mid-mutation for the take/run/restore window.
+    // The signal's slot reads `None` until we restore it; a deferred
+    // scope-anchored callback that fires during this window must NOT
+    // touch a signal (its slot may be the one we took, or another
+    // effect's dep recording may be half-done). `is_reactive_busy`
+    // exposes this so those callbacks skip + re-arm. The guard's Drop
+    // runs even if `f` panics, so the busy count can't get stuck.
+    let _busy = ReactiveBusyGuard::enter();
     let mut boxed = ARENA.with(|a| {
         a.borrow_mut()
             .signals
@@ -1489,6 +1540,10 @@ fn run_effect(id: EffectId) {
     // unintentional A↔B cycle produces a useful error instead of a stack
     // overflow.
     let (_depth_guard, depth) = DepthGuard::enter();
+    // Effect bodies mutate the arena (dep recording, signal writes); a
+    // deferred scope-anchored callback dispatched during this window
+    // must skip rather than re-enter. See `is_reactive_busy`.
+    let _busy = ReactiveBusyGuard::enter();
     if depth > MAX_EFFECT_DEPTH {
         panic!(
             "effect run depth exceeded {} — likely a mutual signal/effect cycle. \

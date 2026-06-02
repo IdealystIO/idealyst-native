@@ -1,0 +1,11 @@
+error: placeholder `{nmae}` has no matching argument in `greeting(name)`
+ --> tests/ui/bad_placeholder.rs:9:17
+  |
+9 |             En: "Hello, {nmae}",
+  |                 ^^^^^^^^^^^^^^^
+
+error: argument `name` is never used in the default (`en`) translation of message `greeting`
+ --> tests/ui/bad_placeholder.rs:8:18
+  |
+8 |         greeting(name) {
+  |                  ^^^^

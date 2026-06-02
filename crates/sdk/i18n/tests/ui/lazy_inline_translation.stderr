@@ -1,0 +1,5 @@
+error: `Ja` is a `lazy` (opt-in) locale; its strings come from a fetched pack, so remove this inline translation
+  --> tests/ui/lazy_inline_translation.rs:11:13
+   |
+11 |             Ja: "やあ",
+   |             ^^

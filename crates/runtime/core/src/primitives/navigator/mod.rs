@@ -29,10 +29,11 @@ pub use host::{NavigatorHandler, NavigatorHost};
 pub use registry::{NavigatorHandlerFactory, NavigatorRegistry, RegisterNavigator};
 pub use scroll::{ambient_scroll_context, ScrollContext};
 pub use shared::{
-    ambient_navigator, capture_ambient_nav_context, current_screen_route, current_screen_state,
-    enable_route_collector, match_pattern, record_routes, set_initial_path, take_initial_path,
+    ambient_navigator, capture_ambient_nav_context, current_nav_base, current_screen_route,
+    current_screen_state, enable_route_collector, join_path, match_pattern, match_prefix,
+    peek_initial_path, record_routes, set_initial_path, take_initial_path,
     take_route_collector, use_focus, AmbientNavContext, AmbientNavContextGuard, AmbientNavGuard,
-    MountResult, NavCommand, NavState, NavigatorConfig, NavigatorControl, NavigatorHandle,
-    NavigatorOps, ParamsFromSegments, Route, RouteEntry, RouteParams, Screen, ScreenBuilder,
-    ScreenRouteGuard, ScreenStateGuard,
+    MountResult, NavBaseGuard, NavCommand, NavState, NavigatorConfig, NavigatorControl,
+    NavigatorHandle, NavigatorOps, ParamsFromSegments, Route, RouteEntry, RouteParams, Screen,
+    ScreenBuilder, ScreenRouteGuard, ScreenStateGuard,
 };

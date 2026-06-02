@@ -13,13 +13,17 @@
 //! }
 //! ```
 
-use runtime_core::{component, ui, Element};
+use runtime_core::{component, ui, Element, IdealystSchema};
 
 use crate::stylesheets::Spacer as SpacerStyle;
 
-#[derive(Default)]
+/// Props for [`Spacer`]. None — the component is configuration-free.
+#[derive(Default, IdealystSchema)]
 pub struct SpacerProps;
 
+/// An empty `flex-grow: 1` item. Drop it between siblings in a row/
+/// column `Stack` to push them to opposite ends without computing
+/// margins.
 #[component]
 pub fn Spacer(_props: &SpacerProps) -> Element {
     let style = SpacerStyle();

@@ -1,0 +1,86 @@
+[package]
+name = "biometrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform **biometric authentication** — the raw "prove the device
+# owner is present" capability, backed by each platform's real biometric
+# facility, refusing loudly where no such facility exists rather than
+# faking a gate:
+#   - iOS / macOS : LocalAuthentication (LAContext) — Face ID / Touch ID
+#   - Android     : android.hardware.biometrics.BiometricPrompt (framework,
+#                   no androidx) + BiometricManager availability (JNI)
+#   - Windows      : Windows Hello (UserConsentVerifier, WinRT)
+#   - web          : WebAuthn — navigator.credentials.get with
+#                   userVerification="required" (a passkey assertion the
+#                   SERVER verifies; there is no local-only browser gate)
+#   - Linux / other: ERRORS — no standard biometric API. Returns
+#                   BioError::Unsupported with guidance.
+#
+# This is the auth-GATE half of the picture; pair it with the `credentials`
+# crate when you want a biometric-protected *secret* (a Keychain/Keystore
+# ACL). This crate deliberately stays unopinionated about what the gate
+# guards — it just establishes "the user authenticated."
+#
+# Async on purpose: every native biometric API presents a system prompt and
+# resolves later, so `authenticate()` returns a future. The completion
+# callback/block is bridged to the future over a `futures-channel` oneshot.
+
+[dependencies]
+
+# iOS / macOS: LAContext.evaluatePolicy is block-based; bridge it to the
+# returned future with a oneshot. `objc2`/`block2` pinned to the workspace
+# versions (backend-ios-mobile / backend-macos use 0.5 / 0.2).
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSError"] }
+block2 = "0.5"
+futures-channel = "0.3"
+
+# Android: framework BiometricPrompt + BiometricManager via JNI. The
+# AuthenticationCallback is delivered by a Kotlin shim (RustBiometricPrompt,
+# shipped via [package.metadata.idealyst.android].runtime_kotlin) that
+# trampolines back into the `nativeResult` export in android.rs.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+futures-channel = "0.3"
+
+# The Kotlin shim that subclasses BiometricPrompt.AuthenticationCallback and
+# trampolines results back to `Java_io_idealyst_biometrics_RustBiometricPrompt_nativeResult`.
+# `idealyst run android` discovers and compiles it from this declaration.
+[package.metadata.idealyst.android]
+runtime_kotlin = ["runtime/kotlin/io/idealyst/biometrics/RustBiometricPrompt.kt"]
+
+# Windows: Windows Hello via WinRT UserConsentVerifier. The Win32 desktop
+# variant requires the foreground HWND (interop), so pull the Win32 window
+# APIs alongside the WinRT surface.
+[target.'cfg(target_os = "windows")'.dependencies]
+futures-channel = "0.3"
+windows = { version = "0.58", features = [
+    "Security_Credentials_UI",
+    "Foundation",
+    "Win32_Foundation",
+    "Win32_System_WinRT",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+
+# web: WebAuthn assertion ceremony via `navigator.credentials.get`.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Navigator",
+    "CredentialsContainer",
+    "Credential",
+    "CredentialRequestOptions",
+    "PublicKeyCredential",
+    "PublicKeyCredentialType",
+    "AuthenticatorAssertionResponse",
+    "AuthenticationExtensionsClientOutputs",
+    "Location",
+] }

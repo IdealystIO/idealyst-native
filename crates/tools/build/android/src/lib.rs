@@ -341,8 +341,8 @@ fn generate_wrapper(
     // wrapper calls each SDK's `register` via
     // `attach_with_url_with_register`. Mirrors the per-app web wrapper's
     // `register_extensions` and the iOS `backend-ios-rs-shell`.
-    let drawer_navigator_dep = source.dep("crates/sdk/drawer-navigator", &[]);
-    let idea_codeblock_dep = source.dep("crates/sdk/idea-codeblock", &[]);
+    let drawer_navigator_dep = source.dep("crates/sdk/navigators/drawer", &[]);
+    let codeblock_dep = source.dep("crates/sdk/codeblock", &[]);
     let table_dep = source.dep("crates/sdk/table", &[]);
 
     let cargo_toml = match mode {
@@ -415,7 +415,7 @@ backend-android-mobile = {bandroid_dep}
 # registers them on the RS client backend via
 # `attach_with_url_with_register`.
 drawer-navigator = {drawer_navigator_dep}
-idea-codeblock = {idea_codeblock_dep}
+codeblock = {codeblock_dep}
 table = {table_dep}
 jni = "0.21"
 log = "0.4"
@@ -423,7 +423,7 @@ log = "0.4"
             fcore_dep = fcore_dep,
             bandroid_dep = bandroid_aas_dep,
             drawer_navigator_dep = drawer_navigator_dep,
-            idea_codeblock_dep = idea_codeblock_dep,
+            codeblock_dep = codeblock_dep,
             table_dep = table_dep,
         ),
     };
@@ -440,7 +440,7 @@ log = "0.4"
 #![cfg(target_os = "android")]
 
 use backend_android::AndroidBackend;
-use jni::objects::{{JClass, JObject}};
+use jni::objects::{{JClass, JObject, JString}};
 use jni::JNIEnv;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -554,6 +554,30 @@ pub extern "system" fn Java_{jni}_NativeBridge_notifyConfigChanged<'local>(
 ) {{
     backend_android::notify_config_changed();
 }}
+
+/// Cold-start deep-link trampoline. `MainActivity.onCreate` calls this
+/// with the launch `Intent`'s data-URI PATH (e.g. `/encounters/abc`)
+/// BEFORE `attach`, so the navigator walker's synchronous initial mount
+/// resolves the deep-linked screen and reconstructs the back stack. When
+/// the Activity launched without a `VIEW`/app-link intent, the Java side
+/// never calls this and behavior is unchanged.
+#[no_mangle]
+pub extern "system" fn Java_{jni}_NativeBridge_setLaunchPath<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    path: JString<'local>,
+) {{
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{
+        // `get_string` errors on a null jstring, so this also handles the
+        // "no deep link" case where Java passes null.
+        if let Ok(js) = env.get_string(&path) {{
+            let s = js.to_str().unwrap_or("").to_string();
+            if !s.is_empty() {{
+                runtime_core::set_initial_path(Some(s));
+            }}
+        }}
+    }}));
+}}
 "#,
             lib = manifest.lib_name,
             jni = jni_package,
@@ -601,7 +625,7 @@ pub extern "system" fn Java_{jni}_NativeBridge_attachRuntimeServerUrl<'local>(
         // wrapper's `register_extensions`.
         fn register_first_party_sdks(backend: &mut backend_android::AndroidBackend) {{
             drawer_navigator::register(backend);
-            idea_codeblock::register(backend);
+            codeblock::register(backend);
             table::register(backend);
         }}
         backend_android::runtime_server::attach_with_url_with_register(

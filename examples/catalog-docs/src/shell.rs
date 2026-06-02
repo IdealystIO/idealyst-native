@@ -148,7 +148,7 @@ fn sidebar_entry_link(entry: &Entry, active_path: runtime_core::Signal<String>) 
 
 // =============================================================================
 // CodePanel — theme-aware syntax-highlighted code block (lifted from
-// idea-ui-docs). Renders usage snippets through idea-codeblock.
+// idea-ui-docs). Renders usage snippets through codeblock.
 // =============================================================================
 
 #[derive(Default)]
@@ -266,7 +266,7 @@ pub fn CodePanel(props: &CodePanelProps) -> Element {
         let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
         let spans = highlight(&src, palette);
         let code_style = move || StyleApplication::new(CodeText::sheet());
-        idea_codeblock::code_block(spans).with_style(code_style).into_element()
+        codeblock::code_block(spans).with_style(code_style).into_element()
     });
     ui! { view(style = panel_style) { dynamic } }
 }
@@ -508,6 +508,10 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
             if !entry.animations.is_empty() {
                 animations_section(entry)
             }
+            // Usage recipes (components).
+            if !entry.recipes.is_empty() {
+                recipes_section(entry)
+            }
         }
     })
 }
@@ -660,6 +664,38 @@ fn animations_section(entry: &Entry) -> Element {
     ui! {
         Section(title = "Animations".to_string()) {
             Table { rows }
+        }
+    }
+}
+
+fn recipes_section(entry: &Entry) -> Element {
+    let recipes = entry.recipes.clone();
+    ui! {
+        Section(title = "Recipes".to_string()) {
+            for recipe in recipes {
+                recipe_card(recipe)
+            }
+        }
+    }
+}
+
+fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
+    // Pretty-print the recipe fn name (`button_basic` → "Button basic")
+    // for the card heading; primary recipes get a tag so authors can
+    // tell the canonical example apart from incidental `uses` mentions.
+    let title = recipe.name.replace('_', " ");
+    let heading = if recipe.primary { format!("{} · primary", title) } else { title };
+    let docs = recipe.docs.clone();
+    let source = recipe.source.clone();
+    ui! {
+        Card {
+            Stack(gap = StackGap::Sm) {
+                Typography(content = heading, kind = typography_kind::H3)
+                if !docs.is_empty() {
+                    markdown(&docs)
+                }
+                CodePanel(src = source)
+            }
         }
     }
 }

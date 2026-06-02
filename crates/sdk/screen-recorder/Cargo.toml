@@ -1,0 +1,101 @@
+[package]
+name = "screen-recorder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform screen / window recording SDK.
+#
+# One small capability — `ScreenRecorder::start(config).await` — that
+# establishes a live frame stream from the screen, a window, or this
+# app on each target using the platform's own capture stack, and fires
+# a raw `VideoFrame` callback for each captured frame.
+#
+# Deliberately unopinionated, exactly like the `microphone` SDK: it
+# hands you raw frames and gets out of the way. **It never writes a
+# file** — encoding to mp4/webm, muxing audio, and persisting to disk
+# are the job of a separate higher-level crate that layers on top of
+# this one. This crate's only output is the frame callback.
+#
+#   - iOS:                 ReplayKit (RPScreenRecorder.startCapture) → CMSampleBuffer
+#   - Android:             MediaProjection + VirtualDisplay + ImageReader (JNI)
+#   - macOS:               ScreenCaptureKit (SCStream + SCContentFilter)
+#   - Windows:             Windows.Graphics.Capture (Direct3D11CaptureFramePool)
+#   - Linux:               xdg-desktop-portal ScreenCast + PipeWire
+#   - web (wasm32):        getDisplayMedia + MediaStreamTrackProcessor / canvas pump
+#
+# A second, optional feature — the `private_layer` `Element::External` —
+# designates an overlay subtree that screen recordings DON'T capture
+# (the iOS "overlay on a separate UIWindow" trick, generalized to every
+# backend). It rides the framework's existing third-party-extension
+# mechanism (`Element::External` + per-backend `ExternalRegistry`), so
+# it needs zero framework-core changes.
+#
+# # Required platform permissions (the app declares these — see README):
+#   - iOS:     RPScreenRecorder prompts; broadcast extension for system-wide
+#   - macOS:   Screen Recording TCC permission (system prompt)
+#   - Android: <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
+#              + the MediaProjection consent dialog (re-prompts each session on 14+)
+#   - web:     none (the browser shows the source picker on getDisplayMedia)
+
+# Declares the platform permission this SDK needs. The CLI walks the app's
+# dependency graph, finds this, and injects the right per-platform artifacts.
+[package.metadata.idealyst]
+capabilities = ["screen_capture"]
+
+[dependencies]
+# Only needed for the `private_layer` Element::External component + its
+# `register()`. The capture capability itself is framework-agnostic.
+runtime-core = { workspace = true }
+thiserror = "1"
+
+# Web capture: getDisplayMedia → a hidden <video> → <canvas> pixel pump.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Navigator",
+    "MediaDevices",
+    "MediaStream",
+    "MediaStreamTrack",
+    "DisplayMediaStreamConstraints",
+    "Document",
+    "Element",
+    "HtmlMediaElement",
+    "HtmlVideoElement",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "ImageData",
+    "Performance",
+    "DomException",
+] }
+
+# ---------------------------------------------------------------------------
+# Per-platform capture deps are added as each backend is implemented. The
+# skeleton compiles with none of them (every `imp` module is a stub). The
+# planned dep set per target, for reference when filling them in:
+#
+# [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+# objc2, objc2-foundation, block2, dispatch2, futures-channel   # ReplayKit
+#
+# [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+# objc2, objc2-foundation, block2, dispatch2, futures-channel   # ScreenCaptureKit
+#
+# [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+# jni, ndk-context, futures-channel                             # MediaProjection
+# # [package.metadata.idealyst.android] runtime_kotlin = ["android/ScreenRecorder.kt"]
+#
+# [target.'cfg(target_os = "windows")'.dependencies]
+# windows = { features = ["Graphics_Capture", "Graphics_DirectX_Direct3D11", ...] }
+#
+# [target.'cfg(target_os = "linux")'.dependencies]
+# ashpd, pipewire                                               # xdg portal
+#
+# [target.'cfg(target_arch = "wasm32")'.dependencies]
+# js-sys, wasm-bindgen, wasm-bindgen-futures, web-sys           # getDisplayMedia
+# ---------------------------------------------------------------------------
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

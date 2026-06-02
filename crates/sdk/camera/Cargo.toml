@@ -1,0 +1,96 @@
+[package]
+name = "camera"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform camera capture SDK — the video sibling of `microphone`.
+#
+# One small API — `Camera::open(config, |frame| { .. }).await` — that
+# establishes a live capture stream on each target using the platform's
+# own camera stack, and fires a raw callback with each frame of pixels
+# (normalized to tightly-packed RGBA8). Deliberately unopinionated: it
+# hands you frames and gets out of the way. Preview surfaces, encoding,
+# recording, and state-binding are left to higher-level SDKs / the app.
+#
+#   - web (wasm32):     getUserMedia + a <video>/<canvas> frame pump
+#   - iOS / macOS:      AVCaptureSession + AVCaptureVideoDataOutput
+#   - Android:          Camera2 + ImageReader via JNI on a worker thread
+#   - desktop Linux/Win: not yet implemented (returns Unsupported)
+#
+# The platform-agnostic shell (Camera / CameraStream / VideoFrame,
+# CameraConfig / CameraFacing, CameraError, the FrameCallback bound) lives
+# in this crate's top-level modules. Each cfg-gated module supplies one
+# backend.
+#
+# Required platform permissions (the app must declare these — see README):
+#   - iOS / macOS: `NSCameraUsageDescription` in Info.plist
+#   - Android:     `<uses-permission android:name="android.permission.CAMERA"/>`
+#   - web:         none (the browser prompts on getUserMedia)
+
+# Declares the platform permission this SDK needs. The CLI walks the app's
+# dependency graph, finds this, and injects the right artifacts per platform
+# (iOS/macOS NSCameraUsageDescription + entitlement, Android CAMERA). The
+# app supplies the user-facing reason via
+# [package.metadata.idealyst.app.permissions] camera = "…".
+[package.metadata.idealyst]
+capabilities = ["camera"]
+
+[dependencies]
+thiserror = "1"
+
+# iOS / macOS: AVFoundation capture, driven through the Obj-C runtime
+# (objc2 msg_send + a declared AVCaptureVideoDataOutputSampleBufferDelegate
+# subclass), the same way the `net` SDK drives NSURLSession. No typed
+# framework crate — we link AVFoundation/CoreMedia/CoreVideo directly and
+# call the C surface for the CVPixelBuffer bytes.
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString"] }
+block2 = "0.5"
+# Bridges AVCaptureDevice's `requestAccessForMediaType:` completion block to
+# async — same callback→future pattern `microphone` uses for AVAudioSession.
+futures-channel = "0.3"
+
+# Web (wasm) target: getUserMedia for the MediaStream, an offscreen
+# <canvas> to pull RGBA pixels out of each <video> frame.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Navigator",
+    "Document",
+    "MediaDevices",
+    "MediaStream",
+    "MediaStreamConstraints",
+    "MediaStreamTrack",
+    "MediaTrackConstraints",
+    "HtmlVideoElement",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "ImageData",
+    "Element",
+    "EventTarget",
+] }
+
+# Android target: Camera2 + ImageReader, driven by a Kotlin shim that
+# trampolines frames back through JNI. `ndk-context` exposes the host
+# JavaVM + Activity (for the runtime permission request), mirroring the
+# `microphone`/`biometrics` SDKs.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+# Hands the camera-open result (success / permission-denied / open failure)
+# back from the shim's lifecycle callbacks to the awaiting `open()`.
+futures-channel = "0.3"
+
+# The Kotlin shim that drives Camera2 + ImageReader and trampolines frames
+# back to the `Java_io_idealyst_camera_RustCamera2Helper_native*` exports in
+# android.rs. `idealyst run android` discovers and compiles it from here.
+[package.metadata.idealyst.android]
+runtime_kotlin = ["runtime/kotlin/io/idealyst/camera/RustCamera2Helper.kt"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

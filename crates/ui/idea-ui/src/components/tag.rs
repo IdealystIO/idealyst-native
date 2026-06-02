@@ -24,17 +24,20 @@
 
 use std::rc::Rc;
 
-use runtime_core::{component, ui, IntoElement, Element, Reactive, StyleApplication};
+use runtime_core::{component, ui, IdealystSchema, IntoElement, Element, Reactive, StyleApplication};
 
 use idea_theme::extensible::{installed_tag_sheet, tone, variant, ToneRef, VariantRef};
 
 use crate::stylesheets::{TagClose, TagLabel};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct TagProps {
     /// Tag text. `Reactive<String>` — static or live (signal/`rx!`).
     pub label: Reactive<String>,
+    /// Semantic color palette. Default Neutral.
     pub tone: ToneRef,
+    /// Surface treatment (Soft, Filled, Outline, …). Default Soft.
     pub variant: VariantRef,
     /// When `Some`, a close button renders to the right of the label.
     pub on_remove: Option<Rc<dyn Fn()>>,
@@ -51,6 +54,8 @@ impl Default for TagProps {
     }
 }
 
+/// Renders a tone/variant-styled pill containing `label`, with an
+/// optional close button (when `on_remove` is set) to its right.
 #[component]
 pub fn Tag(props: &TagProps) -> Element {
     let label = props.label.clone();

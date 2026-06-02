@@ -214,7 +214,7 @@ fn type_short_name(ty: &syn::Type) -> Option<String> {
 /// them with `\n` separators. Returns an empty string literal when
 /// the fn has no doc comments. Output is a string literal token, ready
 /// to drop into the `inventory::submit!` body.
-fn collect_doc_comments(attrs: &[syn::Attribute]) -> proc_macro2::TokenStream {
+pub(crate) fn collect_doc_comments(attrs: &[syn::Attribute]) -> proc_macro2::TokenStream {
     let mut lines: Vec<String> = Vec::new();
     for attr in attrs {
         if !attr.path().is_ident("doc") {
@@ -244,7 +244,7 @@ fn collect_doc_comments(attrs: &[syn::Attribute]) -> proc_macro2::TokenStream {
 /// recurses into the rest of the block, so multiple `ui!` calls,
 /// `ui!` inside `let`-RHS, inside closures, and `Stmt::Macro` at
 /// statement position are all caught.
-fn collect_composes(block: &syn::Block) -> Vec<(String, u32)> {
+pub(crate) fn collect_composes(block: &syn::Block) -> Vec<(String, u32)> {
     let mut v = ComposeCollector { edges: Vec::new() };
     v.visit_block(block);
     v.edges

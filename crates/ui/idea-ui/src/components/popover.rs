@@ -40,11 +40,12 @@ use std::rc::Rc;
 
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
-use runtime_core::{component, ui, ChildList, Element};
+use runtime_core::{component, ui, ChildList, Element, IdealystSchema};
 
 use crate::stylesheets::Popover as PopoverStyle;
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct PopoverProps {
     /// The element to anchor against. Construct via
     /// `AnchorTarget::from(some_ref)` where `some_ref` is a `Ref<H>`
@@ -57,9 +58,13 @@ pub struct PopoverProps {
     /// Alignment along the anchor's edge. Default: `ElementAlign::Start`.
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub align: ElementAlign,
-    /// Gap in pixels between the anchor and the popover.
+    /// Gap in pixels between the anchor and the popover. Default 4.
+    #[schema(constraint = "pixels, >= 0")]
     pub offset: f32,
+    /// Fires on Escape (and any host-wired click-outside). Flip your
+    /// open-state signal here.
     pub on_dismiss: Option<Rc<dyn Fn()>>,
+    /// Popover surface contents.
     pub children: Vec<Element>,
 }
 
@@ -76,6 +81,8 @@ impl Default for PopoverProps {
     }
 }
 
+/// Renders a scrim-less surface anchored to `target`, holding the
+/// composed children; the page behind stays interactive.
 #[component(children)]
 pub fn Popover(props: PopoverProps) -> Element {
     let target = props

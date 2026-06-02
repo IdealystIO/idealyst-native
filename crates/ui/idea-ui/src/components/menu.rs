@@ -32,8 +32,8 @@ use std::rc::Rc;
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
-    component, signal, ui, ChildList, IntoElement, PressableHandle, Element, Reactive, Ref, Signal,
-    StyleApplication,
+    component, signal, ui, ChildList, IdealystSchema, IntoElement, PressableHandle, Element,
+    Reactive, Ref, Signal, StyleApplication,
 };
 
 use crate::stylesheets::{MenuChevron, MenuItemRow, MenuLabel as MenuLabelStyle, MenuSeparator as MenuSeparatorStyle, SelectMenu, Spacer};
@@ -56,16 +56,24 @@ fn panel(children: Vec<Element>) -> Element {
 // =============================================================================
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct MenuProps {
     /// Element to anchor against — `AnchorTarget::from(some_ref)`.
+    /// Required; the component panics if `None`.
     pub target: Option<AnchorTarget>,
     /// Fires on click-outside / Escape; flip your open-state signal.
     pub on_dismiss: Option<Rc<dyn Fn()>>,
+    /// Which side of the anchor the panel opens toward. Default `Below`.
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub side: ElementSide,
+    /// Alignment along the anchor's edge. Default `Start`.
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub align: ElementAlign,
+    /// Gap in pixels between the anchor and the panel. Default 4.
+    #[schema(constraint = "pixels, >= 0")]
     pub offset: f32,
+    /// Panel contents — compose [`MenuItem`], [`MenuLabel`],
+    /// [`MenuSeparator`], and [`SubMenu`] children.
     pub children: Vec<Element>,
 }
 
@@ -82,6 +90,8 @@ impl Default for MenuProps {
     }
 }
 
+/// Renders an anchored, backdrop-less command panel containing the
+/// composed menu children, positioned relative to `target`.
 #[component(children)]
 pub fn Menu(props: MenuProps) -> Element {
     let target = props
@@ -110,8 +120,10 @@ pub fn Menu(props: MenuProps) -> Element {
 // =============================================================================
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct MenuItemProps {
     /// Row label. `Reactive<String>` — static or live.
+    #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub label: Reactive<String>,
     /// Fires when the row is chosen. Typically also closes the menu.
     pub on_select: Rc<dyn Fn()>,
@@ -137,6 +149,8 @@ impl Default for MenuItemProps {
     }
 }
 
+/// Renders one selectable menu row: optional leading element, label,
+/// and optional right-pushed trailing element, in a pressable.
 #[component]
 pub fn MenuItem(props: MenuItemProps) -> Element {
     let active = props.active;
@@ -165,7 +179,10 @@ pub fn MenuItem(props: MenuItemProps) -> Element {
 // =============================================================================
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct MenuLabelProps {
+    /// Section-heading text. `Reactive<String>` — static or live.
+    #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub text: Reactive<String>,
 }
 impl Default for MenuLabelProps {
@@ -174,12 +191,14 @@ impl Default for MenuLabelProps {
     }
 }
 
+/// Renders a non-interactive section heading inside a menu panel.
 #[component]
 pub fn MenuLabel(props: MenuLabelProps) -> Element {
     ui! { text(style = MenuLabelStyle()) { props.text.clone() } }
 }
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct MenuSeparatorProps {}
 impl Default for MenuSeparatorProps {
     fn default() -> Self {
@@ -187,6 +206,7 @@ impl Default for MenuSeparatorProps {
     }
 }
 
+/// Renders a thin horizontal divider between groups of menu rows.
 #[component]
 pub fn MenuSeparator(_props: MenuSeparatorProps) -> Element {
     ui! { view(style = MenuSeparatorStyle()) {} }
@@ -197,9 +217,12 @@ pub fn MenuSeparator(_props: MenuSeparatorProps) -> Element {
 // =============================================================================
 
 /// One row in a [`SubMenu`] flyout. `MenuEntry::new(label, on_select)`.
-#[derive(Clone)]
+#[derive(Clone, IdealystSchema)]
 pub struct MenuEntry {
+    /// Flyout row label. `Reactive<String>` — static or live.
+    #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub label: Reactive<String>,
+    /// Fires when this flyout row is chosen (also closes the flyout).
     pub on_select: Rc<dyn Fn()>,
 }
 
@@ -210,8 +233,10 @@ impl MenuEntry {
 }
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct SubMenuProps {
     /// Trigger row label.
+    #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub label: Reactive<String>,
     /// Flyout contents. Passed as reconstructable [`MenuEntry`] data
     /// (not composed children) because the flyout mounts conditionally
@@ -235,6 +260,8 @@ impl Default for SubMenuProps {
     }
 }
 
+/// Renders a menu row with a trailing chevron that, on click, opens a
+/// nested flyout panel built from `items` to the configured `side`.
 #[component]
 pub fn SubMenu(props: SubMenuProps) -> Element {
     let open: Signal<bool> = signal!(false);

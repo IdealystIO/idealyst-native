@@ -16,7 +16,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 runtime-core = { path = "../../../crates/framework/core", features = ["async-driver"] }
 idea-ui = { path = "../../../crates/ui/idea-ui" }
-idea-codeblock = { path = "../../../crates/sdk/idea-codeblock" }
+codeblock = { path = "../../../crates/sdk/codeblock" }
 webview = { path = "../../../crates/sdk/webview" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

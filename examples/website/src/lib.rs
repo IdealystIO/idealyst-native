@@ -213,7 +213,7 @@ fn sync_body_background_to_theme() {
 #[cfg(target_arch = "wasm32")]
 pub fn register_extensions(backend: &mut backend_web::WebBackend) {
     drawer_navigator::register(backend);
-    idea_codeblock::register(backend);
+    codeblock::register(backend);
     // Push the initial window size + wire a resize listener into the
     // framework's reactive viewport signal. The CLI-generated wrapper
     // installs scheduler/time-source/render-loop here too, but the
@@ -273,5 +273,5 @@ pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBacke
 #[cfg(feature = "ssr")]
 pub fn register_ssr_extensions(backend: &mut backend_ssr::SsrBackend) {
     drawer_navigator::chrome::register(backend);
-    idea_codeblock::register(backend);
+    codeblock::register(backend);
 }

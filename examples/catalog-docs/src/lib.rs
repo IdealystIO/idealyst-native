@@ -7,7 +7,7 @@
 //! entries by kind; each detail page is generated from the catalog
 //! record (docs, props/fields table, composes graph, methods,
 //! animations) using the same visual language as idea-ui-docs
-//! (drawer-navigator + idea-ui + idea-codeblock + the `table` SDK +
+//! (drawer-navigator + idea-ui + codeblock + the `table` SDK +
 //! icons-lucide).
 //!
 //! ## How the catalog data flows in
@@ -76,7 +76,7 @@ fn model() -> Rc<CatalogModel> {
 #[cfg(target_arch = "wasm32")]
 pub fn register_extensions(backend: &mut backend_web::WebBackend) {
     drawer_navigator::register(backend);
-    idea_codeblock::register(backend);
+    codeblock::register(backend);
     table::register(backend);
     backend_web::install_viewport_observer();
 }
@@ -84,21 +84,21 @@ pub fn register_extensions(backend: &mut backend_web::WebBackend) {
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
     drawer_navigator::register(backend);
-    idea_codeblock::register(backend);
+    codeblock::register(backend);
     table::register(backend);
 }
 
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
     drawer_navigator::register(backend);
-    idea_codeblock::register(backend);
+    codeblock::register(backend);
     table::register(backend);
 }
 
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
     drawer_navigator::register(backend);
-    idea_codeblock::register(backend);
+    codeblock::register(backend);
     table::register(backend);
 }
 
@@ -110,7 +110,7 @@ pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
 ))]
 pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
     drawer_navigator::register(backend);
-    idea_codeblock::register(backend);
+    codeblock::register(backend);
     table::register(backend);
 }
 

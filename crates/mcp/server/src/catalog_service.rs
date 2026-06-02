@@ -1199,10 +1199,91 @@ impl CatalogService {
                     || format!("{}::{}", t.module_path, t.short_name) == req.name
             })
             .ok_or_else(|| {
-                McpError::invalid_params(format!("type {:?} not found", req.name), None)
+                // A common dead-end: an LLM sees a component param typed
+                // `&FooProps` (from `describe_component`) and calls
+                // `describe_type("FooProps")`. Props/types are catalogued
+                // only when their struct/enum derives `#[derive(IdealystSchema)]`;
+                // an unannotated one simply isn't here. Make the cause
+                // actionable rather than a bare "not found".
+                let hint = if req.name.ends_with("Props") {
+                    " — if this is a component's props struct, its fields are \
+                     catalogued only when it derives `#[derive(IdealystSchema)]`; \
+                     the defining crate may not annotate it yet"
+                } else {
+                    " — only structs/enums deriving `#[derive(IdealystSchema)]` are \
+                     catalogued; use list_types to see what's available"
+                };
+                McpError::invalid_params(
+                    format!("type {:?} not found in the catalog{}", req.name, hint),
+                    None,
+                )
             })?;
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&type_entry_json(entry)).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "List recipes — compile-checked usage examples for components. Lightweight { name, component, fqn, summary }; pass `filter` (case-insensitive, glob `*`, matches name/component/fqn) to narrow, then `describe_recipe` for the full example source. Recipes are how you learn the canonical, type-verified way to use a component.")]
+    async fn list_recipes(
+        &self,
+        Parameters(req): Parameters<FilterRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let json: Vec<serde_json::Value> = cat
+            .recipes()
+            .iter()
+            .filter_map(|r| {
+                let fqn = format!("{}::{}", r.module_path, r.name);
+                if !matches_filter(&req.filter, &[r.name, r.component, &fqn]) {
+                    return None;
+                }
+                Some(serde_json::json!({
+                    "name": r.name,
+                    "component": r.component,
+                    "fqn": fqn,
+                    "summary": doc_summary(r.docs),
+                }))
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Get one recipe in full: its component, docs, the compile-verified source code, and the components it uses. Accepts the recipe's short-name or fully-qualified name. The `source` is a working, copy-pasteable example proven to type-check against the current props.")]
+    async fn describe_recipe(
+        &self,
+        Parameters(req): Parameters<NameRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let entry = cat
+            .recipes()
+            .iter()
+            .find(|r| {
+                r.name == req.name || format!("{}::{}", r.module_path, r.name) == req.name
+            })
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!(
+                        "recipe {:?} not found — use list_recipes to see what's available",
+                        req.name
+                    ),
+                    None,
+                )
+            })?;
+        let json = serde_json::json!({
+            "name": entry.name,
+            "component": entry.component,
+            "module_path": entry.module_path,
+            "fqn": format!("{}::{}", entry.module_path, entry.name),
+            "file": entry.file,
+            "line": entry.line,
+            "docs": entry.docs,
+            "source": entry.source,
+            "uses": entry.uses,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
         )]))
     }
 
@@ -1353,11 +1434,51 @@ fn entry_to_json(
             // (`#[derive(IdealystSchema)]`). This is the prop-level
             // documentation surface.
             if !p.type_short_name.is_empty() {
-                if let Some(fields) = prop_fields_for(cat, p.type_short_name) {
-                    obj.insert("schema".into(), serde_json::json!(fields));
+                match prop_fields_for(cat, p.type_short_name) {
+                    Some(fields) => {
+                        obj.insert("schema".into(), serde_json::json!(fields));
+                    }
+                    // A `*Props`-shaped param with no catalogued schema means
+                    // the props struct isn't annotated with
+                    // `#[derive(IdealystSchema)]`, so per-field docs aren't
+                    // available. Flag it inline so a consumer knows the field
+                    // docs are absent and does NOT dead-end calling
+                    // `describe_type` on it (which would 404). Only flagged
+                    // for the `*Props` convention to avoid noise on plain
+                    // value params (`&str`, `i32`, …).
+                    None if p.type_short_name.ends_with("Props") => {
+                        obj.insert("props_documented".into(), serde_json::json!(false));
+                        obj.insert(
+                            "note".into(),
+                            serde_json::json!(format!(
+                                "`{}` has no catalogued field docs — its struct isn't \
+                                 annotated with `#[derive(IdealystSchema)]` in the defining \
+                                 crate. The component is usable; per-prop docs are unavailable.",
+                                p.type_short_name
+                            )),
+                        );
+                    }
+                    None => {}
                 }
             }
             serde_json::Value::Object(obj)
+        })
+        .collect();
+    // Compile-checked usage examples for this component — the rich
+    // "how do I use it" context. A recipe is linked if it primarily
+    // demonstrates this component OR merely uses it in its body.
+    let recipes: Vec<serde_json::Value> = cat
+        .recipes()
+        .iter()
+        .filter(|r| r.component == entry.name || r.uses.contains(&entry.name))
+        .map(|r| {
+            serde_json::json!({
+                "name": r.name,
+                "fqn": format!("{}::{}", r.module_path, r.name),
+                "primary": r.component == entry.name,
+                "docs": r.docs,
+                "source": r.source,
+            })
         })
         .collect();
     serde_json::json!({
@@ -1369,6 +1490,7 @@ fn entry_to_json(
         "docs": entry.docs,
         "params": params,
         "composes": composes,
+        "recipes": recipes,
     })
 }
 
@@ -2021,5 +2143,127 @@ mod tests {
         assert_eq!(schema[0]["name"], "value");
         assert_eq!(schema[0]["doc"], "The gauge value, 0.0-1.0.");
         assert_eq!(schema[0]["constraint"], "0..=1");
+    }
+
+    /// When a component's `*Props` param has NO catalogued type (the
+    /// struct lacks `#[derive(IdealystSchema)]` — e.g. idea-ui's
+    /// `SelectProps`), `describe_component` must flag it as
+    /// `props_documented: false` with a note (and NO `schema`), instead
+    /// of silently omitting it and leaving an LLM to dead-end on
+    /// `describe_type`. Regression for the quill-emr
+    /// `type "SelectProps" not found` report.
+    #[tokio::test]
+    async fn describe_component_flags_undocumented_props() {
+        let json = r#"{
+          "catalog_version": 2,
+          "components": [
+            {
+              "name": "Select",
+              "module_path": "idea_ui::components::select",
+              "file": "select.rs",
+              "line": 1,
+              "docs": "A dropdown select.",
+              "composes": [],
+              "params": [
+                { "name": "props", "type": "& SelectProps", "type_short_name": "SelectProps" }
+              ]
+            }
+          ],
+          "types": []
+        }"#;
+        let cat = mcp_catalog::ResolvedCatalog::build_from_json(json)
+            .expect("build catalog from wire JSON");
+        let svc = CatalogService::new();
+        svc.replace_catalog(cat).await;
+
+        let result = svc
+            .describe_component(Parameters(NameRequest {
+                name: "Select".into(),
+                app: None,
+            }))
+            .await
+            .expect("describe_component succeeds");
+        let payload = result
+            .content
+            .iter()
+            .find_map(|c| c.as_text().map(|t| t.text.clone()))
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let param = &v["params"][0];
+        assert!(param["schema"].is_null(), "no schema when props undocumented; got {v}");
+        assert_eq!(param["props_documented"], serde_json::json!(false));
+        assert!(
+            param["note"].as_str().unwrap_or("").contains("IdealystSchema"),
+            "note should point at the missing derive; got {param}"
+        );
+    }
+
+    /// Recipes flow over the wire and surface in all three places:
+    /// `list_recipes`, `describe_recipe`, and — the key one —
+    /// `describe_component`'s `recipes` section (matched by primary
+    /// component AND by `uses`).
+    #[tokio::test]
+    async fn recipes_surface_in_list_describe_and_component() {
+        let json = r#"{
+          "catalog_version": 2,
+          "components": [
+            { "name": "Select", "module_path": "idea_ui::components::select",
+              "file": "select.rs", "line": 1, "docs": "A dropdown.",
+              "composes": [], "params": [] }
+          ],
+          "recipes": [
+            { "name": "select_basic", "component": "Select",
+              "module_path": "demo::recipes", "file": "recipes.rs", "line": 10,
+              "docs": "Basic Select usage.",
+              "source": "fn select_basic() -> Element { ui!{ Select(value = v) } }",
+              "uses": ["Select"] }
+          ]
+        }"#;
+        let cat = mcp_catalog::ResolvedCatalog::build_from_json(json).unwrap();
+        let svc = CatalogService::new();
+        svc.replace_catalog(cat).await;
+
+        let text = |r: &CallToolResult| {
+            r.content
+                .iter()
+                .find_map(|c| c.as_text().map(|t| t.text.clone()))
+                .unwrap()
+        };
+
+        // list_recipes
+        let lr = svc
+            .list_recipes(Parameters(FilterRequest::default()))
+            .await
+            .unwrap();
+        let lv: serde_json::Value = serde_json::from_str(&text(&lr)).unwrap();
+        assert_eq!(lv[0]["name"], "select_basic");
+        assert_eq!(lv[0]["component"], "Select");
+
+        // describe_recipe → full source
+        let dr = svc
+            .describe_recipe(Parameters(NameRequest {
+                name: "select_basic".into(),
+                app: None,
+            }))
+            .await
+            .unwrap();
+        let dv: serde_json::Value = serde_json::from_str(&text(&dr)).unwrap();
+        assert!(dv["source"].as_str().unwrap().contains("Select(value"));
+        assert_eq!(dv["uses"][0], "Select");
+
+        // describe_component links the recipe inline
+        let dc = svc
+            .describe_component(Parameters(NameRequest {
+                name: "Select".into(),
+                app: None,
+            }))
+            .await
+            .unwrap();
+        let cv: serde_json::Value = serde_json::from_str(&text(&dc)).unwrap();
+        let recipes = cv["recipes"].as_array().expect("recipes section");
+        assert_eq!(recipes.len(), 1, "got {cv}");
+        assert_eq!(recipes[0]["name"], "select_basic");
+        assert_eq!(recipes[0]["primary"], serde_json::json!(true));
+        assert!(recipes[0]["source"].as_str().unwrap().contains("Select"));
     }
 }

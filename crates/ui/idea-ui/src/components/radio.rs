@@ -30,7 +30,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, Element, IntoElement, Reactive, Signal, StyleApplication,
+    component, ui, Element, IdealystSchema, IntoElement, Reactive, Signal, StyleApplication,
 };
 
 use idea_theme::extensible::{installed_radio_sheets, RadioSheets, ToneRef, VariantRef};
@@ -114,8 +114,10 @@ fn radio_row(
 // =============================================================================
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct RadioProps {
     /// Optional label rendered to the right of the radio.
+    #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
     pub label: Reactive<Option<String>>,
     /// Whether this radio is currently selected.
     pub selected: Signal<bool>,
@@ -143,6 +145,9 @@ impl Default for RadioProps {
     }
 }
 
+/// Renders a single radio button: a tone-colored ring with a filled inner
+/// dot that mounts only while selected, plus an optional label, in a
+/// clickable row.
 #[component]
 pub fn Radio(props: &RadioProps) -> Element {
     let selected = props.selected;
@@ -165,9 +170,13 @@ pub fn Radio(props: &RadioProps) -> Element {
 
 /// One option in a [`RadioGroup`]. `RadioOption::new(id, label)`.
 #[derive(Clone)]
+#[derive(IdealystSchema)]
 pub struct RadioOption {
+    /// Stable identity for this option; matched against the group's
+    /// `value` to decide selection and handed to `on_change` on tap.
     pub id: String,
     /// Row label. `Reactive<String>` — static or live (signal/`rx!`).
+    #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub label: Reactive<String>,
 }
 
@@ -179,6 +188,7 @@ impl RadioOption {
 
 /// Layout direction for a [`RadioGroup`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(IdealystSchema)]
 pub enum RadioAxis {
     /// Stack options vertically. The default.
     #[default]
@@ -200,6 +210,7 @@ impl runtime_core::VariantEnum for RadioAxis {
 }
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct RadioGroupProps {
     /// The selected option's id. The host owns the signal.
     pub value: Signal<String>,
@@ -232,6 +243,10 @@ impl Default for RadioGroupProps {
     }
 }
 
+/// Renders a controlled set of radios over a `Signal<String>`, enforcing
+/// single-select: each option is a [`Radio`]-style row that reports its id
+/// via `on_change`, and the row whose id matches `value` shows selected.
+/// Options are stacked in a column or row per `axis`.
 #[component]
 pub fn RadioGroup(props: RadioGroupProps) -> Element {
     let value = props.value;

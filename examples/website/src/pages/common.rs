@@ -72,7 +72,7 @@ pub fn PageSection(props: PageSectionProps) -> Element {
 // Code panel — theme-aware syntax highlighting
 // =============================================================================
 //
-// `idea-codeblock` stamps the per-span color into the External primitive's
+// `codeblock` stamps the per-span color into the External primitive's
 // payload at construction time — the colors don't re-resolve on theme
 // change. So we wrap the codeblock in a `runtime_core::switch` keyed on
 // the active theme's background luminance: a theme swap re-runs
@@ -230,7 +230,7 @@ pub struct CodeBlockProps {
     pub src: String,
 }
 
-/// On non-web targets, `idea-codeblock` falls back to a placeholder — the
+/// On non-web targets, `codeblock` falls back to a placeholder — the
 /// surrounding chrome still renders. Stubbed to an empty View on iOS
 /// (perf probe — codeblocks render incorrectly there today and are
 /// an outsized contributor to the layout-pass cost; the surrounding
@@ -243,7 +243,7 @@ pub fn CodeBlock(props: CodeBlockProps) -> Element {
         let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
         let spans = highlight(&src_owned, palette);
         let code_style = move || StyleApplication::new(CodeText::sheet());
-        idea_codeblock::code_block(spans)
+        codeblock::code_block(spans)
             .with_style(code_style)
             .into_element()
     })

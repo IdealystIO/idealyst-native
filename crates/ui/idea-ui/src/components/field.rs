@@ -25,8 +25,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, Easing, Length, Element, Reactive, Signal, StyleApplication, StyleRules,
-    StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
+    component, ui, Easing, IdealystSchema, Length, Element, Reactive, Signal, StyleApplication,
+    StyleRules, StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
 };
 
 use idea_theme::active_theme;
@@ -37,24 +37,34 @@ use crate::stylesheets::{FieldGroup, FieldLabel};
 pub use crate::stylesheets::{FieldAppearance, FieldSize};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct FieldProps {
     /// Optional field label. `Reactive<Option<String>>` — static
     /// (`None`/`Some`) or live (signal/`rx!`).
+    #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
     pub label: Reactive<Option<String>>,
+    /// The input's current text. The host owns this signal; the Field
+    /// reads it to populate the input and writes via `on_change`.
     pub value: Signal<String>,
+    /// Fires with the new text on each edit.
     pub on_change: Rc<dyn Fn(String)>,
+    /// Placeholder shown when the input is empty.
     pub placeholder: Option<String>,
     /// Helper text below the input. `Reactive<Option<String>>` — static
     /// or live (signal/`rx!`).
+    #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
     pub help: Reactive<Option<String>>,
     /// Error text below the input; takes precedence over `help` when
     /// present. `Reactive<Option<String>>` — typically the live one
     /// (validation result).
+    #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
     pub error: Reactive<Option<String>>,
     /// Optional tone overlay (border + help-text color). Write
     /// `Some(tone::Warning.into())`; orphan rule blocks a bare-tone
     /// `Into<Option<ToneRef>>`.
     pub tone: Option<ToneRef>,
+    /// Input density (`Sm`/`Md`/`Lg`) — drives padding + font size.
+    /// Default `Md`.
     pub size: FieldSize,
     /// Visual shell: `Outline` (bordered, default), `Contained` (filled),
     /// or `Bare` (no chrome). All three keep a focus ring.
@@ -294,6 +304,9 @@ fn size_key(size: FieldSize) -> &'static str {
     size.as_variant_str()
 }
 
+/// Renders a labeled text input with optional helper/error text. Composes
+/// an optional label, a `text_input` styled by the size × tone × variant
+/// axes, and a helper/error line (error takes precedence) into a column.
 #[component]
 pub fn Field(props: &FieldProps) -> Element {
     let value = props.value;

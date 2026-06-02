@@ -12,11 +12,11 @@
 //! `runtime_core::register_external_serde`; the recorder serializes the
 //! payload into `CreateExternal { payload }`, and `dev-client`
 //! deserializes it back to a concrete `Rc<dyn Any>` and dispatches to the
-//! real `create_external` handler. `idea_codeblock` registers its serde
+//! real `create_external` handler. `codeblock` registers its serde
 //! lazily from `code_block(...)`, so this round-trips with no app-level
 //! wiring.
 
-use idea_codeblock::{code_block, CodeBlockProps};
+use codeblock::{code_block, CodeBlockProps};
 use mock_backend::WireHarness;
 use runtime_core::Color;
 

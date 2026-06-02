@@ -29,8 +29,8 @@ use std::collections::HashMap;
 
 use crate::{
     AnimationEntry, ComponentEntry, EdgeRef, GuideEntry, MethodEntry, ParamSpec,
-    PrimitiveCategory, PrimitiveEntry, PropFieldSpec, StateEntry, ToolEntry, TypeEntry,
-    TypeShape, UtilityCategory, UtilityEntry, VariantSpec,
+    PrimitiveCategory, PrimitiveEntry, PropFieldSpec, RecipeEntry, StateEntry, ToolEntry,
+    TypeEntry, TypeShape, UtilityCategory, UtilityEntry, VariantSpec,
 };
 
 /// A `(module_path, name)` pair, the canonical identity for a
@@ -101,6 +101,7 @@ pub struct ResolvedCatalog {
     animations: Vec<&'static crate::AnimationEntry>,
     types: Vec<&'static crate::TypeEntry>,
     tools: Vec<&'static crate::ToolEntry>,
+    recipes: Vec<&'static crate::RecipeEntry>,
 }
 
 impl ResolvedCatalog {
@@ -116,6 +117,7 @@ impl ResolvedCatalog {
         cat.animations = crate::animations().collect();
         cat.types = crate::types().collect();
         cat.tools = crate::tools().collect();
+        cat.recipes = crate::recipes().collect();
         cat
     }
 
@@ -171,6 +173,9 @@ impl ResolvedCatalog {
         if let Some(arr) = value["tools"].as_array() {
             cat.tools = arr.iter().filter_map(leak_tool_from_json).collect();
         }
+        if let Some(arr) = value["recipes"].as_array() {
+            cat.recipes = arr.iter().filter_map(leak_recipe_from_json).collect();
+        }
         Ok(cat)
     }
 
@@ -197,6 +202,9 @@ impl ResolvedCatalog {
     }
     pub fn tools(&self) -> &[&'static crate::ToolEntry] {
         &self.tools
+    }
+    pub fn recipes(&self) -> &[&'static crate::RecipeEntry] {
+        &self.recipes
     }
 
     /// Build from an explicit entry list — the path tests use to
@@ -569,6 +577,34 @@ fn leak_animation_from_json(v: &serde_json::Value) -> Option<&'static AnimationE
         binding: leak_str(binding),
         initial: leak_str(initial),
         line,
+    })))
+}
+
+fn leak_recipe_from_json(v: &serde_json::Value) -> Option<&'static RecipeEntry> {
+    let name = v["name"].as_str()?.to_string();
+    let component = v["component"].as_str().unwrap_or("").to_string();
+    let module_path = v["module_path"].as_str().unwrap_or("").to_string();
+    let file = v["file"].as_str().unwrap_or("").to_string();
+    let line = v["line"].as_u64().unwrap_or(0) as u32;
+    let docs = v["docs"].as_str().unwrap_or("").to_string();
+    let source = v["source"].as_str().unwrap_or("").to_string();
+    let uses: Vec<&'static str> = v["uses"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|u| u.as_str().map(|s| leak_str(s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(Box::leak(Box::new(RecipeEntry {
+        name: leak_str(name),
+        component: leak_str(component),
+        module_path: leak_str(module_path),
+        file: leak_str(file),
+        line,
+        docs: leak_str(docs),
+        source: leak_str(source),
+        uses: Box::leak(uses.into_boxed_slice()),
     })))
 }
 

@@ -69,7 +69,7 @@ pub const SECTIONS: &[IndexSection] = &[
             IndexEntry { route: &RX_SIGNALS_ROUTE, label: "Signals" },
             IndexEntry { route: &RX_EFFECTS_ROUTE, label: "Effects" },
             IndexEntry { route: &RX_DERIVED_ROUTE, label: "Derived state" },
-            IndexEntry { route: &RX_BATCHING_ROUTE, label: "Batching & escape hatches" },
+            IndexEntry { route: &RX_BATCHING_ROUTE, label: "Controlling when effects fire" },
         ],
     },
     IndexSection {

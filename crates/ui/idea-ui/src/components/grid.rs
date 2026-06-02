@@ -18,17 +18,22 @@
 //! cell width as full rows is *not* guaranteed — its cells stretch to
 //! fill — which is the conventional flex-grid behavior.
 
-use runtime_core::{component, ChildList, IntoElement, Element, StyleApplication, VariantEnum};
+use runtime_core::{
+    component, ChildList, IdealystSchema, IntoElement, Element, StyleApplication, VariantEnum,
+};
 
 use crate::components::stack::StackGap;
 use crate::stylesheets::{GridCell, GridContainer, GridRow};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct GridProps {
     /// Number of columns (>= 1). Default 2.
+    #[schema(constraint = ">= 1 (clamped)")]
     pub columns: u32,
     /// Gap between rows and between columns. Default Md.
     pub gap: StackGap,
+    /// Cells, laid out left-to-right then wrapping to the next row.
     pub children: Vec<Element>,
 }
 
@@ -38,6 +43,8 @@ impl Default for GridProps {
     }
 }
 
+/// Lays out `children` in `columns` equal-width columns, wrapping into
+/// rows, with `gap` spacing between rows and columns.
 #[component(children)]
 pub fn Grid(props: GridProps) -> Element {
     let cols = props.columns.max(1) as usize;

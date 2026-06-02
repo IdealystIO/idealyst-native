@@ -50,7 +50,7 @@ drawer-navigator = { workspace = true }
 dev-server = { workspace = true, optional = true }
 # Theme-aware syntax-highlighted code panels for the snippet blocks
 # in every component page.
-idea-codeblock = { workspace = true }
+codeblock = { workspace = true }
 # Real HTML <table> on web via Element::External; flex fallback on
 # native. Powers PropsTable on every component page.
 table = { workspace = true }

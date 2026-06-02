@@ -18,15 +18,17 @@
 
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
-use runtime_core::{component, IntoElement, Element, Reactive};
+use runtime_core::{component, IdealystSchema, IntoElement, Element, Reactive};
 
 use crate::stylesheets::TooltipBubble;
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct TooltipProps {
     /// Element to anchor against — `AnchorTarget::from(some_ref)`.
     pub target: Option<AnchorTarget>,
     /// Bubble text. `Reactive<String>` — static or live.
+    #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub text: Reactive<String>,
     /// Which side of the target the bubble sits on. Default `Above`.
     #[cfg_attr(feature = "docs", doc_control(skip))]
@@ -50,6 +52,9 @@ impl Default for TooltipProps {
     }
 }
 
+/// Renders a compact, non-interactive bubble anchored to a trigger element
+/// via the framework's `anchored_overlay`. The host owns visibility and
+/// gates mounting; positioning follows `target`/`side`/`align`/`offset`.
 #[component]
 pub fn Tooltip(props: TooltipProps) -> Element {
     let target = props

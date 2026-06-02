@@ -13,13 +13,16 @@
 //! equal width/height for a round avatar).
 
 use runtime_core::{
-    component, IntoElement, Length, Element, StyleApplication, StyleRules, Tokenized,
+    component, IdealystSchema, IntoElement, Length, Element, StyleApplication, StyleRules, Tokenized,
 };
 
 use crate::stylesheets::ImageBox;
 
+#[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ImageProps {
+    /// Image source URL handed to the underlying `image` primitive.
+    #[schema(constraint = "image URL the platform can load (http/https/file/data)")]
     pub src: String,
     /// Accessible description. Maps to `alt` on web.
     pub alt: Option<String>,
@@ -37,6 +40,9 @@ impl Default for ImageProps {
     }
 }
 
+/// Themed wrapper over the framework's `image` primitive. Adds opt-in
+/// explicit `width`/`height` sizing and a `rounded` (circular) clip on
+/// top of the raw image.
 #[component]
 pub fn Image(props: &ImageProps) -> Element {
     let w = props.width;

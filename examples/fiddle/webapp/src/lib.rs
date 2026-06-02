@@ -36,7 +36,7 @@ use runtime_core::{
     FontWeight, JustifyContent, KeyEvent, KeyOutcome, Length, Overflow, Position, Element, Ref,
     Signal,
 };
-use idea_codeblock::code_block;
+use codeblock::code_block;
 use idea_ui::{install_idea_theme, light_theme};
 
 // The `stylesheet!` macro takes a `<Theme>` generic for syntactic
@@ -322,14 +322,14 @@ pub fn start() {
 
     let backend = Rc::new(RefCell::new(backend_web::WebBackend::new("#app")));
     // Register third-party SDK primitives. The fiddle uses
-    // `idea_codeblock::code_block` for the syntax-highlight overlay
+    // `codeblock::code_block` for the syntax-highlight overlay
     // behind the textarea — see `editor_panel()`. `webview::register`
     // installs the `WebView` SDK so `preview_panel()`'s iframe shows
     // up; without it the framework's "external not supported"
     // placeholder renders instead.
     {
         let mut b = backend.borrow_mut();
-        idea_codeblock::register(&mut b);
+        codeblock::register(&mut b);
         webview::register(&mut b);
     }
     let owner = runtime_core::render(backend, app());

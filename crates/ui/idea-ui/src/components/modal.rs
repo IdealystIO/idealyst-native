@@ -66,9 +66,9 @@ use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
-    component, viewport_size, AlignItems, Color, Element, FlexDirection, IntoElement,
-    JustifyContent, Length, Overflow, Position, Ref, StyleApplication, StyleRules, StyleSheet,
-    Tokenized, VariantSet, ViewHandle,
+    component, viewport_size, AlignItems, Color, Element, FlexDirection, IdealystSchema,
+    IntoElement, JustifyContent, Length, Overflow, Position, Ref, StyleApplication, StyleRules,
+    StyleSheet, Tokenized, VariantSet, ViewHandle,
 };
 
 use crate::stylesheets::Modal as ModalStyle;
@@ -90,6 +90,7 @@ const ENTER_MS: u64 = 180;
 const CARD_SLIDE_PX: f32 = 14.0;
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct ModalProps {
     /// Fires when the user dismisses (backdrop tap — unless
     /// `on_backdrop_press` overrides it — or Escape / back). The host is
@@ -112,6 +113,8 @@ pub struct ModalProps {
     /// Must keep the backdrop full-bleed (`position: absolute` + zero
     /// insets).
     pub backdrop_style: Option<Rc<StyleSheet>>,
+    /// Modal body content, laid out in a column inside the scrollable
+    /// surface. Incoming fragments are flattened.
     pub children: Vec<Element>,
 }
 
@@ -258,6 +261,10 @@ fn center_container_sheet() -> Rc<StyleSheet> {
     }))
 }
 
+/// Renders a centered viewport overlay: one fullscreen portal holding a
+/// fading dimming backdrop and a themed, viewport-capped, scrollable
+/// surface that fades and slides in. Dismissal is delegated to the host
+/// via `on_dismiss`/`on_backdrop_press`.
 #[component(children)]
 pub fn Modal(props: ModalProps) -> Element {
     let on_dismiss = props.on_dismiss.clone();

@@ -145,7 +145,9 @@ pub use touch::recognizers::{
 };
 pub use walker::{build_detached, mount, render, DetachedScope, Owner};
 pub use primitives::navigator::{
-    current_screen_state, match_pattern, MountResult, NavCommand, NavState, NavigatorConfig,
+    current_screen_state, join_path, match_pattern, match_prefix, peek_initial_path,
+    set_initial_path, take_initial_path, MountResult, NavCommand,
+    NavState, NavigatorConfig,
     NavigatorControl, NavigatorHandle, NavigatorHandler, NavigatorHost, NavigatorOps,
     NavigatorRegistry, Route, RouteParams, Screen, ScreenStateGuard,
 };
@@ -172,10 +174,10 @@ pub use primitives::presence::{
     presence, PresenceAnim, PresenceHandle, PresenceOps, PresenceState,
 };
 pub use reactive::{
-    arena_stats, batch, inject, inject_or, install_drop_deferral, memo, memo_with, on,
-    on_cleanup, on_defer, provide, reducer, register_signal_js_notifier, signal_has_js_notifier,
-    unregister_signal_js_notifier, untrack, with_inject, ArenaStats, Effect, Ref, Signal,
-    Trackable,
+    arena_stats, batch, inject, inject_or, install_drop_deferral, is_reactive_busy, memo,
+    memo_with, on, on_cleanup, on_defer, provide, reducer, register_signal_js_notifier,
+    signal_has_js_notifier, unregister_signal_js_notifier, untrack, with_inject, ArenaStats,
+    Effect, Ref, Signal, Trackable,
 };
 
 /// Run `f` with the reactive scope-ownership stack emptied: signals and
@@ -226,7 +228,7 @@ pub use style::{
 };
 
 pub use runtime_macros::{
-    component, jsx, lazy, stylesheet, text_fmt, ui,
+    component, jsx, lazy, recipe, stylesheet, text_fmt, ui,
 };
 
 /// `#[idealyst_tool]` and `#[derive(IdealystSchema)]` — the

@@ -15,17 +15,19 @@
 //! }
 //! ```
 
-use runtime_core::{component, ui, Element, Reactive, StyleApplication, VariantEnum};
+use runtime_core::{component, ui, Element, IdealystSchema, Reactive, StyleApplication, VariantEnum};
 
 use crate::stylesheets::{Avatar as AvatarStyle, AvatarText};
 use crate::theme::IdeaThemeRef;
 
 pub use crate::stylesheets::{AvatarColor, AvatarSize};
 
+#[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct AvatarProps {
     /// Optional image URL. When `Some`, an `Image` primitive renders
     /// and the initials are hidden. When `None`, the initials show.
+    #[schema(constraint = "absolute image URL when present")]
     pub src: Option<String>,
     /// Fallback text rendered when `src` is `None`.
     /// `Reactive<String>` — static or live (signal/`rx!`).
@@ -34,6 +36,7 @@ pub struct AvatarProps {
     /// and matching `soft_text`. Distinct from `Intent` because an
     /// avatar doesn't represent a semantic action.
     pub color: AvatarColor,
+    /// Diameter scale (Sm/Md/Lg → theme avatar-size tokens).
     pub size: AvatarSize,
 }
 
@@ -48,6 +51,8 @@ impl Default for AvatarProps {
     }
 }
 
+/// Circular user-identity element. Renders the `src` image when set,
+/// otherwise the `initials` on a `color`-tinted placeholder background.
 #[component]
 pub fn Avatar(props: &AvatarProps) -> Element {
     let size = props.size;

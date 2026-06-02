@@ -43,7 +43,7 @@ fn main() {
                 &path,
                 |b| {
                     drawer_navigator::chrome::register(b);
-                    idea_codeblock::register(b);
+                    codeblock::register(b);
                 },
                 website::app,
             );

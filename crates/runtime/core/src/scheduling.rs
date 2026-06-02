@@ -370,10 +370,37 @@ pub fn raf_loop<F: FnMut() + 'static>(f: F) -> RafLoop {
 /// plain [`after_ms`] and manage the handle yourself.
 pub fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
     let ctx = crate::reactive::capture_reactive_ctx();
+    // Teardown-safety flag (see module doc above `after_ms_scoped` and
+    // the `scheduling_scoped` regression). `cancelAnimationFrame` /
+    // `clearTimeout` do NOT reliably remove a callback the browser has
+    // already dispatched for the current tick, so dropping the handle on
+    // scope cleanup is not enough — a queued shot can still fire after
+    // the owning scope's signals were dropped (use-after-drop) or while
+    // the navigator's mount holds the reactive arena mid-mutation
+    // (re-entrancy). The shared flag, set by the `on_cleanup` below and
+    // checked at the very top of the callback, guarantees the body never
+    // runs once cleanup has happened.
+    let cancelled = std::rc::Rc::new(std::cell::Cell::new(false));
+    let cancelled_for_cb = cancelled.clone();
     let task = after_ms(delay_ms, move || {
+        if cancelled_for_cb.get() {
+            return;
+        }
+        // Re-entrancy guard: if the reactive arena is mid-mutation
+        // (an effect body or a `with_signal_mut` window is in flight),
+        // touching a signal here would panic. A one-shot can't re-arm,
+        // so we drop this late dispatch — the owning context is being
+        // mutated out from under us, which in practice means it's about
+        // to tear this scope down anyway.
+        if crate::reactive::is_reactive_busy() {
+            return;
+        }
         crate::reactive::with_reactive_ctx(&ctx, f);
     });
-    crate::reactive::on_cleanup(move || drop(task));
+    crate::reactive::on_cleanup(move || {
+        cancelled.set(true);
+        drop(task);
+    });
 }
 
 /// Recurring animation-frame loop, anchored to the current reactive
@@ -392,10 +419,35 @@ pub fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
 /// [`after_ms_scoped`] for the rationale.
 pub fn raf_loop_scoped<F: FnMut() + 'static>(mut f: F) {
     let ctx = crate::reactive::capture_reactive_ctx();
+    // Teardown-safety flag — see `after_ms_scoped` for the full
+    // rationale. This is the case the QuillEMR notetaker teardown-race
+    // exercised: a persistent per-frame loop reading a screen-scoped
+    // signal, where the navigator releases the screen scope while a rAF
+    // for THIS frame is already queued. Without the flag the queued
+    // frame fires after the scope's signals were dropped (panics #2/#3:
+    // "signal used after its scope was dropped" / "signal type
+    // mismatch"); without the busy-skip it can re-enter the arena while
+    // the navigator mount holds it mid-mutation (panic #1: "RefCell
+    // already mutably borrowed" / taken-slot None).
+    let cancelled = std::rc::Rc::new(std::cell::Cell::new(false));
+    let cancelled_for_cb = cancelled.clone();
     let loop_handle = raf_loop(move || {
+        if cancelled_for_cb.get() {
+            return;
+        }
+        // Mid-mutation arena: skip this frame and let the loop re-arm.
+        // The next frame, after the in-flight effect/mount has finished,
+        // will run the body normally (unless the scope was torn down, in
+        // which case `cancelled` is now set and we bail above).
+        if crate::reactive::is_reactive_busy() {
+            return;
+        }
         crate::reactive::with_reactive_ctx(&ctx, || f());
     });
-    crate::reactive::on_cleanup(move || drop(loop_handle));
+    crate::reactive::on_cleanup(move || {
+        cancelled.set(true);
+        drop(loop_handle);
+    });
 }
 
 // Gated to non-wasm: these tests use `std::thread`/`std::panic`, and

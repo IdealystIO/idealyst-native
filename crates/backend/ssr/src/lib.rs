@@ -206,7 +206,7 @@ pub struct SsrBackend {
     /// plain class rules in `head_css` so a matching `@media` overrides the
     /// base declaration.
     media_rules: std::collections::BTreeMap<String, String>,
-    /// Third-party `Element::External` handlers (e.g. `idea_codeblock`),
+    /// Third-party `Element::External` handlers (e.g. `codeblock`),
     /// so externals SERVER-RENDER their real DOM (a code block's
     /// `<pre>`+spans) instead of an empty host — matching web so
     /// hydration adopts them.
@@ -845,7 +845,7 @@ impl Backend for SsrBackend {
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Server-render the external via its registered handler (e.g.
-        // `idea_codeblock` → a real `<pre>` + spans), so SSR output
+        // `codeblock` → a real `<pre>` + spans), so SSR output
         // matches the web build and hydration adopts it. Falls back to an
         // empty host `<div>` only when no handler is registered (the
         // client bundle then fills it).

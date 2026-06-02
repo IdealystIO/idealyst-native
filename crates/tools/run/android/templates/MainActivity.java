@@ -10,8 +10,10 @@
 package {{PACKAGE}};
 
 import android.app.Activity;
+import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.MenuItem;
@@ -38,6 +40,28 @@ public class MainActivity extends Activity {
         getWindow().getDecorView().setSystemUiVisibility(
             getWindow().getDecorView().getSystemUiVisibility()
                 | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+
+        // Cold-start deep link. If the Activity was launched via an
+        // ACTION_VIEW intent (custom scheme or Android App Link), hand
+        // the URI's PATH to the framework BEFORE `attach` so the
+        // navigator walker resolves the deep-linked screen on its
+        // synchronous initial mount. No VIEW intent ⇒ skipped, behavior
+        // unchanged.
+        Intent launchIntent = getIntent();
+        if (launchIntent != null && Intent.ACTION_VIEW.equals(launchIntent.getAction())) {
+            Uri data = launchIntent.getData();
+            if (data != null) {
+                String path = data.getPath();
+                if (path == null || path.isEmpty()) {
+                    path = "/";
+                }
+                String query = data.getEncodedQuery();
+                if (query != null && !query.isEmpty()) {
+                    path += "?" + query;
+                }
+                NativeBridge.setLaunchPath(path);
+            }
+        }
 
         FrameLayout root = new FrameLayout(this);
         root.setLayoutParams(new ViewGroup.LayoutParams(

@@ -70,7 +70,7 @@ const INFO_PLIST_TMPL: &str = include_str!("../templates/Info.plist.tmpl");
 /// runtime-server mode). This is `backend-ios-rs-shell`, NOT
 /// `backend-ios-mobile`: the shell sits ABOVE the backend so it can
 /// depend on (and register) the first-party SDK crates
-/// (drawer-navigator / idea-codeblock / table), which themselves
+/// (drawer-navigator / codeblock / table), which themselves
 /// depend on `backend-ios-mobile`. Bundling those SDK handlers into
 /// the fixed RS client is what makes native SDK chrome (the Drawer
 /// navigator) render over the wire on device. The shell re-exports the

@@ -126,6 +126,7 @@ inventory::collect!(GuideEntry);
 inventory::collect!(MethodEntry);
 inventory::collect!(AnimationEntry);
 inventory::collect!(TypeEntry);
+inventory::collect!(RecipeEntry);
 
 /// A built-in framework primitive — the leaf nodes of the `ui!` /
 /// `jsx!` grammar (`View`, `Text`, `Button`, `ScrollView`, ...).
@@ -354,6 +355,43 @@ pub struct AnimationEntry {
     pub line: u32,
 }
 
+/// A usage **recipe** for a component — a compile-checked example,
+/// captured by the `recipe!(Component, fn ...)` macro. The recipe's fn
+/// is real code built against the component's live props, so if a prop
+/// changes and the recipe isn't updated it FAILS TO COMPILE (whenever
+/// the catalog is built). That makes recipes self-verifying docs +
+/// trustworthy LLM context: "here is how to use this component", proven
+/// to still type-check.
+///
+/// Open slice — anyone can write recipes for any component, anywhere
+/// (the macro is location-agnostic and emits nothing without the
+/// `catalog` feature, so recipes cost zero in production).
+#[derive(Debug)]
+pub struct RecipeEntry {
+    /// The recipe fn's name, e.g. `"select_basic"`.
+    pub name: &'static str,
+    /// The component this recipe primarily demonstrates — the
+    /// `recipe!` first argument's last path segment, e.g. `"Select"`.
+    pub component: &'static str,
+    /// `module_path!()` at the recipe site.
+    pub module_path: &'static str,
+    /// `file!()` at the recipe site.
+    pub file: &'static str,
+    /// `line!()` at the recipe site.
+    pub line: u32,
+    /// Concatenated `///` docs on the recipe fn — prose context for
+    /// humans and the LLM. Empty when undocumented.
+    pub docs: &'static str,
+    /// The recipe's source code (the whole fn), formatted for display.
+    /// This is the copy-pasteable, compile-verified example shown in
+    /// docs and handed to the LLM.
+    pub source: &'static str,
+    /// Every component the recipe's `ui!` / `jsx!` body references (the
+    /// composes walk). Lets `describe_component` surface recipes that
+    /// merely *use* a component, not just the primary one.
+    pub uses: &'static [&'static str],
+}
+
 /// Generalized type-catalog entry. Subsumes [`PropsSchemaEntry`]:
 /// every props struct also produces a `TypeEntry` (shape `Struct`).
 /// Enums get a `TypeEntry` with shape `Enum` listing their variants
@@ -463,6 +501,11 @@ pub fn methods() -> impl Iterator<Item = &'static MethodEntry> {
 /// bodies.
 pub fn animations() -> impl Iterator<Item = &'static AnimationEntry> {
     inventory::iter::<AnimationEntry>()
+}
+
+/// Iterate every [`RecipeEntry`] captured by `recipe!(...)`.
+pub fn recipes() -> impl Iterator<Item = &'static RecipeEntry> {
+    inventory::iter::<RecipeEntry>()
 }
 
 /// Iterate every [`TypeEntry`] (struct or enum) registered via
@@ -776,6 +819,25 @@ pub fn catalog_json() -> serde_json::Value {
         })
         .collect();
 
+    let mut sorted_recipes: Vec<&RecipeEntry> = recipes().collect();
+    sorted_recipes.sort_by_key(|r| (r.component, r.module_path, r.name));
+    let recipes_json: Vec<serde_json::Value> = sorted_recipes
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "name": r.name,
+                "component": r.component,
+                "module_path": r.module_path,
+                "fqn": format!("{}::{}", r.module_path, r.name),
+                "file": r.file,
+                "line": r.line,
+                "docs": r.docs,
+                "source": r.source,
+                "uses": r.uses,
+            })
+        })
+        .collect();
+
     serde_json::json!({
         "catalog_version": 2,
         "components": components,
@@ -787,6 +849,7 @@ pub fn catalog_json() -> serde_json::Value {
         "animations": animations_json,
         "types": types_json,
         "tools": tools_json,
+        "recipes": recipes_json,
     })
 }
 

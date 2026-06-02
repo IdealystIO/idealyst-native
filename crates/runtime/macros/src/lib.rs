@@ -34,6 +34,8 @@ mod mcp_emit;
 mod schema_emit;
 #[cfg(feature = "catalog")]
 mod tool_emit;
+#[cfg(feature = "catalog")]
+mod recipe_emit;
 mod methods_block;
 mod path_analysis;
 mod primitives;
@@ -94,6 +96,41 @@ pub fn idealyst_tool(_attr: TokenStream, item: TokenStream) -> TokenStream {
             #item_fn
             #registration
         })
+    }
+}
+
+/// `recipe!(Component, fn name() -> Element { … })` — declare a
+/// compile-checked usage example ("recipe") for `Component`.
+///
+/// The recipe's function is emitted verbatim, so it's **compiled and
+/// type-checked against the component's live props** — if a prop changes
+/// and the recipe isn't updated, it fails to compile. The macro also
+/// captures the fn's formatted source, its `///` docs, and the
+/// components its `ui!`/`jsx!` body uses, registering a
+/// `RecipeEntry` for the catalog (so MCP + docs surface working,
+/// verified examples).
+///
+/// Self-gating: with the `catalog` feature OFF this expands to
+/// **nothing** — recipes (and the imports inside them) cost zero in
+/// production and aren't compiled at all. So write recipes anywhere
+/// (their own file, a `*_recipes.rs`, a separate crate) with no `#[cfg]`
+/// of your own; they materialize only when the catalog is built.
+///
+/// Recipes should be self-contained — put the needed `use`s inside the
+/// fn body — both so they read as complete, copy-pasteable examples and
+/// so nothing dangles when the macro expands to nothing.
+#[proc_macro]
+pub fn recipe(input: TokenStream) -> TokenStream {
+    // Recipes exist only when building the catalog. Off → emit nothing
+    // (the body, and any imports it relies on, simply don't compile).
+    #[cfg(not(feature = "catalog"))]
+    {
+        let _ = input;
+        TokenStream::new()
+    }
+    #[cfg(feature = "catalog")]
+    {
+        recipe_emit::emit(input.into()).into()
     }
 }
 

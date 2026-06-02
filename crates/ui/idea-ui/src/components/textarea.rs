@@ -34,8 +34,8 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, IntoElement, Length, Element, Reactive, Signal, StyleApplication, StyleRules,
-    Tokenized, VariantEnum,
+    component, ui, IdealystSchema, IntoElement, Length, Element, Reactive, Signal, StyleApplication,
+    StyleRules, Tokenized, VariantEnum,
 };
 
 use idea_theme::extensible::{tone as tones, ToneRef};
@@ -45,28 +45,38 @@ use crate::stylesheets::{FieldGroup, FieldLabel};
 pub use crate::stylesheets::{FieldAppearance, FieldSize};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct TextareaProps {
     /// Optional label above the input.
+    #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
     pub label: Reactive<Option<String>>,
+    /// Controlled text value. The host owns the signal.
     pub value: Signal<String>,
+    /// Fires with the full new text on every edit.
     pub on_change: Rc<dyn Fn(String)>,
+    /// Placeholder shown when the value is empty.
     pub placeholder: Option<String>,
     /// Helper text below the input.
+    #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
     pub help: Reactive<Option<String>>,
     /// Error text below the input; takes precedence over `help` and
     /// auto-applies the Danger tone.
+    #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
     pub error: Reactive<Option<String>>,
     /// Optional tone overlay (border + help-text color).
     pub tone: Option<ToneRef>,
+    /// Padding/font scale (Sm, Md, Lg). Default Md.
     pub size: FieldSize,
     /// Visual shell: `Outline` (bordered, default), `Contained` (filled),
     /// or `Bare` (no chrome). All three keep a focus ring.
     pub variant: FieldAppearance,
     /// Resting height in text lines — the floor the box grows from and
     /// never shrinks below. Default 3.
+    #[schema(constraint = "text lines; floored at 1")]
     pub rows: u32,
     /// Maximum height in text lines before the box stops growing and
     /// scrolls. `0` (the default) leaves the autogrow uncapped.
+    #[schema(constraint = "text lines; 0 = uncapped, otherwise clamped up to `rows`")]
     pub max_rows: u32,
 }
 
@@ -121,6 +131,9 @@ fn height_bounds(rows: u32, max_rows: u32, size: FieldSize) -> (f32, Option<f32>
     (min_height, max_height, rows, max_rows)
 }
 
+/// Renders a controlled multi-line text input with optional label,
+/// helper/error text, and tone, auto-growing between the `rows` floor
+/// and the `max_rows` cap.
 #[component]
 pub fn Textarea(props: &TextareaProps) -> Element {
     let value = props.value;

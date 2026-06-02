@@ -105,7 +105,7 @@ pub fn app() -> Element {
 #[cfg(target_arch = "wasm32")]
 pub fn register_extensions(backend: &mut backend_web::WebBackend) {
     drawer_navigator::register(backend);
-    idea_codeblock::register(backend);
+    codeblock::register(backend);
     // Wire the framework's reactive viewport signal so `current_breakpoint()`
     // (taught in the Media queries track) actually updates on resize.
     backend_web::install_viewport_observer();

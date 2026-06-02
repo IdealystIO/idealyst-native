@@ -13,11 +13,14 @@
 //! Color precedence: `tone: Some(...)` wins, then `muted: true`, then
 //! the theme's default text color.
 
-use runtime_core::{component, text, IntoElement, Element, Reactive, StyleApplication, TextAlign};
+use runtime_core::{
+    component, text, IdealystSchema, IntoElement, Element, Reactive, StyleApplication, TextAlign,
+};
 
 use idea_theme::extensible::{installed_typography_sheet, ToneRef, TypographyKindRef};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct TypographyProps {
     /// Text content. `Reactive<String>` so it can carry live text: a
     /// string literal / `String` is static, a `Signal<String>` or
@@ -25,6 +28,8 @@ pub struct TypographyProps {
     /// no parent rebuild. The `ui!`/`jsx!` dispatch coerces all of these
     /// via `.into()`, so call sites are unchanged for the static case.
     pub content: Reactive<String>,
+    /// Typographic role (font family/size/weight/line-height), e.g.
+    /// H1/Body/Caption. Default Body.
     pub kind: TypographyKindRef,
     /// Optional intent-colored text. When `Some`, overrides `muted`.
     pub tone: Option<ToneRef>,
@@ -49,6 +54,9 @@ impl Default for TypographyProps {
     }
 }
 
+/// Themed text. Renders `content` at the given `kind` (H1…H6, Body,
+/// Caption, …) using the theme's type scale — the standard way to put
+/// text on screen with consistent typography.
 #[component]
 pub fn Typography(props: &TypographyProps) -> Element {
     let content = props.content.clone();

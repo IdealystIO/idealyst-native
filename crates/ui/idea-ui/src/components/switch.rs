@@ -27,7 +27,8 @@ use std::time::Duration;
 
 use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::{
-    component, ui, Effect, Element, IntoElement, Reactive, Ref, Signal, StyleApplication, ViewHandle,
+    component, ui, Effect, Element, IdealystSchema, IntoElement, Reactive, Ref, Signal,
+    StyleApplication, ViewHandle,
 };
 
 use idea_theme::extensible::{installed_switch_sheet, ToneRef, VariantRef};
@@ -51,9 +52,11 @@ fn travel_for(size: ControlSize) -> f32 {
 }
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct SwitchProps {
     /// Optional inline label rendered to the left of the track.
     /// `Reactive<Option<String>>` — static (`None`/`Some`) or live.
+    #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
     pub label: Reactive<Option<String>>,
     /// Controlled bool state. The host owns the signal.
     pub value: Signal<bool>,
@@ -80,6 +83,9 @@ impl Default for SwitchProps {
     }
 }
 
+/// Renders a controlled slide-toggle: a tone-colored pill track with a
+/// thumb that animates between off (left) and on (right), with an
+/// optional inline label.
 #[component]
 pub fn Switch(props: &SwitchProps) -> Element {
     let value = props.value;

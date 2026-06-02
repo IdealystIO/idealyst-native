@@ -24,7 +24,7 @@ Concrete from the marketing site:
 | Component | Forces in deps | Bundle impact |
 |---|---|---|
 | Embedded `Simulator` on `/` | `host-web` + `ios-sim` + `android-sim` + `render-api` + `render-wgpu` + `welcome` | ~10 MB |
-| Everything else | runtime, idea-ui, drawer-navigator, idea-codeblock, etc. | ~3 MB |
+| Everything else | runtime, idea-ui, drawer-navigator, codeblock, etc. | ~3 MB |
 
 The Simulator is a visual asset shown on one route. With code
 splitting, the main bundle drops to ~3 MB and the simulator wasm

@@ -28,8 +28,8 @@ use std::cell::Cell;
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
-    after_ms, component, presence, ui, unscope, Easing, IntoElement, PresenceAnim, PresenceState,
-    Element, Signal, StyleApplication,
+    after_ms, component, presence, ui, unscope, Easing, IdealystSchema, IntoElement, PresenceAnim,
+    PresenceState, Element, Signal, StyleApplication,
 };
 
 use idea_theme::extensible::{installed_alert_sheet, ToneRef, VariantRef};
@@ -49,11 +49,15 @@ const TOAST_SLIDE_PX: f32 = 8.0;
 
 /// One queued toast. Constructed by [`push_toast`]; consumed by
 /// [`ToastHost`]'s reactive list.
-#[derive(Clone)]
+#[derive(Clone, IdealystSchema)]
 pub struct ToastEntry {
+    /// Process-unique id. Pass to [`dismiss_toast`] to close early.
     pub id: u64,
+    /// The message line shown in the toast card.
     pub message: String,
+    /// Semantic palette (Success/Danger/…) for the surface styling.
     pub tone: ToneRef,
+    /// Surface skeleton (Filled/Soft/…) for the surface styling.
     pub variant: VariantRef,
     /// Flips to `true` when the toast begins its exit animation. The
     /// card's `presence` reads it via `present()`.
@@ -154,8 +158,11 @@ fn remove_toast(id: u64) {
 // ToastCard
 // =============================================================================
 
+#[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ToastCardProps {
+    /// The queued toast this card renders. Supplied by [`ToastHost`]'s
+    /// reactive list, not authored directly.
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub entry: ToastEntry,
 }
@@ -166,6 +173,9 @@ impl Default for ToastCardProps {
     }
 }
 
+/// One toast surface. Renders the entry's message on the Alert-sheet
+/// surface and fades/slides itself in and out via `presence`, driven by
+/// the entry's `leaving` signal.
 #[component]
 pub fn ToastCard(props: &ToastCardProps) -> Element {
     let entry = props.entry.clone();
@@ -205,10 +215,12 @@ pub fn ToastCard(props: &ToastCardProps) -> Element {
 // =============================================================================
 
 /// Where the toast stack anchors on the viewport.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema)]
 pub enum ToastPlacement {
+    /// Anchor the stack to the top of the viewport.
     #[default]
     Top,
+    /// Anchor the stack to the bottom of the viewport.
     Bottom,
 }
 
@@ -221,8 +233,10 @@ impl ToastPlacement {
     }
 }
 
+#[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ToastHostProps {
+    /// Viewport edge the toast stack anchors to. Default Top.
     pub placement: ToastPlacement,
 }
 
@@ -232,6 +246,10 @@ impl Default for ToastHostProps {
     }
 }
 
+/// Renders the process-global toast queue. Mount once near the app
+/// root; [`push_toast`] (from anywhere) enqueues entries that appear
+/// here as a non-modal, touch-passthrough overlay anchored per
+/// `placement`.
 #[component]
 pub fn ToastHost(props: &ToastHostProps) -> Element {
     let q = queue();

@@ -73,11 +73,14 @@ members = [
     "crates/ui/icons-lucide",
 
     # SDK — third-party extension primitives (Primitive::External).
-    "crates/sdk/maps-core",
+    # `maps` is an umbrella crate; its per-backend leaves are nested
+    # under it (core/ios/web) so the flat sdk/ listing shows the SDK
+    # feature, not its platform implementations.
     "crates/sdk/maps",
-    "crates/sdk/maps-web",
-    "crates/sdk/maps-ios",
-    "crates/sdk/idea-codeblock",
+    "crates/sdk/maps/core",
+    "crates/sdk/maps/web",
+    "crates/sdk/maps/ios",
+    "crates/sdk/codeblock",
     "crates/sdk/webview",
     "crates/sdk/video",
     "crates/sdk/svg",
@@ -90,8 +93,13 @@ members = [
     "crates/sdk/net",
     "crates/sdk/storage",
     "crates/sdk/microphone",
+    "crates/sdk/camera",
     "crates/sdk/credentials",
+    "crates/sdk/biometrics",
+    "crates/sdk/screen-recorder",
     "crates/sdk/files",
+    "crates/sdk/i18n",
+    "crates/sdk/i18n/macros",
 
     # API — full-stack server-functions layer (server fns, transport,
     # auth/middleware, storage). See crates/api/server/DESIGN.md.
@@ -99,12 +107,15 @@ members = [
     "crates/api/server-macros",
 
     # SDK — navigator-kind extensions (Primitive::NavigatorExt).
-    "crates/sdk/stack-navigator",
-    "crates/sdk/tab-navigator",
-    "crates/sdk/drawer-navigator",
-    "crates/sdk/web-navigator-helpers",
-    "crates/sdk/ios-navigator-helpers",
-    "crates/sdk/android-navigator-helpers",
+    # Grouped under navigators/: the three SDK features (stack/tab/
+    # drawer) plus the shared per-platform machinery in helpers/ that
+    # all three depend on.
+    "crates/sdk/navigators/stack",
+    "crates/sdk/navigators/tab",
+    "crates/sdk/navigators/drawer",
+    "crates/sdk/navigators/helpers/web",
+    "crates/sdk/navigators/helpers/ios",
+    "crates/sdk/navigators/helpers/android",
 
     # Tools — CLI + per-platform build/run + source porters.
     "crates/tools/cli",
@@ -149,6 +160,7 @@ members = [
     "examples/stack-demo",
     "examples/server-fn-demo",
     "examples/mic-demo",
+    "examples/camera-demo",
     "examples/login-demo",
     "examples/mcp-demo",
     "examples/fiddle",
@@ -158,6 +170,7 @@ members = [
     "examples/toolbar-demo",
     "examples/menu-demo",
     "examples/reactive-loops",
+    "examples/i18n-demo",
     "benchmark",
     "benchmark/idealyst-native/wasm",
     "benchmark/idealyst-native-anim/wasm",
@@ -262,11 +275,11 @@ idea-theme = { path = "crates/ui/idea-theme" }
 idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }
 icons-lucide = { path = "crates/ui/icons-lucide" }
-maps-core = { path = "crates/sdk/maps-core" }
 maps = { path = "crates/sdk/maps" }
-maps-web = { path = "crates/sdk/maps-web" }
-maps-ios = { path = "crates/sdk/maps-ios" }
-idea-codeblock = { path = "crates/sdk/idea-codeblock" }
+maps-core = { path = "crates/sdk/maps/core" }
+maps-web = { path = "crates/sdk/maps/web" }
+maps-ios = { path = "crates/sdk/maps/ios" }
+codeblock = { path = "crates/sdk/codeblock" }
 webview = { path = "crates/sdk/webview" }
 video = { path = "crates/sdk/video" }
 svg = { path = "crates/sdk/svg" }
@@ -277,16 +290,21 @@ menu = { path = "crates/sdk/menu" }
 net = { path = "crates/sdk/net" }
 storage = { path = "crates/sdk/storage" }
 microphone = { path = "crates/sdk/microphone" }
+camera = { path = "crates/sdk/camera" }
 credentials = { path = "crates/sdk/credentials" }
+biometrics = { path = "crates/sdk/biometrics" }
+screen-recorder = { path = "crates/sdk/screen-recorder" }
 files = { path = "crates/sdk/files" }
+i18n = { path = "crates/sdk/i18n" }
+i18n-macros = { path = "crates/sdk/i18n/macros" }
 server = { path = "crates/api/server" }
 server-macros = { path = "crates/api/server-macros" }
-stack-navigator = { path = "crates/sdk/stack-navigator" }
-tab-navigator = { path = "crates/sdk/tab-navigator" }
-drawer-navigator = { path = "crates/sdk/drawer-navigator" }
-web-navigator-helpers = { path = "crates/sdk/web-navigator-helpers" }
-android-navigator-helpers = { path = "crates/sdk/android-navigator-helpers" }
-ios-navigator-helpers = { path = "crates/sdk/ios-navigator-helpers" }
+stack-navigator = { path = "crates/sdk/navigators/stack" }
+tab-navigator = { path = "crates/sdk/navigators/tab" }
+drawer-navigator = { path = "crates/sdk/navigators/drawer" }
+web-navigator-helpers = { path = "crates/sdk/navigators/helpers/web" }
+android-navigator-helpers = { path = "crates/sdk/navigators/helpers/android" }
+ios-navigator-helpers = { path = "crates/sdk/navigators/helpers/ios" }
 
 # Gzip for the web build's `--gzip` flag (idealyst build --web --gzip).
 # Already in the dep graph transitively (reqwest, ureq, etc.) so adding

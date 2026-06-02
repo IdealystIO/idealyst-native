@@ -1,0 +1,5 @@
+error: argument `name` is never used in the default (`en`) translation of message `greeting`
+ --> tests/ui/unused_arg.rs:8:18
+  |
+8 |         greeting(name) {
+  |                  ^^^^

@@ -22,8 +22,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, ChildList, Easing, Length, Element, StyleApplication, StyleRules, StyleSheet,
-    Tokenized, Transition, VariantEnum, VariantSet,
+    component, ui, ChildList, Easing, IdealystSchema, Length, Element, StyleApplication, StyleRules,
+    StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
 };
 
 use idea_theme::active_theme;
@@ -192,10 +192,18 @@ pub fn build_card_sheet(variants: Vec<VariantRef>) -> Rc<StyleSheet> {
     Rc::new(sheet)
 }
 
+#[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct CardProps {
+    /// Surface skeleton: built-in [`variant::Flat`] (page surface) or
+    /// [`variant::Elevated`] (raised surface + shadow), or an
+    /// app-installed custom variant. Default Flat.
     pub variant: VariantRef,
+    /// Inner padding scale (None/Sm/Md/Lg → theme spacing tokens).
+    /// Default Md.
     pub padding: CardPadding,
+    /// Card contents. Incoming fragments are flattened via
+    /// `ChildList::append_to` before rendering inside the surface.
     pub children: Vec<Element>,
 }
 
@@ -209,6 +217,9 @@ impl Default for CardProps {
     }
 }
 
+/// Surface container that wraps its children in a themed, bordered,
+/// rounded panel. The `variant` picks the background/shadow treatment
+/// and `padding` the inner spacing.
 #[component(children)]
 pub fn Card(props: CardProps) -> Element {
     let variant_key = props.variant.key().to_string();

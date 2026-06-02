@@ -39,7 +39,7 @@ mcp-catalog = { workspace = true }
 idea-ui = { workspace = true, features = ["docs"] }
 drawer-navigator = { workspace = true }
 # Theme-aware syntax-highlighted code panels for usage snippets.
-idea-codeblock = { workspace = true }
+codeblock = { workspace = true }
 # Real HTML <table> on web via Element::External; flex fallback on
 # native. Powers the auto-generated props/fields tables.
 table = { workspace = true }

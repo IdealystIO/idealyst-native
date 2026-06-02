@@ -24,8 +24,8 @@ use std::rc::Rc;
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
-    component, signal, ui, IntoElement, PressableHandle, Element, Reactive, Ref, Signal,
-    StyleApplication, VariantEnum,
+    component, signal, ui, IdealystSchema, IntoElement, PressableHandle, Element, Reactive, Ref,
+    Signal, StyleApplication, VariantEnum,
 };
 
 use idea_theme::theme::IdeaThemeRef;
@@ -34,8 +34,13 @@ use crate::stylesheets::{SelectMenu, SelectOption as SelectOptionStyle, SelectTr
 
 pub use crate::stylesheets::SelectTriggerSize as SelectSize;
 
-#[derive(Clone)]
+/// One selectable row in a [`Select`]. `id` is the value committed to
+/// the bound signal when chosen; `label` is what the user sees.
+#[derive(Clone, IdealystSchema)]
 pub struct SelectOption {
+    /// Stable value committed to the `Select`'s `value` signal when this
+    /// row is chosen. Compared against the current value to mark the
+    /// selected row.
     pub id: String,
     /// Row label. `Reactive<String>` — static or live (signal/`rx!`).
     pub label: Reactive<String>,
@@ -47,11 +52,19 @@ impl SelectOption {
     }
 }
 
+#[derive(IdealystSchema)]
 pub struct SelectProps {
+    /// Controlled selected value — the `id` of the chosen
+    /// [`SelectOption`]. The host owns the signal; selecting a row sets
+    /// it via `on_change`.
     pub value: Signal<String>,
+    /// Fires with the chosen option's `id` when the user picks a row.
     pub on_change: Rc<dyn Fn(String)>,
+    /// The rows to offer in the dropdown menu.
     pub options: Vec<SelectOption>,
+    /// Trigger height. Default Md.
     pub size: SelectSize,
+    /// Text shown on the trigger when no option matches `value`.
     pub placeholder: Option<String>,
 }
 
@@ -67,6 +80,10 @@ impl Default for SelectProps {
     }
 }
 
+/// Controlled dropdown: a pressable trigger showing the selected
+/// option's label (or `placeholder`), opening an anchored menu of
+/// [`SelectOption`] rows. Choosing a row fires `on_change` and closes
+/// the menu.
 #[component]
 pub fn Select(props: SelectProps) -> Element {
     let value = props.value;

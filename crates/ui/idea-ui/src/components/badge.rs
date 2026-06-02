@@ -16,15 +16,20 @@
 //! before mounting. The default sheet is installed by
 //! `install_idea_theme`.
 
-use runtime_core::{component, text, IntoElement, Element, Reactive, StyleApplication};
+use runtime_core::{component, text, IdealystSchema, IntoElement, Element, Reactive, StyleApplication};
 
 use idea_theme::extensible::{installed_badge_sheet, tone, variant, ToneRef, VariantRef};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct BadgeProps {
     /// Badge text. `Reactive<String>` — static or live (signal/`rx!`).
+    #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub label: Reactive<String>,
+    /// Semantic color palette (Neutral, Success, Danger, Warning, …).
+    /// Default Neutral.
     pub tone: ToneRef,
+    /// Surface treatment (Soft, Filled, Outline, …). Default Soft.
     pub variant: VariantRef,
 }
 
@@ -38,6 +43,9 @@ impl Default for BadgeProps {
     }
 }
 
+/// Renders a small pill-shaped status indicator: a single styled text
+/// node whose tone × variant appearance is resolved from the installed
+/// Badge stylesheet.
 #[component]
 pub fn Badge(props: &BadgeProps) -> Element {
     let label = props.label.clone();

@@ -63,9 +63,31 @@ pub struct NavigatorHost<N: Clone + 'static> {
     pub release_screen: Rc<dyn Fn(u64)>,
 
     /// Match a URL path against the navigator's route table. Returns
-    /// `(route_name, typed_params_box)` for the first matching
-    /// pattern. Used by web/SSR; native handlers can ignore.
+    /// `(route_name, typed_params_box)` for the first FULL-match (the
+    /// path equals a route's pattern after stripping this navigator's
+    /// base). Used by web/SSR; native handlers can ignore.
     pub match_path: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>)>>,
+
+    /// Resolve a URL path against the route table by PREFIX matching
+    /// (after stripping this navigator's [`base`](Self::base)): returns
+    /// the best-matching `(route_name, typed_params, remainder)`, where
+    /// `remainder` is the unconsumed tail after the matched route's
+    /// pattern. "Best" = the route whose pattern consumes the most
+    /// segments, so a specific route beats an index (`""` pattern).
+    ///
+    /// This is the hierarchical / deep-link entry point: a navigator
+    /// prefix-selects the screen for an incoming URL even when the URL
+    /// continues into a NESTED navigator (which resolves the remainder
+    /// against its own routes). `match_path` is the full-match special
+    /// case. Web/native handlers use this on cold-load / deep-link.
+    pub resolve_entry:
+        Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>, String)>>,
+
+    /// This navigator's hierarchy base prefix — the URL it's mounted
+    /// under (empty for the root, e.g. `/encounters` for a stack nested
+    /// in that drawer screen). Web/native handlers strip it from the
+    /// platform URL before resolving. Route patterns are relative to it.
+    pub base: String,
 
     /// Reactive nav-state mirror. Updated automatically by the
     /// substrate's `NavigatorControl::dispatch` for commands that

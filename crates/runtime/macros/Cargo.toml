@@ -29,7 +29,10 @@ hot-reload = []
 # surface: the MCP server is one consumer, a docs renderer is another.
 # When off, the macros emit zero catalog code — no inventory entry, no
 # dependency on `mcp-catalog`. See `docs/mcp-catalog-spec.md`.
-catalog = []
+#
+# Pulls `prettyplease` — used only by `recipe!` to format captured
+# recipe source for the catalog — so it compiles only in catalog builds.
+catalog = ["dep:prettyplease"]
 
 # Backward-compatible alias. The catalog used to be called "mcp" (after
 # its first consumer); the gate is now `catalog` since the data feeds
@@ -58,3 +61,6 @@ proc-macro2 = { version = "1", features = ["span-locations"] }
 # Stable hashing for `lazy! { … }`'s generated function / split-module
 # names. Per-call-site uniqueness comes from the block's token text.
 sha2 = "0.10"
+# Formats captured `recipe!` source into readable, exact Rust for the
+# catalog. Optional — only pulled in by the `catalog` feature.
+prettyplease = { version = "0.2", optional = true }

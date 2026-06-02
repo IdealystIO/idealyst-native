@@ -38,12 +38,12 @@ pub fn app() -> Element {
 
             H2(content = "Optional: theme-aware code blocks".to_string())
             P(content = "If you want syntax-highlighted code panels (these docs use one), add \
-                the idea-codeblock SDK and register it alongside other backend handlers.".to_string())
+                the codeblock SDK and register it alongside other backend handlers.".to_string())
             CodePanel(src = r##"[dependencies]
-idea-codeblock = { workspace = true }
+codeblock = { workspace = true }
 
 # On wasm32:
-idea_codeblock::register(&mut backend);"##.to_string())
+codeblock::register(&mut backend);"##.to_string())
 
             H2(content = "What's next".to_string())
             P(content = "Walk through First component (the next page) for a one-screen app, \

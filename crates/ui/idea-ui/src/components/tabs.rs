@@ -29,7 +29,9 @@
 //! }
 //! ```
 
-use runtime_core::{component, pressable, text, ui, Element, Reactive, Signal, StyleApplication};
+use runtime_core::{
+    component, pressable, text, ui, Element, IdealystSchema, Reactive, Signal, StyleApplication,
+};
 use std::rc::Rc;
 
 use crate::stylesheets::{TabBar, TabButton};
@@ -38,9 +40,11 @@ use crate::stylesheets::{TabBar, TabButton};
 /// is its identity — `Signal<usize>` indexes into the same vec.
 #[derive(Clone, Default)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct Tab {
     /// Human-readable label shown on the tab. `Reactive<String>` —
     /// static or live (signal/`rx!`).
+    #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub label: Reactive<String>,
 }
 
@@ -51,6 +55,7 @@ impl Tab {
 }
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct TabsProps {
     /// Tabs in left-to-right order. Position in the vec is the tab's
     /// index — what the active Signal points at and what `on_change`
@@ -79,6 +84,10 @@ impl Default for TabsProps {
     }
 }
 
+/// Renders a clickable tab strip with reactive active highlighting. Pure
+/// UI: it draws one pressable tab button per `Tab`, highlights the one at
+/// `active`, and reports taps via `on_change` — the caller owns the active
+/// state and renders the corresponding content itself.
 #[component]
 pub fn Tabs(props: TabsProps) -> Element {
     let tab_items = props.tabs;

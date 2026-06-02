@@ -24,20 +24,26 @@
 
 use std::rc::Rc;
 
-use runtime_core::{component, ui, IntoElement, Element, Reactive, StyleApplication};
+use runtime_core::{component, ui, IdealystSchema, IntoElement, Element, Reactive, StyleApplication};
 
 use idea_theme::extensible::{installed_alert_sheet, tone, variant, ToneRef, VariantRef};
 
 use crate::stylesheets::{AlertBody, AlertTitle, TagClose};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+#[derive(IdealystSchema)]
 pub struct AlertProps {
     /// Alert title. `Reactive<String>` — static or live (signal/`rx!`).
+    #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub title: Reactive<String>,
     /// Optional second-line detail text, beneath the title.
     /// `Reactive<Option<String>>` — static or live.
+    #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
     pub body: Reactive<Option<String>>,
+    /// Semantic color palette (Info, Danger, Warning, Success, …).
+    /// Default Info.
     pub tone: ToneRef,
+    /// Surface treatment (Soft, Filled, Outline, …). Default Soft.
     pub variant: VariantRef,
     /// When `Some`, a close affordance appears in the top-right.
     pub on_dismiss: Option<Rc<dyn Fn()>>,
@@ -57,6 +63,8 @@ impl Default for AlertProps {
     }
 }
 
+/// Renders a banner with a bold title, optional body line, and an
+/// optional dismiss button, styled by the tone × variant axes.
 #[component]
 pub fn Alert(props: &AlertProps) -> Element {
     let title = props.title.clone();

@@ -1,0 +1,48 @@
+[package]
+name = "i18n"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Lightweight, Rust-native internationalization SDK.
+#
+# Translations are authored inline in Rust via the `i18n! { … }` macro
+# (re-exported from `i18n-macros`). The macro emits a strongly-typed
+# `Locale` enum plus one typed function per message; a missing bundled
+# locale or a placeholder that doesn't match a typed argument is a
+# *compile error*, not a runtime surprise.
+#
+# This crate is the runtime half: the global reactive locale signal, the
+# interpolation `format()` fn + a pluggable-formatter seam (so a richer
+# Fluent/ICU layer can swap in), and the opt-in pack registry + loader
+# seam for locales that live on the network rather than in the binary.
+#
+# There is NO per-platform backend code here — i18n is fundamentally a
+# string-replacement + reactivity layer. It reuses the same global-signal
+# + `Reactive<String>` machinery that powers `viewport_size()` and
+# reactive `text()`, so changing the language re-renders affected text in
+# place with no component rebuild.
+
+[features]
+default = []
+
+# Ready-made network pack loader for opt-in locales: fetches
+# `<base>/<code>.json` via the `net` SDK and drives it on the framework
+# async driver. Opt-in — without it the crate has no `net` dependency and
+# opt-in locales load only via a user-installed loader + `install_pack`.
+lazy-fetch = ["dep:net", "runtime-core/async-driver"]
+
+[dependencies]
+runtime-core = { workspace = true }
+i18n-macros = { workspace = true }
+net = { workspace = true, optional = true }
+# Parsing flat `{ "key": "value" }` locale packs (SSR-inlined or fetched).
+serde_json = "1"
+
+[dev-dependencies]
+# Compile-fail tests that prove the strong-typing guarantees: a missing
+# bundled locale / a bad placeholder / an unused arg must fail to compile.
+trybuild = "1"
+# Integration tests drive the reactive primitives directly to prove that a
+# generated message recomputes when the locale (or a pack) changes.
+runtime-core = { workspace = true }

@@ -454,6 +454,8 @@ fn command_kind(c: &wire::Command) -> &'static str {
         AnnounceForAccessibility { .. } => "AnnounceForAccessibility",
         SetAnimatedF32 { .. } => "SetAnimatedF32",
         SetAnimatedColor { .. } => "SetAnimatedColor",
+        ApplySafeAreaPadding { .. } => "ApplySafeAreaPadding",
+        ApplyScrollViewSafeAreaInset { .. } => "ApplyScrollViewSafeAreaInset",
     }
 }
 

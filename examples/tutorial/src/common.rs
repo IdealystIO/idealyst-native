@@ -160,7 +160,7 @@ pub fn CodePanel(props: &CodePanelProps) -> Element {
         let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
         let spans = highlight(&src, palette);
         let code_style = move || StyleApplication::new(CodeText::sheet());
-        idea_codeblock::code_block(spans)
+        codeblock::code_block(spans)
             .with_style(code_style)
             .into_element()
     });

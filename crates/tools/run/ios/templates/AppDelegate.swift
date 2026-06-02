@@ -11,11 +11,42 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
+        // Cold-start deep link. Capture the launch URL — custom scheme
+        // (`launchOptions[.url]`) or a universal link delivered as a
+        // user activity — and hand its PATH to the framework BEFORE the
+        // ViewController mounts (its `viewDidLoad` calls `ios_main`). The
+        // navigator walker reads the seeded path on its synchronous
+        // initial mount and resolves the deep-linked screen. No launch
+        // URL ⇒ this is skipped and behavior is unchanged.
+        if let launchURL = launchOptions?[.url] as? URL {
+            seedLaunchPath(launchURL)
+        } else if
+            let activityDict = launchOptions?[.userActivityDictionary] as? [AnyHashable: Any],
+            let activity = activityDict.values.compactMap({ $0 as? NSUserActivity }).first,
+            activity.activityType == NSUserActivityTypeBrowsingWeb,
+            let webURL = activity.webpageURL
+        {
+            seedLaunchPath(webURL)
+        }
+
         let window = UIWindow(frame: UIScreen.main.bounds)
         let vc = ViewController()
         window.rootViewController = vc
         window.makeKeyAndVisible()
         self.window = window
         return true
+    }
+
+    /// Pass the URL's path (with query, e.g. `/encounters/abc`) to the
+    /// Rust side. Falls back to the absolute string if `URLComponents`
+    /// can't isolate a path.
+    private func seedLaunchPath(_ url: URL) {
+        let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        var path = comps?.path ?? url.path
+        if path.isEmpty { path = "/" }
+        if let query = comps?.query, !query.isEmpty {
+            path += "?" + query
+        }
+        path.withCString { ios_set_launch_path($0) }
     }
 }

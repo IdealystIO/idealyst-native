@@ -21,7 +21,8 @@ use runtime_core::scheduling::{
     install_scheduler, ScheduleHandle, Scheduler,
 };
 use runtime_core::{
-    after_ms_scoped, animated, on_cleanup, raf_loop_scoped, timeline, Effect,
+    after_ms_scoped, animated, is_reactive_busy, on_cleanup, raf_loop_scoped, timeline, Effect,
+    Signal,
 };
 
 // =============================================================================
@@ -86,6 +87,34 @@ fn tick_raf_loops_once() {
             s.raf.insert(id, cb);
         });
     }
+}
+
+/// Model the browser holding a reference to an animation-frame callback
+/// it has ALREADY dispatched for the current tick: steal the most-recently
+/// registered raf-loop body OUT of the scheduler registry so a later
+/// `cancel()` (e.g. from scope teardown dropping the handle) can no longer
+/// remove it. The returned closure can then be fired manually to simulate
+/// the queued frame landing after teardown. This is the crux of the
+/// QuillEMR notetaker teardown-race: `cancelAnimationFrame` can't unqueue
+/// an already-dispatched frame, so the framework's own `cancelled` flag is
+/// what must stop the body from running.
+fn steal_one_raf() -> Box<dyn FnMut()> {
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let id = *s.raf.keys().next().expect("a raf loop must be registered");
+        s.raf.remove(&id).unwrap()
+    })
+}
+
+/// Same idea for a one-shot: pull the registered callback out so a later
+/// cancel can't reach it, letting us fire the "already-dispatched" shot
+/// after the owning scope has dropped.
+fn steal_one_one_shot() -> Box<dyn FnOnce()> {
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let id = *s.one_shot.keys().next().expect("a one-shot must be registered");
+        s.one_shot.remove(&id).unwrap()
+    })
 }
 
 fn pending_one_shots() -> usize {
@@ -555,4 +584,146 @@ fn raf_loop_scoped_inside_after_ms_scoped_keeps_running() {
     );
     // Cancels: 0 from after_ms (it already fired), 1 from the raf loop.
     assert_eq!(cancel_count(), 1);
+}
+
+// =============================================================================
+// Teardown-race regressions (QuillEMR notetaker)
+// =============================================================================
+//
+// Reproduce the shape that crashed QuillEMR on web: a navigator releases a
+// screen whose subtree has a live `raf_loop_scoped` reading a screen-scoped
+// signal every frame. The browser had already DISPATCHED that screen's rAF
+// for the current tick; `cancelAnimationFrame` can't unqueue it, so the
+// queued frame fires AFTER the scope (and its signals) were torn down.
+//
+// `steal_one_raf` / `steal_one_one_shot` model "the browser holds the
+// already-dispatched callback": they pull the body out of the test
+// scheduler so the teardown's `cancel()` can't reach it, then we fire it by
+// hand after dropping the scope. Without the framework's `cancelled` flag
+// + busy-skip, the stolen body would re-enter the reactive arena and panic
+// ("signal used after its scope was dropped" / "RefCell already borrowed").
+
+#[test]
+fn raf_loop_scoped_does_not_fire_after_scope_drop_even_if_browser_already_dispatched() {
+    install_test_scheduler();
+    reset_state();
+
+    let ran_after_drop = Rc::new(Cell::new(false));
+    let ran_for_effect = ran_after_drop.clone();
+
+    // A screen-scoped signal the per-frame body reads — the notetaker
+    // shape (`state.get()` every frame inside the reactive context).
+    let effect = Effect::new(move || {
+        let signal = Signal::new(0u32);
+        let ran = ran_for_effect.clone();
+        raf_loop_scoped(move || {
+            // Reading the scope-owned signal is exactly what panics with
+            // "signal used after its scope was dropped" if this body runs
+            // post-teardown. The flag records that we got past the guard.
+            let _ = signal.get();
+            ran.set(true);
+        });
+    });
+    assert_eq!(pending_raf_loops(), 1, "loop registered");
+
+    // The browser dispatched this frame: steal the body so teardown's
+    // cancel can't unqueue it.
+    let mut already_dispatched = steal_one_raf();
+
+    // Navigator releases the screen scope: dropping the Effect runs the
+    // scope cleanup (which sets the `cancelled` flag + drops the handle)
+    // and recycles the signal's arena slot.
+    drop(effect);
+
+    // The OS-dispatched frame finally lands. With the fix it must bail at
+    // the top (cancelled flag set) and NEVER touch the dropped signal —
+    // so this call must neither panic nor run the body.
+    already_dispatched();
+
+    assert!(
+        !ran_after_drop.get(),
+        "the raf body must NOT run after its owning scope was dropped, \
+         even though the browser had already dispatched the frame",
+    );
+}
+
+#[test]
+fn after_ms_scoped_does_not_fire_after_scope_drop_even_if_browser_already_dispatched() {
+    install_test_scheduler();
+    reset_state();
+
+    let ran_after_drop = Rc::new(Cell::new(false));
+    let ran_for_effect = ran_after_drop.clone();
+
+    let effect = Effect::new(move || {
+        let signal = Signal::new(0u32);
+        let ran = ran_for_effect.clone();
+        after_ms_scoped(1000, move || {
+            let _ = signal.get();
+            ran.set(true);
+        });
+    });
+    assert_eq!(pending_one_shots(), 1, "one-shot registered");
+
+    let already_dispatched = steal_one_one_shot();
+    drop(effect);
+    already_dispatched();
+
+    assert!(
+        !ran_after_drop.get(),
+        "the one-shot must NOT run after its owning scope was dropped",
+    );
+}
+
+#[test]
+fn raf_loop_scoped_skips_a_frame_while_reactive_arena_is_busy() {
+    // Re-entrancy guard (panic #1): a frame that lands WHILE the reactive
+    // arena is mid-mutation (a navigator mount running effects /
+    // `with_signal_mut`) must skip rather than re-enter — re-entering
+    // would collide with the in-flight borrow / taken signal slot. The
+    // scope is still alive here (cleanup hasn't run, so the `cancelled`
+    // flag is false); only the busy-skip protects this case. The loop
+    // re-arms, so the body runs normally on a later, non-busy frame.
+    install_test_scheduler();
+    reset_state();
+
+    let ran_count = Rc::new(Cell::new(0u32));
+    let ran_for_effect = ran_count.clone();
+
+    let _effect = Effect::new(move || {
+        let ran = ran_for_effect.clone();
+        raf_loop_scoped(move || {
+            // Must never observe a busy arena: if the guard works, the
+            // body only runs when `is_reactive_busy()` is false.
+            assert!(
+                !is_reactive_busy(),
+                "raf body ran while the reactive arena was mid-mutation",
+            );
+            ran.set(ran.get() + 1);
+        });
+    });
+
+    // Fire the loop body from inside a `with_signal_mut`-style window: a
+    // separate signal's `update` holds the busy state while we tick. The
+    // body should skip (count stays 0).
+    let gate = Signal::new(0u32);
+    gate.update(|_| {
+        // Inside `update`, the arena is busy (signal box taken out).
+        assert!(is_reactive_busy(), "update should mark the arena busy");
+        tick_raf_loops_once();
+    });
+    assert_eq!(
+        ran_count.get(),
+        0,
+        "raf body must skip the frame that lands while the arena is busy",
+    );
+
+    // A later frame, outside any busy window, runs normally.
+    assert!(!is_reactive_busy());
+    tick_raf_loops_once();
+    assert_eq!(
+        ran_count.get(),
+        1,
+        "raf body runs on the next non-busy frame (loop re-armed)",
+    );
 }

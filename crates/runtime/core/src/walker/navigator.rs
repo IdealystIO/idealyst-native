@@ -32,7 +32,8 @@ pub(super) fn build<B: Backend + 'static>(
     accessibility: AccessibilityProps,
 ) -> B::Node {
     use primitives::navigator::{
-        match_pattern, MountResult, NavState, NavigatorControl, NavigatorHost,
+        current_nav_base, join_path, match_pattern, match_prefix, MountResult, NavBaseGuard,
+        NavState, NavigatorControl, NavigatorHost,
     };
 
     let primitives::navigator::NavigatorConfig {
@@ -57,6 +58,15 @@ pub(super) fn build<B: Backend + 'static>(
     // its dispatcher inside `init`.
     let control = Rc::new(NavigatorControl::new());
 
+    // This navigator's hierarchy base prefix — the URL the parent screen it's
+    // nested in is mounted at (empty for the root). Read from the thread-local
+    // set by the parent's `mount_screen`. Route patterns in `screens` are
+    // RELATIVE to this base; the control composes `base + url` on dispatch and
+    // `match_path` strips it before matching. A root navigator has base "" so
+    // every join/strip is a no-op.
+    let my_base = current_nav_base();
+    control.set_base(my_base.clone());
+
     // mount_screen: build a screen subtree inside its own scope; return
     // (node, scope_id, opaque options). Weak control to avoid Rc-cycle
     // through dispatcher → mount_screen → control.
@@ -68,6 +78,7 @@ pub(super) fn build<B: Backend + 'static>(
         let screens = screens.clone();
         let backend = backend.clone();
         let control_for_mount = Rc::downgrade(&control);
+        let base_for_mount = my_base.clone();
         Rc::new(move |name, params, state| {
             let entry = screens.get(name).unwrap_or_else(|| {
                 panic!("Navigator: route '{}' is not registered", name)
@@ -81,6 +92,10 @@ pub(super) fn build<B: Backend + 'static>(
                 primitives::navigator::AmbientNavGuard::push(control_strong);
             let _state_guard = primitives::navigator::shared::ScreenStateGuard::push(state);
             let _route_guard = primitives::navigator::shared::ScreenRouteGuard::push(name);
+            // Publish the base prefix for any navigator nested in THIS screen:
+            // our base + this route's (relative) path. A child navigator's
+            // `current_nav_base()` reads this. No-op-shaped for the root.
+            let _base_guard = NavBaseGuard::push(join_path(&base_for_mount, entry.path));
             let screen_id = crate::Identity::node(
                 nav_identity,
                 0,
@@ -112,12 +127,20 @@ pub(super) fn build<B: Backend + 'static>(
         })
     };
 
-    // match_path: URL → (route name, typed params). Used by web/SSR.
+    // match_path: full URL → (route name, typed params) for THIS navigator.
+    // Used by web/SSR. Strips this navigator's base prefix first, then matches
+    // the remainder against the navigator's RELATIVE route patterns (root base
+    // "" leaves the path unchanged, so single-navigator apps are unaffected).
     let match_path: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>)>> = {
         let screens = screens.clone();
+        let base = my_base.clone();
         Rc::new(move |path| {
+            let rel = match match_prefix(path, &base) {
+                Some((_, rem)) => rem,
+                None => return None, // path isn't under this navigator's base
+            };
             for (name, entry) in screens.iter() {
-                if let Some(segs) = match_pattern(path, entry.path) {
+                if let Some(segs) = match_pattern(&rel, entry.path) {
                     if let Some(params) = (entry.from_segments)(&segs) {
                         return Some((*name, params));
                     }
@@ -127,14 +150,44 @@ pub(super) fn build<B: Backend + 'static>(
         })
     };
 
-    // Retained clone for the SSR initial-path consult below — the
-    // original `match_path` is moved into the host.
-    let match_path_for_ssr = match_path.clone();
+    // resolve_entry: full URL → best PREFIX-matching (route, params, remainder)
+    // for THIS navigator. Strips the base, then picks the route whose relative
+    // pattern consumes the MOST segments (so a specific route beats an index
+    // `""`), returning the unconsumed tail for a nested navigator to resolve.
+    // The hierarchical / deep-link entry point.
+    let resolve_entry: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>, String)>> = {
+        let screens = screens.clone();
+        let base = my_base.clone();
+        Rc::new(move |path| {
+            let rel = match_prefix(path, &base).map(|(_, rem)| rem)?;
+            let mut best: Option<(&'static str, Box<dyn Any>, String, usize)> = None;
+            for (name, entry) in screens.iter() {
+                if let Some((segs, rem)) = match_prefix(&rel, entry.path) {
+                    if let Some(params) = (entry.from_segments)(&segs) {
+                        let pat_len = entry.path.split('/').filter(|s| !s.is_empty()).count();
+                        let better = best.as_ref().map(|(_, _, _, l)| pat_len > *l).unwrap_or(true);
+                        if better {
+                            best = Some((*name, params, rem, pat_len));
+                        }
+                    }
+                }
+            }
+            best.map(|(n, p, r, _)| (n, p, r))
+        })
+    };
 
-    // Reactive nav-state mirror.
+    // Retained clone of the PREFIX resolver for the non-deferred initial-mount
+    // / deep-link consult below. The original `resolve_entry` is moved into the
+    // host; clone it before the move so the synchronous (native/SSR/headless)
+    // mount path can resolve THIS navigator's slice of a cold-start launch URL.
+    let resolve_entry_for_initial = resolve_entry.clone();
+
+    // Reactive nav-state mirror. `active_path` is the FULL hierarchical path
+    // (base + this navigator's initial relative path); root base "" leaves the
+    // configured initial path unchanged.
     let nav_state = NavState {
         active_route: Signal::new(initial),
-        active_path: Signal::new(initial_path.to_string()),
+        active_path: Signal::new(join_path(&my_base, initial_path)),
         depth: Signal::new(1),
         can_go_back: Signal::new(false),
     };
@@ -232,6 +285,8 @@ pub(super) fn build<B: Backend + 'static>(
         mount_screen: mount_screen.clone(),
         release_screen,
         match_path,
+        resolve_entry,
+        base: my_base.clone(),
         nav_state: nav_state.clone(),
         depth_changed,
         active_changed,
@@ -248,17 +303,41 @@ pub(super) fn build<B: Backend + 'static>(
     });
 
     if !defer_initial_mount {
-        // Headless render-at-path (SSR): if a server-requested path was
-        // set and resolves to a registered route, mount THAT screen with
-        // its parsed params instead of the hardcoded `initial`, and sync
-        // nav-state so chrome reads the right route. Backend-agnostic —
-        // live backends never set this (they read the path from their
-        // own platform in the SDK handler layer).
-        let (route, params) = primitives::navigator::take_initial_path()
+        // Native / SSR / headless initial mount with hierarchical deep-link
+        // resolution. A launch / server-requested path may have been set
+        // (iOS/Android cold-start deep link, or SSR render-at-path). Resolve
+        // THIS navigator's slice of it via the PREFIX resolver — stripping our
+        // base and picking the most-specific relative route — and mount THAT
+        // screen as the initial instead of the hardcoded `initial`.
+        //
+        // PEEK, don't take: each navigator in this synchronous mount cascade
+        // (a drawer whose screen nests a stack, etc.) independently consults the
+        // SAME full URL and strips ITS OWN base via `resolve_entry`. Consuming
+        // (the old `take`) would starve nested navigators. The root navigator
+        // (base "") clears the slot once its whole subtree has mounted — see
+        // below.
+        //
+        // The resolved screen is what `attach_initial` carries — the SSR /
+        // primitive-chrome contract (it renders exactly the attached screen,
+        // no navigation), and also the on-screen-top for live drawer/tab/stack.
+        // STACK back-stack reconstruction (so Back returns to the index after a
+        // cold deep-link) is the stack SDK handler's job: it sees
+        // `host.initial_route` vs `host.nav_state.active_route` and, when they
+        // differ, seats the configured initial BELOW the resolved screen. Only
+        // the stack knows it's a stack, so that reconstruction can't live here.
+        //
+        // Live web backends never set the initial path; they read the platform
+        // URL in the SDK handler layer (deferred mount).
+        let (route, params) = primitives::navigator::peek_initial_path()
             .and_then(|path| {
-                match_path_for_ssr(&path).map(|(name, params)| {
+                resolve_entry_for_initial(&path).map(|(name, params, _rem)| {
+                    // Compose the matched screen's FULL hierarchical path
+                    // (base + this navigator's matched relative pattern) so
+                    // chrome reads the right route. The resolver gives us the
+                    // route name; reconstruct the relative path from its pattern.
+                    let rel = screens.get(name).map(|e| e.path).unwrap_or("");
                     nav_state.active_route.set(name);
-                    nav_state.active_path.set(path);
+                    nav_state.active_path.set(join_path(&my_base, rel));
                     (name, params)
                 })
             })
@@ -270,6 +349,14 @@ pub(super) fn build<B: Backend + 'static>(
             initial_result.scope_id,
             initial_result.options,
         );
+
+        // Root navigator: the entire nested subtree has now mounted
+        // synchronously (mounting in this path is synchronous), so every nested
+        // navigator has already peeked the launch URL and stripped its base.
+        // Clear the slot so a later rebuild / non-deep-link mount isn't poisoned.
+        if my_base.is_empty() {
+            primitives::navigator::set_initial_path(None);
+        }
     }
 
     if let Some(style_source) = style {

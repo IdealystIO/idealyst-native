@@ -1,0 +1,39 @@
+[package]
+name = "camera-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Camera SDK demo — opens a live camera stream and tints the page to the average color of what the camera sees, plus a resolution + frame counter. Exercises the `camera` SDK and capability-based permission injection (declares `camera` + a reason string)."
+
+# Pure `rlib` — platform-agnostic app crate. The CLI-generated per-target
+# wrappers carry the platform crate-type + entry point; this crate has no
+# `#[cfg(target_os)]` blocks. `camera` is internally cfg-gated, so the app
+# just calls `Camera` and the right backend compiles per target.
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+camera = { workspace = true }
+# Recorder backend for the runtime-server sidecar wrapper (host-side only).
+dev-server = { workspace = true, optional = true }
+
+# The app declares the *capability* it needs via its dependency on the
+# `camera` SDK (which declares `capabilities = ["camera"]`), and supplies the
+# user-facing *reason* the OS prompt shows here. The CLI walks the dep graph
+# at build time and injects NSCameraUsageDescription (iOS/macOS) + the CAMERA
+# permission (Android) automatically — no hand-edited Info.plist /
+# AndroidManifest.
+[package.metadata.idealyst.app]
+name      = "Camera Demo"
+bundle_id = "ai.truday.idealyst.camerademo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]
+
+[package.metadata.idealyst.app.permissions]
+camera = "Camera Demo tints the screen to the average color your camera sees."

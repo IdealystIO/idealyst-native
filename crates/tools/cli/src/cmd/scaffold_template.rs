@@ -12,7 +12,8 @@
 //! - **Library** — a third-party External-primitive extension. Pure
 //!   `rlib`, defines a `*Props` struct + a PascalCase constructor,
 //!   per-backend `register` stubs gated on `target_arch` /
-//!   `target_os`. Mirrors the in-tree `crates/sdk/maps*/` pattern.
+//!   `target_os`. Mirrors the in-tree `crates/sdk/maps/` pattern
+//!   (umbrella + nested `core`/`ios`/`web` leaves).
 //!
 //! Both flavours emit a `runtime-core = { git = "...", rev = "..." }`
 //! dep using the source the CLI resolved (workspace path-deps in-tree,

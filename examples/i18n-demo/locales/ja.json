@@ -1,0 +1,6 @@
+{
+  "greeting": "こんにちは、{name}",
+  "tagline": "コアのリアクティビティによる型安全な国際化。",
+  "items": "カートに{count}個の商品",
+  "pick_language": "言語を選択"
+}

@@ -23,8 +23,8 @@ use runtime_core::animation::{
     AnimProp, AnimatedValue, LoopFactory, Repeat, SequenceFactory, TweenTo,
 };
 use runtime_core::{
-    component, ui, IntoElement, Length, Element, Reactive, Ref, StyleApplication, StyleRules,
-    Tokenized, ViewHandle,
+    component, ui, IdealystSchema, IntoElement, Length, Element, Reactive, Ref, StyleApplication,
+    StyleRules, Tokenized, ViewHandle,
 };
 
 use idea_theme::extensible::{installed_progress_sheets, ToneRef, VariantRef};
@@ -36,10 +36,12 @@ const PULSE_MS: u64 = 800;
 /// Opacity floor of the indeterminate pulse.
 const PULSE_MIN: f32 = 0.4;
 
+#[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ProgressProps {
     /// Completion in `0.0..=1.0`. Ignored when `indeterminate`.
     /// `Reactive<f32>` — a literal or a live `Signal<f32>` / `rx!`.
+    #[schema(constraint = "0.0..=1.0 (clamped)")]
     pub value: Reactive<f32>,
     /// When true, ignore `value` and show a pulsing indeterminate bar.
     pub indeterminate: bool,
@@ -63,6 +65,10 @@ impl Default for ProgressProps {
     }
 }
 
+/// Linear progress bar — a muted track with a tone-colored fill.
+/// Determinate when `value` is set (fill width tracks it reactively);
+/// `indeterminate = true` shows a pulsing full-width fill for
+/// unknown-duration work.
 #[component]
 pub fn Progress(props: &ProgressProps) -> Element {
     let appearance = format!("{}_{}", props.tone.key(), props.variant.key());
