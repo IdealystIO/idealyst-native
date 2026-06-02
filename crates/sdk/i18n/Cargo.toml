@@ -30,7 +30,7 @@ default = []
 # `<base>/<code>.json` via the `net` SDK and drives it on the framework
 # async driver. Opt-in — without it the crate has no `net` dependency and
 # opt-in locales load only via a user-installed loader + `install_pack`.
-lazy-fetch = ["dep:net", "runtime-core/async-driver"]
+lazy-fetch = ["dep:net", "runtime-core/async-driver", "dep:web-sys"]
 
 [dependencies]
 runtime-core = { workspace = true }
@@ -38,6 +38,12 @@ i18n-macros = { workspace = true }
 net = { workspace = true, optional = true }
 # Parsing flat `{ "key": "value" }` locale packs (SSR-inlined or fetched).
 serde_json = "1"
+
+# Web-only: the `lazy-fetch` loader resolves a relative pack base
+# (`/locales`) against the document origin, since `net` rejects relative
+# URLs. Optional + wasm-target-gated so non-web builds never pull it.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Location"], optional = true }
 
 [dev-dependencies]
 # Compile-fail tests that prove the strong-typing guarantees: a missing

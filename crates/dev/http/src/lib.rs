@@ -152,6 +152,7 @@ const RELOAD_SCRIPT: &str = r#"<script>
 })();
 </script>"#;
 
+#[allow(clippy::too_many_arguments)]
 pub fn serve_static(
     host: &str,
     port: u16,
@@ -161,6 +162,7 @@ pub fn serve_static(
     preload: Option<PreloadContext>,
     overlay: Option<OverlayContext>,
     head: Option<HeadInjectionContext>,
+    fallback_index: Option<String>,
 ) -> Result<()> {
     let addr = format!("{host}:{port}");
     let server = Server::http(&addr)
@@ -229,6 +231,7 @@ pub fn serve_static(
             aas.as_ref(),
             preload.as_ref(),
             head.as_ref(),
+            fallback_index.as_deref(),
             request,
         ) {
             eprintln!("[dev-http] request error: {e}");
@@ -238,6 +241,7 @@ pub fn serve_static(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle(
     root: &Path,
     overlay_roots: &[PathBuf],
@@ -245,6 +249,7 @@ fn handle(
     aas: Option<&AasContext>,
     preload: Option<&PreloadContext>,
     head: Option<&HeadInjectionContext>,
+    fallback_index: Option<&str>,
     request: Request,
 ) -> Result<()> {
     // GET / HEAD only. Anything else (POST, PUT, …) isn't meaningful
@@ -311,6 +316,11 @@ fn handle(
             let index = path.join("index.html");
             if index.is_file() {
                 respond_with_file(request, &index, reload, aas, preload, head)
+            } else if let Some(html) = fallback_index {
+                // Project ships no index.html — serve the synthesized
+                // default so `idealyst dev --web` works without the user
+                // hand-authoring boilerplate.
+                respond_with_html_string(request, html, reload, aas, preload, head)
             } else {
                 not_found(request)
             }
@@ -328,6 +338,8 @@ fn handle(
             let index = root.join("index.html");
             if index.is_file() {
                 respond_with_file(request, &index, reload, aas, preload, head)
+            } else if let Some(html) = fallback_index {
+                respond_with_html_string(request, html, reload, aas, preload, head)
             } else {
                 not_found(request)
             }
@@ -476,23 +488,7 @@ fn respond_with_file(
             .with_context(|| format!("open {}", path.display()))?
             .read_to_string(&mut body)
             .with_context(|| format!("read {}", path.display()))?;
-        if let Some(ctx) = aas {
-            body = inject_aas_url(body, ctx);
-        }
-        if reload.is_some() {
-            body = inject_reload_script(body);
-        }
-        if let Some(ctx) = preload {
-            // Same helpers `build-web`'s `stage_bundle` calls — same tag
-            // set lands in the response as ships in the deployed bundle.
-            let snippet = build_ios::font_preload_tags(&ctx.font_paths);
-            body = build_ios::inject_into_head(body, &snippet);
-        }
-        if let Some(ctx) = head {
-            // Free-form `<head>` injection (favicon link tags today;
-            // other manifest-driven head metadata as it lands).
-            body = build_ios::inject_into_head(body, &ctx.html);
-        }
+        let body = inject_html_head(body, reload, aas, preload, head);
         let response = Response::from_string(body)
             .with_header(header("Content-Type", ct))
             .with_header(header("Cache-Control", "no-store"));
@@ -508,6 +504,56 @@ fn respond_with_file(
         response.add_header(header("Cache-Control", "no-store"));
         request.respond(response).map_err(Into::into)
     }
+}
+
+/// Apply the dev-time `<head>`/script injections (runtime-server URL,
+/// livereload, font preloads, free-form head) to an HTML string. Shared
+/// by the on-disk index path ([`respond_with_file`]) and the synthesized
+/// fallback index ([`respond_with_html_string`]) so both emit identical
+/// dev decorations.
+fn inject_html_head(
+    mut body: String,
+    reload: Option<&ReloadContext>,
+    aas: Option<&AasContext>,
+    preload: Option<&PreloadContext>,
+    head: Option<&HeadInjectionContext>,
+) -> String {
+    if let Some(ctx) = aas {
+        body = inject_aas_url(body, ctx);
+    }
+    if reload.is_some() {
+        body = inject_reload_script(body);
+    }
+    if let Some(ctx) = preload {
+        // Same helpers `build-web`'s `stage_bundle` calls — same tag
+        // set lands in the response as ships in the deployed bundle.
+        let snippet = build_ios::font_preload_tags(&ctx.font_paths);
+        body = build_ios::inject_into_head(body, &snippet);
+    }
+    if let Some(ctx) = head {
+        // Free-form `<head>` injection (favicon link tags today;
+        // other manifest-driven head metadata as it lands).
+        body = build_ios::inject_into_head(body, &ctx.html);
+    }
+    body
+}
+
+/// Serve an in-memory HTML string (the synthesized fallback index for a
+/// project that ships no `index.html`), with the same dev head/script
+/// injection an on-disk `index.html` gets.
+fn respond_with_html_string(
+    request: Request,
+    html: &str,
+    reload: Option<&ReloadContext>,
+    aas: Option<&AasContext>,
+    preload: Option<&PreloadContext>,
+    head: Option<&HeadInjectionContext>,
+) -> Result<()> {
+    let body = inject_html_head(html.to_string(), reload, aas, preload, head);
+    let response = Response::from_string(body)
+        .with_header(header("Content-Type", "text/html; charset=utf-8"))
+        .with_header(header("Cache-Control", "no-store"));
+    request.respond(response).map_err(Into::into)
 }
 
 /// Insert `<script>window.IDEALYST_RUNTIME_SERVER_URL = "..."</script>` right

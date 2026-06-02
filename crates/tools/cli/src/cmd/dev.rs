@@ -853,6 +853,13 @@ fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
         font_paths: manifest.app.web.preload_fonts.clone(),
     });
 
+    // Default index.html served when the project ships none, so
+    // `idealyst dev --web` works without hand-authored boilerplate. A
+    // project's own index.html still wins — dev-http only falls back to
+    // this when the file is absent. Same generator `build-web` uses when
+    // staging a deploy bundle, so dev and build behave identically.
+    let fallback_index = build_web::default_index_html(&manifest.app.name, &manifest.lib_name);
+
     // Framework-managed dev assets — favicons today; other generated
     // dev-time outputs as they land. Lives under `target/idealyst/dev/web/`
     // by convention (matches what build writes to its staging dir, but
@@ -944,6 +951,7 @@ fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
             preload_ctx,
             overlay_ctx.clone(),
             head_ctx.clone(),
+            Some(fallback_index.clone()),
         )?;
         Ok(())
     } else {
@@ -993,6 +1001,7 @@ fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
             preload_ctx,
             overlay_ctx,
             head_ctx,
+            Some(fallback_index),
         )?;
         Ok(())
     }

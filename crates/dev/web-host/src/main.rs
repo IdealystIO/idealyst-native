@@ -66,7 +66,7 @@ fn main() -> Result<()> {
         aas_url: aas_url.clone(),
     };
 
-    serve_static(&args.host, args.port, &args.root, None, Some(ctx), None, None, None)
+    serve_static(&args.host, args.port, &args.root, None, Some(ctx), None, None, None, None)
 }
 
 fn parse_args() -> Result<Args> {

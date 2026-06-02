@@ -84,6 +84,7 @@ fn spawn_server(root: &Path, overlay_root: Option<&Path>) -> u16 {
             None,
             overlay_ctx,
             None,
+            None,
         );
     });
     port

@@ -34,10 +34,6 @@ runtime-core = { workspace = true }
 # pulled in only by the `sidecar` feature (host-side build).
 dev-server = { workspace = true, optional = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-# TEMP instrumentation: trace the opt-in loader path to the browser console.
-web-sys = { version = "0.3", features = ["console"] }
-
 [dev-dependencies]
 # The SSG example renders on the host against the SSR backend.
 backend-ssr = { workspace = true }

@@ -185,12 +185,26 @@ pub(super) fn build<B: Backend + 'static>(
     // Reactive nav-state mirror. `active_path` is the FULL hierarchical path
     // (base + this navigator's initial relative path); root base "" leaves the
     // configured initial path unchanged.
-    let nav_state = NavState {
+    //
+    // These signals are created inside a DEDICATED scope owned by the
+    // `control` (an `Rc` that lives as long as the navigator), NOT the
+    // ambient build scope. A nested navigator is frequently built inside a
+    // transient dispatch/microtask scope (e.g. a stack hung under a drawer
+    // screen, reached via a sidebar `on_select`); if `nav_state` were owned
+    // by that scope its signals would be freed when it drops, and a later
+    // `active_route.set(...)` from `mount_internal` / `on_popstate` would hit
+    // a recycled arena slot ("signal used after its scope was dropped" /
+    // type-mismatch — the QuillEMR forward/back nested-stack crash). Owning
+    // the scope on the control frees them on navigator teardown instead —
+    // leak-free, and never before the control itself drops.
+    let mut nav_scope = Box::new(reactive::Scope::new());
+    let nav_state = reactive::with_scope(&mut nav_scope, || NavState {
         active_route: Signal::new(initial),
         active_path: Signal::new(join_path(&my_base, initial_path)),
         depth: Signal::new(1),
         can_go_back: Signal::new(false),
-    };
+    });
+    control.retain_scope(nav_scope);
     control.attach_nav_state(nav_state.clone());
 
     let depth_changed: Rc<dyn Fn(usize)> = {

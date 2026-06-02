@@ -171,7 +171,8 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     }
 
     let (pkg_dir, bundle_dir) = if let Some(out) = opts.bundle_out_dir.as_ref() {
-        let staged = stage_bundle(&project_dir, out)
+        let default_index = default_index_html(&manifest.app.name, &manifest.lib_name);
+        let staged = stage_bundle(&project_dir, out, Some(&default_index))
             .with_context(|| format!("stage static bundle at {}", out.display()))?;
         let staged_pkg = staged.join("pkg");
         sync_pkg_dir(&wrapper_pkg, &staged_pkg).with_context(|| {
@@ -214,25 +215,41 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
 }
 
 /// Stage a deployable static-site bundle at `out_dir`. Copies
-/// `index.html` (required) and every top-level entry in the project
-/// that isn't Rust source, build metadata, a dotfile, or `pkg/`
-/// itself. `pkg/` is populated separately by the caller, straight
-/// from the wasm-pack output dir — that way the project root never
-/// has to carry a `pkg/` for the bundle's sake. `out_dir` is fully
-/// cleared first so stale files from a prior bundle (renamed wasm,
-/// removed assets) never linger.
+/// `index.html` and every top-level entry in the project that isn't
+/// Rust source, build metadata, a dotfile, or `pkg/` itself. `pkg/` is
+/// populated separately by the caller, straight from the wasm-pack
+/// output dir — that way the project root never has to carry a `pkg/`
+/// for the bundle's sake. `out_dir` is fully cleared first so stale
+/// files from a prior bundle (renamed wasm, removed assets) never
+/// linger.
 ///
-/// Returns the canonicalized bundle path. Errors when `index.html`
-/// is missing — without it there's nothing to serve.
-pub fn stage_bundle(project_dir: &Path, out_dir: &Path) -> Result<PathBuf> {
+/// When the project supplies no `index.html`, `fallback_index` decides
+/// what happens: `Some(html)` writes that HTML into the *staged* bundle
+/// as `index.html` (the project source tree is never touched), so a
+/// project doesn't have to hand-author boilerplate just to be served;
+/// `None` errors (there's nothing to serve). Production builds pass the
+/// generated default (see [`default_index_html`]); a project's own
+/// `index.html`, when present, always wins.
+///
+/// Returns the canonicalized bundle path.
+pub fn stage_bundle(
+    project_dir: &Path,
+    out_dir: &Path,
+    fallback_index: Option<&str>,
+) -> Result<PathBuf> {
     let index = project_dir.join("index.html");
-    if !index.is_file() {
-        anyhow::bail!(
-            "cannot stage web bundle: {} missing (a web bundle needs an index.html at the \
-             project root that loads ./pkg/<lib>.js)",
-            index.display(),
-        );
-    }
+    let synth_index = if index.is_file() {
+        None
+    } else {
+        match fallback_index {
+            Some(html) => Some(html),
+            None => anyhow::bail!(
+                "cannot stage web bundle: {} missing (a web bundle needs an index.html at the \
+                 project root that loads ./pkg/<lib>.js)",
+                index.display(),
+            ),
+        }
+    };
     if out_dir.exists() {
         fs::remove_dir_all(out_dir)
             .with_context(|| format!("clear stale bundle {}", out_dir.display()))?;
@@ -258,7 +275,52 @@ pub fn stage_bundle(project_dir: &Path, out_dir: &Path) -> Result<PathBuf> {
         }
     }
 
+    // Synthesize a default index.html into the staged bundle when the
+    // project supplied none. Written here (the staged out_dir), never
+    // into the project source tree.
+    if let Some(html) = synth_index {
+        fs::write(out_dir.join("index.html"), html)
+            .with_context(|| format!("write default index.html into {}", out_dir.display()))?;
+    }
+
     fs::canonicalize(out_dir).with_context(|| format!("canonicalize {}", out_dir.display()))
+}
+
+/// The default `index.html` a web bundle is served with when the project
+/// doesn't ship its own. Mounts into `#app` and boots the wasm via
+/// `/pkg/<lib_name>.js` — identical in shape to what `idealyst scaffold`
+/// writes, so an index-less project behaves the same as a scaffolded one.
+/// `lib_name` is the package name with `-` → `_` (matches the emitted
+/// `pkg/<lib_name>.js`).
+pub fn default_index_html(title: &str, lib_name: &str) -> String {
+    format!(
+        r##"<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <base href="/" />
+    <title>{title}</title>
+    <style>
+      html, body, #app {{ height: 100%; margin: 0; }}
+      body {{ background: #f7f8fb; }}
+      /* Mount is a flex column so the app's root view fills the viewport
+         height; without it the root sizes to content and short screens
+         stop short of full height on tall windows. */
+      #app {{ display: flex; flex-direction: column; }}
+      #app > * {{ flex: 1 1 auto; min-height: 0; }}
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import init from "/pkg/{lib_name}.js";
+      init();
+    </script>
+  </body>
+</html>
+"##
+    )
 }
 
 /// Read `index_path`, splice `<link rel="preload">` tags for every
@@ -1540,7 +1602,7 @@ mod bundle_tests {
         let project = fake_project(tmp.path());
         let out = tmp.path().join("dist");
 
-        stage_bundle(&project, &out).expect("stage");
+        stage_bundle(&project, &out, None).expect("stage");
 
         assert!(
             out.join("index.html").is_file(),
@@ -1572,14 +1634,59 @@ mod bundle_tests {
     }
 
     #[test]
-    fn stage_bundle_errors_without_index_html() {
+    fn stage_bundle_errors_without_index_html_when_no_fallback() {
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("proj");
         fs::create_dir_all(&project).unwrap();
-        let err = stage_bundle(&project, &tmp.path().join("dist")).unwrap_err();
+        let err = stage_bundle(&project, &tmp.path().join("dist"), None).unwrap_err();
         assert!(
             err.to_string().contains("index.html"),
             "missing-index error should mention index.html, got: {err}",
+        );
+    }
+
+    #[test]
+    fn stage_bundle_synthesizes_default_index_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A project with NO index.html (and some other asset to copy).
+        let project = tmp.path().join("proj");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("robots.txt"), b"User-agent: *").unwrap();
+        let out = tmp.path().join("dist");
+
+        let html = default_index_html("My App", "my_app");
+        stage_bundle(&project, &out, Some(&html)).expect("stage with fallback");
+
+        // The default index is written into the STAGED dir...
+        let staged_index = out.join("index.html");
+        assert!(staged_index.is_file(), "default index.html must be staged");
+        let contents = fs::read_to_string(&staged_index).unwrap();
+        assert!(
+            contents.contains("/pkg/my_app.js"),
+            "default index must boot the lib's wasm, got:\n{contents}",
+        );
+        // ...and NOT back into the project source tree.
+        assert!(
+            !project.join("index.html").exists(),
+            "synthesizing a default must never touch the project source tree",
+        );
+        // Other assets still copy.
+        assert!(out.join("robots.txt").is_file(), "non-source assets still copy");
+    }
+
+    #[test]
+    fn stage_bundle_prefers_project_index_over_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = fake_project(tmp.path()); // writes its own index.html
+        let out = tmp.path().join("dist");
+
+        let fallback = default_index_html("Fallback", "fallback_lib");
+        stage_bundle(&project, &out, Some(&fallback)).expect("stage");
+
+        let contents = fs::read_to_string(out.join("index.html")).unwrap();
+        assert!(
+            !contents.contains("fallback_lib"),
+            "a project's own index.html must win over the fallback, got:\n{contents}",
         );
     }
 
@@ -1593,7 +1700,7 @@ mod bundle_tests {
         fs::create_dir_all(&out).unwrap();
         fs::write(out.join("ghost.wasm"), b"old").unwrap();
 
-        stage_bundle(&project, &out).expect("stage");
+        stage_bundle(&project, &out, None).expect("stage");
         assert!(
             !out.join("ghost.wasm").exists(),
             "stale files from a prior bundle must be cleared so renamed/removed assets don't leak",
@@ -1636,7 +1743,7 @@ mod bundle_tests {
         let tmp = tempfile::tempdir().unwrap();
         let project = fake_project(tmp.path());
         let out = tmp.path().join("dist");
-        stage_bundle(&project, &out).expect("stage");
+        stage_bundle(&project, &out, None).expect("stage");
 
         // Drop in a synthetic pkg/ the way `build()` would after
         // copying from `wrapper_pkg`. Wasm body is intentionally
@@ -1686,7 +1793,7 @@ mod bundle_tests {
         let tmp = tempfile::tempdir().unwrap();
         let project = fake_project(tmp.path());
         let out = tmp.path().join("dist");
-        stage_bundle(&project, &out).unwrap();
+        stage_bundle(&project, &out, None).unwrap();
         let html_before = fs::read_to_string(out.join("index.html")).unwrap();
 
         // `fake_project`'s Cargo.toml has no icon block, so the
@@ -1730,7 +1837,7 @@ mod bundle_tests {
         .unwrap();
 
         let out = tmp.path().join("dist");
-        stage_bundle(&project, &out).unwrap();
+        stage_bundle(&project, &out, None).unwrap();
         sync_and_inject_web_icons(&project, &out).unwrap();
 
         for name in [

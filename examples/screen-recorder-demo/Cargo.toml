@@ -1,0 +1,30 @@
+[package]
+name = "screen-recorder-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Screen-recorder SDK demo — captures the current tab/window/screen via getDisplayMedia and streams raw frames, showing a live frame counter + resolution. Exercises the `screen-recorder` SDK's capture capability (frame-callback only; no file output)."
+
+# Pure `rlib` — platform-agnostic app crate. `screen-recorder` is internally
+# cfg-gated, so the app just calls `ScreenRecorder` and the right backend
+# compiles per target. Capture is implemented for web today; other targets
+# return `RecorderError::Unsupported`, so this demo targets web.
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+screen-recorder = { workspace = true }
+# Recorder backend for the runtime-server sidecar wrapper (host-side only).
+dev-server = { workspace = true, optional = true }
+
+[package.metadata.idealyst.app]
+name      = "Screen Recorder Demo"
+bundle_id = "ai.truday.idealyst.screenrecorderdemo"
+version   = "0.0.1"
+targets   = ["web"]

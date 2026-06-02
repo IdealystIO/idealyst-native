@@ -115,6 +115,11 @@ pub fn ensure_pack_loaded(code: &str) {
 /// Ready-made network loader for opt-in packs: fetches `<base>/<code>.json`
 /// via the `net` SDK and installs it. Drive on the framework async driver.
 ///
+/// `base` may be relative (`"/locales"`). Unlike browser `fetch`, the `net`
+/// client rejects a relative URL with no configured base, so on web a
+/// relative base is resolved against the document origin here — otherwise
+/// the fetch fails with `InvalidUrl(... no base_url configured)`.
+///
 /// ```ignore
 /// i18n::set_pack_loader(i18n::net_pack_loader("/locales"));
 /// ```
@@ -123,7 +128,7 @@ pub fn net_pack_loader(base_url: impl Into<String>) -> impl Fn(&str) + 'static {
     use runtime_core::logging::{log, LogLevel};
     let base = base_url.into();
     move |code: &str| {
-        let url = format!("{}/{}.json", base.trim_end_matches('/'), code);
+        let url = resolve_pack_url(&base, code);
         let code = code.to_string();
         runtime_core::driver::spawn_async(async move {
             let client = net::Client::new();
@@ -148,6 +153,30 @@ pub fn net_pack_loader(base_url: impl Into<String>) -> impl Fn(&str) + 'static {
             }
         });
     }
+}
+
+/// Build the absolute pack URL. On web a relative base (`"/locales"`) is
+/// resolved against the document origin, because `net` won't accept a
+/// relative URL the way `fetch` does. An already-absolute `http(s)://` base
+/// is used verbatim.
+#[cfg(all(feature = "lazy-fetch", target_arch = "wasm32"))]
+fn resolve_pack_url(base: &str, code: &str) -> String {
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        format!("{trimmed}/{code}.json")
+    } else {
+        let origin = web_sys::window()
+            .and_then(|w| w.location().origin().ok())
+            .unwrap_or_default();
+        format!("{origin}{trimmed}/{code}.json")
+    }
+}
+
+/// Native loader: the caller supplies an absolute base (there's no document
+/// origin to resolve against off the web).
+#[cfg(all(feature = "lazy-fetch", not(target_arch = "wasm32")))]
+fn resolve_pack_url(base: &str, code: &str) -> String {
+    format!("{}/{code}.json", base.trim_end_matches('/'))
 }
 
 #[cfg(test)]

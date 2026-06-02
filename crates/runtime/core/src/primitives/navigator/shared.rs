@@ -565,6 +565,22 @@ pub struct NavigatorControl {
     link_activator: RefCell<
         Option<Rc<dyn Fn(&'static str, String, Box<dyn Any>) -> NavCommand>>,
     >,
+    /// Reactive scope owning this navigator's `nav_state` signals (and any
+    /// other framework-owned per-navigator reactive state). The control is
+    /// the navigator's true lifetime anchor — it's an `Rc` held by the
+    /// backend instance and the SDK handler, so it outlives the *transient*
+    /// build scope that ran `build_navigator`.
+    ///
+    /// `nav_state` MUST be anchored here, not to the ambient build scope: a
+    /// nested navigator (e.g. a stack hung under a drawer screen) is often
+    /// built inside a short-lived dispatch/microtask scope. If `nav_state`
+    /// were owned by that scope, its signals would be freed when the scope
+    /// drops, and a later `active_route.set(...)` from `mount_internal` /
+    /// `on_popstate` would hit a recycled arena slot — "signal used after
+    /// its scope was dropped" / type-mismatch. Owning the scope here ties
+    /// the signals to the navigator's real lifetime: freed when the control
+    /// drops on navigator teardown (leak-free), never sooner.
+    owning_scope: RefCell<Option<Box<crate::reactive::Scope>>>,
 }
 
 impl NavigatorControl {
@@ -575,7 +591,17 @@ impl NavigatorControl {
             nav_state: RefCell::new(None),
             base: RefCell::new(String::new()),
             link_activator: RefCell::new(None),
+            owning_scope: RefCell::new(None),
         }
+    }
+
+    /// Retain the reactive scope that owns this navigator's `nav_state`
+    /// signals so they live for the control's lifetime, not the transient
+    /// build scope's. Called once from `walker::navigator::build` right
+    /// after the scope-anchored `nav_state` is constructed. See the
+    /// `owning_scope` field doc for why this anchoring is required.
+    pub(crate) fn retain_scope(&self, scope: Box<crate::reactive::Scope>) {
+        *self.owning_scope.borrow_mut() = Some(scope);
     }
 
     /// Set this navigator's hierarchy base prefix. Called once at build
@@ -1010,5 +1036,77 @@ impl NavigatorConfig {
             screens: HashMap::new(),
             defer_initial_mount: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod nav_state_lifetime_tests {
+    //! Regression: a navigator's `nav_state` signals must outlive the
+    //! *transient* scope it was built in.
+    //!
+    //! A nested navigator (e.g. a stack hung under a drawer screen, reached
+    //! via a sidebar `on_select`) is built inside a short-lived
+    //! dispatch/microtask scope. The walker creates `nav_state` in a DEDICATED
+    //! scope retained on the long-lived `NavigatorControl` (an `Rc`) rather
+    //! than letting the ambient build scope own it. Before that fix, the
+    //! ambient scope owned the signals; when it dropped, a later
+    //! `active_route.set(...)` from `mount_internal` / `on_popstate` hit a
+    //! freed arena slot and panicked — the QuillEMR forward/back nested-stack
+    //! crash ("signal used after its scope was dropped" / type mismatch).
+
+    use super::*;
+    use crate::reactive::{with_scope, Scope, Signal};
+
+    fn fresh_nav_state() -> NavState {
+        NavState {
+            active_route: Signal::new("home"),
+            active_path: Signal::new("/".to_string()),
+            depth: Signal::new(1),
+            can_go_back: Signal::new(false),
+        }
+    }
+
+    /// THE FIX: `nav_state` anchored to the control's retained scope survives
+    /// the transient build scope dropping, and stays writable afterwards.
+    #[test]
+    fn nav_state_survives_transient_build_scope() {
+        let control = NavigatorControl::new();
+
+        // Build INSIDE a transient ambient scope, mirroring the walker: the
+        // nav_state lives in its own scope handed to the control, never the
+        // ambient one.
+        let mut ambient = Box::new(Scope::new());
+        let nav_state = with_scope(&mut ambient, || {
+            let mut nav_scope = Box::new(Scope::new());
+            let st = with_scope(&mut nav_scope, fresh_nav_state);
+            control.retain_scope(nav_scope);
+            st
+        });
+        control.attach_nav_state(nav_state.clone());
+
+        // The transient build scope drops, as it does after the
+        // dispatch/microtask that triggered the nested-nav build returns.
+        drop(ambient);
+
+        // Pre-fix this panicked "signal used after its scope was dropped".
+        nav_state.active_route.set("detail");
+        nav_state.active_path.set("/detail".to_string());
+        assert_eq!(nav_state.active_route.get(), "detail");
+        assert_eq!(nav_state.active_path.get(), "/detail");
+
+        // Leak-free: dropping the control frees the retained scope (and with
+        // it the nav_state signals). Just assert it doesn't panic.
+        drop(control);
+    }
+
+    /// COUNTER-TEST pinning the bug: the OLD shape (nav_state owned by the
+    /// ambient build scope) is a use-after-free once that scope drops.
+    #[test]
+    #[should_panic(expected = "signal used after its scope was dropped")]
+    fn nav_state_owned_by_build_scope_is_use_after_free() {
+        let mut ambient = Box::new(Scope::new());
+        let nav_state = with_scope(&mut ambient, fresh_nav_state);
+        drop(ambient); // frees the signals — the bug
+        nav_state.active_route.set("detail"); // hits a freed slot → panic
     }
 }

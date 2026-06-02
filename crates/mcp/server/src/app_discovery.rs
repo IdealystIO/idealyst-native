@@ -15,11 +15,6 @@
 //! that fails with ESRCH when the process is gone) to filter ghost
 //! entries that a crash left behind without RAII running. Stale files
 //! are deleted at scan time.
-//!
-//! The module name (`mdns_discovery`) and the `mdns` field name on
-//! [`crate::catalog_service::CatalogService`] are kept for now to
-//! keep the diff focused; the surface is identical from the caller's
-//! perspective.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

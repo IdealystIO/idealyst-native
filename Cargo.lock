@@ -2361,6 +2361,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "frame-view"
+version = "0.0.1"
+dependencies = [
+ "runtime-core",
+ "wgpu",
+]
+
+[[package]]
 name = "from_variant"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3341,6 +3349,7 @@ dependencies = [
  "runtime-core",
  "serde_json",
  "trybuild",
+ "web-sys",
 ]
 
 [[package]]
@@ -3352,7 +3361,6 @@ dependencies = [
  "i18n",
  "idea-ui",
  "runtime-core",
- "web-sys",
 ]
 
 [[package]]
@@ -6254,6 +6262,16 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "screen-recorder-demo"
+version = "0.0.1"
+dependencies = [
+ "dev-server",
+ "idea-ui",
+ "runtime-core",
+ "screen-recorder",
 ]
 
 [[package]]
