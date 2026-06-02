@@ -151,11 +151,21 @@ pub(crate) fn create(
 ///    deleted (with `rows = 1` set at create time, `auto` is one line,
 ///    not the textarea's default two).
 /// 3. Read `scrollHeight` (content + padding, since `box-sizing:
-///    border-box`) and pin `height` to it. The CSS `min-height` /
-///    `max-height` then clamp the rendered height.
-/// 4. If a `max-height` cap left content taller than the box (scrollHeight
-///    still exceeds clientHeight), restore `overflow-y: auto` so the
-///    overflow scrolls instead of clipping.
+///    border-box`), add the border back ([`autosize_height`]), and pin
+///    `height`. The CSS `min-height` / `max-height` then clamp the box.
+/// 4. Decide the scrollbar from the `max-height` cap, NOT from a re-measure
+///    ([`should_scroll`]). A scrollbar belongs here only when content
+///    genuinely exceeds the cap; the box otherwise fits its content exactly
+///    so `overflow-y: hidden` stays. (An uncapped textarea — the default
+///    `max_rows = 0` — therefore never shows a scrollbar; it just grows.)
+///
+/// Why not the obvious `if scrollHeight > clientHeight { scroll }`? Those
+/// are integers rounded from fractional layout: with the field's real
+/// `line-height: normal` (~16.8px for 14px text), content height is
+/// fractional, `scrollHeight` rounds *up*, `clientHeight` rounds *down*,
+/// and they differ by 1px even on a perfectly-fitted box — so the box
+/// permanently shows a spurious scrollbar. Comparing the (unclamped)
+/// desired height against the cap sidesteps the rounding entirely.
 ///
 /// Skipped when the author owns the box geometry, mirroring native
 /// "style pins the height → fixed, don't grow":
@@ -168,23 +178,83 @@ fn autosize(textarea: &web_sys::HtmlTextAreaElement) {
     if textarea.wrap() == "off" {
         return;
     }
+    // Read border + the `max-height` cap (and bail on author-owned geometry)
+    // up front. Both are constant w.r.t. the height we're about to pin, so
+    // reading them before the `height: auto` write is correct and avoids a
+    // second reflow.
+    let mut vertical_border = 0.0_f64;
+    let mut max_height: Option<f64> = None;
     if let Some(win) = web_sys::window() {
         if let Ok(Some(cs)) = win.get_computed_style(textarea) {
             let pos = cs.get_property_value("position").unwrap_or_default();
             if pos == "absolute" || pos == "fixed" {
                 return;
             }
+            let top = parse_px(&cs.get_property_value("border-top-width").unwrap_or_default());
+            let bottom =
+                parse_px(&cs.get_property_value("border-bottom-width").unwrap_or_default());
+            vertical_border = top + bottom;
+            // `max-height: none` (uncapped) parses to `None` → never scroll.
+            max_height = parse_px_opt(&cs.get_property_value("max-height").unwrap_or_default());
         }
     }
     let style = textarea.style();
     let _ = style.set_property("overflow-y", "hidden");
     let _ = style.set_property("height", "auto");
-    let h = textarea.scroll_height();
-    let _ = style.set_property("height", &format!("{h}px"));
-    // Did a `max-height` cap clip the content? If so, let it scroll.
-    if textarea.scroll_height() > textarea.client_height() {
+    let desired = autosize_height(textarea.scroll_height(), vertical_border);
+    let _ = style.set_property("height", &format!("{desired}px"));
+    // Scroll only when the content genuinely outgrows the cap. CSS
+    // `max-height` clamps the rendered `height` we just pinned, so the
+    // overflow scrolls instead of clipping.
+    if should_scroll(desired, max_height) {
         let _ = style.set_property("overflow-y", "auto");
     }
+}
+
+/// Border-box autosize height. `scrollHeight` reports content + padding
+/// only — it never includes the border (per spec, measured like
+/// `clientHeight`). But with `box-sizing: border-box` the CSS `height` we
+/// pin *is* the border box (content + padding + border). Pinning
+/// `height = scrollHeight` therefore lands `vertical_border` px short, so
+/// the content overflows by exactly the border and a scrollbar pops in.
+/// Adding the border back makes the border box exactly tall enough.
+fn autosize_height(scroll_height: i32, vertical_border: f64) -> f64 {
+    scroll_height as f64 + vertical_border
+}
+
+/// Sub-pixel slack on the `max-height` cap comparison. A box sitting
+/// *exactly* at the cap (desired ≈ max, off only by fractional rounding)
+/// must NOT flip a scrollbar; a genuine overflow is a whole extra line
+/// (>16px past the cap), comfortably clear of this tolerance.
+const AUTOSIZE_CAP_TOLERANCE_PX: f64 = 1.0;
+
+/// Whether the autosized box needs a vertical scrollbar: only when a real
+/// `max-height` cap exists *and* the content's desired height exceeds it
+/// (beyond [`AUTOSIZE_CAP_TOLERANCE_PX`]). An uncapped box (`None`) fits its
+/// content exactly and never scrolls — this is the fix for the spurious
+/// scrollbar that a `scrollHeight > clientHeight` re-measure produced on a
+/// perfectly-fitted box (those integers round in opposite directions).
+fn should_scroll(desired_height: f64, max_height: Option<f64>) -> bool {
+    match max_height {
+        Some(max) => desired_height > max + AUTOSIZE_CAP_TOLERANCE_PX,
+        None => false,
+    }
+}
+
+/// Parse a computed `<len>px` string into pixels, defaulting unparseable
+/// input (the empty string for an unset property) to `0`. See
+/// [`parse_px_opt`] for the cap case where "unset/none" must be
+/// distinguished from a real `0px`.
+fn parse_px(value: &str) -> f64 {
+    parse_px_opt(value).unwrap_or(0.0)
+}
+
+/// Parse a computed `<len>px` string into pixels, returning `None` for any
+/// value without a `px` suffix — notably `"none"` (an uncapped
+/// `max-height`) and `""`. `getComputedStyle` always resolves lengths to
+/// `px`, so a trailing-`px` strip + parse covers every real length.
+fn parse_px_opt(value: &str) -> Option<f64> {
+    value.trim().strip_suffix("px")?.trim().parse().ok()
 }
 
 /// Mirror of `text_input::attach_key_listener_input` for the
@@ -279,5 +349,142 @@ impl TextAreaOps for WebTextAreaOps {
                 let _ = t.dispatch_event(&event);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_test::*;
+
+    #[wasm_bindgen_test]
+    fn autosize_height_adds_vertical_border() {
+        // Border-box: the pinned height must add back the border that
+        // `scrollHeight` omits, or the box lands short and overflows.
+        assert_eq!(autosize_height(40, 2.0), 42.0);
+        assert_eq!(autosize_height(40, 0.0), 40.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_px_handles_values_and_garbage() {
+        assert_eq!(parse_px("1px"), 1.0);
+        assert_eq!(parse_px(" 0.5px "), 0.5);
+        assert_eq!(parse_px(""), 0.0);
+        assert_eq!(parse_px("auto"), 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_px_opt_distinguishes_none_from_zero() {
+        assert_eq!(parse_px_opt("204px"), Some(204.0));
+        assert_eq!(parse_px_opt("0px"), Some(0.0));
+        // Uncapped / unset must be `None`, NOT `Some(0.0)` — a `0` cap would
+        // make every box "scroll" while `none` means "never scroll".
+        assert_eq!(parse_px_opt("none"), None);
+        assert_eq!(parse_px_opt(""), None);
+    }
+
+    /// The core of the spurious-scrollbar fix: scrolling is decided from the
+    /// `max-height` cap, never from a re-measure. An uncapped box never
+    /// scrolls no matter how tall it grew; a capped box scrolls only once
+    /// content clears the cap by more than the sub-pixel tolerance.
+    #[wasm_bindgen_test]
+    fn should_scroll_only_when_content_clears_the_cap() {
+        // Uncapped (the default `max_rows = 0`) → never scroll, even tall.
+        assert!(!should_scroll(10_000.0, None));
+        // Comfortably under the cap → fits, no scrollbar.
+        assert!(!should_scroll(100.0, Some(200.0)));
+        // Sitting essentially at the cap (off by sub-pixel rounding) → the
+        // tolerance suppresses the flicker.
+        assert!(!should_scroll(200.4, Some(200.0)));
+        // A genuine extra line past the cap → scroll.
+        assert!(should_scroll(217.0, Some(200.0)));
+    }
+
+    /// Regression for the reported bug: an uncapped, bordered, `border-box`
+    /// wrapping textarea with a realistic fractional `line-height` showed a
+    /// permanent vertical scrollbar even though its content fit — because
+    /// the old `scrollHeight > clientHeight` re-measure compares two
+    /// integers that round in opposite directions, differing by 1px on a
+    /// perfectly-fitted box. After the fix an uncapped box decides "no
+    /// scroll" from the absent cap, so `overflow-y` stays `hidden`.
+    ///
+    /// Lives here (not a Rust unit test) because the bug only manifests in
+    /// real layout — it needs a browser to round `scrollHeight`/
+    /// `clientHeight` against a fractional content height, which only
+    /// `wasm-bindgen-test` provides.
+    #[wasm_bindgen_test]
+    fn regression_uncapped_textarea_never_shows_scrollbar() {
+        let doc = web_sys::window().unwrap().document().unwrap();
+        let ta: web_sys::HtmlTextAreaElement =
+            doc.create_element("textarea").unwrap().unchecked_into();
+        // Mirror the idea-ui Field input geometry: 1px border, `border-box`,
+        // soft wrap, a fixed narrow width so content wraps to several lines,
+        // and crucially `line-height: normal` (fractional for 14px text) —
+        // the exact condition that made the re-measure round to a 1px
+        // overflow. No `max-height` → uncapped (the `max_rows = 0` default).
+        ta.set_attribute(
+            "style",
+            "box-sizing: border-box; border: 1px solid #000; padding: 8px; \
+             width: 120px; margin: 0; resize: none; white-space: pre-wrap; \
+             overflow-wrap: break-word; line-height: normal; font-size: 14px; \
+             font-family: sans-serif;",
+        )
+        .unwrap();
+        ta.set_attribute("wrap", "soft").unwrap();
+        ta.set_rows(1);
+        ta.set_value("123 123 123 123 123 123 o123 o12y oiu2y3 41y23o 4y 1o234ui");
+        doc.body().unwrap().append_child(&ta).unwrap();
+
+        autosize(&ta);
+
+        // The reported symptom: a scrollbar on a box that fits. An uncapped
+        // box must never enable scrolling.
+        assert_eq!(
+            ta.style().get_property_value("overflow-y").unwrap(),
+            "hidden",
+            "uncapped autosized textarea must not show a scrollbar",
+        );
+        // And it grew to fit rather than collapsing.
+        assert!(
+            ta.client_height() >= 20,
+            "autosized box should be at least one line tall, got {}",
+            ta.client_height(),
+        );
+
+        doc.body().unwrap().remove_child(&ta).unwrap();
+    }
+
+    /// Complement: a *capped* textarea (`max_rows`-equivalent `max-height`)
+    /// whose content overflows the cap DOES scroll — the fix must not
+    /// suppress legitimate scrollbars.
+    #[wasm_bindgen_test]
+    fn capped_textarea_scrolls_when_content_exceeds_cap() {
+        let doc = web_sys::window().unwrap().document().unwrap();
+        let ta: web_sys::HtmlTextAreaElement =
+            doc.create_element("textarea").unwrap().unchecked_into();
+        ta.set_attribute(
+            "style",
+            "box-sizing: border-box; border: 1px solid #000; padding: 8px; \
+             width: 120px; max-height: 60px; margin: 0; resize: none; \
+             white-space: pre-wrap; overflow-wrap: break-word; \
+             line-height: 20px; font-size: 14px; font-family: sans-serif;",
+        )
+        .unwrap();
+        ta.set_attribute("wrap", "soft").unwrap();
+        ta.set_rows(1);
+        // Many lines — far past the 60px (~2 line) cap.
+        ta.set_value("one two three four five six seven eight nine ten eleven twelve");
+        doc.body().unwrap().append_child(&ta).unwrap();
+
+        autosize(&ta);
+
+        assert_eq!(
+            ta.style().get_property_value("overflow-y").unwrap(),
+            "auto",
+            "capped textarea with overflowing content must scroll",
+        );
+
+        doc.body().unwrap().remove_child(&ta).unwrap();
     }
 }

@@ -324,6 +324,21 @@ pub struct SearchRequest {
     pub app: Option<String>,
 }
 
+/// Shared optional filter for the `list_*` catalog tools. Lets the LLM
+/// narrow a large catalog (a project pulling in idea-ui surfaces 40+
+/// components) down to the handful it cares about before drilling into
+/// one with the matching `describe_*` tool — the intended top-down flow.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct FilterRequest {
+    /// Case-insensitive filter. Every whitespace-separated term must
+    /// match (AND); a term matches if it is a substring of the item's
+    /// name or fully-qualified name (and, where applicable, its
+    /// category). `*` is a glob wildcard: `butt*`, `*view`, `*field*`.
+    /// Omit / empty to list everything.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SlugRequest {
     /// Guide slug (e.g. `getting-started`).
@@ -417,8 +432,11 @@ impl CatalogService {
         self.replace_catalog(ResolvedCatalog::build()).await;
     }
 
-    #[tool(description = "List every component across live apps. Each app's catalog is fetched over its Robot bridge's `get_catalog` command. If no apps are live, falls back to the in-process catalog (the catalog the MCP server itself was built with — useful when running offline with `--project-root`). Returns a JSON array of { app, name, module_path, fqn, file, line } sorted by (app, fqn).")]
-    async fn list_components(&self) -> Result<CallToolResult, McpError> {
+    #[tool(description = "List components — the top-down entry point. Returns a lightweight JSON array of { app, name, fqn, summary } (summary = first doc line) so you can scan a large catalog cheaply; pass `filter` to narrow (case-insensitive, glob `*`, matches name/fqn), then call `describe_component` for one item's props + full docs + composes. Source: live apps over their Robot bridge, else the in-process / project catalog.")]
+    async fn list_components(
+        &self,
+        Parameters(req): Parameters<FilterRequest>,
+    ) -> Result<CallToolResult, McpError> {
         let mut json: Vec<serde_json::Value> = Vec::new();
 
         let live = self.live_apps();
@@ -440,32 +458,36 @@ impl CatalogService {
             let mut sorted: Vec<&ComponentEntry> = cat.entries().to_vec();
             sorted.sort_by_key(|e| (e.module_path, e.name));
             for e in sorted {
+                let fqn = format!("{}::{}::{}", app.name, e.module_path, e.name);
+                if !matches_filter(&req.filter, &[e.name, &fqn]) {
+                    continue;
+                }
                 json.push(serde_json::json!({
                     "app": app.name,
                     "name": e.name,
-                    "module_path": e.module_path,
-                    "fqn": format!("{}::{}::{}", app.name, e.module_path, e.name),
-                    "file": e.file,
-                    "line": e.line,
+                    "fqn": fqn,
+                    "summary": doc_summary(e.docs),
                 }));
             }
         }
 
         if json.is_empty() {
             // No live apps — serve the in-process catalog (set up at
-            // server startup by `--project-root` extractor spawn, or
-            // empty if the server was started with no project).
+            // server startup by the project extractor, or empty if the
+            // server was started with no project).
             let cat = self.catalog.read().await;
             let mut sorted: Vec<&ComponentEntry> = cat.entries().to_vec();
             sorted.sort_by_key(|e| (e.module_path, e.name));
             for e in sorted {
+                let fqn = format!("{}::{}", e.module_path, e.name);
+                if !matches_filter(&req.filter, &[e.name, &fqn]) {
+                    continue;
+                }
                 json.push(serde_json::json!({
                     "app": null,
                     "name": e.name,
-                    "module_path": e.module_path,
-                    "fqn": format!("{}::{}", e.module_path, e.name),
-                    "file": e.file,
-                    "line": e.line,
+                    "fqn": fqn,
+                    "summary": doc_summary(e.docs),
                 }));
             }
         } else {
@@ -490,7 +512,7 @@ impl CatalogService {
         let entry = find_by_name(&cat, &req.name)
             .ok_or_else(|| McpError::invalid_params(format!("component {:?} not found", req.name), None))?;
         let edges = cat.dependencies(&EntryRef::of(entry));
-        let json = entry_to_json(entry, edges);
+        let json = entry_to_json(&cat, entry, edges);
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&json).unwrap(),
         )]))
@@ -541,21 +563,26 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "List every `#[idealyst_tool]`-registered function. Returns a JSON array of { name, module_path, fqn, file, line, return_type }.")]
-    async fn list_tools(&self) -> Result<CallToolResult, McpError> {
+    #[tool(description = "List `#[idealyst_tool]`-registered functions. Lightweight { name, fqn, return_type, summary }; pass `filter` (case-insensitive, glob `*`, matches name/fqn) to narrow, then `describe_tool` for params + full docs.")]
+    async fn list_tools(
+        &self,
+        Parameters(req): Parameters<FilterRequest>,
+    ) -> Result<CallToolResult, McpError> {
         let mut sorted: Vec<&mcp_catalog::ToolEntry> = mcp_catalog::tools().collect();
         sorted.sort_by_key(|t| (t.module_path, t.name));
         let json: Vec<serde_json::Value> = sorted
             .iter()
-            .map(|t| {
-                serde_json::json!({
+            .filter_map(|t| {
+                let fqn = format!("{}::{}", t.module_path, t.name);
+                if !matches_filter(&req.filter, &[t.name, &fqn]) {
+                    return None;
+                }
+                Some(serde_json::json!({
                     "name": t.name,
-                    "module_path": t.module_path,
-                    "fqn": format!("{}::{}", t.module_path, t.name),
-                    "file": t.file,
-                    "line": t.line,
+                    "fqn": fqn,
                     "return_type": t.return_type,
-                })
+                    "summary": doc_summary(t.docs),
+                }))
             })
             .collect();
         Ok(CallToolResult::success(vec![Content::text(
@@ -844,19 +871,24 @@ impl CatalogService {
     // can discover the full authoring vocabulary, not just the
     // user's components.
 
-    #[tool(description = "List every framework primitive — the leaf nodes of `ui!` (View, Text, Button, ScrollView, …). Returns a JSON array of { name, pascal_name, category, backends, docs } sorted by name.")]
-    async fn list_primitives(&self) -> Result<CallToolResult, McpError> {
+    #[tool(description = "List framework primitives — the leaf nodes of `ui!` (view, text, button, scroll_view, …). Lightweight { name, pascal_name, category, summary }; pass `filter` (case-insensitive, glob `*`, matches name/pascal_name/category) to narrow, then `describe_primitive` for every prop + backend support + full docs.")]
+    async fn list_primitives(
+        &self,
+        Parameters(req): Parameters<FilterRequest>,
+    ) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
         let json: Vec<serde_json::Value> = cat
             .primitives()
             .iter()
+            .filter(|p| {
+                matches_filter(&req.filter, &[p.name, p.pascal_name, p.category.as_str()])
+            })
             .map(|p| {
                 serde_json::json!({
                     "name": p.name,
                     "pascal_name": p.pascal_name,
                     "category": p.category.as_str(),
-                    "backends": p.backends,
-                    "docs": p.docs,
+                    "summary": doc_summary(p.docs),
                 })
             })
             .collect();
@@ -906,21 +938,27 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "List every framework utility function — free helpers authors call from their own code (not inside `ui!`). Examples: `platform()`, `parse_color()`, `now_micros()`. Returns { name, fqn, category, return_type, docs } sorted by name.")]
-    async fn list_utilities(&self) -> Result<CallToolResult, McpError> {
+    #[tool(description = "List framework utility functions — free helpers authors call outside `ui!` (`platform()`, `parse_color()`, `now_micros()`). Lightweight { name, fqn, category, return_type, summary }; pass `filter` (case-insensitive, glob `*`, matches name/fqn/category) to narrow, then `describe_utility` for params + full docs.")]
+    async fn list_utilities(
+        &self,
+        Parameters(req): Parameters<FilterRequest>,
+    ) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
         let json: Vec<serde_json::Value> = cat
             .utilities()
             .iter()
-            .map(|u| {
-                serde_json::json!({
+            .filter_map(|u| {
+                let fqn = format!("{}::{}", u.module_path, u.name);
+                if !matches_filter(&req.filter, &[u.name, &fqn, u.category.as_str()]) {
+                    return None;
+                }
+                Some(serde_json::json!({
                     "name": u.name,
-                    "module_path": u.module_path,
-                    "fqn": format!("{}::{}", u.module_path, u.name),
+                    "fqn": fqn,
                     "category": u.category.as_str(),
                     "return_type": u.return_type,
-                    "docs": u.docs,
-                })
+                    "summary": doc_summary(u.docs),
+                }))
             })
             .collect();
         Ok(CallToolResult::success(vec![Content::text(
@@ -1077,7 +1115,7 @@ impl CatalogService {
                 serde_json::json!({
                     "parent_fqn": format!("{}::{}", m.parent_module_path, m.parent_name),
                     "name": m.name,
-                    "docs": m.docs,
+                    "summary": doc_summary(m.docs),
                     "params": params,
                     "return_type": m.return_type,
                 })
@@ -1117,23 +1155,29 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "List every type registered via `#[derive(IdealystSchema)]` (structs and enums). Returns { short_name, fqn, kind } sorted by FQN.")]
-    async fn list_types(&self) -> Result<CallToolResult, McpError> {
+    #[tool(description = "List types registered via `#[derive(IdealystSchema)]` (structs and enums). Returns { short_name, fqn, kind }; pass `filter` (case-insensitive, glob `*`, matches name/fqn/kind) to narrow, then `describe_type` for fields/variants.")]
+    async fn list_types(
+        &self,
+        Parameters(req): Parameters<FilterRequest>,
+    ) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
         let json: Vec<serde_json::Value> = cat
             .types()
             .iter()
-            .map(|t| {
+            .filter_map(|t| {
                 let kind = match &t.shape {
                     mcp_catalog::TypeShape::Struct { .. } => "struct",
                     mcp_catalog::TypeShape::Enum { .. } => "enum",
                 };
-                serde_json::json!({
+                let fqn = format!("{}::{}", t.module_path, t.short_name);
+                if !matches_filter(&req.filter, &[t.short_name, &fqn, kind]) {
+                    return None;
+                }
+                Some(serde_json::json!({
                     "short_name": t.short_name,
-                    "module_path": t.module_path,
-                    "fqn": format!("{}::{}", t.module_path, t.short_name),
+                    "fqn": fqn,
                     "kind": kind,
-                })
+                }))
             })
             .collect();
         Ok(CallToolResult::success(vec![Content::text(
@@ -1275,7 +1319,11 @@ fn find_by_name<'a>(
     None
 }
 
-fn entry_to_json(entry: &ComponentEntry, edges: &[mcp_catalog::ResolvedEdge]) -> serde_json::Value {
+fn entry_to_json(
+    cat: &ResolvedCatalog,
+    entry: &ComponentEntry,
+    edges: &[mcp_catalog::ResolvedEdge],
+) -> serde_json::Value {
     let composes: Vec<serde_json::Value> = edges
         .iter()
         .map(|edge| {
@@ -1300,22 +1348,12 @@ fn entry_to_json(entry: &ComponentEntry, edges: &[mcp_catalog::ResolvedEdge]) ->
             obj.insert("name".into(), p.name.into());
             obj.insert("type".into(), p.type_str.into());
             obj.insert("type_short_name".into(), p.type_short_name.into());
-            // Inline `IdealystSchema`-derived fields when the
-            // parameter's type matches a registered props struct.
+            // Inline the props struct's per-field docs when the
+            // parameter's type matches a documented props struct
+            // (`#[derive(IdealystSchema)]`). This is the prop-level
+            // documentation surface.
             if !p.type_short_name.is_empty() {
-                if let Some(schema) = mcp_catalog::lookup_schema(p.type_short_name) {
-                    let fields: Vec<serde_json::Value> = schema
-                        .fields
-                        .iter()
-                        .map(|f| {
-                            serde_json::json!({
-                                "name": f.name,
-                                "type": f.type_str,
-                                "doc": f.doc,
-                                "constraint": f.constraint,
-                            })
-                        })
-                        .collect();
+                if let Some(fields) = prop_fields_for(cat, p.type_short_name) {
                     obj.insert("schema".into(), serde_json::json!(fields));
                 }
             }
@@ -1332,6 +1370,61 @@ fn entry_to_json(entry: &ComponentEntry, edges: &[mcp_catalog::ResolvedEdge]) ->
         "params": params,
         "composes": composes,
     })
+}
+
+/// Resolve a component param's props struct to its per-field docs
+/// (`{ name, type, doc, constraint }`), for inlining under a param's
+/// `schema`. `short_name` is the param type's bare ident (e.g.
+/// `ButtonProps`).
+///
+/// Prefers the loaded catalog's `types` slice — that's the path that
+/// survives the wire: a project's `#[derive(IdealystSchema)]` props
+/// struct is serialized into the catalog JSON as a `TypeEntry { Struct }`
+/// and rebuilt here by `build_from_json`. Falls back to the server's own
+/// in-process `PropsSchemaEntry` inventory for the offline / in-binary
+/// case. Returns `None` when the props struct isn't documented (no
+/// `IdealystSchema` derive) so the param simply carries its type.
+fn prop_fields_for(
+    cat: &ResolvedCatalog,
+    short_name: &str,
+) -> Option<Vec<serde_json::Value>> {
+    // Wire path: the props struct as a documented `TypeEntry`.
+    for t in cat.types() {
+        if t.short_name != short_name {
+            continue;
+        }
+        if let mcp_catalog::TypeShape::Struct { fields } = &t.shape {
+            return Some(
+                fields
+                    .iter()
+                    .map(|f| {
+                        serde_json::json!({
+                            "name": f.name,
+                            "type": f.type_str,
+                            "doc": f.doc,
+                            "constraint": f.constraint,
+                        })
+                    })
+                    .collect(),
+            );
+        }
+    }
+    // In-process fallback (server binary compiled with the components).
+    let schema = mcp_catalog::lookup_schema(short_name)?;
+    Some(
+        schema
+            .fields
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "name": f.name,
+                    "type": f.type_str,
+                    "doc": f.doc,
+                    "constraint": f.constraint,
+                })
+            })
+            .collect(),
+    )
 }
 
 fn type_entry_json(t: &mcp_catalog::TypeEntry) -> serde_json::Value {
@@ -1389,6 +1482,76 @@ fn type_entry_json(t: &mcp_catalog::TypeEntry) -> serde_json::Value {
 /// Pull a ±80-char window around the first occurrence of `needle`
 /// inside `docs`. Returns the first 160 chars if no match (defensive
 /// — caller already filtered).
+/// First non-empty line of a doc string, trimmed and truncated to a
+/// short one-liner for list views. Full docs come from `describe_*`.
+fn doc_summary(docs: &str) -> String {
+    const MAX: usize = 120;
+    let line = docs
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    if line.chars().count() > MAX {
+        let mut s: String = line.chars().take(MAX - 1).collect();
+        s.push('…');
+        s
+    } else {
+        line.to_string()
+    }
+}
+
+/// Robust catalog filter shared by the `list_*` tools. Case-insensitive;
+/// ANDs across whitespace-separated terms; each term matches if it is a
+/// substring of ANY supplied field, or a `*`-glob match when the term
+/// contains a `*`. An empty / absent filter matches everything.
+fn matches_filter(filter: &Option<String>, fields: &[&str]) -> bool {
+    let Some(q) = filter.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return true;
+    };
+    let lowered: Vec<String> = fields.iter().map(|f| f.to_lowercase()).collect();
+    q.split_whitespace().all(|term| {
+        let term = term.to_lowercase();
+        lowered.iter().any(|f| {
+            if term.contains('*') {
+                glob_match(&term, f)
+            } else {
+                f.contains(&term)
+            }
+        })
+    })
+}
+
+/// Minimal `*`-glob matcher, anchored to the whole string. `*` matches
+/// any run of characters (including empty); every other char matches
+/// literally. Case is the caller's responsibility (both args lowered).
+/// Two-pointer match with star-backtracking — no regex dep.
+fn glob_match(pat: &str, text: &str) -> bool {
+    let p: Vec<char> = pat.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let (mut star, mut mark) = (None, 0usize);
+    while ti < t.len() {
+        if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ti;
+            pi += 1;
+        } else if pi < p.len() && p[pi] == t[ti] {
+            pi += 1;
+            ti += 1;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            mark += 1;
+            ti = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
 fn docs_excerpt_around(docs: &str, needle: &str) -> String {
     let lower = docs.to_lowercase();
     let Some(pos) = lower.find(needle) else {
@@ -1465,7 +1628,7 @@ impl ServerHandler for CatalogService {
                     .iter()
                     .map(|e| {
                         let edges = cat.dependencies(&EntryRef::of(e));
-                        entry_to_json(e, edges)
+                        entry_to_json(&cat, e, edges)
                     })
                     .collect();
 
@@ -1684,37 +1847,179 @@ mod tests {
         ::runtime_core::view(::std::vec::Vec::new())
     }
 
-    #[tokio::test]
-    async fn list_components_returns_in_process_catalog_components() {
-        let svc = CatalogService::new();
-
-        let result = svc
-            .list_components()
-            .await
-            .expect("list_components tool call succeeds");
-
-        // `CallToolResult::success(vec![Content::text(json)])` —
-        // the JSON-pretty-printed component array is the first
-        // content block's text. Pull it out, parse, and verify
-        // our canary's there.
+    /// Parse a `list_*` tool result into `(name, has_summary, keys)`
+    /// triples so tests can assert on shape + contents.
+    fn component_names(result: &CallToolResult) -> Vec<String> {
         let payload = result
             .content
             .iter()
             .find_map(|c| c.as_text().map(|t| t.text.clone()))
             .expect("tool result has a text content block");
-
-        let entries: serde_json::Value =
+        let v: serde_json::Value =
             serde_json::from_str(&payload).expect("response is valid JSON");
-        let arr = entries.as_array().expect("response is a JSON array");
-
-        let names: Vec<&str> = arr
+        v.as_array()
+            .expect("response is a JSON array")
             .iter()
-            .filter_map(|e| e["name"].as_str())
-            .collect();
+            .filter_map(|e| e["name"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn list_components_returns_in_process_catalog_components() {
+        let svc = CatalogService::new();
+        let result = svc
+            .list_components(Parameters(FilterRequest::default()))
+            .await
+            .expect("list_components tool call succeeds");
+        let names = component_names(&result);
         assert!(
-            names.contains(&"list_components_regression_canary"),
+            names.contains(&"list_components_regression_canary".to_string()),
             "expected canary component in list_components output; got {:?}",
             names,
         );
+    }
+
+    #[tokio::test]
+    async fn list_components_output_is_lightweight_and_filterable() {
+        let svc = CatalogService::new();
+
+        // Lightweight: entries carry a `summary`, not full `docs`, and
+        // none of the file/line/module_path noise the old shape had.
+        let all = svc
+            .list_components(Parameters(FilterRequest::default()))
+            .await
+            .unwrap();
+        let payload = all
+            .content
+            .iter()
+            .find_map(|c| c.as_text().map(|t| t.text.clone()))
+            .unwrap();
+        let arr: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let first = &arr.as_array().unwrap()[0];
+        assert!(first.get("summary").is_some(), "list entry has a summary");
+        assert!(first.get("docs").is_none(), "list entry omits full docs");
+        assert!(first.get("file").is_none(), "list entry omits file");
+        assert!(first.get("line").is_none(), "list entry omits line");
+
+        // Filter that matches the canary keeps it…
+        let hit = svc
+            .list_components(Parameters(FilterRequest {
+                filter: Some("regression_canary".into()),
+            }))
+            .await
+            .unwrap();
+        assert!(component_names(&hit)
+            .contains(&"list_components_regression_canary".to_string()));
+
+        // …a non-matching filter excludes it (and yields fewer rows).
+        let miss = svc
+            .list_components(Parameters(FilterRequest {
+                filter: Some("definitely-no-such-component-xyz".into()),
+            }))
+            .await
+            .unwrap();
+        assert!(!component_names(&miss)
+            .contains(&"list_components_regression_canary".to_string()));
+    }
+
+    #[test]
+    fn doc_summary_takes_first_nonempty_line_and_truncates() {
+        assert_eq!(doc_summary(""), "");
+        assert_eq!(doc_summary("\n\n  Hello there  \nsecond line"), "Hello there");
+        let long = "x".repeat(200);
+        let s = doc_summary(&long);
+        assert_eq!(s.chars().count(), 120);
+        assert!(s.ends_with('…'));
+    }
+
+    #[test]
+    fn matches_filter_is_case_insensitive_substring_with_and_terms() {
+        // Empty / absent matches everything.
+        assert!(matches_filter(&None, &["Button"]));
+        assert!(matches_filter(&Some("   ".into()), &["Button"]));
+        // Case-insensitive substring against any field.
+        assert!(matches_filter(&Some("btn".into()), &["IconBtn", "icon_btn"]));
+        assert!(matches_filter(&Some("BUTTON".into()), &["button"]));
+        // AND across whitespace-separated terms (each may hit a
+        // different field).
+        assert!(matches_filter(&Some("icon button".into()), &["IconButton", "layout"]));
+        assert!(!matches_filter(&Some("icon missing".into()), &["IconButton"]));
+        // No match.
+        assert!(!matches_filter(&Some("slider".into()), &["Button", "button"]));
+    }
+
+    #[test]
+    fn glob_filter_supports_prefix_suffix_and_infix_wildcards() {
+        assert!(matches_filter(&Some("butt*".into()), &["button"]));
+        assert!(matches_filter(&Some("*view".into()), &["scroll_view"]));
+        assert!(matches_filter(&Some("*field*".into()), &["text_field_inner"]));
+        assert!(!matches_filter(&Some("btn*".into()), &["button"]));
+        // Raw glob_match anchoring.
+        assert!(glob_match("a*c", "abc"));
+        assert!(glob_match("a*c", "ac"));
+        assert!(!glob_match("a*c", "abd"));
+        assert!(glob_match("*", "anything"));
+    }
+
+    /// Regression for the prop-doc wire gap: a catalog arriving over the
+    /// managed-wrapper / bridge flow carries prop docs only in its
+    /// serialized `types` slice (the server binary has no in-process
+    /// `PropsSchemaEntry` for the project's structs). `describe_component`
+    /// must inline them from `cat.types()`. The pre-fix join via the
+    /// global `lookup_schema` returned nothing here.
+    #[tokio::test]
+    async fn describe_component_surfaces_prop_docs_over_the_wire() {
+        let json = r#"{
+          "catalog_version": 2,
+          "components": [
+            {
+              "name": "gauge",
+              "module_path": "demo::gauge",
+              "file": "src/gauge.rs",
+              "line": 10,
+              "docs": "A radial gauge.",
+              "composes": [],
+              "params": [
+                { "name": "props", "type": "& GaugeProps", "type_short_name": "GaugeProps" }
+              ]
+            }
+          ],
+          "types": [
+            {
+              "short_name": "GaugeProps",
+              "module_path": "demo::gauge",
+              "docs": "Props for the gauge.",
+              "shape": {
+                "kind": "struct",
+                "fields": [
+                  { "name": "value", "type": "f64", "doc": "The gauge value, 0.0-1.0.", "constraint": "0..=1" }
+                ]
+              }
+            }
+          ]
+        }"#;
+        let cat = mcp_catalog::ResolvedCatalog::build_from_json(json)
+            .expect("build catalog from wire JSON");
+        let svc = CatalogService::new();
+        svc.replace_catalog(cat).await;
+
+        let result = svc
+            .describe_component(Parameters(NameRequest {
+                name: "gauge".into(),
+                app: None,
+            }))
+            .await
+            .expect("describe_component succeeds");
+        let payload = result
+            .content
+            .iter()
+            .find_map(|c| c.as_text().map(|t| t.text.clone()))
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let schema = &v["params"][0]["schema"];
+        assert!(schema.is_array(), "param must inline its props schema; got {v}");
+        assert_eq!(schema[0]["name"], "value");
+        assert_eq!(schema[0]["doc"], "The gauge value, 0.0-1.0.");
+        assert_eq!(schema[0]["constraint"], "0..=1");
     }
 }

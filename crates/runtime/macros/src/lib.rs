@@ -20,6 +20,11 @@
 //!   macros are opaque to the reactivity rewriter.
 
 mod component_attr;
+// Always compiled (so its unit tests run on a default `cargo test`), but
+// its helpers are only *called* under `strict-docs` — suppress dead-code
+// when the feature is off.
+#[cfg_attr(not(feature = "strict-docs"), allow(dead_code))]
+mod doc_check;
 mod invocation_macro;
 mod jsx;
 mod lazy;
@@ -48,19 +53,26 @@ use syn::ItemFn;
 /// Recognises `#[schema(constraint = "...")]` field attributes for
 /// free-form constraint hints (spec §4.3).
 ///
-/// When the `mcp` feature is off this derive expands to nothing.
+/// With the `mcp` feature on, registers the struct's per-field schema
+/// into the catalog. With `strict-docs` on, additionally requires a doc
+/// comment on every named field / enum variant (a missing one is a
+/// `compile_error!`). With neither feature this derive expands to
+/// nothing.
 #[proc_macro_derive(IdealystSchema, attributes(schema))]
 pub fn derive_idealyst_schema(input: TokenStream) -> TokenStream {
-    #[cfg(not(feature = "mcp"))]
-    {
-        let _ = input;
-        proc_macro::TokenStream::new()
-    }
+    let parsed = parse_macro_input!(input as syn::DeriveInput);
+    let mut out = proc_macro2::TokenStream::new();
+    // `strict-docs`: one `compile_error!` per undocumented prop/variant.
+    #[cfg(feature = "strict-docs")]
+    out.extend(doc_check::require_schema_docs(&parsed));
+    // `mcp`: the inventory registration carrying the field docs to the
+    // catalog. `emit` consumes the input, so clone — `strict-docs` may
+    // have already borrowed it above.
     #[cfg(feature = "mcp")]
-    {
-        let parsed = parse_macro_input!(input as syn::DeriveInput);
-        schema_emit::emit(parsed).into()
-    }
+    out.extend(schema_emit::emit(parsed.clone()));
+    // Keep `parsed` "used" when neither feature touched it.
+    let _ = &parsed;
+    out.into()
 }
 
 /// `#[idealyst_tool]` — register a standalone function as an MCP
@@ -179,6 +191,14 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
     let mut item_fn = parse_macro_input!(item as ItemFn);
+    // `strict-docs`: require a doc comment on the component fn. Computed
+    // from the original attrs before any rewrite; emitted alongside the
+    // component so the error points at the fn name. Empty when the
+    // feature is off (zero generated tokens).
+    #[cfg(feature = "strict-docs")]
+    let strict_doc_err = doc_check::require_component_doc(&item_fn);
+    #[cfg(not(feature = "strict-docs"))]
+    let strict_doc_err = proc_macro2::TokenStream::new();
     // Components read as PascalCase at the `ui!` call site. Authors who
     // also name the fn itself PascalCase — the "true `fn` component"
     // style — would otherwise trip Rust's `non_snake_case` lint. Inject
@@ -233,6 +253,7 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     let item_fn = quote! { #item_fn };
 
     TokenStream::from(quote! {
+        #strict_doc_err
         #methods_extra
         #item_fn
         #invocation

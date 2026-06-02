@@ -53,10 +53,10 @@ impl WebBackend {
             head.append_child(&elem).expect("append style to head");
             self.style_element = Some(elem);
 
-            // Seed the resets at indices 0–1. We never delete or
+            // Seed the resets at indices 0–2. We never delete or
             // shift these, so the rule recycler in `insert_rule`
             // doesn't need to know about them — it appends or
-            // recycles at index ≥ 2.
+            // recycles at index ≥ 3.
             let sheet = self
                 .style_element
                 .as_ref()
@@ -94,6 +94,19 @@ impl WebBackend {
             // out `border`. Authors that want the border back just
             // set `border_width: 1.0` in their stylesheet.
             let _ = sheet.insert_rule_with_index(css::BUTTON_RESET, 1);
+
+            // Index 2 — form-control font reset.
+            //
+            // The browser UA stylesheet defaults `<textarea>` to a
+            // monospace face and form controls don't inherit the host's
+            // body font the way ordinary text nodes do. Without this, a
+            // framework `<textarea>` renders monospace even though its
+            // stylesheet never asked for it. `:where(input, textarea)` is
+            // specificity 0, so author classes (e.g. the fiddle's
+            // code-editor monospace stylesheet) still win; author origin
+            // also beats the UA origin, so the monospace default is
+            // overridden. Shared with the SSR backend via `base_reset_css`.
+            let _ = sheet.insert_rule_with_index(css::FORM_FONT_RESET, 2);
         }
         self.style_element.as_ref().unwrap().clone()
     }

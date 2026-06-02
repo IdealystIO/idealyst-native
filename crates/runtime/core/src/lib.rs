@@ -229,11 +229,18 @@ pub use runtime_macros::{
     component, jsx, lazy, stylesheet, text_fmt, ui,
 };
 
-/// MCP-only macros (`#[idealyst_tool]` + `#[derive(IdealystSchema)]`).
-/// Re-exported only when the `mcp` feature is on so they don't add
-/// dead `pub use`s to production builds.
+/// `#[idealyst_tool]` — MCP-only, re-exported with the `mcp` feature.
 #[cfg(feature = "mcp")]
-pub use runtime_macros::{idealyst_tool, IdealystSchema};
+pub use runtime_macros::idealyst_tool;
+
+/// `#[derive(IdealystSchema)]` — captures a props struct's per-field
+/// docs. Available under `mcp` (it feeds the catalog) AND under
+/// `strict-docs` (which enforces a doc on every field). Either feature
+/// makes the derive — and its `#[schema(...)]` helper attribute —
+/// resolvable; off both, it's not re-exported so production builds carry
+/// no dead `pub use`.
+#[cfg(any(feature = "mcp", feature = "strict-docs"))]
+pub use runtime_macros::IdealystSchema;
 
 /// Sentinel macro: marks a `text_fmt!` argument as a reactive
 /// signal (rather than a captured value). Has no behavior on its

@@ -182,9 +182,22 @@ pub const BUTTON_RESET: &str = ":where(button) { all: unset; box-sizing: border-
     cursor: pointer; font: inherit; color: inherit; display: inline-flex; \
     align-items: center; justify-content: center; }";
 
-/// The full base reset stylesheet ([`BOX_SIZING_RESET`] + [`BUTTON_RESET`]).
-/// The SSR backend emits this once in `<head>`; the web backend inserts
-/// the two rules at sheet indices 0/1.
+/// Form-control font reset. The browser UA stylesheet gives `<textarea>`
+/// a `font-family: monospace` default (and form controls in general don't
+/// inherit the document font the way `<div>`/`<span>` do). Left alone, a
+/// framework `<textarea>` renders in a monospace face while every other
+/// piece of UI text uses the host's sans body font — so the idea-ui
+/// Textarea came out monospace even though nothing in its stylesheet asked
+/// for it. `:where(...)` is specificity 0, so the fiddle's code-editor
+/// stylesheet (which explicitly pins `font-family: ui-monospace, …`) and
+/// any other author class still win; this only supplies a sane default for
+/// controls that don't set their own family. Author origin beats the UA
+/// origin regardless of specificity, so this defeats the UA monospace rule.
+pub const FORM_FONT_RESET: &str = ":where(input, textarea) { font-family: inherit; }";
+
+/// The full base reset stylesheet ([`BOX_SIZING_RESET`] + [`BUTTON_RESET`]
+/// + [`FORM_FONT_RESET`]). The SSR backend emits this once in `<head>`; the
+/// web backend inserts the three rules at sheet indices 0/1/2.
 ///
 /// Host-surface theming (body background, scrollbar) is **not** part of
 /// the reset — it's owned by the theme SDK and routed through
@@ -195,7 +208,7 @@ pub const BUTTON_RESET: &str = ":where(button) { all: unset; box-sizing: border-
 /// `box-sizing` + `<button>` baseline without inheriting opinions about
 /// color tokens that may not exist.
 pub fn base_reset_css() -> String {
-    format!("{BOX_SIZING_RESET}{BUTTON_RESET}")
+    format!("{BOX_SIZING_RESET}{BUTTON_RESET}{FORM_FONT_RESET}")
 }
 
 /// Default inline style for a `Link` primitive's `<a>`: strip the
@@ -997,6 +1010,28 @@ mod tests {
     #[test]
     fn tokens_to_root_css_empty_is_blank() {
         assert_eq!(tokens_to_root_css(&[]), "");
+    }
+
+    // Regression: a framework `<textarea>` rendered in the browser's UA
+    // monospace face because nothing reset the form-control font. The base
+    // reset (seeded on web at index 2, emitted by SSR in <head>) must carry
+    // a specificity-0 `font-family: inherit` for input/textarea so they pick
+    // up the host's sans body font instead. A tighter test isn't reachable
+    // here — the monospace default lives in the browser UA stylesheet, which
+    // no Rust-level test can exercise — so we assert the reset string the
+    // backends actually inject.
+    #[test]
+    fn regression_textarea_does_not_default_to_monospace_font() {
+        assert_eq!(
+            FORM_FONT_RESET,
+            ":where(input, textarea) { font-family: inherit; }"
+        );
+        let reset = base_reset_css();
+        assert!(
+            reset.contains(FORM_FONT_RESET),
+            "base reset must include the form-control font reset so textareas \
+             inherit the body font rather than the UA monospace default; got: {reset}"
+        );
     }
 
     #[test]

@@ -50,6 +50,15 @@ hot-reload = ["runtime-macros/hot-reload", "dep:dev-hot", "dev-hot/hot"]
 # never have to declare it directly. See `docs/mcp-catalog-spec.md`.
 mcp = ["runtime-macros/mcp", "dep:mcp-catalog"]
 
+# Compile-time documentation enforcement. When on, the compiler rejects
+# any `#[component]` without a `///` doc comment and any
+# `#[derive(IdealystSchema)]` prop field / enum variant without one.
+# A deliberately strict gate — not the everyday workflow — for catching
+# undocumented public surface at build time instead of in a later catalog
+# audit. Independent of `mcp`; forwards to `runtime-macros/strict-docs`.
+# Off by default. See `docs/mcp-catalog-spec.md`.
+strict-docs = ["runtime-macros/strict-docs"]
+
 # Programmatic introspection and control of the running UI. When
 # enabled, the render walker registers every mounted primitive into a
 # thread-local registry that can be queried and controlled via the

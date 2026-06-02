@@ -31,6 +31,14 @@ hot-reload = []
 # `mcp-catalog`. See `docs/mcp-catalog-spec.md`.
 mcp = []
 
+# Compile-time documentation enforcement. When on, `#[component]` errors
+# if the component fn has no `///` doc comment, and
+# `#[derive(IdealystSchema)]` errors on any undocumented prop field / enum
+# variant. Independent of `mcp` (you can enforce docs without building a
+# catalog), though the two pair naturally. Forwarded from
+# `runtime-core/strict-docs`. Off by default; opt in per build.
+strict-docs = []
+
 [dependencies]
 syn = { version = "2", features = ["full", "visit", "visit-mut", "extra-traits"] }
 quote = "1"

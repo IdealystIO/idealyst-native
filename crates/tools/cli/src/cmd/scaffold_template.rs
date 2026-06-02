@@ -555,11 +555,13 @@ const GITIGNORE: &str = "/target\n/pkg\nCargo.lock\n/.idealyst/\n";
 /// Robot tools on, lazy-connecting to the local app's bridge on
 /// 127.0.0.1:9718 — works the moment the user runs `idealyst dev`.
 ///
-/// Catalog tools return empty results until the project has a
-/// binary that supports `--emit-catalog` (the generated platform
-/// wrappers don't expose one today). When that's wired, this file
-/// will gain `"--from-bin", "<wrapper-binary>"` to populate the
-/// catalog half.
+/// The bare `["mcp"]` args are enough: with no `--project-root` /
+/// `--from-bin`, `idealyst mcp` extracts the catalog from its current
+/// directory, which Claude Code sets to this project root when it
+/// launches the server. The server finds (or `cargo run`-builds) this
+/// project's `catalog` bin and lists every `#[component]`. When an app
+/// is also running (`idealyst dev`), the live catalog flows over its
+/// Robot bridge and takes precedence.
 const MCP_JSON: &str = r#"{
   "mcpServers": {
     "idealyst": {
