@@ -911,14 +911,49 @@ impl AndroidBackend {
         // Content holder: a FrameLayout (like the portal overlay) so children
         // are placed by Taffy frames on FrameLayout.LayoutParams.
         let content = with_env(|env| {
-            let fl_class = env.find_class("android/widget/FrameLayout").unwrap();
+            // `RustOverlayPassthrough` is a `FrameLayout` subclass: the overlay
+            // is a full-screen window (so screen capture can exclude it), but a
+            // full-screen window would swallow ALL app touches. This view
+            // forwards any touch that misses an interactive child to the MAIN
+            // activity window's decor view — both windows are in the same
+            // process, so `dispatchTouchEvent` reaches the app's real view tree
+            // (the drawable canvas behind). The overlay's own controls (a
+            // toolbar) still get their taps. This is the Android analog of
+            // iOS's `OverlayPassthroughView` hit-test passthrough.
+            let cls = env
+                .find_class("io/idealyst/runtime/RustOverlayPassthrough")
+                .expect("RustOverlayPassthrough class missing — bundle the kotlin runtime");
             let content = env
                 .new_object(
-                    &fl_class,
+                    &cls,
                     "(Landroid/content/Context;)V",
                     &[JValue::Object(&self.context.as_obj())],
                 )
                 .unwrap();
+            // Point it at the main window's decor view to forward through to.
+            if let Some(decor) = env
+                .call_method(
+                    &self.context.as_obj(),
+                    "getWindow",
+                    "()Landroid/view/Window;",
+                    &[],
+                )
+                .ok()
+                .and_then(|v| v.l().ok())
+                .filter(|w| !w.is_null())
+                .and_then(|w| {
+                    env.call_method(&w, "getDecorView", "()Landroid/view/View;", &[])
+                        .ok()
+                        .and_then(|v| v.l().ok())
+                })
+            {
+                let _ = env.call_method(
+                    &content,
+                    "setBehind",
+                    "(Landroid/view/View;)V",
+                    &[JValue::Object(&decor)],
+                );
+            }
             env.new_global_ref(content).unwrap()
         });
 
@@ -1002,25 +1037,19 @@ impl AndroidBackend {
             const MATCH_PARENT: i32 = -1;
             const TYPE_APPLICATION_PANEL: i32 = 1000;
             const FLAG_NOT_FOCUSABLE: i32 = 0x0000_0008;
-            // FLAG_NOT_TOUCHABLE: the window NEVER receives touches — every
-            // touch falls straight through to the app behind. Required because
-            // this overlay is FULL-SCREEN: FLAG_NOT_TOUCH_MODAL only passes
-            // through touches OUTSIDE the window's bounds, so a full-screen
-            // window without NOT_TOUCHABLE swallows ALL app touches (the
-            // recurring "Android controls dead under an overlay" bug). Correct
-            // for display-only private-layer content (a REC badge, a recording
-            // preview). LIMITATION: INTERACTIVE private-layer controls (e.g. a
-            // whiteboard toolbar) won't receive taps on Android with this flag
-            // — per-region touchability needs the hidden
-            // `OnComputeInternalInsetsListener` touchable-region API; iOS
-            // handles it via `OverlayPassthroughView` hit-testing. Tracked as a
-            // follow-up.
-            const FLAG_NOT_TOUCHABLE: i32 = 0x0000_0010;
+            // The window is TOUCHABLE (no FLAG_NOT_TOUCHABLE): its content view
+            // is a `RustOverlayPassthrough` that handles taps on the overlay's
+            // controls and FORWARDS every other touch to the main window's
+            // decor view (same process), so the app behind stays interactive.
+            // A full-screen NOT_TOUCHABLE window would make the overlay's own
+            // controls dead; FLAG_NOT_TOUCH_MODAL alone can't help a
+            // full-screen window (it only passes through touches OUTSIDE the
+            // bounds). Forwarding is the Android analog of iOS's hit-test
+            // passthrough.
             const FLAG_NOT_TOUCH_MODAL: i32 = 0x0000_0020;
             const FLAG_LAYOUT_NO_LIMITS: i32 = 0x0000_0200;
             const TRANSLUCENT: i32 = -3;
-            let flags =
-                FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCHABLE | FLAG_NOT_TOUCH_MODAL | FLAG_LAYOUT_NO_LIMITS;
+            let flags = FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCH_MODAL | FLAG_LAYOUT_NO_LIMITS;
 
             let lp_class = env
                 .find_class("android/view/WindowManager$LayoutParams")
@@ -2103,14 +2132,40 @@ impl Backend for AndroidBackend {
             self.pending_sticky.remove(&k);
         }
 
-        // Portals mount dynamically (when their open signal flips), outside
-        // the initial build's `finish()` layout pass — so the portal's Taffy
-        // root never gets `compute()` and its subtree renders with default
-        // LayoutParams (children unsized, overlapping at the origin). Mirror
-        // iOS: kick a coalesced layout pass when inserting into a portal's
-        // content holder. Same root cause as the navigator's `swap_body`
-        // needing `schedule_layout_pass` for a dynamically-swapped screen.
-        if self.portal_instances.contains_key(&Self::node_key_of(parent)) {
+        // A dynamically-mounted subtree needs a layout pass that the initial
+        // build's `finish()` hook can't provide, because it mounts AFTER
+        // `finish()` already ran. This covers three cases:
+        //
+        //   1. Portals (their open signal flips) — parent is a portal holder.
+        //   2. ANY reactive control-flow child — `when` toggling true, a
+        //      `switch`/`match` branch swapping, an `Each`/list inserting a
+        //      row, a `presence` entering — mounting into a parent that's
+        //      already live in the window hierarchy.
+        //
+        // Without a pass here the new views keep their default LayoutParams
+        // (0×0 at the origin), so the subtree is invisible — exactly the
+        // "the `when`-mounted camera widget never appears" bug.
+        //
+        // Discriminate mid-build vs. post-mount the same way iOS does
+        // (`parent.window != nil` — see project_ios_insert_layout_discriminator):
+        // if the parent is already attached to the window, this is a
+        // post-`finish()` dynamic insert → kick a pass. If it's a floating
+        // parent still being built, defer to the upcoming `finish()` pass;
+        // scheduling here would compute against a partial tree and cache wrong
+        // sizes. The coalescing flag (LAYOUT_PASS_QUEUED) collapses a burst of
+        // sibling inserts in one runloop turn into a single pass, so this is
+        // cheap even when a list mounts many rows at once.
+        let is_portal_parent = self.portal_instances.contains_key(&Self::node_key_of(parent));
+        // `isAttachedToWindow()` is true exactly when the parent is live in the
+        // window's view hierarchy — i.e. the initial build's `finish()` pass
+        // already ran and this is a later dynamic mount. A floating parent
+        // still being built returns false (defer to `finish()`).
+        let parent_attached = with_env(|env| {
+            env.call_method(parent.as_obj(), "isAttachedToWindow", "()Z", &[])
+                .and_then(|v| v.z())
+                .unwrap_or(false)
+        });
+        if crate::layout_policy::insert_needs_layout_pass(is_portal_parent, parent_attached) {
             crate::imp::scheduler::schedule_layout_pass_retry(0);
         }
     }

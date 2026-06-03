@@ -63,6 +63,11 @@ mod phase_timer;
 /// types, so there's no reason to make them target-gated.
 mod sticky_compute;
 
+/// Pure layout-scheduling policy (when an `insert` must kick a layout pass),
+/// kept un-gated like `sticky_compute` so its regression coverage runs on the
+/// host. The JNI-driven insert path that consumes it lives in `imp`.
+mod layout_policy;
+
 #[cfg(not(target_os = "android"))]
 mod stub;
 

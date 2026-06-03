@@ -78,6 +78,7 @@ fn model() -> Rc<CatalogModel> {
 pub fn register_extensions(backend: &mut backend_web::WebBackend) {
     drawer_navigator::register(backend);
     codeblock::register(backend);
+    markdown::register(backend);
     table::register(backend);
     backend_web::install_viewport_observer();
 }
@@ -86,6 +87,7 @@ pub fn register_extensions(backend: &mut backend_web::WebBackend) {
 pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
     drawer_navigator::register(backend);
     codeblock::register(backend);
+    markdown::register(backend);
     table::register(backend);
 }
 
@@ -93,13 +95,20 @@ pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
 pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
     drawer_navigator::register(backend);
     codeblock::register(backend);
+    markdown::register(backend);
     table::register(backend);
 }
 
+// macOS/terminal have no native `markdown` handler yet — `register` there
+// only installs the wire serde, so prose nodes show the framework's
+// external placeholder. Harmless: catalog-docs ships web/ios/android (see
+// `[package.metadata.idealyst.app].targets`); these arms exist only for
+// the CLI-generated wrappers.
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
     drawer_navigator::register(backend);
     codeblock::register(backend);
+    markdown::register(backend);
     table::register(backend);
 }
 
@@ -112,6 +121,7 @@ pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
 pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
     drawer_navigator::register(backend);
     codeblock::register(backend);
+    markdown::register(backend);
     table::register(backend);
 }
 

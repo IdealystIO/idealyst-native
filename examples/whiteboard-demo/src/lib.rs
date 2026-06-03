@@ -343,10 +343,11 @@ fn parse_rgba(css: &str) -> (u8, u8, u8, u8) {
 // ============================================================================
 
 fn build_camera_widget(cam_on: Signal<bool>, cam_stream: Signal<Option<MediaStream>>) -> Element {
-    // Reactive presence: only mount the camera box when `cam_on`. The Video
-    // is built fresh inside the `then` branch (it carries a reactive stream
-    // source, so it re-populates when `cam_stream` is set). The `otherwise`
-    // branch is an empty zero-size view (nothing shown / no capture running).
+    // Reactive presence: mount the camera box only when `cam_on`. The Video
+    // carries a reactive stream source, so it populates once `cam_stream` is
+    // set. The dynamically-mounted box gets sized because the backend kicks a
+    // layout pass for inserts into a live (window-attached) parent — see the
+    // Android `insert` / `layout_policy::insert_needs_layout_pass`.
     runtime_core::when(
         move || cam_on.get(),
         move || stream_box(cam_stream, camera_box_rules()),
@@ -375,6 +376,9 @@ fn camera_box_rules() -> StyleRules {
 /// Build a `Video` that fills `box_rules`, sourced from a reactive stream
 /// signal. The Video external has no intrinsic size on native, so it's
 /// wrapped in an explicitly-sized box (the camera-preview-demo fix).
+/// Build a `Video` that fills `box_rules`, sourced from a reactive stream
+/// signal. The Video external has no intrinsic size on native, so it's wrapped
+/// in an explicitly-sized box (the camera-preview-demo fix).
 fn stream_box(stream_sig: Signal<Option<MediaStream>>, box_rules: StyleRules) -> Element {
     let fill = StyleRules {
         width: Some(Length::pct(100.0).into()),
@@ -393,10 +397,11 @@ fn stream_box(stream_sig: Signal<Option<MediaStream>>, box_rules: StyleRules) ->
         .into_element()
 }
 
-/// An empty, zero-size view — the inert `otherwise` branch for `when`.
 fn empty_view() -> Element {
     view(vec![]).into_element()
 }
+
+/// An empty, zero-size view — the inert `otherwise` branch for `when`.
 
 // ============================================================================
 // Recording preview (inside PrivateLayer, center-left) — NOT recorded
@@ -492,13 +497,15 @@ fn build_toolbar(
     let bar_rules = StyleRules {
         position: Some(Position::Absolute),
         bottom: Some(Length::Px(28.0).into()),
-        left: Some(Length::pct(50.0).into()),
-        // Center horizontally by translating left half the bar width. The
-        // bar auto-sizes to content; a translate keeps it centered without
-        // hardcoding a width. (left:50% + translateX(-50%) idiom.)
-        transform: Some(vec![runtime_core::Transform::TranslateX(Length::pct(-50.0))]),
+        // Span the width with side margins and WRAP, instead of auto-sizing +
+        // centering: ~12 tools at 40px overflow a phone's width, so let the
+        // row flow onto a second line and stay on-screen on any device.
+        left: Some(Length::Px(12.0).into()),
+        right: Some(Length::Px(12.0).into()),
         flex_direction: Some(runtime_core::FlexDirection::Row),
+        flex_wrap: Some(runtime_core::FlexWrap::Wrap),
         align_items: Some(runtime_core::AlignItems::Center),
+        justify_content: Some(runtime_core::JustifyContent::Center),
         gap: Some(Length::Px(8.0).into()),
         padding_top: Some(Length::Px(10.0).into()),
         padding_bottom: Some(Length::Px(10.0).into()),

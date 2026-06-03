@@ -14,8 +14,9 @@ use idea_ui::{
     tone, typography_kind, variant, Card, Divider, Field, Modal, Spacer, Stack, StackGap, Table,
     TableCell, Tag, TableRow, Typography,
 };
+use markdown::{Markdown, MdTheme};
 use runtime_core::{
-    component, signal, switch, ui, Color, Element, IntoElement, SafeAreaSides, StyleApplication,
+    component, rx, signal, switch, ui, Color, Element, IntoElement, SafeAreaSides, StyleApplication,
     Tokenized,
 };
 
@@ -667,7 +668,7 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
         return layout(ui! {
             view(style = pad) {
                 Typography(content = entry.name.clone(), kind = typography_kind::H1)
-                markdown(&entry.docs)
+                render_markdown(&entry.docs)
             }
         });
     }
@@ -702,7 +703,7 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
                     Typography(content = format!("scope · {} members", count), muted = true)
                 }
                 if !docs.is_empty() {
-                    markdown(&docs)
+                    render_markdown(&docs)
                 }
                 Divider()
                 if count == 0 {
@@ -736,7 +737,7 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
             }
             // Docs paragraph(s).
             if !docs.is_empty() {
-                markdown(&docs)
+                render_markdown(&docs)
             }
             Divider()
             // Fields / props / params table.
@@ -997,7 +998,7 @@ fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
             Stack(gap = StackGap::Sm) {
                 Typography(content = heading, kind = typography_kind::H3)
                 if !docs.is_empty() {
-                    markdown(&docs)
+                    render_markdown(&docs)
                 }
                 if let Some(preview) = preview {
                     view(style = PreviewBox()) {
@@ -1011,72 +1012,34 @@ fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
 }
 
 // =============================================================================
-// markdown — a tiny block-level renderer for docs/guide bodies. Not a
-// full CommonMark engine; it handles the constructs the catalog's docs
-// and bundled guides actually use: headings (`#`..`###`), fenced code
-// blocks (```), and paragraphs. Inline emphasis is left as-is (legible
-// either way). Anything fancier degrades to a plain paragraph rather
-// than crashing.
+// render_markdown — prose bodies (guide pages + component/type/scope/recipe
+// docs) go through the `markdown` SDK: one native styled-text node per
+// backend with full CommonMark/GFM (headings, lists, emphasis, links,
+// quotes, inline + fenced code), replacing the old hand-rolled block
+// renderer that dropped lists/emphasis/links. The theme follows the docs'
+// live light/dark toggle, so flipping it re-paints the prose.
+//
+// Recipe code *samples* are NOT routed here — they keep their
+// syntax-highlighted `codeblock` panels (`CodePanel`, used in the recipe
+// section of `entry_page`). The SDK renders fenced code as plain monospace,
+// which is fine for the incidental snippets embedded inside prose but not
+// for the showcased recipe sources.
 // =============================================================================
 
-fn markdown(src: &str) -> Element {
-    let mut blocks: Vec<Element> = Vec::new();
-    let mut lines = src.lines().peekable();
-    let mut paragraph: Vec<String> = Vec::new();
-
-    let flush_para = |paragraph: &mut Vec<String>, blocks: &mut Vec<Element>| {
-        if paragraph.is_empty() {
-            return;
-        }
-        let text = paragraph.join(" ");
-        paragraph.clear();
-        blocks.push(ui! { Typography(content = text) });
-    };
-
-    while let Some(line) = lines.next() {
-        let trimmed = line.trim_end();
-        // Fenced code block.
-        if trimmed.trim_start().starts_with("```") {
-            flush_para(&mut paragraph, &mut blocks);
-            let mut code: Vec<String> = Vec::new();
-            for code_line in lines.by_ref() {
-                if code_line.trim_start().starts_with("```") {
-                    break;
-                }
-                code.push(code_line.to_string());
-            }
-            let src = code.join("\n");
-            blocks.push(ui! { CodePanel(src = src) });
-            continue;
-        }
-        // Headings.
-        let heading = trimmed.trim_start();
-        if let Some(rest) = heading.strip_prefix("### ") {
-            flush_para(&mut paragraph, &mut blocks);
-            let t = rest.to_string();
-            blocks.push(ui! { Typography(content = t, kind = typography_kind::H3) });
-            continue;
-        }
-        if let Some(rest) = heading.strip_prefix("## ") {
-            flush_para(&mut paragraph, &mut blocks);
-            let t = rest.to_string();
-            blocks.push(ui! { Typography(content = t, kind = typography_kind::H2) });
-            continue;
-        }
-        if let Some(rest) = heading.strip_prefix("# ") {
-            flush_para(&mut paragraph, &mut blocks);
-            let t = rest.to_string();
-            blocks.push(ui! { Typography(content = t, kind = typography_kind::H1) });
-            continue;
-        }
-        // Blank line ends a paragraph.
-        if trimmed.is_empty() {
-            flush_para(&mut paragraph, &mut blocks);
-            continue;
-        }
-        paragraph.push(trimmed.to_string());
-    }
-    flush_para(&mut paragraph, &mut blocks);
-
-    ui! { Stack(gap = StackGap::Sm) { blocks } }
+fn render_markdown(src: &str) -> Element {
+    // `MdTheme` styles text only; the surrounding page background is owned
+    // by the docs chrome. `rx!` keeps the theme live: when the sidebar
+    // toggle flips `dark_mode`, the SDK rebuilds the single native node
+    // with the matching colors.
+    // `MdTheme` styles text only; the surrounding page background is owned
+    // by the docs chrome. `rx!` keeps the theme live: when the sidebar
+    // toggle flips `dark_mode`, the SDK rebuilds the single native node
+    // with the matching colors.
+    let dark = crate::theme::dark_mode();
+    let theme = rx!(if dark.get() {
+        MdTheme::dark()
+    } else {
+        MdTheme::light()
+    });
+    ui! { Markdown(source = src.to_string(), theme = theme) }
 }

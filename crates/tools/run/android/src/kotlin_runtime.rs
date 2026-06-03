@@ -84,6 +84,12 @@ const RUNTIME_KOTLIN_FILES: &[(&str, &str)] = &[
         ),
     ),
     (
+        "RustActivityResult.kt",
+        include_str!(
+            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustActivityResult.kt"
+        ),
+    ),
+    (
         "RustBorderDrawable.kt",
         include_str!(
             "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustBorderDrawable.kt"
@@ -219,6 +225,12 @@ const RUNTIME_KOTLIN_FILES: &[(&str, &str)] = &[
         "RustActivityResult.kt",
         include_str!(
             "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustActivityResult.kt"
+        ),
+    ),
+    (
+        "RustOverlayPassthrough.kt",
+        include_str!(
+            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustOverlayPassthrough.kt"
         ),
     ),
 ];

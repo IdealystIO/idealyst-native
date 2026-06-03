@@ -40,6 +40,9 @@ idea-ui = { workspace = true, features = ["docs"] }
 drawer-navigator = { workspace = true }
 # Theme-aware syntax-highlighted code panels for usage snippets.
 codeblock = { workspace = true }
+# CommonMark/GFM prose rendering for guides + entry docs — one native
+# styled-text node per backend. Recipe code samples stay on `codeblock`.
+markdown = { workspace = true }
 # Real HTML <table> on web via Element::External; flex fallback on
 # native. Powers the auto-generated props/fields tables.
 table = { workspace = true }

@@ -251,11 +251,25 @@ object RustCamera2Helper {
             session.device?.close()
         } catch (_: Throwable) {
         }
+        // Stop the capture thread and WAIT for it to drain BEFORE closing the
+        // ImageReader. A frame may be mid-`yuv420ToRgba` on that thread reading
+        // the reader's native Image buffers; `reader.close()` frees them, and
+        // reading freed native memory is a use-after-free SIGSEGV (the "camera
+        // crashes the app a while after starting" bug — only fires when the
+        // session is torn down with a frame in flight). `quitSafely` lets the
+        // in-flight `onImageAvailable` finish (closing its Image in `finally`);
+        // `join` blocks this (main) thread until the looper has exited.
+        session.thread?.let { t ->
+            t.quitSafely()
+            try {
+                t.join(500)
+            } catch (_: InterruptedException) {
+            }
+        }
         try {
             session.reader?.close()
         } catch (_: Throwable) {
         }
-        session.thread?.quitSafely()
     }
 
     /**

@@ -47,8 +47,15 @@ class RustTouchListener(private val nativePtr: Long) : View.OnTouchListener {
         // `getLocationOnScreen` calls. The view doesn't move between
         // the dispatch calls for a single event.
         v.getLocationOnScreen(screenLoc)
-        val screenX = screenLoc[0].toFloat()
-        val screenY = screenLoc[1].toFloat()
+        // MotionEvent coordinates are DEVICE PIXELS, but the framework's
+        // coordinate space is logical dp everywhere else — Taffy layout frames,
+        // the canvas Scene, and iOS's `locationInView` points. Reporting raw px
+        // makes `TouchEvent::position` ~`density`× too large, so absolute-
+        // position consumers (canvas drawing) land far off and gesture deltas
+        // run `density`× too fast. Divide by density so Android matches iOS.
+        val density = v.resources.displayMetrics.density.let { if (it > 0f) it else 1f }
+        val screenX = screenLoc[0].toFloat() / density
+        val screenY = screenLoc[1].toFloat() / density
         val timestampNs = event.eventTime * 1_000_000L
 
         var anyConsumed = false
@@ -57,25 +64,25 @@ class RustTouchListener(private val nativePtr: Long) : View.OnTouchListener {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                 val idx = event.actionIndex
-                val resp = dispatch(event, idx, PHASE_BEGAN, screenX, screenY, timestampNs)
+                val resp = dispatch(event, idx, PHASE_BEGAN, screenX, screenY, density, timestampNs)
                 if (resp and RESP_CONSUMED != 0) anyConsumed = true
                 if (resp and RESP_CLAIM != 0) anyClaim = true
             }
             MotionEvent.ACTION_MOVE -> {
                 for (i in 0 until event.pointerCount) {
-                    val resp = dispatch(event, i, PHASE_MOVED, screenX, screenY, timestampNs)
+                    val resp = dispatch(event, i, PHASE_MOVED, screenX, screenY, density, timestampNs)
                     if (resp and RESP_CONSUMED != 0) anyConsumed = true
                     if (resp and RESP_CLAIM != 0) anyClaim = true
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
                 val idx = event.actionIndex
-                val resp = dispatch(event, idx, PHASE_ENDED, screenX, screenY, timestampNs)
+                val resp = dispatch(event, idx, PHASE_ENDED, screenX, screenY, density, timestampNs)
                 if (resp and RESP_CONSUMED != 0) anyConsumed = true
             }
             MotionEvent.ACTION_CANCEL -> {
                 for (i in 0 until event.pointerCount) {
-                    val resp = dispatch(event, i, PHASE_CANCELLED, screenX, screenY, timestampNs)
+                    val resp = dispatch(event, i, PHASE_CANCELLED, screenX, screenY, density, timestampNs)
                     if (resp and RESP_CONSUMED != 0) anyConsumed = true
                 }
             }
@@ -98,11 +105,13 @@ class RustTouchListener(private val nativePtr: Long) : View.OnTouchListener {
         phase: Int,
         screenX: Float,
         screenY: Float,
+        density: Float,
         timestampNs: Long,
     ): Int {
         val id = event.getPointerId(pointerIndex).toLong()
-        val x = event.getX(pointerIndex)
-        val y = event.getY(pointerIndex)
+        // px → dp (screenX/screenY are already dp).
+        val x = event.getX(pointerIndex) / density
+        val y = event.getY(pointerIndex) / density
         return nativeInvokeTouch(
             nativePtr,
             id,

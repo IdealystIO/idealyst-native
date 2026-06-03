@@ -1316,6 +1316,7 @@ dependencies = [
  "icons-lucide",
  "idea-ui",
  "lol_alloc",
+ "markdown",
  "mcp-catalog",
  "runtime-core",
  "serde_json",
