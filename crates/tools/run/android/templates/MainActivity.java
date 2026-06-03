@@ -103,6 +103,22 @@ public class MainActivity extends Activity {
         NativeBridge.notifyConfigChanged();
     }
 
+    /**
+     * Forward `startActivityForResult` results to the framework's runtime
+     * dispatcher. SDKs that drive an Activity-result flow (e.g. the
+     * screen-recorder's MediaProjection consent intent) register a handler
+     * with `io.idealyst.runtime.RustActivityResult` keyed by their request
+     * code — so they never have to subclass or edit this generated Activity.
+     * If no handler claims the result, fall through to the default.
+     */
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (io.idealyst.runtime.RustActivityResult.dispatch(requestCode, resultCode, data)) {
+            return;
+        }
+        super.onActivityResult(requestCode, resultCode, data);
+    }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();

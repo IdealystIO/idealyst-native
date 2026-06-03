@@ -46,6 +46,12 @@ object RustCamera2Helper {
         var reader: ImageReader? = null
         var thread: HandlerThread? = null
         var handler: Handler? = null
+        // SENSOR_ORIENTATION (0/90/180/270): the camera sensor is mounted
+        // landscape, so frames arrive rotated by this amount relative to a
+        // portrait-held device. We rotate the RGBA output by it so upright
+        // frames reach the FrameWriter — the Android analog of the iOS
+        // AVCaptureConnection.videoOrientation fix.
+        var sensorOrientation: Int = 0
     }
 
     private val sessions = ConcurrentHashMap<Long, Session>()
@@ -104,6 +110,8 @@ object RustCamera2Helper {
         }
 
         val session = Session()
+        session.sensorOrientation =
+            characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
         sessions[token] = session
 
         val thread = HandlerThread("idealyst-camera-$token").also { it.start() }
@@ -116,8 +124,13 @@ object RustCamera2Helper {
         reader.setOnImageAvailableListener({ r ->
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
-                val rgba = yuv420ToRgba(image)
-                nativeFrame(token, rgba, image.width, image.height)
+                val rot = session.sensorOrientation
+                val rgba = yuv420ToRgba(image, rot)
+                // 90°/270° rotation swaps the frame's width and height.
+                val swap = rot == 90 || rot == 270
+                val outW = if (swap) image.height else image.width
+                val outH = if (swap) image.width else image.height
+                nativeFrame(token, rgba, outW, outH)
             } catch (_: Throwable) {
                 // Drop the frame; never throw into the listener.
             } finally {
@@ -247,14 +260,22 @@ object RustCamera2Helper {
 
     /**
      * Convert a `YUV_420_888` [image] to tightly-packed top-down `RGBA8`
-     * (BT.601 full-range). O(width*height); a straightforward CPU pass that
-     * keeps the JNI boundary a single byte array — a future GPU/RenderScript
-     * path can replace this without touching the Rust side.
+     * (BT.601 full-range), rotating the output by [rotation] degrees clockwise
+     * (the camera's `SENSOR_ORIENTATION`) so frames are upright on a
+     * portrait-held device. The rotation is baked into the destination index —
+     * no extra copy pass. O(width*height); a future GPU/RenderScript path can
+     * replace this without touching the Rust side.
+     *
+     * For 90°/270° the output is `height × width` (dimensions swapped); the
+     * caller emits the swapped size to [nativeFrame]. Like the iOS fix this
+     * assumes a portrait device and does not mirror the front camera.
      */
-    private fun yuv420ToRgba(image: Image): ByteArray {
+    private fun yuv420ToRgba(image: Image, rotation: Int): ByteArray {
         val width = image.width
         val height = image.height
         val out = ByteArray(width * height * 4)
+        // Output row stride (in pixels): swapped for 90°/270°.
+        val outW = if (rotation == 90 || rotation == 270) height else width
 
         val yPlane = image.planes[0]
         val uPlane = image.planes[1]
@@ -271,7 +292,6 @@ object RustCamera2Helper {
         val vRowStride = vPlane.rowStride
         val vPixelStride = vPlane.pixelStride
 
-        var dst = 0
         for (row in 0 until height) {
             val yRow = row * yRowStride
             val uvRow = (row shr 1)
@@ -290,11 +310,22 @@ object RustCamera2Helper {
                 if (g < 0) g = 0 else if (g > 255) g = 255
                 if (b < 0) b = 0 else if (b > 255) b = 255
 
+                // Destination pixel in the rotated frame. Clockwise by
+                // `rotation`; 90°/270° map into the height×width output.
+                val dRow: Int
+                val dCol: Int
+                when (rotation) {
+                    90 -> { dRow = col; dCol = height - 1 - row }
+                    180 -> { dRow = height - 1 - row; dCol = width - 1 - col }
+                    270 -> { dRow = width - 1 - col; dCol = row }
+                    else -> { dRow = row; dCol = col }
+                }
+                val dst = (dRow * outW + dCol) * 4
+
                 out[dst] = r.toByte()
                 out[dst + 1] = g.toByte()
                 out[dst + 2] = b.toByte()
                 out[dst + 3] = 255.toByte()
-                dst += 4
             }
         }
         return out

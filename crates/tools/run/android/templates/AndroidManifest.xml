@@ -36,5 +36,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Capability-derived services (e.g. the screen_capture
+             mediaProjection foreground service), injected from SDKs in the
+             dependency graph the same way `{{USES_PERMISSIONS}}` is. -->
+        {{SERVICES}}
     </application>
 </manifest>

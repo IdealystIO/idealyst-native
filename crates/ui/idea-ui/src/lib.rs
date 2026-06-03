@@ -65,7 +65,10 @@ pub mod intent;
 // Compile-checked usage examples for idea-ui components. `recipe!`
 // self-gates on the `catalog` feature, so this module is empty (zero
 // cost) in production and only materializes when the catalog is built.
-mod recipes;
+// `pub` so the catalog-docs build script can reference each no-arg
+// recipe fn by path (`idea_ui::recipes::<name>`) and render it live —
+// the whole module is still nothing in production (catalog off).
+pub mod recipes;
 pub mod stylesheets;
 pub mod theme;
 mod theme_runtime;

@@ -1,0 +1,26 @@
+[package]
+name = "canvas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Umbrella facade for the `canvas` 2D-drawing SDK — the crate screens
+# import for the small, consistent `canvas::` namespace (`canvas::Canvas`,
+# `canvas::Scene`, `canvas::prelude::*`).
+#
+# Layering (mirrors `maps`):
+# - `canvas-core`  — the renderer-agnostic `Scene` model + `Canvas`
+#                    primitive. Zero platform deps.
+# - this crate     — author-facing re-export of `canvas-core`.
+# - `canvas-vello` / `canvas-native` — the two interchangeable renderers,
+#                    imported separately by the app's bootstrap to pick
+#                    which one backs `CanvasProps` (registration-time
+#                    selection; last `register` wins).
+#
+# Renderer choice is NOT routed here (unlike `maps`, whose umbrella
+# cfg-routes `register`): the whole point of this SDK is that the app
+# selects vello vs native explicitly, so `register` lives in the renderer
+# crates, not the umbrella.
+
+[dependencies]
+canvas-core = { workspace = true }

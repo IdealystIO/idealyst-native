@@ -84,6 +84,11 @@ members = [
     "crates/sdk/webview",
     "crates/sdk/video",
     "crates/sdk/svg",
+    # `canvas` 2D-drawing SDK: umbrella facade + renderer-agnostic core.
+    # Renderer crates (canvas-vello / canvas-native) added in later phases.
+    "crates/sdk/canvas",
+    "crates/sdk/canvas/core",
+    "crates/sdk/canvas/native",
     "crates/sdk/toolbar",
     "crates/sdk/form",
     "crates/sdk/table",
@@ -164,6 +169,7 @@ members = [
     "examples/screen-recorder-demo",
     "examples/camera-demo",
     "examples/camera-preview-demo",
+    "examples/canvas-demo",
     "examples/screenshare-preview-demo",
     "examples/media-sources-demo",
     "examples/login-demo",
@@ -288,6 +294,9 @@ codeblock = { path = "crates/sdk/codeblock" }
 webview = { path = "crates/sdk/webview" }
 video = { path = "crates/sdk/video" }
 svg = { path = "crates/sdk/svg" }
+canvas = { path = "crates/sdk/canvas" }
+canvas-core = { path = "crates/sdk/canvas/core" }
+canvas-native = { path = "crates/sdk/canvas/native" }
 toolbar = { path = "crates/sdk/toolbar" }
 form = { path = "crates/sdk/form" }
 table = { path = "crates/sdk/table" }

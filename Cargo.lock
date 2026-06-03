@@ -610,6 +610,7 @@ dependencies = [
  "backend-android-core",
  "jni 0.21.1",
  "log",
+ "ndk-context",
  "ndk-sys 0.6.0+11769913",
  "raw-window-handle",
  "runtime-core",
@@ -1231,6 +1232,50 @@ dependencies = [
  "idea-ui",
  "runtime-core",
  "video",
+]
+
+[[package]]
+name = "canvas"
+version = "0.0.1"
+dependencies = [
+ "canvas-core",
+]
+
+[[package]]
+name = "canvas-core"
+version = "0.0.1"
+dependencies = [
+ "runtime-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "canvas-demo"
+version = "0.0.1"
+dependencies = [
+ "backend-ios-mobile",
+ "backend-web",
+ "canvas",
+ "canvas-native",
+ "idea-ui",
+ "runtime-core",
+]
+
+[[package]]
+name = "canvas-native"
+version = "0.0.1"
+dependencies = [
+ "backend-ios-mobile",
+ "backend-web",
+ "canvas-core",
+ "js-sys",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "objc2-ui-kit",
+ "runtime-core",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -6286,8 +6331,10 @@ version = "0.0.1"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
+ "jni 0.21.1",
  "js-sys",
  "media-stream",
+ "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "runtime-core",

@@ -54,6 +54,11 @@ pub struct Capability {
     pub macos_entitlement: Option<&'static str>,
     /// Android `<uses-permission>` names.
     pub android_permissions: &'static [&'static str],
+    /// Fully-qualified Android `<service>` class this capability needs
+    /// injected into `<application>` (e.g. a foreground service). `None`
+    /// for capabilities that need no service. The service class is shipped
+    /// as runtime Kotlin by the SDK that declares the capability.
+    pub android_service: Option<&'static str>,
     /// Reason used when the app supplied none. Deliberately generic.
     pub default_reason: &'static str,
 }
@@ -69,6 +74,7 @@ pub const REGISTRY: &[Capability] = &[
         macos_plist_key: Some("NSMicrophoneUsageDescription"),
         macos_entitlement: Some("com.apple.security.device.audio-input"),
         android_permissions: &["android.permission.RECORD_AUDIO"],
+        android_service: None,
         default_reason: "This app uses the microphone to capture audio.",
     },
     Capability {
@@ -77,7 +83,27 @@ pub const REGISTRY: &[Capability] = &[
         macos_plist_key: Some("NSCameraUsageDescription"),
         macos_entitlement: Some("com.apple.security.device.camera"),
         android_permissions: &["android.permission.CAMERA"],
+        android_service: None,
         default_reason: "This app uses the camera.",
+    },
+    // Screen capture via MediaProjection. Android needs the two
+    // foreground-service permissions AND a started mediaProjection foreground
+    // service (the `android_service` below) before `getMediaProjection` — see
+    // the screen-recorder SDK's RustScreenCaptureHelper. Consent itself is a
+    // runtime Activity-result dialog, so there's no iOS plist key / macOS
+    // entitlement here (iOS ReplayKit / macOS ScreenCaptureKit prompt at
+    // runtime too). Declared by the `screen-recorder` SDK.
+    Capability {
+        name: "screen_capture",
+        ios_plist_key: None,
+        macos_plist_key: None,
+        macos_entitlement: None,
+        android_permissions: &[
+            "android.permission.FOREGROUND_SERVICE",
+            "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION",
+        ],
+        android_service: Some("io.idealyst.screenrecorder.MediaProjectionService"),
+        default_reason: "This app captures the screen.",
     },
     // Outbound network access. Android gates it behind a (normal, no-prompt)
     // permission that must be in the manifest; iOS/macOS don't gate outbound
@@ -92,6 +118,7 @@ pub const REGISTRY: &[Capability] = &[
             "android.permission.INTERNET",
             "android.permission.ACCESS_NETWORK_STATE",
         ],
+        android_service: None,
         default_reason: "",
     },
 ];
@@ -181,6 +208,9 @@ pub struct Resolved {
     pub macos_entitlements: Vec<String>,
     /// Android `<uses-permission>` names.
     pub android_permissions: Vec<String>,
+    /// Fully-qualified Android `<service>` class names to inject into
+    /// `<application>` (foreground services etc.).
+    pub android_services: Vec<String>,
     /// Human lines describing what was bundled + which crate asked, so
     /// auto-added permissions are visible in the build output.
     pub report: Vec<String>,
@@ -250,13 +280,18 @@ pub fn resolve(
         for p in cap.android_permissions {
             out.android_permissions.push((*p).to_string());
         }
+        if let Some(svc) = cap.android_service {
+            out.android_services.push(svc.to_string());
+        }
         out.report
             .push(format!("{} (requested by {})", d.name, requesters));
     }
     // Two crates requesting the same capability would otherwise double the
-    // Android permission / entitlement; dedup defensively.
+    // Android permission / entitlement / service; dedup defensively.
     out.android_permissions.sort();
     out.android_permissions.dedup();
+    out.android_services.sort();
+    out.android_services.dedup();
     out.macos_entitlements.sort();
     out.macos_entitlements.dedup();
     out
@@ -355,6 +390,30 @@ mod tests {
         // No plist key → no usage-description, no missing-reason warning.
         assert!(r.ios_plist.is_empty());
         assert!(r.warnings.is_empty(), "internet must not warn: {:?}", r.warnings);
+    }
+
+    #[test]
+    fn resolve_screen_capture_adds_fgs_perms_and_service() {
+        let discovered = vec![DiscoveredCapability {
+            name: "screen_capture".into(),
+            requested_by: vec!["screen-recorder".into()],
+        }];
+        let r = resolve(&discovered, &BTreeMap::new());
+        // The two foreground-service permissions, no plist key.
+        assert!(r
+            .android_permissions
+            .contains(&"android.permission.FOREGROUND_SERVICE".to_string()));
+        assert!(r
+            .android_permissions
+            .contains(&"android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION".to_string()));
+        assert!(r.ios_plist.is_empty());
+        // The mediaProjection foreground service is emitted for the manifest.
+        assert_eq!(
+            r.android_services,
+            vec!["io.idealyst.screenrecorder.MediaProjectionService".to_string()]
+        );
+        // No plist key → no missing-reason warning.
+        assert!(r.warnings.is_empty(), "screen_capture must not warn: {:?}", r.warnings);
     }
 
     #[test]

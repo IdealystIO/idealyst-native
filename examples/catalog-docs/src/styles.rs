@@ -7,7 +7,8 @@
 
 use runtime_core::stylesheet;
 use runtime_core::{
-    AlignItems, Color, FlexDirection, JustifyContent, Length, Overflow, TextAlign, Tokenized,
+    AlignItems, Color, FlexDirection, FlexWrap, JustifyContent, Length, Overflow, TextAlign,
+    Tokenized,
 };
 
 // ---- Page-level scroll surface --------------------------------------------
@@ -443,6 +444,112 @@ stylesheet! {
         }
         transitions {
             color: 150ms EaseOut,
+        }
+    }
+}
+
+// ---- Search filter chips --------------------------------------------------
+// A wrapping row of kind-filter chips; each chip has an `active` variant
+// (mirrors NavLink/NavLinkText so one signal flips container + text).
+stylesheet! {
+    pub ChipRow<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            flex_wrap: FlexWrap::Wrap,
+            gap: 8.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub Chip<()> {
+        base(_t) {
+            padding_vertical: 4.0,
+            padding_horizontal: 10.0,
+            border_radius: Tokenized::token("radius-pill", Length::Px(999.0)),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            background: Color("transparent".into()),
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                background: Tokenized::token(
+                    "intent-primary-soft-bg",
+                    Color("rgba(91, 108, 255, 0.12)".into()),
+                ),
+                border_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+            }
+        }
+        transitions {
+            background: 140ms EaseOut,
+            border_color: 140ms EaseOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub ChipText<()> {
+        base(_t) {
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: 13.0,
+            text_align: TextAlign::Center,
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+            }
+        }
+    }
+}
+
+// ---- Search results body (reserve height so the modal doesn't jump) -------
+// The result list grows/shrinks as the query + filter change; a min-height
+// keeps the modal a stable size (it still scrolls inside the Modal cap when
+// results overflow).
+stylesheet! {
+    pub SearchResultsBody<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: 12.0,
+        }
+    }
+}
+
+// The scrolling results region — a fixed-height viewport so the search
+// field + filter chips stay pinned above while only the results scroll
+// (and the modal height stays stable regardless of result count).
+stylesheet! {
+    pub ResultsScroll<()> {
+        base(_t) {
+            min_height: 340.0,
+            max_height: 340.0,
+        }
+    }
+}
+
+// ---- Search result heading row (name + kind tag, inline) ------------------
+stylesheet! {
+    pub ResultHead<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            flex_wrap: FlexWrap::Wrap,
+            gap: 8.0,
+        }
+    }
+}
+
+// ---- Search result namespace (small label above the name) -----------------
+stylesheet! {
+    pub ResultNamespace<()> {
+        base(_t) {
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: 12.0,
+            text_align: TextAlign::Left,
         }
     }
 }

@@ -1,0 +1,21 @@
+[package]
+name = "canvas-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The renderer-agnostic 2D drawing abstraction for the `canvas` SDK.
+# Owns the retained `Scene` model + the `Canvas` `Element::External`
+# primitive; contains NO rendering code. Zero platform deps so the
+# per-renderer crates (`canvas-vello`, `canvas-native`) and the `canvas`
+# umbrella can all depend on it without a dep cycle — same split
+# rationale as `maps-core`.
+
+[dependencies]
+# `Element::External` plumbing, the canonical `color::Rgba`, and the
+# `IdealystSchema` derive (a no-op without the `catalog` feature, so this
+# adds no platform code to a normal build).
+runtime-core = { workspace = true }
+# Scene wire serialization (snapshot crosses the runtime-server wire).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

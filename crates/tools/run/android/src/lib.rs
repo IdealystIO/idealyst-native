@@ -219,11 +219,11 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     let icon_attrs =
         sync_android_icons_into_res(&project_dir, &project_res, &build_tools, &project_icon_flat)?;
 
-    // Capability-derived `<uses-permission>` entries, discovered from the
-    // wrapper's dependency graph (the same manifest the Kotlin-runtime
+    // Capability-derived `<uses-permission>` + `<service>` entries, discovered
+    // from the wrapper's dependency graph (the same manifest the Kotlin-runtime
     // discovery below walks).
-    let uses_permissions =
-        android_permission_entries(&so.wrapper_dir.join("Cargo.toml"), &manifest.app.permissions);
+    let (uses_permissions, services) =
+        android_manifest_entries(&so.wrapper_dir.join("Cargo.toml"), &manifest.app.permissions);
 
     fs::write(
         &manifest_xml,
@@ -234,6 +234,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             ("AAS_URL", &xml_escape(&aas_url)),
             ("ICON_ATTRS", &icon_attrs),
             ("USES_PERMISSIONS", &uses_permissions),
+            ("SERVICES", &services),
         ]),
     )?;
 
@@ -939,25 +940,27 @@ fn adb_launch(adb: &Path, serial: &str, component: &str) -> Result<()> {
 // Tiny templating helpers
 // ---------------------------------------------------------------------------
 
-/// Discover the capabilities the app's dependency graph declares and
-/// render the Android `<uses-permission>` entries that the manifest's
-/// `{{USES_PERMISSIONS}}` placeholder expects. Warnings (generic reason,
-/// unknown capability) and a per-permission report are printed so an
-/// auto-added permission is visible. A discovery error degrades to no
-/// entries with a warning rather than failing the run.
-fn android_permission_entries(
+/// Discover the capabilities the app's dependency graph declares and render
+/// the Android manifest fragments they expand into: the `<uses-permission>`
+/// entries (`{{USES_PERMISSIONS}}` placeholder) and the `<service>` entries
+/// (`{{SERVICES}}` placeholder — e.g. the screen_capture mediaProjection
+/// foreground service). Warnings (generic reason, unknown capability) and a
+/// per-permission report are printed so an auto-added entry is visible. A
+/// discovery error degrades to empty fragments with a warning rather than
+/// failing the run. Returns `(uses_permissions, services)`.
+fn android_manifest_entries(
     wrapper_manifest: &Path,
     app_reasons: &std::collections::BTreeMap<String, String>,
-) -> String {
+) -> (String, String) {
     let discovered = match capabilities::discover(wrapper_manifest) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("warning: could not discover app capabilities: {e}");
-            return String::new();
+            return (String::new(), String::new());
         }
     };
     if discovered.is_empty() {
-        return String::new();
+        return (String::new(), String::new());
     }
     let resolved = capabilities::resolve(&discovered, app_reasons);
     for w in &resolved.warnings {
@@ -966,12 +969,27 @@ fn android_permission_entries(
     for r in &resolved.report {
         println!("  Android permission: {r}");
     }
-    resolved
+    let uses_permissions = resolved
         .android_permissions
         .iter()
         .map(|p| format!("<uses-permission android:name=\"{}\" />", xml_escape(p)))
         .collect::<Vec<_>>()
-        .join("\n    ")
+        .join("\n    ");
+    // A capability-declared service is internal (not launched from outside the
+    // app), so `android:exported="false"`. `foregroundServiceType` is what the
+    // OS checks against the started-foreground type — mediaProjection here.
+    let services = resolved
+        .android_services
+        .iter()
+        .map(|s| {
+            format!(
+                "<service android:name=\"{}\" android:foregroundServiceType=\"mediaProjection\" android:exported=\"false\" />",
+                xml_escape(s)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n        ");
+    (uses_permissions, services)
 }
 
 fn render(template: &str, vars: &[(&str, &str)]) -> String {

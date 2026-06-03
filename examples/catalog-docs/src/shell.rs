@@ -11,19 +11,21 @@ use std::rc::Rc;
 
 use drawer_navigator::SlotProps;
 use idea_ui::{
-    typography_kind, Card, Divider, Field, Modal, Spacer, Stack, StackGap, Table, TableCell,
-    TableRow, Typography,
+    tone, typography_kind, variant, Card, Divider, Field, Modal, Spacer, Stack, StackGap, Table,
+    TableCell, Tag, TableRow, Typography,
 };
 use runtime_core::{
-    component, effect, signal, switch, ui, Color, Element, IntoElement, SafeAreaSides,
-    StyleApplication, Tokenized,
+    component, signal, switch, ui, Color, Element, IntoElement, SafeAreaSides, StyleApplication,
+    Tokenized,
 };
 
 use crate::catalog::{CatalogModel, Entry, Kind};
 use crate::routes::{EntryParams, ENTRY_ROUTE, OVERVIEW_ROUTE};
 use crate::styles::{
-    Callout as CalloutBox, CodePanel as CodePanelBox, CodeText, LinkText, PageColumn, PagePad,
-    ScreenScroll, SearchBox, SearchBoxText, SidebarBody, SidebarHeader, SidebarSection,
+    Callout as CalloutBox, Chip, ChipActive, ChipRow, ChipText, ChipTextActive,
+    CodePanel as CodePanelBox, CodeText, LinkText, PageColumn, PagePad, PreviewBox, PreviewSlot,
+    ResultHead, ResultNamespace, ResultsScroll, ScreenScroll, SearchBox, SearchBoxText,
+    SearchResultsBody, SidebarBody, SidebarHeader, SidebarSection,
 };
 
 // =============================================================================
@@ -102,20 +104,11 @@ pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
     // Search modal state.
     let open = signal!(false);
     let query = signal!(String::new());
+    let filter = signal!(Option::<Kind>::None);
     let on_query: Rc<dyn Fn(String)> = Rc::new(move |s| query.set(s));
     let open_search: Rc<dyn Fn()> = Rc::new(move || open.set(true));
     let close_search: Rc<dyn Fn()> = Rc::new(move || open.set(false));
     let model_for_results = model.clone();
-
-    // Close the search modal whenever navigation happens (i.e. a result
-    // was tapped). Reading `active_path` subscribes this effect to nav
-    // changes; it anchors to the sidebar slot's reactive scope (the
-    // `effect!` is a no-op handle inside an active scope, so it survives
-    // past this fn's return — same as the website shell).
-    effect!({
-        let _ = active_path.get();
-        open.set(false);
-    });
 
     let header_children: Vec<Element> = vec![
         ui! { Typography(content = "Idealyst Catalog".to_string(), kind = typography_kind::H3) },
@@ -141,14 +134,19 @@ pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
             }
             Spacer()
             if open.get() {
-                Modal(on_dismiss = Some(close_search.clone()), width = 560.0) {
+                Modal(on_dismiss = Some(close_search.clone()), width = 600.0) {
                     Typography(content = "Search the catalog".to_string(), kind = typography_kind::H3)
                     Field(
                         value = query,
                         on_change = on_query.clone(),
                         placeholder = Some("Component, type, utility…".to_string()),
                     )
-                    search_results(model_for_results.clone(), query)
+                    search_results(
+                        model_for_results.clone(),
+                        query,
+                        filter,
+                        close_search.clone(),
+                    )
                 }
             }
         }
@@ -159,48 +157,122 @@ pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
 /// Reactive search results — rebuilds the result list as the query
 /// changes (via `switch`, keyed on the query string). Each result links
 /// to its entry page; the modal closes on navigation (see `sidebar`).
-fn search_results(model: Rc<CatalogModel>, query: runtime_core::Signal<String>) -> Element {
-    switch(
-        move || query.get(),
-        move |q: &String| {
-            let mut rows: Vec<Element> = Vec::new();
-            if q.trim().is_empty() {
-                rows.push(ui! {
+/// Reactive search body — a row of kind-filter chips plus result cards.
+/// Rebuilds (via `switch`) whenever the query *or* the active kind filter
+/// changes. Each card links to its entry and closes the modal on press.
+fn search_results(
+    model: Rc<CatalogModel>,
+    query: runtime_core::Signal<String>,
+    filter: runtime_core::Signal<Option<Kind>>,
+    close: Rc<dyn Fn()>,
+) -> Element {
+    // Filter chips stay pinned above the scroll region; they rebuild only
+    // when the active filter changes.
+    let chips = switch(
+        move || filter.get(),
+        move |f: &Option<Kind>| filter_chips(filter, *f),
+    );
+    // The results list — the only part that scrolls.
+    let results = switch(
+        move || (query.get(), filter.get()),
+        move |(q, f): &(String, Option<Kind>)| {
+            let f = *f;
+            if q.trim().chars().count() < 2 {
+                ui! {
                     Typography(
-                        content = "Type to search components, types, utilities, primitives…"
-                            .to_string(),
+                        content = "Type at least 2 characters to search…".to_string(),
                         muted = true,
                     )
-                });
+                }
             } else {
-                let matches = model.search(q);
-                if matches.is_empty() {
-                    rows.push(ui! {
+                let hits = model.search(q, f);
+                if hits.is_empty() {
+                    ui! {
                         Typography(
                             content = format!("No matches for \u{201c}{}\u{201d}.", q.trim()),
                             muted = true,
                         )
-                    });
-                } else {
-                    for m in matches {
-                        rows.push(search_result_link(m));
                     }
+                } else {
+                    let cards: Vec<Element> =
+                        hits.into_iter().map(|h| result_card(h, close.clone())).collect();
+                    ui! { Stack(gap = StackGap::Sm) { cards } }
                 }
             }
-            ui! { Stack(gap = StackGap::Xs) { rows } }
         },
-    )
-}
-
-/// One search result — a link to the entry, labelled `"<name> · <kind>"`.
-fn search_result_link(m: crate::catalog::EntryLink) -> Element {
-    let params = EntryParams::new(m.kind, m.slug.clone());
-    let label = format!("{} · {}", m.name, m.kind.noun());
+    );
     ui! {
-        link(route = &ENTRY_ROUTE, params = params) {
-            text(style = LinkText()) { label }
+        view(style = SearchResultsBody()) {
+            chips
+            scroll_view(style = ResultsScroll()) { results }
         }
     }
+}
+
+/// The kind-filter chip row. `current` is the active filter (`None` = all).
+fn filter_chips(filter: runtime_core::Signal<Option<Kind>>, current: Option<Kind>) -> Element {
+    let opts: [(&str, Option<Kind>); 5] = [
+        ("All", None),
+        ("Components", Some(Kind::Component)),
+        ("Primitives", Some(Kind::Primitive)),
+        ("Types", Some(Kind::Type)),
+        ("Utilities", Some(Kind::Utility)),
+    ];
+    let chips: Vec<Element> = opts
+        .into_iter()
+        .map(|(label, k)| filter_chip(label, current == k, filter, k))
+        .collect();
+    ui! { view(style = ChipRow()) { chips } }
+}
+
+/// One filter chip — a pressable pill that sets the active kind filter.
+fn filter_chip(
+    label: &str,
+    active: bool,
+    filter: runtime_core::Signal<Option<Kind>>,
+    kind: Option<Kind>,
+) -> Element {
+    use runtime_core::derived;
+    let container = Chip().active(derived(move || {
+        if active { ChipActive::On } else { ChipActive::Off }
+    }));
+    let text_style = ChipText().active(derived(move || {
+        if active { ChipTextActive::On } else { ChipTextActive::Off }
+    }));
+    let label = label.to_string();
+    let inner = ui! { view(style = container) { text(style = text_style) { label } } };
+    runtime_core::pressable(vec![inner], move || filter.set(kind)).into_element()
+}
+
+/// One search result, as a card linking to the entry: a blue title, the
+/// kind, and a short doc summary. Wrapped in a `pressable` that closes the
+/// modal on press (the inner `link` handles navigation).
+fn result_card(h: crate::catalog::SearchHit, close: Rc<dyn Fn()>) -> Element {
+    let params = EntryParams::new(h.kind, h.slug.clone());
+    let name = h.name.clone();
+    let kind_label = h.kind.noun().to_string();
+    let module = h.module_path.clone();
+    let summary = h.summary.clone();
+    let card = ui! {
+        Card {
+            Stack(gap = StackGap::Xs) {
+                // Crate / namespace — a small label above the result.
+                if !module.is_empty() {
+                    text(style = ResultNamespace()) { module }
+                }
+                // Name + kind tag, inline.
+                view(style = ResultHead()) {
+                    text(style = LinkText()) { name }
+                    Tag(label = kind_label, tone = tone::Neutral, variant = variant::Soft)
+                }
+                if !summary.is_empty() {
+                    Typography(content = summary, muted = true)
+                }
+            }
+        }
+    };
+    let link_el = ui! { link(route = &ENTRY_ROUTE, params = params) { card } };
+    runtime_core::pressable(vec![link_el], move || (close)()).into_element()
 }
 
 fn sidebar_overview_link(active_path: runtime_core::Signal<String>) -> Element {
@@ -877,6 +949,15 @@ fn recipes_section(entry: &Entry) -> Element {
     }
 }
 
+// The build-time `recipe_renderer(module_path, name) -> Option<fn() ->
+// Element>` map. Generated by `build.rs` from the catalog's recipes:
+// one arm per zero-arg `idea_ui` recipe (the renderable ones), keyed by
+// the recipe's `module_path!()` + fn name. Lets us turn a recipe into a
+// LIVE component preview instead of only showing its source. This is the
+// only DCE-proof path on wasm — the runtime inventory thunks are pruned,
+// but a statically-linked fn reference survives.
+include!(concat!(env!("OUT_DIR"), "/recipe_renderers.rs"));
+
 fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
     // Pretty-print the recipe fn name (`button_basic` → "Button basic")
     // for the card heading; primary recipes get a tag so authors can
@@ -885,12 +966,21 @@ fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
     let heading = if recipe.primary { format!("{} · primary", title) } else { title };
     let docs = recipe.docs.clone();
     let source = recipe.source.clone();
+    // A live preview, when this recipe is a zero-arg renderable one the
+    // build-time map could address. Props-defining recipes (those whose
+    // wrapper fn takes args) aren't in the map → no preview, source only.
+    let preview = recipe_renderer(&recipe.module_path, &recipe.name).map(|render| render());
     ui! {
         Card {
             Stack(gap = StackGap::Sm) {
                 Typography(content = heading, kind = typography_kind::H3)
                 if !docs.is_empty() {
                     markdown(&docs)
+                }
+                if let Some(preview) = preview {
+                    view(style = PreviewBox()) {
+                        view(style = PreviewSlot()) { preview }
+                    }
                 }
                 CodePanel(src = source)
             }

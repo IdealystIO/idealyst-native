@@ -60,6 +60,12 @@ android_logger = "0.13"
 # to convert the Java-side `android.view.Surface` into the native
 # window pointer wgpu expects in `AndroidNdkWindowHandle`.
 ndk-sys = "0.6"
+# `ndk-context` is the ecosystem-standard global the JVM + Android Context are
+# published to. We don't use NativeActivity (our host is a Kotlin MainActivity
+# + JNI bridge), so nothing populates it unless we do — and SDKs like `camera`
+# call `ndk_context::android_context()`. `AndroidBackend::new` initializes it
+# so any ndk-context-based SDK works in an idealyst app.
+ndk-context = "0.1"
 # runtime-server-client wire transport + worker thread. Pulled in only when
 # the `runtime-server` feature is on. The shared crate carries
 # tungstenite + the RuntimeServerShell worker for every native target.

@@ -53,8 +53,32 @@ thread_local! {
 
 /// Register this backend's scheduler with `runtime-core`.
 /// Idempotent — first install wins.
+///
+/// Also installs the cooperative async executor
+/// ([`crate::imp::async_executor::install_async_executor`]) so
+/// `runtime_core::driver::spawn_async` polls futures on the main looper
+/// instead of falling back to `pollster::block_on` (which would FREEZE the
+/// main thread — a hard ANR for any future that needs the looper to make
+/// progress, e.g. the `camera` SDK's main-thread Camera2 setup). Matches the
+/// Apple scheduler, which installs its executor from `install_scheduler` too.
 pub fn install_scheduler() {
     install(Box::new(AndroidScheduler));
+    // Gated on `async-driver` (the feature that brings `runtime_core::driver`
+    // into scope); mirrors the Apple scheduler installing its executor here.
+    #[cfg(feature = "async-driver")]
+    crate::imp::async_executor::install_async_executor();
+}
+
+/// Post a `RustAsyncPoll(id)` to the cached main-looper `Handler` so
+/// `async_executor::poll_task(id)` re-runs on the main thread. Exposed for
+/// the async executor's `TaskWaker`, which fires on a BACKGROUND thread and
+/// needs the thread-safe `Handler.post` marshal. Lives here because the
+/// cached `Handler` (`main_handler`) is private to this module; the runnable
+/// construction itself lives next to its consumer in `async_executor`.
+#[cfg(feature = "async-driver")]
+pub(crate) fn post_async_poll_to_main(env: &mut JNIEnv, id: u64) {
+    let mh = main_handler();
+    crate::imp::async_executor::construct_and_post_async_poll(env, mh.handler.as_obj(), id);
 }
 
 struct AndroidScheduler;

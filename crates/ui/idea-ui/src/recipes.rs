@@ -22,7 +22,7 @@ recipe!(
     /// A primary action button that runs a callback when pressed. The
     /// default `tone`/`variant`/`size`/`shape` give a filled primary
     /// button; pass them explicitly to vary it.
-    fn button_basic() -> ::runtime_core::Element {
+    pub fn button_basic() -> ::runtime_core::Element {
         use crate::Button;
         use ::runtime_core::ui;
         use ::std::rc::Rc;
@@ -41,7 +41,7 @@ recipe!(
     /// A controlled dropdown. The host owns the `value` signal (the
     /// chosen option's `id`); `on_change` writes the picked id back into
     /// it. Build the rows with `SelectOption::new(id, label)`.
-    fn select_controlled() -> ::runtime_core::Element {
+    pub fn select_controlled() -> ::runtime_core::Element {
         use crate::{Select, SelectOption};
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
@@ -69,7 +69,7 @@ recipe!(
     /// signal; `on_change` fires the new text on each edit. Add `help`
     /// for hint text or `error = Some(...)` to flag a validation problem
     /// (which paints the input in the Danger tone automatically).
-    fn field_controlled() -> ::runtime_core::Element {
+    pub fn field_controlled() -> ::runtime_core::Element {
         use crate::Field;
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
@@ -93,7 +93,7 @@ recipe!(
     /// A controlled checkbox with a label. The host owns the `value:
     /// Signal<bool>`; `on_change` fires the toggled value. Tapping
     /// anywhere on the row (box or label) toggles it.
-    fn checkbox_controlled() -> ::runtime_core::Element {
+    pub fn checkbox_controlled() -> ::runtime_core::Element {
         use crate::{tone, Checkbox};
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
@@ -116,7 +116,7 @@ recipe!(
     /// A controlled slide-toggle with an inline label. The host owns the
     /// `value: Signal<bool>`; `on_change` fires the flipped value. Use a
     /// semantic `tone` (e.g. Success) to color the "on" track.
-    fn switch_controlled() -> ::runtime_core::Element {
+    pub fn switch_controlled() -> ::runtime_core::Element {
         use crate::{tone, Switch};
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
@@ -140,7 +140,7 @@ recipe!(
     /// bordered panel. Use `variant = card::variant::Elevated` for a
     /// raised look (surface-alt background + shadow); `padding` sets the
     /// inner spacing.
-    fn card_elevated() -> ::runtime_core::Element {
+    pub fn card_elevated() -> ::runtime_core::Element {
         use crate::components::card::variant;
         use crate::{typography_kind, Card, CardPadding, Typography};
         use ::runtime_core::ui;
@@ -160,7 +160,7 @@ recipe!(
     /// idea-ui's Modal does NOT auto-unmount — the host gates it behind
     /// an open-state signal (`if open.get() { Modal { .. } }`) and flips
     /// that signal in `on_dismiss`.
-    fn modal_confirm() -> ::runtime_core::Element {
+    pub fn modal_confirm() -> ::runtime_core::Element {
         use crate::{typography_kind, Modal, Typography};
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
@@ -184,7 +184,7 @@ recipe!(
     /// index (`Signal<usize>`) and renders the active tab's content
     /// itself (e.g. with a `match` on `active.get()`). Position in the
     /// `tabs` vec is each tab's index.
-    fn tabs_controlled() -> ::runtime_core::Element {
+    pub fn tabs_controlled() -> ::runtime_core::Element {
         use crate::{Tab, Tabs};
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
@@ -212,7 +212,7 @@ recipe!(
     /// plus body rows. Use `TableCell(header = true, text = "...")` for
     /// the simple text case; pass a `children` block for richer cell
     /// content.
-    fn table_basic() -> ::runtime_core::Element {
+    pub fn table_basic() -> ::runtime_core::Element {
         use crate::{Table, TableCell, TableRow};
         use ::runtime_core::ui;
 
@@ -241,7 +241,7 @@ recipe!(
     /// type role (H1…H6, Body, Caption, …) from the theme's scale; set
     /// `muted = true` for secondary text or `tone = Some(...)` for
     /// intent-colored text.
-    fn typography_heading() -> ::runtime_core::Element {
+    pub fn typography_heading() -> ::runtime_core::Element {
         use crate::{typography_kind, Typography};
         use ::runtime_core::ui;
 
@@ -257,7 +257,7 @@ recipe!(
     /// dismiss button. Pick a semantic `tone` (Info/Success/Warning/
     /// Danger) and a `variant` (Soft/Filled/Outline). Provide
     /// `on_dismiss = Some(...)` to show the close affordance.
-    fn alert_dismissible() -> ::runtime_core::Element {
+    pub fn alert_dismissible() -> ::runtime_core::Element {
         use crate::{tone, variant, Alert};
         use ::runtime_core::ui;
         use ::std::rc::Rc;
@@ -282,7 +282,7 @@ recipe!(
     /// AnchorTarget::from(trigger)` on the Menu) and gate it behind an
     /// open-state signal. Compose `MenuItem`/`MenuLabel`/`MenuSeparator`
     /// children; flip the signal in each `on_select` and `on_dismiss`.
-    fn menu_anchored() -> ::runtime_core::Element {
+    pub fn menu_anchored() -> ::runtime_core::Element {
         use crate::{Button, Menu, MenuItem, MenuLabel, MenuSeparator};
         use ::runtime_core::primitives::portal::AnchorTarget;
         use ::runtime_core::{signal, ui, PressableHandle, Ref};
@@ -323,7 +323,7 @@ recipe!(
     /// A square, single-glyph clickable. Pick a `tone` × `variant` ×
     /// `size`; `glyph` is the character drawn inside (e.g. `"×"` for a
     /// close button). `on_click` fires on press.
-    fn icon_button_close() -> ::runtime_core::Element {
+    pub fn icon_button_close() -> ::runtime_core::Element {
         use crate::{tone, variant, IconButton, IconButtonSize};
         use ::runtime_core::ui;
         use ::std::rc::Rc;

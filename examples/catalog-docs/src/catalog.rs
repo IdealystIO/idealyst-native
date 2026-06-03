@@ -132,6 +132,10 @@ pub struct Compose {
 pub struct Recipe {
     /// The recipe fn's name, e.g. `button_basic`.
     pub name: String,
+    /// The `module_path!()` at the recipe site (e.g. `idea_ui::recipes`).
+    /// Paired with `name`, it keys the build-time `recipe_renderer` map
+    /// that turns a renderable recipe into a live component preview.
+    pub module_path: String,
     /// Prose docs on the recipe fn. May be empty.
     pub docs: String,
     /// The recipe's formatted, copy-pasteable source code.
@@ -231,6 +235,7 @@ fn build_recipes(cat: &ResolvedCatalog, name: &str) -> Vec<Recipe> {
         .iter()
         .map(|r| Recipe {
             name: r.name.to_string(),
+            module_path: r.module_path.to_string(),
             docs: r.docs.to_string(),
             source: r.source.to_string(),
             primary: r.target == name,
@@ -653,21 +658,64 @@ impl CatalogModel {
     }
 
     /// Entries whose name or module-path contains `query`
-    /// (case-insensitive), across every kind, capped for a snappy modal.
+    /// (case-insensitive), optionally narrowed to one `kind`, capped for
+    /// a snappy modal. Each hit carries a short doc summary for the card.
     /// Empty/whitespace query → no results (the modal shows a hint).
-    pub fn search(&self, query: &str) -> Vec<EntryLink> {
+    pub fn search(&self, query: &str, kind: Option<Kind>) -> Vec<SearchHit> {
         let q = query.trim().to_lowercase();
-        if q.is_empty() {
+        // Require at least 2 characters before yielding results — a single
+        // letter matches almost everything and isn't useful.
+        if q.chars().count() < 2 {
             return Vec::new();
         }
         self.entries
             .iter()
+            .filter(|e| kind.map_or(true, |k| e.kind == k))
             .filter(|e| {
                 e.name.to_lowercase().contains(&q) || e.module_path.to_lowercase().contains(&q)
             })
             .take(40)
-            .map(|e| EntryLink { kind: e.kind, name: e.name.clone(), slug: e.slug.clone() })
+            .map(|e| SearchHit {
+                kind: e.kind,
+                name: e.name.clone(),
+                slug: e.slug.clone(),
+                module_path: e.module_path.clone(),
+                summary: doc_summary(&e.docs),
+            })
             .collect()
+    }
+}
+
+/// One search result — enough to render a card linking to the entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    pub kind: Kind,
+    pub name: String,
+    pub slug: String,
+    /// Module path / FQN (the same subtitle shown on the detail page) —
+    /// the crate/namespace the entry comes from.
+    pub module_path: String,
+    /// First couple of lines of the entry's docs, trimmed + truncated.
+    pub summary: String,
+}
+
+/// First one or two non-empty doc lines, joined and truncated — a one-glance
+/// description for search cards.
+fn doc_summary(docs: &str) -> String {
+    let s = docs
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ");
+    const MAX: usize = 140;
+    if s.chars().count() > MAX {
+        let mut t: String = s.chars().take(MAX).collect();
+        t.push('…');
+        t
+    } else {
+        s
     }
 }
 

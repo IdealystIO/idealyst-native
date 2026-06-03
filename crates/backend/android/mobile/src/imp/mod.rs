@@ -6,6 +6,11 @@
 
 mod a11y;
 mod animation;
+/// Cooperative main-thread async executor. Gated on `async-driver` since it
+/// needs `runtime_core::driver` (which the feature brings in). Mirrors the
+/// Apple backend's `async_executor` module gating.
+#[cfg(feature = "async-driver")]
+pub(crate) mod async_executor;
 pub(crate) mod callbacks;
 mod font;
 mod jni_exports;
@@ -74,6 +79,37 @@ pub(super) fn with_env<R>(f: impl FnOnce(&mut JNIEnv) -> R) -> R {
         .attach_current_thread_permanently()
         .expect("attach_current_thread_permanently");
     f(&mut env)
+}
+
+/// Publish the JVM + Android `Context` to the ecosystem-standard
+/// [`ndk_context`] global, once per process. SDKs such as `camera` obtain the
+/// `JavaVM` / `Context` via `ndk_context::android_context()`; since the
+/// idealyst host is a Kotlin `MainActivity` + JNI bridge (not a
+/// `NativeActivity`), nothing populates that global unless we do here.
+///
+/// The `Context` is published through a *separate, leaked* `GlobalRef` so its
+/// pointer stays valid for the whole process — `ndk_context` holds it
+/// indefinitely, and it must outlive any `AndroidBackend` (which releases its
+/// own ref on detach). Guarded by a `Once` so re-attach (hot reload) doesn't
+/// re-initialize.
+fn init_ndk_context(context: &GlobalRef) {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let Some(vm) = JAVA_VM.get() else { return };
+        let vm_ptr = vm.get_java_vm_pointer() as *mut std::ffi::c_void;
+        // A dedicated, process-lifetime ref to the Context.
+        let ctx_ref = with_env(|env| {
+            env.new_global_ref(context.as_obj())
+                .expect("ndk_context: new_global_ref(context)")
+        });
+        let ctx_ptr = ctx_ref.as_obj().as_raw() as *mut std::ffi::c_void;
+        std::mem::forget(ctx_ref);
+        // SAFETY: `vm_ptr` is the process-lifetime JavaVM captured in
+        // `JNI_OnLoad`; `ctx_ptr` is a leaked global ref to the Android
+        // Context, valid for the process lifetime. Called once.
+        unsafe { ndk_context::initialize_android_context(vm_ptr, ctx_ptr) };
+    });
 }
 
 /// Per-node animation state. Keyed by the raw `*JObject` pointer
@@ -731,6 +767,12 @@ impl AndroidBackend {
     /// Construct a backend rooted at the provided Android `Context`
     /// and a parent `ViewGroup` to mount under.
     pub fn new(context: GlobalRef, root: GlobalRef) -> Self {
+        // Publish the JVM + Android Context to the ecosystem-standard
+        // `ndk_context` global so SDKs that obtain the VM/Context that way
+        // (e.g. `camera`'s `ndk_context::android_context()`) work. We don't use
+        // NativeActivity, so nothing else populates it. Without this, the first
+        // SDK call panics "android context was not initialized" → abort.
+        init_ndk_context(&context);
         Self {
             context,
             root,
@@ -1726,6 +1768,11 @@ impl Backend for AndroidBackend {
     fn create_button(&mut self, label: &str, on_click: &runtime_core::Action, _leading_icon: Option<&runtime_core::IconData>, _trailing_icon: Option<&runtime_core::IconData>, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         // TODO: render icons as compound drawables on the button
         let node = primitives::button::create(self, label, on_click.fire.clone());
+        // A bare `android.widget.Button` is a 0×0 Taffy leaf without a
+        // measure_fn — as a flex child with no explicit height it collapses
+        // and vanishes (the "Start camera button is missing" bug). Hook its
+        // intrinsic `measure()` like Switch/SeekBar do.
+        primitives::measure::install_intrinsic_measure(self, &node);
         a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Button));
         node
     }
@@ -2078,6 +2125,9 @@ impl Backend for AndroidBackend {
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::slider::create(self, initial_value, min, max, step, on_change);
+        // Same 0×0-leaf hazard as Button: a bare `SeekBar` needs its intrinsic
+        // `measure()` hooked into Taffy or it collapses to zero height.
+        primitives::measure::install_intrinsic_measure(self, &node);
         a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Slider));
         node
     }

@@ -209,6 +209,18 @@ const RUNTIME_KOTLIN_FILES: &[(&str, &str)] = &[
             "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustScheduledRunnable.kt"
         ),
     ),
+    (
+        "RustAsyncPoll.kt",
+        include_str!(
+            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustAsyncPoll.kt"
+        ),
+    ),
+    (
+        "RustActivityResult.kt",
+        include_str!(
+            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustActivityResult.kt"
+        ),
+    ),
 ];
 
 /// AndroidX modules the runtime references directly or transitively.

@@ -1,0 +1,29 @@
+[package]
+name = "canvas-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Canvas SDK demo — programmatic 2D drawing (paths, fills, strokes, gradients, transforms, clip, animation) rendered via canvas-native's Canvas2D replay. Exercises the renderer-agnostic Scene end to end on web."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+canvas = { workspace = true }
+canvas-native = { workspace = true }
+
+# The concrete backend each platform hands to `register_extensions`, where
+# the canvas renderer registers its `Element::External` handler.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Canvas Demo"
+bundle_id = "ai.truday.idealyst.canvasdemo"
+version   = "0.0.1"
+targets   = ["web", "ios"]

@@ -1,0 +1,43 @@
+[package]
+name = "canvas-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# `canvas-native` — renders a canvas `Scene` with each platform's NATIVE
+# 2D engine. One crate, cfg-gated per-backend modules (codeblock/video
+# pattern). The app picks this renderer by calling `canvas_native::register`
+# at bootstrap; it registers an `Element::External` handler for
+# `CanvasProps` keyed by its TypeId.
+#
+# Backend coverage:
+# - Web: `<canvas>` 2D context (this phase).
+# - iOS: CoreGraphics / `CGContext` (later phase).
+# - Android: `android.graphics.Canvas` (later phase).
+# - Other targets: framework `External` placeholder; use `canvas-vello`.
+
+[dependencies]
+runtime-core = { workspace = true }
+canvas-core = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "Node",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "CanvasGradient",
+    "CanvasWindingRule",
+    "ResizeObserver",
+] }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSGeometry"] }
+objc2-ui-kit = { version = "0.2", features = ["UIView", "UIResponder"] }

@@ -95,20 +95,35 @@ web-sys = { version = "0.3", features = [
     "DomException",
 ] }
 
+# Android capture: MediaProjection + VirtualDisplay + ImageReader, driven by a
+# Kotlin shim (RustScreenCaptureHelper) that owns the consent Activity-result
+# flow, the mandatory mediaProjection foreground service, and the capture loop,
+# and trampolines each RGBA frame back through the
+# `Java_io_idealyst_screenrecorder_RustScreenCaptureHelper_native*` exports in
+# android.rs. `ndk-context` exposes the host JavaVM + Activity; `futures-channel`
+# bridges the shim's `nativeStarted`/`nativeError` callbacks to the awaiting
+# `start()` — exactly the `camera` SDK's Android shape.
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+futures-channel = "0.3"
+
+# The Kotlin shim + foreground service that drive MediaProjection capture and
+# trampoline frames back to the native exports in android.rs. `idealyst run
+# android` discovers and compiles these from here, like the `camera` SDK's
+# RustCamera2Helper.
+[package.metadata.idealyst.android]
+runtime_kotlin = [
+    "runtime/kotlin/io/idealyst/screenrecorder/RustScreenCaptureHelper.kt",
+    "runtime/kotlin/io/idealyst/screenrecorder/MediaProjectionService.kt",
+]
+
 # ---------------------------------------------------------------------------
 # Per-platform capture deps are added as each backend is implemented. The
-# skeleton compiles with none of them (every `imp` module is a stub). The
-# planned dep set per target, for reference when filling them in:
-#
-# [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
-# objc2, objc2-foundation, block2, dispatch2, futures-channel   # ReplayKit
+# planned dep set per remaining target, for reference when filling them in:
 #
 # [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 # objc2, objc2-foundation, block2, dispatch2, futures-channel   # ScreenCaptureKit
-#
-# [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
-# jni, ndk-context, futures-channel                             # MediaProjection
-# # [package.metadata.idealyst.android] runtime_kotlin = ["android/ScreenRecorder.kt"]
 #
 # [target.'cfg(target_os = "windows")'.dependencies]
 # windows = { features = ["Graphics_Capture", "Graphics_DirectX_Direct3D11", ...] }
