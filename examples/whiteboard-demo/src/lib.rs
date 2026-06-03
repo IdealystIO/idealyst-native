@@ -34,10 +34,10 @@
 //! pure-Rust and stable. See the report for the on-device verification
 //! checklist (the Android canvas renderer is actively under construction).
 
-use camera::{Camera, CameraConfig, MediaStream};
+use camera::{Camera, CameraConfig, CameraFacing, MediaStream};
 use runtime_core::{
-    signal, text, view, Color, Element, IntoElement, Length, Position, Signal, StyleRules,
-    StyleSheet, Tokenized, TouchPhase, TouchResponse,
+    signal, text, view, Color, Element, IntoElement, Length, Position, Signal, StyleApplication,
+    StyleRules, StyleSheet, Tokenized, TouchPhase, TouchResponse,
 };
 use screen_recorder::{PrivateLayer, RecordingConfig, ScreenRecorder};
 use std::cell::RefCell;
@@ -348,11 +348,66 @@ fn build_camera_widget(cam_on: Signal<bool>, cam_stream: Signal<Option<MediaStre
     // set. The dynamically-mounted box gets sized because the backend kicks a
     // layout pass for inserts into a live (window-attached) parent — see the
     // Android `insert` / `layout_policy::insert_needs_layout_pass`.
-    runtime_core::when(
-        move || cam_on.get(),
-        move || stream_box(cam_stream, camera_box_rules()),
-        empty_view,
-    )
+    // Always-mounted box with reactive visibility. We avoid `when` here: on the
+    // Android backend `Element::When` content doesn't reliably mount+lay out
+    // after the initial paint (dynamic-mount gap), so the widget would never
+    // appear. Keeping the box mounted from first paint sidesteps that; only its
+    // size toggles with `cam_on`. The inner `Video`'s reactive `stream(...)`
+    // source is blank while `cam_stream` is `None`, so a collapsed box is empty.
+    stream_box_reactive(cam_stream, cam_on, camera_box_rules())
+}
+
+/// Wrap a signal-reading `StyleRules` builder into a REACTIVE style source.
+///
+/// `.with_style(Rc<StyleSheet>)` resolves to `StyleSource::Static` (resolved
+/// once at mount and memoized by `RESOLUTION_CACHE`) — so a `StyleSheet::new`
+/// closure that reads a *signal* is evaluated once and never again, even though
+/// the signal changes (the cache key is `(sheet_ptr, variants)`, which never
+/// moves). A closure `Fn() -> StyleApplication` resolves to
+/// `StyleSource::Reactive`: the walker wraps it in an Effect that re-runs every
+/// time a signal read *inside* `f` changes, calling `apply_style` with the new
+/// rules. Building a fresh `r#static` sheet per run also sidesteps the
+/// resolution cache (unique sheet pointer ⇒ no stale hit). This is the idiom
+/// idea-ui uses (`.with_style(move || StyleApplication::new(...))`).
+fn reactive_style(f: impl Fn() -> StyleRules + 'static) -> impl Fn() -> StyleApplication {
+    move || StyleApplication::new(Rc::new(StyleSheet::r#static(f())))
+}
+
+/// Always-mounted `Video` box whose size is reactive: `box_rules` when
+/// `visible`, collapsed to 0×0 otherwise. See `build_camera_widget` for why we
+/// don't use `when` on Android.
+fn stream_box_reactive(
+    stream_sig: Signal<Option<MediaStream>>,
+    visible: Signal<bool>,
+    box_rules: StyleRules,
+) -> Element {
+    let fill = StyleRules {
+        width: Some(Length::pct(100.0).into()),
+        height: Some(Length::pct(100.0).into()),
+        ..Default::default()
+    };
+    let video_el = video::Video(video::VideoProps {
+        source: video::stream(move || stream_sig.get()),
+        autoplay: true,
+        ..Default::default()
+    })
+    .with_style(Rc::new(StyleSheet::r#static(fill)))
+    .into_element();
+    view(vec![video_el])
+        .with_style(reactive_style(move || {
+            if visible.get() {
+                box_rules.clone()
+            } else {
+                StyleRules {
+                    position: Some(Position::Absolute),
+                    width: Some(Length::Px(0.0).into()),
+                    height: Some(Length::Px(0.0).into()),
+                    overflow: Some(runtime_core::Overflow::Hidden),
+                    ..Default::default()
+                }
+            }
+        }))
+        .into_element()
 }
 
 /// Fixed camera box, absolutely positioned bottom-right.
@@ -373,33 +428,6 @@ fn camera_box_rules() -> StyleRules {
     }
 }
 
-/// Build a `Video` that fills `box_rules`, sourced from a reactive stream
-/// signal. The Video external has no intrinsic size on native, so it's
-/// wrapped in an explicitly-sized box (the camera-preview-demo fix).
-/// Build a `Video` that fills `box_rules`, sourced from a reactive stream
-/// signal. The Video external has no intrinsic size on native, so it's wrapped
-/// in an explicitly-sized box (the camera-preview-demo fix).
-fn stream_box(stream_sig: Signal<Option<MediaStream>>, box_rules: StyleRules) -> Element {
-    let fill = StyleRules {
-        width: Some(Length::pct(100.0).into()),
-        height: Some(Length::pct(100.0).into()),
-        ..Default::default()
-    };
-    let video_el = video::Video(video::VideoProps {
-        source: video::stream(move || stream_sig.get()),
-        autoplay: true,
-        ..Default::default()
-    })
-    .with_style(Rc::new(StyleSheet::r#static(fill)))
-    .into_element();
-    view(vec![video_el])
-        .with_style(Rc::new(StyleSheet::r#static(box_rules)))
-        .into_element()
-}
-
-fn empty_view() -> Element {
-    view(vec![]).into_element()
-}
 
 /// An empty, zero-size view — the inert `otherwise` branch for `when`.
 
@@ -411,11 +439,7 @@ fn build_recording_preview(
     recording: Signal<bool>,
     rec_stream: Signal<Option<MediaStream>>,
 ) -> Element {
-    runtime_core::when(
-        move || recording.get(),
-        move || stream_box(rec_stream, preview_box_rules()),
-        empty_view,
-    )
+    stream_box_reactive(rec_stream, recording, preview_box_rules())
 }
 
 /// Fixed recording-preview box, absolutely positioned center-left.
@@ -546,11 +570,10 @@ fn width_button(glyph: &'static str, w: f32, width: Signal<f32>) -> Element {
     let label = text(glyph).into_element();
     // Reactive background: selected → tinted.
     let bg = runtime_core::view(vec![label]);
-    let style = Rc::new(StyleSheet::new(move |_| {
+    bg.with_style(reactive_style(move || {
         let selected = (width.get() - w).abs() < f32::EPSILON;
         tool_btn_rules(if selected { "rgba(59,130,246,0.18)" } else { "rgba(31,41,55,0.06)" })
-    }));
-    bg.with_style(style)
+    }))
         .on_touch(move |ev| {
             if ev.phase == TouchPhase::Ended {
                 width.set(w);
@@ -562,31 +585,30 @@ fn width_button(glyph: &'static str, w: f32, width: Signal<f32>) -> Element {
 
 /// A color swatch. Tapping sets `color_css`; a ring shows the selection.
 fn swatch(css: &'static str, color_css: Signal<&'static str>) -> Element {
-    let style = Rc::new(StyleSheet::new(move |_| {
-        let selected = color_css.get() == css;
-        let bw: f32 = if selected { 3.0 } else { 0.0 };
-        let ring = Tokenized::Literal(Color("#1f2937".into()));
-        StyleRules {
-            width: Some(Length::Px(28.0).into()),
-            height: Some(Length::Px(28.0).into()),
-            background: Some(Tokenized::Literal(Color(css.to_string()))),
-            border_top_left_radius: Some(Length::Px(14.0).into()),
-            border_top_right_radius: Some(Length::Px(14.0).into()),
-            border_bottom_left_radius: Some(Length::Px(14.0).into()),
-            border_bottom_right_radius: Some(Length::Px(14.0).into()),
-            border_top_width: Some(bw.into()),
-            border_bottom_width: Some(bw.into()),
-            border_left_width: Some(bw.into()),
-            border_right_width: Some(bw.into()),
-            border_top_color: Some(ring.clone()),
-            border_bottom_color: Some(ring.clone()),
-            border_left_color: Some(ring.clone()),
-            border_right_color: Some(ring),
-            ..Default::default()
-        }
-    }));
     view(vec![])
-        .with_style(style)
+        .with_style(reactive_style(move || {
+            let selected = color_css.get() == css;
+            let bw: f32 = if selected { 3.0 } else { 0.0 };
+            let ring = Tokenized::Literal(Color("#1f2937".into()));
+            StyleRules {
+                width: Some(Length::Px(28.0).into()),
+                height: Some(Length::Px(28.0).into()),
+                background: Some(Tokenized::Literal(Color(css.to_string()))),
+                border_top_left_radius: Some(Length::Px(14.0).into()),
+                border_top_right_radius: Some(Length::Px(14.0).into()),
+                border_bottom_left_radius: Some(Length::Px(14.0).into()),
+                border_bottom_right_radius: Some(Length::Px(14.0).into()),
+                border_top_width: Some(bw.into()),
+                border_bottom_width: Some(bw.into()),
+                border_left_width: Some(bw.into()),
+                border_right_width: Some(bw.into()),
+                border_top_color: Some(ring.clone()),
+                border_bottom_color: Some(ring.clone()),
+                border_left_color: Some(ring.clone()),
+                border_right_color: Some(ring),
+                ..Default::default()
+            }
+        }))
         .on_touch(move |ev| {
             if ev.phase == TouchPhase::Ended {
                 color_css.set(css);
@@ -614,23 +636,32 @@ fn camera_toggle(cam_on: Signal<bool>, cam_stream: Signal<Option<MediaStream>>) 
         if cam_on.get() { "📷●".to_string() } else { "📷".to_string() }
     })
     .into_element();
-    let style = Rc::new(StyleSheet::new(move |_| {
-        tool_btn_rules(if cam_on.get() { "rgba(34,197,94,0.18)" } else { "rgba(31,41,55,0.06)" })
-    }));
     view(vec![label])
-        .with_style(style)
+        .with_style(reactive_style(move || {
+            tool_btn_rules(if cam_on.get() { "rgba(34,197,94,0.18)" } else { "rgba(31,41,55,0.06)" })
+        }))
         .on_touch(move |ev| {
             if ev.phase != TouchPhase::Ended {
                 return TouchResponse::CONSUMED;
             }
-            if cam_on.get() {
+            let was_on = cam_on.get();
+            if was_on {
                 // Turn off: drop the stream (last clone → capture stops).
                 cam_on.set(false);
                 cam_stream.set(None);
             } else {
                 cam_on.set(true);
                 runtime_core::driver::spawn_async(async move {
-                    match Camera::new().open(CameraConfig::default()).await {
+                    // Front ("selfie") camera. On the Android emulator the back
+                    // camera is `virtualscene`, which disconnects mid-config on
+                    // some images; the front `emulated` camera is stable. On a
+                    // real device the front camera is the natural choice for a
+                    // self-view widget anyway.
+                    let config = CameraConfig {
+                        facing: CameraFacing::Front,
+                        ..Default::default()
+                    };
+                    match Camera::new().open(config).await {
                         Ok(stream) => cam_stream.set(Some(stream)),
                         Err(_) => {
                             // Failed to open — revert the toggle.
@@ -651,24 +682,23 @@ fn record_button(recording: Signal<bool>, rec_stream: Signal<Option<MediaStream>
         if recording.get() { "● REC".to_string() } else { "● Rec".to_string() }
     })
     .into_element();
-    let style = Rc::new(StyleSheet::new(move |_| {
-        let bg = if recording.get() { "rgba(220,38,38,0.95)" } else { "rgba(220,38,38,0.12)" };
-        StyleRules {
-            height: Some(Length::Px(40.0).into()),
-            align_items: Some(runtime_core::AlignItems::Center),
-            justify_content: Some(runtime_core::JustifyContent::Center),
-            padding_left: Some(Length::Px(14.0).into()),
-            padding_right: Some(Length::Px(14.0).into()),
-            background: Some(Tokenized::Literal(Color(bg.into()))),
-            border_top_left_radius: Some(Length::Px(20.0).into()),
-            border_top_right_radius: Some(Length::Px(20.0).into()),
-            border_bottom_left_radius: Some(Length::Px(20.0).into()),
-            border_bottom_right_radius: Some(Length::Px(20.0).into()),
-            ..Default::default()
-        }
-    }));
     view(vec![label])
-        .with_style(style)
+        .with_style(reactive_style(move || {
+            let bg = if recording.get() { "rgba(220,38,38,0.95)" } else { "rgba(220,38,38,0.12)" };
+            StyleRules {
+                height: Some(Length::Px(40.0).into()),
+                align_items: Some(runtime_core::AlignItems::Center),
+                justify_content: Some(runtime_core::JustifyContent::Center),
+                padding_left: Some(Length::Px(14.0).into()),
+                padding_right: Some(Length::Px(14.0).into()),
+                background: Some(Tokenized::Literal(Color(bg.into()))),
+                border_top_left_radius: Some(Length::Px(20.0).into()),
+                border_top_right_radius: Some(Length::Px(20.0).into()),
+                border_bottom_left_radius: Some(Length::Px(20.0).into()),
+                border_bottom_right_radius: Some(Length::Px(20.0).into()),
+                ..Default::default()
+            }
+        }))
         .on_touch(move |ev| {
             if ev.phase != TouchPhase::Ended {
                 return TouchResponse::CONSUMED;

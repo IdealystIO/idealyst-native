@@ -2264,6 +2264,140 @@ impl Backend for IosBackend {
         }
     }
 
+    /// Opt into the anchorless reactive-region path. This is the root fix
+    /// for the latent "`when`-mounted box never appears" bug on iOS — the
+    /// exact mirror of Android's. A `create_reactive_anchor` wrapper is a
+    /// real UIView that AUTO-sizes to its IN-FLOW children, so a branch
+    /// whose only content is `position: Absolute` (the whiteboard's
+    /// bottom-right camera box) collapsed the wrapper to 0×0 and the
+    /// absolute child — though Taffy gave it a correct frame — never
+    /// painted (a 0×0 superview clips a larger subview). Splicing the
+    /// active branch DIRECTLY into the real parent (via `remove_child` /
+    /// `insert_at`) gives in-flow content normal flow AND absolute content
+    /// the real parent as its containing block — both matching web's
+    /// `display: contents` anchor, with no per-case wrapper hack. It also
+    /// upgrades reactive `for` to keyed reconciliation.
+    fn supports_child_splice(&self) -> bool {
+        true
+    }
+
+    /// Remove a SPECIFIC `child` from `parent` (Backend::remove_child) —
+    /// the removal half of an anchorless region's per-toggle rebuild.
+    /// Mirrors the teardown `clear_children` does for one child: detach the
+    /// native view (`removeFromSuperview`) AND the parallel Taffy child
+    /// link, then `mark_dirty` the parent so its cached measured size is
+    /// recomputed (Taffy doesn't auto-invalidate on a child-set change —
+    /// without this the parent could keep a stale size from when the prior,
+    /// taller branch was active).
+    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
+        let parent_view = parent.as_view();
+        let child_view = child.as_view();
+        let parent_layout = self.layout_for_view(parent_view);
+        if let Some(child_layout) = self.layout_of(child_view) {
+            self.layout.remove_child(parent_layout, child_layout);
+        }
+        self.layout.mark_dirty(parent_layout);
+        unsafe { child_view.removeFromSuperview() };
+    }
+
+    /// Insert `child` into `parent` at `index` among its current subviews
+    /// (Backend::insert_at). Companion to `remove_child`: an anchorless
+    /// reactive region splices its single branch node at the region's
+    /// stable `base_index` so a region with trailing static siblings
+    /// rebuilds in the right place instead of always appending.
+    ///
+    /// This is `insert` (above) with two differences — it uses UIKit's
+    /// `insertSubview:atIndex:` instead of `addSubview:`, and
+    /// `layout.add_child_at_index` instead of `add_child` — and it
+    /// preserves every special case `insert` has:
+    ///
+    /// - The `portal_instances` skip (a portal mounts itself into the host
+    ///   window; the walker's parent-tree insert is a no-op for it).
+    /// - The `detached_window_roots` skip (a private-layer window's content
+    ///   view must NOT be reparented out of its excluded `UIWindow`).
+    /// - The window-attached layout-pass discriminator (`parent.window !=
+    ///   nil`): a child spliced into an already-mounted parent (the `when`
+    ///   toggle case) MUST get a layout pass in the same turn, or it renders
+    ///   at default 0×0 — reproducing the very bug for a different reason. A
+    ///   mid-build splice into a floating parent defers to `finish()`.
+    /// - The `promote_pending_sticky_recursive` retry, for parity.
+    ///
+    /// There is no portal-PARENT branch here: the spliced path only ever
+    /// targets the real container the `when`/`each` lives in (see
+    /// `walker::view::insert_children` → `build_when_spliced`), never a
+    /// portal content holder — portals take the anchored `insert` path.
+    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
+        let parent_view = parent.as_view();
+        let child_view = child.as_view();
+        let child_key = child_view as *const UIView as usize;
+
+        // Portal containers mount themselves into the host window — skip
+        // the parent-tree splice the walker tries for them. (Mirror of
+        // `insert`.)
+        if self.portal_instances.contains_key(&child_key) {
+            return;
+        }
+
+        // Detached window root (screen_recorder private layer): the content
+        // view already lives in its OWN excluded `UIWindow`. Reparenting it
+        // here would pull it back into the recorded tree. Skip the native
+        // reparent; its Taffy node stays registered. (Mirror of `insert`.)
+        if self.detached_window_roots.contains_key(&child_key) {
+            return;
+        }
+
+        // Native indexed insert. Clamp `index` to the current subview count
+        // — `-[UIView insertSubview:atIndex:]` raises `NSRangeException`
+        // when `index > count`. The Taffy side clamps identically in
+        // `add_child_at_index`. See `crate::splice_policy`.
+        let child_count = parent_view.subviews().len();
+        let idx = crate::splice_policy::clamp_insert_index(index, child_count);
+        // `-[UIView insertSubview:atIndex:]` takes a signed `NSInteger`
+        // (objc type code 'q' = i64); passing a `usize` ('Q' = u64) trips
+        // objc2's runtime type-encoding check and aborts. The clamp keeps
+        // `idx` in `[0, child_count]`, so the `isize` cast never goes
+        // negative.
+        let idx_ns = idx as isize;
+        let _: () = unsafe { msg_send![parent_view, insertSubview: child_view, atIndex: idx_ns] };
+
+        let p_layout = self.layout_for_view(parent_view);
+        let c_layout = self.layout_for_view(child_view);
+        self.layout.add_child_at_index(p_layout, c_layout, idx);
+        // Same `mark_dirty` rationale as `insert` / `clear_children`: a
+        // child-set change doesn't auto-invalidate the parent's cached
+        // measured size.
+        self.layout.mark_dirty(p_layout);
+
+        // Same window-attached layout-pass discriminator as `insert`. A
+        // splice into a live parent (the post-mount `when` toggle) syncs so
+        // the new branch paints in the same frame (no flicker); a mid-build
+        // splice into a floating parent defers to the closing `finish()`
+        // pass (a sync pass against a partial tree would cache wrong sizes).
+        let parent_window: *const NSObject = unsafe { msg_send![parent_view, window] };
+        if !parent_window.is_null() && !sync_layout_already_done_this_turn() {
+            arm_sync_layout_done_reset();
+            self.run_layout_pass_global();
+        } else {
+            schedule_layout_pass();
+        }
+
+        // Retry pending sticky registrations for the just-spliced subtree,
+        // exactly as `insert` does (the walker fires `apply_style` before
+        // the parent insert, so any `Position::Sticky` child deferred its
+        // registration to `pending_sticky`).
+        let mut to_remove = Vec::new();
+        promote_pending_sticky_recursive(
+            self.mtm,
+            child_view,
+            &mut self.pending_sticky,
+            &mut self.sticky_registry,
+            &mut to_remove,
+        );
+        for k in to_remove {
+            self.pending_sticky.remove(&k);
+        }
+    }
+
     fn update_text(&mut self, node: &Self::Node, content: &str) {
         match node {
             IosNode::Label(label) => {

@@ -46,9 +46,9 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, derived, pressable, signal, switch, text, ui, ChildList, Element, IdealystSchema,
-    IntoElement, LayoutSubscription, Reactive, Ref, Signal, StyleApplication, VariantEnum,
-    ViewHandle,
+    component, derived, on_cleanup, pressable, signal, switch, text, ui, ChildList, Element,
+    IdealystSchema, IntoElement, LayoutSubscription, Reactive, Ref, Signal, StyleApplication,
+    VariantEnum, ViewHandle,
 };
 use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use std::time::Duration;
@@ -316,10 +316,20 @@ fn measured_body(value: Signal<bool>, duration_ms: u32, kids: Vec<Element>) -> E
             *holder_for_setup.borrow_mut() = Some(sub);
         }
     });
-    // Both must outlive the function return — ScheduledTask cancels on
-    // drop, holder owns the subscription that cancels on drop.
-    std::mem::forget(setup_task);
-    std::mem::forget(layout_sub_holder);
+    // Both must outlive the function return but MUST be torn down when
+    // this component's scope drops — NOT leaked. `mem::forget` here was a
+    // bug: it kept the `ResizeObserver` (the `LayoutSubscription`) alive
+    // forever, so after the scope was disposed (e.g. a web history-pop
+    // detaching this subtree) a late layout callback still fired and read
+    // `natural_height` after its `Signal<f32>` slot was freed —
+    // "signal used after its scope was dropped" → abort. Anchoring to the
+    // scope via `on_cleanup` drops the ScheduledTask (cancels a not-yet-run
+    // setup) and the subscription (unsubscribes the observer) during scope
+    // teardown, before the scope's signals are freed.
+    on_cleanup(move || {
+        drop(setup_task);
+        drop(layout_sub_holder);
+    });
 
     // Toggle effect: kick a TweenTo on `av` whenever `value` or
     // `natural_height` flips. Reading both inside the effect closure
@@ -348,7 +358,8 @@ fn measured_body(value: Signal<bool>, duration_ms: u32, kids: Vec<Element>) -> E
         // height.
         av.animate(TweenTo::new(target, Duration::from_millis(duration_ms as u64)).ease_out());
     });
-    std::mem::forget(_toggle);
+    // Scope-adopted: the reactive scope owns this effect and frees it on
+    // teardown (the `_toggle` handle's drop is a no-op). No `mem::forget`.
 
     // Outer view — `body_ref` binds for AnimatedValue (drives
     // max-height per frame). The variant axis switches between
@@ -491,14 +502,15 @@ pub fn Accordion(props: AccordionProps) -> Element {
         // reads the vec and writes the per-item signal.
         let item_open: Signal<bool> =
             signal!(open_state.get().get(idx).copied().unwrap_or(false));
-        let e_sync = runtime_core::Effect::new(move || {
+        // Scope-adopted: the Accordion's reactive scope owns this sync
+        // effect and frees it on teardown (the handle drop is a no-op).
+        // No `mem::forget` (a leak outside framework core).
+        let _e_sync = runtime_core::Effect::new(move || {
             let now = open_state.get().get(idx).copied().unwrap_or(false);
             if item_open.get() != now {
                 item_open.set(now);
             }
         });
-        // Anchor the sync effect to the Accordion's scope.
-        std::mem::forget(e_sync);
 
         // Per-item on_change: mutate the host's open-vec according to
         // `expand` mode, then fire the observation callback.

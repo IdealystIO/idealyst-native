@@ -203,12 +203,18 @@ impl ViewHandle {
 ///
 /// The cleanup closure runs on `Drop`; for web that's
 /// `ResizeObserver.disconnect()`, for iOS removing the bounds-KVO
-/// observer, etc. Holding the subscription past the relevant view's
-/// lifetime is safe (the cleanup closure should bail gracefully if
-/// the node is gone), but the canonical lifetime is "as long as the
-/// component scope that registered it" — store it in a `Ref<>` slot
-/// or hand it to `std::mem::forget` if the framework's scope-owned
-/// lifecycle is what you want.
+/// observer, etc. The canonical lifetime is "as long as the component
+/// scope that registered it" — anchor it to that scope so it
+/// unsubscribes on teardown, *before* the scope's signals are freed:
+/// store it in a `Ref<>` slot, or drop it from an
+/// [`on_cleanup`](crate::on_cleanup) callback
+/// (`on_cleanup(move || drop(sub))`).
+///
+/// Do **not** `std::mem::forget` the subscription to keep it alive: that
+/// leaks the observer, so it outlives the scope and a later layout
+/// callback reads a freed signal ("signal used after its scope was
+/// dropped"). `mem::forget` for scope-bound RAII guards is a bug outside
+/// framework core.
 pub struct LayoutSubscription {
     drop_fn: Option<Box<dyn FnOnce()>>,
 }

@@ -2031,6 +2031,48 @@ impl Backend for AndroidBackend {
         node
     }
 
+    /// Opt into ANCHORLESS reactive regions. The framework then splices a
+    /// `when`/`switch`/`for` region's children DIRECTLY into the real
+    /// parent (via `insert_at` / `remove_child`) instead of nesting them
+    /// under a `create_reactive_anchor` wrapper FrameLayout.
+    ///
+    /// This is the native analog of web's `display: contents` anchor and
+    /// the root fix for the "`when`-mounted box never appears on Android"
+    /// bug: a wrapper FrameLayout AUTO-sizes to its in-flow children, so a
+    /// branch whose only content is `position: Absolute` (the whiteboard's
+    /// bottom-right camera box) collapsed the wrapper to 0×0 and the
+    /// absolute child — though Taffy gave it a correct frame — never
+    /// painted (a 0×0 ViewGroup doesn't lay out a larger child). Splicing
+    /// the branch into the real parent gives in-flow content normal flow
+    /// AND absolute content the real parent as its containing block, both
+    /// matching web with no per-case wrapper hack. It also upgrades
+    /// reactive `for` to keyed reconciliation (per-row state survives).
+    fn supports_child_splice(&self) -> bool {
+        true
+    }
+
+    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
+        primitives::view::remove_child(self, parent, child);
+        crate::imp::scheduler::schedule_layout_pass_retry(0);
+    }
+
+    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
+        primitives::view::insert_at(self, parent, child, index);
+        // Same dynamic-mount layout-pass policy as `insert`: a region
+        // splicing rows into an already-attached parent mounts after the
+        // initial `finish()` pass, so it must kick its own (coalesced)
+        // pass or the new views render at default 0×0.
+        let is_portal_parent = self.portal_instances.contains_key(&Self::node_key_of(parent));
+        let parent_attached = with_env(|env| {
+            env.call_method(parent.as_obj(), "isAttachedToWindow", "()Z", &[])
+                .and_then(|v| v.z())
+                .unwrap_or(false)
+        });
+        if crate::layout_policy::insert_needs_layout_pass(is_portal_parent, parent_attached) {
+            crate::imp::scheduler::schedule_layout_pass_retry(0);
+        }
+    }
+
     /// Override the trait default (which silently falls back to
     /// `create_view`, dropping `on_click`) so Pressable's tap handler
     /// actually fires on Android. Same `FrameLayout + setClickable +
@@ -2902,6 +2944,30 @@ impl Backend for AndroidBackend {
                 });
                 self.pending_sticky.remove(&key);
             }
+        }
+
+        // A reactive style change can alter layout-affecting properties
+        // (width / height / position / inset / flex). We mirrored them into
+        // Taffy via `set_style` above, but that only updates the cached style —
+        // the frame isn't recomputed until a layout pass runs. For an
+        // already-attached view the initial build's `finish()` pass is long
+        // gone, so without kicking a pass the new geometry never reaches the
+        // native `LayoutParams`: e.g. a reactive box that grows from 0×0 to its
+        // real size when a signal flips stays invisible. Kick a coalesced pass.
+        //
+        // Gate on window-attachment exactly like `insert`
+        // (`layout_policy::insert_needs_layout_pass`): a mid-build `apply_style`
+        // on a floating view defers to the upcoming `finish()` pass; scheduling
+        // then would compute against a partial tree. The coalescing flag
+        // (LAYOUT_PASS_QUEUED) collapses the per-node `apply_style` storm of a
+        // theme switch into a single pass.
+        let attached = with_env(|env| {
+            env.call_method(node.as_obj(), "isAttachedToWindow", "()Z", &[])
+                .and_then(|v| v.z())
+                .unwrap_or(false)
+        });
+        if attached {
+            crate::imp::scheduler::schedule_layout_pass_retry(0);
         }
     }
 

@@ -139,6 +139,22 @@ pub(super) fn insert_children<B: Backend + 'static>(
             {
                 inserted += super::each::build_spliced(backend, parent, inserted, snapshot);
             }
+            // Anchorless reactive conditional: a (style-less) `When` whose
+            // backend supports child splicing mounts the active branch's
+            // node DIRECTLY into `parent` — no `create_reactive_anchor`
+            // wrapper — so an absolutely-positioned branch resolves its
+            // containing block against the real parent (matching web's
+            // `display:contents` anchor) instead of a collapsed 0×0
+            // wrapper view. See `when_switch::build_when_spliced`. A styled
+            // `When`, or a backend without splice support, falls through to
+            // `other` and takes the anchored path that can host the style.
+            Element::When { cond, then, otherwise, style }
+                if style.is_none() && backend.borrow().supports_child_splice() =>
+            {
+                inserted += super::when_switch::build_when_spliced(
+                    backend, parent, inserted, cond, then, otherwise,
+                );
+            }
             other => {
                 let child_node = super::build(backend, slot, other);
                 backend.borrow_mut().insert(parent, child_node);

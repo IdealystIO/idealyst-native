@@ -28,6 +28,73 @@ pub(crate) fn create(b: &AndroidBackend) -> GlobalRef {
     })
 }
 
+/// Remove a SPECIFIC child from `parent` (Backend::remove_child).
+///
+/// Companion to anchorless reactive regions (`supports_child_splice`): a
+/// `when`/`switch`/`for` region unmounts exactly the nodes it previously
+/// inserted before rebuilding, leaving sibling content in place. Detaches
+/// the native view (`removeView`) AND the parallel Taffy child link, then
+/// `mark_dirty`s the parent so its cached measurement is recomputed.
+pub(crate) fn remove_child(b: &mut AndroidBackend, parent: &GlobalRef, child: &GlobalRef) {
+    let target = super::scroll_view::inner_for(b, parent).unwrap_or_else(|| parent.clone());
+    with_env(|env| {
+        env.call_method(
+            target.as_obj(),
+            "removeView",
+            "(Landroid/view/View;)V",
+            &[JValue::Object(&child.as_obj())],
+        )
+        .ok();
+    });
+    let parent_layout = b.layout_for_view(&target);
+    let child_layout = b.layout_for_view(child);
+    b.layout.remove_child(parent_layout, child_layout);
+    b.layout.mark_dirty(parent_layout);
+}
+
+/// Insert `child` into `parent` at `index` among its current children
+/// (Backend::insert_at). Clamped to the end if `index` exceeds the count.
+///
+/// Anchorless regions splice their rows at a stable `base_index` so a
+/// region with trailing static siblings rebuilds in place. Mirrors
+/// `insert`'s portal / detached-root skips + Taffy wiring, but uses the
+/// indexed `addView(View, int)` overload and `add_child_at_index`.
+pub(crate) fn insert_at(
+    b: &mut AndroidBackend,
+    parent: &mut GlobalRef,
+    child: GlobalRef,
+    index: usize,
+) {
+    if super::overlay::is_portal_node(b, &child)
+        || b.detached_window_roots
+            .contains_key(&AndroidBackend::node_key_of(&child))
+    {
+        return;
+    }
+    let target = super::scroll_view::inner_for(b, parent).unwrap_or_else(|| parent.clone());
+    // Clamp to the current child count so an out-of-range index appends.
+    let child_count = with_env(|env| {
+        env.call_method(target.as_obj(), "getChildCount", "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(0)
+    });
+    let idx = (index as i32).min(child_count);
+    with_env(|env| {
+        env.call_method(
+            target.as_obj(),
+            "addView",
+            "(Landroid/view/View;I)V",
+            &[JValue::Object(&child.as_obj()), JValue::Int(idx)],
+        )
+        .unwrap();
+    });
+    let parent_layout = b.layout_for_view(&target);
+    let child_layout = b.layout_for_view(&child);
+    b.layout
+        .add_child_at_index(parent_layout, child_layout, idx as usize);
+    b.layout.mark_dirty(parent_layout);
+}
+
 /// Insert `child` into `parent`. Two special cases:
 ///
 /// - If `parent` is a registered ScrollView outer, the addView call

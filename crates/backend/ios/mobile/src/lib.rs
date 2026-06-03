@@ -9,6 +9,11 @@ mod imp;
 #[cfg(not(target_os = "ios"))]
 mod stub;
 
+// Pure splice index-clamping policy. Kept un-gated (no `target_os`) so its
+// regression test runs from any host — the objc `insert_at` that consumes it
+// is ios-only, but the decision it makes is host-testable. See the module docs.
+mod splice_policy;
+
 #[cfg(target_os = "ios")]
 pub use imp::{
     install_global_self, mount_screen_in_vc, pin_to_edges, schedule_layout_pass,

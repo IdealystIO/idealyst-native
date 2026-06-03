@@ -24,7 +24,7 @@ use crate::catalog::{CatalogModel, Entry, Kind};
 use crate::routes::{EntryParams, ENTRY_ROUTE, OVERVIEW_ROUTE};
 use crate::styles::{
     Callout as CalloutBox, Chip, ChipActive, ChipRow, ChipText, ChipTextActive,
-    CodePanel as CodePanelBox, CodeText, LinkText, PageColumn, PagePad, PreviewBox, PreviewSlot,
+    CodePanel as CodePanelBox, CodeText, LinkText, MemberRow, PageColumn, PagePad, PreviewBox, PreviewSlot,
     ResultHead, ResultNamespace, ResultsScroll, ScreenScroll, SearchBox, SearchBoxText,
     SearchResultsBody, SidebarBody, SidebarHeader, SidebarSection, ThemeToggleBox, ThemeToggleText,
 };
@@ -150,9 +150,18 @@ pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
             // Overview link.
             sidebar_overview_link(active_path)
             for kind in model.populated_kinds() {
-                text(style = SidebarSection()) { kind.title().to_string() }
-                for entry in model.of_kind(kind) {
-                    sidebar_entry_link(entry, active_path)
+                if kind == Kind::Scope {
+                    // Scopes ARE the primary headings (same look as a kind
+                    // section header) — pressable, each navigating to its
+                    // scope screen. No generic "Scopes" group header.
+                    for entry in model.of_kind(kind) {
+                        sidebar_scope_heading(entry, active_path)
+                    }
+                } else {
+                    text(style = SidebarSection()) { kind.title().to_string() }
+                    for entry in model.of_kind(kind) {
+                        sidebar_entry_link(entry, active_path)
+                    }
                 }
             }
             Spacer()
@@ -312,6 +321,19 @@ fn sidebar_overview_link(active_path: runtime_core::Signal<String>) -> Element {
             view(style = container) {
                 text(style = text_style) { "Overview".to_string() }
             }
+        }
+    }
+}
+
+/// A scope rendered as a pressable primary heading — the same uppercase
+/// `SidebarSection` look as a kind header, but wrapped in a link so it
+/// navigates to the scope's screen.
+fn sidebar_scope_heading(entry: &Entry, _active_path: runtime_core::Signal<String>) -> Element {
+    let params = EntryParams::new(entry.kind, entry.slug.clone());
+    let label = entry.name.clone();
+    ui! {
+        link(route = &ENTRY_ROUTE, params = params) {
+            text(style = SidebarSection()) { label }
         }
     }
 }
@@ -538,7 +560,7 @@ pub fn FieldsTable(props: FieldsTableProps) -> Element {
     });
     for f in props.fields {
         let name = f.name.clone();
-        let ty = f.ty.clone();
+        let ty = tidy_type(&f.ty);
         // Fold the constraint hint into the description column so the
         // table stays three columns wide on narrow screens.
         let desc = if f.constraint.is_empty() {
@@ -749,7 +771,7 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
             // Return type (utilities).
             if !entry.return_type.is_empty() {
                 Section(title = "Returns".to_string()) {
-                    CodePanel(src = entry.return_type.clone())
+                    CodePanel(src = tidy_type(&entry.return_type))
                 }
             }
             // Composition graph (components).
@@ -863,8 +885,10 @@ fn scope_member_link(m: crate::catalog::EntryLink) -> Element {
 fn scope_member_group(kind: Kind, members: Vec<crate::catalog::EntryLink>) -> Element {
     ui! {
         Section(title = format!("{} ({})", kind.title(), members.len())) {
-            for m in members {
-                member_link(m)
+            view(style = MemberRow()) {
+                for m in members {
+                    member_link(m)
+                }
             }
         }
     }
@@ -880,6 +904,32 @@ fn member_link(m: crate::catalog::EntryLink) -> Element {
             text(style = LinkText()) { label }
         }
     }
+}
+
+/// Collapse the spaces `quote!{ #ty }.to_string()` inserts around generic
+/// brackets in catalog type strings: `Vec < X >` → `Vec<X>`,
+/// `Signal < Vec < bool > >` → `Signal<Vec<bool>>`. Applied at every type
+/// display site (props table, method signatures, return types).
+fn tidy_type(s: &str) -> String {
+    s.replace(" <", "<")
+        .replace("< ", "<")
+        .replace(" >", ">")
+        .replace("> ", ">")
+        .replace(" :: ", "::")
+}
+
+/// Drop the recipe fn's leading `///` doc lines from its source. The same
+/// prose is already rendered above the code block (as markdown from the
+/// recipe's `docs`), so leaving it in the source shows it twice.
+fn strip_leading_doc(src: &str) -> String {
+    let start = src
+        .lines()
+        .position(|l| {
+            let t = l.trim_start();
+            !(t.starts_with("///") || t.starts_with("//!"))
+        })
+        .unwrap_or(0);
+    src.lines().skip(start).collect::<Vec<_>>().join("\n")
 }
 
 fn compose_link(c: crate::catalog::Compose) -> Element {
@@ -918,10 +968,14 @@ fn method_row(m: crate::catalog::Method) -> Element {
     let params = m
         .params
         .iter()
-        .map(|p| format!("{}: {}", p.name, p.ty))
+        .map(|p| format!("{}: {}", p.name, tidy_type(&p.ty)))
         .collect::<Vec<_>>()
         .join(", ");
-    let ret = if m.return_type.is_empty() { String::new() } else { format!(" -> {}", m.return_type) };
+    let ret = if m.return_type.is_empty() {
+        String::new()
+    } else {
+        format!(" -> {}", tidy_type(&m.return_type))
+    };
     let sig = format!("fn {}({}){}", m.name, params, ret);
     let doc = m.doc.clone();
     ui! {
@@ -988,7 +1042,7 @@ fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
     let title = recipe.name.replace('_', " ");
     let heading = if recipe.primary { format!("{} · primary", title) } else { title };
     let docs = recipe.docs.clone();
-    let source = recipe.source.clone();
+    let source = strip_leading_doc(&recipe.source);
     // A live preview, when this recipe is a zero-arg renderable one the
     // build-time map could address. Props-defining recipes (those whose
     // wrapper fn takes args) aren't in the map → no preview, source only.
@@ -1027,10 +1081,6 @@ fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
 // =============================================================================
 
 fn render_markdown(src: &str) -> Element {
-    // `MdTheme` styles text only; the surrounding page background is owned
-    // by the docs chrome. `rx!` keeps the theme live: when the sidebar
-    // toggle flips `dark_mode`, the SDK rebuilds the single native node
-    // with the matching colors.
     // `MdTheme` styles text only; the surrounding page background is owned
     // by the docs chrome. `rx!` keeps the theme live: when the sidebar
     // toggle flips `dark_mode`, the SDK rebuilds the single native node

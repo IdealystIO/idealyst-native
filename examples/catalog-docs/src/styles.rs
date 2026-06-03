@@ -498,6 +498,20 @@ stylesheet! {
     }
 }
 
+// ---- Scope member list ----------------------------------------------------
+// A scope's members render side-by-side and wrap to new lines, rather than
+// as one long vertical column — far more compact for scopes with many
+// entries. Used by `scope_member_group`.
+stylesheet! {
+    pub MemberRow<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            flex_wrap: FlexWrap::Wrap,
+            gap: 12.0,
+        }
+    }
+}
+
 stylesheet! {
     pub Chip<()> {
         base(_t) {

@@ -103,11 +103,13 @@ pub fn Switch(props: &SwitchProps) -> Element {
     let travel = travel_for(size);
     let av: AnimatedValue<f32> = AnimatedValue::new(if value.get() { travel } else { 0.0 });
     av.bind(thumb_ref, AnimProp::TranslateX);
-    let slide = Effect::new(move || {
+    // Scope-adopted: the component's reactive scope owns this effect and
+    // frees it on teardown, so the handle's drop is a no-op — no
+    // `mem::forget` (a leak outside framework core).
+    let _slide = Effect::new(move || {
         let target = if value.get() { travel } else { 0.0 };
         av.animate(TweenTo::new(target, Duration::from_millis(SWITCH_ANIM_MS)).ease_out());
     });
-    std::mem::forget(slide);
 
     let thumb_size_key = size_key.clone();
     let thumb = runtime_core::view(Vec::new())

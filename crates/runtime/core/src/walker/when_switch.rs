@@ -145,6 +145,93 @@ fn build_when_closure<B: Backend + 'static>(
     placeholder
 }
 
+/// Anchorless `Element::When` — splices the active branch's node DIRECTLY
+/// into the real `parent` (no `create_reactive_anchor` wrapper), used when
+/// the backend reports
+/// [`supports_child_splice`](crate::Backend::supports_child_splice).
+///
+/// Why anchorless: web's reactive anchor is `display: contents`
+/// (layout-transparent), but a native wrapper view is a real box that
+/// AUTO-sizes to its in-flow children. When the active branch is
+/// `position: Absolute` (an overlay), the wrapper collapses to 0×0 and the
+/// absolute child never paints even though Taffy framed it correctly — the
+/// "`when`-mounted box never appears on Android" bug. Splicing the branch
+/// into the real parent instead gives in-flow branch content normal flow
+/// (it pushes siblings, like web) AND absolute branch content the real
+/// parent as its containing block (it lands at the same pixels web's
+/// `display: contents` produces) — full behavioral convergence, no
+/// per-case wrapper hack.
+///
+/// Each branch (`then`/`otherwise`) returns exactly one `Element`, so the
+/// region contributes exactly one node. On every `cond()` change the
+/// Effect `remove_child`s its prior node, drops the old branch scope
+/// (freeing its signals/effects), builds the new branch in a fresh scope,
+/// and `insert_at`s it at the stable `base_index`. Returns the region's
+/// initial node count (1) so the caller advances its running child index
+/// for trailing static siblings.
+pub(super) fn build_when_spliced<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    parent: &B::Node,
+    base_index: usize,
+    cond: crate::derive::Derived<bool>,
+    then: Box<dyn Fn() -> Element>,
+    otherwise: Box<dyn Fn() -> Element>,
+) -> usize {
+    let parent = parent.clone();
+    let backend_for_effect = backend.clone();
+
+    // The active branch's scope + its inserted node, replaced atomically
+    // on each toggle. `Rc<RefCell>` so the Effect can swap them.
+    let branch_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> = Rc::new(RefCell::new(None));
+    let current_node: Rc<RefCell<Option<B::Node>>> = Rc::new(RefCell::new(None));
+    let branch_scope_for_effect = branch_scope.clone();
+    let current_node_for_effect = current_node.clone();
+
+    // Capture the ambient navigator context ONCE (guards still on the
+    // stack); re-establish it around each rebuild so a `link` inside a
+    // reactively-remounted branch keeps its navigator. See
+    // `build_when_closure` for the full rationale.
+    let nav_ctx = crate::primitives::navigator::shared::capture_ambient_nav_context();
+
+    let compute = cond.compute.clone();
+    let _e = Effect::new(move || {
+        let active = (compute)();
+
+        // Unmount the prior branch: remove its node from the parent, then
+        // drop its scope. Order matters — remove the native view before
+        // freeing the scope so a reactive style/text effect in the old
+        // subtree can't fire against a half-detached node.
+        if let Some(old) = current_node_for_effect.borrow_mut().take() {
+            backend_for_effect.borrow_mut().remove_child(&parent, &old);
+        }
+        *branch_scope_for_effect.borrow_mut() = None;
+
+        // Build the new branch inside a fresh nested scope, then splice it
+        // at the region's stable base index. `untrack` keeps inner setup
+        // reads from subscribing to THIS outer effect.
+        let mut new_scope = Box::new(reactive::Scope::new());
+        untrack(|| {
+            let _nav_restore = nav_ctx.enter();
+            reactive::with_scope(&mut new_scope, || {
+                let branch = if active { then() } else { otherwise() };
+                let child_node = super::build(&backend_for_effect, 0, branch);
+                let mut parent_mut = parent.clone();
+                backend_for_effect.borrow_mut().insert_at(
+                    &mut parent_mut,
+                    child_node.clone(),
+                    base_index,
+                );
+                *current_node_for_effect.borrow_mut() = Some(child_node);
+            });
+        });
+        *branch_scope_for_effect.borrow_mut() = Some(new_scope);
+    });
+
+    // The Effect ran once synchronously, so exactly one branch node is now
+    // spliced — this region contributes 1 to the parent's child index.
+    1
+}
+
 /// Build a `Element::When` for backends that opt into
 /// declarative conditional rendering via
 /// `handles_when_natively()`. Both branches are constructed

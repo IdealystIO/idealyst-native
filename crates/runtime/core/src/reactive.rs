@@ -481,29 +481,11 @@ struct EffectInner {
     stable_deps: bool,
 }
 
-impl EffectInner {
-    /// Drain and fire the effect's `on_cleanup` callbacks, LIFO. Idempotent
-    /// — once drained, a subsequent call (or the `Drop` below) is a no-op.
-    ///
-    /// `Scope::drop` calls this synchronously at teardown so effect-level
-    /// cleanups run *while this scope's signals are still live*. That
-    /// matters because the web backend defers the effect *box* drop to a
-    /// later rAF (`install_drop_deferral`); a cleanup that cancels a
-    /// scope-anchored deferred callback (`raf_loop`/`after_ms`/an
-    /// `AnimatedValue` bind — see `ReactiveCtx`'s safety note) MUST fire
-    /// before the signals it reads are dropped, or the still-live animation
-    /// frame re-reads a freshly-dropped (and possibly id-recycled) signal
-    /// and aborts with "signal used after its scope was dropped".
-    fn dispose_cleanups(&mut self) {
+impl Drop for EffectInner {
+    fn drop(&mut self) {
         for cb in self.cleanups.drain(..).rev() {
             cb();
         }
-    }
-}
-
-impl Drop for EffectInner {
-    fn drop(&mut self) {
-        self.dispose_cleanups();
     }
 }
 
@@ -1932,40 +1914,19 @@ impl Drop for Scope {
         let ref_ids: Vec<RefId> = self.refs.drain(..).collect();
         let guards: Vec<Box<dyn Any>> = self.guards.drain(..).collect();
 
-        // Phase 1 — take the effect boxes out of the arena. This also
-        // unsubscribes them from every signal (batched: at 10k rows
-        // sharing one `theme` dep, ~10k `HashSet::remove`s collapse into
-        // one `retain`). Signals/refs stay in the arena for Phase 2.
-        let mut taken_effects: Vec<Box<dyn Any>> =
-            ARENA.with(|a| a.borrow_mut().take_effects_batched(&effect_ids));
-
-        // Phase 2 — fire EFFECT-level cleanups synchronously, BEFORE this
-        // scope's signals are taken/dropped. `on_cleanup` callbacks
-        // registered inside an effect cancel scope-anchored deferred
-        // callbacks (`raf_loop`/`after_ms` handles, `AnimatedValue` binds,
-        // observers) and run backend release hooks (`release_virtualizer`,
-        // `release_graphics`, …); all of them may read the scope's signals,
-        // so they must run while those signals are still live. We can't let
-        // them ride along with the effect *box* drop: the web backend
-        // defers that drop to a later rAF (`install_drop_deferral`), by
-        // which point the signals below are already gone — a still-live
-        // animation frame would then re-read a freshly-dropped (and
-        // possibly id-recycled) signal and abort with "signal used after
-        // its scope was dropped". This mirrors the scope-level cleanup pass
-        // at the top of `drop`. The deferred box drop re-runs `cleanups`
-        // (now drained) as a harmless no-op.
-        for any in taken_effects.iter_mut() {
-            if let Some(inner) = any.downcast_mut::<EffectInner>() {
-                inner.dispose_cleanups();
-            }
-        }
-
-        // Phase 3 — now take signals + refs out of the arena.
         let mut taken_signals: Vec<Box<dyn Any>> = Vec::new();
+        let mut taken_effects: Vec<Box<dyn Any>> = Vec::new();
         let mut taken_refs: Vec<Option<Box<dyn Any>>> = Vec::with_capacity(ref_ids.len());
+
         ARENA.with(|a| {
             let mut a = a.borrow_mut();
+            // Batched takers collapse the per-effect `unsubscribe`
+            // hits — at 10k rows on one branch, all effects share
+            // the same `theme` dep, so this turns ~10k
+            // `HashSet::remove` calls into one `retain`. Same idea
+            // for signals on the symmetric path.
             taken_signals = a.take_signals_batched(&signal_ids);
+            taken_effects = a.take_effects_batched(&effect_ids);
             for id in ref_ids {
                 if let Some(inner) = a.take_ref(id) {
                     taken_refs.push(inner);
@@ -1975,13 +1936,24 @@ impl Drop for Scope {
 
         // Borrow released; safe to drop the captured contents now.
         //
-        // Cleanup BEHAVIOR has already run (Phase 2 + the scope-level pass
-        // at the top): every effect's `on_cleanup` and the backend release
-        // hooks (`release_virtualizer`, `release_graphics`, …) fired while
-        // this scope's signals were still live. What remains here is only
-        // the box DEALLOCATION — dropping the effect closures (and the
-        // wasm-bindgen `Closure`s they hold) and the scope guards.
+        // Drop order matters: **effects first, signals second**.
+        // Backend cleanup hooks (`release_virtualizer`,
+        // `release_graphics`, etc.) run from inside an
+        // EffectInner's drop — they tear down JS-side listeners
+        // and drop the wasm-bindgen Closures that JS was holding.
+        // During that teardown, a queued browser event (scroll,
+        // ResizeObserver, microtask-deferred refresh) can fire
+        // synchronously into a Rust callback that reads a user
+        // signal. If we'd already dropped the signal, that read
+        // panics with "signal used after its scope was dropped".
         //
+        // By draining effects first, every cleanup hook runs
+        // while the surrounding scope's signals are still live.
+        // Once all effects are gone, no Rust code holds a
+        // `Signal<T>` reference into this scope — the framework's
+        // own `data_changed` effect that captured `data` is
+        // among the effects we just dropped — so the signal drop
+        // is now harmless.
         // Heavy boxes (effect closures, scope guards holding
         // `StyleHandle`s) are routed through the backend-installable
         // `DROP_DEFERRAL` policy. The web backend installs a policy
@@ -1991,10 +1963,7 @@ impl Drop for Scope {
         // `PENDING_DROPS` thread-local + scheduler from here. Native
         // backends never install a policy; `defer_or_drop` falls
         // through to a synchronous `drop`, which is the right choice
-        // when teardown is cheap. Deferring the box drop is now safe
-        // w.r.t. the signals dropped just below precisely BECAUSE the
-        // cleanups already ran in Phase 2 — the parked box's eventual
-        // `Drop` re-runs an empty `cleanups` list.
+        // when teardown is cheap.
         //
         // Signals and refs stay synchronous unconditionally — they
         // don't hold JS-side closures, and any deferred drain
@@ -3120,71 +3089,47 @@ mod tests {
         DROP_DEFERRAL.with(|c| c.set(None));
     }
 
-    /// Regression test for the web history-pop abort: "signal used after
-    /// its scope was dropped".
+    /// Regression for the web history-pop abort traced to
+    /// `idea-ui`'s `Collapsible::measured_body`: it `mem::forget`'d the
+    /// `LayoutSubscription` (a `ResizeObserver`), so the observer was
+    /// never disconnected. After the component's scope was disposed (a
+    /// history-pop detaching the subtree) a late layout callback still
+    /// fired and read the now-freed `natural_height: Signal<f32>` →
+    /// "signal used after its scope was dropped" → abort.
     ///
-    /// The web backend defers the effect *box* drop to a later rAF
-    /// (`install_drop_deferral`). Before the fix, effect-level `on_cleanup`
-    /// callbacks rode along with that deferred drop — so a cleanup that
-    /// reads a scope-owned signal (the shape of a `raf_loop`/`AnimatedValue`
-    /// cancel path) ran AFTER the scope's signals had already been dropped
-    /// synchronously, reading a dead (and possibly id-recycled) slot and
-    /// aborting. The fix fires effect-level cleanups synchronously in
-    /// `Scope::drop`, while the signals are still live.
-    ///
-    /// Pre-fix this test fails twice over: the cleanup never runs at scope
-    /// drop (so the assertion sees `None`), and draining the parked box
-    /// later runs the cleanup against a dropped signal → panic. Post-fix
-    /// the cleanup runs at drop time (signal live) and the parked drop is a
-    /// no-op.
+    /// The contract the fix relies on: a `LayoutSubscription` anchored to
+    /// the scope via [`on_cleanup`] has its drop (= observer disconnect)
+    /// run when the scope drops. `mem::forget` would skip that drop — this
+    /// test fails if the anchor regresses back to a leak. A tighter test
+    /// against `measured_body` itself needs a layout-capable web backend
+    /// (real `ResizeObserver`), which the headless test env lacks, so we
+    /// assert the underlying subscription/scope contract instead.
     #[test]
-    fn effect_cleanup_reading_signal_runs_before_signal_drop_under_deferral() {
-        use std::cell::RefCell;
+    fn layout_subscription_via_on_cleanup_unsubscribes_on_scope_drop() {
+        use std::cell::Cell;
         use std::rc::Rc;
 
-        // Park effect/guard boxes instead of dropping them — exactly what
-        // the web backend's policy does.
-        thread_local! {
-            static PARKED: RefCell<Vec<Box<dyn std::any::Any>>> = RefCell::new(Vec::new());
-        }
-        fn park(mut boxes: Vec<Box<dyn std::any::Any>>) {
-            PARKED.with(|q| q.borrow_mut().append(&mut boxes));
-        }
-        install_drop_deferral(park);
-
-        let read_in_cleanup = Rc::new(RefCell::new(None::<i32>));
+        let disconnected = Rc::new(Cell::new(false));
         {
             let mut scope = Scope::new();
+            let flag = disconnected.clone();
             with_scope(&mut scope, || {
-                let sig = Signal::new(7i32);
-                let out = read_in_cleanup.clone();
-                let _e = Effect::new(move || {
-                    // Subscribe so this is a real, dep-bearing effect.
-                    let _ = sig.get();
-                    let out = out.clone();
-                    // Effect-level cleanup that READS a scope-owned signal —
-                    // the same access a raf/animation cancel performs.
-                    on_cleanup(move || {
-                        *out.borrow_mut() = Some(sig.get());
-                    });
-                });
+                // Stands in for `ViewHandle::on_layout`'s return — its
+                // drop is the observer disconnect.
+                let sub = crate::handles::LayoutSubscription::new(move || flag.set(true));
+                on_cleanup(move || drop(sub));
             });
-            // `scope` drops here: effect box is parked by `park`, signals
-            // drop synchronously. The cleanup must already have run.
+            assert!(
+                !disconnected.get(),
+                "subscription must stay live until the scope drops"
+            );
+            // scope drops here → on_cleanup fires → sub drops → disconnect.
         }
-        assert_eq!(
-            *read_in_cleanup.borrow(),
-            Some(7),
-            "effect-level cleanup must fire synchronously at scope drop, \
-             while the scope's signals are still live"
+        assert!(
+            disconnected.get(),
+            "scope drop must run the LayoutSubscription's drop (observer \
+             disconnect); a `mem::forget` anchor would leak it"
         );
-
-        // Draining the parked box must be inert now (cleanups already
-        // drained) and must NOT panic reading a dropped signal.
-        PARKED.with(|q| q.borrow_mut().clear());
-
-        // Reset to no-policy so we don't poison sibling tests.
-        DROP_DEFERRAL.with(|c| c.set(None));
     }
 
     /// Helper that adopts a guard into the currently-active scope. The

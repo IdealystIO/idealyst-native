@@ -226,6 +226,39 @@ impl LayoutTree {
         // rendered full-bleed past the 280pt panel. `auto_width` is the
         // signal that the node never had an author-set width, so the
         // baked viewport value is purely a root artifact to undo here.
+        self.revert_root_baked_size(child);
+        self.tree
+            .add_child(parent.0, child.0)
+            .expect("taffy add_child");
+    }
+
+    /// Insert `child` into `parent` at a specific `child_index` (clamped
+    /// by the caller). Companion to [`add_child`](Self::add_child) for
+    /// anchorless reactive regions that splice their rows at a stable
+    /// base index instead of always appending. Applies the same
+    /// root-baked-size revert.
+    pub fn add_child_at_index(
+        &mut self,
+        parent: LayoutNode,
+        child: LayoutNode,
+        index: usize,
+    ) {
+        self.revert_root_baked_size(child);
+        let count = self.tree.children(parent.0).map(|c| c.len()).unwrap_or(0);
+        let idx = index.min(count);
+        self.tree
+            .insert_child_at_index(parent.0, idx, child.0)
+            .expect("taffy insert_child_at_index");
+    }
+
+    /// A node previously laid out as a ROOT has had its `Auto` size axes
+    /// overwritten with `Length(viewport)` by `compute()`. When it's
+    /// reparented as a child, revert those baked dimensions to `Auto`
+    /// (only on axes the author never set), so the child doesn't carry a
+    /// hardcoded full-viewport size into its new parent's flex layout.
+    /// See [`add_child`](Self::add_child)'s history for the iOS drawer
+    /// bug this guards against.
+    fn revert_root_baked_size(&mut self, child: LayoutNode) {
         if self.auto_width.contains(&child.0) || self.auto_height.contains(&child.0) {
             if let Ok(mut style) = self.tree.style(child.0).cloned() {
                 if self.auto_width.contains(&child.0) {
@@ -237,9 +270,6 @@ impl LayoutTree {
                 let _ = self.tree.set_style(child.0, style);
             }
         }
-        self.tree
-            .add_child(parent.0, child.0)
-            .expect("taffy add_child");
     }
 
     /// Remove `child` from `parent` (for dynamic mounts / unmounts).

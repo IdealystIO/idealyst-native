@@ -31,7 +31,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::{on_cleanup, signal, ui, Element, Signal};
+use runtime_core::{on_cleanup, signal, text, ui, view, when, Element, IntoElement, Signal};
 
 use crate::common::{Event, MockBackendConfig, TestRuntime};
 
@@ -856,6 +856,135 @@ fn anchorless_region_splices_at_position_among_siblings() {
     assert_eq!(reinsert, vec![1], "new row re-spliced at the region's position: {ev2:?}");
     assert_eq!(count_text(&ev2, "c"), 1, "new row built");
     assert_eq!(count_text(&ev2, "footer"), 0, "trailing sibling untouched on rebuild");
+}
+
+// ---------------------------------------------------------------------------
+// Anchorless `when` (reactive conditional) — the fix for the Android
+// "`when`-mounted box never appears" bug. On a splice-capable backend a
+// style-less `when` mounts its active branch DIRECTLY into the parent (no
+// `create_reactive_anchor` wrapper), so an absolutely-positioned branch
+// resolves its containing block against the real parent — matching web's
+// `display:contents` anchor — instead of a wrapper view that collapses to
+// 0×0 (and on a native FrameLayout never paints its absolute child). The
+// wrapper-collapse can't be observed against the mock (it has no layout),
+// so these tests pin the mechanism that fixes it: the branch is spliced
+// into the real parent via `insert_at` / `remove_child`, never nested
+// under an anchor. The device screenshot in the PR is the visual proof.
+// ---------------------------------------------------------------------------
+
+/// With `supports_child_splice`, a `when` splices its active branch
+/// directly into the parent at the region's `base_index` (no wrapper
+/// anchor). Toggling the condition removes exactly the prior branch node
+/// via `remove_child` and re-splices the new branch via `insert_at` — it
+/// never creates a `create_reactive_anchor`.
+#[test]
+fn anchorless_when_splices_branch_without_anchor() {
+    let rt = TestRuntime::with_config(MockBackendConfig {
+        supports_child_splice: true,
+        ..Default::default()
+    });
+    let on: Signal<bool> = signal!(false);
+    let tree: Element = view(vec![
+        text("header").into_element(),
+        when(
+            move || on.get(),
+            || text("then").into_element(),
+            || text("otherwise").into_element(),
+        ),
+        text("footer").into_element(),
+    ])
+    .into_element();
+    let _owner = rt.render(tree);
+    let ev = rt.events();
+    assert_eq!(
+        ev.iter().filter(|e| matches!(e, Event::CreateReactiveAnchor)).count(),
+        0,
+        "anchorless `when` creates NO wrapper anchor: {ev:?}"
+    );
+    // Initial: cond=false → "otherwise", spliced at base_index 1 (after
+    // the static "header"), before the trailing "footer".
+    assert_eq!(texts(&ev), vec!["header", "otherwise", "footer"]);
+    let at: Vec<usize> = ev
+        .iter()
+        .filter_map(|e| match e {
+            Event::InsertAt { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(at, vec![1], "branch splices right after header: {ev:?}");
+
+    // Toggle true: the prior "otherwise" node is removed via remove_child
+    // (NOT clear_children), and the new "then" branch is spliced back at
+    // the region's position. The footer is left untouched.
+    rt.backend_mut().clear_events();
+    on.set(true);
+    let ev2 = rt.events();
+    assert_eq!(
+        ev2.iter().filter(|e| matches!(e, Event::RemoveChild { .. })).count(),
+        1,
+        "the prior branch node is removed via remove_child: {ev2:?}"
+    );
+    assert_eq!(
+        ev2.iter().filter(|e| matches!(e, Event::ClearChildren { .. })).count(),
+        0,
+        "anchorless `when` never clears a wrapper's children: {ev2:?}"
+    );
+    let reinsert: Vec<usize> = ev2
+        .iter()
+        .filter_map(|e| match e {
+            Event::InsertAt { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reinsert, vec![1], "new branch re-spliced at the region's position: {ev2:?}");
+    assert_eq!(count_text(&ev2, "then"), 1, "active branch rebuilt");
+    assert_eq!(
+        ev2.iter().filter(|e| matches!(e, Event::CreateReactiveAnchor)).count(),
+        0,
+        "still no anchor on toggle"
+    );
+}
+
+/// Capability gate: WITHOUT `supports_child_splice` the same `when` keeps
+/// the anchored path — its branch nests under one `create_reactive_anchor`
+/// and toggling clears that wrapper's children. Proves the anchorless
+/// behavior is opt-in; backends that haven't implemented splice are
+/// unaffected (the framework default stays the closure/anchor path).
+#[test]
+fn default_backend_when_uses_anchored_path() {
+    let rt = TestRuntime::new(); // no splice support
+    let on: Signal<bool> = signal!(false);
+    let tree: Element = view(vec![when(
+        move || on.get(),
+        || text("then").into_element(),
+        || text("otherwise").into_element(),
+    )])
+    .into_element();
+    let _owner = rt.render(tree);
+    let ev = rt.events();
+    assert_eq!(
+        ev.iter().filter(|e| matches!(e, Event::CreateReactiveAnchor)).count(),
+        1,
+        "without splice support `when` uses an anchor: {ev:?}"
+    );
+    assert_eq!(count_text(&ev, "otherwise"), 1);
+
+    // Toggle: anchored path tears down the branch via clear_children on
+    // the wrapper (not remove_child), and never splices via insert_at.
+    rt.backend_mut().clear_events();
+    on.set(true);
+    let ev2 = rt.events();
+    assert_eq!(
+        ev2.iter().filter(|e| matches!(e, Event::ClearChildren { .. })).count(),
+        1,
+        "anchored `when` clears the wrapper on toggle: {ev2:?}"
+    );
+    assert_eq!(
+        ev2.iter().filter(|e| matches!(e, Event::InsertAt { .. })).count(),
+        0,
+        "anchored `when` never uses insert_at: {ev2:?}"
+    );
+    assert_eq!(count_text(&ev2, "then"), 1, "active branch rebuilt");
 }
 
 // ---------------------------------------------------------------------------

@@ -320,32 +320,69 @@ fn EphemeralList(props: &EphemeralListProps) -> Element {
 // App entry — last, so every component's invocation macro is in scope.
 // ---------------------------------------------------------------------------
 
+// === TEMP: anchorless-when iOS splice repro (REVERT) ===========================
 #[component]
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
-    let items: Signal<Vec<Row>> = signal!(vec![
-        Row { id: 0, label: "Reactive".to_string(), count: signal!(0) },
-        Row { id: 1, label: "for".to_string(), count: signal!(0) },
-        Row { id: 2, label: "loops".to_string(), count: signal!(0) },
-    ]);
-    // The id allocator is genuinely a counter (must stay monotonic
-    // across removes), so it's its own signal — seeded from the initial
-    // row count rather than a magic number.
-    let next_id: Signal<u32> = signal!(items.get().len() as u32);
+    use runtime_core::{
+        view, when, Color, IntoElement, Length, Position, StyleApplication, StyleRules,
+        StyleSheet, Tokenized,
+    };
+    use std::rc::Rc;
 
-    // Separate list for the render-scope-state counter-example below.
-    let labels: Signal<Vec<String>> = signal!(vec!["alpha".to_string(), "beta".to_string()]);
+    fn static_style(rules: StyleRules) -> impl Fn() -> StyleApplication {
+        move || StyleApplication::new(Rc::new(StyleSheet::r#static(rules.clone())))
+    }
+
+    // Flip this const between builds to test the two splice transitions:
+    //   true  → both `when` branches' active content is spliced in at mount
+    //           (the absolute red box + in-flow green box must render).
+    //   false → branches render their empty `view {}` (regression check that
+    //           an absent branch leaves siblings undisturbed).
+    const VISIBLE: bool = true;
+    let visible: Signal<bool> = signal!(VISIBLE);
+
+    // Absolute branch: a 120x120 red box pinned bottom-right. This is the
+    // exact shape that collapsed a `create_reactive_anchor` wrapper to 0x0
+    // and never painted — it must now appear bottom-right when visible.
+    let abs_box = move || {
+        view(vec![])
+            .with_style(static_style(StyleRules {
+                position: Some(Position::Absolute),
+                right: Some(Length::Px(16.0).into()),
+                bottom: Some(Length::Px(16.0).into()),
+                width: Some(Length::Px(120.0).into()),
+                height: Some(Length::Px(120.0).into()),
+                background: Some(Tokenized::Literal(Color("#ff0000".into()))),
+                ..Default::default()
+            }))
+            .into_element()
+    };
+
+    // In-flow branch: a 60px-tall green box that should push siblings down.
+    let inflow_box = move || {
+        view(vec![])
+            .with_style(static_style(StyleRules {
+                width: Some(Length::Px(200.0).into()),
+                height: Some(Length::Px(60.0).into()),
+                background: Some(Tokenized::Literal(Color("#00aa00".into()))),
+                ..Default::default()
+            }))
+            .into_element()
+    };
+
+    let abs_branch = when(move || visible.get(), abs_box, || ui! { view {} });
+    let inflow_branch = when(move || visible.get(), inflow_box, || ui! { view {} });
 
     ui! {
         Stack(gap = StackGap::Xl, padding = StackPadding::Lg) {
             Header()
-            DynamicList(items = items, next_id = next_id)
-            // count is DERIVED from the list, not a separate signal:
-            // `rx!` makes it live so the grid tracks add/remove.
-            CountGrid(count = rx!(items.get().len()))
-            EphemeralList(labels = labels)
-            Legend()
+            Typography(content = rx!(format!("visible = {}", visible.get())))
+            inflow_branch
+            Typography(content = "below-inflow sibling".to_string())
+            abs_branch
         }
     }
 }
+// === END TEMP ==================================================================
