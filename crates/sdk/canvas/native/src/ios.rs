@@ -363,7 +363,11 @@ fn ui_color(c: Color) -> Retained<NSObject> {
     unsafe { msg_send_id![cls, colorWithRed: r, green: g, blue: b, alpha: a] }
 }
 
-fn cg_line_cap(c: LineCap) -> i64 {
+// `CGLineCap` / `CGLineJoin` are `int32_t` C enums — UIBezierPath's
+// `setLineCapStyle:` / `setLineJoinStyle:` take them by value, so the
+// argument MUST be `i32` (Obj-C type code 'i'). Passing `i64` ('q')
+// trips objc2's runtime encoding check and aborts in `drawRect:`.
+fn cg_line_cap(c: LineCap) -> i32 {
     match c {
         LineCap::Butt => 0,
         LineCap::Round => 1,
@@ -371,7 +375,7 @@ fn cg_line_cap(c: LineCap) -> i64 {
     }
 }
 
-fn cg_line_join(j: LineJoin) -> i64 {
+fn cg_line_join(j: LineJoin) -> i32 {
     match j {
         LineJoin::Miter => 0,
         LineJoin::Round => 1,

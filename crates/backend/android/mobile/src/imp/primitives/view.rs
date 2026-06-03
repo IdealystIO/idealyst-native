@@ -45,6 +45,17 @@ pub(crate) fn insert(b: &mut AndroidBackend, parent: &mut GlobalRef, child: Glob
     if super::overlay::is_portal_node(b, &child) {
         return;
     }
+    // Detached window root (screen_recorder private layer): the content
+    // view already lives in its own `WindowManager` window. Skip the
+    // `addView` reparent — Android would throw "child already has a
+    // parent", and reparenting into the captured window would defeat
+    // capture exclusion (the whole point of the private layer). The
+    // root stays a Taffy root, so its children still lay out inside it.
+    if b.detached_window_roots
+        .contains_key(&AndroidBackend::node_key_of(&child))
+    {
+        return;
+    }
     let target = super::scroll_view::inner_for(b, parent).unwrap_or_else(|| parent.clone());
     with_env(|env| {
         env.call_method(

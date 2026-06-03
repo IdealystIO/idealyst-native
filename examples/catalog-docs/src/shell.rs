@@ -25,7 +25,7 @@ use crate::styles::{
     Callout as CalloutBox, Chip, ChipActive, ChipRow, ChipText, ChipTextActive,
     CodePanel as CodePanelBox, CodeText, LinkText, PageColumn, PagePad, PreviewBox, PreviewSlot,
     ResultHead, ResultNamespace, ResultsScroll, ScreenScroll, SearchBox, SearchBoxText,
-    SearchResultsBody, SidebarBody, SidebarHeader, SidebarSection,
+    SearchResultsBody, SidebarBody, SidebarHeader, SidebarSection, ThemeToggleBox, ThemeToggleText,
 };
 
 // =============================================================================
@@ -98,6 +98,27 @@ pub fn SearchTrigger(props: SearchTriggerProps) -> Element {
     .into_element()
 }
 
+/// Light/dark theme toggle. The label is a reactive `text` node bound to
+/// the global dark-mode signal, so it updates in place when the mode
+/// flips (the node's own effect survives the sidebar's scope, unlike a
+/// free `Effect`). Pressing it swaps the live theme via `toggle_theme`.
+#[component]
+pub fn ThemeToggle() -> Element {
+    let label = runtime_core::text(|| {
+        if crate::theme::dark_mode().get() {
+            "\u{2600} Light".to_string()
+        } else {
+            "\u{263e} Dark".to_string()
+        }
+    })
+    .with_style(ThemeToggleText())
+    .into_element();
+    let inner = ui! {
+        view(style = ThemeToggleBox()) { label }
+    };
+    runtime_core::pressable(vec![inner], || crate::theme::toggle_theme()).into_element()
+}
+
 pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
     let active_path = slot.active_path;
 
@@ -124,6 +145,7 @@ pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
         view(style = SidebarBody()) {
             view(style = SidebarHeader()) { header_children }
             SearchTrigger(on_press = Some(open_search.clone()))
+            ThemeToggle()
             // Overview link.
             sidebar_overview_link(active_path)
             for kind in model.populated_kinds() {

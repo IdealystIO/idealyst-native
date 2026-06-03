@@ -117,7 +117,9 @@ pub use assets::{
     Asset, AssetId, AssetKind, AssetSource, AssetTag, SystemFallback, Typeface, TypefaceFace,
     TypefaceId,
 };
-pub use backend::{open_url, platform, Backend, ColorScheme, Platform, VirtualizerCallbacks};
+pub use backend::{
+    color_scheme, open_url, platform, Backend, ColorScheme, Platform, VirtualizerCallbacks,
+};
 pub use page_meta::{set_page_metadata, take_page_metadata, PageMetadata};
 pub use batch::{BackendBatch, BatchOp};
 pub use handles::{

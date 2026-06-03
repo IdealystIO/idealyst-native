@@ -32,7 +32,12 @@ pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
     canvas_native::register(backend);
 }
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
+    canvas_native::register(backend);
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
 pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 
 /// Fixed logical canvas size every card draws into.
@@ -65,7 +70,9 @@ pub fn app() -> Element {
     ];
 
     ui! {
-        Stack(gap = StackGap::Lg, padding = StackPadding::Lg) { body }
+        scroll_view {
+            Stack(gap = StackGap::Lg, padding = StackPadding::Lg) { body }
+        }
     }
 }
 

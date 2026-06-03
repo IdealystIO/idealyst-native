@@ -22,8 +22,11 @@ backend-web = { workspace = true }
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }
 
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
 [package.metadata.idealyst.app]
 name      = "Canvas Demo"
 bundle_id = "ai.truday.idealyst.canvasdemo"
 version   = "0.0.1"
-targets   = ["web", "ios"]
+targets   = ["web", "ios", "android"]

@@ -1733,6 +1733,13 @@ stylesheet! {
             padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
             border_bottom_width: 1.0,
             border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            // Override the browser UA default `th { text-align: center }`.
+            // The inner text node shrink-wraps (display: inline), so its
+            // own `text_align: Left` can't win — the cell's alignment is
+            // what positions the inline span. Pin it Left so header cells
+            // match body cells on web (native is unaffected: there the
+            // text node's alignment already applies). See `TableBodyCell`.
+            text_align: TextAlign::Left,
         }
         transitions {
             background: 250ms EaseInOut,
@@ -1748,6 +1755,9 @@ stylesheet! {
             padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
             border_bottom_width: 1.0,
             border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            // Explicit (matches the UA `td` default) so head + body cells
+            // share one alignment source of truth — see `TableHeadCell`.
+            text_align: TextAlign::Left,
         }
         transitions {
             border_bottom_color: 250ms EaseInOut,

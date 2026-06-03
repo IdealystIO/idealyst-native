@@ -157,6 +157,12 @@ where
     let platform = backend.borrow().platform();
     crate::backend::install_current_platform(platform);
 
+    // Stash the backend's reported color scheme so author code can read
+    // the platform's light/dark default via `runtime_core::color_scheme()`
+    // at startup and install a matching theme (avoids a wrong-theme flash).
+    let scheme = backend.borrow().color_scheme();
+    crate::backend::install_current_color_scheme(scheme);
+
     // Install the platform-appropriate default monotonic clock unless
     // the host already wired one. Native hosts get an
     // `InstantTimeSource`; `Web` is skipped (its backend installs a

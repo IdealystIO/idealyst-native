@@ -340,3 +340,553 @@ recipe!(
         }
     }
 );
+
+// ---------------------------------------------------------------------
+// Layout & containers
+// ---------------------------------------------------------------------
+
+recipe!(
+    Stack,
+    /// The everyday vertical layout: stacks its children in a column with
+    /// a uniform `gap`. Switch to a horizontal row with `axis =
+    /// StackAxis::Row`; `align`/`justify` control cross- and main-axis
+    /// placement.
+    pub fn stack_layout() -> ::runtime_core::Element {
+        use crate::{typography_kind, Stack, StackGap, Typography};
+        use ::runtime_core::ui;
+
+        ui! {
+            Stack(gap = StackGap::Md) {
+                Typography(content = "Profile", kind = typography_kind::H3)
+                Typography(content = "Manage your account details.", muted = true)
+                Typography(content = "Last updated just now.")
+            }
+        }
+    }
+);
+
+recipe!(
+    Center,
+    /// Centers its children on both axes inside the space it's given. Drop
+    /// any single child (or a Stack) inside and it sits dead center —
+    /// handy for empty states and loading screens.
+    pub fn center_content() -> ::runtime_core::Element {
+        use crate::{typography_kind, Center, Typography};
+        use ::runtime_core::ui;
+
+        ui! {
+            Center {
+                Typography(content = "Nothing here yet", kind = typography_kind::H2)
+            }
+        }
+    }
+);
+
+recipe!(
+    Grid,
+    /// A fixed-column grid. `columns` sets how many equal-width tracks
+    /// each row has; `gap` spaces both rows and columns. Children flow
+    /// left-to-right, wrapping to a new row every `columns` items.
+    pub fn grid_columns() -> ::runtime_core::Element {
+        use crate::{typography_kind, Card, CardPadding, Grid, StackGap, Typography};
+        use ::runtime_core::ui;
+
+        ui! {
+            Grid(columns = 3u32, gap = StackGap::Md) {
+                Card(padding = CardPadding::Md) { Typography(content = "One", kind = typography_kind::H3) }
+                Card(padding = CardPadding::Md) { Typography(content = "Two", kind = typography_kind::H3) }
+                Card(padding = CardPadding::Md) { Typography(content = "Three", kind = typography_kind::H3) }
+            }
+        }
+    }
+);
+
+recipe!(
+    Divider,
+    /// A hairline rule separating content. Defaults to a horizontal line
+    /// that fills its parent's width; pass `axis = DividerAxis::Vertical`
+    /// for a vertical rule inside a row.
+    pub fn divider_separator() -> ::runtime_core::Element {
+        use crate::{Divider, Stack, StackGap, Typography};
+        use ::runtime_core::ui;
+
+        ui! {
+            Stack(gap = StackGap::Md) {
+                Typography(content = "Account")
+                Divider()
+                Typography(content = "Danger zone")
+            }
+        }
+    }
+);
+
+recipe!(
+    Spacer,
+    /// A flexible gap that pushes its siblings apart. In a row it expands
+    /// to fill the free space, shoving the items on either side to the
+    /// edges — the standard "title on the left, actions on the right"
+    /// toolbar trick.
+    pub fn spacer_gap() -> ::runtime_core::Element {
+        use crate::{tone, variant, Spacer, Stack, StackAxis, StackAlign, Tag, Typography};
+        use ::runtime_core::ui;
+
+        ui! {
+            Stack(axis = StackAxis::Row, align = StackAlign::Center) {
+                Typography(content = "Inbox")
+                Spacer()
+                Tag(label = "12 new", tone = tone::Primary, variant = variant::Soft)
+            }
+        }
+    }
+);
+
+// ---------------------------------------------------------------------
+// Display & status
+// ---------------------------------------------------------------------
+
+recipe!(
+    Avatar,
+    /// A round user chip. Pass `src` for a photo, or `initials` to render
+    /// a colored monogram when there's no image. `color` picks the
+    /// monogram palette and `size` scales the circle.
+    pub fn avatar_initials() -> ::runtime_core::Element {
+        use crate::{Avatar, AvatarColor, AvatarSize};
+        use ::runtime_core::ui;
+
+        ui! {
+            Avatar(initials = "AL", color = AvatarColor::Primary, size = AvatarSize::Lg)
+        }
+    }
+);
+
+recipe!(
+    Badge,
+    /// A small status pill for counts and labels. Pick a semantic `tone`
+    /// (Primary/Success/Danger/…) and a `variant` (Soft/Filled/Outline).
+    /// `label` is reactive, so it can be driven by a signal.
+    pub fn badge_status() -> ::runtime_core::Element {
+        use crate::{tone, variant, Badge};
+        use ::runtime_core::ui;
+
+        ui! {
+            Badge(label = "New", tone = tone::Primary, variant = variant::Soft)
+        }
+    }
+);
+
+recipe!(
+    Tag,
+    /// A pill label, optionally removable. Provide `on_remove = Some(...)`
+    /// to show a close affordance (e.g. for filter chips); omit it for a
+    /// static tag. `tone` × `variant` set the palette.
+    pub fn tag_removable() -> ::runtime_core::Element {
+        use crate::{tone, variant, Tag};
+        use ::runtime_core::ui;
+        use ::std::rc::Rc;
+
+        let on_remove: Rc<dyn Fn()> = Rc::new(|| { /* drop the filter */ });
+        ui! {
+            Tag(
+                label = "Rust",
+                tone = tone::Primary,
+                variant = variant::Soft,
+                on_remove = Some(on_remove),
+            )
+        }
+    }
+);
+
+recipe!(
+    Progress,
+    /// A horizontal progress bar. Set `value` in 0.0..=1.0 for a
+    /// determinate bar, or `indeterminate = true` for an ongoing
+    /// animation when you can't measure progress. `value` is reactive.
+    pub fn progress_bar() -> ::runtime_core::Element {
+        use crate::{tone, Progress, Stack, StackGap};
+        use ::runtime_core::ui;
+
+        ui! {
+            Stack(gap = StackGap::Md) {
+                Progress(value = 0.65f32, tone = tone::Primary)
+                Progress(indeterminate = true, tone = tone::Info)
+            }
+        }
+    }
+);
+
+recipe!(
+    Spinner,
+    /// A spinning loading indicator for indeterminate waits. `size` picks
+    /// `Small` or `Large`. Pair it with a label or center it in the area
+    /// that's loading.
+    pub fn spinner_loading() -> ::runtime_core::Element {
+        use crate::{Spinner, SpinnerSize};
+        use ::runtime_core::ui;
+
+        ui! {
+            Spinner(size = SpinnerSize::Large)
+        }
+    }
+);
+
+recipe!(
+    Skeleton,
+    /// Placeholder shimmer blocks shown while content loads. Stack a few
+    /// with varied `width`s (Full/ThreeQuarter/Half or `Px`) to suggest
+    /// the shape of the incoming content; `height` sets each block's
+    /// thickness.
+    pub fn skeleton_placeholder() -> ::runtime_core::Element {
+        use crate::{Skeleton, SkeletonWidth, Stack, StackGap};
+        use ::runtime_core::ui;
+
+        ui! {
+            Stack(gap = StackGap::Sm) {
+                Skeleton(width = SkeletonWidth::Full, height = 16.0)
+                Skeleton(width = SkeletonWidth::ThreeQuarter, height = 16.0)
+                Skeleton(width = SkeletonWidth::Half, height = 16.0)
+            }
+        }
+    }
+);
+
+recipe!(
+    Image,
+    /// A bitmap image. `src` is the URL/path; `alt` is the accessible
+    /// description. Constrain it with `width`/`height` (points) and set
+    /// `rounded = true` for rounded corners (e.g. thumbnails).
+    pub fn image_rounded() -> ::runtime_core::Element {
+        use crate::Image;
+        use ::runtime_core::ui;
+
+        ui! {
+            Image(
+                src = "https://picsum.photos/200",
+                alt = Some("A random landscape".to_string()),
+                width = Some(160.0_f32),
+                height = Some(160.0_f32),
+                rounded = true,
+            )
+        }
+    }
+);
+
+recipe!(
+    Link,
+    /// An inline hyperlink to an external URL. `label` is the visible
+    /// text; `url` is the destination. For in-app navigation between
+    /// screens, use the framework's `link` primitive with a typed route
+    /// instead.
+    pub fn link_external() -> ::runtime_core::Element {
+        use crate::Link;
+        use ::runtime_core::ui;
+
+        ui! {
+            Link(label = "Idealyst docs", url = "https://idealyst.dev")
+        }
+    }
+);
+
+// ---------------------------------------------------------------------
+// Lists, navigation & paging
+// ---------------------------------------------------------------------
+
+recipe!(
+    List,
+    /// A vertical list of rows. Compose `ListItem`s inside it; each row
+    /// takes a `label`, an optional `on_press`, and optional
+    /// `leading`/`trailing` slots for icons or controls.
+    pub fn list_items() -> ::runtime_core::Element {
+        use crate::{List, ListItem};
+        use ::runtime_core::ui;
+        use ::std::rc::Rc;
+
+        let on_press: Rc<dyn Fn()> = Rc::new(|| { /* navigate */ });
+        ui! {
+            List {
+                ListItem(label = "Profile", on_press = Some(on_press.clone()))
+                ListItem(label = "Billing", on_press = Some(on_press.clone()))
+                ListItem(label = "Sign out", on_press = Some(on_press))
+            }
+        }
+    }
+);
+
+recipe!(
+    Breadcrumbs,
+    /// A navigation trail. Build it from `Crumb`s — `Crumb::linked(label,
+    /// on_press)` for clickable ancestors and `Crumb::new(label)` for the
+    /// current (non-clickable) page. The `separator` between them is
+    /// configurable.
+    pub fn breadcrumbs_trail() -> ::runtime_core::Element {
+        use crate::{Breadcrumbs, Crumb};
+        use ::runtime_core::ui;
+        use ::std::rc::Rc;
+
+        let go_home: Rc<dyn Fn()> = Rc::new(|| { /* navigate home */ });
+        let go_library: Rc<dyn Fn()> = Rc::new(|| { /* navigate to library */ });
+        ui! {
+            Breadcrumbs(
+                items = vec![
+                    Crumb::linked("Home", go_home),
+                    Crumb::linked("Library", go_library),
+                    Crumb::new("Button"),
+                ],
+            )
+        }
+    }
+);
+
+recipe!(
+    Pagination,
+    /// A page selector. The host owns the current `page` (zero-based)
+    /// `Signal<usize>`; `total` is the page count; `on_change` fires the
+    /// newly chosen page so the host can refetch and update the signal.
+    pub fn pagination_pager() -> ::runtime_core::Element {
+        use crate::Pagination;
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let page = signal!(0_usize);
+        let on_change: Rc<dyn Fn(usize)> = Rc::new(move |p| page.set(p));
+        ui! {
+            Pagination(page = page, total = 20_usize, on_change = on_change)
+        }
+    }
+);
+
+// ---------------------------------------------------------------------
+// Disclosure
+// ---------------------------------------------------------------------
+
+recipe!(
+    Collapsible,
+    /// A titled section that expands and collapses. The host owns the
+    /// open-state `Signal<bool>`; `on_change` fires the toggled value.
+    /// Children are revealed when open; the default `Measured` transition
+    /// animates to the body's natural height.
+    pub fn collapsible_section() -> ::runtime_core::Element {
+        use crate::{Collapsible, Stack, StackGap, Typography};
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let open = signal!(false);
+        let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| open.set(v));
+        ui! {
+            Collapsible(title = "Advanced settings", value = open, on_change = on_change) {
+                Stack(gap = StackGap::Sm) {
+                    Typography(content = "These options are hidden until you expand.")
+                    Typography(content = "Tweak with care.", muted = true)
+                }
+            }
+        }
+    }
+);
+
+recipe!(
+    Accordion,
+    /// A set of collapsible items. `expand = AccordionExpand::Single`
+    /// keeps at most one open at a time (Multi allows any subset). The
+    /// host owns `open: Signal<Vec<bool>>` (one bool per item); the
+    /// Accordion writes to it on click. Each `AccordionItem` carries a
+    /// `title` and an `Element` `body`.
+    pub fn accordion_single() -> ::runtime_core::Element {
+        use crate::{AccordionExpand, AccordionItem, Accordion, Typography};
+        use ::runtime_core::{signal, ui};
+
+        let open = signal!(vec![true, false, false]);
+        ui! {
+            Accordion(
+                expand = AccordionExpand::Single,
+                open = open,
+                items = vec![
+                    AccordionItem {
+                        title: "Shipping".into(),
+                        body: ui! { Typography(content = "Ships within 2 business days.") },
+                    },
+                    AccordionItem {
+                        title: "Returns".into(),
+                        body: ui! { Typography(content = "Free returns within 30 days.") },
+                    },
+                    AccordionItem {
+                        title: "Support".into(),
+                        body: ui! { Typography(content = "Chat with us 24/7.") },
+                    },
+                ],
+            )
+        }
+    }
+);
+
+// ---------------------------------------------------------------------
+// Selection controls
+// ---------------------------------------------------------------------
+
+recipe!(
+    RadioGroup,
+    /// A set of mutually exclusive options. The host owns `value:
+    /// Signal<String>` (the selected option's id); `on_change` writes the
+    /// picked id back. Build the rows with `RadioOption::new(id, label)`.
+    /// RadioGroup coordinates exclusivity for you.
+    pub fn radio_group_controlled() -> ::runtime_core::Element {
+        use crate::{tone, RadioGroup, RadioOption};
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let plan = signal!("pro".to_string());
+        let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| plan.set(v));
+        ui! {
+            RadioGroup(
+                value = plan,
+                on_change = on_change,
+                options = vec![
+                    RadioOption::new("free", "Free"),
+                    RadioOption::new("pro", "Pro"),
+                    RadioOption::new("team", "Team"),
+                ],
+                tone = tone::Primary,
+            )
+        }
+    }
+);
+
+recipe!(
+    Radio,
+    /// A standalone radio row — the single-row primitive `RadioGroup` is
+    /// built from. Use it directly only when laying out the rows
+    /// yourself; the host then owns each row's `selected: Signal<bool>`
+    /// and coordinates exclusivity in `on_select`.
+    pub fn radio_standalone() -> ::runtime_core::Element {
+        use crate::{tone, Radio};
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let selected = signal!(true);
+        let on_select: Rc<dyn Fn()> = Rc::new(move || selected.set(true));
+        ui! {
+            Radio(
+                label = Some("Email me updates".to_string()),
+                selected = selected,
+                on_select = on_select,
+                tone = tone::Primary,
+            )
+        }
+    }
+);
+
+recipe!(
+    Textarea,
+    /// A multi-line text input that grows to fit its content. `rows` sets
+    /// the resting height; `max_rows` caps the autogrow (past it the
+    /// field scrolls). The host owns the `value` signal; `on_change`
+    /// fires the new text on each edit.
+    pub fn textarea_autogrow() -> ::runtime_core::Element {
+        use crate::Textarea;
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let bio = signal!(String::new());
+        let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| bio.set(v));
+        ui! {
+            Textarea(
+                label = Some("Bio".to_string()),
+                value = bio,
+                on_change = on_change,
+                placeholder = Some("Tell us about yourself…".to_string()),
+                rows = 2u32,
+                max_rows = 8u32,
+            )
+        }
+    }
+);
+
+// ---------------------------------------------------------------------
+// Overlays (anchored / portal — shown as source, not a live preview)
+// ---------------------------------------------------------------------
+
+recipe!(
+    Popover,
+    /// An anchored floating panel. Anchor it to a trigger via a
+    /// `Ref<PressableHandle>` (`bind_to` on the Button, `target =
+    /// AnchorTarget::from(trigger)` on the Popover) and gate it behind an
+    /// open-state signal. `side`/`align`/`offset` place it relative to
+    /// the anchor.
+    pub fn popover_anchored() -> ::runtime_core::Element {
+        use crate::{typography_kind, Button, Popover, Stack, StackGap, Typography};
+        use ::runtime_core::primitives::portal::AnchorTarget;
+        use ::runtime_core::{signal, ui, PressableHandle, Ref};
+        use ::std::rc::Rc;
+
+        let trigger: Ref<PressableHandle> = Ref::new();
+        let open = signal!(false);
+        let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
+        let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+        ui! {
+            view {
+                Button(label = "Details", on_click = on_open, bind_to = Some(trigger))
+                if open.get() {
+                    Popover(
+                        target = Some(AnchorTarget::from(trigger)),
+                        on_dismiss = Some(close.clone()),
+                    ) {
+                        Stack(gap = StackGap::Xs) {
+                            Typography(content = "Order #1024", kind = typography_kind::H3)
+                            Typography(content = "Shipped yesterday.", muted = true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+);
+
+recipe!(
+    Tooltip,
+    /// A small hint anchored to a trigger. Anchor it the same way as a
+    /// Popover (`bind_to` on the trigger, `target =
+    /// AnchorTarget::from(trigger)` on the Tooltip) and reveal it on
+    /// hover/focus by flipping its presence signal. `text` is the hint.
+    pub fn tooltip_hint() -> ::runtime_core::Element {
+        use crate::{Button, Tooltip};
+        use ::runtime_core::primitives::portal::AnchorTarget;
+        use ::runtime_core::{signal, ui, PressableHandle, Ref};
+        use ::std::rc::Rc;
+
+        let trigger: Ref<PressableHandle> = Ref::new();
+        let show = signal!(false);
+        let noop: Rc<dyn Fn()> = Rc::new(|| {});
+        ui! {
+            view {
+                Button(label = "Save", on_click = noop, bind_to = Some(trigger))
+                if show.get() {
+                    Tooltip(
+                        target = Some(AnchorTarget::from(trigger)),
+                        text = "Saves your changes",
+                    )
+                }
+            }
+        }
+    }
+);
+
+recipe!(
+    ToastHost,
+    /// The mount point for transient notifications. Render exactly one
+    /// `ToastHost` near the root; anywhere in the app, call
+    /// `push_toast(message, tone)` to enqueue a toast and it appears at
+    /// the host's `placement`. `dismiss_toast(id)` removes one early.
+    pub fn toast_host() -> ::runtime_core::Element {
+        use crate::{push_toast, tone, Button, ToastHost, ToastPlacement};
+        use ::runtime_core::ui;
+        use ::std::rc::Rc;
+
+        let notify: Rc<dyn Fn()> = Rc::new(|| {
+            push_toast("Saved!", tone::Success);
+        });
+        ui! {
+            view {
+                Button(label = "Notify", on_click = notify)
+                ToastHost(placement = ToastPlacement::Bottom)
+            }
+        }
+    }
+);

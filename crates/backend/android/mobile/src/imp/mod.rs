@@ -331,6 +331,30 @@ pub struct AndroidBackend {
     /// paint until it's been laid out, so the modal is centered from its
     /// first VISIBLE frame regardless of AV/Choreographer timing.
     pub(crate) pending_reveal: Vec<jni::objects::GlobalRef>,
+    /// Content-view pointers of "detached window roots" — views that
+    /// live in their OWN `WindowManager` window (the `screen_recorder`
+    /// private layer's PixelCopy-excluded overlay) rather than in the
+    /// Activity `root`. Two consult sites:
+    ///
+    /// - `view::insert` SKIPS the `parent.addView` reparent for these,
+    ///   exactly like a portal content holder. The External walker's
+    ///   `insert(parent, external_node)` would otherwise try to splice
+    ///   the window-root into the main (captured) tree — Android would
+    ///   throw `IllegalStateException("child already has a parent")`
+    ///   because it's already added via `WindowManager.addView`, and
+    ///   even if it didn't, reparenting into the captured window would
+    ///   defeat exclusion.
+    /// - `apply_frame_to_layout_params` SKIPS these roots: the
+    ///   top-level view of a `WindowManager` window is positioned by
+    ///   its `WindowManager.LayoutParams` (full-screen), not by a
+    ///   `MarginLayoutParams` — wrapping it would break the window.
+    ///   Its CHILDREN still get Taffy frames normally.
+    ///
+    /// The entry holds the `WindowManager.LayoutParams` `GlobalRef`
+    /// used at `addView` time; `removeView` in
+    /// `release_private_layer_window` tears the window down.
+    pub(crate) detached_window_roots:
+        HashMap<usize, jni::objects::GlobalRef>,
 }
 
 /// Read the device's `density` (screen-pixels-per-dp) from the
@@ -790,6 +814,7 @@ impl AndroidBackend {
             scroll_listeners: HashMap::new(),
             pending_sticky: HashMap::new(),
             pending_reveal: Vec::new(),
+            detached_window_roots: HashMap::new(),
         }
     }
 
@@ -1113,6 +1138,17 @@ impl AndroidBackend {
         with_env(|env| {
             for (view, frame) in &frames {
                 if frame.width <= 0.0 && frame.height <= 0.0 {
+                    continue;
+                }
+                // Detached window root (screen_recorder private layer):
+                // its top-level view is positioned by its
+                // `WindowManager.LayoutParams` (full-screen), NOT a
+                // `MarginLayoutParams` — applying a Taffy frame here
+                // would wrap it in margin params and break the window.
+                // Its CHILDREN still flow through `apply_frame_to_layout_params`
+                // normally (they're ordinary views inside the content
+                // FrameLayout), so the layer's controls position correctly.
+                if self.detached_window_roots.contains_key(&Self::node_key(view)) {
                     continue;
                 }
                 {

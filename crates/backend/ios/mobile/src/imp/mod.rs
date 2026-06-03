@@ -207,6 +207,23 @@ pub struct IosBackend {
     /// view is actually in a parent chain. The map empties as
     /// each pending entry is promoted to the live registry.
     pub(crate) pending_sticky: std::collections::HashMap<usize, f32>,
+    /// Content-view pointers of "detached window roots" — views that
+    /// live in their OWN `UIWindow` (the `screen_recorder` private
+    /// layer's ReplayKit-excluded overlay) rather than in the host's
+    /// view tree. `insert` consults this to SKIP the native
+    /// `addSubview` reparent when the External walker tries to splice
+    /// such a root into its surrounding parent: the walker's
+    /// `insert(parent, external_node)` would otherwise yank the
+    /// window-root out of its private `UIWindow` and into the main
+    /// (recorded) tree, defeating capture exclusion. Everything else
+    /// proceeds normally — the root is still a Taffy root in
+    /// `view_to_layout`, so the layout pass sizes it to the window
+    /// (= viewport) and its children lay out inside it. The entry
+    /// retains the owning `UIWindow` so it stays on screen for the
+    /// layer's lifetime; dropping it (in `release_private_layer_window`)
+    /// tears the window down.
+    pub(crate) detached_window_roots:
+        std::collections::HashMap<usize, Retained<NSObject>>,
 }
 
 // =========================================================================
@@ -524,6 +541,7 @@ impl IosBackend {
             collection_views: std::collections::HashSet::new(),
             sticky_registry: HashMap::new(),
             pending_sticky: HashMap::new(),
+            detached_window_roots: HashMap::new(),
         }
     }
 
@@ -605,6 +623,170 @@ impl IosBackend {
     pub(crate) fn layout_of(&self, view: &UIView) -> Option<runtime_layout::LayoutNode> {
         let key = view as *const UIView as usize;
         self.view_to_layout.get(&key).map(|(_, n)| *n)
+    }
+
+    /// Create a capture-excluded overlay surface for the
+    /// `screen_recorder` private layer and return its content view as
+    /// an [`IosNode`]. The `screen_recorder` SDK calls this from its
+    /// `PrivateLayer` external handler; the walker then parents the
+    /// layer's children into the returned content view and tries to
+    /// `insert` the content view into the surrounding tree — which
+    /// `insert` skips because we register the content view as a
+    /// detached window root.
+    ///
+    /// ## Why a separate `UIWindow` excludes it from the recording
+    ///
+    /// ReplayKit (`RPScreenRecorder.startCapture`) records the app's
+    /// **key window only**. We build a second `UIWindow` at a high
+    /// `windowLevel` (above the normal/alert key window), make it
+    /// visible but deliberately **never** call `makeKeyAndVisible`, so
+    /// it stays a non-key window — ReplayKit's capture omits it while
+    /// the user still sees it composited on screen. This is the iOS
+    /// "overlay on a separate UIWindow" trick the user shipped at
+    /// Critiq; the orchestrator verifies the exclusion on a real
+    /// device (a Simulator can't run ReplayKit capture). If the device
+    /// run shows the layer IS captured, the fix is a property tweak on
+    /// THIS window (e.g. a private capture-exclusion flag), not a
+    /// change to the framework's tree handling.
+    ///
+    /// ## Layout
+    ///
+    /// The content view is registered in `view_to_layout`, making it a
+    /// Taffy ROOT. `run_layout_pass_global` computes every root at the
+    /// viewport size (`viewport_size()` == screen bounds here), so the
+    /// content view fills the overlay window and the author positions
+    /// the layer's controls inside it with normal flex/absolute style.
+    ///
+    /// ## Touch passthrough
+    ///
+    /// The content view is an [`OverlayPassthroughView`]: its
+    /// `pointInside:` returns YES only over a child subview's frame, so
+    /// taps that miss the private-layer content fall through this
+    /// window to the app window beneath — the app stays interactive
+    /// everywhere except where the layer's controls sit.
+    pub fn create_private_layer_window(&mut self) -> IosNode {
+        let (vw, vh) = self.viewport_size();
+        let screen_bounds = objc2_foundation::CGRect {
+            origin: objc2_foundation::CGPoint { x: 0.0, y: 0.0 },
+            size: objc2_foundation::CGSize {
+                width: vw as f64,
+                height: vh as f64,
+            },
+        };
+
+        // Content view = passthrough overlay. Hosting it as the window's
+        // rootViewController.view means UIKit owns its lifecycle and
+        // resizes it to the window; we additionally drive its frame via
+        // the Taffy layout pass (it's a registered root).
+        let content: Retained<UIView> = {
+            let v = callbacks::OverlayPassthroughView::new(self.mtm);
+            unsafe { Retained::cast::<UIView>(v) }
+        };
+        let _: () = unsafe { msg_send![&content, setFrame: screen_bounds] };
+        // flexibleWidth (2) | flexibleHeight (16) — track the window on
+        // rotation even before the next Taffy pass writes a frame.
+        let _: () = unsafe { msg_send![&content, setAutoresizingMask: 0x12u64] };
+
+        // Root view controller whose view IS the content view. A bare
+        // UIWindow with no rootViewController logs a runtime warning and
+        // declines to display; the VC is the documented host.
+        let vc: Retained<NSObject> =
+            unsafe { msg_send_id![msg_send_id![objc2::class!(UIViewController), alloc], init] };
+        let _: () = unsafe { msg_send![&vc, setView: &*content] };
+
+        // The separate UIWindow. Prefer the active window scene so the
+        // window joins the same scene as the app (required on iOS 13+
+        // for the window to actually display); fall back to the
+        // frame-based initializer if no scene is resolvable.
+        let window: Retained<NSObject> = unsafe {
+            let window: Retained<NSObject> =
+                msg_send_id![msg_send_id![objc2::class!(UIWindow), alloc], initWithFrame: screen_bounds];
+            if let Some(scene) = self.active_window_scene() {
+                let _: () = msg_send![&window, setWindowScene: &*scene];
+            }
+            window
+        };
+
+        // Clear background so the app shows through the passthrough
+        // regions, and a high windowLevel so the overlay composites
+        // above the key window. UIWindowLevelAlert is 2000; go above it.
+        let clear: Retained<NSObject> =
+            unsafe { msg_send_id![objc2::class!(UIColor), clearColor] };
+        let _: () = unsafe { msg_send![&window, setBackgroundColor: &*clear] };
+        // `windowLevel` is a CGFloat (f64 on 64-bit). Above
+        // UIWindowLevelAlert (2000) so it sits over alerts/sheets too.
+        let _: () = unsafe { msg_send![&window, setWindowLevel: 3000.0f64] };
+        let _: () = unsafe { msg_send![&window, setRootViewController: &*vc] };
+        // Make it VISIBLE but NOT key — `setHidden: NO` shows the
+        // window without making it the key window. ReplayKit records
+        // the key window only, so this stays excluded. (Calling
+        // `makeKeyAndVisible` here would defeat the whole mechanism.)
+        let _: () = unsafe { msg_send![&window, setHidden: false] };
+
+        // Register the content view as a Taffy root + detached window
+        // root so the layout pass sizes it and `insert` skips its
+        // reparent. Retain the window on the entry so it lives as long
+        // as the layer.
+        self.register_external_view(&content);
+        let key = &*content as *const UIView as usize;
+        self.detached_window_roots.insert(key, window);
+
+        // Kick a layout pass so the new root computes against the
+        // viewport even though it never entered the main tree (the
+        // window-attached-insert sync in `insert` won't fire for a
+        // detached root).
+        schedule_layout_pass();
+
+        IosNode::View(content)
+    }
+
+    /// Tear down the private-layer overlay window created by
+    /// [`Self::create_private_layer_window`]. Dropping the retained
+    /// `UIWindow` removes it from the screen; we also drop the Taffy
+    /// node + view-table entry so the next layout pass doesn't lay out
+    /// a detached subtree (mirrors the portal `release` path).
+    pub fn release_private_layer_window(&mut self, node: &IosNode) {
+        let key = node.view_key();
+        if self.detached_window_roots.remove(&key).is_none() {
+            return;
+        }
+        // Hide the window before dropping so it stops compositing even
+        // if some stray retain keeps the object alive briefly.
+        if let Some((view, layout_node)) = self.view_to_layout.remove(&key) {
+            let window: Option<Retained<NSObject>> =
+                unsafe { msg_send_id![&*view, window] };
+            if let Some(window) = window {
+                let _: () = unsafe { msg_send![&window, setHidden: true] };
+            }
+            self.layout.remove_node(layout_node);
+        }
+        self.applied_frames.remove(&key);
+    }
+
+    /// Resolve the app's active `UIWindowScene` (iOS 13+) so the
+    /// private-layer window can join the same scene as the app. Walks
+    /// `UIApplication.sharedApplication.connectedScenes` for the first
+    /// `UIWindowScene`. Returns `None` on older OSes or if no scene is
+    /// foreground-active yet (the window then falls back to its
+    /// frame-based init, which still displays on single-scene apps).
+    fn active_window_scene(&self) -> Option<Retained<NSObject>> {
+        unsafe {
+            let app: Retained<NSObject> =
+                msg_send_id![objc2::class!(UIApplication), sharedApplication];
+            let scenes: Retained<objc2_foundation::NSSet<NSObject>> =
+                msg_send_id![&app, connectedScenes];
+            let enumerator: Retained<NSObject> = msg_send_id![&scenes, objectEnumerator];
+            let window_scene_class = objc2::class!(UIWindowScene);
+            loop {
+                let next: Option<Retained<NSObject>> = msg_send_id![&enumerator, nextObject];
+                let scene = next?;
+                let is_window_scene: bool =
+                    msg_send![&scene, isKindOfClass: window_scene_class];
+                if is_window_scene {
+                    return Some(scene);
+                }
+            }
+        }
     }
 
     pub fn set_host_root(&mut self, view: Retained<UIView>) {
@@ -1865,6 +2047,22 @@ impl Backend for IosBackend {
         // Portal containers mount themselves into the host window —
         // skip the parent-tree insert the walker tries for them.
         if self.portal_instances.contains_key(&child_key) {
+            return;
+        }
+
+        // Detached window root (screen_recorder private layer): the
+        // content view already lives in its OWN `UIWindow`. The
+        // External walker calls `insert(parent, external_node)` to
+        // splice the handler's returned node into the surrounding
+        // view tree — but doing the `addSubview` here would reparent
+        // the content view OUT of its private window and INTO the
+        // main (recorded) tree, so ReplayKit would capture it. Skip
+        // the native reparent; the root stays in its window. Its
+        // Taffy node remains registered (sized to the window in the
+        // layout pass) and the walker's `insert_children` already
+        // populated it, so the private subtree renders correctly —
+        // just on the excluded window.
+        if self.detached_window_roots.contains_key(&child_key) {
             return;
         }
 

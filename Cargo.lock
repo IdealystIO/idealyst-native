@@ -1254,6 +1254,7 @@ dependencies = [
 name = "canvas-demo"
 version = "0.0.1"
 dependencies = [
+ "backend-android-mobile",
  "backend-ios-mobile",
  "backend-web",
  "canvas",
@@ -1266,10 +1267,14 @@ dependencies = [
 name = "canvas-native"
 version = "0.0.1"
 dependencies = [
+ "backend-android-core",
+ "backend-android-mobile",
  "backend-ios-mobile",
  "backend-web",
  "canvas-core",
+ "jni 0.21.1",
  "js-sys",
+ "log",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",

@@ -23,17 +23,22 @@ mod ios;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub use ios::register;
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+mod android;
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+pub use android::register;
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
 mod fallback {
     use runtime_core::Backend;
 
-    /// No-op `register` for targets without a native canvas module yet
-    /// (Android lands next; desktop uses `canvas-vello`). Still registers
-    /// the wire serde so a canvas can round-trip over the runtime-server
-    /// wire to a client that *does* have a renderer.
+    /// No-op `register` for targets without a native canvas module
+    /// (desktop uses `canvas-vello`). Still registers the wire serde so a
+    /// canvas can round-trip over the runtime-server wire to a client that
+    /// *does* have a renderer.
     pub fn register<B: Backend>(_backend: &mut B) {
         canvas_core::ensure_wire_serde();
     }
 }
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
 pub use fallback::register;

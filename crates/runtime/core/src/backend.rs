@@ -211,6 +211,39 @@ pub fn install_current_platform(platform: Platform) {
 }
 
 // ---------------------------------------------------------------------------
+// Color scheme
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static CURRENT_COLOR_SCHEME: std::cell::Cell<ColorScheme> =
+        const { std::cell::Cell::new(ColorScheme::Auto) };
+}
+
+/// The host platform's appearance preference (light / dark / auto) as
+/// reported by the backend at mount. Read it at startup to pick a
+/// matching default theme so the app doesn't flash the wrong one — e.g.
+/// `let dark = matches!(color_scheme(), ColorScheme::Dark);`.
+///
+/// This is the platform's *initial* preference, captured once during
+/// `mount(...)` (the same one-shot model as [`platform`]); it is not a
+/// reactive subscription to live OS theme changes. Apps that let the
+/// user toggle themes own that state themselves and treat this only as
+/// the default. Returns [`ColorScheme::Auto`] before any mount has
+/// happened on this thread.
+pub fn color_scheme() -> ColorScheme {
+    CURRENT_COLOR_SCHEME.with(|c| c.get())
+}
+
+/// Internal: invoked by `mount(...)` to stash the backend's reported
+/// color scheme in the thread-local accessor above. Not part of the
+/// public API surface; backends should override [`Backend::color_scheme`]
+/// instead.
+#[doc(hidden)]
+pub fn install_current_color_scheme(scheme: ColorScheme) {
+    CURRENT_COLOR_SCHEME.with(|c| c.set(scheme));
+}
+
+// ---------------------------------------------------------------------------
 // External URL opener
 // ---------------------------------------------------------------------------
 //
@@ -2615,6 +2648,26 @@ mod tests {
         // Restore default so other tests on the same thread aren't
         // surprised by leftover state.
         install_current_platform(Platform::Custom(""));
+    }
+
+    /// `install_current_color_scheme` must round-trip through the global
+    /// `color_scheme()` accessor — the storage layer author code relies
+    /// on to pick a platform-default theme at startup.
+    #[test]
+    fn install_current_color_scheme_round_trips() {
+        // Default before any install on this thread is `Auto`.
+        install_current_color_scheme(ColorScheme::Auto);
+        assert_eq!(color_scheme(), ColorScheme::Auto);
+
+        install_current_color_scheme(ColorScheme::Dark);
+        assert_eq!(color_scheme(), ColorScheme::Dark);
+
+        install_current_color_scheme(ColorScheme::Light);
+        assert_eq!(color_scheme(), ColorScheme::Light);
+
+        // Restore default so other tests on the same thread aren't
+        // surprised by leftover state.
+        install_current_color_scheme(ColorScheme::Auto);
     }
 
     /// `Backend::url_opener` defaults to `None` so backends without

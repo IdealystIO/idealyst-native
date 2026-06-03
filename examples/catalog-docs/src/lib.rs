@@ -39,7 +39,7 @@ use drawer_navigator::{
     install_navigator_pin_width, DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerScreenExt,
     HeaderStyle,
 };
-use idea_ui::{idea_color, install_idea_theme, light_theme};
+use idea_ui::idea_color;
 use runtime_core::primitives::navigator::Screen;
 use runtime_core::{component, ui, Element, Ref};
 
@@ -47,6 +47,7 @@ mod catalog;
 mod routes;
 mod shell;
 mod styles;
+mod theme;
 
 use catalog::CatalogModel;
 use routes::{decode_entry_route, ENTRY_ROUTE, OVERVIEW_ROUTE};
@@ -128,7 +129,7 @@ fn titled(title: String, el: Element) -> Screen {
 
 #[component]
 pub fn app() -> Element {
-    install_idea_theme(light_theme());
+    theme::install_initial_theme();
     install_navigator_pin_width(960.0);
 
     let nav: Ref<DrawerHandle> = Ref::new();

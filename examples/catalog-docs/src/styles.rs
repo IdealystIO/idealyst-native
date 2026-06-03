@@ -429,6 +429,43 @@ stylesheet! {
     }
 }
 
+// ---- Theme toggle (light/dark) --------------------------------------------
+// A compact pill in the sidebar. All colors are theme tokens, so the
+// toggle itself recolors when the theme switches.
+stylesheet! {
+    pub ThemeToggleBox<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            gap: 8.0,
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+        }
+        state hovered(_t) {
+            border_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+        }
+        transitions {
+            border_color: 160ms EaseOut,
+            background: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub ThemeToggleText<()> {
+        base(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: 14.0,
+            text_align: TextAlign::Center,
+        }
+    }
+}
+
 // ---- Reference link text (blue, hyperlink-like) ---------------------------
 // Applied to in-content links that reference other catalog entries
 // (composes graph, scope members, prop type links, search results).

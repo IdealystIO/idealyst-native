@@ -116,16 +116,30 @@ pub(crate) async fn start(
     let (tx, rx) = oneshot::channel::<Result<(), RecorderError>>();
     pending_start().lock().unwrap().insert(token, tx);
 
-    // Kick off the consent → service → capture flow. The shim returns
-    // immediately; the result arrives via nativeStarted/nativeError once the
-    // user responds to the consent dialog and the projection is up.
+    // Source discriminant the shim branches on: `ThisApp` (0) → app-only
+    // PixelCopy of our own window (no consent, no foreground service, matches
+    // iOS ReplayKit); everything else → whole-screen MediaProjection.
+    let source = match config.source {
+        Source::ThisApp => 0,
+        Source::FullScreen => 1,
+        Source::UserChoice => 2,
+        // Window was rejected above.
+        Source::Window(_) => 2,
+    };
+
+    // Kick off capture. For `ThisApp` the shim starts the PixelCopy loop and
+    // fires `nativeStarted` immediately; for the screen sources it launches the
+    // consent dialog and the result arrives via nativeStarted/nativeError once
+    // the user responds and the projection is up. Either way the shim returns
+    // immediately.
     let launch = env.call_static_method(
         "io/idealyst/screenrecorder/RustScreenCaptureHelper",
         "start",
-        "(Landroid/content/Context;J)V",
+        "(Landroid/content/Context;JI)V",
         &[
             JValue::Object(&activity),
             JValue::Long(token as jlong),
+            JValue::Int(source),
         ],
     );
     if let Err(e) = launch {

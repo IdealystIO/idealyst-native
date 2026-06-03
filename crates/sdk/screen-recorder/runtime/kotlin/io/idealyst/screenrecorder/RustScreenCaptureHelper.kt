@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.DisplayMetrics
+import android.view.PixelCopy
 import android.view.WindowManager
 import io.idealyst.runtime.RustActivityResult
 import java.util.concurrent.ConcurrentHashMap
@@ -45,6 +46,14 @@ object RustScreenCaptureHelper {
     // colliding with any app-level startActivityForResult.
     private const val REQUEST_CONSENT = 0x5C12
 
+    // Source discriminant passed from Rust (`screen_recorder::Source`): 0 =
+    // ThisApp → app-only PixelCopy (no consent, no service); anything else →
+    // whole-screen MediaProjection.
+    private const val SOURCE_THIS_APP = 0
+
+    // ~30fps cadence for the app-only PixelCopy loop.
+    private const val PIXELCOPY_INTERVAL_MS = 33L
+
     private class Session {
         var projection: MediaProjection? = null
         var virtualDisplay: android.hardware.display.VirtualDisplay? = null
@@ -58,6 +67,11 @@ object RustScreenCaptureHelper {
         // error after a successful start doesn't double-resolve the Rust
         // oneshot (which would be a no-op anyway, but keeps intent clear).
         var started = false
+        // App-only (Source::ThisApp) PixelCopy path:
+        var window: android.view.Window? = null
+        var bitmap: android.graphics.Bitmap? = null
+        // Cleared on cleanup so the self-reposting capture loop stops.
+        var running = false
     }
 
     private val sessions = ConcurrentHashMap<Long, Session>()
@@ -69,19 +83,94 @@ object RustScreenCaptureHelper {
      * needs `startActivityForResult`).
      */
     @JvmStatic
-    fun start(context: Context, token: Long) {
+    fun start(context: Context, token: Long, source: Int) {
         // Cache the application context for service teardown — cleanup may run
         // after the Activity is gone.
         appContext = context.applicationContext
         // Bounce to the main thread: startActivityForResult + the consent UI
-        // must run on the UI thread, and Rust may call us from any thread.
+        // (MediaProjection) and reading the Activity window (PixelCopy) must run
+        // on the UI thread, and Rust may call us from any thread.
         Handler(context.mainLooper).post {
             try {
-                launchConsent(context, token)
+                if (source == SOURCE_THIS_APP) {
+                    startPixelCopy(context, token)
+                } else {
+                    launchConsent(context, token)
+                }
             } catch (t: Throwable) {
                 cleanup(token)
                 nativeError(token, ERR_EXCEPTION, t.message ?: t.toString())
             }
+        }
+    }
+
+    /**
+     * App-only capture via [PixelCopy] of the Activity's OWN window — the
+     * Android analog of iOS ReplayKit in-app capture. Copying your own window
+     * needs no consent dialog and no foreground service, and (because PixelCopy
+     * copies one specific window) content rendered on a *separate* window is
+     * naturally excluded — the substrate the `PrivateLayer` feature builds on.
+     *
+     * The loop runs on a private HandlerThread: PixelCopy copies the window's
+     * rendered content (including hardware-accelerated layers) into a reused
+     * ARGB_8888 Bitmap, whose in-memory byte order is RGBA, so
+     * `copyPixelsToBuffer` yields tightly-packed RGBA directly (no rowStride
+     * padding to strip, unlike the ImageReader path).
+     */
+    private fun startPixelCopy(context: Context, token: Long) {
+        val activity = context as? Activity
+            ?: throw IllegalStateException("app capture requires an Activity context")
+        val session = Session()
+        session.window = activity.window
+        session.running = true
+        sessions[token] = session
+        val thread = HandlerThread("idealyst-pixelcopy-$token").also { it.start() }
+        session.thread = thread
+        session.handler = Handler(thread.looper)
+        // App capture has no consent gate — the stream is live immediately.
+        session.started = true
+        nativeStarted(token)
+        pixelCopyFrame(token)
+    }
+
+    private fun pixelCopyFrame(token: Long) {
+        val session = sessions[token] ?: return
+        if (!session.running) return
+        val window = session.window ?: return
+        val handler = session.handler ?: return
+        val decor = window.peekDecorView()
+        val w = decor?.width ?: 0
+        val h = decor?.height ?: 0
+        if (w <= 0 || h <= 0) {
+            // Window not laid out yet — retry shortly without emitting a frame.
+            handler.postDelayed({ pixelCopyFrame(token) }, PIXELCOPY_INTERVAL_MS)
+            return
+        }
+        var bmp = session.bitmap
+        if (bmp == null || bmp.width != w || bmp.height != h) {
+            bmp?.recycle()
+            bmp = android.graphics.Bitmap.createBitmap(
+                w, h, android.graphics.Bitmap.Config.ARGB_8888
+            )
+            session.bitmap = bmp
+        }
+        val dest = bmp
+        try {
+            PixelCopy.request(window, dest, { result ->
+                val s = sessions[token]
+                if (s != null && s.running) {
+                    if (result == PixelCopy.SUCCESS) {
+                        val buf = java.nio.ByteBuffer.allocate(dest.width * dest.height * 4)
+                        dest.copyPixelsToBuffer(buf)
+                        nativeFrame(token, buf.array(), dest.width, dest.height)
+                    }
+                    s.handler?.postDelayed({ pixelCopyFrame(token) }, PIXELCOPY_INTERVAL_MS)
+                }
+            }, handler)
+        } catch (_: Throwable) {
+            // PixelCopy can throw if the window's surface isn't ready; retry
+            // rather than killing the stream.
+            handler.postDelayed({ pixelCopyFrame(token) }, PIXELCOPY_INTERVAL_MS)
         }
     }
 
@@ -266,6 +355,12 @@ object RustScreenCaptureHelper {
             // after the service started (it normally isn't started until OK).
             stopService(token)
             return
+        }
+        // App-only PixelCopy path: stop the self-reposting loop + free the bitmap.
+        session.running = false
+        try {
+            session.bitmap?.recycle()
+        } catch (_: Throwable) {
         }
         try {
             session.virtualDisplay?.release()
