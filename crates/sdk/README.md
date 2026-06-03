@@ -39,7 +39,8 @@ drop into `ui!`.
 | `biometrics` | [`biometrics/`](./biometrics) | Biometric **auth gate** — Face/Touch ID (`LAContext`), Android `BiometricPrompt`, Windows Hello (`UserConsentVerifier`); web maps to WebAuthn (assertion verified server-side). The unopinionated "prove the owner is present" capability. |
 | `files` | [`files/`](./files) | Binary blob/file storage by path — real filesystem on native (per-app dir), IndexedDB on web. For recordings, images, downloads. |
 | `microphone` | [`microphone/`](./microphone) | Live microphone capture — a raw f32 PCM stream via cpal (desktop/iOS), `getUserMedia`+Web Audio (web), and `AudioRecord`/JNI (Android). |
-| `camera` | [`camera/`](./camera) | Live camera capture — a raw RGBA8 frame stream (the video sibling of `microphone`). `AVCaptureSession` (iOS/macOS), `getUserMedia`+`<canvas>` (web), `Camera2`+`ImageReader` via a Kotlin shim (Android). No preview widget — hands you pixels. |
+| `camera` | [`camera/`](./camera) | Live camera capture — yields a `MediaStream` (see `media-stream`). `AVCaptureSession` (iOS/macOS), `getUserMedia`+`<canvas>` (web), `Camera2`+`ImageReader` via a Kotlin shim (Android). No preview widget. |
+| `media-stream` | [`media-stream/`](./media-stream) | The platform-agnostic live-video-source abstraction — the common currency between capture SDKs (`camera`, `screen-recorder`) and display/compositing consumers. Thin + GPU-free: a CPU frame tap (`subscribe`/`latest`) plus an opaque zero-copy `native_source` handle. |
 | `screen-recorder` | [`screen-recorder/`](./screen-recorder) | Screen / window frame capture as a raw frame stream. Capability API plus a private-layer `Element::External` overlay. |
 | `menu` | [`menu/`](./menu) | OS menu-bar definitions — `NSMenu` / native app menus. A capability API (no rendered primitive); reactivity is full on macOS, one-shot elsewhere. |
 
@@ -114,7 +115,8 @@ JNI/Obj-C symbol resolution that the compiler can't check. So a green
 | `biometrics` | 🧪 unit (builders, error Display, WebAuthn payload) | ⚠️ **Android `BiometricPrompt` + Windows Hello compile-checked only**; iOS/macOS/web run-exercised |
 | `files` | 🧪 unit (path-escape safety) | 🟢 native fs + web IndexedDB run in examples |
 | `microphone` | 🧪 unit (framing math, config builders) · 🖥️ host capture (`#[ignore]`) | ✅ host capture (cpal); 🟢 web/iOS/Android run in `mic-demo` |
-| `camera` | 🧪 unit (frame math, config builders) · 🖥️ host capture (`#[ignore]`) | ✅ **macOS hardware-verified** (`host_capture` — AVFoundation, shared with iOS); 🟢 web compiles/runs in `camera-demo`; ⚠️ **Android Camera2 compile-checked only** |
+| `camera` | 🧪 unit (config builders) · 🖥️ host capture (`#[ignore]`) | ✅ **macOS hardware-verified** (`host_capture` — AVFoundation through the `MediaStream`/`subscribe` path, shared with iOS); 🟢 web compiles/runs in `camera-demo`; ⚠️ **Android Camera2 compile-checked only** |
+| `media-stream` | 🧪 unit (frame channel: subscribe/latest, RGBA/BGRA, lifecycle) | n/a — pure Rust, no native backend (the abstraction layer) |
 | `screen-recorder` | 🧪 unit (portable) | ⚠️ per-platform capture paths compile-checked |
 | `menu` | — none | 🟢 macOS (`NSMenu`) reactive; one-shot elsewhere |
 | `i18n` · `i18n-macros` | 🧪 unit (locale, packs, format) · 🔌 macro + compile-fail UI tests | n/a — pure Rust, no native backend |

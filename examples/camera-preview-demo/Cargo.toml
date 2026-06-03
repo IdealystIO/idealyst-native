@@ -1,0 +1,42 @@
+[package]
+name = "camera-preview-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Camera → Video demo — the camera SDK yields a MediaStream and the video SDK displays it. On web the stream's native_source (a web_sys::MediaStream) is attached as <video> srcObject (zero-copy). Exercises the phase-2 MediaStream consumer path end to end."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+camera = { workspace = true }
+video = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+# The concrete backend each platform's wrapper hands to `register_extensions`
+# so we can register the `video` external handler there.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Camera Preview"
+bundle_id = "ai.truday.idealyst.camerapreview"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]
+
+[package.metadata.idealyst.app.permissions]
+camera = "Camera Preview shows your camera feed through the video component."

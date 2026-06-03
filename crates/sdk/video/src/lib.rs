@@ -68,12 +68,14 @@ use std::rc::Rc;
 /// what the author wants in those cases anyway.
 #[derive(IdealystSchema)]
 pub struct VideoProps {
-    /// Initial + reactive video URL. The backend handler subscribes via
-    /// `Effect::new(...)`, so changes to the closure's captured signals
-    /// swap the source. Use [`src`] to coerce any of `&str` / `String`
-    /// / `Fn() -> String` into this shape.
-    #[schema(constraint = "absolute media URL the platform player can fetch")]
-    pub src: Box<dyn Fn() -> String>,
+    /// What to display — one extensible prop for any media source. Build it
+    /// with [`url`] (a fetched URL: file / HLS / DASH / live / `data:`),
+    /// [`stream`] (a live [`MediaStream`](media_stream::MediaStream) from
+    /// `camera` / `screen-recorder`), or your own [`VideoSource`]. The
+    /// backend resolves it inside a reactive `Effect`, so a source that
+    /// reads signals re-populates the view on change.
+    #[schema(constraint = "a VideoSource — url(...) / stream(...) / custom")]
+    pub source: Box<dyn VideoSource>,
     /// Begin playback immediately on mount. Most platforms require the
     /// video to be muted for autoplay to work without a user gesture;
     /// the per-backend impls pair `autoplay = true` with a silent
@@ -85,14 +87,14 @@ pub struct VideoProps {
     /// `<video controls>`.
     pub controls: bool,
     /// Restart from the beginning when playback reaches the end. Field
-    /// name avoids the `loop` keyword.
+    /// name avoids the `loop` keyword. Ignored for a live stream source.
     pub loop_playback: bool,
 }
 
 impl Default for VideoProps {
     fn default() -> Self {
         Self {
-            src: Box::new(String::new),
+            source: Box::new(NoSource),
             autoplay: false,
             controls: false,
             loop_playback: false,
@@ -100,43 +102,132 @@ impl Default for VideoProps {
     }
 }
 
-/// Coerce any of `&str`, `String`, or `Fn() -> String` into the closure
-/// shape [`VideoProps::src`] stores. Lets the call site write
-/// `video::src("https://...")` for static URLs and
-/// `video::src(move || sig.get())` for reactive ones without thinking
-/// about the closure boxing.
-pub fn src<S: IntoVideoSrc>(s: S) -> Box<dyn Fn() -> String> {
-    s.into_video_src()
+// ============================================================================
+// Media source — one extensible abstraction for "what a Video displays".
+// ============================================================================
+
+/// What a [`VideoSource`] resolves to: the small, platform-agnostic set of
+/// ways a video view can be populated. Backends match on this closed set;
+/// source authors produce it. `#[non_exhaustive]` so a new mechanism (e.g. a
+/// GPU-texture handoff for the compositing layer) can be added without
+/// breaking implementors.
+#[non_exhaustive]
+pub enum MediaContent {
+    /// Nothing to display.
+    None,
+    /// A URL the platform player fetches/decodes — file, HLS, DASH, live,
+    /// or `data:`.
+    Url(String),
+    /// A live [`MediaStream`](media_stream::MediaStream) — camera, screen
+    /// capture, or generated frames. Its `native_source` hides the
+    /// per-platform pipe.
+    Stream(media_stream::MediaStream),
 }
 
-/// Coercion target for [`src`]. Implemented for `&str`, `String`, and
-/// any `Fn() -> String`, so the call site can pass a static or reactive
-/// source URL interchangeably.
-pub trait IntoVideoSrc {
-    /// Box the receiver into the `Fn() -> String` closure that
-    /// [`VideoProps::src`] stores.
-    fn into_video_src(self) -> Box<dyn Fn() -> String>;
+/// The single, extensible media-source abstraction a [`Video`] displays.
+///
+/// Build the common cases with [`url`] / [`stream`]. Implement this directly
+/// for a custom source — the backend calls [`resolve`](VideoSource::resolve)
+/// inside a reactive `Effect`, so any signal read there makes the view
+/// re-populate on change.
+pub trait VideoSource: 'static {
+    /// Resolve the current content. Runs inside the backend's reactive
+    /// effect — reads of signals here re-populate the video when they change.
+    fn resolve(&self) -> MediaContent;
 }
 
-impl IntoVideoSrc for &str {
-    fn into_video_src(self) -> Box<dyn Fn() -> String> {
+/// The default source: displays nothing until a real source is set.
+struct NoSource;
+impl VideoSource for NoSource {
+    fn resolve(&self) -> MediaContent {
+        MediaContent::None
+    }
+}
+
+/// A URL source. Accepts `&str`, `String`, or `Fn() -> String` (reactive —
+/// reads of captured signals re-load the player). Replaces the old `src(...)`
+/// helper.
+///
+/// ```ignore
+/// Video(VideoProps { source: url("https://…/clip.mp4"), ..Default::default() })
+/// Video(VideoProps { source: url(move || sig.get()),    ..Default::default() })
+/// ```
+pub fn url<S: IntoUrl>(s: S) -> Box<dyn VideoSource> {
+    Box::new(UrlSource(s.into_url()))
+}
+
+struct UrlSource(Box<dyn Fn() -> String>);
+impl VideoSource for UrlSource {
+    fn resolve(&self) -> MediaContent {
+        MediaContent::Url((self.0)())
+    }
+}
+
+/// Coercion target for [`url`] — `&str`, `String`, or any `Fn() -> String`.
+pub trait IntoUrl {
+    /// Box the receiver into the reactive URL closure a [`url`] source holds.
+    fn into_url(self) -> Box<dyn Fn() -> String>;
+}
+impl IntoUrl for &str {
+    fn into_url(self) -> Box<dyn Fn() -> String> {
         let s = self.to_string();
         Box::new(move || s.clone())
     }
 }
-
-impl IntoVideoSrc for String {
-    fn into_video_src(self) -> Box<dyn Fn() -> String> {
+impl IntoUrl for String {
+    fn into_url(self) -> Box<dyn Fn() -> String> {
         Box::new(move || self.clone())
     }
 }
-
-impl<F> IntoVideoSrc for F
-where
-    F: Fn() -> String + 'static,
-{
-    fn into_video_src(self) -> Box<dyn Fn() -> String> {
+impl<F: Fn() -> String + 'static> IntoUrl for F {
+    fn into_url(self) -> Box<dyn Fn() -> String> {
         Box::new(self)
+    }
+}
+
+/// A live-stream source. Accepts a [`MediaStream`](media_stream::MediaStream)
+/// directly, or `Fn() -> Option<MediaStream>` (reactive — swap the stream, or
+/// clear the view with `None`).
+///
+/// ```ignore
+/// Video(VideoProps { source: stream(camera_stream),         ..Default::default() })
+/// Video(VideoProps { source: stream(move || sig.get()),     ..Default::default() })
+/// ```
+pub fn stream<S: IntoStream>(s: S) -> Box<dyn VideoSource> {
+    s.into_stream()
+}
+
+/// Coercion target for [`stream`] — a `MediaStream` or `Fn() -> Option<MediaStream>`.
+pub trait IntoStream {
+    /// Box the receiver into a [`VideoSource`].
+    fn into_stream(self) -> Box<dyn VideoSource>;
+}
+impl IntoStream for media_stream::MediaStream {
+    fn into_stream(self) -> Box<dyn VideoSource> {
+        Box::new(StaticStream(self))
+    }
+}
+// One `Fn` blanket per `Into*` trait — no two `Fn`-output blankets share a
+// trait, so this dodges the closure-coherence conflict (see the crate docs).
+impl<F: Fn() -> Option<media_stream::MediaStream> + 'static> IntoStream for F {
+    fn into_stream(self) -> Box<dyn VideoSource> {
+        Box::new(ReactiveStream(Box::new(self)))
+    }
+}
+
+struct StaticStream(media_stream::MediaStream);
+impl VideoSource for StaticStream {
+    fn resolve(&self) -> MediaContent {
+        MediaContent::Stream(self.0.clone())
+    }
+}
+struct ReactiveStream(Box<dyn Fn() -> Option<media_stream::MediaStream>>);
+impl VideoSource for ReactiveStream {
+    fn resolve(&self) -> MediaContent {
+        match (self.0)() {
+            Some(s) => MediaContent::Stream(s),
+            None => MediaContent::None,
+        }
     }
 }
 
@@ -265,7 +356,9 @@ impl VideoBind for Bound<VideoHandle> {
 /// the constructor, props struct, handle type, the `.bind(...)`
 /// extension trait, and the `src(...)` coercion helper.
 pub mod prelude {
-    pub use super::{src, Video, VideoBind, VideoHandle, VideoProps};
+    pub use super::{
+        stream, url, MediaContent, Video, VideoBind, VideoHandle, VideoProps, VideoSource,
+    };
 }
 
 // ============================================================================

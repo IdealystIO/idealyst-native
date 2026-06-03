@@ -228,7 +228,7 @@ pub use style::{
 };
 
 pub use runtime_macros::{
-    component, jsx, lazy, recipe, stylesheet, text_fmt, ui,
+    component, doc_scope, jsx, lazy, recipe, stylesheet, text_fmt, ui,
 };
 
 /// `#[idealyst_tool]` and `#[derive(IdealystSchema)]` — the

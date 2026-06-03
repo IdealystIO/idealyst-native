@@ -36,14 +36,15 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 use futures_channel::oneshot;
 use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
 use jni::sys::{jint, jlong};
 use jni::{JNIEnv, JavaVM};
 
-use crate::{BoxedCallback, CameraConfig, CameraError, CameraFacing, PixelFormat, VideoFrame};
+use crate::{CameraConfig, CameraError, CameraFacing, NativeSource};
+use media_stream::FrameWriter;
 
 const CAMERA_PERMISSION: &str = "android.permission.CAMERA";
 const PERMISSION_GRANTED: i32 = 0; // PackageManager.PERMISSION_GRANTED
@@ -53,23 +54,20 @@ const FACING_DEFAULT: i32 = 0;
 const FACING_FRONT: i32 = 1;
 const FACING_BACK: i32 = 2;
 
-/// A live stream's frame sink. Shared (per-token `Arc`) so the JNI frame
-/// trampoline can clone it out from under the registry lock and invoke it
-/// without holding the global lock across user code.
-type FrameSink = Arc<Mutex<BoxedCallback>>;
-
 /// The sender that resolves an awaiting `open()` once the shim reports the
 /// camera up (or failed).
 type OpenSender = oneshot::Sender<Result<(), CameraError>>;
 
-/// token → frame callback, for frames in flight.
-static CALLBACKS: OnceLock<Mutex<HashMap<u64, FrameSink>>> = OnceLock::new();
+/// token → frame writer, for frames in flight. The JNI trampoline clones the
+/// `Send` writer out from under the registry lock and pushes into it without
+/// holding the global lock across the channel fan-out.
+static WRITERS: OnceLock<Mutex<HashMap<u64, FrameWriter>>> = OnceLock::new();
 /// token → the sender awaiting the camera-open result.
 static PENDING_OPEN: OnceLock<Mutex<HashMap<u64, OpenSender>>> = OnceLock::new();
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 
-fn callbacks() -> &'static Mutex<HashMap<u64, FrameSink>> {
-    CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+fn writers() -> &'static Mutex<HashMap<u64, FrameWriter>> {
+    WRITERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 fn pending_open() -> &'static Mutex<HashMap<u64, OpenSender>> {
     PENDING_OPEN.get_or_init(|| Mutex::new(HashMap::new()))
@@ -95,7 +93,7 @@ impl Drop for StreamHandle {
                 );
             }
         }
-        callbacks().lock().unwrap().remove(&self.token);
+        writers().lock().unwrap().remove(&self.token);
         pending_open().lock().unwrap().remove(&self.token);
     }
 }
@@ -129,8 +127,8 @@ pub(crate) async fn request_permission() -> Result<(), CameraError> {
 
 pub(crate) async fn open(
     config: CameraConfig,
-    callback: BoxedCallback,
-) -> Result<StreamHandle, CameraError> {
+    writer: FrameWriter,
+) -> Result<(StreamHandle, Option<NativeSource>), CameraError> {
     let vm = java_vm()?;
     let mut env = vm.attach_current_thread().map_err(jni_err)?;
     let activity = android_context();
@@ -142,10 +140,7 @@ pub(crate) async fn open(
     }
 
     let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
-    callbacks()
-        .lock()
-        .unwrap()
-        .insert(token, Arc::new(Mutex::new(callback)));
+    writers().lock().unwrap().insert(token, writer);
     let (tx, rx) = oneshot::channel::<Result<(), CameraError>>();
     pending_open().lock().unwrap().insert(token, tx);
 
@@ -171,19 +166,21 @@ pub(crate) async fn open(
     );
     if let Err(e) = launch {
         // The shim never got a chance to call back — clean up the registries.
-        callbacks().lock().unwrap().remove(&token);
+        writers().lock().unwrap().remove(&token);
         pending_open().lock().unwrap().remove(&token);
         return Err(jni_err(e));
     }
 
     match rx.await {
-        Ok(Ok(())) => Ok(StreamHandle { token }),
+        // Android exposes no zero-copy native source yet (camera→SurfaceTexture
+        // is the GPU-pipeline phase); frames flow through the CPU channel.
+        Ok(Ok(())) => Ok((StreamHandle { token }, None)),
         Ok(Err(e)) => {
-            callbacks().lock().unwrap().remove(&token);
+            writers().lock().unwrap().remove(&token);
             Err(e)
         }
         Err(_) => {
-            callbacks().lock().unwrap().remove(&token);
+            writers().lock().unwrap().remove(&token);
             Err(CameraError::Backend("camera open channel dropped".into()))
         }
     }
@@ -321,11 +318,11 @@ pub extern "system" fn Java_io_idealyst_camera_RustCamera2Helper_nativeFrame(
         if width <= 0 || height <= 0 {
             return;
         }
-        // Pull the frame's callback out from under the registry lock, then
-        // release it before invoking user code (which may itself touch the
-        // registry, e.g. by dropping a stream).
-        let sink = callbacks().lock().unwrap().get(&(token as u64)).cloned();
-        let Some(sink) = sink else {
+        // Clone the frame writer out from under the registry lock, then push
+        // into it without holding the global lock across the channel fan-out
+        // (a subscriber may itself touch the stream, e.g. drop it).
+        let writer = writers().lock().unwrap().get(&(token as u64)).cloned();
+        let Some(writer) = writer else {
             return;
         };
 
@@ -333,20 +330,9 @@ pub extern "system" fn Java_io_idealyst_camera_RustCamera2Helper_nativeFrame(
             Ok(b) => b,
             Err(_) => return,
         };
-        let expected = width as usize * height as usize * 4;
-        if bytes.len() != expected {
-            // The shim's converter is the authority on packing; a mismatch
-            // means a malformed frame we must not hand on as RGBA8.
-            return;
-        }
-
-        let frame = VideoFrame {
-            data: &bytes,
-            width: width as u32,
-            height: height as u32,
-            format: PixelFormat::Rgba8,
-        };
-        (sink.lock().unwrap())(&frame);
+        // The shim's YUV→RGBA converter is the authority on packing; a
+        // mismatch means a malformed frame `write_rgba8` will reject anyway.
+        writer.write_rgba8(width as u32, height as u32, &bytes);
     }));
     if result.is_err() {
         eprintln!("camera: panic in nativeFrame trampoline; aborting");

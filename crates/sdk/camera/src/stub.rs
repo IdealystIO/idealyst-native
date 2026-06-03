@@ -9,7 +9,8 @@
 //! same `request_permission` / `open` / `StreamHandle` contract the other
 //! backends satisfy.
 
-use crate::{BoxedCallback, CameraConfig, CameraError};
+use crate::{CameraConfig, CameraError, NativeSource};
+use media_stream::FrameWriter;
 
 /// No resources are held; the type exists only to satisfy the `imp`
 /// contract. It is never constructed (every `open` errors first).
@@ -23,7 +24,7 @@ pub(crate) async fn request_permission() -> Result<(), CameraError> {
 
 pub(crate) async fn open(
     _config: CameraConfig,
-    _callback: BoxedCallback,
-) -> Result<StreamHandle, CameraError> {
+    _writer: FrameWriter,
+) -> Result<(StreamHandle, Option<NativeSource>), CameraError> {
     Err(CameraError::Unsupported)
 }

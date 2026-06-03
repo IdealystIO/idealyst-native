@@ -173,7 +173,7 @@ docs! {
             use video::prelude::*;
             ui! {
                 { Video(VideoProps {
-                    src: src("https://example.com/clip.mp4"),
+                    source: url("https://example.com/clip.mp4"),
                     autoplay: true,
                     controls: true,
                     ..Default::default()

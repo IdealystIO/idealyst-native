@@ -8,15 +8,15 @@
 //! See `docs/mcp-catalog-spec.md` §5 for the MCP surface this
 //! implements.
 
+mod app_discovery;
 mod catalog_service;
 pub mod lint;
-mod mdns_discovery;
 mod robot_bridge;
 mod watch;
 
+pub use app_discovery::{DiscoveredApp, DiscoveryTable};
 pub use catalog_service::CatalogService;
-pub use lint::{run as lint_catalog, LintFinding, Severity};
-pub use mdns_discovery::{DiscoveredApp, DiscoveryTable};
+pub use lint::{run as lint_catalog, run_with as lint_catalog_with, LintFinding, LintOptions, Severity};
 pub use robot_bridge::{RobotBridge, DEFAULT_BRIDGE};
 
 use anyhow::Result;

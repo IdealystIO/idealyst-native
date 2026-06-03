@@ -9,16 +9,18 @@
 //! macro emission has to walk a parseable, compilable AST. Stubs
 //! return an empty view; bodies are never invoked at runtime.
 
-use runtime_core::Element;
-use runtime_macros::{component, idealyst_tool, jsx, ui, IdealystSchema};
+use runtime_core::{ChildList, Element};
+use runtime_macros::{component, idealyst_tool, jsx, recipe, ui, IdealystSchema};
 
 #[allow(dead_code)]
+#[derive(Default)]
 pub struct DemoProps {}
 
 /// Doc comment whose text we'll look for in the catalog.
 #[component]
-pub fn democomponent(_props: &DemoProps) -> u32 {
-    unreachable!("integration test body should not run")
+pub fn democomponent(_props: &DemoProps) -> Element {
+    // Stub body — never invoked; the tests assert only on catalog metadata.
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 // ---------------------------------------------------------------------
@@ -51,9 +53,21 @@ pub fn ChildC() -> Element {
 // JSX dispatch is transform-free too. These keep snake_case names to
 // prove a lowercase tag still resolves verbatim: `<jsx_outer>` →
 // `jsx_outer!()` → `jsx_outer()`.
-#[component]
-pub fn jsx_outer() -> Element {
-    ::runtime_core::view(::std::vec::Vec::new())
+/// Container variant — holds children so the jsx host can nest
+/// `<jsx_inner/>` inside `<jsx_outer>…</jsx_outer>`. (Container
+/// components move `children` out of props via `#[component(children)]`.)
+#[derive(Default)]
+pub struct JsxOuterProps {
+    pub children: Vec<Element>,
+}
+
+#[component(children)]
+pub fn jsx_outer(props: JsxOuterProps) -> Element {
+    let mut kids: Vec<Element> = Vec::with_capacity(props.children.len());
+    for c in props.children {
+        ChildList::append_to(c, &mut kids);
+    }
+    ui! { view() { kids } }
 }
 
 #[component]
@@ -64,6 +78,22 @@ pub fn jsx_inner() -> Element {
 #[component]
 pub fn jsx_fragmented() -> Element {
     ::runtime_core::view(::std::vec::Vec::new())
+}
+
+/// Generic container used by `nested_host` to exercise the walker's
+/// recursion into a component's children block (`Nest() { ChildA() … }`).
+#[derive(Default)]
+pub struct NestProps {
+    pub children: Vec<Element>,
+}
+
+#[component(children)]
+pub fn Nest(props: NestProps) -> Element {
+    let mut kids: Vec<Element> = Vec::with_capacity(props.children.len());
+    for c in props.children {
+        ChildList::append_to(c, &mut kids);
+    }
+    ui! { view() { kids } }
 }
 
 fn nondescript_helper() -> u32 {
@@ -83,23 +113,22 @@ fn nondescript_helper() -> u32 {
 /// idents fall through to plain Rust expressions — see
 /// `next_is_component_invocation` in `ui.rs`). The component name
 /// recorded in `composes` is the *exact* ident written here.
-#[allow(non_snake_case)]
 #[component]
-pub fn ui_host(_props: &DemoProps) -> u32 {
+pub fn ui_host() -> Element {
     let _ = nondescript_helper();
     let _ = ui! {
         ChildA()
         ChildB()
         ChildC()
     };
-    0
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 /// Host with a `jsx!` body. Element names from `<name ...>` should be
 /// captured; the fragment `<>...</>` has no name and is skipped, but
 /// its children are still walked.
 #[component]
-pub fn jsx_host(_props: &DemoProps) -> u32 {
+pub fn jsx_host() -> Element {
     let _ = jsx! {
         <jsx_outer>
             <jsx_inner />
@@ -108,69 +137,66 @@ pub fn jsx_host(_props: &DemoProps) -> u32 {
             <jsx_fragmented />
         </>
     };
-    0
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 /// Host that nests children inside a ui! component slot
 /// (`ChildA() { ChildB() ChildC() }`). The collector should recurse
 /// into the children block and capture all three idents.
-#[allow(non_snake_case)]
 #[component]
-pub fn nested_host(_props: &DemoProps) -> u32 {
+pub fn nested_host() -> Element {
     let _ = ui! {
-        ChildA() {
+        Nest() {
+            ChildA()
             ChildB()
             ChildC()
         }
     };
-    0
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 /// Host whose `ui!` body uses `for` to iterate. The visitor walks
 /// `UiNode::For.body` so the iterated `ChildA()` is captured.
 /// `View` wraps the for-loop because the top-level coercion expects
 /// a single `Element`, not a `Vec<Element>`.
-#[allow(non_snake_case)]
 #[component]
-pub fn for_host(_props: &DemoProps) -> u32 {
+pub fn for_host() -> Element {
     let _ = ui! {
-        View() {
+        view() {
             for _i in 0..3 {
                 ChildA()
             }
         }
     };
-    0
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 /// Host with TWO separate `ui!` invocations. The visitor recurses
 /// through the block-statement list and both calls should contribute
 /// edges, in source order.
-#[allow(non_snake_case)]
 #[component]
-pub fn multi_ui_host(_props: &DemoProps) -> u32 {
+pub fn multi_ui_host() -> Element {
     let _ = ui! { ChildA() };
     let _ = ui! { ChildB() };
-    0
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 /// Host whose `ui!` lives at statement position with a trailing
 /// semicolon and no `let _ = ...` wrapper. `syn` represents this as
 /// `Stmt::Macro`, which the visitor handles via its
 /// `visit_stmt_macro` override (separate from `visit_expr_macro`).
-#[allow(non_snake_case)]
 #[component]
-pub fn stmt_macro_host(_props: &DemoProps) -> u32 {
+pub fn stmt_macro_host() -> Element {
     ui! { ChildA() };
-    0
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 // The `docless` component has no `///` lines; the catalog should
 // record an empty docs string. Use `//` here so this explanatory
 // note doesn't become the fn's docs.
 #[component]
-pub fn docless(_props: &DemoProps) -> u32 {
-    0
+pub fn docless() -> Element {
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 /// Component
@@ -179,8 +205,8 @@ pub fn docless(_props: &DemoProps) -> u32 {
 ///
 /// Including a blank-line paragraph break.
 #[component]
-pub fn multiline_docs(_props: &DemoProps) -> u32 {
-    0
+pub fn multiline_docs() -> Element {
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 // ---------------------------------------------------------------------
@@ -192,16 +218,19 @@ mod submodule {
     use runtime_core::Element;
     use runtime_macros::{component, ui};
 
+    // Dispatched via the generated type alias inside `ui!`, never called
+    // as a fn — only registered in the catalog. Same for the host below.
+    #[allow(dead_code)]
     #[component]
     pub fn Ambiguousname() -> Element {
         ::runtime_core::view(::std::vec::Vec::new())
     }
 
-    #[allow(non_snake_case)]
+    #[allow(dead_code)]
     #[component]
-    pub fn submodule_host(_props: &super::DemoProps) -> u32 {
+    pub fn submodule_host() -> Element {
         let _ = ui! { Ambiguousname() };
-        0
+        ::runtime_core::view(::std::vec::Vec::new())
     }
 }
 
@@ -212,11 +241,82 @@ pub fn Ambiguousname() -> Element {
     ::runtime_core::view(::std::vec::Vec::new())
 }
 
-#[allow(non_snake_case)]
 #[component]
-pub fn root_host_with_dupe(_props: &DemoProps) -> u32 {
+pub fn root_host_with_dupe() -> Element {
     let _ = ui! { Ambiguousname() };
-    0
+    ::runtime_core::view(::std::vec::Vec::new())
+}
+
+// ---------------------------------------------------------------------
+// doc_scope! — the catalog spine. A two-level scope tree with a
+// component in each level exercises the ambient module-proximity join
+// (`ResolvedCatalog::scope_for`): same-module wins, else nearest ancestor.
+
+mod scoped {
+    use runtime_core::{component, doc_scope, Element};
+
+    doc_scope!(Demo = "Demo Feature", docs = "Scope for demo components.", order = 5);
+
+    #[allow(dead_code)]
+    #[component]
+    pub fn DemoLeaf() -> Element {
+        ::runtime_core::view(::std::vec::Vec::new())
+    }
+
+    pub mod inner {
+        use runtime_core::{component, doc_scope, Element};
+
+        // Custom slug here to prove the `slug =` override path. Scopes are
+        // flat — a nearer-module scope just wins assignment, no parent.
+        doc_scope!(Inner = "Inner Feature", slug = "inner-feature");
+
+        #[allow(dead_code)]
+        #[component]
+        pub fn InnerLeaf() -> Element {
+            ::runtime_core::view(::std::vec::Vec::new())
+        }
+    }
+}
+
+#[test]
+fn doc_scope_registers_with_slug_and_title() {
+    let demo = mcp_catalog::lookup_scope("demo").expect("demo scope registered");
+    assert_eq!(demo.title, "Demo Feature");
+    assert!(demo.docs.contains("demo components"), "docs = {:?}", demo.docs);
+    assert_eq!(demo.order, 5);
+
+    // Explicit `slug =` override is honored.
+    let inner = mcp_catalog::lookup_scope("inner-feature")
+        .expect("inner scope registered under its custom slug");
+    assert_eq!(inner.title, "Inner Feature");
+}
+
+#[test]
+fn scope_for_picks_nearest_enclosing_scope() {
+    let cat = mcp_catalog::ResolvedCatalog::build();
+
+    // Same-module declaration wins for the inner leaf.
+    let inner_leaf = find_entry("InnerLeaf");
+    let s = cat
+        .scope_for(inner_leaf.module_path)
+        .expect("InnerLeaf resolves to a scope");
+    assert_eq!(s.slug, "inner-feature", "nearest (same-module) scope wins");
+
+    // The outer leaf falls to the outer scope.
+    let demo_leaf = find_entry("DemoLeaf");
+    let s = cat
+        .scope_for(demo_leaf.module_path)
+        .expect("DemoLeaf resolves to a scope");
+    assert_eq!(s.slug, "demo");
+
+    // A component at the crate root with no `doc_scope!` ancestor has no
+    // scope — the default/root fallback lives at a higher layer, not here.
+    let unscoped = find_entry("democomponent");
+    assert!(
+        cat.scope_for(unscoped.module_path).is_none(),
+        "unscoped module should yield None, got {:?}",
+        cat.scope_for(unscoped.module_path).map(|s| s.slug),
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -484,9 +584,9 @@ fn zero_arg_records_empty_params() {
 /// it registers in the global catalog like any other `#[component]`.
 #[allow(non_snake_case)]
 #[component]
-pub fn positional_host(idx: u32, _label: &'static str) -> u32 {
+pub fn positional_host(idx: u32, _label: &'static str) -> Element {
     let _ = (idx, _label);
-    0
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 #[test]
@@ -511,7 +611,7 @@ fn positional_params_captured_in_order() {
 /// `PropsSchemaEntry` whose fields carry per-field docs + the
 /// `#[schema(constraint = "...")]` hint.
 #[allow(dead_code)]
-#[derive(IdealystSchema)]
+#[derive(Default, IdealystSchema)]
 pub struct BadgeProps {
     /// Visible label text.
     pub label: String,
@@ -546,8 +646,8 @@ fn props_schema_records_fields_with_docs_and_constraints() {
 /// `BadgeProps` → its schema fields.
 #[allow(non_snake_case)]
 #[component]
-pub fn badge_host(_props: &BadgeProps) -> u32 {
-    0
+pub fn badge_host(_props: &BadgeProps) -> Element {
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 #[test]
@@ -831,6 +931,7 @@ fn struct_schema_also_emits_type_entry() {
 // -----------------------------------------------------------------------------
 
 #[allow(dead_code)]
+#[derive(Default)]
 pub struct CounterProps {
     pub initial: i32,
 }
@@ -910,6 +1011,76 @@ fn animated_macros_emit_animation_entries() {
 }
 
 // -----------------------------------------------------------------------------
+// Recipes target ANY entity (phase 3) — not just components. A recipe
+// for a free function must surface via `recipes_for`, and the cross-kind
+// `resolve_entity` must tag names with their kind.
+// -----------------------------------------------------------------------------
+
+/// A free function (not a component) that a recipe can target.
+#[allow(dead_code)]
+pub fn compute_thing(x: u32) -> u32 {
+    x * 2
+}
+
+recipe!(
+    compute_thing,
+    /// Doubling helper — call it with the input you want doubled.
+    fn compute_thing_example() {
+        let _ = compute_thing(21);
+    }
+);
+
+#[test]
+fn recipe_can_target_a_free_function() {
+    let cat = mcp_catalog::ResolvedCatalog::build();
+    let recs = cat.recipes_for("compute_thing");
+    let r = recs
+        .iter()
+        .find(|r| r.name == "compute_thing_example")
+        .unwrap_or_else(|| {
+            panic!(
+                "recipe targeting a free fn should surface via recipes_for; got {:?}",
+                recs.iter().map(|r| r.name).collect::<Vec<_>>(),
+            )
+        });
+    assert_eq!(r.target, "compute_thing", "recipe target should be the fn name");
+    assert!(r.docs.contains("Doubling helper"), "recipe docs = {:?}", r.docs);
+}
+
+#[test]
+fn resolve_entity_tags_kinds() {
+    use mcp_catalog::EntityKind;
+    let cat = mcp_catalog::ResolvedCatalog::build();
+
+    // A component resolves as Component.
+    let m = cat.resolve_entity("ui_host");
+    assert!(
+        m.iter().any(|e| e.kind == EntityKind::Component && e.name == "ui_host"),
+        "ui_host should resolve as Component; got {:?}",
+        m,
+    );
+
+    // The framework `platform` utility resolves as Utility.
+    let m = cat.resolve_entity("platform");
+    assert!(
+        m.iter().any(|e| e.kind == EntityKind::Utility),
+        "platform should resolve as Utility; got {:?}",
+        m,
+    );
+
+    // A primitive resolves as Primitive (snake_case or pascal name).
+    let m = cat.resolve_entity("view");
+    assert!(
+        m.iter().any(|e| e.kind == EntityKind::Primitive),
+        "view should resolve as Primitive; got {:?}",
+        m,
+    );
+
+    // An unknown name yields no matches (not a panic).
+    assert!(cat.resolve_entity("definitely_not_a_thing_xyz").is_empty());
+}
+
+// -----------------------------------------------------------------------------
 // catalog_version + cross-slice presence.
 // -----------------------------------------------------------------------------
 
@@ -925,12 +1096,124 @@ fn catalog_json_v2_includes_every_new_slice() {
         "animations",
         "types",
         "tools",
+        "scopes",
     ] {
         assert!(
             json[slice].is_array(),
             "catalog v2 missing `{}` slice: {}",
             slice,
             json,
+        );
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Round-trip guard: catalog_json() → build_from_json() must reproduce every
+// slice the in-process `build()` sees. This pins the *equivalence* of the
+// serialize (to_json) and deserialize (leak-from-json) halves so the
+// CatalogSlice trait migration is provably behavior-preserving — if either
+// half drifts, the per-slice counts or the spot-checked fields diverge.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn catalog_json_round_trips_through_build_from_json() {
+    use mcp_catalog::ResolvedCatalog;
+
+    let json_str = serde_json::to_string(&mcp_catalog::catalog_json()).unwrap();
+    let rebuilt = ResolvedCatalog::build_from_json(&json_str)
+        .expect("build_from_json should accept catalog_json output");
+    let direct = ResolvedCatalog::build();
+
+    // Every slice must survive the round-trip with the same cardinality.
+    assert_eq!(
+        rebuilt.entries().len(),
+        direct.entries().len(),
+        "component count drifted through JSON round-trip",
+    );
+    assert_eq!(rebuilt.primitives().len(), direct.primitives().len(), "primitives");
+    assert_eq!(rebuilt.utilities().len(), direct.utilities().len(), "utilities");
+    assert_eq!(rebuilt.states().len(), direct.states().len(), "states");
+    assert_eq!(rebuilt.guides().len(), direct.guides().len(), "guides");
+    assert_eq!(rebuilt.methods().len(), direct.methods().len(), "methods");
+    assert_eq!(rebuilt.animations().len(), direct.animations().len(), "animations");
+    assert_eq!(rebuilt.types().len(), direct.types().len(), "types");
+    assert_eq!(rebuilt.tools().len(), direct.tools().len(), "tools");
+    assert_eq!(rebuilt.recipes().len(), direct.recipes().len(), "recipes");
+    assert_eq!(rebuilt.scopes().len(), direct.scopes().len(), "scopes");
+
+    // A scope survives the JSON boundary with its fields intact.
+    let rebuilt_inner = rebuilt
+        .scopes()
+        .iter()
+        .find(|s| s.slug == "inner-feature")
+        .expect("inner scope survives round-trip");
+    assert_eq!(rebuilt_inner.title, "Inner Feature", "scope title lost in round-trip");
+
+    // A recipe keeps its target across the boundary.
+    let rebuilt_recipe = rebuilt
+        .recipes()
+        .iter()
+        .find(|r| r.name == "compute_thing_example")
+        .expect("recipe survives round-trip");
+    assert_eq!(rebuilt_recipe.target, "compute_thing", "recipe target lost in round-trip");
+
+    // Field-level fidelity: a component carries its docs, composes, and
+    // params across the boundary intact.
+    let demo = rebuilt
+        .entries()
+        .iter()
+        .find(|e| e.name == "democomponent")
+        .expect("democomponent survives round-trip");
+    assert!(!demo.docs.is_empty(), "component docs lost in round-trip");
+    assert_eq!(demo.params.len(), 1, "component params lost in round-trip");
+
+    let ui_host = rebuilt
+        .entries()
+        .iter()
+        .find(|e| e.name == "ui_host")
+        .expect("ui_host survives round-trip");
+    assert!(
+        !ui_host.composes.is_empty(),
+        "composes edges lost in round-trip",
+    );
+
+    // An enum TypeEntry keeps its variants through the boundary.
+    let direct_enum_variants: usize = direct
+        .types()
+        .iter()
+        .filter_map(|t| match &t.shape {
+            mcp_catalog::TypeShape::Enum { variants } => Some(variants.len()),
+            _ => None,
+        })
+        .sum();
+    let rebuilt_enum_variants: usize = rebuilt
+        .types()
+        .iter()
+        .filter_map(|t| match &t.shape {
+            mcp_catalog::TypeShape::Enum { variants } => Some(variants.len()),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(
+        rebuilt_enum_variants, direct_enum_variants,
+        "enum variants lost in round-trip",
+    );
+
+    // A tool keeps its params + return type.
+    if let Some(direct_tool) = direct.tools().first() {
+        let rebuilt_tool = rebuilt
+            .tools()
+            .iter()
+            .find(|t| t.name == direct_tool.name)
+            .expect("tool survives round-trip");
+        assert_eq!(
+            rebuilt_tool.params.len(),
+            direct_tool.params.len(),
+            "tool params lost in round-trip",
+        );
+        assert_eq!(
+            rebuilt_tool.return_type, direct_tool.return_type,
+            "tool return type lost in round-trip",
         );
     }
 }

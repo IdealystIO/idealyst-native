@@ -94,7 +94,7 @@ members = [
     "crates/sdk/storage",
     "crates/sdk/microphone",
     "crates/sdk/camera",
-    "crates/sdk/frame-view",
+    "crates/sdk/media-stream",
     "crates/sdk/credentials",
     "crates/sdk/biometrics",
     "crates/sdk/screen-recorder",
@@ -163,6 +163,8 @@ members = [
     "examples/mic-demo",
     "examples/screen-recorder-demo",
     "examples/camera-demo",
+    "examples/camera-preview-demo",
+    "examples/media-sources-demo",
     "examples/login-demo",
     "examples/mcp-demo",
     "examples/fiddle",
@@ -293,7 +295,7 @@ net = { path = "crates/sdk/net" }
 storage = { path = "crates/sdk/storage" }
 microphone = { path = "crates/sdk/microphone" }
 camera = { path = "crates/sdk/camera" }
-frame-view = { path = "crates/sdk/frame-view" }
+media-stream = { path = "crates/sdk/media-stream" }
 credentials = { path = "crates/sdk/credentials" }
 biometrics = { path = "crates/sdk/biometrics" }
 screen-recorder = { path = "crates/sdk/screen-recorder" }

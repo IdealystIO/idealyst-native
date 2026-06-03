@@ -77,7 +77,7 @@ pub struct CatalogService {
     /// running app's Robot bridge writes on bind; tools consult this
     /// before falling back to the on-disk catalog. Empty (and
     /// harmlessly so) when no app is running.
-    mdns: crate::mdns_discovery::DiscoveryTable,
+    discovery: crate::app_discovery::DiscoveryTable,
     // `#[tool_handler]` reads this through the trait impl, not via
     // a direct field access — the dead-code analyzer can't see it.
     #[allow(dead_code)]
@@ -129,9 +129,9 @@ impl RobotResolver {
     pub async fn resolve(
         &self,
         app: Option<&str>,
-        mdns: &crate::mdns_discovery::DiscoveryTable,
+        discovery: &crate::app_discovery::DiscoveryTable,
     ) -> Result<Arc<RobotBridge>, McpError> {
-        let live = mdns.snapshot();
+        let live = discovery.snapshot();
         let entry = match (app, live.len()) {
             (Some(name), _) => live
                 .iter()
@@ -362,18 +362,18 @@ impl CatalogService {
     /// - otherwise → [`RobotMode::Discovery`]: start the
     ///   `~/.idealyst/apps/` scanner thread and route per call.
     pub fn with_robot_mode(enabled: bool, explicit_addr: Option<String>) -> Self {
-        let (robot_mode, robot, mdns) = if !enabled {
+        let (robot_mode, robot, discovery) = if !enabled {
             // Inert table — `DiscoveryTable::default()` never spawns the
             // scanner thread, so "disabled" really does nothing.
-            (RobotMode::Disabled, None, crate::mdns_discovery::DiscoveryTable::default())
+            (RobotMode::Disabled, None, crate::app_discovery::DiscoveryTable::default())
         } else if let Some(addr) = explicit_addr {
             (
                 RobotMode::Explicit { addr: addr.clone() },
                 Some(Arc::new(RobotBridge::new(addr))),
-                crate::mdns_discovery::DiscoveryTable::default(),
+                crate::app_discovery::DiscoveryTable::default(),
             )
         } else {
-            (RobotMode::Discovery, None, crate::mdns_discovery::start())
+            (RobotMode::Discovery, None, crate::app_discovery::start())
         };
         Self {
             catalog: Arc::new(RwLock::new(ResolvedCatalog::build())),
@@ -381,7 +381,7 @@ impl CatalogService {
             robot,
             resolver: Arc::new(RobotResolver::default()),
             catalog_cache: Arc::new(CatalogCache::default()),
-            mdns,
+            discovery,
             tool_router: Self::tool_router(),
         }
     }
@@ -400,11 +400,11 @@ impl CatalogService {
     /// - Disabled → none (no bridge is ever contacted).
     /// - Discovery → whatever the `~/.idealyst/apps/` scanner found.
     /// - Explicit → a single synthetic entry for the pinned address.
-    fn live_apps(&self) -> Vec<crate::mdns_discovery::DiscoveredApp> {
+    fn live_apps(&self) -> Vec<crate::app_discovery::DiscoveredApp> {
         match &self.robot_mode {
             RobotMode::Disabled => Vec::new(),
-            RobotMode::Discovery => self.mdns.snapshot(),
-            RobotMode::Explicit { addr } => vec![crate::mdns_discovery::DiscoveredApp {
+            RobotMode::Discovery => self.discovery.snapshot(),
+            RobotMode::Explicit { addr } => vec![crate::app_discovery::DiscoveredApp {
                 name: "app".to_string(),
                 bundle_id: None,
                 project_root: None,
@@ -852,7 +852,7 @@ impl CatalogService {
             // `RobotMode::Explicit`. Ignore `app` — there's exactly one.
             b.clone()
         } else {
-            match self.resolver.resolve(app, &self.mdns).await {
+            match self.resolver.resolve(app, &self.discovery).await {
                 Ok(b) => b,
                 Err(e) => return Err(e),
             }
@@ -1015,6 +1015,15 @@ impl CatalogService {
         obj.insert("category".into(), entry.category.as_str().into());
         if let Some(ty) = return_type_inline {
             obj.insert("return_type_entry".into(), ty);
+        }
+        // Cross-kind recipes (phase 3): usage examples that target or use
+        // this utility, surfaced the same way `describe_component` does.
+        obj.insert(
+            "recipes".into(),
+            serde_json::json!(recipes_json_for(&cat, entry.name)),
+        );
+        if let Some(s) = cat.scope_for(entry.module_path) {
+            obj.insert("scope".into(), s.slug.into());
         }
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap(),
@@ -1223,7 +1232,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "List recipes — compile-checked usage examples for components. Lightweight { name, component, fqn, summary }; pass `filter` (case-insensitive, glob `*`, matches name/component/fqn) to narrow, then `describe_recipe` for the full example source. Recipes are how you learn the canonical, type-verified way to use a component.")]
+    #[tool(description = "List recipes — compile-checked usage examples for any catalog entity (component, utility, function, or type). Lightweight { name, target, fqn, summary }; pass `filter` (case-insensitive, glob `*`, matches name/target/fqn) to narrow, then `describe_recipe` for the full example source. Recipes are how you learn the canonical, type-verified way to use something.")]
     async fn list_recipes(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -1234,12 +1243,12 @@ impl CatalogService {
             .iter()
             .filter_map(|r| {
                 let fqn = format!("{}::{}", r.module_path, r.name);
-                if !matches_filter(&req.filter, &[r.name, r.component, &fqn]) {
+                if !matches_filter(&req.filter, &[r.name, r.target, &fqn]) {
                     return None;
                 }
                 Some(serde_json::json!({
                     "name": r.name,
-                    "component": r.component,
+                    "target": r.target,
                     "fqn": fqn,
                     "summary": doc_summary(r.docs),
                 }))
@@ -1250,7 +1259,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Get one recipe in full: its component, docs, the compile-verified source code, and the components it uses. Accepts the recipe's short-name or fully-qualified name. The `source` is a working, copy-pasteable example proven to type-check against the current props.")]
+    #[tool(description = "Get one recipe in full: its target entity, docs, the compile-verified source code, and the entities it uses. Accepts the recipe's short-name or fully-qualified name. The `source` is a working, copy-pasteable example proven to type-check against the current API.")]
     async fn describe_recipe(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -1273,7 +1282,7 @@ impl CatalogService {
             })?;
         let json = serde_json::json!({
             "name": entry.name,
-            "component": entry.component,
+            "target": entry.target,
             "module_path": entry.module_path,
             "fqn": format!("{}::{}", entry.module_path, entry.name),
             "file": entry.file,
@@ -1281,6 +1290,79 @@ impl CatalogService {
             "docs": entry.docs,
             "source": entry.source,
             "uses": entry.uses,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "List documentation scopes — flat labels (declared with `doc_scope!`) that group components/utilities by feature area. Lightweight { slug, title, order, summary }; pass `filter` (case-insensitive, glob `*`, matches slug/title) to narrow, then `describe_scope` for a scope's docs + the entities it contains.")]
+    async fn list_scopes(
+        &self,
+        Parameters(req): Parameters<FilterRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let json: Vec<serde_json::Value> = cat
+            .scopes()
+            .iter()
+            .filter_map(|s| {
+                if !matches_filter(&req.filter, &[s.slug, s.title]) {
+                    return None;
+                }
+                Some(serde_json::json!({
+                    "slug": s.slug,
+                    "title": s.title,
+                    "order": s.order,
+                    "summary": doc_summary(s.docs),
+                }))
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Describe one documentation scope by its slug: title, docs, and the entities (components, utilities) assigned to it by module proximity. A component declared inside a nearer scope belongs to that nearer scope, not this one — so this lists what lives *directly* in the scope. The way to see what a feature area contains.")]
+    async fn describe_scope(
+        &self,
+        Parameters(req): Parameters<NameRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let scope = cat
+            .scopes()
+            .iter()
+            .find(|s| s.slug == req.name)
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!("scope {:?} not found — use list_scopes to see what's available", req.name),
+                    None,
+                )
+            })?;
+        let components: Vec<serde_json::Value> = cat
+            .entries()
+            .iter()
+            .filter(|e| cat.scope_for(e.module_path).map(|s| s.slug) == Some(scope.slug))
+            .map(|e| serde_json::json!({
+                "name": e.name,
+                "fqn": format!("{}::{}", e.module_path, e.name),
+            }))
+            .collect();
+        let utilities: Vec<serde_json::Value> = cat
+            .utilities()
+            .iter()
+            .filter(|u| cat.scope_for(u.module_path).map(|s| s.slug) == Some(scope.slug))
+            .map(|u| serde_json::json!({
+                "name": u.name,
+                "fqn": format!("{}::{}", u.module_path, u.name),
+            }))
+            .collect();
+        let json = serde_json::json!({
+            "slug": scope.slug,
+            "title": scope.title,
+            "docs": scope.docs,
+            "order": scope.order,
+            "components": components,
+            "utilities": utilities,
         });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&json).unwrap(),
@@ -1400,6 +1482,24 @@ fn find_by_name<'a>(
     None
 }
 
+/// Recipes targeting or using `name`, shaped for a `describe_*` payload.
+/// Kind-agnostic (works for components, utilities, types, …) via the
+/// catalog's `recipes_for` join.
+fn recipes_json_for(cat: &ResolvedCatalog, name: &str) -> Vec<serde_json::Value> {
+    cat.recipes_for(name)
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "name": r.name,
+                "fqn": format!("{}::{}", r.module_path, r.name),
+                "primary": r.target == name,
+                "docs": r.docs,
+                "source": r.source,
+            })
+        })
+        .collect()
+}
+
 fn entry_to_json(
     cat: &ResolvedCatalog,
     entry: &ComponentEntry,
@@ -1467,20 +1567,7 @@ fn entry_to_json(
     // Compile-checked usage examples for this component — the rich
     // "how do I use it" context. A recipe is linked if it primarily
     // demonstrates this component OR merely uses it in its body.
-    let recipes: Vec<serde_json::Value> = cat
-        .recipes()
-        .iter()
-        .filter(|r| r.component == entry.name || r.uses.contains(&entry.name))
-        .map(|r| {
-            serde_json::json!({
-                "name": r.name,
-                "fqn": format!("{}::{}", r.module_path, r.name),
-                "primary": r.component == entry.name,
-                "docs": r.docs,
-                "source": r.source,
-            })
-        })
-        .collect();
+    let recipes = recipes_json_for(cat, entry.name);
     serde_json::json!({
         "name": entry.name,
         "module_path": entry.module_path,
@@ -1488,6 +1575,7 @@ fn entry_to_json(
         "file": entry.file,
         "line": entry.line,
         "docs": entry.docs,
+        "scope": cat.scope_for(entry.module_path).map(|s| s.slug),
         "params": params,
         "composes": composes,
         "recipes": recipes,
@@ -2212,7 +2300,7 @@ mod tests {
               "composes": [], "params": [] }
           ],
           "recipes": [
-            { "name": "select_basic", "component": "Select",
+            { "name": "select_basic", "target": "Select",
               "module_path": "demo::recipes", "file": "recipes.rs", "line": 10,
               "docs": "Basic Select usage.",
               "source": "fn select_basic() -> Element { ui!{ Select(value = v) } }",
@@ -2237,7 +2325,7 @@ mod tests {
             .unwrap();
         let lv: serde_json::Value = serde_json::from_str(&text(&lr)).unwrap();
         assert_eq!(lv[0]["name"], "select_basic");
-        assert_eq!(lv[0]["component"], "Select");
+        assert_eq!(lv[0]["target"], "Select");
 
         // describe_recipe → full source
         let dr = svc
@@ -2265,5 +2353,71 @@ mod tests {
         assert_eq!(recipes[0]["name"], "select_basic");
         assert_eq!(recipes[0]["primary"], serde_json::json!(true));
         assert!(recipes[0]["source"].as_str().unwrap().contains("Select"));
+    }
+
+    /// Scopes surface in `list_scopes`, `describe_scope` (with the
+    /// components assigned by module proximity), and as the `scope` field
+    /// of `describe_component`.
+    #[tokio::test]
+    async fn scopes_surface_in_list_describe_and_component() {
+        let json = r#"{
+          "catalog_version": 2,
+          "components": [
+            { "name": "LoginForm", "module_path": "app::auth::forms",
+              "file": "forms.rs", "line": 1, "docs": "A login form.",
+              "composes": [], "params": [] }
+          ],
+          "scopes": [
+            { "slug": "auth", "title": "Authentication", "docs": "Login + sessions.",
+              "module_path": "app::auth", "order": 5 }
+          ]
+        }"#;
+        let cat = mcp_catalog::ResolvedCatalog::build_from_json(json).unwrap();
+        let svc = CatalogService::new();
+        svc.replace_catalog(cat).await;
+
+        let text = |r: &CallToolResult| {
+            r.content
+                .iter()
+                .find_map(|c| c.as_text().map(|t| t.text.clone()))
+                .unwrap()
+        };
+
+        // list_scopes
+        let ls = svc
+            .list_scopes(Parameters(FilterRequest::default()))
+            .await
+            .unwrap();
+        let lv: serde_json::Value = serde_json::from_str(&text(&ls)).unwrap();
+        assert_eq!(lv[0]["slug"], "auth");
+        assert_eq!(lv[0]["title"], "Authentication");
+
+        // describe_scope → the component lands here by module proximity
+        // (`app::auth` is an ancestor of `app::auth::forms`).
+        let ds = svc
+            .describe_scope(Parameters(NameRequest {
+                name: "auth".into(),
+                app: None,
+            }))
+            .await
+            .unwrap();
+        let dv: serde_json::Value = serde_json::from_str(&text(&ds)).unwrap();
+        assert_eq!(dv["slug"], "auth");
+        let comps = dv["components"].as_array().expect("components section");
+        assert!(
+            comps.iter().any(|c| c["name"] == "LoginForm"),
+            "scope should contain LoginForm; got {dv}"
+        );
+
+        // describe_component reports its ambient scope.
+        let dc = svc
+            .describe_component(Parameters(NameRequest {
+                name: "LoginForm".into(),
+                app: None,
+            }))
+            .await
+            .unwrap();
+        let cv: serde_json::Value = serde_json::from_str(&text(&dc)).unwrap();
+        assert_eq!(cv["scope"], "auth", "got {cv}");
     }
 }

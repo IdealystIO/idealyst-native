@@ -38,6 +38,9 @@ capabilities = ["camera"]
 
 [dependencies]
 thiserror = "1"
+# The platform-agnostic live-source abstraction camera produces. Thin and
+# GPU-free; shared with `screen-recorder` (producer) and `video` (consumer).
+media-stream = { workspace = true }
 
 # iOS / macOS: AVFoundation capture, driven through the Obj-C runtime
 # (objc2 msg_send + a declared AVCaptureVideoDataOutputSampleBufferDelegate

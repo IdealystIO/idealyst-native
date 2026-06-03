@@ -19,6 +19,9 @@ license.workspace = true
 
 [dependencies]
 runtime-core = { workspace = true }
+# A `Video` can display a live `MediaStream` (from `camera` /
+# `screen-recorder`), not just a URL `src`.
+media-stream = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
@@ -27,6 +30,7 @@ web-sys = { version = "0.3", features = [
     "Element",
     "HtmlMediaElement",
     "HtmlVideoElement",
+    "MediaStream",
     "Node",
 ] }
 wasm-bindgen = "0.2"
@@ -35,6 +39,12 @@ wasm-bindgen = "0.2"
 backend-android-mobile = { workspace = true }
 backend-android-core = { workspace = true }
 jni = "0.21"
+
+# The Kotlin shim that hosts the VideoView (URL) / ImageView (live stream)
+# children and converts RGBA frames to a Bitmap. `idealyst run android`
+# discovers + compiles it from here.
+[package.metadata.idealyst.android]
+runtime_kotlin = ["runtime/kotlin/io/idealyst/video/RustVideoFrameSink.kt"]
 
 [target.'cfg(target_os = "ios")'.dependencies]
 backend-ios-mobile = { workspace = true }

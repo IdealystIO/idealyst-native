@@ -1,0 +1,43 @@
+[package]
+name = "media-sources-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Two Video components fed by two different live MediaStream producers — a camera (camera SDK) and a screen share (getDisplayMedia). Same component, same prop; only the source differs. Demonstrates the producer-agnostic MediaStream abstraction."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+camera = { workspace = true }
+video = { workspace = true }
+media-stream = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+# Web: the concrete `WebBackend` for `register_extensions`, plus the
+# `getDisplayMedia` surface for the inline screen-share producer.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Navigator",
+    "MediaDevices",
+    "MediaStream",
+    "MediaStreamTrack",
+] }
+
+[package.metadata.idealyst.app]
+name      = "Media Sources"
+bundle_id = "ai.truday.idealyst.mediasources"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]
+
+[package.metadata.idealyst.app.permissions]
+camera = "Media Sources shows your camera feed through the video component."

@@ -27,16 +27,16 @@ gaps:
    helpers, etc. — have no compile-checked usage examples, even though they're
    exactly the API surface an LLM most often gets wrong.
 
-The fix is one unified model: a **Scope** tree as the spine, every documentable
-thing is an **Entity** that lands in a scope, and **attachments** (recipes,
-anchored prose) hang off entities. Components and base-framework utilities use
-the *same* system — they don't get a bespoke path.
+The fix is one unified model: a flat set of **Scope** labels as the organizing
+layer, every documentable thing is an **Entity** that lands in a scope, and
+**attachments** (recipes, anchored prose) hang off entities. Components and
+base-framework utilities use the *same* system — they don't get a bespoke path.
 
 ## 2. Goals & non-goals
 
 **Goals**
 
-- A **Scope** tree (sections) declared programmatically — no TOML manifest.
+- A flat set of **Scope** labels (sections) declared programmatically — no TOML manifest.
 - Scope assignment is **ambient**: `#[component]` takes **no scope argument**.
   Authors don't repeat themselves; a component inherits the scope of its module.
 - Works with **`strict-docs`**: under the strict gate, an undocumented /
@@ -62,9 +62,14 @@ the *same* system — they don't get a bespoke path.
 
 Three node kinds and one resolver:
 
-- **Scope** — the organizing node. Fields: stable `id`, `title`, `docs`,
-  optional `parent` (→ forms a tree, the spine), `order`. Guides, project
-  topics, and feature groupings are *all* scopes.
+- **Scope** — a **flat** label. Fields: stable `slug` (identity), `title`,
+  `docs`, `module_path` (for the ambient join), `order`. **No hierarchy** —
+  there is no `parent`/tree. Granularity comes from module nesting (a scope at
+  `crate::ui::inputs` is "nearer" than one at `crate::ui`), not an explicit
+  tree. Hierarchy was dropped deliberately: it added cycle/dangling-parent
+  validation and a marker-type compile-time system for speculative benefit
+  (navigation breadcrumbs), while the one valuable behavior — ambient
+  assignment — never depended on it. See §13.
 - **Entity** — anything documentable: component, primitive, utility, tool, type,
   method, animation. Each has a stable ref `(kind, module_path, name)`.
 - **Attachment** — recipes and anchored prose notes, attached to an entity
@@ -83,21 +88,39 @@ Two distinct graphs coexist and must not be conflated:
 
 ## 4. Scope declaration — `doc_scope!` (compile-time item macro)
 
-`doc_scope!` is an **item-position** macro, not a `let` binding. It expands to a
-module-level marker item plus an `inventory::submit!(ScopeEntry)` carrying
-`module_path!()` at the declaration site:
+`doc_scope!` is an **item-position** macro, not a `let` binding. It expands to
+an `inventory::submit!(ScopeEntry)` carrying its **stable slug** (the identity —
+see §4.1) and `module_path!()` (used only for the ambient join in §5) at the
+declaration site. No marker item is emitted — scopes are flat, so there's
+nothing for a marker type to reference:
 
 ```rust
 mod auth {
     doc_scope!(Auth = "Authentication");
     // optional refinement:
-    // doc_scope!(Auth = "Authentication", docs: "Login, sessions, tokens.", parent: Features);
+    // doc_scope!(Auth = "Authentication", slug = "auth", docs = "Login, sessions, tokens.", order = 10);
 
     mod forms {
         #[component] fn LoginForm(..) -> Element { .. }   // ← inherits `Auth` ambiently
     }
 }
 ```
+
+### 4.1 Scope identity is a stable slug, not the module path — *decided*
+
+A scope's identity is a **slug that is independent of module location**, so
+moving or renaming a module never reorganizes the catalog or breaks saved
+references / MCP `describe_scope(id)` calls. The slug defaults to the
+`doc_scope!` marker ident (`Auth` → `"auth"`) — already location-independent —
+and is overridable via an explicit `slug:` for when you want to rename the
+marker without breaking the external key.
+
+`module_path!()` is still recorded on `ScopeEntry`, but **only** to drive the
+ambient proximity join in §5 (which components fall under this scope's subtree).
+It is *not* the identity. Consequence: physically relocating a `doc_scope!`
+changes which components it captures (membership follows code structure, as
+intended), while its slug — and therefore every external reference to it — stays
+fixed.
 
 Rationale for compile-time (not a runtime value): catalog extraction never
 *runs* user code — it links the crate and reads the linker section populated at
@@ -116,12 +139,15 @@ reusing the resolver's existing tie-break rules. A component at
 `crate::auth::forms` inherits the `Auth` scope declared at `crate::auth`. **No
 scope argument on the macro.**
 
-Base-framework primitives/utilities are registered in hand-maintained tables
-([`primitives.rs`](../crates/mcp/catalog/src/primitives.rs), `utilities.rs`), so
-they carry an explicit `scope:` id in the table — the scope genuinely
-pre-exists, with zero per-call burden. The framework declares its own scope tree
-(`Layout`, `Color`, `Platform`, …) once in its crate roots; user crates declare
-theirs. Both feed one Scope tree.
+Base-framework utilities are registered in hand-maintained tables
+([`utilities.rs`](../crates/mcp/catalog/src/utilities.rs)) with `module_path`
+values like `runtime_core` / `runtime_core::color`. The framework ships a `core`
+scope at `module_path: "runtime_core"` ([`scopes.rs`](../crates/mcp/catalog/src/scopes.rs)),
+so every such utility resolves to it by the same ambient proximity rule as
+components — no per-entry scope field. (The scope is a table submit rather than a
+`doc_scope!` because `runtime-core` can't self-reference `::runtime_core::__mcp`.)
+User crates declare their own scopes via `doc_scope!`. All feed one flat scope
+set.
 
 ## 6. Recipes target any entity
 
@@ -141,46 +167,34 @@ existing `EdgeStatus::Ambiguous` path — no new mechanism. `describe_utility`,
 `describe_type`, etc. surface their recipes exactly the way `describe_component`
 does today.
 
-## 7. Enforcement tiers
+## 7. Enforcement
 
 Every rule sorts by a single question: **does it need the whole graph?**
 
-### 7.1 Compile-time (rustc) — local / absolute-path facts
+### 7.1 Compile-time (rustc) — local facts
 
 - **Missing `///` docs** → `compile_error!` at the item (existing `strict-docs`
   behavior, unchanged).
-- **Crate has *no* scope at all** → hard error, under the strict gate, via a
-  sentinel the macro emits:
 
-  ```rust
-  // emitted only when the strict-scopes compile gate is active
-  const _: () = { let _ = crate::__IDEALYST_DOC_SCOPE; };
-  ```
-
-  If no `doc_scope!` declared the sentinel at the crate root, `crate::…` fails
-  to resolve → `E0433`. This is the only scope fact that can be a true rustc
-  error, because it's an absolute path, not a whole-graph query.
+That's the only scope-related compile-time fact. **Scopes have no other rustc
+enforcement, by design.** Once hierarchy was dropped (§13) there is no parent
+graph to validate, so the only remaining facts are "this crate has ≥1 scope"
+(a marginal backstop `--check` already subsumes — a scope-less crate has *every*
+component unscoped) and "this component is covered by a scope" (whole-graph,
+inherently impossible as a rustc error — the macro is per-item and never sees
+the assembled crate). Both are handled at build-time. There is no sentinel, no
+marker-type system — those existed only to serve a hierarchy that no longer
+exists.
 
 ### 7.2 Build-time (`mcp --check`) — whole-graph facts
 
-The macro is per-item and never sees the full scope graph, so these are
+The macro is per-item and never sees which scopes exist elsewhere, so this is
 necessarily `--check`-time:
 
-- **Scope cycles** → error, with a readable message (`scope cycle: Auth →
-  Features → Auth`). One DFS/topo-sort over the merged `ScopeEntry` set.
-  *Cross-crate cycles are impossible by construction* — Cargo's dep graph is a
-  DAG and `parent:` can only reference an in-scope (this-crate-or-upstream)
-  scope, so a back-edge would require a crate cycle. Only intra-crate cycles can
-  occur, and `--check` holds the whole crate's scopes.
-- **Dangling `parent`** (references a scope id that doesn't resolve) → error.
-- **Default-scope fallback** (an entity that reached only the synthesized
-  default/root scope) → **warning** by default, error under `--strict-scopes`
-  (see §8).
-
-A type-level const-eval depth trick *can* force rustc to catch cycles, but it
-produces cryptic errors (points at a const, not the cycle), forces `parent` to
-be a type reference, and is the kind of too-clever construct the repo's
-"proven, documented" rule discourages. Rejected in favor of the `--check` DFS.
+- **Unscoped component** — a first-party component resolves to no scope →
+  **warning** by default, **error** under `--strict-scopes` (see §8). Only
+  emitted once the project has declared ≥1 scope (a project not using scopes
+  gets no noise).
 
 ## 8. Strictness gating — two modes, the right tier each
 
@@ -191,17 +205,18 @@ decision splits across tiers, and only the maximal variant is a Cargo feature
 | Decision | Mechanism | Scope of effect |
 |---|---|---|
 | unscoped valid (warns) | `mcp --check` default | first-party warnings |
-| unscoped invalid (errors) | `mcp --check --strict-scopes` (or project config) | **first-party only**; deps stay lenient |
-| won't-compile-without-a-scope | Cargo feature `strict-scopes` + §7.1 sentinel | **whole graph** (unification) |
+| unscoped invalid (errors) | `mcp --check --strict-scopes` (CLI flag) | **first-party only**; deps stay lenient |
 
-The per-component default-fallback policy lives in `--check`, deliberately *not*
-as a Cargo feature: a feature would unify across the build and make third-party
-SDKs with unscoped components fail a check the consumer can't fix. `--check`
-applies strictness **first-party only** — error on entries whose root crate is
-in the workspace, warn on pulled-in deps. The compile-time sentinel remains
-available as a Cargo feature for "I control my whole graph" shops and for the
-framework's own crates, inheriting the same global-unification property
-`strict-docs` already has (consistent, not a new hazard).
+**Status:** both rows are **implemented** (`LintOptions { strict_scopes,
+first_party_crates }` + `idealyst mcp --check [--strict-scopes]`). There is no
+"won't-compile-without-a-scope" rustc tier — see §7.1.
+
+The unscoped-component policy lives in `--check`, deliberately *not* as a Cargo
+feature: a feature would unify across the build and make third-party SDKs with
+unscoped components fail a check the consumer can't fix. `--check` applies
+strictness **first-party only** — error on entries whose root crate is in the
+workspace, warn on pulled-in deps. This is the *only* enforcement tier for
+scopes; there is no compile-time variant (§7.1).
 
 ## 9. Serialization — kill the triplication
 
@@ -227,10 +242,9 @@ boundary.
 
 ## 10. MCP surface
 
-- `list_scopes(filter?)` → `{ id, title, parent, order, summary }`; the spine
-  for navigation.
-- `describe_scope(id)` → scope docs + its child scopes + the entities that
-  resolve into it (components, utilities, recipes, …).
+- `list_scopes(filter?)` → `{ slug, title, order, summary }`; the flat scope list.
+- `describe_scope(slug)` → scope docs + the entities that resolve into it
+  (components, utilities, …) by nearest-module proximity.
 - **Anchored prose notes** get no list tool — they fold into `describe_*` of the
   entity they're `about`, the way recipes already do, so the LLM gets the note
   in context of the thing it asked about, never as a flat pile.
@@ -245,33 +259,43 @@ boundary.
 - Existing `#[component]`s with no ancestor `doc_scope!` resolve to the default
   scope and emit a `--check` **warning** (lenient default) — nothing breaks.
 - `strict-docs` behavior is unchanged; `strict-scopes` is additive and opt-in.
-- The framework's own crates declare their scope tree + adopt
-  `--strict-scopes`/the sentinel first, dogfooding the strict path.
+- The framework's own crates declare their scopes + adopt `--strict-scopes`
+  first, dogfooding the strict path.
 
 ## 12. Open questions
 
 1. **Default scope identity** — one synthesized `Uncategorized` per crate, or
    the crate-root `doc_scope!` when present? (Affects the `--check` warning
    message and whether root-level placement is "real" or "fallback.")
-2. **Scope id stability** — `module_path::MarkerName` is the obvious id, but it
-   ties the id to module location; renaming a module reorganizes the catalog.
-   Acceptable? Or allow an explicit stable slug on `doc_scope!`?
+2. ~~**Scope id stability**~~ — **decided (§4.1)**: identity is a stable slug
+   (default = marker ident, overridable via `slug:`), independent of module
+   path; `module_path` drives only the ambient join, not identity.
 3. **Anchored-prose body source** — inline string literal vs
    `include_str!("notes/foo.md")` vs a doc-comment-carrying marker item. Long
    prose wants a file; short notes want inline.
-4. **`parent:` ergonomics** — type-path reference (rustc-checked existence, but
-   must be in scope) vs string id (resolved at `--check`, more flexible). The
-   §7.1 cross-crate-DAG argument leans toward allowing a path *or* an upstream
-   id.
+4. ~~**`parent:` ergonomics**~~ — **moot:** hierarchy was dropped (§13), so
+   scopes have no `parent`.
 
 ## 13. Phasing
 
-1. `CatalogSlice` trait + migrate existing slices to it (no behavior change).
-2. `ScopeEntry` + `doc_scope!` item macro + ambient module-proximity join.
-3. Generalize the resolver to all entity kinds; generalize `recipe!` target.
-4. `--check` tier: cycles, dangling parents, default-fallback warning,
-   `--strict-scopes` first-party gate.
-5. Compile-time sentinel + `strict-scopes` Cargo feature.
-6. MCP tools: `list_scopes` / `describe_scope`; fold scope + cross-kind recipes
-   into existing `describe_*`.
-7. Framework crates declare their scope tree and adopt the strict path.
+1. ✅ `CatalogSlice` trait + migrate existing slices to it (no behavior change).
+2. ✅ `ScopeEntry` + `doc_scope!` item macro + ambient module-proximity join.
+3. ✅ Generalize the resolver to all entity kinds; generalize `recipe!` target
+   (`component` → `target`, `recipes_for`, `resolve_entity`/`EntityKind`).
+4. ✅ `--check` tier: unscoped-component warning + `--strict-scopes` first-party
+   gate (`LintOptions` + CLI flag). *(Cycle/dangling-parent checks existed
+   briefly, then were removed with hierarchy.)*
+5. ⛔ **Dissolved — hierarchy dropped.** Phase 5 was the compile-time scope
+   guarantee; with flat scopes there is no parent graph to enforce and the only
+   remaining facts are handled at build-time (§7). No sentinel, no marker types.
+6. ✅ MCP tools: `list_scopes` / `describe_scope`; fold `scope` + cross-kind
+   recipes into `describe_component` / `describe_utility`.
+7. ◐ Framework crates declare their scopes (flat). idea-ui declares a
+   `components` scope (`components/mod.rs`) that every component resolves to by
+   ambient proximity; mcp-catalog ships a `core` scope for the `runtime_core`
+   utilities (a table there, not `doc_scope!`, since `runtime-core` can't
+   self-reference `::runtime_core::__mcp`). Verified by `catalog-docs`'s
+   `every_idea_ui_component_is_scoped` test — `--check --strict-scopes` passes
+   for idea-ui. **Follow-up:** finer scopes (Inputs/Layout/Feedback/…) need the
+   flat `components` modules grouped into category submodules — deferred
+   (a ~36-file move + taxonomy decision).

@@ -1,7 +1,8 @@
 # `video`
 
-A `Video` primitive for the idealyst framework — play a media URL
-inside your native UI tree with the platform's own player. Built on the
+A `Video` primitive for the idealyst framework — display a media URL **or
+a live `MediaStream`** (from `camera` / `screen-recorder`) inside your
+native UI tree with the platform's own player. Built on the
 framework's `Element::External` extension mechanism, so it's not part
 of runtime-core: an app opts in by depending on this crate and calling
 `video::register(&mut backend)` once at bootstrap.
@@ -25,13 +26,20 @@ let v: Ref<VideoHandle> = Ref::new();
 ui! {
     View {
         { video::Video(VideoProps {
-            src: video::src(move || src.get()),
+            // One extensible `source` prop — a VideoSource. Build it with
+            // `url(...)` (string / Fn()->String) or `stream(...)` (a live
+            // MediaStream / Fn()->Option<MediaStream>). Reactive either way.
+            source: video::url(move || src.get()),
             autoplay: true,
             controls: true,
             ..Default::default()
         }).bind(v.clone()) }
     }
 }
+
+// A live camera feed instead of a URL — same prop:
+//   source: video::stream(camera.open(cfg).await?),
+//   source: video::stream(move || stream_sig.get()),   // reactive swap
 
 // Imperative ops at any later point, via the bound handle:
 v.with(|h| h.play());
@@ -40,17 +48,20 @@ v.with(|h| h.seek(10.0));
 
 ## What you get
 
-Every backend plays a media URL through the platform's native player
-and converges on the same author-observable behavior — a reactive
-`src`, `autoplay` / `controls` / `loop_playback` flags, and imperative
-`play` / `pause` / `seek` ops. The *mechanism* differs per platform:
+Every backend displays the resolved `source` through the platform's native
+player and converges on the same author-observable behavior — a reactive
+`source`, `autoplay` / `controls` / `loop_playback` flags, and imperative
+`play` / `pause` / `seek` ops. A `source` is a `VideoSource` that resolves
+(inside a reactive `Effect`, so it re-populates on signal change) to a
+small, platform-agnostic `MediaContent` set: a `Url` (the native player
+fetches it) or a live `Stream`. The *mechanism* differs per platform:
 
-| Target | Mechanism |
-| --- | --- |
-| Web (wasm32) | `<video>` element |
-| iOS | `AVPlayer` + `AVPlayerLayer` hosted in a stock `UIView` |
-| Android | `android.widget.VideoView` (`setVideoURI` ← `Uri.parse`) |
-| Other (wgpu desktop, terminal, …) | the framework's `External` "not supported" placeholder |
+| Target | URL mechanism | Live `Stream` mechanism |
+| --- | --- | --- |
+| Web (wasm32) | `<video>` element (`src`) | `<video>.srcObject` ← the stream's native `MediaStream` (zero-copy) |
+| iOS | `AVPlayer` + `AVPlayerLayer` in a `UIView` | — (GPU/compositing phase) |
+| Android | `android.widget.VideoView` (`setVideoURI`) | — (GPU/compositing phase) |
+| Other (wgpu desktop, terminal, …) | the framework's `External` "not supported" placeholder | — |
 
 ### Backend caveats
 

@@ -93,6 +93,15 @@ mod control_size_tests {
     }
 }
 
+// The catalog scope every component in this module tree belongs to (by
+// ambient module proximity — `idea_ui::components` is an ancestor of
+// `idea_ui::components::*`). No-op without the `catalog` feature.
+runtime_core::doc_scope!(
+    Components = "Components",
+    slug = "components",
+    docs = "idea-ui's component library — buttons, inputs, layout, overlays, feedback, and data-display widgets, all cross-platform."
+);
+
 pub mod alert;
 pub mod avatar;
 pub mod badge;

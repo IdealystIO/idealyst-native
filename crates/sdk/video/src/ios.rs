@@ -32,7 +32,7 @@
 //! object attached to the view (releases on dealloc); v1 keeps the
 //! simpler model so the surface ships now.
 
-use crate::{VideoOps, VideoProps};
+use crate::{MediaContent, VideoOps, VideoProps};
 // `backend-ios-mobile`'s `[lib].name` is `backend_ios` — historical
 // staticlib filename preserved across the package rename.
 use backend_ios::{IosBackend, IosNode};
@@ -96,6 +96,95 @@ unsafe impl RefEncode for CMTime {
 
 const CM_TIME_FLAG_VALID: u32 = 1;
 
+// ---------------------------------------------------------------------------
+// CoreGraphics: build a CGImage from RGBA8 bytes to display a live
+// MediaStream's frames as a CALayer's `contents`. Mirrors the camera SDK's
+// `#[link] extern "C"` posture (CF types as opaque pointers).
+// ---------------------------------------------------------------------------
+
+type CGImageRef = *mut std::ffi::c_void;
+type CGColorSpaceRef = *mut std::ffi::c_void;
+type CGDataProviderRef = *mut std::ffi::c_void;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGColorSpaceCreateDeviceRGB() -> CGColorSpaceRef;
+    fn CGColorSpaceRelease(cs: CGColorSpaceRef);
+    fn CGDataProviderCreateWithData(
+        info: *mut std::ffi::c_void,
+        data: *const std::ffi::c_void,
+        size: usize,
+        release: Option<unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_void, usize)>,
+    ) -> CGDataProviderRef;
+    fn CGDataProviderRelease(p: CGDataProviderRef);
+    #[allow(clippy::too_many_arguments)]
+    fn CGImageCreate(
+        width: usize,
+        height: usize,
+        bits_per_component: usize,
+        bits_per_pixel: usize,
+        bytes_per_row: usize,
+        space: CGColorSpaceRef,
+        bitmap_info: u32,
+        provider: CGDataProviderRef,
+        decode: *const f64,
+        should_interpolate: bool,
+        intent: u32,
+    ) -> CGImageRef;
+    fn CGImageRelease(img: CGImageRef);
+}
+
+// kCGImageAlphaPremultipliedLast. Camera/screen frames are opaque
+// (alpha == 255), so premultiplied == straight; bytes are R,G,B,A.
+const CG_ALPHA_PREMUL_LAST: u32 = 1;
+
+/// CGDataProvider release callback — frees the `Vec<u8>` the provider owned.
+unsafe extern "C" fn release_pixels(
+    info: *mut std::ffi::c_void,
+    _data: *const std::ffi::c_void,
+    _size: usize,
+) {
+    if !info.is_null() {
+        drop(Box::from_raw(info as *mut Vec<u8>));
+    }
+}
+
+/// Build a CGImage from tightly-packed RGBA8 `pixels`, taking ownership of
+/// the buffer — the data provider frees it (via [`release_pixels`]) when the
+/// CGImage is released, so the image is independent of any reused scratch.
+/// Returns null on bad input.
+unsafe fn cgimage_from_rgba(pixels: Vec<u8>, width: usize, height: usize) -> CGImageRef {
+    if width == 0 || height == 0 || pixels.len() < width * height * 4 {
+        return std::ptr::null_mut();
+    }
+    let boxed = Box::new(pixels);
+    let data_ptr = boxed.as_ptr() as *const std::ffi::c_void;
+    let size = boxed.len();
+    let info = Box::into_raw(boxed) as *mut std::ffi::c_void;
+    let provider = CGDataProviderCreateWithData(info, data_ptr, size, Some(release_pixels));
+    if provider.is_null() {
+        drop(Box::from_raw(info as *mut Vec<u8>));
+        return std::ptr::null_mut();
+    }
+    let color_space = CGColorSpaceCreateDeviceRGB();
+    let image = CGImageCreate(
+        width,
+        height,
+        8,
+        32,
+        width * 4,
+        color_space,
+        CG_ALPHA_PREMUL_LAST,
+        provider,
+        std::ptr::null(),
+        false,
+        0,
+    );
+    CGColorSpaceRelease(color_space);
+    CGDataProviderRelease(provider); // the CGImage retains it
+    image
+}
+
 /// Per-video state retained in the side-table. `loop_observer` is held
 /// purely for its retention side-effect — releasing it removes the
 /// notification observer.
@@ -107,8 +196,20 @@ struct VideoEntry {
     loop_observer: Option<Retained<NSObject>>,
 }
 
+/// Register the Video handler against an `IosBackend`. One-line call from
+/// the app's bootstrap.
 pub fn register(backend: &mut IosBackend) {
     backend.register_external::<VideoProps, _>(|props, b| build_video(props, b));
+}
+
+/// Resolve a source to a URL for the AVPlayer path. A live `Stream` source
+/// has no native iOS player binding yet (that's the GPU/compositing phase);
+/// it resolves to no URL, leaving the player idle.
+fn resolved_url(props: &VideoProps) -> Option<String> {
+    match props.source.resolve() {
+        MediaContent::Url(u) => Some(u),
+        MediaContent::Stream(_) | MediaContent::None => None,
+    }
 }
 
 fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
@@ -122,7 +223,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
         ]
     };
 
-    let initial_src = (props.src)();
+    let initial_src = resolved_url(props).unwrap_or_default();
     let player = build_player(&initial_src);
     let player_layer = build_player_layer(&player);
 
@@ -182,7 +283,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
     let props_clone = props.clone();
     let first_run = Cell::new(true);
     let _src_effect = Effect::new(move || {
-        let url = (props_clone.src)();
+        let url = resolved_url(&props_clone).unwrap_or_default();
         if first_run.replace(false) {
             // Initial run: AVPlayer already has this URL; skip the
             // replaceCurrentItemWithPlayerItem call so we don't double-
@@ -195,6 +296,49 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
             };
         }
     });
+
+    // Live MediaStream display. A `Stream` source carries no AVPlayer URL, so
+    // we poll the stream's latest frame on the main thread (via the
+    // scope-tied frame loop) and push it to the view's CALayer `contents` as
+    // a CGImage. This is the universal CPU path — it works for ANY
+    // MediaStream (camera, screen, a compositor's output). Performant native
+    // paths (AVSampleBufferDisplayLayer / a Metal texture) are the GPU phase;
+    // this renders correctly and stays simple.
+    {
+        let view_layer: Retained<NSObject> = unsafe { msg_send_id![&view, layer] };
+        // Aspect-fit instead of the default stretch.
+        let gravity = NSString::from_str("resizeAspect");
+        let _: () = unsafe { msg_send![&view_layer, setContentsGravity: &*gravity] };
+
+        let view_for_stream = view.clone();
+        let props_for_stream = props.clone();
+        let mut last_gen: u64 = u64::MAX;
+        let mut scratch: Vec<u8> = Vec::new();
+        runtime_core::raf_loop_scoped(move || {
+            let MediaContent::Stream(stream) = props_for_stream.source.resolve() else {
+                return;
+            };
+            let generation = stream.generation();
+            if generation == last_gen {
+                return;
+            }
+            last_gen = generation;
+            let Some((w, h)) = stream.latest(&mut scratch) else {
+                return;
+            };
+            // Move the pixels out; the CGImage's provider takes ownership.
+            let pixels = std::mem::take(&mut scratch);
+            let image = unsafe { cgimage_from_rgba(pixels, w as usize, h as usize) };
+            if image.is_null() {
+                return;
+            }
+            unsafe {
+                let layer: Retained<NSObject> = msg_send_id![&view_for_stream, layer];
+                let _: () = msg_send![&layer, setContents: image as *const AnyObject];
+                CGImageRelease(image); // the layer holds its own reference
+            }
+        });
+    }
 
     IosNode::View(view)
 }

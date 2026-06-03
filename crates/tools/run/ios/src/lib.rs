@@ -347,6 +347,13 @@ fn compile_and_link(
         .args(["-framework", "Foundation"])
         .args(["-framework", "CoreGraphics"])
         .args(["-framework", "QuartzCore"])
+        // CoreMedia + CoreVideo are needed by the `camera` SDK's AVFoundation
+        // pixel path: CMSampleBufferGetImageBuffer / CMTimeMake /
+        // CVPixelBuffer* are C functions, so they surface as undefined symbols
+        // at link time — unlike AVFoundation/MapKit *classes*, which resolve
+        // at runtime via objc_getClass and need no link-time framework.
+        .args(["-framework", "CoreMedia"])
+        .args(["-framework", "CoreVideo"])
         .status()
         .with_context(|| "spawn xcrun swiftc")?;
 

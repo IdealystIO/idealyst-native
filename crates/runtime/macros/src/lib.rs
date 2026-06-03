@@ -36,6 +36,8 @@ mod schema_emit;
 mod tool_emit;
 #[cfg(feature = "catalog")]
 mod recipe_emit;
+#[cfg(feature = "catalog")]
+mod scope_emit;
 mod methods_block;
 mod path_analysis;
 mod primitives;
@@ -131,6 +133,33 @@ pub fn recipe(input: TokenStream) -> TokenStream {
     #[cfg(feature = "catalog")]
     {
         recipe_emit::emit(input.into()).into()
+    }
+}
+
+/// `doc_scope!(Marker = "Title" [, slug = "…"] [, docs = "…"]
+/// [, order = N])` — declare a documentation **scope**, a flat label
+/// that groups catalog entities by feature area.
+///
+/// Scopes are flat (no hierarchy); every documentable entity is assigned
+/// to the nearest enclosing scope by module proximity — so `#[component]`
+/// etc. take **no** scope argument; a component inherits the `doc_scope!`
+/// declared in its module (or an ancestor). Identity is the `slug`
+/// (default = lowercased marker ident), independent of module location.
+/// See `docs/catalog-scopes-spec.md`.
+///
+/// Self-gating like `recipe!`: with the `catalog` feature OFF this
+/// expands to **nothing** (scopes cost zero in production). Write
+/// `doc_scope!(...)` anywhere with no `#[cfg]` of your own.
+#[proc_macro]
+pub fn doc_scope(input: TokenStream) -> TokenStream {
+    #[cfg(not(feature = "catalog"))]
+    {
+        let _ = input;
+        TokenStream::new()
+    }
+    #[cfg(feature = "catalog")]
+    {
+        scope_emit::emit(input.into()).into()
     }
 }
 

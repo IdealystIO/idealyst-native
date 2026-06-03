@@ -64,6 +64,12 @@ pub struct Args {
     #[arg(long)]
     pub check: bool,
 
+    /// With `--check`: treat an unscoped first-party component as an
+    /// error (not a warning), failing the build. Structural scope issues
+    /// (cycles, dangling parents) are always errors regardless.
+    #[arg(long)]
+    pub strict_scopes: bool,
+
     /// Path to a project directory whose catalog binary should populate
     /// the server's catalog at startup. The CLI looks for
     /// `<dir>/target/debug/catalog` (then `target/release/catalog`) and
@@ -135,7 +141,7 @@ pub fn run(args: Args) -> Result<()> {
         };
     }
     if args.check {
-        return run_check();
+        return run_check(args.strict_scopes);
     }
 
     let mut opts = mcp_server::ServerOptions::new();
@@ -318,9 +324,15 @@ fn run_install(args: InstallArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_check() -> Result<()> {
+fn run_check(strict_scopes: bool) -> Result<()> {
     let cat = mcp_catalog::ResolvedCatalog::build();
-    let findings = mcp_server::lint_catalog(&cat);
+    let opts = mcp_server::LintOptions {
+        strict_scopes,
+        // `--check` runs against the project's own catalog; treat every
+        // entry as first-party. (A dep-aware list could be passed here.)
+        first_party_crates: Vec::new(),
+    };
+    let findings = mcp_server::lint_catalog_with(&cat, &opts);
     if findings.is_empty() {
         println!(
             "OK — {} components, no catalog-integrity issues",
@@ -328,15 +340,25 @@ fn run_check() -> Result<()> {
         );
         return Ok(());
     }
+    let mut errors = 0usize;
     for f in &findings {
         let tag = match f.severity {
             mcp_server::Severity::Warning => "warn",
-            mcp_server::Severity::Error => "error",
+            mcp_server::Severity::Error => {
+                errors += 1;
+                "error"
+            }
         };
         println!("[{}] {} — {}", tag, f.fqn, f.message);
     }
-    println!("\n{} findings", findings.len());
-    std::process::exit(1);
+    println!("\n{} findings ({} errors)", findings.len(), errors);
+    // Warnings inform but don't fail the build (the lint is adopted
+    // incrementally); only errors gate CI. `--strict-scopes` promotes
+    // unscoped-component findings to errors.
+    if errors > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

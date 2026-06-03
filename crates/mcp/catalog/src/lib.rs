@@ -16,12 +16,19 @@
 pub use inventory;
 
 pub mod resolve;
-pub use resolve::{BuildFromJsonError, EdgeStatus, EntryRef, ResolvedCatalog, ResolvedEdge};
+pub use resolve::{
+    BuildFromJsonError, EdgeStatus, EntityKind, EntityMatch, EntryRef, ResolvedCatalog,
+    ResolvedEdge,
+};
+
+pub mod slice;
+pub use slice::{CatalogSlice, LeakFromJson};
 
 mod primitives;
 mod utilities;
 mod states;
 mod guides;
+mod scopes;
 
 /// A single composition edge emitted by `#[component]` when it walked
 /// the function body. `name` is the bare ident as written at the call
@@ -127,6 +134,7 @@ inventory::collect!(MethodEntry);
 inventory::collect!(AnimationEntry);
 inventory::collect!(TypeEntry);
 inventory::collect!(RecipeEntry);
+inventory::collect!(ScopeEntry);
 
 /// A built-in framework primitive — the leaf nodes of the `ui!` /
 /// `jsx!` grammar (`View`, `Text`, `Button`, `ScrollView`, ...).
@@ -355,24 +363,29 @@ pub struct AnimationEntry {
     pub line: u32,
 }
 
-/// A usage **recipe** for a component — a compile-checked example,
-/// captured by the `recipe!(Component, fn ...)` macro. The recipe's fn
-/// is real code built against the component's live props, so if a prop
-/// changes and the recipe isn't updated it FAILS TO COMPILE (whenever
-/// the catalog is built). That makes recipes self-verifying docs +
-/// trustworthy LLM context: "here is how to use this component", proven
-/// to still type-check.
+/// A usage **recipe** — a compile-checked example, captured by the
+/// `recipe!(Target, fn ...)` macro. The recipe's fn is real code built
+/// against the target's live API, so if it changes and the recipe isn't
+/// updated it FAILS TO COMPILE (whenever the catalog is built). That
+/// makes recipes self-verifying docs + trustworthy LLM context: "here is
+/// how to use this", proven to still type-check.
 ///
-/// Open slice — anyone can write recipes for any component, anywhere
-/// (the macro is location-agnostic and emits nothing without the
-/// `catalog` feature, so recipes cost zero in production).
+/// The target is **any** documentable entity — a component, a utility, a
+/// free function, a type — not just a component (phase 3 generalization,
+/// see `docs/catalog-scopes-spec.md` §6). Consumers join a recipe to an
+/// entity by name via [`ResolvedCatalog::recipes_for`].
+///
+/// Open slice — anyone can write recipes for anything, anywhere (the
+/// macro is location-agnostic and emits nothing without the `catalog`
+/// feature, so recipes cost zero in production).
 #[derive(Debug)]
 pub struct RecipeEntry {
     /// The recipe fn's name, e.g. `"select_basic"`.
     pub name: &'static str,
-    /// The component this recipe primarily demonstrates — the
-    /// `recipe!` first argument's last path segment, e.g. `"Select"`.
-    pub component: &'static str,
+    /// The entity this recipe primarily demonstrates — the `recipe!`
+    /// first argument's last path segment, e.g. `"Select"` or
+    /// `"parse_color"`. May name a component, utility, function, or type.
+    pub target: &'static str,
     /// `module_path!()` at the recipe site.
     pub module_path: &'static str,
     /// `file!()` at the recipe site.
@@ -390,6 +403,36 @@ pub struct RecipeEntry {
     /// composes walk). Lets `describe_component` surface recipes that
     /// merely *use* a component, not just the primary one.
     pub uses: &'static [&'static str],
+}
+
+/// A documentation **scope** — a flat label that groups documentable
+/// entities (components, utilities, …), declared with the `doc_scope!`
+/// item macro. Every entity is assigned to the nearest enclosing scope
+/// by module proximity (see [`ResolvedCatalog::scope_for`]).
+///
+/// Scopes are **flat** — there is no parent/child hierarchy. Granularity
+/// comes from module nesting (a scope at `crate::ui::inputs` is "nearer"
+/// than one at `crate::ui`), not from an explicit tree. Open slice: any
+/// crate declares its own scopes. Identity is the
+/// [`slug`](ScopeEntry::slug), *independent of module location* so
+/// moving/renaming a module never reorganizes the catalog or breaks
+/// saved references. See `docs/catalog-scopes-spec.md` §4.1.
+#[derive(Debug)]
+pub struct ScopeEntry {
+    /// Stable, location-independent identity + lookup key. Defaults to
+    /// the `doc_scope!` marker ident (lowercased); overridable via
+    /// `slug = "..."`.
+    pub slug: &'static str,
+    /// Human-facing title for tables-of-contents / doc headings.
+    pub title: &'static str,
+    /// Prose describing the scope. Empty when none was given.
+    pub docs: &'static str,
+    /// `module_path!()` at the declaration site — drives the ambient
+    /// proximity join in [`ResolvedCatalog::scope_for`]. NOT the
+    /// identity (that's [`slug`](ScopeEntry::slug)).
+    pub module_path: &'static str,
+    /// Display ordering — lowest first.
+    pub order: u32,
 }
 
 /// Generalized type-catalog entry. Subsumes [`PropsSchemaEntry`]:
@@ -514,6 +557,16 @@ pub fn types() -> impl Iterator<Item = &'static TypeEntry> {
     inventory::iter::<TypeEntry>()
 }
 
+/// Iterate every [`ScopeEntry`] declared via `doc_scope!`.
+pub fn scopes() -> impl Iterator<Item = &'static ScopeEntry> {
+    inventory::iter::<ScopeEntry>()
+}
+
+/// Look up a scope by its [`slug`](ScopeEntry::slug).
+pub fn lookup_scope(slug: &str) -> Option<&'static ScopeEntry> {
+    scopes().find(|s| s.slug == slug)
+}
+
 /// Look up a primitive by its `name` (snake_case) or `pascal_name`.
 pub fn lookup_primitive(needle: &str) -> Option<&'static PrimitiveEntry> {
     primitives().find(|p| p.name == needle || p.pascal_name == needle)
@@ -541,315 +594,24 @@ pub fn lookup_type(short_name: &str) -> Option<&'static TypeEntry> {
 /// utilities, states, guides, methods, animations, types, and tools.
 /// Entries within each slice are sorted by a stable key
 /// (`module_path::name`, slug, etc.) so JSON diffs are minimal.
+///
+/// Each slice serializes through its [`CatalogSlice`] impl (see
+/// `slice.rs`); this function just names the key → type mapping.
 pub fn catalog_json() -> serde_json::Value {
-    let mut sorted: Vec<&ComponentEntry> = entries().collect();
-    sorted.sort_by_key(|e| (e.module_path, e.name));
-    let components: Vec<serde_json::Value> = sorted
-        .into_iter()
-        .map(|e| {
-            let composes: Vec<serde_json::Value> = e
-                .composes
-                .iter()
-                .map(|edge| {
-                    serde_json::json!({
-                        "name": edge.name,
-                        "line": edge.line,
-                    })
-                })
-                .collect();
-            let params: Vec<serde_json::Value> = e
-                .params
-                .iter()
-                .map(|p| {
-                    // If the param's type resolves to a known props
-                    // schema, inline its fields. Otherwise the field
-                    // is just absent — consumers can fall back to
-                    // `type_str` alone.
-                    let schema = if p.type_short_name.is_empty() {
-                        None
-                    } else {
-                        lookup_schema(p.type_short_name)
-                    };
-                    let mut obj = serde_json::Map::new();
-                    obj.insert("name".into(), p.name.into());
-                    obj.insert("type".into(), p.type_str.into());
-                    obj.insert("type_short_name".into(), p.type_short_name.into());
-                    if let Some(s) = schema {
-                        let fields: Vec<serde_json::Value> = s
-                            .fields
-                            .iter()
-                            .map(|f| {
-                                serde_json::json!({
-                                    "name": f.name,
-                                    "type": f.type_str,
-                                    "doc": f.doc,
-                                    "constraint": f.constraint,
-                                })
-                            })
-                            .collect();
-                        obj.insert("schema".into(), serde_json::json!(fields));
-                    }
-                    serde_json::Value::Object(obj)
-                })
-                .collect();
-            serde_json::json!({
-                "name": e.name,
-                "module_path": e.module_path,
-                "file": e.file,
-                "line": e.line,
-                "docs": e.docs,
-                "composes": composes,
-                "params": params,
-            })
-        })
-        .collect();
-    // Primitives — sorted by name (the snake_case key) for stable
-    // diffs.
-    let mut sorted_prims: Vec<&PrimitiveEntry> = primitives().collect();
-    sorted_prims.sort_by_key(|p| p.name);
-    let primitives_json: Vec<serde_json::Value> = sorted_prims
-        .into_iter()
-        .map(|p| {
-            let props: Vec<serde_json::Value> = p
-                .props
-                .iter()
-                .map(|f| {
-                    serde_json::json!({
-                        "name": f.name,
-                        "type": f.type_str,
-                        "doc": f.doc,
-                        "constraint": f.constraint,
-                    })
-                })
-                .collect();
-            serde_json::json!({
-                "name": p.name,
-                "pascal_name": p.pascal_name,
-                "docs": p.docs,
-                "category": p.category.as_str(),
-                "backends": p.backends,
-                "props": props,
-            })
-        })
-        .collect();
-
-    let mut sorted_utils: Vec<&UtilityEntry> = utilities().collect();
-    sorted_utils.sort_by_key(|u| u.name);
-    let utilities_json: Vec<serde_json::Value> = sorted_utils
-        .into_iter()
-        .map(|u| {
-            let params: Vec<serde_json::Value> = u
-                .params
-                .iter()
-                .map(|p| {
-                    serde_json::json!({
-                        "name": p.name,
-                        "type": p.type_str,
-                        "type_short_name": p.type_short_name,
-                    })
-                })
-                .collect();
-            serde_json::json!({
-                "name": u.name,
-                "module_path": u.module_path,
-                "fqn": format!("{}::{}", u.module_path, u.name),
-                "docs": u.docs,
-                "params": params,
-                "return_type": u.return_type,
-                "return_type_short": u.return_type_short,
-                "category": u.category.as_str(),
-            })
-        })
-        .collect();
-
-    let mut sorted_states: Vec<&StateEntry> = states().collect();
-    sorted_states.sort_by_key(|s| s.name);
-    let states_json: Vec<serde_json::Value> = sorted_states
-        .into_iter()
-        .map(|s| {
-            serde_json::json!({
-                "name": s.name,
-                "docs": s.docs,
-                "backends": s.backends,
-            })
-        })
-        .collect();
-
-    let mut sorted_guides: Vec<&GuideEntry> = guides().collect();
-    sorted_guides.sort_by_key(|g| (g.order, g.slug));
-    let guides_json: Vec<serde_json::Value> = sorted_guides
-        .into_iter()
-        .map(|g| {
-            serde_json::json!({
-                "slug": g.slug,
-                "title": g.title,
-                "order": g.order,
-                "tags": g.tags,
-                "body": g.body,
-            })
-        })
-        .collect();
-
-    let mut sorted_methods: Vec<&MethodEntry> = methods().collect();
-    sorted_methods.sort_by_key(|m| (m.parent_module_path, m.parent_name, m.name));
-    let methods_json: Vec<serde_json::Value> = sorted_methods
-        .into_iter()
-        .map(|m| {
-            let params: Vec<serde_json::Value> = m
-                .params
-                .iter()
-                .map(|p| {
-                    serde_json::json!({
-                        "name": p.name,
-                        "type": p.type_str,
-                        "type_short_name": p.type_short_name,
-                    })
-                })
-                .collect();
-            serde_json::json!({
-                "parent_module_path": m.parent_module_path,
-                "parent_name": m.parent_name,
-                "parent_fqn": format!("{}::{}", m.parent_module_path, m.parent_name),
-                "name": m.name,
-                "docs": m.docs,
-                "params": params,
-                "return_type": m.return_type,
-            })
-        })
-        .collect();
-
-    let mut sorted_anim: Vec<&AnimationEntry> = animations().collect();
-    sorted_anim.sort_by_key(|a| (a.parent_module_path, a.parent_name, a.binding, a.line));
-    let animations_json: Vec<serde_json::Value> = sorted_anim
-        .into_iter()
-        .map(|a| {
-            serde_json::json!({
-                "parent_module_path": a.parent_module_path,
-                "parent_name": a.parent_name,
-                "parent_fqn": format!("{}::{}", a.parent_module_path, a.parent_name),
-                "binding": a.binding,
-                "initial": a.initial,
-                "line": a.line,
-            })
-        })
-        .collect();
-
-    let mut sorted_types: Vec<&TypeEntry> = types().collect();
-    sorted_types.sort_by_key(|t| (t.module_path, t.short_name));
-    let types_json: Vec<serde_json::Value> = sorted_types
-        .into_iter()
-        .map(|t| {
-            let shape_json = match &t.shape {
-                TypeShape::Struct { fields } => {
-                    let fs: Vec<serde_json::Value> = fields
-                        .iter()
-                        .map(|f| {
-                            serde_json::json!({
-                                "name": f.name,
-                                "type": f.type_str,
-                                "doc": f.doc,
-                                "constraint": f.constraint,
-                            })
-                        })
-                        .collect();
-                    serde_json::json!({ "kind": "struct", "fields": fs })
-                }
-                TypeShape::Enum { variants } => {
-                    let vs: Vec<serde_json::Value> = variants
-                        .iter()
-                        .map(|v| {
-                            let payload: Vec<serde_json::Value> = v
-                                .payload
-                                .iter()
-                                .map(|f| {
-                                    serde_json::json!({
-                                        "name": f.name,
-                                        "type": f.type_str,
-                                        "doc": f.doc,
-                                        "constraint": f.constraint,
-                                    })
-                                })
-                                .collect();
-                            serde_json::json!({
-                                "name": v.name,
-                                "docs": v.docs,
-                                "payload": payload,
-                            })
-                        })
-                        .collect();
-                    serde_json::json!({ "kind": "enum", "variants": vs })
-                }
-            };
-            serde_json::json!({
-                "short_name": t.short_name,
-                "module_path": t.module_path,
-                "fqn": format!("{}::{}", t.module_path, t.short_name),
-                "docs": t.docs,
-                "shape": shape_json,
-            })
-        })
-        .collect();
-
-    let mut sorted_tools: Vec<&ToolEntry> = tools().collect();
-    sorted_tools.sort_by_key(|t| (t.module_path, t.name));
-    let tools_json: Vec<serde_json::Value> = sorted_tools
-        .into_iter()
-        .map(|t| {
-            let params: Vec<serde_json::Value> = t
-                .params
-                .iter()
-                .map(|p| {
-                    serde_json::json!({
-                        "name": p.name,
-                        "type": p.type_str,
-                        "type_short_name": p.type_short_name,
-                    })
-                })
-                .collect();
-            serde_json::json!({
-                "name": t.name,
-                "module_path": t.module_path,
-                "fqn": format!("{}::{}", t.module_path, t.name),
-                "file": t.file,
-                "line": t.line,
-                "docs": t.docs,
-                "params": params,
-                "return_type": t.return_type,
-            })
-        })
-        .collect();
-
-    let mut sorted_recipes: Vec<&RecipeEntry> = recipes().collect();
-    sorted_recipes.sort_by_key(|r| (r.component, r.module_path, r.name));
-    let recipes_json: Vec<serde_json::Value> = sorted_recipes
-        .into_iter()
-        .map(|r| {
-            serde_json::json!({
-                "name": r.name,
-                "component": r.component,
-                "module_path": r.module_path,
-                "fqn": format!("{}::{}", r.module_path, r.name),
-                "file": r.file,
-                "line": r.line,
-                "docs": r.docs,
-                "source": r.source,
-                "uses": r.uses,
-            })
-        })
-        .collect();
-
+    use slice::slice_array;
     serde_json::json!({
         "catalog_version": 2,
-        "components": components,
-        "primitives": primitives_json,
-        "utilities": utilities_json,
-        "states": states_json,
-        "guides": guides_json,
-        "methods": methods_json,
-        "animations": animations_json,
-        "types": types_json,
-        "tools": tools_json,
-        "recipes": recipes_json,
+        "components": slice_array::<ComponentEntry>(),
+        "primitives": slice_array::<PrimitiveEntry>(),
+        "utilities": slice_array::<UtilityEntry>(),
+        "states": slice_array::<StateEntry>(),
+        "guides": slice_array::<GuideEntry>(),
+        "methods": slice_array::<MethodEntry>(),
+        "animations": slice_array::<AnimationEntry>(),
+        "types": slice_array::<TypeEntry>(),
+        "tools": slice_array::<ToolEntry>(),
+        "recipes": slice_array::<RecipeEntry>(),
+        "scopes": slice_array::<ScopeEntry>(),
     })
 }
 

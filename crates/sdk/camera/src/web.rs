@@ -25,7 +25,8 @@ use web_sys::{
     MediaStreamConstraints, MediaStreamTrack,
 };
 
-use crate::{BoxedCallback, CameraConfig, CameraError, CameraFacing, PixelFormat, VideoFrame};
+use crate::{CameraConfig, CameraError, CameraFacing, NativeSource};
+use media_stream::FrameWriter;
 
 /// The self-rescheduling rAF closure, held in an `Rc<RefCell<Option<…>>>`
 /// so it can re-arm itself by reference each frame.
@@ -74,8 +75,8 @@ pub(crate) async fn request_permission() -> Result<(), CameraError> {
 
 pub(crate) async fn open(
     config: CameraConfig,
-    callback: BoxedCallback,
-) -> Result<StreamHandle, CameraError> {
+    writer: FrameWriter,
+) -> Result<(StreamHandle, Option<NativeSource>), CameraError> {
     let document = web_sys::window()
         .and_then(|w| w.document())
         .ok_or(CameraError::Unsupported)?;
@@ -116,12 +117,12 @@ pub(crate) async fn open(
         let running = running.clone();
         let raf_id = raf_id.clone();
         let pump = pump.clone();
-        let mut callback = callback;
+        let writer = writer;
         Closure::wrap(Box::new(move || {
             if !running.get() {
                 return;
             }
-            pump_frame(&video, &canvas, &ctx, &mut callback);
+            pump_frame(&video, &canvas, &ctx, &writer);
             // Re-arm for the next display frame. rAF calls us later (not
             // re-entrantly), so a plain FnMut closure is safe to re-schedule.
             if let Some(c) = pump.borrow().as_ref() {
@@ -132,13 +133,22 @@ pub(crate) async fn open(
     *pump.borrow_mut() = Some(closure);
     raf_id.set(request_animation_frame(pump.borrow().as_ref().unwrap()));
 
-    Ok(StreamHandle {
-        video,
-        stream,
-        running,
-        raf_id,
-        _pump: pump,
-    })
+    // Publish the real `web_sys::MediaStream` as the stream's zero-copy
+    // native source: a future display consumer can `set_src_object` it (no
+    // canvas pump), and a GPU compositor can import it as an external
+    // texture. Downcast back to `web_sys::MediaStream` by the web consumer.
+    let native: NativeSource = std::rc::Rc::new(stream.clone());
+
+    Ok((
+        StreamHandle {
+            video,
+            stream,
+            running,
+            raf_id,
+            _pump: pump,
+        },
+        Some(native),
+    ))
 }
 
 /// Draw the current video frame into the canvas and read it back as
@@ -148,7 +158,7 @@ fn pump_frame(
     video: &HtmlVideoElement,
     canvas: &HtmlCanvasElement,
     ctx: &CanvasRenderingContext2d,
-    callback: &mut BoxedCallback,
+    writer: &FrameWriter,
 ) {
     let width = video.video_width();
     let height = video.video_height();
@@ -174,13 +184,7 @@ fn pump_frame(
     // `ImageData::data()` is straight (non-premultiplied) RGBA8, tightly
     // packed — exactly the SDK's frame format.
     let bytes = image.data();
-    let frame = VideoFrame {
-        data: &bytes.0,
-        width,
-        height,
-        format: PixelFormat::Rgba8,
-    };
-    callback(&frame);
+    writer.write_rgba8(width, height, &bytes.0);
 }
 
 fn request_animation_frame(f: &Closure<dyn FnMut()>) -> i32 {

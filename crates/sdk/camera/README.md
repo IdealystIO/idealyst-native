@@ -1,11 +1,12 @@
 # `camera`
 
 Cross-platform camera capture — the video sibling of [`microphone`], and
-the smallest useful abstraction over the platform's camera. Open a stream,
-receive raw pixel frames in a callback, drop the stream to stop. No files,
-no encoding, **no preview widget**, no opinion about where the frames go.
-That's deliberately left to higher-level SDKs (or your app); this crate's
-only job is to **establish the stream and hand you pixels**.
+the smallest useful abstraction over the platform's camera. Open it, get a
+[`MediaStream`] — a platform-agnostic live video source — and drop the
+stream to stop. No files, no encoding, **no preview widget**. The
+[`MediaStream`] is the shared currency this SDK trades with `screen-recorder`
+(another producer) and the `video` display layer (a consumer); see the
+[`media-stream`] crate.
 
 ```rust
 use camera::{Camera, CameraConfig};
@@ -13,26 +14,30 @@ use camera::{Camera, CameraConfig};
 # async fn demo() -> Result<(), camera::CameraError> {
 let cam = Camera::new();
 
-let stream = cam
-    .open(CameraConfig::default().back(), |frame| {
-        // Runs on a capture thread (native/Android) or the main thread
-        // (web). `frame.data` is tightly-packed, top-down RGBA8 of
-        // `frame.width * frame.height * 4` bytes. Copy out what you need
-        // and return quickly.
-        let (w, h) = (frame.width, frame.height);
-        let _ = (w, h, frame.data);
-    })
-    .await?;
+// Open the camera → a live MediaStream. Capture runs while any clone is
+// alive; the last drop stops it.
+let stream = cam.open(CameraConfig::default().back()).await?;
 
-// Capture runs for as long as `stream` is alive.
-stream.stop(); // or just drop it
+// Tap raw RGBA8 frames (push). Runs on a capture thread (native/Android)
+// or the main thread (web).
+let sub = stream.subscribe(|frame| {
+    // `frame.data` is tightly-packed top-down RGBA8 of
+    // `frame.width * frame.height * 4` bytes. Copy out what you need.
+    let (w, h) = (frame.width, frame.height);
+    let _ = (w, h, frame.data);
+});
+
+// Drop `sub` to stop tapping; drop `stream` to stop capture.
+# let _ = sub;
 # Ok(())
 # }
 ```
 
 ## What you get
 
-Every backend delivers the **same shape** to your callback — a
+A [`MediaStream`] (from the [`media-stream`] crate) exposes two ways to read
+the source: [`subscribe`] for push frames and [`latest`] for a pull of the
+most recent one. Every backend delivers the **same shape** — a
 [`VideoFrame`] of **tightly-packed, top-down `RGBA8`** pixels
 (`data.len() == width * height * 4`) plus the actual `width` and `height`.
 The platforms diverge in mechanism — and in their native pixel layout —
@@ -46,36 +51,38 @@ everywhere:
 | Web (wasm32) | `getUserMedia` + a `<video>`/`<canvas>` frame pump | canvas `RGBA8` |
 | desktop Linux / Windows | *not yet implemented* — returns `Unsupported` | — |
 
-The callback is `FnMut`, so it can own and mutate state across frames. It
-must be `Send` on native/Android (it runs on the capture thread) and need
-not be on web (it runs on the main thread) — the [`FrameCallback`] bound
-encodes that per target, so the same closure compiles everywhere.
+The subscribe callback is `FnMut`, so it can own and mutate state across
+frames. It must be `Send` on native/Android (it runs on the capture thread)
+and need not be on web (it runs on the main thread) — the [`FrameCallback`]
+bound encodes that per target, so the same closure compiles everywhere.
 
 ## Getting frames on screen
 
-This SDK renders **nothing** — by design (see [`microphone`]'s posture).
-A `VideoFrame` is just RGBA bytes; do whatever you want with them:
+This SDK renders **nothing** — by design. The [`MediaStream`] is meant to be
+*consumed*: hand it to the `video` display layer, or read it yourself.
 
-- **Show a live preview** — upload each frame into a `graphics` surface (a
-  GPU texture you own) and draw it, or `drawImage`/`putImageData` it onto a
-  canvas on web.
-- **Process / analyze** — run frames through your own pipeline (ML, QR
-  decode, color sampling) off the capture thread.
+- **Display / composite** — a `video` consumer or a GPU compositor takes the
+  `MediaStream`; on web it can attach the stream's zero-copy
+  [`native_source`] (a `web_sys::MediaStream`) directly, no per-frame copy.
+- **Process / analyze** — `subscribe` and run frames through your own
+  pipeline (ML, QR decode, color sampling) off the capture thread.
 - **Record / upload** — feed frames to an encoder or a `net` upload.
 
-Because the format is uniform RGBA8, the consumer code is the same on every
-platform.
+Because the format is uniform RGBA8 (and the native source is hidden behind
+[`media-stream`]), consumer code is the same on every platform.
 
 ## Delivery model
 
-A **raw push callback**, on purpose. The callback fires from the capture
-thread with each frame; you decide what to do with the pixels. Keeping this
-layer unopinionated lets a future SDK add preview-surface / recording /
-streaming abstractions without this crate having baked in the wrong one.
+A **live source you tap**, on purpose. `subscribe` fires from the capture
+thread with each frame; `latest` polls the most recent. The stream stays
+unopinionated about display/encoding so a `video` consumer or GPU compositor
+can layer on top — and so the platform transport (a web `MediaStream`, an
+Apple `CVPixelBuffer`, an Android `SurfaceTexture`) never leaks into your
+code.
 
-> **Frames are borrowed.** `frame.data` points at a backend-owned buffer
-> that's reused for the next frame. Copy out what you need before the
-> callback returns; don't stash the slice.
+> **Frames are borrowed.** In a `subscribe` callback `frame.data` points at a
+> reused buffer. Copy out what you need before returning; don't stash the
+> slice.
 
 ## Permissions
 
@@ -160,9 +167,14 @@ constraint.
   SDK's Android path, is **not yet device-verified**.
 
 [`microphone`]: ../microphone/README.md
-[`VideoFrame`]: src/frame.rs
+[`media-stream`]: ../media-stream
+[`MediaStream`]: ../media-stream/src/lib.rs
+[`VideoFrame`]: ../media-stream/src/lib.rs
+[`FrameCallback`]: ../media-stream/src/lib.rs
+[`subscribe`]: ../media-stream/src/lib.rs
+[`latest`]: ../media-stream/src/lib.rs
+[`native_source`]: ../media-stream/src/lib.rs
 [`CameraConfig`]: src/config.rs
 [`CameraFacing`]: src/config.rs
-[`FrameCallback`]: src/lib.rs
 [`Camera::request_permission`]: src/lib.rs
 [`Camera::open`]: src/lib.rs

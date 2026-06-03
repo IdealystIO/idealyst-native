@@ -5,7 +5,7 @@
 //! us inside the walker's active scope, so the effect is owned by the
 //! scope and survives past handler return).
 
-use crate::{VideoOps, VideoProps};
+use crate::{MediaContent, VideoOps, VideoProps};
 use backend_web::WebBackend;
 use runtime_core::Effect;
 use std::any::Any;
@@ -45,14 +45,46 @@ fn build_video(props: &Rc<VideoProps>) -> web_sys::Element {
     }
     let _ = video.set_attribute("data-external-kind", "video::VideoProps");
 
-    // Reactive src. The walker calls us inside its active scope, so the
-    // Effect's slot is owned by that scope — `_effect` going out of this
-    // function is fine, the scope keeps it alive.
-    let video_for_src = video.clone();
+    // One reactive populate effect: resolve the source each run, then set
+    // `src` (URL) or `srcObject` (stream) / clear. The walker calls us inside
+    // its active scope, so the Effect's slot is owned by that scope. Because
+    // `resolve()` runs HERE, any signal it reads re-runs this and re-populates
+    // — one mechanism for URL change, stream change, or swap-to-none.
+    let video_for_effect = video.clone();
     let props_clone = props.clone();
     let _effect = Effect::new(move || {
-        let url = (props_clone.src)();
-        let _ = video_for_src.set_attribute("src", &url);
+        let video_el = video_for_effect.dyn_ref::<web_sys::HtmlVideoElement>();
+        match props_clone.source.resolve() {
+            MediaContent::Url(u) => {
+                if let Some(v) = video_el {
+                    v.set_src_object(None);
+                }
+                let _ = video_for_effect.set_attribute("src", &u);
+            }
+            // Zero-copy web path: attach the stream's native `web_sys::MediaStream`
+            // (camera/screen-recorder publish theirs) as `srcObject` — the browser
+            // renders the live feed with no per-frame copy. A stream with only a CPU
+            // frame channel (no native source) would need the GPU/blit path — the
+            // compositing layer's job, not wired here.
+            MediaContent::Stream(s) => {
+                let _ = video_for_effect.remove_attribute("src");
+                if let (Some(v), Some(native)) = (video_el, s.native_source()) {
+                    if let Some(media_stream) = native.downcast_ref::<web_sys::MediaStream>() {
+                        v.set_src_object(Some(media_stream));
+                        let _ = v.set_attribute("playsinline", "");
+                        if props_clone.autoplay {
+                            let _ = v.play();
+                        }
+                    }
+                }
+            }
+            MediaContent::None => {
+                if let Some(v) = video_el {
+                    v.set_src_object(None);
+                }
+                let _ = video_for_effect.remove_attribute("src");
+            }
+        }
     });
 
     video

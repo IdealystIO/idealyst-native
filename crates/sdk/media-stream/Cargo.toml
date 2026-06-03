@@ -1,0 +1,26 @@
+[package]
+name = "media-stream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# A cross-platform, platform-agnostic handle to a live video source — the
+# common currency between capture SDKs (`camera`, `screen-recorder`) that
+# PRODUCE video and display / processing layers that CONSUME it.
+#
+# Deliberately thin and GPU-free: a `MediaStream` carries (a) a CPU frame
+# tap (normalized RGBA8, for analysis / a lowest-common-denominator display
+# / a fallback) and (b) an opaque, type-erased "native source" handle — the
+# platform's zero-copy frame source (a web `MediaStream`, an Apple
+# `CVPixelBuffer` pool, an Android `SurfaceTexture`) that a same-platform
+# display or GPU-compositing layer downcasts. The native pipe never leaks
+# into author code: a developer wires `camera -> video` and never names a
+# platform type.
+#
+# This crate intentionally does NOT depend on `wgpu` or the graphics stack.
+# A real-time GPU compositor is a LAYER ON TOP that consumes a `MediaStream`
+# (importing frames as textures, zero-copy via the native source, or via the
+# CPU tap as a fallback). The only guarantee made here is that such a
+# consumer is possible — the abstraction doesn't preclude it.
+
+[dependencies]

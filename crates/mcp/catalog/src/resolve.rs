@@ -27,10 +27,11 @@
 
 use std::collections::HashMap;
 
+use crate::slice::LeakFromJson;
 use crate::{
     AnimationEntry, ComponentEntry, EdgeRef, GuideEntry, MethodEntry, ParamSpec,
-    PrimitiveCategory, PrimitiveEntry, PropFieldSpec, RecipeEntry, StateEntry, ToolEntry,
-    TypeEntry, TypeShape, UtilityCategory, UtilityEntry, VariantSpec,
+    PrimitiveCategory, PrimitiveEntry, PropFieldSpec, RecipeEntry, ScopeEntry, StateEntry,
+    ToolEntry, TypeEntry, TypeShape, UtilityCategory, UtilityEntry, VariantSpec,
 };
 
 /// A `(module_path, name)` pair, the canonical identity for a
@@ -77,6 +78,27 @@ pub enum EdgeStatus {
     Ambiguous { candidates: Vec<EntryRef> },
 }
 
+/// The catalog slice an entity lives in — the discriminant
+/// [`ResolvedCatalog::resolve_entity`] tags each match with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntityKind {
+    Component,
+    Primitive,
+    Utility,
+    Tool,
+    Type,
+    Method,
+}
+
+/// One hit from the cross-kind name resolver. `module_path` is `""` for
+/// primitives (they have no module).
+#[derive(Debug, Clone, Copy)]
+pub struct EntityMatch {
+    pub kind: EntityKind,
+    pub module_path: &'static str,
+    pub name: &'static str,
+}
+
 /// Resolved view over the catalog.
 ///
 /// Built once at startup. Holds the entries (drained from `inventory`),
@@ -102,6 +124,7 @@ pub struct ResolvedCatalog {
     types: Vec<&'static crate::TypeEntry>,
     tools: Vec<&'static crate::ToolEntry>,
     recipes: Vec<&'static crate::RecipeEntry>,
+    scopes: Vec<&'static crate::ScopeEntry>,
 }
 
 impl ResolvedCatalog {
@@ -118,6 +141,7 @@ impl ResolvedCatalog {
         cat.types = crate::types().collect();
         cat.tools = crate::tools().collect();
         cat.recipes = crate::recipes().collect();
+        cat.scopes = crate::scopes().collect();
         cat
     }
 
@@ -147,35 +171,19 @@ impl ResolvedCatalog {
             entries.push(leak_entry_from_json(c)?);
         }
         let mut cat = Self::build_from(entries);
-        // v2 slices — all optional. Missing entries are silently
-        // empty so v1 producers keep working unchanged.
-        if let Some(arr) = value["primitives"].as_array() {
-            cat.primitives = arr.iter().filter_map(leak_primitive_from_json).collect();
-        }
-        if let Some(arr) = value["utilities"].as_array() {
-            cat.utilities = arr.iter().filter_map(leak_utility_from_json).collect();
-        }
-        if let Some(arr) = value["states"].as_array() {
-            cat.states = arr.iter().filter_map(leak_state_from_json).collect();
-        }
-        if let Some(arr) = value["guides"].as_array() {
-            cat.guides = arr.iter().filter_map(leak_guide_from_json).collect();
-        }
-        if let Some(arr) = value["methods"].as_array() {
-            cat.methods = arr.iter().filter_map(leak_method_from_json).collect();
-        }
-        if let Some(arr) = value["animations"].as_array() {
-            cat.animations = arr.iter().filter_map(leak_animation_from_json).collect();
-        }
-        if let Some(arr) = value["types"].as_array() {
-            cat.types = arr.iter().filter_map(leak_type_from_json).collect();
-        }
-        if let Some(arr) = value["tools"].as_array() {
-            cat.tools = arr.iter().filter_map(leak_tool_from_json).collect();
-        }
-        if let Some(arr) = value["recipes"].as_array() {
-            cat.recipes = arr.iter().filter_map(leak_recipe_from_json).collect();
-        }
+        // v2 slices — all optional, each rebuilt through its
+        // `LeakFromJson` impl. Missing keys yield empty Vecs (via
+        // `slice_vec`) so v1 producers keep working unchanged.
+        cat.primitives = slice_vec::<PrimitiveEntry>(&value);
+        cat.utilities = slice_vec::<UtilityEntry>(&value);
+        cat.states = slice_vec::<StateEntry>(&value);
+        cat.guides = slice_vec::<GuideEntry>(&value);
+        cat.methods = slice_vec::<MethodEntry>(&value);
+        cat.animations = slice_vec::<AnimationEntry>(&value);
+        cat.types = slice_vec::<TypeEntry>(&value);
+        cat.tools = slice_vec::<ToolEntry>(&value);
+        cat.recipes = slice_vec::<RecipeEntry>(&value);
+        cat.scopes = slice_vec::<ScopeEntry>(&value);
         Ok(cat)
     }
 
@@ -205,6 +213,125 @@ impl ResolvedCatalog {
     }
     pub fn recipes(&self) -> &[&'static crate::RecipeEntry] {
         &self.recipes
+    }
+    pub fn scopes(&self) -> &[&'static crate::ScopeEntry] {
+        &self.scopes
+    }
+
+    /// Recipes that demonstrate `name` — either as their primary
+    /// [`target`](crate::RecipeEntry::target) or merely referenced in
+    /// their body ([`uses`](crate::RecipeEntry::uses)). Kind-agnostic:
+    /// works for a component, utility, free function, or type name
+    /// alike. This is the join every `describe_*` uses to surface
+    /// "here's how to use it" examples — the phase-3 generalization of
+    /// what was previously inlined for components only.
+    pub fn recipes_for(&self, name: &str) -> Vec<&'static RecipeEntry> {
+        self.recipes
+            .iter()
+            .copied()
+            .filter(|r| r.target == name || r.uses.iter().any(|u| *u == name))
+            .collect()
+    }
+
+    /// Cross-kind name resolver: every catalog entity matching `name`
+    /// exactly, tagged with its [`EntityKind`]. Empty when nothing
+    /// matches; more than one hit means the name is ambiguous across (or
+    /// within) kinds — a `--check` concern, surfaced here so callers can
+    /// report it. The generalized counterpart to the component-only
+    /// `composes` edge resolver: a recipe target or a future "what is
+    /// X?" query resolves through this.
+    pub fn resolve_entity(&self, name: &str) -> Vec<EntityMatch> {
+        let mut out = Vec::new();
+        for e in &self.entries {
+            if e.name == name {
+                out.push(EntityMatch {
+                    kind: EntityKind::Component,
+                    module_path: e.module_path,
+                    name: e.name,
+                });
+            }
+        }
+        for p in &self.primitives {
+            if p.name == name || p.pascal_name == name {
+                out.push(EntityMatch {
+                    kind: EntityKind::Primitive,
+                    module_path: "",
+                    name: p.name,
+                });
+            }
+        }
+        for u in &self.utilities {
+            if u.name == name {
+                out.push(EntityMatch {
+                    kind: EntityKind::Utility,
+                    module_path: u.module_path,
+                    name: u.name,
+                });
+            }
+        }
+        for t in &self.tools {
+            if t.name == name {
+                out.push(EntityMatch {
+                    kind: EntityKind::Tool,
+                    module_path: t.module_path,
+                    name: t.name,
+                });
+            }
+        }
+        for t in &self.types {
+            if t.short_name == name {
+                out.push(EntityMatch {
+                    kind: EntityKind::Type,
+                    module_path: t.module_path,
+                    name: t.short_name,
+                });
+            }
+        }
+        for m in &self.methods {
+            if m.name == name {
+                out.push(EntityMatch {
+                    kind: EntityKind::Method,
+                    module_path: m.parent_module_path,
+                    name: m.name,
+                });
+            }
+        }
+        out
+    }
+
+    /// Ambient scope assignment: the scope an entity at `module_path`
+    /// belongs to, by module proximity — same-module declaration first,
+    /// then the closest ancestor module that declared a `doc_scope!`,
+    /// else `None` (falls back to the default/root scope at a higher
+    /// layer). Mirrors the component edge resolver's proximity rules
+    /// (see [`resolve_one`]), so scope membership follows the same
+    /// "nearest wins" semantics authors already rely on.
+    ///
+    /// Ties (two scopes declared in the same module, or two equidistant
+    /// ancestors) resolve to the lowest `slug` for determinism — a
+    /// genuinely ambiguous scoping is a `--check` concern, not a panic.
+    pub fn scope_for(&self, module_path: &str) -> Option<&'static ScopeEntry> {
+        // 1. Same-module declaration wins outright.
+        if let Some(s) = self
+            .scopes
+            .iter()
+            .filter(|s| s.module_path == module_path)
+            .min_by_key(|s| s.slug)
+        {
+            return Some(s);
+        }
+        // 2. Closest ancestor module (longest matching module prefix).
+        self.scopes
+            .iter()
+            .filter(|s| is_ancestor_module(s.module_path, module_path))
+            .max_by(|a, b| {
+                a.module_path
+                    .len()
+                    .cmp(&b.module_path.len())
+                    // Same depth → lowest slug for a deterministic pick.
+                    .then_with(|| b.slug.cmp(a.slug))
+            })
+            .copied()
     }
 
     /// Build from an explicit entry list — the path tests use to
@@ -582,7 +709,7 @@ fn leak_animation_from_json(v: &serde_json::Value) -> Option<&'static AnimationE
 
 fn leak_recipe_from_json(v: &serde_json::Value) -> Option<&'static RecipeEntry> {
     let name = v["name"].as_str()?.to_string();
-    let component = v["component"].as_str().unwrap_or("").to_string();
+    let target = v["target"].as_str().unwrap_or("").to_string();
     let module_path = v["module_path"].as_str().unwrap_or("").to_string();
     let file = v["file"].as_str().unwrap_or("").to_string();
     let line = v["line"].as_u64().unwrap_or(0) as u32;
@@ -598,7 +725,7 @@ fn leak_recipe_from_json(v: &serde_json::Value) -> Option<&'static RecipeEntry> 
         .unwrap_or_default();
     Some(Box::leak(Box::new(RecipeEntry {
         name: leak_str(name),
-        component: leak_str(component),
+        target: leak_str(target),
         module_path: leak_str(module_path),
         file: leak_str(file),
         line,
@@ -661,6 +788,86 @@ fn leak_tool_from_json(v: &serde_json::Value) -> Option<&'static ToolEntry> {
         params,
         return_type: leak_str(return_type),
     })))
+}
+
+fn leak_scope_from_json(v: &serde_json::Value) -> Option<&'static ScopeEntry> {
+    let slug = v["slug"].as_str()?.to_string();
+    let title = v["title"].as_str().unwrap_or(&slug).to_string();
+    let docs = v["docs"].as_str().unwrap_or("").to_string();
+    let module_path = v["module_path"].as_str().unwrap_or("").to_string();
+    let order = v["order"].as_u64().unwrap_or(0) as u32;
+    Some(Box::leak(Box::new(ScopeEntry {
+        slug: leak_str(slug),
+        title: leak_str(title),
+        docs: leak_str(docs),
+        module_path: leak_str(module_path),
+        order,
+    })))
+}
+
+/// `value[S::KEY]` as a Vec of leaked entries, or empty when the key is
+/// absent / not an array. The generic reader half of `build_from_json`.
+fn slice_vec<S: LeakFromJson>(value: &serde_json::Value) -> Vec<&'static S> {
+    value[S::KEY]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| S::from_json(v)).collect())
+        .unwrap_or_default()
+}
+
+// `LeakFromJson` impls — the reader side of each lenient v2 slice. Each
+// delegates to the `leak_*_from_json` fn above, which stays the single
+// implementation site. `ComponentEntry` intentionally has no impl: its
+// reader (`leak_entry_from_json`) is `Result`-returning because a
+// malformed component must fail the rebuild, not be silently skipped.
+impl LeakFromJson for PrimitiveEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_primitive_from_json(v)
+    }
+}
+impl LeakFromJson for UtilityEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_utility_from_json(v)
+    }
+}
+impl LeakFromJson for StateEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_state_from_json(v)
+    }
+}
+impl LeakFromJson for GuideEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_guide_from_json(v)
+    }
+}
+impl LeakFromJson for MethodEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_method_from_json(v)
+    }
+}
+impl LeakFromJson for AnimationEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_animation_from_json(v)
+    }
+}
+impl LeakFromJson for TypeEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_type_from_json(v)
+    }
+}
+impl LeakFromJson for ToolEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_tool_from_json(v)
+    }
+}
+impl LeakFromJson for RecipeEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_recipe_from_json(v)
+    }
+}
+impl LeakFromJson for ScopeEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_scope_from_json(v)
+    }
 }
 
 fn is_ancestor_module(maybe_ancestor: &str, descendant: &str) -> bool {

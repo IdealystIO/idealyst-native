@@ -1,120 +1,84 @@
 //! Cross-platform camera capture.
 //!
-//! The smallest useful abstraction over the platform's camera: open a
-//! stream, get raw pixel frames in a callback, drop the stream to stop.
-//! No files, no encoding, no preview widget, no opinion about where the
-//! frames go — that's for higher-level SDKs (or the app) to layer on top.
-//! This crate just establishes the stream and hands you pixels.
+//! The smallest useful abstraction over the platform's camera: open it, get
+//! a [`MediaStream`] — a platform-agnostic live video source — and drop the
+//! stream to stop. No files, no encoding, no preview widget. Tap raw frames
+//! with [`MediaStream::subscribe`], or hand the stream to a display /
+//! compositing layer; the per-platform transport stays hidden.
 //!
-//! It is the sibling of the `microphone` SDK: same shape, same
-//! unopinionated posture, but for video frames instead of PCM. If you want
-//! the frames *on screen*, copy them into a `graphics` surface (a GPU
-//! texture you own) or draw them to a canvas — this SDK deliberately does
-//! not render anything itself.
+//! It is the sibling of the `microphone` SDK: same unopinionated posture,
+//! but for video. The [`MediaStream`] is the common currency it shares with
+//! `screen-recorder` (another producer) and the `video` display layer (a
+//! consumer) — see the `media-stream` crate.
 //!
 //! ```no_run
 //! use camera::{Camera, CameraConfig};
 //!
 //! # async fn demo() -> Result<(), camera::CameraError> {
 //! let cam = Camera::new();
-//! // Keep the returned stream alive for as long as you want to capture.
-//! let stream = cam
-//!     .open(CameraConfig::default().back(), |frame| {
-//!         // Runs on a capture thread (native/Android) or the main thread
-//!         // (web). Copy out what you need and return fast.
-//!         let (w, h) = (frame.width, frame.height);
-//!         let _ = (w, h, frame.data);
-//!     })
-//!     .await?;
+//! // Keep the stream alive for as long as you want to capture.
+//! let stream = cam.open(CameraConfig::default().back()).await?;
 //!
-//! // ... later ...
-//! stream.stop();
+//! // Tap raw RGBA8 frames (runs on a capture thread / the web main thread):
+//! let sub = stream.subscribe(|frame| {
+//!     let (w, h) = (frame.width, frame.height);
+//!     let _ = (w, h, frame.data);
+//! });
+//!
+//! // ... later: drop `sub` to stop tapping, drop `stream` to stop capture.
+//! # let _ = sub;
 //! # Ok(())
 //! # }
 //! ```
 //!
 //! # Architecture
 //!
-//! The platform-agnostic surface ([`Camera`], [`CameraStream`],
-//! [`VideoFrame`], [`CameraConfig`], [`CameraFacing`], [`CameraError`])
-//! lives here. Exactly one cfg-gated backend module is compiled per target
-//! and supplies the `imp` submodule the public API delegates to:
+//! The platform-agnostic surface ([`Camera`], [`CameraConfig`],
+//! [`CameraFacing`], [`CameraError`]) lives here; the live-source surface
+//! ([`MediaStream`], [`VideoFrame`], …) is re-exported from `media-stream`.
+//! Exactly one cfg-gated backend module is compiled per target; each pushes
+//! frames into a [`FrameWriter`](media_stream::FrameWriter):
 //!
 //! - **web (wasm32)** — `getUserMedia` + a `<video>`/`<canvas>` frame pump.
-//! - **iOS / macOS** — `AVCaptureSession` + `AVCaptureVideoDataOutput`,
-//!   frames delivered to a sample-buffer delegate.
-//! - **Android** — `Camera2` + `ImageReader` read on a JNI worker thread.
-//! - **other (desktop Linux/Windows)** — not yet implemented; every call
-//!   returns [`CameraError::Unsupported`]. A V4L2/MSMF backend is a clean
-//!   future addition, not a gap in the capture model.
+//!   Also publishes the `web_sys::MediaStream` as the stream's
+//!   [`native_source`](MediaStream::native_source) for a future zero-copy
+//!   display / GPU consumer.
+//! - **iOS / macOS** — `AVCaptureSession` + `AVCaptureVideoDataOutput`.
+//! - **Android** — `Camera2` + `ImageReader` via a Kotlin shim.
+//! - **other (desktop Linux/Windows)** — not yet implemented; returns
+//!   [`CameraError::Unsupported`].
 //!
 //! # Permissions
 //!
-//! The app must declare the platform's camera permission, or capture is
-//! denied at runtime. This SDK declares the `camera` capability
-//! (`[package.metadata.idealyst] capabilities = ["camera"]`); the build
-//! CLI injects the right per-platform artifacts:
+//! The app must declare the platform's camera permission. This SDK declares
+//! the `camera` capability (`[package.metadata.idealyst] capabilities =
+//! ["camera"]`); the build CLI injects `NSCameraUsageDescription` (iOS/macOS)
+//! / the `CAMERA` permission (Android). Web prompts on first `getUserMedia`.
 //!
-//! - **iOS / macOS** — `NSCameraUsageDescription` in `Info.plist`.
-//! - **Android** — `<uses-permission android:name="android.permission.CAMERA"/>`.
-//! - **web** — none; the browser prompts on first `getUserMedia`.
-//!
-//! [`Camera::request_permission`] proactively triggers that prompt (and is
-//! a no-op where the OS prompts implicitly), but it's optional —
-//! [`Camera::open`] requests access itself if needed.
+//! [`Camera::request_permission`] proactively triggers that prompt; it's
+//! optional — [`Camera::open`] requests access itself if needed.
 
 #![deny(missing_docs)]
 
 mod config;
 mod error;
-mod frame;
 
 pub use config::{CameraConfig, CameraFacing};
 pub use error::CameraError;
-pub use frame::{PixelFormat, VideoFrame};
+
+// The live-source surface is the shared `media-stream` vocabulary. Re-export
+// it so a camera user has everything from `camera::`.
+pub use media_stream::{FrameCallback, MediaStream, PixelFormat, Subscription, VideoFrame};
+
+/// The type-erased zero-copy frame source a backend publishes on the stream
+/// (e.g. the web `web_sys::MediaStream`), downcast by a same-platform
+/// consumer. `None` where no zero-copy source is exposed (yet).
+pub(crate) type NativeSource = std::rc::Rc<dyn std::any::Any>;
 
 // ---------------------------------------------------------------------------
-// The callback bound.
-//
-// The native (AVFoundation) and Android backends deliver frames on a
-// capture/reader thread, so the callback must be `Send` there. The web
-// backend runs it on the single wasm thread inside a `requestVideoFrame`
-// handler holding non-`Send` JS values, so `Send` is both unnecessary and
-// unsatisfiable. One marker trait, cfg'd, keeps the public `open`
-// signature identical on every target while enforcing the right bound
-// underneath. (Mirrors `microphone::AudioCallback`.)
-// ---------------------------------------------------------------------------
-
-/// The bound a frame callback must satisfy. Implemented automatically for
-/// any matching closure — you never write `impl FrameCallback` yourself,
-/// just pass a `|frame| { .. }` closure to [`Camera::open`].
-///
-/// On native and Android targets this requires `Send` (the callback runs
-/// on the capture/reader thread); on web it does not (it runs on the main
-/// thread). The closure is `FnMut`, so it may own and mutate state across
-/// frames.
-#[cfg(not(target_arch = "wasm32"))]
-pub trait FrameCallback: FnMut(&VideoFrame) + Send + 'static {}
-#[cfg(not(target_arch = "wasm32"))]
-impl<T: FnMut(&VideoFrame) + Send + 'static> FrameCallback for T {}
-
-/// See the non-wasm definition; on web the `Send` bound is dropped.
-#[cfg(target_arch = "wasm32")]
-pub trait FrameCallback: FnMut(&VideoFrame) + 'static {}
-#[cfg(target_arch = "wasm32")]
-impl<T: FnMut(&VideoFrame) + 'static> FrameCallback for T {}
-
-/// The boxed form backends actually receive. Mirrors [`FrameCallback`]'s
-/// cfg'd `Send`-ness.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) type BoxedCallback = Box<dyn FnMut(&VideoFrame) + Send + 'static>;
-#[cfg(target_arch = "wasm32")]
-pub(crate) type BoxedCallback = Box<dyn FnMut(&VideoFrame) + 'static>;
-
-// ---------------------------------------------------------------------------
-// Backend selector. Exactly one compiles per target; each supplies an
-// `imp` module with `request_permission()`, `open()`, and a `StreamHandle`
-// whose `Drop` stops capture.
+// Backend selector. Exactly one compiles per target; each supplies an `imp`
+// module with `request_permission()`, `open(config, FrameWriter)`, and a
+// `StreamHandle` whose `Drop` stops capture.
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
@@ -156,54 +120,30 @@ impl Camera {
     }
 
     /// Proactively request camera permission, triggering the OS prompt on
-    /// platforms that have one (iOS, macOS, Android, web). Resolves
-    /// `Ok(())` once access is granted, [`CameraError::PermissionDenied`]
-    /// if refused. A no-op `Ok(())` where the platform grants implicitly or
-    /// prompts only on capture start.
+    /// platforms that have one (iOS, macOS, Android, web). Resolves `Ok(())`
+    /// once access is granted, [`CameraError::PermissionDenied`] if refused.
     ///
-    /// Optional — [`open`](Camera::open) requests access on its own. Call
-    /// this when you want the prompt to appear before, say, showing a
-    /// capture UI.
+    /// Optional — [`open`](Camera::open) requests access on its own.
     pub async fn request_permission(&self) -> Result<(), CameraError> {
         imp::request_permission().await
     }
 
-    /// Open a live capture stream. `callback` fires with each captured
-    /// frame (see [`VideoFrame`]) until the returned [`CameraStream`] is
-    /// dropped (or [`stop`](CameraStream::stop)ped).
+    /// Open the camera and return a live [`MediaStream`]. Capture runs while
+    /// any clone of the stream is alive; dropping the last one stops it.
     ///
-    /// Requests permission if it hasn't been granted yet, so this can
-    /// surface the OS prompt. The callback runs on a capture thread on
-    /// native/Android targets and on the main thread on web — keep it fast
-    /// and non-blocking; copy pixels out rather than processing heavily in
-    /// place.
-    pub async fn open<C: FrameCallback>(
-        &self,
-        config: CameraConfig,
-        callback: C,
-    ) -> Result<CameraStream, CameraError> {
-        let boxed: BoxedCallback = Box::new(callback);
-        let handle = imp::open(config, boxed).await?;
-        Ok(CameraStream { _handle: handle })
-    }
-}
-
-/// A live capture stream. Capture runs for as long as this value is alive;
-/// dropping it tears the stream down and stops the callback. Hold onto it
-/// (e.g. in your app state) for the duration you want to capture.
-///
-/// Not `Send` on native targets — the underlying platform session is tied
-/// to the thread that opened it. Keep it on that thread.
-pub struct CameraStream {
-    // The concrete type is backend-specific; its `Drop` stops capture.
-    _handle: imp::StreamHandle,
-}
-
-impl CameraStream {
-    /// Stop capturing and release the stream. Equivalent to dropping the
-    /// value; provided for call sites where an explicit `stop()` reads
-    /// clearer than a `drop(stream)`.
-    pub fn stop(self) {
-        // `self` drops here, running the backend's teardown.
+    /// Requests permission if needed (can surface the OS prompt). Tap frames
+    /// with [`MediaStream::subscribe`] / [`MediaStream::latest`], or hand the
+    /// stream to a display / compositing consumer.
+    pub async fn open(&self, config: CameraConfig) -> Result<MediaStream, CameraError> {
+        let (stream, writer) = MediaStream::new();
+        let (handle, native) = imp::open(config, writer).await?;
+        if let Some(src) = native {
+            stream.set_native_source(src);
+        }
+        // The backend `StreamHandle` (which owns the capture session + the
+        // `FrameWriter`) stops capture on drop. Own it in the stopper so it
+        // tears down when the last `MediaStream` clone drops.
+        stream.attach_stopper(move || drop(handle));
+        Ok(stream)
     }
 }

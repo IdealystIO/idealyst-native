@@ -24,7 +24,8 @@ use objc2::runtime::{AnyObject, Bool, NSObjectProtocol};
 use objc2::{class, declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_foundation::{NSObject, NSString};
 
-use crate::{BoxedCallback, CameraConfig, CameraError, CameraFacing, PixelFormat, VideoFrame};
+use crate::{CameraConfig, CameraError, CameraFacing, NativeSource};
+use media_stream::FrameWriter;
 
 // ---------------------------------------------------------------------------
 // Foreign surfaces. AVFoundation classes are reached by name via `class!`,
@@ -134,7 +135,7 @@ const AUTH_AUTHORIZED: i64 = 3;
 /// Callback + reusable repack scratch, shared with the delegate. Holds no
 /// Obj-C handle, so it is `Send + Sync`.
 struct State {
-    callback: BoxedCallback,
+    writer: FrameWriter,
     /// Reusable tightly-packed RGBA buffer so steady-state capture doesn't
     /// allocate per frame.
     scratch: Vec<u8>,
@@ -192,15 +193,9 @@ declare_class!(
 
                 if !base.is_null() && width > 0 && height > 0 && stride >= width * 4 {
                     let mut state = self.ivars().state.lock().unwrap();
-                    let State { callback, scratch } = &mut *state;
+                    let State { writer, scratch } = &mut *state;
                     repack_bgra_to_rgba(base, width, height, stride, scratch);
-                    let frame = VideoFrame {
-                        data: scratch,
-                        width: width as u32,
-                        height: height as u32,
-                        format: PixelFormat::Rgba8,
-                    };
-                    callback(&frame);
+                    writer.write_rgba8(width as u32, height as u32, scratch);
                 }
 
                 CVPixelBufferUnlockBaseAddress(pixel_buffer, LOCK_READ_ONLY);
@@ -301,8 +296,8 @@ pub(crate) async fn request_permission() -> Result<(), CameraError> {
 
 pub(crate) async fn open(
     config: CameraConfig,
-    callback: BoxedCallback,
-) -> Result<StreamHandle, CameraError> {
+    writer: FrameWriter,
+) -> Result<(StreamHandle, Option<NativeSource>), CameraError> {
     request_permission().await?;
 
     // SAFETY: a straight transcription of the documented AVCaptureSession
@@ -347,7 +342,7 @@ pub(crate) async fn open(
         let delegate: Retained<FrameDelegate> = {
             let this = FrameDelegate::alloc().set_ivars(DelegateIvars {
                 state: Mutex::new(State {
-                    callback,
+                    writer,
                     scratch: Vec::new(),
                 }),
             });
@@ -368,11 +363,17 @@ pub(crate) async fn open(
         let _: () = msg_send![&*session, commitConfiguration];
         let _: () = msg_send![&*session, startRunning];
 
-        Ok(StreamHandle {
-            session,
-            _delegate: delegate,
-            _queue: queue,
-        })
+        // Apple exposes no zero-copy native source yet (CVPixelBuffer→Metal
+        // via CVMetalTextureCache is the GPU-pipeline phase); frames flow
+        // through the CPU channel.
+        Ok((
+            StreamHandle {
+                session,
+                _delegate: delegate,
+                _queue: queue,
+            },
+            None,
+        ))
     }
 }
 

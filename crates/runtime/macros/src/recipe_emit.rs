@@ -23,31 +23,32 @@ use quote::quote;
 use syn::parse::{Parse, ParseStream};
 
 struct RecipeInput {
-    /// The component the recipe primarily demonstrates (`recipe!`'s
-    /// first arg). A path so `recipe!(idea_ui::Select, …)` works too;
-    /// only the last segment is recorded as the component name.
-    component: syn::Path,
+    /// The entity the recipe primarily demonstrates (`recipe!`'s first
+    /// arg) — a component, utility, free function, or type. A path so
+    /// `recipe!(idea_ui::Select, …)` works too; only the last segment is
+    /// recorded as the target name.
+    target: syn::Path,
     /// The recipe function — real, compiled code.
     func: syn::ItemFn,
 }
 
 impl Parse for RecipeInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let component: syn::Path = input.parse()?;
+        let target: syn::Path = input.parse()?;
         input.parse::<syn::Token![,]>()?;
         let func: syn::ItemFn = input.parse()?;
-        Ok(RecipeInput { component, func })
+        Ok(RecipeInput { target, func })
     }
 }
 
 pub(crate) fn emit(input: TokenStream2) -> TokenStream2 {
-    let RecipeInput { component, func } = match syn::parse2::<RecipeInput>(input) {
+    let RecipeInput { target, func } = match syn::parse2::<RecipeInput>(input) {
         Ok(p) => p,
         Err(e) => return e.to_compile_error(),
     };
 
     let name_str = func.sig.ident.to_string();
-    let component_str = component
+    let target_str = target
         .segments
         .last()
         .map(|s| s.ident.to_string())
@@ -85,7 +86,7 @@ pub(crate) fn emit(input: TokenStream2) -> TokenStream2 {
         ::runtime_core::__mcp::inventory::submit! {
             ::runtime_core::__mcp::RecipeEntry {
                 name: #name_str,
-                component: #component_str,
+                target: #target_str,
                 module_path: module_path!(),
                 file: file!(),
                 line: line!(),

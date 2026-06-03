@@ -106,7 +106,7 @@ pub struct Recipe {
     /// The recipe's formatted, copy-pasteable source code.
     pub source: String,
     /// True when this component is the recipe's primary subject
-    /// (`recipe.component == component.name`); false when the component
+    /// (`recipe.target == component.name`); false when the component
     /// only appears in the recipe's `uses` list.
     pub primary: bool,
 }
@@ -281,14 +281,14 @@ impl CatalogModel {
                 .collect();
 
             // Recipes attach to a component when they primarily
-            // demonstrate it (`recipe.component == name`) OR merely
+            // demonstrate it (`recipe.target == name`) OR merely
             // reference it (`recipe.uses` contains the name). Primary
             // recipes sort first so the renderer can flag them.
             let mut recipes: Vec<Recipe> = cat
                 .recipes()
                 .iter()
                 .filter_map(|r| {
-                    let primary = r.component == c.name;
+                    let primary = r.target == c.name;
                     let used = r.uses.contains(&c.name);
                     if primary || used {
                         Some(Recipe {
@@ -539,6 +539,37 @@ mod tests {
     }
 
     #[test]
+    fn every_idea_ui_component_is_scoped() {
+        // Phase 7 dogfood: with the `idea-ui` + `components` scopes
+        // declared, every idea-ui component must resolve to a scope by
+        // ambient module proximity. This is exactly what
+        // `mcp --check --strict-scopes` enforces — assert it holds for
+        // the live catalog so the strict gate would pass for idea-ui.
+        let cat = ResolvedCatalog::build();
+        let unscoped: Vec<&str> = cat
+            .entries()
+            .iter()
+            .filter(|e| e.module_path.starts_with("idea_ui"))
+            .filter(|e| cat.scope_for(e.module_path).is_none())
+            .map(|e| e.name)
+            .collect();
+        assert!(
+            unscoped.is_empty(),
+            "these idea-ui components resolve to no doc_scope!: {:?}",
+            unscoped
+        );
+        // And they land in the `components` scope specifically (the
+        // nearest ancestor), not some accidental other scope.
+        if let Some(button) = cat.entries().iter().find(|e| e.name == "Button") {
+            assert_eq!(
+                cat.scope_for(button.module_path).map(|s| s.slug),
+                Some("components"),
+                "Button should resolve to the `components` scope",
+            );
+        }
+    }
+
+    #[test]
     fn find_round_trips_through_slug() {
         let m = model();
         // Every entry must be reachable by its own (kind, slug) — the
@@ -611,7 +642,7 @@ mod tests {
             let Some(comp) = m
                 .of_kind(Kind::Component)
                 .into_iter()
-                .find(|e| e.name == r.component)
+                .find(|e| e.name == r.target)
             else {
                 // The primary component may not be in the model (e.g. a
                 // recipe for a non-idea-ui component); skip those.
@@ -626,14 +657,14 @@ mod tests {
                         "recipe `{}` (component `{}`) did not attach to its component; \
                          component had recipes: {:?}",
                         r.name,
-                        r.component,
+                        r.target,
                         comp.recipes.iter().map(|x| &x.name).collect::<Vec<_>>()
                     )
                 });
             assert!(
                 attached.primary,
                 "recipe `{}` should be marked primary on component `{}`",
-                r.name, r.component
+                r.name, r.target
             );
             assert_eq!(attached.source, r.source, "recipe source should round-trip owned");
         }

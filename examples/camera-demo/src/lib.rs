@@ -130,19 +130,23 @@ pub fn app() -> Element {
         status.set("Requesting camera…".to_string());
         runtime_core::driver::spawn_async(async move {
             let cam = Camera::new();
-            let result = cam
-                .open(CameraConfig::default(), |frame: &VideoFrame| {
-                    COLOR_BITS.store(average_color(frame), Ordering::Relaxed);
-                    DIMS.store((frame.width << 16) | (frame.height & 0xFFFF), Ordering::Relaxed);
-                    FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
-                })
-                .await;
-            match result {
+            match cam.open(CameraConfig::default()).await {
                 Ok(stream) => {
+                    // Tap the stream's frames. The subscription must outlive
+                    // the closure, so leak it alongside the stream.
+                    let sub = stream.subscribe(|frame: &VideoFrame| {
+                        COLOR_BITS.store(average_color(frame), Ordering::Relaxed);
+                        DIMS.store(
+                            (frame.width << 16) | (frame.height & 0xFFFF),
+                            Ordering::Relaxed,
+                        );
+                        FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+                    });
                     status.set("Live — the page tints to what the camera sees".to_string());
                     // The demo has no Stop button; keep capturing for the
-                    // app's lifetime. Leaking the stream pins it (and avoids
-                    // moving the !Send native session).
+                    // app's lifetime. Leaking the stream + subscription pins
+                    // them (and avoids moving the !Send stream handle).
+                    std::mem::forget(sub);
                     std::mem::forget(stream);
                 }
                 Err(e) => {

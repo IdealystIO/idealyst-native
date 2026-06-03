@@ -1851,8 +1851,14 @@ impl Backend for AndroidBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        secure: bool,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
+        // TODO(secure): wire `secure` to the EditText input type
+        // (`PasswordTransformationMethod` / `TYPE_TEXT_VARIATION_PASSWORD`).
+        // Stubbed for now so the backend matches the updated Backend trait —
+        // part of the in-flight text-input rework, not this video change.
+        let _ = secure;
         let node = primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down);
         a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::TextField));
         node

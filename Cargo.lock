@@ -1197,6 +1197,7 @@ dependencies = [
  "futures-channel",
  "jni 0.21.1",
  "js-sys",
+ "media-stream",
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
@@ -1215,6 +1216,21 @@ dependencies = [
  "dev-server",
  "idea-ui",
  "runtime-core",
+]
+
+[[package]]
+name = "camera-preview-demo"
+version = "0.0.1"
+dependencies = [
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-macos",
+ "backend-web",
+ "camera",
+ "dev-server",
+ "idea-ui",
+ "runtime-core",
+ "video",
 ]
 
 [[package]]
@@ -2358,14 +2374,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "frame-view"
-version = "0.0.1"
-dependencies = [
- "runtime-core",
- "wgpu",
 ]
 
 [[package]]
@@ -4237,6 +4245,26 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
 ]
+
+[[package]]
+name = "media-sources-demo"
+version = "0.0.1"
+dependencies = [
+ "backend-web",
+ "camera",
+ "dev-server",
+ "idea-ui",
+ "media-stream",
+ "runtime-core",
+ "video",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "media-stream"
+version = "0.0.1"
 
 [[package]]
 name = "memchr"
@@ -7974,6 +8002,7 @@ dependencies = [
  "backend-web",
  "block2 0.5.1",
  "jni 0.21.1",
+ "media-stream",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
