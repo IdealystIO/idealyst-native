@@ -28,9 +28,13 @@
 //! Bundle ID, app name, splash, simulator orchestration are all
 //! identical to Local mode — same project metadata, same flow.
 //!
-//! Limited to simulator builds today. Device builds need code
-//! signing (provisioning profile + signing identity + entitlements)
-//! which is a separate problem.
+//! This module is the **simulator** path. The **physical-device** path
+//! lives in [`device`]: it can't reuse the raw-swiftc step because
+//! code-signing requires an Xcode project + `xcodebuild` auto-provisioning
+//! (provisioning profile + signing identity + entitlements). The device
+//! path generates a `.xcodeproj` directly (no `xcodegen` dependency),
+//! builds + signs with `xcodebuild`, and installs with `ios-deploy`. See
+//! `device.rs` and [[project_ios_device_deploy_from_cli]].
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -41,15 +45,26 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use build_ios::{capabilities, BuildOptions, FrameworkSource, Manifest};
 
+/// Physical-device build/sign/install/launch path. The simulator path
+/// (the rest of this crate) compiles Swift with raw `swiftc`; the device
+/// path needs an Xcode project + `xcodebuild` for code-signing. See
+/// [`device::run`] and [[project_ios_device_deploy_from_cli]].
+pub mod device;
+pub mod frameworks;
+
 /// Embedded Swift sources + plist template. Tiny and identical for
 /// every project (modulo splash substitution), so we ship them as
 /// `include_str!` rather than generating from scratch.
-const APP_DELEGATE_SWIFT: &str = include_str!("../templates/AppDelegate.swift");
+///
+/// `pub(crate)` so the [`device`] submodule reuses the exact same Swift
+/// glue + plist template as the simulator path — the device build is the
+/// same app, just signed and assembled via xcodebuild instead of swiftc.
+pub(crate) const APP_DELEGATE_SWIFT: &str = include_str!("../templates/AppDelegate.swift");
 const VIEW_CONTROLLER_LOCAL_SWIFT: &str = include_str!("../templates/ViewController.swift");
 const VIEW_CONTROLLER_AAS_SWIFT: &str = include_str!("../templates/ViewControllerRuntimeServer.swift");
-const BRIDGING_HEADER_LOCAL_H: &str = include_str!("../templates/BridgingHeader.h");
+pub(crate) const BRIDGING_HEADER_LOCAL_H: &str = include_str!("../templates/BridgingHeader.h");
 const BRIDGING_HEADER_AAS_H: &str = include_str!("../templates/BridgingHeaderRuntimeServer.h");
-const INFO_PLIST_TMPL: &str = include_str!("../templates/Info.plist.tmpl");
+pub(crate) const INFO_PLIST_TMPL: &str = include_str!("../templates/Info.plist.tmpl");
 
 /// The runtime-server-mode iOS staticlib is `backend-ios-mobile` itself, built
 /// with its `runtime-server` feature. That feature compiles in the
@@ -152,6 +167,10 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // on-device — runtime-server mode runs it on the dev host, so the
     // device process needs no app permissions).
     let mut permission_plist = String::new();
+    // The wrapper manifest (local mode only) is what `cargo metadata` walks to
+    // derive the linked frameworks from the dep graph. runtime-server mode runs
+    // the app on the dev host, so the device process needs only the base set.
+    let mut wrapper_manifest: Option<PathBuf> = None;
     let (lib_dir, lib_name) = match &opts.mode {
         RunMode::Local => {
             let artifact = build_ios::build(
@@ -163,10 +182,10 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
                     user_features: opts.user_features.clone(),
                 },
             )?;
-            permission_plist = ios_permission_entries(
-                &artifact.wrapper_dir.join("Cargo.toml"),
-                &manifest.app.permissions,
-            );
+            let manifest_path = artifact.wrapper_dir.join("Cargo.toml");
+            permission_plist =
+                ios_permission_entries(&manifest_path, &manifest.app.permissions);
+            wrapper_manifest = Some(manifest_path);
             let dir = artifact
                 .staticlib
                 .parent()
@@ -226,8 +245,16 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     )?;
 
     // ── 4. swiftc: compile Swift + link executable ───────────────
+    // Frameworks are DERIVED from the dep graph (base set + each SDK's
+    // `[package.metadata.idealyst.ios].frameworks`), not hardcoded — a
+    // screen-capture sim build must link ReplayKit or its class fails to load.
+    // runtime-server mode has no wrapper, so it links just the base set.
+    let frameworks = match &wrapper_manifest {
+        Some(m) => frameworks::collect_ios_frameworks(m)?,
+        None => frameworks::collect_ios_frameworks(Path::new("/nonexistent"))?,
+    };
     let exe_path = app_bundle.join(&executable_name);
-    compile_and_link(&swift_dir, &lib_dir, &lib_name, &exe_path)?;
+    compile_and_link(&swift_dir, &lib_dir, &lib_name, &exe_path, &frameworks)?;
 
     // ── 5. App-icon PNGs (optional) ──────────────────────────────
     // Generated directly into the .app bundle root because iOS
@@ -307,6 +334,7 @@ fn compile_and_link(
     lib_dir: &Path,
     lib_name: &str,
     output: &Path,
+    frameworks: &[frameworks::Framework],
 ) -> Result<()> {
     // Target triple matches the rustc one. `build-ios::pick_target`
     // returned `aarch64-apple-ios-sim`; Swift's equivalent is
@@ -322,8 +350,8 @@ fn compile_and_link(
 
     eprintln!("[run-ios] swiftc -target {target} → {}", output.display());
 
-    let status = Command::new("xcrun")
-        .args(["-sdk", "iphonesimulator", "swiftc"])
+    let mut cmd = Command::new("xcrun");
+    cmd.args(["-sdk", "iphonesimulator", "swiftc"])
         .args(["-target", target])
         .args(["-sdk"])
         .arg(&sdk_path)
@@ -337,25 +365,24 @@ fn compile_and_link(
         .arg(swift_dir.join("ViewController.swift"))
         .arg("-L")
         .arg(lib_dir)
-        .arg(format!("-l{lib_name}"))
-        // The Rust staticlib pulls in objc2/objc2-foundation/objc2-ui-kit
-        // which need these frameworks at link time. Foundation +
-        // UIKit are the must-haves; QuartzCore is used by
-        // backend-ios' CALayer code; CoreGraphics by anything that
-        // touches CGRect/CGFloat at the FFI boundary.
-        .args(["-framework", "UIKit"])
-        .args(["-framework", "Foundation"])
-        .args(["-framework", "CoreGraphics"])
-        .args(["-framework", "QuartzCore"])
-        // CoreMedia + CoreVideo are needed by the `camera` SDK's AVFoundation
-        // pixel path: CMSampleBufferGetImageBuffer / CMTimeMake /
-        // CVPixelBuffer* are C functions, so they surface as undefined symbols
-        // at link time — unlike AVFoundation/MapKit *classes*, which resolve
-        // at runtime via objc_getClass and need no link-time framework.
-        .args(["-framework", "CoreMedia"])
-        .args(["-framework", "CoreVideo"])
-        .status()
-        .with_context(|| "spawn xcrun swiftc")?;
+        .arg(format!("-l{lib_name}"));
+
+    // Frameworks the Rust staticlib needs at link time, DERIVED from the dep
+    // graph (base set + each SDK's declared frameworks) rather than hardcoded.
+    // UIKit/Foundation must weak-link (objc2 back-deploy fix — see
+    // `frameworks`); CoreGraphics/QuartzCore and the SDK frameworks
+    // (CoreMedia/CoreVideo C-symbol path, ReplayKit/AVFoundation classes)
+    // strong-link. `-weak_framework` is the swiftc/ld spelling of the pbxproj
+    // `ATTRIBUTES = (Weak, )`.
+    for fw in frameworks {
+        if fw.weak {
+            cmd.args(["-Xlinker", "-weak_framework", "-Xlinker", &fw.name]);
+        } else {
+            cmd.args(["-framework", &fw.name]);
+        }
+    }
+
+    let status = cmd.status().with_context(|| "spawn xcrun swiftc")?;
 
     if !status.success() {
         anyhow::bail!("swiftc exited with {status}");
@@ -386,7 +413,7 @@ fn xcrun_sdk_path(sdk: &str) -> Result<PathBuf> {
 /// CFBundleIcons XML snippet to splice into Info.plist. No-op when
 /// the project has no `[package.metadata.idealyst.app.icon]` block
 /// — returns an empty string and writes nothing.
-fn sync_ios_icons_into_bundle(project_dir: &Path, app_bundle: &Path) -> Result<String> {
+pub(crate) fn sync_ios_icons_into_bundle(project_dir: &Path, app_bundle: &Path) -> Result<String> {
     let Some(config) = icon_gen::load_config_from_manifest(project_dir)? else {
         return Ok(String::new());
     };
@@ -423,7 +450,7 @@ fn sync_ios_icons_into_bundle(project_dir: &Path, app_bundle: &Path) -> Result<S
 /// auto-added permission is never invisible. A discovery error degrades to
 /// no entries with a warning rather than failing the run — a permission
 /// gap shouldn't block `idealyst dev`.
-fn ios_permission_entries(
+pub(crate) fn ios_permission_entries(
     wrapper_manifest: &Path,
     app_reasons: &std::collections::BTreeMap<String, String>,
 ) -> String {
@@ -526,7 +553,7 @@ fn render_info_plist(
 /// literal, so backslashes and quotes get escaped). Colors are
 /// validated by Swift's own `Scanner` at runtime — passing a
 /// malformed hex shows magenta so it's obvious.
-fn render_view_controller(manifest: &Manifest, mode: &RunMode) -> String {
+pub(crate) fn render_view_controller(manifest: &Manifest, mode: &RunMode) -> String {
     let template = match mode {
         RunMode::Local => VIEW_CONTROLLER_LOCAL_SWIFT,
         RunMode::RuntimeServer { .. } => VIEW_CONTROLLER_AAS_SWIFT,
@@ -550,7 +577,7 @@ fn swift_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn xml_escape(s: &str) -> String {
+pub(crate) fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -702,7 +729,7 @@ fn launch_app(udid: &str, bundle_id: &str) -> Result<()> {
 /// Title-case a cargo package name for use as the .app executable
 /// name (e.g., `docs` → `Docs`, `my-app` → `MyApp`). Stripped of
 /// anything Xcode would dislike inside a bundle.
-fn title_case_for_executable(s: &str) -> String {
+pub(crate) fn title_case_for_executable(s: &str) -> String {
     let mut out = String::new();
     for word in s.split(|c: char| !c.is_alphanumeric()).filter(|s| !s.is_empty()) {
         let mut chars = word.chars();
@@ -718,6 +745,37 @@ fn title_case_for_executable(s: &str) -> String {
         "App".to_string()
     } else {
         out
+    }
+}
+
+/// Shared test fixtures for this crate, reused by the [`device`] submodule's
+/// unit tests. Only compiled under `#[cfg(test)]`.
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use build_ios::{AppMetadata, Manifest, SplashConfig, WebMetadata};
+
+    /// A minimal manifest with a bundle id and the splash disabled —
+    /// enough to exercise plist / project rendering without touching disk.
+    pub(crate) fn fake_manifest() -> Manifest {
+        Manifest {
+            name: "demo".to_string(),
+            lib_name: "demo".to_string(),
+            app: AppMetadata {
+                name: "Demo".to_string(),
+                bundle_id: Some("ai.example.demo".to_string()),
+                version: "0.0.1".to_string(),
+                splash: SplashConfig {
+                    background: "#000000".to_string(),
+                    title: "Demo".to_string(),
+                    title_color: "#ffffff".to_string(),
+                    duration_ms: 0,
+                },
+                targets: Vec::new(),
+                server_bin: None,
+                web: WebMetadata::default(),
+                permissions: Default::default(),
+            },
+        }
     }
 }
 

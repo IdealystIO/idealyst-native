@@ -20,11 +20,14 @@
 
 use mcp_catalog::{ResolvedCatalog, TypeShape};
 
-/// The five navigable kinds the sidebar groups entries under. Methods
-/// and animations are rendered inline on their parent component's detail
-/// page (joined by `parent_*`), so they aren't top-level kinds.
+/// The navigable kinds the sidebar groups entries under. `Scope` leads
+/// (it's the organizing spine — each scope page lists its members);
+/// methods and animations are rendered inline on their parent
+/// component's detail page (joined by `parent_*`), so they aren't
+/// top-level kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
+    Scope,
     Component,
     Primitive,
     Utility,
@@ -35,6 +38,7 @@ pub enum Kind {
 impl Kind {
     pub fn title(self) -> &'static str {
         match self {
+            Kind::Scope => "Scopes",
             Kind::Component => "Components",
             Kind::Primitive => "Primitives",
             Kind::Utility => "Utilities",
@@ -46,6 +50,7 @@ impl Kind {
     /// URL-path segment for this kind's routes (`/components/<slug>`).
     pub fn path_segment(self) -> &'static str {
         match self {
+            Kind::Scope => "scopes",
             Kind::Component => "components",
             Kind::Primitive => "primitives",
             Kind::Utility => "utilities",
@@ -53,18 +58,44 @@ impl Kind {
             Kind::Guide => "guides",
         }
     }
+
+    /// Singular noun for this kind — used in subtitles / member labels.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Kind::Scope => "scope",
+            Kind::Component => "component",
+            Kind::Primitive => "primitive",
+            Kind::Utility => "utility",
+            Kind::Type => "type",
+            Kind::Guide => "guide",
+        }
+    }
+}
+
+/// A link from one entry to another (a scope's member, or an entry's
+/// owning scope) — enough to render a navigable `link` to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryLink {
+    pub kind: Kind,
+    pub name: String,
+    pub slug: String,
 }
 
 /// One field/prop row — shared by component props, primitive props,
 /// utility params, struct fields. `ty` is always present (the
 /// pretty-printed type string); `doc` / `constraint` may be empty when
 /// the source didn't derive `IdealystSchema`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Field {
     pub name: String,
     pub ty: String,
     pub doc: String,
     pub constraint: String,
+    /// When this field's type resolves to a catalog `Type` entry (a
+    /// non-primitive struct/enum like `ControlSize`), a link to that
+    /// type's page. `None` for primitives (`String`, `u32`, …) and types
+    /// not in the catalog. Populated in a post-pass over all entries.
+    pub type_link: Option<EntryLink>,
 }
 
 /// A method exposed on a component's handle (joined by parent).
@@ -141,11 +172,19 @@ pub struct Entry {
     pub methods: Vec<Method>,
     /// Animated values declared in the body (components only).
     pub animations: Vec<Animation>,
-    /// Usage recipes that demonstrate or reference this component
-    /// (components only). Primary recipes sort first.
+    /// Usage recipes that demonstrate or reference this entry — for any
+    /// kind that can be a recipe target (component, utility, type, …),
+    /// joined via `recipes_for`. Primary recipes sort first.
     pub recipes: Vec<Recipe>,
     /// Return type (utilities only). Empty otherwise.
     pub return_type: String,
+    /// The scope this entry is assigned to by module proximity, if any.
+    /// `None` for unscoped entries and for scope entries themselves.
+    /// Rendered as a badge linking to the scope's page.
+    pub scope: Option<EntryLink>,
+    /// For `Kind::Scope` entries only: the entities assigned to this
+    /// scope. Empty for every other kind.
+    pub members: Vec<EntryLink>,
 }
 
 /// The whole catalog, grouped and slugged for navigation.
@@ -182,9 +221,92 @@ fn slugify(name: &str, qualifier: &str) -> String {
     s.trim_matches('-').to_string()
 }
 
+/// Recipes targeting or using `name`, as owned [`Recipe`]s, primary
+/// first. Kind-agnostic — routes through the catalog's `recipes_for`
+/// join so components, utilities, and types all surface their examples
+/// the same way the MCP `describe_*` tools do.
+fn build_recipes(cat: &ResolvedCatalog, name: &str) -> Vec<Recipe> {
+    let mut v: Vec<Recipe> = cat
+        .recipes_for(name)
+        .iter()
+        .map(|r| Recipe {
+            name: r.name.to_string(),
+            docs: r.docs.to_string(),
+            source: r.source.to_string(),
+            primary: r.target == name,
+        })
+        .collect();
+    v.sort_by(|a, b| (!a.primary, a.name.to_lowercase()).cmp(&(!b.primary, b.name.to_lowercase())));
+    v
+}
+
+/// The scope an entry at `module_path` belongs to (nearest by module
+/// proximity), as a link to its scope page. `None` when unscoped.
+fn scope_link(cat: &ResolvedCatalog, module_path: &str) -> Option<EntryLink> {
+    cat.scope_for(module_path).map(|s| EntryLink {
+        kind: Kind::Scope,
+        name: s.title.to_string(),
+        slug: slugify(s.slug, ""),
+    })
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Does `word` appear in `haystack` bounded by non-identifier chars? So
+/// `ControlSize` matches inside `Option<ControlSize>` but `Size` does
+/// **not** match inside `ControlSize` (avoids spurious substring links).
+fn contains_type_word(haystack: &str, word: &str) -> bool {
+    if word.is_empty() {
+        return false;
+    }
+    let bytes = haystack.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = haystack[from..].find(word) {
+        let i = from + rel;
+        let before_ok = i == 0 || !is_ident_byte(bytes[i - 1]);
+        let after = i + word.len();
+        let after_ok = after >= bytes.len() || !is_ident_byte(bytes[after]);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = i + 1;
+    }
+    false
+}
+
+/// The catalog `Type` a prop/field type string refers to, if any — the
+/// first entry in `type_index` whose name appears as a whole word in
+/// `type_str` (so `Option<ControlSize>` / `Reactive<AvatarSize>` link to
+/// the inner type). Primitives aren't in the index, so they don't link.
+fn link_for_type(type_str: &str, type_index: &[(String, String)]) -> Option<EntryLink> {
+    type_index.iter().find_map(|(name, slug)| {
+        if contains_type_word(type_str, name) {
+            Some(EntryLink { kind: Kind::Type, name: name.clone(), slug: slug.clone() })
+        } else {
+            None
+        }
+    })
+}
+
+/// The framework catalog, extracted natively at **build time**
+/// (`build.rs`) and embedded. Native extraction sees the FULL catalog;
+/// the wasm self-inventory is DCE-pruned (only what `app()` references
+/// survives), so the docs never depend on it. Identical on every target.
+const EMBEDDED_CATALOG_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/catalog.json"));
+
 impl CatalogModel {
-    /// Build the model over the global in-process inventory catalog.
+    /// Build the model. Prefers the build-time-embedded catalog (complete
+    /// on every target); falls back to the live in-process inventory only
+    /// if the embed is empty/unparseable (shouldn't happen in a normal
+    /// build — the fallback is partial on wasm due to DCE).
     pub fn build() -> Self {
+        if let Ok(cat) = ResolvedCatalog::build_from_json(EMBEDDED_CATALOG_JSON) {
+            if !cat.entries().is_empty() {
+                return Self::from_resolved(&cat);
+            }
+        }
         Self::from_resolved(&ResolvedCatalog::build())
     }
 
@@ -215,6 +337,7 @@ impl CatalogModel {
                                 ty: f.type_str.to_string(),
                                 doc: f.doc.to_string(),
                                 constraint: f.constraint.to_string(),
+                                type_link: None,
                             });
                         }
                         had_schema = true;
@@ -226,6 +349,7 @@ impl CatalogModel {
                         ty: p.type_str.to_string(),
                         doc: String::new(),
                         constraint: String::new(),
+                        type_link: None,
                     });
                 }
             }
@@ -265,6 +389,7 @@ impl CatalogModel {
                             ty: p.type_str.to_string(),
                             doc: String::new(),
                             constraint: String::new(),
+                            type_link: None,
                         })
                         .collect(),
                     return_type: m.return_type.to_string(),
@@ -280,31 +405,9 @@ impl CatalogModel {
                 })
                 .collect();
 
-            // Recipes attach to a component when they primarily
-            // demonstrate it (`recipe.target == name`) OR merely
-            // reference it (`recipe.uses` contains the name). Primary
-            // recipes sort first so the renderer can flag them.
-            let mut recipes: Vec<Recipe> = cat
-                .recipes()
-                .iter()
-                .filter_map(|r| {
-                    let primary = r.target == c.name;
-                    let used = r.uses.contains(&c.name);
-                    if primary || used {
-                        Some(Recipe {
-                            name: r.name.to_string(),
-                            docs: r.docs.to_string(),
-                            source: r.source.to_string(),
-                            primary,
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            recipes.sort_by(|a, b| {
-                (!a.primary, a.name.to_lowercase()).cmp(&(!b.primary, b.name.to_lowercase()))
-            });
+            // Recipes — primary (target) + referencing (uses), via the
+            // shared `recipes_for` join (same as the MCP surface).
+            let recipes = build_recipes(cat, c.name);
 
             entries.push(Entry {
                 kind: Kind::Component,
@@ -320,6 +423,8 @@ impl CatalogModel {
                 animations,
                 recipes,
                 return_type: String::new(),
+                scope: scope_link(cat, c.module_path),
+                members: Vec::new(),
             });
         }
 
@@ -333,6 +438,7 @@ impl CatalogModel {
                     ty: f.type_str.to_string(),
                     doc: f.doc.to_string(),
                     constraint: f.constraint.to_string(),
+                    type_link: None,
                 })
                 .collect();
             let fields_documented =
@@ -349,8 +455,11 @@ impl CatalogModel {
                 composes: Vec::new(),
                 methods: Vec::new(),
                 animations: Vec::new(),
-                recipes: Vec::new(),
+                recipes: build_recipes(cat, p.name),
                 return_type: String::new(),
+                // Primitives have no module path → no ambient scope.
+                scope: None,
+                members: Vec::new(),
             });
         }
 
@@ -364,6 +473,7 @@ impl CatalogModel {
                     ty: p.type_str.to_string(),
                     doc: String::new(),
                     constraint: String::new(),
+                    type_link: None,
                 })
                 .collect();
             entries.push(Entry {
@@ -378,8 +488,10 @@ impl CatalogModel {
                 composes: Vec::new(),
                 methods: Vec::new(),
                 animations: Vec::new(),
-                recipes: Vec::new(),
+                recipes: build_recipes(cat, u.name),
                 return_type: u.return_type.to_string(),
+                scope: scope_link(cat, u.module_path),
+                members: Vec::new(),
             });
         }
 
@@ -395,6 +507,7 @@ impl CatalogModel {
                             ty: f.type_str.to_string(),
                             doc: f.doc.to_string(),
                             constraint: f.constraint.to_string(),
+                            type_link: None,
                         });
                     }
                 }
@@ -418,8 +531,10 @@ impl CatalogModel {
                 composes: Vec::new(),
                 methods: Vec::new(),
                 animations: Vec::new(),
-                recipes: Vec::new(),
+                recipes: build_recipes(cat, t.short_name),
                 return_type: String::new(),
+                scope: scope_link(cat, t.module_path),
+                members: Vec::new(),
             });
         }
 
@@ -439,7 +554,54 @@ impl CatalogModel {
                 animations: Vec::new(),
                 recipes: Vec::new(),
                 return_type: String::new(),
+                scope: None,
+                members: Vec::new(),
             });
+        }
+
+        // --- Scopes (the organizing spine) ---------------------------------
+        // Built last so every other entry's `scope` is already set; a
+        // scope's members are the entries that resolved into it by module
+        // proximity. Empty scopes are still listed (they exist in the
+        // catalog and may gain members as the code grows).
+        for s in cat.scopes() {
+            let slug = slugify(s.slug, "");
+            let members: Vec<EntryLink> = entries
+                .iter()
+                .filter(|e| e.scope.as_ref().map(|l| l.slug.as_str()) == Some(slug.as_str()))
+                .map(|e| EntryLink { kind: e.kind, name: e.name.clone(), slug: e.slug.clone() })
+                .collect();
+            entries.push(Entry {
+                kind: Kind::Scope,
+                name: s.title.to_string(),
+                slug,
+                module_path: String::new(),
+                docs: s.docs.to_string(),
+                fields: Vec::new(),
+                fields_documented: false,
+                variants: Vec::new(),
+                composes: Vec::new(),
+                methods: Vec::new(),
+                animations: Vec::new(),
+                recipes: Vec::new(),
+                return_type: String::new(),
+                scope: None,
+                members,
+            });
+        }
+
+        // Link prop/field types to their catalog Type pages. Built after
+        // all entries exist so the index covers every Type; primitives
+        // (not in the index) stay plain text.
+        let type_index: Vec<(String, String)> = cat
+            .types()
+            .iter()
+            .map(|t| (t.short_name.to_string(), slugify(t.short_name, t.module_path)))
+            .collect();
+        for e in &mut entries {
+            for f in &mut e.fields {
+                f.type_link = link_for_type(&f.ty, &type_index);
+            }
         }
 
         // Stable, alphabetical order within each kind for a predictable
@@ -467,8 +629,14 @@ impl CatalogModel {
     /// order. Drives the sidebar so empty kinds don't show a bare
     /// header.
     pub fn populated_kinds(&self) -> Vec<Kind> {
-        const ORDER: [Kind; 5] =
-            [Kind::Component, Kind::Primitive, Kind::Utility, Kind::Type, Kind::Guide];
+        const ORDER: [Kind; 6] = [
+            Kind::Scope,
+            Kind::Component,
+            Kind::Primitive,
+            Kind::Utility,
+            Kind::Type,
+            Kind::Guide,
+        ];
         ORDER
             .into_iter()
             .filter(|k| self.entries.iter().any(|e| e.kind == *k))
@@ -482,6 +650,24 @@ impl CatalogModel {
 
     pub fn total(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Entries whose name or module-path contains `query`
+    /// (case-insensitive), across every kind, capped for a snappy modal.
+    /// Empty/whitespace query → no results (the modal shows a hint).
+    pub fn search(&self, query: &str) -> Vec<EntryLink> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        self.entries
+            .iter()
+            .filter(|e| {
+                e.name.to_lowercase().contains(&q) || e.module_path.to_lowercase().contains(&q)
+            })
+            .take(40)
+            .map(|e| EntryLink { kind: e.kind, name: e.name.clone(), slug: e.slug.clone() })
+            .collect()
     }
 }
 
@@ -567,6 +753,102 @@ mod tests {
                 "Button should resolve to the `components` scope",
             );
         }
+    }
+
+    #[test]
+    fn scopes_are_generated_and_members_resolve() {
+        let m = model();
+        let scopes = m.of_kind(Kind::Scope);
+        assert!(!scopes.is_empty(), "expected scope entries in the generated model");
+
+        // The `components` scope exists and lists idea-ui components.
+        let components_scope = scopes
+            .iter()
+            .find(|e| e.slug == "components")
+            .expect("`components` scope generated");
+        assert!(
+            components_scope.members.iter().any(|l| l.name == "Button"),
+            "components scope should contain Button; members: {:?}",
+            components_scope.members.iter().map(|l| &l.name).collect::<Vec<_>>(),
+        );
+
+        // Button's detail entry carries a scope badge back to `components`.
+        let button = m
+            .of_kind(Kind::Component)
+            .into_iter()
+            .find(|e| e.name == "Button")
+            .expect("Button entry");
+        assert_eq!(
+            button.scope.as_ref().map(|s| s.slug.as_str()),
+            Some("components"),
+            "Button should badge the `components` scope",
+        );
+
+        // The framework `core` scope captures runtime_core utilities.
+        if let Some(core) = scopes.iter().find(|e| e.slug == "core") {
+            assert!(
+                core.members.iter().any(|l| l.kind == Kind::Utility),
+                "core scope should contain at least one utility",
+            );
+        }
+    }
+
+    #[test]
+    fn utility_recipes_surface_via_recipes_for() {
+        // Phase-3 parity: a recipe targeting a non-component must attach
+        // to that entity's page through `recipes_for`, not just components.
+        // (No utility recipe ships today, so this asserts the wiring path
+        // exists rather than a specific recipe — every kind builds recipes
+        // through the same join.)
+        let m = model();
+        // Components still get their recipes (regression guard on the
+        // shared helper).
+        let with_recipes = m
+            .of_kind(Kind::Component)
+            .into_iter()
+            .any(|e| !e.recipes.is_empty());
+        assert!(with_recipes, "expected at least one component recipe via recipes_for");
+    }
+
+    /// Diagnostic snapshot of the *generated* docs — run with
+    /// `cargo test -p catalog-docs dump_generated_docs -- --ignored --nocapture`
+    /// to see exactly what the generator produces (every kind's count,
+    /// every scope + its members). Ignored by default so it doesn't spam
+    /// normal test runs.
+    #[test]
+    #[ignore]
+    fn dump_generated_docs() {
+        let m = model();
+        eprintln!("\n=== Generated catalog docs ({} entries) ===", m.total());
+        for k in m.populated_kinds() {
+            let items = m.of_kind(k);
+            eprintln!("\n{} ({}):", k.title(), items.len());
+            for e in &items {
+                if k == Kind::Scope {
+                    let by_kind = |kind: Kind| {
+                        e.members.iter().filter(|l| l.kind == kind).count()
+                    };
+                    eprintln!(
+                        "  - {} [{}]  ({} components, {} utilities, {} total members)",
+                        e.name,
+                        e.slug,
+                        by_kind(Kind::Component),
+                        by_kind(Kind::Utility),
+                        e.members.len(),
+                    );
+                } else {
+                    let scope = e.scope.as_ref().map(|s| s.slug.as_str()).unwrap_or("—");
+                    let rc = e.recipes.len();
+                    eprintln!(
+                        "  - {}{}{}",
+                        e.name,
+                        if scope != "—" { format!("  (scope: {})", scope) } else { String::new() },
+                        if rc > 0 { format!("  [{} recipe(s)]", rc) } else { String::new() },
+                    );
+                }
+            }
+        }
+        eprintln!();
     }
 
     #[test]

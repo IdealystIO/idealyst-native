@@ -360,6 +360,42 @@ pub(crate) async fn open(
         }
         let _: () = msg_send![&*session, addOutput: &*output];
 
+        // Orient delivered frames upright. A phone's camera sensor is mounted
+        // landscape, so without pinning the output connection's orientation the
+        // CVPixelBuffers arrive rotated 90° relative to a portrait-held device
+        // — the "rotation is wrong" symptom. Pinning Portrait makes EVERY
+        // consumer (the iOS CALayer display, the CPU RGBA channel, a future
+        // GPU compositor) receive upright frames, converging on the same
+        // behavior the web backend gets for free from `getUserMedia`.
+        //
+        // iOS-only: this same file also drives macOS capture, where the
+        // webcam is already landscape-natural and forcing Portrait would
+        // rotate it WRONG. The branch reflects a real form-factor difference
+        // (phone held portrait vs. a fixed landscape webcam), not a backend
+        // hack — the output (upright frames) still converges across platforms.
+        //
+        // `videoOrientation` is deprecated on iOS 17 in favor of
+        // `videoRotationAngle`, but remains the correct, honored API at the
+        // framework's iOS-16 deployment floor (verified on iPhone X / 16.7).
+        #[cfg(target_os = "ios")]
+        {
+            // AVCaptureVideoOrientationPortrait. The setter takes an
+            // `AVCaptureVideoOrientation` (NSInteger == isize).
+            const AV_VIDEO_ORIENTATION_PORTRAIT: isize = 1;
+            let media_type = NSString::from_str(AV_MEDIA_TYPE_VIDEO);
+            let connection: Option<Retained<AnyObject>> =
+                msg_send_id![&*output, connectionWithMediaType: &*media_type];
+            if let Some(connection) = connection {
+                let supported: Bool = msg_send![&*connection, isVideoOrientationSupported];
+                if supported.as_bool() {
+                    let _: () = msg_send![
+                        &*connection,
+                        setVideoOrientation: AV_VIDEO_ORIENTATION_PORTRAIT
+                    ];
+                }
+            }
+        }
+
         let _: () = msg_send![&*session, commitConfiguration];
         let _: () = msg_send![&*session, startRunning];
 

@@ -3,7 +3,7 @@ name = "run-ios"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Build and launch an idealyst app on iOS Simulator without an Xcode project — compiles Swift sources directly via swiftc, links against the Rust staticlib, assembles a .app bundle, and drives simctl."
+description = "Build and launch an idealyst app on iOS. Simulator path compiles Swift directly via swiftc + simctl (no Xcode project); device path (`device` module) generates a signed .app via a self-written pbxproj + xcodebuild auto-provisioning and installs with ios-deploy."
 
 [dependencies]
 anyhow = "1"
@@ -13,3 +13,6 @@ build-ios = { workspace = true }
 # returns the entry list this crate splices into Info.plist's
 # CFBundleIcons block. No-op when the icon block is absent.
 icon-gen = { workspace = true }
+# Parses `cargo metadata` JSON to derive the linked Apple frameworks from the
+# dep graph (each SDK declares `[package.metadata.idealyst.ios].frameworks`).
+serde_json = "1"

@@ -15,8 +15,8 @@
 //! Layer exclusion (Element Capture `restrictTo`) is a separate, later
 //! addition — see the module docs in `private_layer`.
 
-use crate::{BoxedFrameCallback, PixelFormat, RecorderError, RecordingConfig, Source, VideoFrame};
-use std::cell::RefCell;
+use crate::{NativeSource, RecorderError, RecordingConfig, Source};
+use media_stream::FrameWriter;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -31,11 +31,10 @@ pub(crate) async fn request_permission(_source: &Source) -> Result<(), RecorderE
 
 pub(crate) async fn start(
     config: RecordingConfig,
-    on_frame: BoxedFrameCallback,
-) -> Result<Recording, RecorderError> {
+    writer: FrameWriter,
+) -> Result<(Recording, Option<NativeSource>), RecorderError> {
     let window = web_sys::window().ok_or_else(|| platform("no window"))?;
     let document = window.document().ok_or_else(|| platform("no document"))?;
-    let performance = window.performance().ok_or_else(|| platform("no performance clock"))?;
     let media_devices = window.navigator().media_devices().map_err(js_err)?;
 
     // Build the constraints object via Reflect so we don't depend on a
@@ -87,23 +86,15 @@ pub(crate) async fn start(
         .dyn_into()
         .map_err(|_| platform("unexpected canvas context type"))?;
 
-    let paused = Rc::new(RefCell::new(false));
-    let callback = Rc::new(RefCell::new(on_frame));
-
     // The per-tick pump. Owns clones of everything it touches; the browser
     // invokes it asynchronously each interval, so a plain `FnMut` (no
-    // self-reentrancy) is correct here.
+    // self-reentrancy) is correct here. The `FrameWriter` is moved in and
+    // pushed through a shared `&self` (`write_rgba8`), so the pump owns it.
     let pump = {
         let video = video.clone();
         let canvas = canvas.clone();
         let ctx = ctx.clone();
-        let paused = paused.clone();
-        let callback = callback.clone();
-        let performance = performance.clone();
         Closure::<dyn FnMut()>::new(move || {
-            if *paused.borrow() {
-                return;
-            }
             let (w, h) = (video.video_width(), video.video_height());
             if w == 0 || h == 0 {
                 return; // metadata not ready yet
@@ -124,15 +115,7 @@ pub(crate) async fn start(
                 Ok(d) => d,
                 Err(_) => return, // tainted canvas / read failure — skip frame
             };
-            let frame = VideoFrame {
-                width: w,
-                height: h,
-                format: PixelFormat::Rgba8,
-                bytes_per_row: (w as usize) * 4,
-                data: image_data.data().0,
-                timestamp_micros: (performance.now() * 1_000.0) as u64,
-            };
-            (callback.borrow_mut())(&frame);
+            writer.write_rgba8(w, h, &image_data.data().0);
         })
     };
 
@@ -144,14 +127,18 @@ pub(crate) async fn start(
         )
         .map_err(js_err)?;
 
-    Ok(Recording {
+    let recording = Recording {
         window,
         interval_id,
         _pump: pump,
-        stream,
+        stream: stream.clone(),
         video,
-        paused,
-    })
+    };
+    // Publish the live `web_sys::MediaStream` as the zero-copy native source so
+    // a same-platform display / GPU consumer (a future `<video srcObject>`) can
+    // downcast it instead of going through the canvas readback. The `Recording`
+    // keeps its own clone for track teardown.
+    Ok((recording, Some(Rc::new(stream) as NativeSource)))
 }
 
 /// A live web recording. Holds the DOM/stream resources alive; tearing it
@@ -163,24 +150,6 @@ pub(crate) struct Recording {
     _pump: Closure<dyn FnMut()>,
     stream: web_sys::MediaStream,
     video: web_sys::HtmlVideoElement,
-    paused: Rc<RefCell<bool>>,
-}
-
-impl Recording {
-    pub(crate) fn pause(&self) -> Result<(), RecorderError> {
-        *self.paused.borrow_mut() = true;
-        Ok(())
-    }
-
-    pub(crate) fn resume(&self) -> Result<(), RecorderError> {
-        *self.paused.borrow_mut() = false;
-        Ok(())
-    }
-
-    pub(crate) async fn stop(self) -> Result<(), RecorderError> {
-        // Teardown happens in Drop; `self` drops at the end of this scope.
-        Ok(())
-    }
 }
 
 impl Drop for Recording {

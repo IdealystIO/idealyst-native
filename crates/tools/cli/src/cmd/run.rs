@@ -35,8 +35,38 @@ pub struct Args {
     pub dir: PathBuf,
 
     /// Build in release mode. Default is debug.
+    ///
+    /// Note: `idealyst run ios --device` defaults to RELEASE regardless
+    /// (debug staticlibs are unusably slow on-device); pass `--debug`
+    /// there to opt out.
     #[arg(long)]
     pub release: bool,
+
+    /// iOS only: build, code-sign, and install onto a connected physical
+    /// iPhone (instead of the simulator). Requires a development signing
+    /// identity + `ios-deploy` (`brew install ios-deploy`). The Rust
+    /// staticlib is built in RELEASE by default for this path — pass
+    /// `--debug` to override.
+    #[arg(long)]
+    pub device: bool,
+
+    /// iOS `--device` only: build the staticlib in DEBUG instead of the
+    /// default release. Slower on-device but faster to compile; handy when
+    /// iterating on signing/install rather than runtime performance.
+    #[arg(long)]
+    pub debug: bool,
+
+    /// iOS `--device` only: Apple Developer team ID to sign with (the
+    /// 10-char identifier). Falls back to `$IDEALYST_DEVELOPMENT_TEAM` /
+    /// `$DEVELOPMENT_TEAM`, then auto-detects from your installed
+    /// "Apple Development" signing certificate.
+    #[arg(long)]
+    pub team: Option<String>,
+
+    /// iOS `--device` only: target a specific device by UDID. Defaults to
+    /// the first connected iPhone found via `xcrun xctrace list devices`.
+    #[arg(long)]
+    pub udid: Option<String>,
 
     /// Build the runtime-server-client variant and connect to an
     /// already-running dev-host. Requires `--runtime-server-port`
@@ -97,6 +127,40 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
         format!("cannot resolve project dir {}", args.dir.display())
     })?;
     match args.platform {
+        Platform::Ios if args.device => {
+            // Physical-device path: build a signed .app via xcodebuild and
+            // install with ios-deploy. Mutually exclusive with
+            // `--runtime-server` (the device path is local-mount only today).
+            if args.runtime_server {
+                anyhow::bail!(
+                    "`idealyst run ios --device` does not support `--runtime-server` yet \
+                     — the device path is local-mount only. Drop `--runtime-server` to \
+                     deploy a standalone signed build to the phone."
+                );
+            }
+            let team = run_ios::device::resolve_team(args.team.as_deref())?;
+            eprintln!("[idealyst run ios --device] signing team {team}");
+            // Default RELEASE for device (debug is unusably slow on-device);
+            // `--debug` flips it back, `--release` is a no-op (already on).
+            let release = !args.debug;
+            let source = crate::framework_source::resolve(&args.dir)?;
+            let artifact = run_ios::device::run(
+                &args.dir,
+                run_ios::device::DeviceOptions {
+                    release,
+                    source,
+                    user_features: Vec::new(),
+                    team,
+                    udid: args.udid.clone(),
+                },
+            )?;
+            eprintln!();
+            eprintln!("[idealyst run ios --device] installed + launched");
+            eprintln!("  app:    {}", artifact.app_bundle.display());
+            eprintln!("  device: {}", artifact.device_udid);
+            eprintln!("  proj:   {}", artifact.xcodeproj.display());
+            Ok(())
+        }
         Platform::Ios => {
             let mode = if args.runtime_server {
                 run_ios::RunMode::RuntimeServer {

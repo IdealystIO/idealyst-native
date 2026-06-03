@@ -11,18 +11,19 @@ use std::rc::Rc;
 
 use drawer_navigator::SlotProps;
 use idea_ui::{
-    typography_kind, Card, Divider, Spacer, Stack, StackGap, Table, TableCell, TableRow,
-    Typography,
+    typography_kind, Card, Divider, Field, Modal, Spacer, Stack, StackGap, Table, TableCell,
+    TableRow, Typography,
 };
 use runtime_core::{
-    component, switch, ui, Color, Element, IntoElement, SafeAreaSides, StyleApplication, Tokenized,
+    component, effect, signal, switch, ui, Color, Element, IntoElement, SafeAreaSides,
+    StyleApplication, Tokenized,
 };
 
 use crate::catalog::{CatalogModel, Entry, Kind};
 use crate::routes::{EntryParams, ENTRY_ROUTE, OVERVIEW_ROUTE};
 use crate::styles::{
-    Callout as CalloutBox, CodePanel as CodePanelBox, CodeText, PageColumn, PagePad, ScreenScroll,
-    SidebarBody, SidebarHeader, SidebarSection,
+    Callout as CalloutBox, CodePanel as CodePanelBox, CodeText, LinkText, PageColumn, PagePad,
+    ScreenScroll, SearchBox, SearchBoxText, SidebarBody, SidebarHeader, SidebarSection,
 };
 
 // =============================================================================
@@ -72,8 +73,49 @@ fn hamburger(open: Rc<dyn Fn()>) -> Element {
 // grouping entries by kind. Survives screen swaps.
 // =============================================================================
 
+/// A search trigger that *looks* like a text input (bordered, rounded,
+/// muted placeholder) but is a `pressable` that opens the search modal.
+#[derive(Default)]
+pub struct SearchTriggerProps {
+    pub on_press: Option<Rc<dyn Fn()>>,
+}
+
+#[component]
+pub fn SearchTrigger(props: SearchTriggerProps) -> Element {
+    let on_press = props.on_press.clone();
+    let inner = ui! {
+        view(style = SearchBox()) {
+            text(style = SearchBoxText()) { "Search the catalog…".to_string() }
+        }
+    };
+    runtime_core::pressable(vec![inner], move || {
+        if let Some(cb) = &on_press {
+            (cb)();
+        }
+    })
+    .into_element()
+}
+
 pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
     let active_path = slot.active_path;
+
+    // Search modal state.
+    let open = signal!(false);
+    let query = signal!(String::new());
+    let on_query: Rc<dyn Fn(String)> = Rc::new(move |s| query.set(s));
+    let open_search: Rc<dyn Fn()> = Rc::new(move || open.set(true));
+    let close_search: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+    let model_for_results = model.clone();
+
+    // Close the search modal whenever navigation happens (i.e. a result
+    // was tapped). Reading `active_path` subscribes this effect to nav
+    // changes; it anchors to the sidebar slot's reactive scope (the
+    // `effect!` is a no-op handle inside an active scope, so it survives
+    // past this fn's return — same as the website shell).
+    effect!({
+        let _ = active_path.get();
+        open.set(false);
+    });
 
     let header_children: Vec<Element> = vec![
         ui! { Typography(content = "Idealyst Catalog".to_string(), kind = typography_kind::H3) },
@@ -88,6 +130,7 @@ pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
     ui! {
         view(style = SidebarBody()) {
             view(style = SidebarHeader()) { header_children }
+            SearchTrigger(on_press = Some(open_search.clone()))
             // Overview link.
             sidebar_overview_link(active_path)
             for kind in model.populated_kinds() {
@@ -97,8 +140,66 @@ pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
                 }
             }
             Spacer()
+            if open.get() {
+                Modal(on_dismiss = Some(close_search.clone()), width = 560.0) {
+                    Typography(content = "Search the catalog".to_string(), kind = typography_kind::H3)
+                    Field(
+                        value = query,
+                        on_change = on_query.clone(),
+                        placeholder = Some("Component, type, utility…".to_string()),
+                    )
+                    search_results(model_for_results.clone(), query)
+                }
+            }
         }
         .safe_area(SafeAreaSides::VERTICAL)
+    }
+}
+
+/// Reactive search results — rebuilds the result list as the query
+/// changes (via `switch`, keyed on the query string). Each result links
+/// to its entry page; the modal closes on navigation (see `sidebar`).
+fn search_results(model: Rc<CatalogModel>, query: runtime_core::Signal<String>) -> Element {
+    switch(
+        move || query.get(),
+        move |q: &String| {
+            let mut rows: Vec<Element> = Vec::new();
+            if q.trim().is_empty() {
+                rows.push(ui! {
+                    Typography(
+                        content = "Type to search components, types, utilities, primitives…"
+                            .to_string(),
+                        muted = true,
+                    )
+                });
+            } else {
+                let matches = model.search(q);
+                if matches.is_empty() {
+                    rows.push(ui! {
+                        Typography(
+                            content = format!("No matches for \u{201c}{}\u{201d}.", q.trim()),
+                            muted = true,
+                        )
+                    });
+                } else {
+                    for m in matches {
+                        rows.push(search_result_link(m));
+                    }
+                }
+            }
+            ui! { Stack(gap = StackGap::Xs) { rows } }
+        },
+    )
+}
+
+/// One search result — a link to the entry, labelled `"<name> · <kind>"`.
+fn search_result_link(m: crate::catalog::EntryLink) -> Element {
+    let params = EntryParams::new(m.kind, m.slug.clone());
+    let label = format!("{} · {}", m.name, m.kind.noun());
+    ui! {
+        link(route = &ENTRY_ROUTE, params = params) {
+            text(style = LinkText()) { label }
+        }
     }
 }
 
@@ -352,10 +453,25 @@ pub fn FieldsTable(props: FieldsTableProps) -> Element {
         } else {
             format!("{} (constraint: {})", f.doc, f.constraint)
         };
+        // When the type resolves to a catalog Type (not a primitive), make
+        // the Type cell a link to that type's page.
+        let type_cell = match f.type_link {
+            Some(link) => {
+                let params = EntryParams::new(link.kind, link.slug);
+                ui! {
+                    TableCell {
+                        link(route = &ENTRY_ROUTE, params = params) {
+                            text(style = LinkText()) { ty }
+                        }
+                    }
+                }
+            }
+            None => ui! { TableCell(text = Some(ty)) },
+        };
         rows.push(ui! {
             TableRow {
                 TableCell(text = Some(name))
-                TableCell(text = Some(ty))
+                type_cell
                 TableCell(text = Some(desc))
             }
         });
@@ -425,6 +541,7 @@ fn overview_kind_card(title: String, count: usize, blurb: &'static str) -> Eleme
 
 fn kind_blurb(kind: Kind) -> &'static str {
     match kind {
+        Kind::Scope => "Feature-area groupings — each scope lists the components and utilities assigned to it by module proximity.",
         Kind::Component => "Author-defined `#[component]`s — props, composition graph, methods, animations.",
         Kind::Primitive => "Framework leaf nodes of the `ui!` grammar — view, text, button, scroll_view, and friends.",
         Kind::Utility => "Free functions authors call from regular Rust (platform, color, time, theme, layout, math).",
@@ -461,23 +578,67 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
         });
     }
 
+    // Scopes list the entities assigned to them by module proximity,
+    // grouped by kind so types are visually separate from components.
+    if entry.kind == Kind::Scope {
+        let members = entry.members.clone();
+        let count = members.len();
+        let docs = entry.docs.clone();
+        let groups: Vec<(Kind, Vec<crate::catalog::EntryLink>)> = [
+            Kind::Component,
+            Kind::Primitive,
+            Kind::Utility,
+            Kind::Type,
+            Kind::Guide,
+        ]
+        .into_iter()
+        .filter_map(|k| {
+            let items: Vec<_> = members.iter().filter(|m| m.kind == k).cloned().collect();
+            if items.is_empty() {
+                None
+            } else {
+                Some((k, items))
+            }
+        })
+        .collect();
+        return layout(ui! {
+            view(style = pad) {
+                Stack(gap = StackGap::Xs) {
+                    Typography(content = entry.name.clone(), kind = typography_kind::H1)
+                    Typography(content = format!("scope · {} members", count), muted = true)
+                }
+                if !docs.is_empty() {
+                    markdown(&docs)
+                }
+                Divider()
+                if count == 0 {
+                    Typography(
+                        content = "No entries resolve into this scope yet.".to_string(),
+                        muted = true,
+                    )
+                }
+                for (k, items) in groups {
+                    scope_member_group(k, items)
+                }
+            }
+        });
+    }
+
     let name = entry.name.clone();
     let module = entry.module_path.clone();
     let docs = entry.docs.clone();
-    let kind_label = match entry.kind {
-        Kind::Component => "component",
-        Kind::Primitive => "primitive",
-        Kind::Utility => "utility",
-        Kind::Type => "type",
-        Kind::Guide => "guide",
-    }
-    .to_string();
+    let scope = entry.scope.clone();
+    let kind_label = entry.kind.noun().to_string();
 
     layout(ui! {
         view(style = pad) {
             Stack(gap = StackGap::Xs) {
                 Typography(content = name.clone(), kind = typography_kind::H1)
                 Typography(content = format!("{} · {}", kind_label, module), muted = true)
+            }
+            // Scope badge — a link to the owning scope's page.
+            if let Some(s) = scope {
+                scope_member_link(s)
             }
             // Docs paragraph(s).
             if !docs.is_empty() {
@@ -521,7 +682,7 @@ fn fields_section(entry: &Entry) -> Element {
         Kind::Component | Kind::Primitive => "Props",
         Kind::Utility => "Parameters",
         Kind::Type => "Fields",
-        Kind::Guide => "Fields",
+        Kind::Guide | Kind::Scope => "Fields",
     }
     .to_string();
     if entry.fields.is_empty() {
@@ -589,6 +750,43 @@ fn composes_section(entry: &Entry) -> Element {
     }
 }
 
+/// The scope badge on an entry's detail page — links up to the owning
+/// scope, labelled `"Scope: <name>"`.
+fn scope_member_link(m: crate::catalog::EntryLink) -> Element {
+    let label = format!("Scope: {}", m.name);
+    let params = EntryParams::new(m.kind, m.slug.clone());
+    ui! {
+        link(route = &ENTRY_ROUTE, params = params) {
+            text(style = LinkText()) { label }
+        }
+    }
+}
+
+/// One kind-grouped block of a scope's members — a subheading (the
+/// kind's plural title + count) over its member links. This is what
+/// keeps types visually distinct from components within a scope.
+fn scope_member_group(kind: Kind, members: Vec<crate::catalog::EntryLink>) -> Element {
+    ui! {
+        Section(title = format!("{} ({})", kind.title(), members.len())) {
+            for m in members {
+                member_link(m)
+            }
+        }
+    }
+}
+
+/// A plain link to an entry by name — the kind is implied by the
+/// surrounding [`scope_member_group`] heading.
+fn member_link(m: crate::catalog::EntryLink) -> Element {
+    let params = EntryParams::new(m.kind, m.slug.clone());
+    let label = m.name.clone();
+    ui! {
+        link(route = &ENTRY_ROUTE, params = params) {
+            text(style = LinkText()) { label }
+        }
+    }
+}
+
 fn compose_link(c: crate::catalog::Compose) -> Element {
     // Resolved edges link to the target component's detail page;
     // unresolved/ambiguous edges render as plain muted text (the target
@@ -599,7 +797,7 @@ fn compose_link(c: crate::catalog::Compose) -> Element {
             let label = c.name.clone();
             ui! {
                 link(route = &ENTRY_ROUTE, params = params) {
-                    Typography(content = label)
+                    text(style = LinkText()) { label }
                 }
             }
         }

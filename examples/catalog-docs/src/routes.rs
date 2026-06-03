@@ -47,6 +47,7 @@ impl EntryParams {
 
 fn kind_from_segment(seg: &str) -> Option<Kind> {
     match seg {
+        "scopes" => Some(Kind::Scope),
         "components" => Some(Kind::Component),
         "primitives" => Some(Kind::Primitive),
         "utilities" => Some(Kind::Utility),

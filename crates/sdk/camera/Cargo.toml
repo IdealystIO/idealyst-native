@@ -36,6 +36,15 @@ license.workspace = true
 [package.metadata.idealyst]
 capabilities = ["camera"]
 
+# Frameworks the iOS/macOS AVFoundation capture backend needs linked into the
+# final app. The CLI's iOS device-deploy collects these from the dep graph
+# (like the Android `runtime_kotlin` registry) and adds them to the generated
+# Xcode project. AVFoundation's *classes* resolve at runtime via objc_getClass,
+# but CoreMedia/CoreVideo expose C functions (CMSampleBufferGetImageBuffer,
+# CVPixelBuffer*) that surface as undefined symbols and must be linked.
+[package.metadata.idealyst.ios]
+frameworks = ["AVFoundation", "CoreMedia", "CoreVideo"]
+
 [dependencies]
 thiserror = "1"
 # The platform-agnostic live-source abstraction camera produces. Thin and

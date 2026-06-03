@@ -43,11 +43,34 @@ license.workspace = true
 [package.metadata.idealyst]
 capabilities = ["screen_capture"]
 
+# Frameworks the iOS ReplayKit capture backend needs linked into the final
+# app. The CLI's iOS device-deploy collects these from the dep graph (like the
+# Android `runtime_kotlin` registry) and adds them to the generated Xcode
+# project — `RPScreenRecorder`'s class won't load otherwise (the screenshare
+# "crash on start"). CoreMedia/CoreVideo expose the C functions that crack a
+# CMSampleBuffer's CVPixelBuffer open.
+[package.metadata.idealyst.ios]
+frameworks = ["ReplayKit", "CoreMedia", "CoreVideo"]
+
 [dependencies]
 # Only needed for the `private_layer` Element::External component + its
 # `register()`. The capture capability itself is framework-agnostic.
 runtime-core = { workspace = true }
 thiserror = "1"
+# The live-source currency every capture backend writes into and the public
+# API hands back — shared with `camera` (a sibling producer) and `video` (a
+# consumer). Keeps the per-platform transport hidden from app code.
+media-stream = { workspace = true }
+
+# iOS capture: ReplayKit (RPScreenRecorder.startCaptureWithHandler) → each
+# CMSampleBuffer's CVPixelBuffer repacked to RGBA8. Driven through objc2
+# msg_send + a block2 capture handler; futures-channel bridges ReplayKit's
+# completionHandler block to async, exactly like `camera`'s permission flow.
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString"] }
+block2 = "0.5"
+futures-channel = "0.3"
 
 # Web capture: getDisplayMedia → a hidden <video> → <canvas> pixel pump.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

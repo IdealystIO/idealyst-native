@@ -3,20 +3,20 @@
 //!
 //! Press **Start recording** → the SDK calls `getDisplayMedia`, the browser
 //! shows its source picker (the app's own tab is the default via the
-//! `preferCurrentTab` hint), and raw RGBA frames begin arriving in the
-//! `on_frame` callback. The demo bridges that callback to reactive UI the
-//! same canonical way `mic-demo` does — the job the SDK deliberately leaves
-//! to a higher layer:
+//! `preferCurrentTab` hint), and raw RGBA frames begin arriving via a
+//! [`MediaStream::subscribe`] tap. The demo bridges that callback to
+//! reactive UI the same canonical way `mic-demo` does — the job the SDK
+//! deliberately leaves to a higher layer:
 //!
-//! 1. The callback runs on the capture thread (native) or the main thread
-//!    (web). It can't touch the reactive runtime off-thread, so it writes
-//!    a frame count + the last frame's dimensions into lock-free
+//! 1. The subscribe callback runs on the capture thread (native) or the main
+//!    thread (web). It can't touch the reactive runtime off-thread, so it
+//!    writes a frame count + the last frame's dimensions into lock-free
 //!    [`std::sync::atomic`] globals.
 //! 2. A [`raf_loop`](runtime_core::raf_loop) on the main thread folds those
 //!    atomics into `Signal`s the UI binds to, writing only on change.
 //!
-//! **Stop recording** drops the [`RecordingHandle`], which clears the
-//! frame pump and stops the capture tracks (the browser's "sharing" chrome
+//! **Stop recording** drops the [`MediaStream`] (and its [`Subscription`]),
+//! which stops the capture tracks (the browser's "sharing" chrome
 //! disappears).
 //!
 //! Note: the SDK hands you raw frames and nothing else — no file is
@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use idea_ui::{install_idea_theme, light_theme, Stack, StackGap, StackPadding, Typography};
 use runtime_core::{signal, text, ui, Element, IntoElement, Signal};
-use screen_recorder::{RecorderError, RecordingConfig, RecordingHandle, ScreenRecorder, VideoFrame};
+use screen_recorder::{MediaStream, RecorderError, RecordingConfig, ScreenRecorder, Subscription};
 
 // Capture→UI bridge. The frame callback writes here; the main-thread
 // `raf_loop` reads. A single global set is fine for a one-stream demo.
@@ -53,10 +53,11 @@ pub fn app() -> Element {
     let status: Signal<String> = signal!("Idle — press Start recording".to_string());
     let started: Signal<bool> = signal!(false);
 
-    // The live recording handle, shared between the start and stop buttons.
-    // `!Send`, but the web app is single-threaded so an `Rc<RefCell<_>>` is
-    // the right holder.
-    let handle: Rc<RefCell<Option<RecordingHandle>>> = Rc::new(RefCell::new(None));
+    // The live stream + its frame-tap subscription, shared between the start
+    // and stop buttons. Capture runs while the `MediaStream` is alive; dropping
+    // it (and the `Subscription`) stops capture. `!Send`, but the web app is
+    // single-threaded so an `Rc<RefCell<_>>` is the right holder.
+    let handle: Rc<RefCell<Option<(MediaStream, Subscription)>>> = Rc::new(RefCell::new(None));
 
     // Fold the atomic bridge into signals once per frame, only on change.
     {
@@ -107,17 +108,19 @@ pub fn app() -> Element {
             let handle = handle.clone();
             runtime_core::driver::spawn_async(async move {
                 let recorder = ScreenRecorder::new();
-                let result = recorder
-                    .start(RecordingConfig::new(), |frame: &VideoFrame| {
-                        FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
-                        LAST_WIDTH.store(frame.width, Ordering::Relaxed);
-                        LAST_HEIGHT.store(frame.height, Ordering::Relaxed);
-                    })
-                    .await;
+                let result = recorder.start(RecordingConfig::new()).await;
                 match result {
-                    Ok(h) => {
+                    Ok(stream) => {
+                        // Tap raw RGBA frames off the stream. The closure runs on
+                        // the capture thread (native) / main thread (web); it
+                        // writes the lock-free atomics the raf_loop folds into UI.
+                        let sub = stream.subscribe(|frame| {
+                            FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+                            LAST_WIDTH.store(frame.width, Ordering::Relaxed);
+                            LAST_HEIGHT.store(frame.height, Ordering::Relaxed);
+                        });
                         status.set("Recording — frames streaming. Press Stop to end.".to_string());
-                        *handle.borrow_mut() = Some(h);
+                        *handle.borrow_mut() = Some((stream, sub));
                     }
                     Err(e) => {
                         started.set(false);
@@ -139,16 +142,13 @@ pub fn app() -> Element {
     let on_stop = {
         let handle = handle.clone();
         move || {
-            // Bind `take()` into a let so the `RefMut` is released before we
-            // move the handle into the async block (avoids holding the borrow
-            // across the await).
+            // Bind `take()` into a let so the `RefMut` is released before the
+            // taken handle drops (drop stops the capture session + tracks).
             let taken = handle.borrow_mut().take();
-            if let Some(h) = taken {
+            if let Some(taken) = taken {
                 started.set(false);
                 status.set("Stopped".to_string());
-                runtime_core::driver::spawn_async(async move {
-                    let _ = h.stop().await;
-                });
+                drop(taken);
             }
         }
     };

@@ -392,3 +392,57 @@ stylesheet! {
         }
     }
 }
+
+// ---- Search trigger (looks like a text input) -----------------------------
+// A bordered, rounded, padded row with muted placeholder text — visually an
+// input, but it's a `pressable` that opens the search modal.
+stylesheet! {
+    pub SearchBox<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: 8.0,
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            background: Tokenized::token("color-background", Color("#f7f8fb".into())),
+        }
+        state hovered(_t) {
+            border_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+        }
+        transitions {
+            border_color: 160ms EaseOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub SearchBoxText<()> {
+        base(_t) {
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: 14.0,
+            text_align: TextAlign::Left,
+        }
+    }
+}
+
+// ---- Reference link text (blue, hyperlink-like) ---------------------------
+// Applied to in-content links that reference other catalog entries
+// (composes graph, scope members, prop type links, search results).
+stylesheet! {
+    pub LinkText<()> {
+        base(_t) {
+            color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+            font_size: 14.0,
+            text_align: TextAlign::Left,
+        }
+        state hovered(_t) {
+            color: Tokenized::token("intent-primary-strong-fg", Color("#2730a8".into())),
+        }
+        transitions {
+            color: 150ms EaseOut,
+        }
+    }
+}

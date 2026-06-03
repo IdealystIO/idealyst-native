@@ -1,0 +1,39 @@
+[package]
+name = "screenshare-preview-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Screen share → Video demo — the screen-recorder SDK yields a MediaStream (ReplayKit on iOS) and the video SDK displays it. In-app capture records the app's own screen, so the Video shows a recursive 'hall of mirrors' that proves the capture → MediaStream → display path end to end. Sibling of camera-preview-demo for the other MediaStream producer."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+screen-recorder = { workspace = true }
+video = { workspace = true }
+
+# The concrete backend each platform's wrapper hands to `register_extensions`
+# so we can register the `video` external handler there.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Screen Share"
+bundle_id = "ai.truday.idealyst.screenshare"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]
+
+# ReplayKit (iOS) and getDisplayMedia (web) need no Info.plist usage string —
+# consent is a runtime prompt. Android MediaProjection's permission lands when
+# that backend does. So no `[package.metadata.idealyst.app.permissions]` block.

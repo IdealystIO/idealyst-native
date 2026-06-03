@@ -164,6 +164,7 @@ members = [
     "examples/screen-recorder-demo",
     "examples/camera-demo",
     "examples/camera-preview-demo",
+    "examples/screenshare-preview-demo",
     "examples/media-sources-demo",
     "examples/login-demo",
     "examples/mcp-demo",

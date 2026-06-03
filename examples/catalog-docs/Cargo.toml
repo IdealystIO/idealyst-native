@@ -48,6 +48,21 @@ icons-lucide = { workspace = true }
 # Recorder backend for the runtime-server sidecar wrapper. Optional.
 dev-server = { workspace = true, optional = true }
 
+# Build-time catalog extraction (see build.rs). These compile for the
+# HOST and run inside the build script, where inventory's `#[used]` ctors
+# survive — so we get the FULL framework catalog, immune to the wasm DCE
+# that prunes the runtime self-inventory. `runtime-core/catalog` flips the
+# emission gate on within the build-dep feature graph so every
+# `#[component]` / `#[derive(IdealystSchema)]` in these crates emits.
+[build-dependencies]
+runtime-core = { workspace = true, features = ["catalog"] }
+mcp-catalog = { workspace = true }
+idea-ui = { workspace = true, features = ["docs"] }
+drawer-navigator = { workspace = true }
+table = { workspace = true }
+codeblock = { workspace = true }
+serde_json = "1"
+
 [dev-dependencies]
 # The unit tests build the catalog and exercise the view-model mapping.
 serde_json = "1"

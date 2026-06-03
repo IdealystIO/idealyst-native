@@ -17,71 +17,34 @@
 //! // bootstrap (only needed for the private layer):
 //! screen_recorder::register(&mut backend);
 //!
-//! // capture:
-//! let recorder = ScreenRecorder::new();
-//! recorder.request_permission(&Source::ThisApp).await?;
-//! let handle = recorder
-//!     .start(RecordingConfig::new(), |frame| {
-//!         // runs on the capture thread (native) / main thread (web);
-//!         // copy out what you need and return — encode/preview/upload
-//!         // downstream, off this thread.
-//!         let _ = (frame.width, frame.height);
-//!     })
-//!     .await?;
-//! // ... later ...
-//! handle.stop().await?;
+//! // capture — yields a `MediaStream`, the same currency `camera` produces
+//! // and the `video` SDK displays:
+//! let stream = ScreenRecorder::new().start(RecordingConfig::new()).await?;
+//!
+//! // tap raw RGBA8 frames (capture thread on native, main thread on web)…
+//! let sub = stream.subscribe(|frame| { let _ = (frame.width, frame.height); });
+//! // …or hand `stream` to the `video` SDK to show the live screen.
+//! // Drop `sub` to stop tapping; drop `stream` to stop capture.
 //! ```
 #![deny(missing_docs)]
 
 mod config;
 mod error;
-mod frame;
 pub mod private_layer;
 
 pub use config::{AudioSource, RecordingConfig, Source, WindowSelector, DEFAULT_FPS};
 pub use error::RecorderError;
-pub use frame::{PixelFormat, VideoFrame};
 pub use private_layer::{register, PrivateLayer, PrivateLayerProps};
 
-// ---------------------------------------------------------------------------
-// The frame-sink callback bound.
-//
-// Native capture APIs (ReplayKit, ScreenCaptureKit, MediaProjection,
-// Windows.Graphics.Capture, PipeWire) deliver frames on a background
-// thread, so the sink must be `Send` there. The web backend runs it on
-// the single wasm thread holding non-`Send` JS values, where `Send` is
-// both unnecessary and unsatisfiable. One cfg'd marker trait keeps
-// `start`'s signature identical on every target — mirrors `microphone`'s
-// `AudioCallback`. The frame is passed **by reference** so the backend
-// can keep ownership of the mapped buffer for the call's duration
-// (zero-copy) and unlock/recycle it on return.
-// ---------------------------------------------------------------------------
+// The live-source surface is the shared `media-stream` vocabulary — the same
+// currency the `camera` SDK produces and the `video` SDK consumes. Re-export
+// it so a screen-recorder user has everything from `screen_recorder::`.
+pub use media_stream::{FrameCallback, MediaStream, PixelFormat, Subscription, VideoFrame};
 
-/// The bound a per-frame sink must satisfy. Implemented automatically for
-/// any matching closure — pass a `|frame| { .. }` to
-/// [`ScreenRecorder::start`], never write `impl FrameCallback` yourself.
-///
-/// On native targets this requires `Send` (the sink runs on the capture
-/// thread); on web it does not (it runs on the main thread). `FnMut`, so
-/// the sink may own and mutate state across frames. Keep it fast — copy
-/// out what you need and return; heavy work belongs off this thread.
-#[cfg(not(target_arch = "wasm32"))]
-pub trait FrameCallback: FnMut(&VideoFrame) + Send + 'static {}
-#[cfg(not(target_arch = "wasm32"))]
-impl<T: FnMut(&VideoFrame) + Send + 'static> FrameCallback for T {}
-
-/// See the non-wasm definition; on web the `Send` bound is dropped.
-#[cfg(target_arch = "wasm32")]
-pub trait FrameCallback: FnMut(&VideoFrame) + 'static {}
-#[cfg(target_arch = "wasm32")]
-impl<T: FnMut(&VideoFrame) + 'static> FrameCallback for T {}
-
-/// The boxed form the `imp` backends actually receive. Mirrors
-/// [`FrameCallback`]'s cfg'd `Send`-ness.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) type BoxedFrameCallback = Box<dyn FnMut(&VideoFrame) + Send + 'static>;
-#[cfg(target_arch = "wasm32")]
-pub(crate) type BoxedFrameCallback = Box<dyn FnMut(&VideoFrame) + 'static>;
+/// The type-erased zero-copy frame source a backend may publish on the stream
+/// (e.g. the web `web_sys::MediaStream`), downcast by a same-platform display
+/// / GPU consumer. `None` where no zero-copy source is exposed (yet).
+pub(crate) type NativeSource = std::rc::Rc<dyn std::any::Any>;
 
 // One capture backend is compiled per target. Each `imp` module supplies
 // `request_permission`, `start`, and the `Recording` handle type. The
@@ -105,66 +68,48 @@ pub(crate) type BoxedFrameCallback = Box<dyn FnMut(&VideoFrame) + 'static>;
 )]
 mod imp;
 
-/// Backend-agnostic entry point. Construct once; reuse across recordings.
+/// Backend-agnostic entry point. Cheap to construct and clone; it holds no OS
+/// resources until you [`start`](ScreenRecorder::start) a recording.
+#[derive(Clone, Default)]
 pub struct ScreenRecorder {
     _private: (),
 }
 
-impl Default for ScreenRecorder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ScreenRecorder {
-    /// Create a recorder. Cheap; does no platform work until
-    /// [`ScreenRecorder::start`].
+    /// Create a recorder.
     pub fn new() -> Self {
-        Self { _private: () }
+        Self::default()
     }
 
-    /// Trigger the platform consent flow for `source` (ReplayKit /
-    /// MediaProjection / Screen Recording TCC / portal / picker). No
-    /// target permits silent capture except a Windows own-window grab,
-    /// so this is always modeled as async and may reject.
+    /// Proactively trigger the platform consent flow for `source` (ReplayKit
+    /// / MediaProjection / Screen Recording TCC / portal / picker) without
+    /// starting capture. Optional — [`start`](ScreenRecorder::start) runs the
+    /// consent flow itself. On most targets the prompt is only shown at
+    /// `start` (e.g. the web `getDisplayMedia` picker, ReplayKit's capture
+    /// consent), so this resolves `Ok` to defer to that call.
     pub async fn request_permission(&self, source: &Source) -> Result<(), RecorderError> {
         imp::request_permission(source).await
     }
 
-    /// Begin recording. `on_frame` fires once per captured frame (on the
-    /// capture thread on native targets, the main thread on web) until
-    /// the returned [`RecordingHandle`] is stopped or dropped. The frame
-    /// is borrowed — copy out what you need and return promptly.
-    pub async fn start<C: FrameCallback>(
-        &self,
-        config: RecordingConfig,
-        on_frame: C,
-    ) -> Result<RecordingHandle, RecorderError> {
-        let boxed: BoxedFrameCallback = Box::new(on_frame);
-        let inner = imp::start(config, boxed).await?;
-        Ok(RecordingHandle { inner })
-    }
-}
-
-/// A live recording. Drop or call [`RecordingHandle::stop`] to end it.
-pub struct RecordingHandle {
-    inner: imp::Recording,
-}
-
-impl RecordingHandle {
-    /// Pause capture without tearing down the session.
-    pub fn pause(&self) -> Result<(), RecorderError> {
-        self.inner.pause()
-    }
-
-    /// Resume a paused capture.
-    pub fn resume(&self) -> Result<(), RecorderError> {
-        self.inner.resume()
-    }
-
-    /// Stop capture and release the platform session. Resolves once the
-    /// backend has flushed and torn down.
-    pub async fn stop(self) -> Result<(), RecorderError> {
-        self.inner.stop().await
+    /// Begin capturing and return a live [`MediaStream`] — the same
+    /// platform-agnostic source the `camera` SDK produces and the `video` SDK
+    /// displays. Capture runs while any clone of the stream is alive; dropping
+    /// the last one stops it and tears down the platform session.
+    ///
+    /// Tap raw RGBA8 frames with [`MediaStream::subscribe`] /
+    /// [`MediaStream::latest`], or hand the stream to the `video` SDK to show
+    /// the live screen. May surface the OS capture-consent prompt.
+    pub async fn start(&self, config: RecordingConfig) -> Result<MediaStream, RecorderError> {
+        let (stream, writer) = MediaStream::new();
+        let (recording, native) = imp::start(config, writer).await?;
+        if let Some(src) = native {
+            stream.set_native_source(src);
+        }
+        // The backend `Recording` owns the capture session + the `FrameWriter`
+        // and stops capture on drop. Own it in the stream's stopper so it tears
+        // down when the last `MediaStream` clone drops — the same ownership
+        // lifecycle as `camera`.
+        stream.attach_stopper(move || drop(recording));
+        Ok(stream)
     }
 }

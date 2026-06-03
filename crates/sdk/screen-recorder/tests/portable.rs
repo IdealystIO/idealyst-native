@@ -35,11 +35,9 @@ fn private_layer_constructs_without_panicking() {
 #[tokio::test]
 async fn start_reports_unsupported_on_skeleton() {
     let recorder = ScreenRecorder::new();
-    // `RecordingHandle` (the Ok variant) isn't `Debug`, so match rather
-    // than `expect_err`.
-    let result = recorder
-        .start(RecordingConfig::new(), |_frame| {})
-        .await;
+    // `MediaStream` (the Ok variant) isn't `Debug`, so match rather than
+    // `expect_err`.
+    let result = recorder.start(RecordingConfig::new()).await;
     assert!(matches!(result, Err(RecorderError::Unsupported)));
 }
 
