@@ -1,0 +1,70 @@
+[package]
+name = "markdown"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Third-party `Markdown` primitive — renders a CommonMark/GFM document
+# as a SINGLE native styled-text node on every native backend (one
+# `UILabel` + `NSAttributedString` on iOS, one `TextView` +
+# `SpannableStringBuilder` on Android) and as semantic DOM on web.
+#
+# Rationale (see README): a markdown document is a deeply nested tree of
+# blocks and inline runs. Lowering it to framework primitives would emit
+# one styled `text`/`view` node per inline run — the exact per-token
+# explosion the `codeblock` SDK was carved out to avoid (100–300× more
+# backend ops per render). Native rich-text engines (NSAttributedString,
+# SpannableString) express the whole tree as inline attribute ranges on
+# ONE widget, so a 50-block document is ONE node, not thousands.
+#
+# Parsing + theme resolution happen author-side (in the `Markdown`
+# component's reactive scope) and produce a fully-resolved, serializable
+# `MarkdownDoc`. The per-backend handler is "dumb": it lowers concrete
+# runs into native attribute spans. Theme toggles re-resolve the doc →
+# new External props → the one node is rebuilt. Per-target `register`
+# functions live in `lib.rs` behind `#[cfg(...)]` (codeblock pattern).
+
+[dependencies]
+runtime-core = { workspace = true }
+
+# CommonMark + GFM (strikethrough, task lists) pull parser. Pure Rust,
+# compiles on every target incl. wasm32. `default-features = false`
+# drops the `html` renderer and the `getopts`-backed CLI bits we don't
+# use — we only consume the event stream.
+pulldown-cmark = { version = "0.12", default-features = false }
+
+# Wire serde for `MarkdownDoc` so a `Markdown(...)` external renders over
+# the runtime-server wire (recorder serializes the resolved doc; the
+# device deserializes + dispatches to its real per-backend handler).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Android handler builds a plain `android.widget.TextView` + a
+# `SpannableStringBuilder` directly via JNI (no custom Kotlin class — a
+# plain TextView gets width-aware wrapping measurement automatically;
+# see android.rs). Target-gated so non-Android targets don't link the
+# Android backend.
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+jni = "0.21"
+
+# iOS handler builds one UILabel whose attributedText is an
+# NSAttributedString with per-range font/size/color/background/underline
+# attributes, plus objc2 for the message sends.
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+backend-ios-core = { workspace = true }
+objc2 = "0.5"
+# `NSAttributedString` feature also gates `NSMutableAttributedString`
+# (same module). Paragraph styling is NOT used — block spacing is blank
+# lines, list indent is leading spaces — so no `NSParagraphStyle`.
+objc2-foundation = { version = "0.2", features = [
+    "NSAttributedString",
+    "NSDictionary",
+    "NSString",
+    "NSRange",
+] }
+objc2-ui-kit = { version = "0.2", features = [
+    "UILabel",
+    "UIColor",
+] }

@@ -337,3 +337,31 @@ static KEEP_NATIVE_ERROR: extern "system" fn(JNIEnv, JClass, jlong, jint, JStrin
 #[used]
 static KEEP_NATIVE_FRAME: extern "system" fn(JNIEnv, JClass, jlong, JByteArray, jint, jint) =
     Java_io_idealyst_screenrecorder_RustScreenCaptureHelper_nativeFrame;
+
+// ===========================================================================
+// Private layer — PixelCopy-excluded overlay window.
+// ===========================================================================
+
+// `backend-android-mobile`'s `[lib].name` is `backend_android`
+// (preserved historically so `System.loadLibrary("backend_android")`
+// resolves), same shape the `video` SDK's Android module uses.
+use backend_android::AndroidBackend;
+
+/// Install the `PrivateLayer` external handler against an `AndroidBackend`.
+///
+/// The handler asks the backend to build a separate `WindowManager`
+/// window (see `AndroidBackend::create_private_layer_window`) and
+/// returns its content view. The External walker parents the layer's
+/// children into that content view; the backend's `view::insert` skips
+/// reparenting it into the Activity `root` because the content view is
+/// registered as a detached window root.
+///
+/// MediaProjection capture here uses PixelCopy against the app's main
+/// window decor view; a view added via `WindowManager.addView` lives in
+/// its own window outside that decor view, so it's visible to the user
+/// but absent from the recording.
+pub fn register(backend: &mut AndroidBackend) {
+    backend.register_external::<crate::PrivateLayerProps, _>(|_props, b| {
+        b.create_private_layer_window()
+    });
+}

@@ -1,0 +1,37 @@
+[package]
+name = "canvas-vello"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# `canvas-vello` — the GPU renderer for the `canvas` SDK. Renders the
+# same `canvas_core::Scene` with `vello` (GPU compute 2D) onto the
+# framework's `graphics` primitive surface via `wgpu`.
+#
+# The app selects this renderer over `canvas-native` by calling
+# `canvas_vello::register` at bootstrap (registers an `Element::External`
+# handler for `CanvasProps`, last-registration-wins).
+#
+# NATIVE ONLY: vello requires compute shaders (Metal / Vulkan / DX12 /
+# WebGPU). The repo's web wgpu is WebGL-only, and web already has a native
+# 2D API (Canvas2D via `canvas-native`), so there's no web vello path —
+# `register` is a no-op on wasm32. One generic `register<B>` covers every
+# native backend because the GPU surface comes from `Backend::create_graphics`.
+
+[dependencies]
+runtime-core = { workspace = true }
+canvas-core = { workspace = true }
+
+# vello/wgpu's Metal backend depends on `objc2-foundation 0.3`, which
+# collides (via the objc2 sys crates' `links` keys) with the framework's
+# Apple backends on `objc2-foundation 0.2` — the two cannot coexist on an
+# Apple target. So vello is gated to NON-APPLE: Android (Vulkan), desktop
+# Linux/Windows (Vulkan/DX). On iOS/macOS `register` is a documented no-op
+# (use `canvas-native` there). Web is excluded too (WebGL-only wgpu; web has
+# Canvas2D via `canvas-native`). The benchmark runs vello-vs-native on
+# Android. Same wgpu major (29) the gpu-backend uses; vello 0.9 pins it too.
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios"), not(target_os = "macos")))'.dependencies]
+vello = "0.9"
+wgpu = "29"
+raw-window-handle = "0.6"
+pollster = "0.4"

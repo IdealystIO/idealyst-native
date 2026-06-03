@@ -863,6 +863,267 @@ impl AndroidBackend {
         with_env(|env| f(env, &self.context))
     }
 
+    /// Create a capture-excluded overlay surface for the
+    /// `screen_recorder` private layer and return its content view's
+    /// `GlobalRef`. The `screen_recorder` SDK calls this from its
+    /// `PrivateLayer` external handler; the walker then parents the
+    /// layer's children into the returned content view and tries to
+    /// `insert` it into the surrounding tree — which `view::insert`
+    /// skips because we register the content view as a detached window
+    /// root.
+    ///
+    /// ## Why a separate `WindowManager` window excludes it from capture
+    ///
+    /// MediaProjection capture on this SDK uses `PixelCopy` against the
+    /// **app's main window** (`activity.getWindow()` decor view). A view
+    /// added through `WindowManager.addView` lives in its OWN window,
+    /// outside that decor view, so PixelCopy never copies it — the
+    /// overlay is visible to the user but absent from the recording.
+    /// The orchestrator verifies this on the emulator.
+    ///
+    /// ## Touch passthrough
+    ///
+    /// The window's `LayoutParams` carry
+    /// `FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCH_MODAL | FLAG_LAYOUT_NO_LIMITS`
+    /// with a `TRANSLUCENT` pixel format. `NOT_TOUCH_MODAL` lets touches
+    /// outside the window's own (full-screen) bounds reach the app
+    /// beneath — but a full-screen window with `NOT_TOUCH_MODAL` alone
+    /// would still swallow touches INSIDE its bounds. So the content
+    /// view is a `FrameLayout` that is left non-clickable: a child that
+    /// doesn't consume a touch returns `false` from
+    /// `dispatchTouchEvent`, and combined with `NOT_FOCUSABLE` the touch
+    /// falls through to the app window. Touches that DO land on an
+    /// interactive private-layer child are consumed by that child.
+    /// (`project_android_nonmodal_overlay_passthrough`: a non-modal
+    /// overlay must not steal touches it has no interactive child for,
+    /// or the app's hamburger/buttons go dead.)
+    ///
+    /// ## Layout
+    ///
+    /// The content view is registered in `view_to_layout`, making it a
+    /// Taffy ROOT sized to the viewport by `run_layout_pass`. The
+    /// window itself is full-screen (`MATCH_PARENT`), so the content
+    /// view fills it; the layer's controls position inside via normal
+    /// flex/absolute style. The root view itself is excluded from
+    /// `apply_frame_to_layout_params` (it's positioned by the window's
+    /// `WindowManager.LayoutParams`, not margin params).
+    pub fn create_private_layer_window(&mut self) -> GlobalRef {
+        // Content holder: a FrameLayout (like the portal overlay) so children
+        // are placed by Taffy frames on FrameLayout.LayoutParams.
+        let content = with_env(|env| {
+            let fl_class = env.find_class("android/widget/FrameLayout").unwrap();
+            let content = env
+                .new_object(
+                    &fl_class,
+                    "(Landroid/content/Context;)V",
+                    &[JValue::Object(&self.context.as_obj())],
+                )
+                .unwrap();
+            env.new_global_ref(content).unwrap()
+        });
+
+        // Register as a Taffy root + detached window root BEFORE attaching the
+        // OS window. Children insert + lay out against this root immediately;
+        // only the `WindowManager.addView` is deferred — see
+        // `try_attach_private_layer_window` for why (the activity window token
+        // is null during the initial mount). The map value is the content
+        // GlobalRef so `release_private_layer_window` can `removeView` it.
+        self.layout_for_view(&content);
+        let key = Self::node_key_of(&content);
+        self.detached_window_roots.insert(key, content.clone());
+
+        self.try_attach_private_layer_window(&content, 0);
+
+        content
+    }
+
+    /// Attach the private-layer content view to its own `WindowManager`
+    /// window. A `TYPE_APPLICATION_PANEL` window needs the host activity's
+    /// window token, which is **null until the activity's window is attached
+    /// to the WindowManager** — a frame or two after `onCreate`. Since this
+    /// handler runs during the initial mount (inside `attach` → `mount`),
+    /// `addView` would throw `BadTokenException` and the overlay would never
+    /// show (the bug this fixes). So if the token isn't live yet — or
+    /// `addView` throws — we re-post on the main looper with a short backoff
+    /// and try again, up to a bounded number of attempts.
+    fn try_attach_private_layer_window(&mut self, content: &GlobalRef, retry: u32) {
+        const MAX_RETRIES: u32 = 30;
+
+        let attached = with_env(|env| -> bool {
+            // WindowManager from the Activity context (Context.WINDOW_SERVICE).
+            let svc_name = env.new_string("window").unwrap();
+            let wm = match env
+                .call_method(
+                    &self.context.as_obj(),
+                    "getSystemService",
+                    "(Ljava/lang/String;)Ljava/lang/Object;",
+                    &[JValue::Object(&svc_name)],
+                )
+                .ok()
+                .and_then(|v| v.l().ok())
+            {
+                Some(wm) if !wm.is_null() => wm,
+                _ => return false,
+            };
+
+            // The activity's window token via getWindow().getDecorView()
+            // .getWindowToken(). Null until the window is attached — bail and
+            // retry. A non-null token is the signal the window is live.
+            let token = env
+                .call_method(
+                    &self.context.as_obj(),
+                    "getWindow",
+                    "()Landroid/view/Window;",
+                    &[],
+                )
+                .ok()
+                .and_then(|v| v.l().ok())
+                .filter(|w| !w.is_null())
+                .and_then(|window| {
+                    env.call_method(&window, "getDecorView", "()Landroid/view/View;", &[])
+                        .ok()
+                        .and_then(|v| v.l().ok())
+                })
+                .filter(|d| !d.is_null())
+                .and_then(|decor| {
+                    env.call_method(&decor, "getWindowToken", "()Landroid/os/IBinder;", &[])
+                        .ok()
+                        .and_then(|v| v.l().ok())
+                });
+            let token = match token {
+                Some(t) if !t.is_null() => t,
+                _ => return false, // window not attached yet — retry
+            };
+
+            // WindowManager.LayoutParams — full-screen, passthrough,
+            // translucent. TYPE_APPLICATION_PANEL (1000) is a child window of
+            // the app's own window (uses the activity token, so no
+            // SYSTEM_ALERT_WINDOW permission).
+            const MATCH_PARENT: i32 = -1;
+            const TYPE_APPLICATION_PANEL: i32 = 1000;
+            const FLAG_NOT_FOCUSABLE: i32 = 0x0000_0008;
+            // FLAG_NOT_TOUCHABLE: the window NEVER receives touches — every
+            // touch falls straight through to the app behind. Required because
+            // this overlay is FULL-SCREEN: FLAG_NOT_TOUCH_MODAL only passes
+            // through touches OUTSIDE the window's bounds, so a full-screen
+            // window without NOT_TOUCHABLE swallows ALL app touches (the
+            // recurring "Android controls dead under an overlay" bug). Correct
+            // for display-only private-layer content (a REC badge, a recording
+            // preview). LIMITATION: INTERACTIVE private-layer controls (e.g. a
+            // whiteboard toolbar) won't receive taps on Android with this flag
+            // — per-region touchability needs the hidden
+            // `OnComputeInternalInsetsListener` touchable-region API; iOS
+            // handles it via `OverlayPassthroughView` hit-testing. Tracked as a
+            // follow-up.
+            const FLAG_NOT_TOUCHABLE: i32 = 0x0000_0010;
+            const FLAG_NOT_TOUCH_MODAL: i32 = 0x0000_0020;
+            const FLAG_LAYOUT_NO_LIMITS: i32 = 0x0000_0200;
+            const TRANSLUCENT: i32 = -3;
+            let flags =
+                FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCHABLE | FLAG_NOT_TOUCH_MODAL | FLAG_LAYOUT_NO_LIMITS;
+
+            let lp_class = env
+                .find_class("android/view/WindowManager$LayoutParams")
+                .unwrap();
+            // (int w, int h, int type, int flags, int format)
+            let lp = env
+                .new_object(
+                    &lp_class,
+                    "(IIIII)V",
+                    &[
+                        JValue::Int(MATCH_PARENT),
+                        JValue::Int(MATCH_PARENT),
+                        JValue::Int(TYPE_APPLICATION_PANEL),
+                        JValue::Int(flags),
+                        JValue::Int(TRANSLUCENT),
+                    ],
+                )
+                .unwrap();
+            let _ = env.set_field(&lp, "token", "Landroid/os/IBinder;", JValue::Object(&token));
+
+            // addView(content, lp) — creates the separate window.
+            let _ = env.call_method(
+                &wm,
+                "addView",
+                "(Landroid/view/View;Landroid/view/ViewGroup$LayoutParams;)V",
+                &[JValue::Object(content.as_obj()), JValue::Object(&lp)],
+            );
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
+                return false; // BadToken (token went stale mid-attach) — retry
+            }
+            true
+        });
+
+        if attached {
+            // Window is up — compute the detached root against the viewport so
+            // the layer's children position (its frame is skipped in the pass,
+            // but its children get frames).
+            crate::imp::scheduler::schedule_layout_pass_retry(0);
+            return;
+        }
+
+        if retry >= MAX_RETRIES {
+            log::error!(
+                "[backend-android] private layer: window token never became valid \
+                 after {MAX_RETRIES} retries — overlay not shown"
+            );
+            return;
+        }
+
+        // Re-try on the main looper after one frame. The closure can't capture
+        // `&mut self`, so it re-reaches the backend via the global self-handle.
+        let content = content.clone();
+        crate::imp::scheduler::post_runnable(
+            16,
+            Box::new(move || {
+                if let Some(rc) = crate::imp::backend_self_weak().and_then(|w| w.upgrade()) {
+                    if let Ok(mut b) = rc.try_borrow_mut() {
+                        b.try_attach_private_layer_window(&content, retry + 1);
+                    }
+                }
+            }),
+        );
+    }
+
+    /// Tear down the private-layer overlay window created by
+    /// [`Self::create_private_layer_window`] — `WindowManager.removeView`
+    /// + drop the Taffy node / view-table entry (mirrors the portal
+    /// `release` path).
+    pub fn release_private_layer_window(&mut self, node: &GlobalRef) {
+        let key = Self::node_key_of(node);
+        if self.detached_window_roots.remove(&key).is_none() {
+            return;
+        }
+        with_env(|env| {
+            let svc_name = env.new_string("window").unwrap();
+            if let Ok(wm) = env
+                .call_method(
+                    &self.context.as_obj(),
+                    "getSystemService",
+                    "(Ljava/lang/String;)Ljava/lang/Object;",
+                    &[JValue::Object(&svc_name)],
+                )
+                .and_then(|v| v.l())
+            {
+                let _ = env.call_method(
+                    &wm,
+                    "removeView",
+                    "(Landroid/view/View;)V",
+                    &[JValue::Object(&node.as_obj())],
+                );
+                // removeView throws if the view was never added (token
+                // failure above); swallow so teardown stays best-effort.
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_clear();
+                }
+            }
+        });
+        let layout_node = self.layout_for_view(node);
+        self.layout.remove_node(layout_node);
+        self.view_to_layout.remove(&key);
+    }
+
     /// Get or create a Taffy layout node for the given view. Called
     /// from every `create_*` so each backend-created view has a
     /// corresponding node in the layout tree.
@@ -2377,11 +2638,21 @@ impl Backend for AndroidBackend {
         node
     }
 
-    fn release_external(&mut self, _node: &Self::Node) {
-        // No per-external bookkeeping today. Future SDK leaves that
-        // keep instance state (e.g. cached callback pointers, GL
-        // contexts) would clean up here, keyed by `node_key` like
-        // animations/navigators do.
+    fn release_external(&mut self, node: &Self::Node) {
+        // Detached window root (screen_recorder private layer):
+        // `WindowManager.removeView` its overlay window so it stops
+        // compositing when the layer unmounts.
+        // `release_private_layer_window` returns early for any node that
+        // isn't a registered detached root, so this is a cheap no-op for
+        // every other external. Future SDK leaves that keep instance
+        // state (cached callback pointers, GL contexts) would also clean
+        // up here, keyed by `node_key` like animations/navigators do.
+        if self
+            .detached_window_roots
+            .contains_key(&Self::node_key_of(node))
+        {
+            self.release_private_layer_window(node);
+        }
     }
 
     fn make_button_handle(&self, node: &Self::Node) -> ButtonHandle {

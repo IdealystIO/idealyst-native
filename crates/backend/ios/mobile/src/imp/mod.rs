@@ -901,6 +901,68 @@ impl IosBackend {
         );
     }
 
+    /// Width-aware variant of [`install_external_content_measure`](Self::install_external_content_measure)
+    /// for externals whose `content` **wraps** to the offered width (a
+    /// multi-line `UILabel` / `UITextView`) rather than scrolling a
+    /// single axis.
+    ///
+    /// The difference is the probe: the scrolling variant asks the
+    /// content `sizeThatFits:` at unbounded width (it never wraps, so the
+    /// natural extent is correct). A wrapping label MUST be probed at the
+    /// parent's offered width minus padding, or it reports its
+    /// single-line intrinsic width and the returned height is one line —
+    /// the text then clips/overlaps below. We pass the definite available
+    /// (or known) width into `sizeThatFits:` so the label wraps and
+    /// returns the true multi-line height. Used by the `markdown` SDK,
+    /// which renders a whole document as one `NSAttributedString` label.
+    pub fn install_external_wrapping_measure(
+        &mut self,
+        node: &objc2_ui_kit::UIView,
+        content: &objc2_ui_kit::UIView,
+        pad: f32,
+    ) {
+        let layout = self.layout_for_view(node);
+        let content: objc2::rc::Retained<objc2_ui_kit::UIView> = unsafe {
+            objc2::rc::Retained::retain(content as *const _ as *mut objc2_ui_kit::UIView)
+                .unwrap()
+        };
+        self.layout.set_measure_fn(
+            layout,
+            std::rc::Rc::new(move |known_dimensions, available_space| {
+                // The width we'll wrap to: prefer an ancestor-pinned
+                // width, else the parent's definite offer, else
+                // unbounded (no wrap — only happens when nothing
+                // constrains us, e.g. a min/max-content probe).
+                let constraint_w = match (known_dimensions.width, available_space.width) {
+                    (Some(w), _) => Some(w),
+                    (None, runtime_layout::AvailableSpace::Definite(w)) => Some(w),
+                    _ => None,
+                };
+                let probe_w = match constraint_w {
+                    Some(w) => ((w - 2.0 * pad).max(0.0)) as f64,
+                    None => f64::MAX,
+                };
+                let probe = objc2_foundation::CGSize {
+                    width: probe_w,
+                    height: f64::MAX,
+                };
+                let fit: objc2_foundation::CGSize =
+                    unsafe { msg_send![&content, sizeThatFits: probe] };
+                let content_w = (fit.width as f32).max(0.0).ceil();
+                let content_h = (fit.height as f32).max(0.0).ceil();
+                runtime_layout::Size {
+                    width: known_dimensions
+                        .width
+                        .or(constraint_w)
+                        .unwrap_or(content_w + 2.0 * pad),
+                    height: known_dimensions
+                        .height
+                        .unwrap_or(content_h + 2.0 * pad),
+                }
+            }),
+        );
+    }
+
     /// Install a Taffy `measure_fn` for a standalone icon view so flex
     /// layout reserves the icon's intrinsic box. Without it the icon
     /// node had no size Taffy understood (the 24×24 Auto Layout
@@ -2689,10 +2751,18 @@ impl Backend for IosBackend {
         node
     }
 
-    fn release_external(&mut self, _node: &Self::Node) {
-        // No per-external bookkeeping today. Future SDK leaves that
-        // hold instance state (KVO observers, CADisplayLink, etc.)
-        // would clean up here, keyed by `node_key` like portals do.
+    fn release_external(&mut self, node: &Self::Node) {
+        // Detached window root (screen_recorder private layer): tear
+        // down its separate UIWindow so the overlay stops compositing
+        // when the layer unmounts. `release_private_layer_window`
+        // returns early for any node that isn't a registered detached
+        // root, so this is a cheap no-op for every other external.
+        // Future SDK leaves that hold instance state (KVO observers,
+        // CADisplayLink, etc.) would also clean up here, keyed by
+        // `view_key` like portals do.
+        if self.detached_window_roots.contains_key(&node.view_key()) {
+            self.release_private_layer_window(node);
+        }
     }
 
     fn apply_safe_area_padding(

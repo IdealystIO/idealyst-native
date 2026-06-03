@@ -24,3 +24,13 @@ pub(crate) async fn start(
 
 #[allow(dead_code)]
 pub(crate) struct Recording;
+
+/// Install the `PrivateLayer` external handler — a no-op on this target
+/// (no capture-exclusion mechanism, and these backends don't expose an
+/// `ExternalRegistry` the SDK can reach generically). Generic over
+/// [`Backend`](runtime_core::Backend) so author code can call
+/// `screen_recorder::register(&mut backend)` unconditionally; the
+/// framework's External placeholder renders if a `PrivateLayer` is
+/// actually mounted, making the unbound layer obvious. macOS's
+/// `SCContentFilter(excludingWindows:)` exclusion is a later addition.
+pub fn register<B: runtime_core::Backend>(_backend: &mut B) {}

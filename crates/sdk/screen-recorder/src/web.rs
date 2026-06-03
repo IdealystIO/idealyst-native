@@ -186,3 +186,31 @@ fn map_get_display_media_err(e: &JsValue) -> RecorderError {
     }
     RecorderError::Platform(format!("{e:?}"))
 }
+
+// ===========================================================================
+// Private layer — web (documented no-op for capture exclusion).
+// ===========================================================================
+
+use backend_web::WebBackend;
+
+/// Install the `PrivateLayer` external handler against a `WebBackend`.
+///
+/// Web has no separate-window equivalent, so the handler renders the
+/// layer's children INLINE in a plain `<div>` — they ARE captured by
+/// `getDisplayMedia`. This is a documented no-op for exclusion.
+///
+// TODO: Element Capture `restrictTo` — wrap the recordable subtree in a
+// `RestrictionTarget.fromElement(content)` so `track.restrictTo(target)`
+// crops the private layer out of the captured frames (Chromium-only,
+// behind the Element Capture API). The DOM node the handler returns
+// here is the natural anchor for that target once wired.
+pub fn register(backend: &mut WebBackend) {
+    backend.register_external::<crate::PrivateLayerProps, _>(|_props, _b| {
+        web_sys::window()
+            .expect("no window")
+            .document()
+            .expect("no document")
+            .create_element("div")
+            .expect("create_element(div) failed")
+    });
+}

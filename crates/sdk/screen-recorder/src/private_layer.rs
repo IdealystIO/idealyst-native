@@ -25,15 +25,28 @@
 //! | web     | DOM sibling outside the captured element | `track.restrictTo(RestrictionTarget.fromElement(content))` |
 //! | Linux   | (no exclusion available — renders inline) | — |
 //!
-//! # Skeleton status
+//! # Per-backend registration
 //!
-//! Today the handler renders children **inline in an ordinary view** —
-//! exclusion is NOT yet active. Each backend replaces the handler body
-//! with its real capture-excluded surface as it's implemented. The
-//! author-facing API is final; only the handler body changes.
+//! The handler that creates the capture-excluded surface needs the
+//! *concrete* backend type — it builds platform windows (a second
+//! `UIWindow` on iOS, a `WindowManager` window on Android) that the
+//! generic [`RegisterExternal`] surface can't express. So [`register`]
+//! is backend-concrete on native (it takes the platform's backend type,
+//! exactly like `video::register`) and dispatches per-`cfg` to the
+//! matching `imp` module's `register_private_layer`. On web the handler
+//! is the documented inline no-op (capture exclusion via Element
+//! Capture `restrictTo` is a later addition), and on platforms with no
+//! backend support `register` is a generic no-op so author code still
+//! compiles.
+//!
+//! | backend | status |
+//! |---------|--------|
+//! | iOS     | separate `UIWindow` — ReplayKit-excluded (device-verified by the orchestrator) |
+//! | Android | separate `WindowManager` window — PixelCopy-excluded |
+//! | web     | inline no-op (TODO: Element Capture `restrictTo`) |
+//! | others  | inline no-op |
 
-use runtime_core::accessibility::AccessibilityProps;
-use runtime_core::{external, Bound, Element, ExternalHandle, RegisterExternal};
+use runtime_core::{external, Bound, Element, ExternalHandle};
 
 /// Marker payload for the private layer. No fields yet — the layer's
 /// behavior is entirely in the backend handler. Kept as a named struct
@@ -67,17 +80,8 @@ pub fn PrivateLayer(children: Vec<Element>) -> Bound<ExternalHandle<PrivateLayer
     external(PrivateLayerProps::default()).children(children)
 }
 
-/// Install the private-layer handler on a backend. Call once at app
-/// bootstrap, exactly like `webview::register(&mut backend)`.
-///
-/// Generic over [`RegisterExternal`] so it works on any backend without
-/// naming a concrete backend type.
-pub fn register<B: RegisterExternal>(backend: &mut B) {
-    backend.register_external::<PrivateLayerProps, _>(|_props, backend| {
-        // SKELETON: render children inline in a plain view. Capture
-        // exclusion is not active yet. Per-platform impls replace this
-        // body with a real capture-excluded surface (see the module
-        // table above) and parent the external's children into it.
-        backend.create_view(&AccessibilityProps::default())
-    });
-}
+// `register` is provided by the per-target `imp` module (selected by
+// the `#[cfg_attr(... path = ...)]` on `mod imp` in `lib.rs`) and
+// re-exported from the crate root next to `ScreenRecorder`. iOS/Android
+// install the capture-excluded-window handler; web + unsupported
+// targets install the inline no-op. See [`crate::register`].

@@ -380,3 +380,28 @@ unsafe fn nserror_to_recorder(error: *mut AnyObject) -> RecorderError {
     let desc: Retained<NSString> = msg_send_id![err, localizedDescription];
     RecorderError::Platform(desc.to_string())
 }
+
+// ===========================================================================
+// Private layer — ReplayKit-excluded overlay window.
+// ===========================================================================
+
+use backend_ios::IosBackend;
+
+/// Install the `PrivateLayer` external handler against an `IosBackend`.
+///
+/// The handler asks the backend to build a separate, ReplayKit-excluded
+/// `UIWindow` (see `IosBackend::create_private_layer_window`) and returns
+/// its content view. The framework's External walker then parents the
+/// layer's children into that content view; the backend's `insert`
+/// skips reparenting it into the main (recorded) tree because the
+/// content view is registered as a detached window root.
+///
+/// ReplayKit records the app's key window only; the overlay lives on a
+/// separate non-key window at a high `windowLevel`, so it's visible to
+/// the user but absent from the recording. The orchestrator verifies
+/// this on a real device.
+pub fn register(backend: &mut IosBackend) {
+    backend.register_external::<crate::PrivateLayerProps, _>(|_props, b| {
+        b.create_private_layer_window()
+    });
+}

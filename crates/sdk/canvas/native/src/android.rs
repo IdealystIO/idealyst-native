@@ -8,9 +8,14 @@
 //! view's actual bounds, like the iOS and web renderers.
 //!
 //! A real `Bitmap` canvas (rather than a `Picture` replayed through a
-//! `PictureDrawable`) is used specifically because `Picture` replay does
-//! not reliably honor `clipPath` — a bitmap canvas does, so clip converges
-//! with web/iOS (CLAUDE.md §7).
+//! `PictureDrawable`) is used because it composites on the GPU as a normal
+//! ImageView and rasterizes static content once.
+//!
+//! **Known clip limitation** (see `DrawOp::Clip` in `apply`): a `clipPath`
+//! followed by an author transform (`concat`) before the clipped geometry
+//! draws does not reliably crop on this trivial path. Non-transformed clips
+//! work; clip+transform needs the custom-`View.onDraw` refinement or the
+//! vello renderer. Every other op converges with web/iOS.
 //!
 //! This is the deliberately **trivial** approach: one JNI call per path
 //! op, re-rasterizing the whole bitmap on every scene change. That makes
@@ -167,20 +172,6 @@ fn render_scene_into_view(view: &GlobalRef, scene: &Scene) {
             &[JValue::Float(density), JValue::Float(density)],
         );
 
-        let n_clips = scene
-            .ops()
-            .iter()
-            .filter(|o| matches!(o, DrawOp::Clip { .. }))
-            .count();
-        log::warn!(
-            "[canvas-render] w={} h={} density={} ops={} clips={}",
-            w_px,
-            h_px,
-            density,
-            scene.ops().len(),
-            n_clips
-        );
-
         if let Some(mut painter) = CanvasPainter::new(env, &canvas) {
             for op in scene.ops() {
                 painter.apply(op);
@@ -294,24 +285,22 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
             DrawOp::Clip { path, fill_rule } => {
                 let jpath = self.build_path(path, *fill_rule);
                 let local = unsafe { JObject::from_raw(jpath.as_obj().as_raw()) };
-                let res = self.env.call_method(
+                let _ = self.env.call_method(
                     self.canvas,
                     "clipPath",
                     "(Landroid/graphics/Path;)Z",
                     &[JValue::Object(&local)],
                 );
-                let exc = self.env.exception_check().unwrap_or(false);
-                if exc {
-                    let _ = self.env.exception_clear();
-                }
-                log::warn!(
-                    "[canvas-clip] segs={} ok={} bool={:?} exc={}",
-                    path.segs.len(),
-                    res.is_ok(),
-                    res.as_ref().ok().and_then(|v| v.z().ok()),
-                    exc,
-                );
                 std::mem::forget(local);
+                // KNOWN LIMITATION: a `clipPath` immediately followed by a
+                // `concat` (author transform) before the clipped geometry
+                // draws does not reliably crop on this trivial JNI path — the
+                // clip is dropped by draw time. An intervening draw realizes
+                // it, but `getClipBounds()` does not, so there's no cheap
+                // commit. Non-transformed clips work. The proper fix is the
+                // custom `View.onDraw` (Kotlin shim) or the vello renderer,
+                // both of which honor clip+transform. Tracked, not silent
+                // (CLAUDE.md §7).
             }
             // `DrawOp` is `#[non_exhaustive]`; future ops no-op until wired.
             _ => {}

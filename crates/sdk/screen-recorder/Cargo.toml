@@ -71,6 +71,10 @@ objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString"] }
 block2 = "0.5"
 futures-channel = "0.3"
+# The private-layer `register` handler builds a ReplayKit-excluded
+# `UIWindow` through `IosBackend::create_private_layer_window`, so it
+# names the concrete backend type (same shape as the `video` SDK).
+backend-ios-mobile = { workspace = true }
 
 # Web capture: getDisplayMedia → a hidden <video> → <canvas> pixel pump.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -94,6 +98,10 @@ web-sys = { version = "0.3", features = [
     "Performance",
     "DomException",
 ] }
+# The private-layer `register` handler installs the inline-no-op
+# external against the concrete `WebBackend` (documented: web has no
+# separate-window exclusion yet — TODO Element Capture `restrictTo`).
+backend-web = { workspace = true }
 
 # Android capture: MediaProjection + VirtualDisplay + ImageReader, driven by a
 # Kotlin shim (RustScreenCaptureHelper) that owns the consent Activity-result
@@ -107,6 +115,10 @@ web-sys = { version = "0.3", features = [
 jni = "0.21"
 ndk-context = "0.1"
 futures-channel = "0.3"
+# The private-layer `register` handler builds a PixelCopy-excluded
+# `WindowManager` window through
+# `AndroidBackend::create_private_layer_window` (lib name `backend_android`).
+backend-android-mobile = { workspace = true }
 
 # The Kotlin shim + foreground service that drive MediaProjection capture and
 # trampoline frames back to the native exports in android.rs. `idealyst run

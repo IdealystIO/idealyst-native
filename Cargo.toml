@@ -81,6 +81,7 @@ members = [
     "crates/sdk/maps/web",
     "crates/sdk/maps/ios",
     "crates/sdk/codeblock",
+    "crates/sdk/markdown",
     "crates/sdk/webview",
     "crates/sdk/video",
     "crates/sdk/svg",
@@ -89,6 +90,7 @@ members = [
     "crates/sdk/canvas",
     "crates/sdk/canvas/core",
     "crates/sdk/canvas/native",
+    "crates/sdk/canvas/vello",
     "crates/sdk/toolbar",
     "crates/sdk/form",
     "crates/sdk/table",
@@ -170,6 +172,7 @@ members = [
     "examples/camera-demo",
     "examples/camera-preview-demo",
     "examples/canvas-demo",
+    "examples/markdown-demo",
     "examples/screenshare-preview-demo",
     "examples/media-sources-demo",
     "examples/login-demo",
@@ -182,6 +185,7 @@ members = [
     "examples/menu-demo",
     "examples/reactive-loops",
     "examples/i18n-demo",
+    "examples/whiteboard-demo",
     "benchmark",
     "benchmark/idealyst-native/wasm",
     "benchmark/idealyst-native-anim/wasm",
@@ -291,12 +295,14 @@ maps-core = { path = "crates/sdk/maps/core" }
 maps-web = { path = "crates/sdk/maps/web" }
 maps-ios = { path = "crates/sdk/maps/ios" }
 codeblock = { path = "crates/sdk/codeblock" }
+markdown = { path = "crates/sdk/markdown" }
 webview = { path = "crates/sdk/webview" }
 video = { path = "crates/sdk/video" }
 svg = { path = "crates/sdk/svg" }
 canvas = { path = "crates/sdk/canvas" }
 canvas-core = { path = "crates/sdk/canvas/core" }
 canvas-native = { path = "crates/sdk/canvas/native" }
+canvas-vello = { path = "crates/sdk/canvas/vello" }
 toolbar = { path = "crates/sdk/toolbar" }
 form = { path = "crates/sdk/form" }
 table = { path = "crates/sdk/table" }

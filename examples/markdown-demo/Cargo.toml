@@ -1,0 +1,29 @@
+[package]
+name = "markdown-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Markdown SDK demo — renders a CommonMark/GFM document as a single native styled-text node per backend (NSAttributedString on iOS, SpannableString on Android, semantic DOM on web), with a live light/dark theme toggle proving styles re-apply on theme change."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+markdown = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Markdown Demo"
+bundle_id = "ai.truday.idealyst.markdowndemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]

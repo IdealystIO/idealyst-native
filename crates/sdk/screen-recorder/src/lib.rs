@@ -34,7 +34,14 @@ pub mod private_layer;
 
 pub use config::{AudioSource, RecordingConfig, Source, WindowSelector, DEFAULT_FPS};
 pub use error::RecorderError;
-pub use private_layer::{register, PrivateLayer, PrivateLayerProps};
+pub use private_layer::{PrivateLayer, PrivateLayerProps};
+
+// The private-layer `register` is backend-concrete on native (it builds
+// platform windows that the generic `RegisterExternal` surface can't),
+// so it's supplied by the per-target `imp` module — iOS/Android install
+// the real capture-excluded-window handler; web + unsupported targets
+// install the inline no-op. See `private_layer`'s module docs.
+pub use imp::register;
 
 // The live-source surface is the shared `media-stream` vocabulary — the same
 // currency the `camera` SDK produces and the `video` SDK consumes. Re-export

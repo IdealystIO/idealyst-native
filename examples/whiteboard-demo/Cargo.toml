@@ -1,0 +1,41 @@
+[package]
+name = "whiteboard-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Whiteboard demo — a freehand-drawable canvas (canvas SDK) with a non-recorded overlay toolbar (screen-recorder PrivateLayer), a recordable camera widget (camera → video), screen recording (screen-recorder → MediaStream), and a live recording preview rendered inside the private layer so it doesn't feed back into the capture."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+canvas = { workspace = true }
+canvas-native = { workspace = true }
+camera = { workspace = true }
+video = { workspace = true }
+screen-recorder = { workspace = true }
+
+# The concrete backend each platform's wrapper hands to `register_extensions`,
+# where the canvas / video / screen-recorder externals register their handlers.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Whiteboard"
+bundle_id = "ai.truday.idealyst.whiteboard"
+version   = "0.0.1"
+targets   = ["ios", "android", "web", "macos"]
+
+[package.metadata.idealyst.app.permissions]
+camera = "Whiteboard shows your camera feed in the corner of the board."
