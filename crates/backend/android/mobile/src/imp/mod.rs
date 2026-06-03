@@ -35,7 +35,8 @@ use runtime_core::{Backend, ButtonHandle, StyleRules};
 struct NoopNavOps;
 impl NavigatorOps for NoopNavOps {}
 static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
-use jni::objects::{GlobalRef, JObject, JValue};
+use jni::objects::{GlobalRef, JFieldID, JMethodID, JObject, JValue};
+use jni::signature::{Primitive, ReturnType};
 use jni::sys::{jint, jlong, JNI_VERSION_1_6};
 use jni::{JNIEnv, JavaVM};
 use std::collections::HashMap;
@@ -449,6 +450,19 @@ thread_local! {
     static TEXTVIEW_CLASS: std::cell::RefCell<Option<GlobalRef>> =
         std::cell::RefCell::new(None);
 
+    /// Cached `android.view.View` class. Pinned so the `getLayoutParams`
+    /// / `setLayoutParams` `JMethodID`s in `FRAME_APPLY_IDS` stay valid
+    /// (a method ID lives only as long as its declaring class isn't
+    /// unloaded — holding a `GlobalRef` to the class guarantees that).
+    static VIEW_CLASS: std::cell::RefCell<Option<GlobalRef>> =
+        std::cell::RefCell::new(None);
+
+    /// Resolved JNI field/method IDs for the per-view layout write in
+    /// `apply_frame_to_layout_params`. See [`FrameApplyIds`]. `Copy`, so
+    /// a plain `Cell` suffices.
+    static FRAME_APPLY_IDS: std::cell::Cell<Option<FrameApplyIds>> =
+        std::cell::Cell::new(None);
+
     /// Display density (dp → px scaling), constant for the lifetime of
     /// the Activity. Cached after the first successful read; reused on
     /// every dp-to-px conversion in the per-view layout path. The 5
@@ -615,6 +629,101 @@ fn cached_margin_lp_class(env: &mut JNIEnv) -> Option<GlobalRef> {
     })
 }
 
+/// Resolved JNI IDs for the per-view layout write in
+/// [`apply_frame_to_layout_params`]. Each `GetFieldID`/`GetMethodID` is
+/// a reflective, string-keyed lookup; the previous (string-based)
+/// `set_field`/`call_method` path paid eight of them *per view per
+/// layout pass* — the six `MarginLayoutParams` fields plus
+/// `getLayoutParams`/`setLayoutParams`. For a 200-view tree that's
+/// ~1600 reflective probes a pass and, per the comment in that
+/// function, most of its wall-clock budget.
+///
+/// Resolving each ID once and reusing the `JFieldID`/`JMethodID`
+/// collapses every subsequent write to a direct slot/vtable access —
+/// the same dispatch shortcut iOS gets for free from cached objc
+/// selectors (see [[feedback_backend_owns_rendering]]: converge on
+/// behavior, diverge on mechanism).
+///
+/// **Validity invariant:** a field/method ID stays valid only until its
+/// declaring class is unloaded. The `MarginLayoutParams` fields + ctor
+/// hang off `MARGIN_LP_CLASS` and the `View` methods off `VIEW_CLASS`,
+/// both pinned as `GlobalRef`s for the Activity's lifetime, so these
+/// IDs never dangle. Resolve them via [`frame_apply_ids`], never store
+/// one whose class isn't pinned.
+#[derive(Clone, Copy)]
+struct FrameApplyIds {
+    width: JFieldID,
+    height: JFieldID,
+    left_margin: JFieldID,
+    top_margin: JFieldID,
+    right_margin: JFieldID,
+    bottom_margin: JFieldID,
+    /// `MarginLayoutParams(int width, int height)` constructor.
+    mlp_ctor: JMethodID,
+    /// `View.getLayoutParams()` — virtual dispatch via the child view.
+    get_layout_params: JMethodID,
+    /// `View.setLayoutParams(ViewGroup.LayoutParams)`.
+    set_layout_params: JMethodID,
+}
+
+/// Get the `android.view.View` class as a pinned `GlobalRef`, looked up
+/// once. Mirrors [`cached_margin_lp_class`]; needed because the
+/// `getLayoutParams`/`setLayoutParams` method IDs resolve against
+/// `View`, and we must keep that class alive for the IDs to stay valid.
+fn cached_view_class(env: &mut JNIEnv) -> Option<GlobalRef> {
+    VIEW_CLASS.with(|slot| {
+        let mut borrow = slot.borrow_mut();
+        if borrow.is_none() {
+            let class = env.find_class("android/view/View").ok()?;
+            *borrow = Some(env.new_global_ref(&class).ok()?);
+        }
+        borrow.clone()
+    })
+}
+
+/// Resolve (and cache) the [`FrameApplyIds`] for the layout hot path.
+/// `&GlobalRef` satisfies `Desc<JClass>`, so the class refs go straight
+/// to `get_field_id`/`get_method_id` without a transmute. Returns
+/// `None` only on a classloader/lookup failure (effectively never on a
+/// valid install) so the caller short-circuits cleanly.
+fn frame_apply_ids(env: &mut JNIEnv) -> Option<FrameApplyIds> {
+    if let Some(ids) = FRAME_APPLY_IDS.with(|c| c.get()) {
+        return Some(ids);
+    }
+    let mlp = cached_margin_lp_class(env)?;
+    let view = cached_view_class(env)?;
+    // `width`/`height` are declared on `ViewGroup.LayoutParams` and the
+    // four margins on `MarginLayoutParams`; `GetFieldID` walks the
+    // superclass chain, so resolving all six against the MLP class is
+    // correct and the IDs are valid for any subclass instance
+    // (`FrameLayout.LayoutParams`, drawer LPs, …).
+    let ids = FrameApplyIds {
+        width: env.get_field_id(&mlp, "width", "I").ok()?,
+        height: env.get_field_id(&mlp, "height", "I").ok()?,
+        left_margin: env.get_field_id(&mlp, "leftMargin", "I").ok()?,
+        top_margin: env.get_field_id(&mlp, "topMargin", "I").ok()?,
+        right_margin: env.get_field_id(&mlp, "rightMargin", "I").ok()?,
+        bottom_margin: env.get_field_id(&mlp, "bottomMargin", "I").ok()?,
+        mlp_ctor: env.get_method_id(&mlp, "<init>", "(II)V").ok()?,
+        get_layout_params: env
+            .get_method_id(
+                &view,
+                "getLayoutParams",
+                "()Landroid/view/ViewGroup$LayoutParams;",
+            )
+            .ok()?,
+        set_layout_params: env
+            .get_method_id(
+                &view,
+                "setLayoutParams",
+                "(Landroid/view/ViewGroup$LayoutParams;)V",
+            )
+            .ok()?,
+    };
+    FRAME_APPLY_IDS.with(|c| c.set(Some(ids)));
+    Some(ids)
+}
+
 /// Apply a Taffy-computed `Frame` to the view's `LayoutParams`. The
 /// view is expected to be a child of a `FrameLayout`-shaped parent —
 /// `FrameLayout.LayoutParams` (which extends `MarginLayoutParams`)
@@ -650,91 +759,91 @@ fn apply_frame_to_layout_params(
     let top_px = (frame.y * density).round() as i32;
     let w_px = (frame.width * density).round() as i32;
     let h_px = (frame.height * density).round() as i32;
-    // Read the current LayoutParams. If the view isn't attached
-    // yet there may be no LP — fall back to fresh
-    // `FrameLayout.LayoutParams(w, h)`.
+    // Resolve the cached field/method IDs for this hot path. A miss
+    // means a classloader failure on a fresh process — punt the view;
+    // the next pass retries (IDs are process-stable once resolved).
+    let Some(ids) = frame_apply_ids(env) else {
+        return;
+    };
+    // Read the current LayoutParams via the cached `getLayoutParams`
+    // method ID. `call_method_unchecked` skips the per-call
+    // `GetMethodID` string probe the old `call_method` paid. If the view
+    // isn't attached yet there may be no LP — fall back to a fresh
+    // `MarginLayoutParams(w, h)`.
     let _t_get_lp = phase_timer::PhaseTimer::start("apply_frame_getLayoutParams");
-    let lp_obj = env
-        .call_method(
-            &view_obj,
-            "getLayoutParams",
-            "()Landroid/view/ViewGroup$LayoutParams;",
-            &[],
-        )
-        .ok()
-        .and_then(|v| v.l().ok());
+    let lp_obj = unsafe {
+        env.call_method_unchecked(&view_obj, ids.get_layout_params, ReturnType::Object, &[])
+    }
+    .ok()
+    .and_then(|v| v.l().ok());
     drop(_t_get_lp);
     let lp = match lp_obj {
         Some(o) if !o.is_null() => {
-            // Already a LayoutParams of *some* shape. We need it to
-            // be `MarginLayoutParams` (or subclass — `FrameLayout`'s
-            // own LP class extends MarginLayoutParams) so we can
-            // write margins. If it isn't, wrap it.
-            //
-            // Use the cached MarginLayoutParams JClass — `find_class`
-            // is a slow JNI call that we'd otherwise pay for every
-            // view in every layout pass. With 200 views per pass and
-            // a 1-3ms find_class on the emulator, that's most of the
-            // wall-clock budget of the pass.
-            let class_global = cached_margin_lp_class(env);
-            let Some(class_global) = class_global else {
+            // Already a LayoutParams of *some* shape. We need it to be
+            // `MarginLayoutParams` (or a subclass — `FrameLayout`'s own
+            // LP class extends it) so we can write margins. If it isn't,
+            // wrap it. The pinned class `GlobalRef` satisfies
+            // `Desc<JClass>` directly, so no transmute is needed.
+            let Some(mlp) = cached_margin_lp_class(env) else {
                 // Without the class we can't proceed; punt this view.
-                // Callers fall through to a no-op LP write and the
-                // next pass can retry.
+                // The next pass can retry.
                 return;
             };
-            let mlp_class: &jni::objects::JClass = unsafe {
-                std::mem::transmute::<&JObject, &jni::objects::JClass>(
-                    class_global.as_obj(),
-                )
-            };
-            let is_mlp = env.is_instance_of(&o, mlp_class).unwrap_or(false);
+            let is_mlp = env.is_instance_of(&o, &mlp).unwrap_or(false);
             if is_mlp {
                 o
             } else {
-                env.new_object(
-                    mlp_class,
-                    "(II)V",
-                    &[JValue::Int(w_px), JValue::Int(h_px)],
-                )
-                .unwrap()
+                match unsafe {
+                    env.new_object_unchecked(
+                        &mlp,
+                        ids.mlp_ctor,
+                        &[JValue::Int(w_px).as_jni(), JValue::Int(h_px).as_jni()],
+                    )
+                } {
+                    Ok(o) => o,
+                    Err(_) => return,
+                }
             }
         }
         _ => {
-            let Some(class_global) = cached_margin_lp_class(env) else {
+            let Some(mlp) = cached_margin_lp_class(env) else {
                 return;
             };
-            let mlp_class: &jni::objects::JClass = unsafe {
-                std::mem::transmute::<&JObject, &jni::objects::JClass>(
-                    class_global.as_obj(),
+            match unsafe {
+                env.new_object_unchecked(
+                    &mlp,
+                    ids.mlp_ctor,
+                    &[JValue::Int(w_px).as_jni(), JValue::Int(h_px).as_jni()],
                 )
-            };
-            env.new_object(
-                mlp_class,
-                "(II)V",
-                &[JValue::Int(w_px), JValue::Int(h_px)],
-            )
-            .unwrap()
+            } {
+                Ok(o) => o,
+                Err(_) => return,
+            }
         }
     };
+    // Write the frame straight into the LP fields via cached field IDs.
+    // `set_field_unchecked` skips the `GetFieldID` probe each of these
+    // used to pay (6 per view per pass).
     let _t_fields = phase_timer::PhaseTimer::start("apply_frame_set_fields");
-    let _ = env.set_field(&lp, "width", "I", JValue::Int(w_px));
-    let _ = env.set_field(&lp, "height", "I", JValue::Int(h_px));
-    let _ = env.set_field(&lp, "leftMargin", "I", JValue::Int(left_px));
-    let _ = env.set_field(&lp, "topMargin", "I", JValue::Int(top_px));
+    let _ = env.set_field_unchecked(&lp, ids.width, JValue::Int(w_px));
+    let _ = env.set_field_unchecked(&lp, ids.height, JValue::Int(h_px));
+    let _ = env.set_field_unchecked(&lp, ids.left_margin, JValue::Int(left_px));
+    let _ = env.set_field_unchecked(&lp, ids.top_margin, JValue::Int(top_px));
     drop(_t_fields);
     // Zero out trailing margins — they're authored via the same
     // taffy-computed frame and writing 0 keeps stale values from a
     // prior layout pass from leaking through.
-    let _ = env.set_field(&lp, "rightMargin", "I", JValue::Int(0));
-    let _ = env.set_field(&lp, "bottomMargin", "I", JValue::Int(0));
+    let _ = env.set_field_unchecked(&lp, ids.right_margin, JValue::Int(0));
+    let _ = env.set_field_unchecked(&lp, ids.bottom_margin, JValue::Int(0));
     let _t_set_lp = phase_timer::PhaseTimer::start("apply_frame_setLayoutParams");
-    let _ = env.call_method(
-        &view_obj,
-        "setLayoutParams",
-        "(Landroid/view/ViewGroup$LayoutParams;)V",
-        &[JValue::Object(&lp)],
-    );
+    let _ = unsafe {
+        env.call_method_unchecked(
+            &view_obj,
+            ids.set_layout_params,
+            ReturnType::Primitive(Primitive::Void),
+            &[JValue::Object(&lp).as_jni()],
+        )
+    };
     drop(_t_set_lp);
 }
 

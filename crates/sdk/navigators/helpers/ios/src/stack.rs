@@ -53,6 +53,13 @@ pub(crate) struct ScreenEntry {
     #[allow(dead_code)]
     pub(crate) vc: Retained<UIViewController>,
     pub(crate) scope_id: u64,
+    /// Header callback targets (nav-bar button action handlers). UIKit
+    /// holds these weakly via `setTarget:`, so the SDK must own them for
+    /// the life of the screen. Storing them here releases them when the
+    /// screen pops — the correct lifetime, instead of leaking them for the
+    /// whole app via `mem::forget`.
+    #[allow(dead_code)]
+    pub(crate) header_targets: Vec<Retained<NSObject>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -200,14 +207,14 @@ pub(crate) fn create(
                 let vc = mount_screen_in_vc(mtm, result.node.as_view());
                 let scope_id = result.scope_id;
                 unsafe { nav_for_dispatch.pushViewController_animated(&vc, true) };
-                // Try to downcast options to IosScreenOptions; if it
-                // doesn't match (no header options were attached), skip.
-                if let Some(opts) = result.options.downcast_ref::<IosScreenOptions>() {
-                    for target in apply_header_options(&vc, opts, mtm) {
-                        std::mem::forget(target);
-                    }
-                }
-                stack.push(ScreenEntry { vc, scope_id });
+                // Downcast options to IosScreenOptions; if it doesn't match
+                // (no header options attached), there are no targets to own.
+                let header_targets = result
+                    .options
+                    .downcast_ref::<IosScreenOptions>()
+                    .map(|opts| apply_header_options(&vc, opts, mtm))
+                    .unwrap_or_default();
+                stack.push(ScreenEntry { vc, scope_id, header_targets });
                 depth_for_dispatch(stack.len());
                 schedule_layout_pass();
             }
@@ -226,15 +233,15 @@ pub(crate) fn create(
                 let result = mount_for_dispatch(name, params);
                 let vc = mount_screen_in_vc(mtm, result.node.as_view());
                 let scope_id = result.scope_id;
-                if let Some(opts) = result.options.downcast_ref::<IosScreenOptions>() {
-                    for target in apply_header_options(&vc, opts, mtm) {
-                        std::mem::forget(target);
-                    }
-                }
+                let header_targets = result
+                    .options
+                    .downcast_ref::<IosScreenOptions>()
+                    .map(|opts| apply_header_options(&vc, opts, mtm))
+                    .unwrap_or_default();
                 if let Some(old) = stack.pop() {
                     release_for_dispatch(old.scope_id);
                 }
-                stack.push(ScreenEntry { vc, scope_id });
+                stack.push(ScreenEntry { vc, scope_id, header_targets });
                 let vcs: Vec<Retained<UIViewController>> =
                     stack.iter().map(|e| e.vc.clone()).collect();
                 unsafe {
@@ -250,15 +257,15 @@ pub(crate) fn create(
                 let result = mount_for_dispatch(name, params);
                 let vc = mount_screen_in_vc(mtm, result.node.as_view());
                 let scope_id = result.scope_id;
-                if let Some(opts) = result.options.downcast_ref::<IosScreenOptions>() {
-                    for target in apply_header_options(&vc, opts, mtm) {
-                        std::mem::forget(target);
-                    }
-                }
+                let header_targets = result
+                    .options
+                    .downcast_ref::<IosScreenOptions>()
+                    .map(|opts| apply_header_options(&vc, opts, mtm))
+                    .unwrap_or_default();
                 while let Some(prev) = stack.pop() {
                     release_for_dispatch(prev.scope_id);
                 }
-                stack.push(ScreenEntry { vc: vc.clone(), scope_id });
+                stack.push(ScreenEntry { vc: vc.clone(), scope_id, header_targets });
                 unsafe {
                     nav_for_dispatch.setViewControllers_animated(
                         &objc2_foundation::NSArray::from_vec(vec![vc]),
@@ -314,13 +321,11 @@ pub(crate) fn attach_initial(
             false,
         );
     }
-    for target in apply_header_options(&root_vc, options, mtm) {
-        std::mem::forget(target);
-    }
+    let header_targets = apply_header_options(&root_vc, options, mtm);
     entry
         .stack
         .borrow_mut()
-        .push(ScreenEntry { vc: root_vc, scope_id });
+        .push(ScreenEntry { vc: root_vc, scope_id, header_targets });
 
     // If this was a deep link (resolved route != configured initial), insert
     // the index UNDER the detail once the walker's borrow releases.
@@ -331,14 +336,13 @@ pub(crate) fn attach_initial(
         // Drop the `entry` borrow before scheduling so the deferred closure can
         // re-borrow the registry entry.
         drop(entry);
-        let task = runtime_core::after_ms(0, move || {
+        // Off-scope, single-shot reconstruction that must survive the
+        // `after_ms(0)` window — the runtime owns it and sweeps it after it
+        // fires. The closure only touches the per-navigator registry entry
+        // (cleaned up on `release`), so this is safe.
+        runtime_core::after_ms_detached(0, move || {
             reconstruct_back_stack(mtm, navigator_key, initial_route);
         });
-        // `ScheduledTask` cancels on drop; forget it so this single-shot
-        // reconstruction survives the `after_ms(0)` window. The closure only
-        // touches the per-navigator registry entry (cleaned up on `release`),
-        // so leaking the handle is safe.
-        std::mem::forget(task);
     }
 }
 
@@ -374,15 +378,13 @@ fn reconstruct_back_stack(
             false,
         );
     }
-    for target in apply_header_options(&index_vc, &IosScreenOptions::default(), mtm) {
-        std::mem::forget(target);
-    }
+    let header_targets = apply_header_options(&index_vc, &IosScreenOptions::default(), mtm);
 
     // Insert the index UNDER the existing detail entry in the rust stack mirror.
     {
         let mut stack = entry.stack.borrow_mut();
         let detail = stack.pop();
-        stack.push(ScreenEntry { vc: index_vc, scope_id: index.scope_id });
+        stack.push(ScreenEntry { vc: index_vc, scope_id: index.scope_id, header_targets });
         if let Some(detail) = detail {
             stack.push(detail);
         }

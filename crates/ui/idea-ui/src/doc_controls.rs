@@ -219,21 +219,19 @@ where
     // so the `shadow.set` below doesn't recursively re-fire this
     // effect and corrupt its subscription set.
     //
-    // `mem::forget` matches `memo_with` / `resource` / animation
-    // bindings: when called inside an active render scope (the common
-    // case) the scope adopted the effect (`owns: false`) and the
-    // forget is a no-op. When called outside any scope (tests,
-    // ad-hoc construction) the forget pins the effect to thread
-    // lifetime so the typed→shadow sync survives past return — pre-fix
-    // the `let _e_typed_to_shadow` drop fired at end-of-statement and
+    // `persist()` is adopt-or-pin: inside an active render scope (the
+    // common case) the scope already owns the effect and this is a no-op;
+    // outside any scope (tests, ad-hoc construction) it pins the effect to
+    // thread lifetime so the typed→shadow sync survives past return — pre-
+    // fix the `let _e_typed_to_shadow` drop fired at end-of-statement and
     // silently cancelled the sync.
-    let e_typed_to_shadow = Effect::new(move || {
+    Effect::new(move || {
         let s = value.get().as_variant_str().to_string();
         if shadow.get() != s {
             shadow.set(s);
         }
-    });
-    std::mem::forget(e_typed_to_shadow);
+    })
+    .persist();
 
     let on_change: Rc<dyn Fn(String)> = {
         let variants = variants;
@@ -289,13 +287,14 @@ pub fn ref_picker_control<T: idea_theme::extensible::RefBuiltins>(
     let initial = value.get().current_key().to_string();
     let shadow: Signal<String> = Signal::new(initial);
 
-    let e_typed_to_shadow = Effect::new(move || {
+    // adopt-or-pin; see `variant_enum_control` above.
+    Effect::new(move || {
         let s = value.get().current_key().to_string();
         if shadow.get() != s {
             shadow.set(s);
         }
-    });
-    std::mem::forget(e_typed_to_shadow);
+    })
+    .persist();
 
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |picked: String| {
         // Re-enumerate per call so we can return owned `T` from the

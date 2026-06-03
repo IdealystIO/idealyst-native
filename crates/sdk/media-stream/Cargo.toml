@@ -24,3 +24,10 @@ license.workspace = true
 # consumer is possible — the abstraction doesn't preclude it.
 
 [dependencies]
+
+# Web target only: the capture clock (`clock::now_micros`) has no `Instant`
+# time source on `wasm32-unknown-unknown`, so it reads `Date.now()`. js-sys is
+# already universal in this project's wasm builds; nothing else here touches
+# the web platform, so the crate stays thin and GPU-free everywhere else.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"

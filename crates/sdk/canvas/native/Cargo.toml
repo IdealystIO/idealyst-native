@@ -11,9 +11,12 @@ license.workspace = true
 # `CanvasProps` keyed by its TypeId.
 #
 # Backend coverage:
-# - Web: `<canvas>` 2D context (this phase).
-# - iOS: CoreGraphics / `CGContext` (later phase).
-# - Android: `android.graphics.Canvas` (later phase).
+# - Web: `<canvas>` 2D context.
+# - iOS: CoreGraphics / `CGContext` via a `UIView` subclass.
+# - macOS: CoreGraphics / `CGContext` via an `NSView` subclass (shares
+#   the iOS op-replay through the `apple` module; only the context
+#   acquisition + bezier/color vtable differ).
+# - Android: `android.graphics.Canvas`.
 # - Other targets: framework `External` placeholder; use `canvas-vello`.
 
 [dependencies]
@@ -41,6 +44,18 @@ backend-ios-mobile = { workspace = true }
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSGeometry"] }
 objc2-ui-kit = { version = "0.2", features = ["UIView", "UIResponder"] }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSGeometry"] }
+objc2-app-kit = { version = "0.2", features = [
+    "NSView",
+    "NSResponder",
+    "NSColor",
+    "NSBezierPath",
+    "NSGraphicsContext",
+] }
 
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 backend-android-mobile = { workspace = true }

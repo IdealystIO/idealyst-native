@@ -3,7 +3,7 @@ use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_foundation::{CGFloat, MainThreadMarker, NSObject, NSRange, NSString};
-use objc2_ui_kit::{UIScrollView, UITextField, UITextView, UIView};
+use objc2_ui_kit::{UIScrollView, UITextField, UITextView, UIView, UIWindow};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -630,6 +630,210 @@ impl OverlayPassthroughView {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(());
         unsafe { msg_send_id![super(this), init] }
+    }
+}
+
+// =========================================================================
+// PrivateLayerPassthroughView — the screen_recorder `PrivateLayer` window's
+// root content view. Like `OverlayPassthroughView` it lets touches fall
+// through to the app window beneath, but its hit-test is RECURSIVE.
+//
+// The portal `OverlayPassthroughView` checks only its DIRECT subviews'
+// frames, because a portal's direct child IS the small popover content.
+// The private layer is different: its direct child is a viewport-spanning,
+// transparent flex root (the content is a Taffy root sized to the window),
+// with the actual controls — a toolbar, a recording preview — nested deep
+// inside and sparse. A direct-children-frame check therefore reports YES for
+// EVERY point and swallows all canvas-area touches (the user "can't draw at
+// all"; the toolbar still works because those taps land in that same
+// full-screen child and hit-test down to the buttons).
+//
+// So we descend the subtree and capture a touch only where it lands on a view
+// that actually wants it: an interactive control (an `IdealystTouchView` with
+// an installed `on_touch` handler) or a view that paints visible content (a
+// non-clear background, alpha > 0). Transparent layout containers are passed
+// through, so a tap in the empty regions above/around the toolbar falls
+// through this window to the drawable canvas in the app window beneath.
+// =========================================================================
+
+extern "C" {
+    /// CoreGraphics: alpha component of a `CGColorRef` (0.0 = fully
+    /// transparent). Linked from the system CoreGraphics framework.
+    fn CGColorGetAlpha(color: *const std::ffi::c_void) -> CGFloat;
+}
+
+/// Recursive hit-test for [`PrivateLayerPassthroughView`]. Returns true if
+/// `point` (in `view`'s coordinate space) lands on a subview that should
+/// CAPTURE the touch — see the type docs for the criteria.
+///
+/// Builds a [`HitNode`](crate::private_layer_hittest::HitNode) tree from the
+/// live UIView subtree (reading each subview's frame + whether it captures)
+/// and delegates the recursion + coordinate conversion to the host-tested
+/// [`region_blocks_touch`](crate::private_layer_hittest::region_blocks_touch).
+/// The private layer's controls use plain frames (no scroll offset / transform),
+/// so a subview's frame origin is the exact parent→child coordinate offset.
+pub(crate) fn private_layer_blocks_touch(
+    view: &UIView,
+    point: objc2_foundation::CGPoint,
+) -> bool {
+    let nodes = private_layer_hit_nodes(view);
+    crate::private_layer_hittest::region_blocks_touch(&nodes, point.x, point.y)
+}
+
+/// Build the [`HitNode`] tree for `view`'s subviews (recursively): frame in the
+/// parent's coordinate space + whether each subview itself captures touches.
+/// Hidden subviews are skipped (they can't be hit).
+fn private_layer_hit_nodes(view: &UIView) -> Vec<crate::private_layer_hittest::HitNode> {
+    let subviews: Retained<objc2_foundation::NSArray<UIView>> =
+        unsafe { msg_send_id![view, subviews] };
+    let mut nodes = Vec::new();
+    for sub in subviews.iter() {
+        if sub.isHidden() {
+            continue;
+        }
+        let frame: objc2_foundation::CGRect = unsafe { msg_send![&*sub, frame] };
+        nodes.push(crate::private_layer_hittest::HitNode {
+            x: frame.origin.x,
+            y: frame.origin.y,
+            w: frame.size.width,
+            h: frame.size.height,
+            captures: private_layer_view_captures(&sub),
+            children: private_layer_hit_nodes(&sub),
+        });
+    }
+    nodes
+}
+
+/// A single view captures touches if it's an interactive control (an
+/// `IdealystTouchView` with an installed handler) or paints visible content
+/// (a non-clear background, alpha > 0).
+fn private_layer_view_captures(view: &UIView) -> bool {
+    // Interactive control: IdealystTouchView with a handler installed.
+    let touch_cls = objc2::class!(IdealystTouchView);
+    let is_touch: bool = unsafe { msg_send![view, isKindOfClass: touch_cls] };
+    if is_touch {
+        // SAFETY: dynamic class just confirmed IdealystTouchView; its layout
+        // is UIView extended with our ivars, ABI-identical for this read.
+        let tv: &super::touch::IdealystTouchView =
+            unsafe { &*(view as *const UIView as *const super::touch::IdealystTouchView) };
+        if tv.has_handler() {
+            return true;
+        }
+    }
+    // Visible content: non-clear background (alpha > 0). `backgroundColor` is
+    // nil on a plain transparent layout container → falls through.
+    let bg: Option<Retained<NSObject>> = unsafe { msg_send_id![view, backgroundColor] };
+    if let Some(bg) = bg {
+        let cg: *const std::ffi::c_void = unsafe { msg_send![&bg, CGColor] };
+        if !cg.is_null() && unsafe { CGColorGetAlpha(cg) } > 0.0 {
+            return true;
+        }
+    }
+    false
+}
+
+declare_class!(
+    pub(crate) struct PrivateLayerPassthroughView;
+
+    unsafe impl ClassType for PrivateLayerPassthroughView {
+        type Super = UIView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystPrivateLayerPassthroughView";
+    }
+
+    impl DeclaredClass for PrivateLayerPassthroughView {
+        type Ivars = ();
+    }
+
+    unsafe impl PrivateLayerPassthroughView {
+        #[method(pointInside:withEvent:)]
+        fn point_inside(
+            &self,
+            point: objc2_foundation::CGPoint,
+            _event: *const NSObject,
+        ) -> objc2::runtime::Bool {
+            // SAFETY: PrivateLayerPassthroughView's superclass is UIView.
+            let this: &UIView = unsafe { &*(self as *const Self as *const UIView) };
+            if private_layer_blocks_touch(this, point) {
+                objc2::runtime::Bool::YES
+            } else {
+                objc2::runtime::Bool::NO
+            }
+        }
+    }
+);
+
+impl PrivateLayerPassthroughView {
+    pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(());
+        unsafe { msg_send_id![super(this), init] }
+    }
+}
+
+// =========================================================================
+// PassthroughWindow — the screen_recorder `PrivateLayer`'s separate UIWindow.
+//
+// `PrivateLayerPassthroughView.pointInside:` returning NO makes the ROOT
+// view's `hitTest` return nil over the canvas — but that is NOT enough to let
+// the touch fall through to the app window beneath. A `UIWindow`'s own
+// `pointInside:` is YES across its whole (screen-sized) bounds, so when its
+// root view declines, the default `hitTest` returns the WINDOW ITSELF — a
+// non-nil result — and UIKit delivers the touch to this overlay window, where
+// it dies (the drawing surface in the app window never sees it; confirmed by
+// logging: 0 of 20 canvas touches reached `touchesBegan`).
+//
+// Overriding the window's `hitTest:` to return nil when the resolved view is
+// the window itself makes the whole window decline those touches, so UIKit
+// proceeds to the next (key/app) window — the canvas becomes drawable while
+// the toolbar (a real subview, hit non-self) still captures.
+declare_class!(
+    pub(crate) struct PassthroughWindow;
+
+    unsafe impl ClassType for PassthroughWindow {
+        type Super = UIWindow;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystPassthroughWindow";
+    }
+
+    impl DeclaredClass for PassthroughWindow {
+        type Ivars = ();
+    }
+
+    unsafe impl PassthroughWindow {
+        #[method_id(hitTest:withEvent:)]
+        fn hit_test(
+            &self,
+            point: objc2_foundation::CGPoint,
+            event: *const NSObject,
+        ) -> Option<Retained<UIView>> {
+            let hit: Option<Retained<UIView>> =
+                unsafe { msg_send_id![super(self), hitTest: point, withEvent: event] };
+            // Resolved to the window itself → no private-layer control was hit
+            // (the root view's recursive `pointInside` declined). Pass through
+            // (nil) so the app window beneath receives the touch. A real
+            // control resolves to a deep subview (not self) and is returned.
+            match hit {
+                Some(v)
+                    if (Retained::as_ptr(&v) as *const ())
+                        == (self as *const Self as *const ()) =>
+                {
+                    None
+                }
+                other => other,
+            }
+        }
+    }
+);
+
+impl PassthroughWindow {
+    pub(crate) fn new_with_frame(
+        mtm: MainThreadMarker,
+        frame: objc2_foundation::CGRect,
+    ) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(());
+        unsafe { msg_send_id![super(this), initWithFrame: frame] }
     }
 }
 

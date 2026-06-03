@@ -1,0 +1,101 @@
+[package]
+name = "media-writer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Records live media streams to a file. The consumer side of `media-stream`:
+# it takes a video `MediaStream` (from `camera` / `screen-recorder`) and/or an
+# audio `AudioStream` (from `microphone`) and muxes them to an `.mp4` on disk,
+# lip-syncing the two by their shared-clock capture timestamps.
+#
+# Like every capture SDK here, the mechanism diverges per platform but the
+# output converges — one author call, a playable file everywhere:
+#
+#   - iOS / macOS:  AVAssetWriter (H.264 video + AAC audio) via AVFoundation
+#   - Android:      MediaCodec + MediaMuxer via a Kotlin runtime shim
+#   - web (wasm32): MediaRecorder over the streams' native MediaStream
+#   - other:        Unsupported
+#
+# The platform-agnostic surface (MediaWriter / MediaInputs / Recording,
+# RecordConfig / Container, MediaWriterError) lives in this crate's top-level
+# modules; each cfg-gated module supplies one backend.
+
+# Frameworks the iOS/macOS AVAssetWriter backend needs linked into the final
+# app. The CLI collects these from the dep graph (like the Android
+# `runtime_kotlin` registry) and adds them to the generated Xcode project.
+# AVFoundation classes resolve at runtime via objc_getClass, but
+# CoreMedia/CoreVideo/AudioToolbox expose C functions (CMSampleBuffer*,
+# CVPixelBuffer*, the audio format ctor) that surface as undefined symbols.
+[package.metadata.idealyst.ios]
+frameworks = ["AVFoundation", "CoreMedia", "CoreVideo", "AudioToolbox"]
+
+[dependencies]
+thiserror = "1"
+# The live-source abstractions this SDK consumes (video + audio) and the
+# shared capture clock it aligns them by.
+media-stream = { workspace = true }
+# Resolves the output path: a real filesystem path on native (for the native
+# muxers), or an IndexedDB-backed blob store on web (for the MediaRecorder
+# Blob). One destination API across platforms.
+files = { workspace = true }
+
+# iOS / macOS: AVAssetWriter, driven through the Obj-C runtime (objc2
+# msg_send), the same posture `camera`'s AVCaptureSession backend takes. We
+# link AVFoundation/CoreMedia/CoreVideo/AudioToolbox and call the C surface
+# for CVPixelBuffer fills and CMSampleBuffer construction.
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+# `exception` feature: catch NSExceptions from AVFoundation calls on the
+# encoder thread and turn them into typed errors (an uncaught Obj-C exception
+# crossing a Rust frame wedges the thread mid-unwind).
+objc2 = { version = "0.5", features = ["exception"] }
+objc2-foundation = { version = "0.2", features = ["NSString", "NSError"] }
+block2 = "0.5"
+
+# Web (wasm) target: MediaRecorder over a `web_sys::MediaStream`, Blob -> the
+# `files` store.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "Blob",
+    "BlobPropertyBag",
+    "MediaStream",
+    "MediaStreamTrack",
+    "MediaRecorder",
+    "MediaRecorderOptions",
+    "RecordingState",
+    "BlobEvent",
+    "Event",
+    "EventTarget",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "CanvasCaptureMediaStreamTrack",
+    "ImageData",
+    "AudioContext",
+    "MediaStreamAudioSourceNode",
+    "MediaStreamAudioDestinationNode",
+] }
+
+# Android target: MediaCodec + MediaMuxer, driven by a Kotlin shim that
+# trampolines lifecycle back through JNI. `ndk-context` exposes the host
+# JavaVM + Activity, mirroring `camera`.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+# The Kotlin shim that drives MediaCodec + MediaMuxer and trampolines back to
+# the `Java_io_idealyst_mediawriter_RustMediaWriter_native*` exports in
+# android.rs. `idealyst run android` discovers and compiles it from here.
+[package.metadata.idealyst.android]
+runtime_kotlin = ["runtime/kotlin/io/idealyst/mediawriter/RustMediaWriter.kt"]
+
+[dev-dependencies]
+# Drives the async `record`/`stop` API in the macOS host test. A
+# current-thread runtime, so the `!Send` `MediaStream`/`AudioStream` futures
+# run on the test thread.
+tokio = { version = "1", features = ["macros", "rt"] }

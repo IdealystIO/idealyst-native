@@ -277,7 +277,13 @@ fn main() {{
         width: 1024.0,
         height: 768.0,
     }};
-    if let Err(e) = host_appkit::run(app, opts) {{
+    // `run_with` (not `run`) so the user crate's
+    // `pub fn register_extensions(&mut MacosBackend)` runs — this is how
+    // SDK externals (canvas, camera, video, screen-recorder, …) register
+    // their per-backend handlers. Without it every `Element::External`
+    // renders the framework's "not supported" placeholder on macOS. Mirrors
+    // the web / terminal / iOS / android templates.
+    if let Err(e) = host_appkit::run_with(app, opts, {user_lib}::register_extensions) {{
         eprintln!("[{bin_name}] runtime error: {{e}}");
         std::process::exit(1);
     }}

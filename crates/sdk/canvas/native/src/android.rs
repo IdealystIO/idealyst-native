@@ -284,6 +284,10 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
             }
             DrawOp::Clip { path, fill_rule } => {
                 let jpath = self.build_path(path, *fill_rule);
+                // `local` is a borrowed `JObject` view of the `GlobalRef`
+                // path. `JObject` has no `Drop` in jni 0.21 (only
+                // `GlobalRef`/`AutoLocal`/`WeakRef` free), so it just falls
+                // out of scope — no `mem::forget` to avoid a double-free.
                 let local = unsafe { JObject::from_raw(jpath.as_obj().as_raw()) };
                 let _ = self.env.call_method(
                     self.canvas,
@@ -291,7 +295,6 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
                     "(Landroid/graphics/Path;)Z",
                     &[JValue::Object(&local)],
                 );
-                std::mem::forget(local);
                 // KNOWN LIMITATION: a `clipPath` immediately followed by a
                 // `concat` (author transform) before the clipped geometry
                 // draws does not reliably crop on this trivial JNI path — the
@@ -425,6 +428,10 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
     }
 
     fn draw_path(&mut self, path: &GlobalRef) {
+        // `local` is a borrowed `JObject` view of the `GlobalRef` path.
+        // `JObject` has no `Drop` in jni 0.21 (only `GlobalRef`/`AutoLocal`/
+        // `WeakRef` free), so it falls out of scope harmlessly — no
+        // `mem::forget` is needed to avoid double-freeing the GlobalRef.
         let local = unsafe { JObject::from_raw(path.as_obj().as_raw()) };
         let p = self.paint.clone();
         let _ = self.env.call_method(
@@ -433,7 +440,6 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
             "(Landroid/graphics/Path;Landroid/graphics/Paint;)V",
             &[JValue::Object(&local), JValue::Object(p.as_obj())],
         );
-        std::mem::forget(local); // borrowed from GlobalRef; do not free
     }
 
     fn set_stroke_cap(&mut self, cap: LineCap) {

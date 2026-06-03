@@ -72,6 +72,10 @@ objc2-foundation = { version = "0.2", features = [
 objc2-ui-kit = { version = "0.2", features = [
     "UIResponder",
     "UIView",
+    # UIWindow: the screen_recorder PrivateLayer's separate overlay window is a
+    # `PassthroughWindow` subclass (callbacks.rs) overriding `hitTest:` so
+    # canvas touches fall through to the app window beneath.
+    "UIWindow",
     "UILabel",
     "UIButton",
     "UIControl",

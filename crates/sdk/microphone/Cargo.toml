@@ -37,6 +37,11 @@ capabilities = ["microphone"]
 [dependencies]
 thiserror = "1"
 
+# The platform-agnostic live-source abstraction. `microphone` is a *producer*
+# of `AudioStream` (the audio peer of `MediaStream`) via `open_stream()`,
+# exactly as `camera` produces `MediaStream`. Thin and GPU-free.
+media-stream = { workspace = true }
+
 # Native targets (desktop + iOS): cpal wraps the platform audio SDK —
 # CoreAudio on macOS/iOS, WASAPI on Windows, ALSA on Linux. Android is
 # excluded here; it goes through JNI/AudioRecord instead (see below).

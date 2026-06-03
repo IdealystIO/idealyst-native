@@ -91,6 +91,13 @@ pub(crate) struct TabDrawerEntry {
     pub(crate) background_effect: Option<runtime_core::Effect>,
     #[allow(dead_code)]
     pub(crate) menu_callback_target: Option<Retained<NSObject>>,
+    /// Header callback targets for the *currently visible* screen. UIKit
+    /// holds them weakly via `setTarget:`, so the SDK must own them. Every
+    /// header re-apply (screen swap, theme re-run) replaces the contents,
+    /// dropping the prior screen's targets — so this holds at most one
+    /// screen's worth, released on drawer teardown. Replaces the
+    /// `mem::forget(target)` idiom, which leaked a fresh set on every swap.
+    pub(crate) header_targets: Rc<RefCell<Vec<Retained<NSObject>>>>,
     /// Configured drawer width (from `DrawerBuilder::drawer_width`).
     /// `drawer_attach_sidebar` reads it to pin the sidebar UIView's
     /// width via Auto Layout — the sidebar's own Taffy node is
@@ -136,6 +143,7 @@ pub(crate) fn create_tab(
         current_effective_policy: current_effective_policy.clone(),
         active_route_sig,
         menu_callback_target: None,
+        header_targets: Rc::new(RefCell::new(Vec::new())),
         header_root_vc: None,
         header_nav_ctrl: None,
         theme_effect: None,
@@ -496,6 +504,10 @@ pub(crate) fn create_drawer(
         Retained::retain(Retained::as_ptr(&target) as *mut NSObject).unwrap()
     };
 
+    // Owns the currently-visible screen's header targets; replaced on
+    // every header re-apply below so old targets release on swap.
+    let header_targets: Rc<RefCell<Vec<Retained<NSObject>>>> =
+        Rc::new(RefCell::new(Vec::new()));
     let entry = TabDrawerEntry {
         outer: outer.clone(),
         content_host: outer.clone(),
@@ -511,6 +523,7 @@ pub(crate) fn create_drawer(
         current_effective_policy: current_effective_policy.clone(),
         active_route_sig,
         menu_callback_target: Some(menu_target_retain),
+        header_targets: header_targets.clone(),
         header_root_vc: Some(root_vc.clone()),
         header_nav_ctrl: Some(unsafe {
             Retained::retain(Retained::as_ptr(&nav_ctrl) as *mut NSObject).unwrap()
@@ -532,6 +545,7 @@ pub(crate) fn create_drawer(
         let mounted_for_theme = mounted.clone();
         let current_route_for_theme = current_route.clone();
         let root_vc_for_theme = root_vc.clone();
+        let header_targets_for_theme = header_targets.clone();
         let nav_ctrl_for_theme: Retained<NSObject> = unsafe {
             Retained::retain(Retained::as_ptr(&nav_ctrl) as *mut NSObject).unwrap()
         };
@@ -540,14 +554,15 @@ pub(crate) fn create_drawer(
             let Some(route) = route else { return };
             let map = mounted_for_theme.borrow();
             let Some(m) = map.get(route) else { return };
-            for target in apply_header_options_with_nav(
+            // Re-tint the visible screen's header; the new targets replace
+            // the previous set (those buttons are gone), releasing them.
+            let targets = apply_header_options_with_nav(
                 &root_vc_for_theme,
                 Some(&nav_ctrl_for_theme),
                 &m.options,
                 mtm,
-            ) {
-                std::mem::forget(target);
-            }
+            );
+            *header_targets_for_theme.borrow_mut() = targets;
         });
         entry_rc.borrow_mut().theme_effect = Some(theme_effect);
     }
@@ -582,6 +597,7 @@ pub(crate) fn create_drawer(
     let sidebar_for_anim = sidebar_cell.clone();
     let body_for_anim = nav_view.clone();
     let root_vc_for_dispatch = root_vc.clone();
+    let header_targets_for_dispatch = header_targets.clone();
     let nav_ctrl_for_dispatch: Retained<NSObject> = unsafe {
         Retained::retain(Retained::as_ptr(&nav_ctrl) as *mut NSObject).unwrap()
     };
@@ -762,14 +778,13 @@ pub(crate) fn create_drawer(
                 name,
                 params,
             );
-            for target in apply_header_options_with_nav(
+            // New screen's header targets replace the outgoing screen's.
+            *header_targets_for_dispatch.borrow_mut() = apply_header_options_with_nav(
                 &root_vc_for_dispatch,
                 Some(&nav_ctrl_for_dispatch),
                 &options,
                 mtm,
-            ) {
-                std::mem::forget(target);
-            }
+            );
             depth_changed(1);
             active_changed(name);
             schedule_layout_pass();
@@ -874,17 +889,18 @@ pub(crate) fn drawer_attach_initial(
 
     let header_root_vc = entry.header_root_vc.clone();
     let header_nav_ctrl = entry.header_nav_ctrl.clone();
+    let header_targets_for_setup = entry.header_targets.clone();
     let initial_options = options.clone();
     let setup: Rc<dyn Fn()> = Rc::new(move || {
         if let Some(ref vc) = header_root_vc {
-            for target in apply_header_options_with_nav(
+            // Initial header for the first screen; owned by the entry so it
+            // releases on the next swap / drawer teardown.
+            *header_targets_for_setup.borrow_mut() = apply_header_options_with_nav(
                 vc,
                 header_nav_ctrl.as_ref(),
                 &initial_options,
                 unsafe { MainThreadMarker::new_unchecked() },
-            ) {
-                std::mem::forget(target);
-            }
+            );
         }
     });
     let setup_target = CallbackTarget::new(mtm, setup);

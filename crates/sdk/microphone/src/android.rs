@@ -52,6 +52,14 @@ impl Drop for StreamHandle {
     }
 }
 
+impl StreamHandle {
+    /// `AudioRecord` exposes no zero-copy native source; PCM flows through the
+    /// CPU tap. A future `AudioTrack` playback path would publish a handle here.
+    pub(crate) fn native_source(&self) -> Option<crate::NativeSource> {
+        None
+    }
+}
+
 /// Map the host `JavaVM` pointer. Panics-free; a bad pointer is a
 /// bootstrap bug surfaced as a [`MicError::Backend`].
 fn java_vm() -> Result<JavaVM, MicError> {

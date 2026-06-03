@@ -1270,11 +1270,13 @@ dependencies = [
  "backend-android-core",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-macos",
  "backend-web",
  "canvas-core",
  "jni 0.21.1",
  "js-sys",
  "objc2 0.5.2",
+ "objc2-app-kit",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "runtime-core",
@@ -4377,6 +4379,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "media-recorder-demo"
+version = "0.0.1"
+dependencies = [
+ "camera",
+ "dev-server",
+ "files",
+ "idea-ui",
+ "media-writer",
+ "microphone",
+ "runtime-core",
+]
+
+[[package]]
 name = "media-sources-demo"
 version = "0.0.1"
 dependencies = [
@@ -4395,6 +4410,28 @@ dependencies = [
 [[package]]
 name = "media-stream"
 version = "0.0.1"
+dependencies = [
+ "js-sys",
+]
+
+[[package]]
+name = "media-writer"
+version = "0.0.1"
+dependencies = [
+ "block2 0.5.1",
+ "files",
+ "jni 0.21.1",
+ "js-sys",
+ "media-stream",
+ "ndk-context",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "thiserror 1.0.69",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
 
 [[package]]
 name = "memchr"
@@ -4473,6 +4510,7 @@ dependencies = [
  "futures-channel",
  "jni 0.21.1",
  "js-sys",
+ "media-stream",
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
@@ -4885,6 +4923,9 @@ name = "objc-sys"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdb91bdd390c7ce1a8607f35f3ca7151b65afc0ff5ff3b34fa350f7d7c7e4310"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "objc2"

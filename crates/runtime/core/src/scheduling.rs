@@ -213,6 +213,62 @@ pub fn after_ms<F: FnOnce() + 'static>(delay_ms: i32, f: F) -> ScheduledTask {
     ScheduledTask { inner: None }
 }
 
+thread_local! {
+    /// Parking lot for tasks handed to the runtime via
+    /// [`after_ms_detached`]. Each slot holds the [`ScheduledTask`] so its
+    /// cancel-on-`Drop` doesn't fire, plus a `done` flag the task sets when
+    /// it runs. The list is swept on every `after_ms_detached` call, so it
+    /// never grows past the number of *in-flight* detached timers — unlike
+    /// `mem::forget`, which leaks an empty handle shell per call forever.
+    static DETACHED_TASKS: std::cell::RefCell<Vec<DetachedSlot>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+struct DetachedSlot {
+    done: std::rc::Rc<std::cell::Cell<bool>>,
+    // Held only to keep the pending dispatch alive; never read.
+    _task: ScheduledTask,
+}
+
+/// Schedule `f` to run once after `delay_ms`, owned by the runtime
+/// instead of the caller. Unlike [`after_ms`] there is no handle to keep
+/// alive and nothing to cancel: the task is parked in a runtime registry,
+/// fires once, then is swept away.
+///
+/// This is the right tool for **imperative, off-scope** call sites —
+/// global queues, app singletons, event handlers that run outside any
+/// component body — where [`after_ms_scoped`] can't apply because there
+/// is no surrounding reactive scope to anchor to. It is the named,
+/// self-documenting replacement for the `mem::forget(after_ms(..))`
+/// idiom: same observable behaviour, but bounded (the registry sweeps
+/// fired tasks) and impossible to mistake for a bug. Library and app code
+/// should reach for this rather than `mem::forget`.
+///
+/// If a reactive scope *is* active, prefer [`after_ms_scoped`] so the
+/// timer dies with the scope instead of outliving it.
+pub fn after_ms_detached<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
+    // Sweep tasks that already fired. We're outside any task closure here,
+    // so dropping a spent `ScheduledTask` is safe — it never re-enters or
+    // drops a handle whose closure is still on the stack (the web hazard).
+    DETACHED_TASKS.with(|t| t.borrow_mut().retain(|s| !s.done.get()));
+
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let done_for_cb = done.clone();
+    let task = after_ms(delay_ms, move || {
+        f();
+        // Mark for sweep. This only writes a `Cell` — it drops nothing, so
+        // the task's own handle is never freed while its closure runs.
+        done_for_cb.set(true);
+    });
+
+    // The synchronous-fallback path (no installed scheduler off web) ran
+    // `f` already and set `done`; there's nothing to park.
+    if done.get() {
+        return;
+    }
+    DETACHED_TASKS.with(|t| t.borrow_mut().push(DetachedSlot { done, _task: task }));
+}
+
 /// A live animation-frame loop. Each frame the user's closure runs;
 /// returning, the helper auto-requests the next frame. Dropping the
 /// handle cancels the currently-pending frame **and** stops the
@@ -354,8 +410,9 @@ pub fn raf_loop<F: FnMut() + 'static>(f: F) -> RafLoop {
 /// Use this instead of [`after_ms`] when the timer is part of an
 /// animation that should die with the surrounding scope. Use plain
 /// [`after_ms`] when you need manual control over the handle's
-/// lifetime (e.g., to cancel ahead of scope teardown, or to outlive
-/// the scope by `mem::forget`'ing the handle).
+/// lifetime (e.g., to cancel ahead of scope teardown). To outlive the
+/// scope from an off-scope call site, use [`after_ms_detached`] rather
+/// than `mem::forget`'ing the handle.
 ///
 /// The deferred callback re-enters the registering scope when it
 /// fires, so a nested `*_scoped` helper inside `f` attaches to the
@@ -367,7 +424,7 @@ pub fn raf_loop<F: FnMut() + 'static>(f: F) -> RafLoop {
 /// task is dropped immediately, mirroring how [`crate::on_cleanup`]
 /// silently drops its callback outside a scope. If you need a
 /// timer that fires regardless of whether you're in a scope, use
-/// plain [`after_ms`] and manage the handle yourself.
+/// [`after_ms_detached`].
 pub fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
     let ctx = crate::reactive::capture_reactive_ctx();
     // Teardown-safety flag (see module doc above `after_ms_scoped` and

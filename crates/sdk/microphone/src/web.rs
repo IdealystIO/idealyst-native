@@ -38,6 +38,17 @@ pub(crate) struct StreamHandle {
     _on_audio: Closure<dyn FnMut(AudioProcessingEvent)>,
 }
 
+impl StreamHandle {
+    /// Publish the live `web_sys::MediaStream` (audio track) as the
+    /// [`AudioStream`](media_stream::AudioStream)'s native source, so a
+    /// same-platform consumer — the `media-writer` `MediaRecorder` path, a
+    /// future `<audio>` playback layer — binds the browser's own audio
+    /// pipeline instead of reconstructing it from raw PCM.
+    pub(crate) fn native_source(&self) -> Option<crate::NativeSource> {
+        Some(std::rc::Rc::new(self.stream.clone()))
+    }
+}
+
 impl Drop for StreamHandle {
     fn drop(&mut self) {
         // Detach the node graph and stop every track so the browser's

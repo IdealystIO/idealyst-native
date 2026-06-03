@@ -62,6 +62,18 @@ pub use buffer::AudioBuffer;
 pub use config::AudioStreamConfig;
 pub use error::MicError;
 
+// The live-source surface, re-exported so a microphone user has everything
+// from `microphone::`. `microphone` is to `AudioStream` what `camera` is to
+// `MediaStream`: a producer. See [`Microphone::open_stream`].
+pub use media_stream::{
+    AudioFormat, AudioFrame, AudioFrameCallback, AudioStream, AudioSubscription, AudioWriter,
+};
+
+/// The type-erased native audio source a backend may publish on an
+/// [`AudioStream`] (e.g. the web `web_sys::MediaStream`), downcast by a
+/// same-platform playback layer. `None` where no native source is exposed.
+pub(crate) type NativeSource = std::rc::Rc<dyn std::any::Any>;
+
 // ---------------------------------------------------------------------------
 // The callback bound.
 //
@@ -164,6 +176,41 @@ impl Microphone {
         let boxed: BoxedCallback = Box::new(callback);
         let handle = imp::open(config, boxed).await?;
         Ok(MicStream { _handle: handle })
+    }
+
+    /// Open a live capture stream as an [`AudioStream`] — the platform-agnostic
+    /// audio peer of [`MediaStream`](media_stream::MediaStream), the same
+    /// currency `camera` produces for video.
+    ///
+    /// Use this (instead of the raw-callback [`open`](Self::open)) when you
+    /// want to hand the microphone to a *consumer* that speaks `AudioStream`:
+    /// the `media-writer` SDK (record mic audio to a file, optionally muxed
+    /// with a camera `MediaStream`), or a future audio-playback layer that
+    /// binds the platform's native pipeline. Tap PCM with
+    /// [`AudioStream::subscribe`] / [`AudioStream::latest`]; on web the
+    /// underlying `web_sys::MediaStream` is published as the stream's
+    /// [`native_source`](AudioStream::native_source) for zero-reconstruction
+    /// playback / recording.
+    ///
+    /// Capture runs while any clone of the returned stream is alive; dropping
+    /// the last one stops it. Requests permission if needed.
+    pub async fn open_stream(&self, config: AudioStreamConfig) -> Result<AudioStream, MicError> {
+        let (stream, writer) = AudioStream::new();
+        // Bridge the raw-callback backends into the AudioStream producer side:
+        // every captured chunk is pushed through the `Send` `AudioWriter`,
+        // stamped with the shared capture clock so a muxer can align it with
+        // video from another source.
+        let boxed: BoxedCallback = Box::new(move |buf: &AudioBuffer| {
+            writer.write_pcm_f32(buf.sample_rate, buf.channels, buf.samples);
+        });
+        let handle = imp::open(config, boxed).await?;
+        if let Some(src) = handle.native_source() {
+            stream.set_native_source(src);
+        }
+        // The backend `StreamHandle` stops capture on drop; own it in the
+        // stopper so it tears down when the last `AudioStream` clone drops.
+        stream.attach_stopper(move || drop(handle));
+        Ok(stream)
     }
 }
 

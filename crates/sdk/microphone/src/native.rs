@@ -18,6 +18,15 @@ pub(crate) struct StreamHandle {
     _session: ios_session::SessionGuard,
 }
 
+impl StreamHandle {
+    /// cpal exposes no zero-copy native audio source; PCM flows through the
+    /// CPU tap. A future `AVAudioEngine`/`AudioTrack` playback path would
+    /// publish a handle here.
+    pub(crate) fn native_source(&self) -> Option<crate::NativeSource> {
+        None
+    }
+}
+
 pub(crate) async fn request_permission() -> Result<(), MicError> {
     // Desktop (macOS/Windows/Linux): the OS either grants implicitly or
     // surfaces its own prompt the first time the input stream starts —

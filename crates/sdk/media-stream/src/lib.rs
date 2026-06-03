@@ -46,6 +46,13 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub mod clock;
+
+mod audio;
+pub use audio::{
+    AudioFormat, AudioFrame, AudioFrameCallback, AudioStream, AudioSubscription, AudioWriter,
+};
+
 // ---------------------------------------------------------------------------
 // Frame types — the normalized currency every producer emits.
 // ---------------------------------------------------------------------------
@@ -78,6 +85,13 @@ pub struct VideoFrame<'a> {
     pub height: u32,
     /// Pixel layout of `data`. Always [`PixelFormat::Rgba8`] today.
     pub format: PixelFormat,
+    /// Capture timestamp on the shared [`clock`] timeline, in microseconds.
+    /// A muxer uses this to place the frame on the file's presentation
+    /// timeline and lip-sync it against audio captured from another source.
+    /// `write_rgba8`/`write_bgra8` stamp it with [`clock::now_micros`]; the
+    /// `*_at` variants let a producer that already has a hardware capture
+    /// timestamp supply its own.
+    pub pts_micros: u64,
 }
 
 impl VideoFrame<'_> {
@@ -128,6 +142,8 @@ struct OwnedFrame {
     height: u32,
     /// Tightly-packed `RGBA8`, `width * height * 4` bytes.
     rgba: Vec<u8>,
+    /// Capture timestamp on the shared [`clock`] timeline, in microseconds.
+    pts_micros: u64,
 }
 
 #[derive(Default)]
@@ -146,7 +162,7 @@ impl FrameChannel {
     // previous frame's buffer out to reuse its allocation, fill it, fan out
     // to push subscribers WITHOUT holding the `latest` lock (so a subscriber
     // may safely call `latest()`), then store it back as the new latest.
-    fn write(&self, width: u32, height: u32, fill: impl FnOnce(&mut Vec<u8>)) {
+    fn write(&self, width: u32, height: u32, pts_micros: u64, fill: impl FnOnce(&mut Vec<u8>)) {
         if width == 0 || height == 0 {
             return;
         }
@@ -167,6 +183,7 @@ impl FrameChannel {
                 width,
                 height,
                 format: PixelFormat::Rgba8,
+                pts_micros,
             };
             let mut subs = self.subscribers.lock().unwrap();
             for (_, cb) in subs.iter_mut() {
@@ -178,6 +195,7 @@ impl FrameChannel {
             width,
             height,
             rgba: buf,
+            pts_micros,
         });
         self.generation.fetch_add(1, Ordering::Release);
     }
@@ -207,27 +225,43 @@ pub struct FrameWriter {
 }
 
 impl FrameWriter {
-    /// Push a tightly-packed top-down `RGBA8` frame. Frames shorter than
-    /// `width * height * 4` are ignored.
+    /// Push a tightly-packed top-down `RGBA8` frame, stamped with the current
+    /// [`clock::now_micros`]. Frames shorter than `width * height * 4` are
+    /// ignored.
     pub fn write_rgba8(&self, width: u32, height: u32, data: &[u8]) {
+        self.write_rgba8_at(width, height, data, clock::now_micros());
+    }
+
+    /// Like [`write_rgba8`](Self::write_rgba8) but with an explicit capture
+    /// timestamp (microseconds on the shared [`clock`] timeline). Use this
+    /// when the producer has a real hardware presentation timestamp for the
+    /// frame, so a muxer sees the true capture cadence rather than the moment
+    /// the byte copy happened.
+    pub fn write_rgba8_at(&self, width: u32, height: u32, data: &[u8], pts_micros: u64) {
         let need = match checked_len(width, height, data) {
             Some(n) => n,
             None => return,
         };
-        self.channel.write(width, height, |buf| {
+        self.channel.write(width, height, pts_micros, |buf| {
             buf.extend_from_slice(&data[..need]);
         });
     }
 
     /// Push a tightly-packed top-down `BGRA8` frame (Apple / Windows layout);
-    /// channels are swizzled to `RGBA8`. Frames shorter than
-    /// `width * height * 4` are ignored.
+    /// channels are swizzled to `RGBA8`. Stamped with [`clock::now_micros`].
+    /// Frames shorter than `width * height * 4` are ignored.
     pub fn write_bgra8(&self, width: u32, height: u32, data: &[u8]) {
+        self.write_bgra8_at(width, height, data, clock::now_micros());
+    }
+
+    /// Like [`write_bgra8`](Self::write_bgra8) but with an explicit capture
+    /// timestamp (microseconds on the shared [`clock`] timeline).
+    pub fn write_bgra8_at(&self, width: u32, height: u32, data: &[u8], pts_micros: u64) {
         let need = match checked_len(width, height, data) {
             Some(n) => n,
             None => return,
         };
-        self.channel.write(width, height, |buf| {
+        self.channel.write(width, height, pts_micros, |buf| {
             buf.reserve(need);
             for px in data[..need].chunks_exact(4) {
                 buf.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
@@ -338,6 +372,19 @@ impl MediaStream {
         Some((frame.width, frame.height))
     }
 
+    /// The capture timestamp of the most recent frame (microseconds on the
+    /// shared [`clock`] timeline), or `None` if none has arrived. Lets a pull
+    /// consumer read a frame's PTS without copying its pixels.
+    pub fn latest_pts(&self) -> Option<u64> {
+        self.inner
+            .channel
+            .latest
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|f| f.pts_micros)
+    }
+
     /// A counter bumped on every frame. Compare across calls to detect a new
     /// frame without copying.
     pub fn generation(&self) -> u64 {
@@ -358,5 +405,54 @@ pub struct Subscription {
 impl Drop for Subscription {
     fn drop(&mut self) {
         self.channel.remove_subscriber(self.id);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    // 2x1 RGBA frame.
+    const W: u32 = 2;
+    const H: u32 = 1;
+
+    #[test]
+    fn write_rgba8_at_carries_explicit_pts() {
+        let (stream, writer) = MediaStream::new();
+        let seen = Arc::new(Mutex::new(Vec::<(u32, u32, u64)>::new()));
+        let _sub = {
+            let seen = seen.clone();
+            stream.subscribe(move |f: &VideoFrame| {
+                assert_eq!(f.format, PixelFormat::Rgba8);
+                assert_eq!(f.data.len(), f.byte_len());
+                seen.lock().unwrap().push((f.width, f.height, f.pts_micros));
+            })
+        };
+        writer.write_rgba8_at(W, H, &[1, 2, 3, 4, 5, 6, 7, 8], 4_242);
+        assert_eq!(*seen.lock().unwrap(), vec![(W, H, 4_242)]);
+    }
+
+    #[test]
+    fn bgra8_swizzles_to_rgba_and_stamps_monotonically() {
+        let (stream, writer) = MediaStream::new();
+        // B G R A  ->  R G B A
+        writer.write_bgra8(1, 1, &[10, 20, 30, 40]);
+        let p1 = {
+            let slot = stream.inner.channel.latest.lock().unwrap();
+            let f = slot.as_ref().unwrap();
+            assert_eq!(f.rgba, vec![30, 20, 10, 40]);
+            f.pts_micros
+        };
+        // Auto-stamped frames are non-decreasing on the shared clock.
+        writer.write_bgra8(1, 1, &[10, 20, 30, 40]);
+        let p2 = stream.inner.channel.latest.lock().unwrap().as_ref().unwrap().pts_micros;
+        assert!(p2 >= p1);
+    }
+
+    #[test]
+    fn short_frames_are_ignored() {
+        let (stream, writer) = MediaStream::new();
+        writer.write_rgba8(W, H, &[1, 2, 3]); // too short for 2x1x4
+        assert_eq!(stream.generation(), 0);
     }
 }

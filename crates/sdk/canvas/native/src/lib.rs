@@ -18,17 +18,33 @@ mod web;
 #[cfg(target_arch = "wasm32")]
 pub use web::register;
 
+// Shared CoreGraphics painter for the Apple platforms (iOS + macOS).
+// The Scene→CGContext op-replay is platform-identical; only context
+// acquisition + the bezier/color vtable differ per backend.
+#[cfg(all(any(target_os = "ios", target_os = "macos"), not(target_arch = "wasm32")))]
+mod apple;
+
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 mod ios;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub use ios::register;
+
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+mod macos;
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+pub use macos::register;
 
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 mod android;
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 pub use android::register;
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "ios",
+    target_os = "android",
+    target_os = "macos"
+)))]
 mod fallback {
     use runtime_core::Backend;
 
@@ -40,5 +56,10 @@ mod fallback {
         canvas_core::ensure_wire_serde();
     }
 }
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "ios",
+    target_os = "android",
+    target_os = "macos"
+)))]
 pub use fallback::register;

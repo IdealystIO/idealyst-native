@@ -677,9 +677,14 @@ impl IosBackend {
         // Content view = passthrough overlay. Hosting it as the window's
         // rootViewController.view means UIKit owns its lifecycle and
         // resizes it to the window; we additionally drive its frame via
-        // the Taffy layout pass (it's a registered root).
+        // the Taffy layout pass (it's a registered root). Use the RECURSIVE
+        // passthrough (not the portal `OverlayPassthroughView`): the private
+        // layer's content is a viewport-spanning transparent flex root, so a
+        // direct-children-frame check would report YES everywhere and swallow
+        // all canvas-area touches (drawing dead). See
+        // `PrivateLayerPassthroughView`.
         let content: Retained<UIView> = {
-            let v = callbacks::OverlayPassthroughView::new(self.mtm);
+            let v = callbacks::PrivateLayerPassthroughView::new(self.mtm);
             unsafe { Retained::cast::<UIView>(v) }
         };
         let _: () = unsafe { msg_send![&content, setFrame: screen_bounds] };
@@ -699,8 +704,12 @@ impl IosBackend {
         // for the window to actually display); fall back to the
         // frame-based initializer if no scene is resolvable.
         let window: Retained<NSObject> = unsafe {
-            let window: Retained<NSObject> =
-                msg_send_id![msg_send_id![objc2::class!(UIWindow), alloc], initWithFrame: screen_bounds];
+            // PassthroughWindow (not a plain UIWindow): its `hitTest:` returns
+            // nil when nothing real is hit, so canvas touches fall through to
+            // the app window. A plain UIWindow's `pointInside` is YES across
+            // the screen, so it would consume every passed-through touch.
+            let window = callbacks::PassthroughWindow::new_with_frame(self.mtm, screen_bounds);
+            let window: Retained<NSObject> = Retained::cast(window);
             if let Some(scene) = self.active_window_scene() {
                 let _: () = msg_send![&window, setWindowScene: &*scene];
             }

@@ -1,0 +1,37 @@
+[package]
+name = "media-recorder-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Records camera video + microphone audio to an .mp4 with the media-writer SDK. Opens a camera MediaStream and a microphone AudioStream, muxes them lip-synced via media-writer, and shows the written file path. Exercises the producer→writer pipeline across the shared media-stream abstraction."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+camera = { workspace = true }
+microphone = { workspace = true }
+media-writer = { workspace = true }
+files = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+# The app declares the capabilities it needs by depending on `camera` +
+# `microphone` (which declare `camera` / `microphone`); the CLI injects the
+# NSCameraUsageDescription / NSMicrophoneUsageDescription (iOS/macOS) and the
+# CAMERA / RECORD_AUDIO permissions (Android) from the dep graph. It supplies
+# the user-facing reason strings here.
+[package.metadata.idealyst.app]
+name      = "Media Recorder"
+bundle_id = "ai.truday.idealyst.mediarecorder"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]
+
+[package.metadata.idealyst.app.permissions]
+camera     = "Media Recorder records video from your camera."
+microphone = "Media Recorder records audio from your microphone."

@@ -118,6 +118,17 @@ impl IdealystTouchView {
         *self.ivars().handler.borrow_mut() = Some(handler);
     }
 
+    /// Whether an `on_touch` handler is currently installed. Every framework
+    /// `View` is minted as an `IdealystTouchView`, so the class alone can't
+    /// distinguish interactive controls from plain layout containers — only a
+    /// set handler does. The private-layer passthrough hit-test
+    /// (`callbacks::private_layer_blocks_touch`) uses this to treat
+    /// handler-bearing views as touch-blocking while letting taps fall through
+    /// handler-less transparent containers.
+    pub(crate) fn has_handler(&self) -> bool {
+        self.ivars().handler.borrow().is_some()
+    }
+
     /// Dispatch each `UITouch` in the set to the installed handler,
     /// honoring the bubble decision per-touch. Returns whether ANY
     /// touch in the set was consumed — the touch override uses this

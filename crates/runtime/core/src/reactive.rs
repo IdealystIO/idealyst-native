@@ -1472,6 +1472,31 @@ impl Effect {
         });
         Effect { id, owns: !registered }
     }
+
+    /// Hand the effect to whoever owns it and stop tracking the handle —
+    /// keeping the effect alive past the current statement without holding
+    /// the returned handle yourself.
+    ///
+    /// - If a reactive scope was active at creation, that scope already
+    ///   owns the slot (`owns == false`); this just drops the no-op handle
+    ///   and the scope frees the effect on teardown.
+    /// - If no scope was active, dropping the handle would otherwise cancel
+    ///   the effect at end-of-statement; `persist` pins it for the process
+    ///   lifetime instead.
+    ///
+    /// This is the named form of the `mem::forget(effect)` idiom used
+    /// internally by `memo_with` / `resource` / animation bindings. Library
+    /// and app code should call `persist()` rather than reaching for
+    /// `mem::forget` — the adopt-or-pin behaviour is identical, but the
+    /// intent is explicit and greppable.
+    pub fn persist(self) {
+        // `owns == false` (scope-adopted): forget drops a no-op handle.
+        // `owns == true` (no scope): forget skips the cancelling Drop,
+        // pinning the slot for the process lifetime. Both are exactly the
+        // behaviour the prior `mem::forget(effect)` call sites relied on
+        // (see `memo_in_scope_releases_signal_and_effect_on_scope_drop`).
+        std::mem::forget(self);
+    }
 }
 
 /// Transitive run-stack depth above which `run_effect` panics. Catches
@@ -2145,6 +2170,52 @@ mod tests {
         assert_eq!(observed.get(), 5);
         count.set(11);
         assert_eq!(observed.get(), 11);
+    }
+
+    /// `Effect::persist` outside any reactive scope must keep the effect
+    /// reacting. A bare handle dropped at end-of-statement (no scope to
+    /// adopt it) would cancel; `persist` pins it instead. This is the
+    /// behaviour `doc_controls.rs` relies on when its controls are built
+    /// ad-hoc / in tests outside a render scope.
+    #[test]
+    fn persist_keeps_effect_alive_outside_scope() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let src = Signal::new(0i32);
+        let runs = Rc::new(Cell::new(0u32));
+        let runs_for_effect = runs.clone();
+        Effect::new(move || {
+            let _ = src.get();
+            runs_for_effect.set(runs_for_effect.get() + 1);
+        })
+        .persist();
+        assert_eq!(runs.get(), 1, "effect runs once at creation");
+        src.set(1);
+        assert_eq!(
+            runs.get(),
+            2,
+            "persisted effect must re-fire on signal change (handle was not held)"
+        );
+    }
+
+    /// Contrast for [`persist_keeps_effect_alive_outside_scope`]: WITHOUT
+    /// `persist`, dropping the handle outside a scope cancels the effect —
+    /// the exact regression `persist` (and the prior `mem::forget`) guards
+    /// against.
+    #[test]
+    fn dropped_effect_outside_scope_does_not_refire() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let src = Signal::new(0i32);
+        let runs = Rc::new(Cell::new(0u32));
+        let runs_for_effect = runs.clone();
+        drop(Effect::new(move || {
+            let _ = src.get();
+            runs_for_effect.set(runs_for_effect.get() + 1);
+        }));
+        assert_eq!(runs.get(), 1);
+        src.set(1);
+        assert_eq!(runs.get(), 1, "dropped effect must not re-fire");
     }
 
     /// Regression test for the "self-writing effect breaks after first

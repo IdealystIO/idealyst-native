@@ -128,6 +128,13 @@ pub struct MacosBackend {
 thread_local! {
     static MACOS_BACKEND_SELF: RefCell<Option<std::rc::Weak<RefCell<MacosBackend>>>> =
         const { RefCell::new(None) };
+
+    /// Last viewport size mirrored into `runtime_core::set_viewport_size`, so
+    /// `finish` schedules exactly one deferred mirror per actual change and
+    /// none in the steady state (unchanged bounds every paint). See the long
+    /// comment at the call site in `finish` for why the mirror is deferred.
+    static LAST_MIRRORED_VIEWPORT: std::cell::Cell<Option<(f32, f32)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// Install the backend's self-reference. Hosts call this once after
@@ -1961,13 +1968,34 @@ impl Backend for MacosBackend {
         };
         // Mirror into the framework's reactive viewport signal so
         // `viewport_size()` subscribers (breakpoint hooks, responsive
-        // containers) re-fire on window resize. Dedup-by-equality
-        // inside `set_viewport_size` keeps this cheap when bounds
-        // didn't actually change.
-        runtime_core::set_viewport_size(runtime_core::ViewportSize {
-            width: viewport.width,
-            height: viewport.height,
-        });
+        // containers, theme-cohort restyle) re-fire on window resize.
+        //
+        // CRITICAL: `finish` runs with the backend RefCell borrowed (the host
+        // calls `backend.borrow_mut().finish(...)`), and `set_viewport_size`
+        // notifies subscribers SYNCHRONOUSLY. On the first paint the viewport
+        // changes from its default, which fires the breakpoint memo → theme-
+        // cohort driver → `apply_style`, and `apply_style` re-borrows the
+        // backend → "RefCell already borrowed" panic that aborts the process at
+        // startup. So defer the mirror to a microtask: it runs after `finish`
+        // returns and the borrow is released. This mirrors the Android backend
+        // (`run_layout_pass`, which carries the same comment) and how iOS
+        // mirrors the viewport from a UIKit resize callback rather than inside
+        // layout. The local `viewport` below still drives THIS pass; only the
+        // reactive signal mirror is deferred. Dedup by last-mirrored size so a
+        // resize schedules exactly one microtask and the steady state none.
+        if viewport.width > 0.0 && viewport.height > 0.0 {
+            let next = (viewport.width, viewport.height);
+            let changed = LAST_MIRRORED_VIEWPORT.with(|c| c.get()) != Some(next);
+            if changed {
+                LAST_MIRRORED_VIEWPORT.with(|c| c.set(Some(next)));
+                runtime_core::schedule_microtask(move || {
+                    runtime_core::set_viewport_size(runtime_core::ViewportSize {
+                        width: next.0,
+                        height: next.1,
+                    });
+                });
+            }
+        }
         if viewport.width <= 0.0 || viewport.height <= 0.0 {
             // Still nothing — nothing to compute against. The next
             // window resize will trigger a layout pass with real

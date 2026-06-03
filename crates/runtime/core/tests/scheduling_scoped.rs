@@ -21,8 +21,8 @@ use runtime_core::scheduling::{
     install_scheduler, ScheduleHandle, Scheduler,
 };
 use runtime_core::{
-    after_ms_scoped, animated, is_reactive_busy, on_cleanup, raf_loop_scoped, timeline, Effect,
-    Signal,
+    after_ms_detached, after_ms_scoped, animated, is_reactive_busy, on_cleanup, raf_loop_scoped,
+    timeline, Effect, Signal,
 };
 
 // =============================================================================
@@ -725,5 +725,64 @@ fn raf_loop_scoped_skips_a_frame_while_reactive_arena_is_busy() {
         ran_count.get(),
         1,
         "raf body runs on the next non-busy frame (loop re-armed)",
+    );
+}
+
+// =============================================================================
+// after_ms_detached — off-scope, runtime-owned one-shots
+// =============================================================================
+
+/// The headline guarantee: a detached timer is NOT cancelled when the
+/// caller drops its (nonexistent) handle. The old `mem::forget(after_ms())`
+/// idiom got this for free; the new `after_ms_detached` must get it by
+/// parking the task in the runtime registry. A regression that dropped the
+/// parking would let the `ScheduledTask` cancel at end-of-call — the task
+/// would never reach `one_shot`, so `pending_one_shots()` would be 0.
+#[test]
+fn after_ms_detached_stays_pending_then_fires() {
+    install_test_scheduler();
+    reset_state();
+
+    let fired = Rc::new(Cell::new(false));
+    let fired_for_cb = fired.clone();
+    after_ms_detached(500, move || fired_for_cb.set(true));
+
+    // Parked, not cancelled: still pending, and no cancel was recorded.
+    assert_eq!(
+        pending_one_shots(),
+        1,
+        "detached task must stay queued after the call returns (held by the runtime, not cancelled)"
+    );
+    assert_eq!(cancel_count(), 0, "detached task must not be cancelled on return");
+
+    fire_pending_one_shots();
+    assert!(fired.get(), "detached task must fire when the scheduler drives it");
+}
+
+/// Scheduling more detached tasks sweeps the ones that already fired, and
+/// that sweep must never cancel a *live* task. We fire task A, then schedule
+/// and fire task B; the sweep on B's call drops A's spent handle. Because A
+/// already fired (drained from `one_shot`), dropping its handle must record
+/// zero cancels — proving the sweep only ever reclaims spent tasks.
+#[test]
+fn after_ms_detached_sweep_never_cancels_live_tasks() {
+    install_test_scheduler();
+    reset_state();
+
+    let a = Rc::new(Cell::new(false));
+    let a_cb = a.clone();
+    after_ms_detached(0, move || a_cb.set(true));
+    fire_pending_one_shots(); // A fires; its parked handle is now spent.
+
+    let b = Rc::new(Cell::new(false));
+    let b_cb = b.clone();
+    after_ms_detached(0, move || b_cb.set(true)); // this call sweeps A.
+    fire_pending_one_shots(); // B fires.
+
+    assert!(a.get() && b.get(), "both detached tasks must fire");
+    assert_eq!(
+        cancel_count(),
+        0,
+        "sweeping a fired task must not cancel anything (the spent handle is inert)"
     );
 }

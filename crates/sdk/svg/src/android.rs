@@ -425,9 +425,13 @@ impl<'p, 'env> SvgPainter for AndroidSvgPainter<'p, 'env> {
         self.reset_paint();
         self.set_paint_style_fill();
         self.set_paint_color_argb(svg_color_to_argb(color, opacity));
+        // `local` is a borrowed `JObject` view of the `GlobalRef` path,
+        // re-tagged with the env lifetime that `draw_path_with_paint`
+        // wants. `JObject` has no `Drop` (only `GlobalRef`/`AutoLocal`/
+        // `WeakRef` free in jni 0.21), so it just falls out of scope — no
+        // `mem::forget` is needed to avoid double-freeing the GlobalRef.
         let local = unsafe { JObject::from_raw(path.as_obj().as_raw()) };
         self.draw_path_with_paint(&local);
-        std::mem::forget(local); // borrowed from GlobalRef, do not free
     }
 
     fn fill_linear_gradient(
@@ -454,8 +458,9 @@ impl<'p, 'env> SvgPainter for AndroidSvgPainter<'p, 'env> {
             );
         }
         let local = unsafe { JObject::from_raw(path.as_obj().as_raw()) };
+        // No `mem::forget`: `JObject` is a borrowed handle with no `Drop`
+        // (see the fill-path note above).
         self.draw_path_with_paint(&local);
-        std::mem::forget(local);
     }
 
     fn fill_radial_gradient(
@@ -487,8 +492,9 @@ impl<'p, 'env> SvgPainter for AndroidSvgPainter<'p, 'env> {
             );
         }
         let local = unsafe { JObject::from_raw(path.as_obj().as_raw()) };
+        // No `mem::forget`: `JObject` is a borrowed handle with no `Drop`
+        // (see the fill-path note above).
         self.draw_path_with_paint(&local);
-        std::mem::forget(local);
     }
 
     fn stroke_solid(
@@ -519,8 +525,9 @@ impl<'p, 'env> SvgPainter for AndroidSvgPainter<'p, 'env> {
             apply_dash_effect(self.env, self.paint.as_obj(), dash, params.dashoffset);
         }
         let local = unsafe { JObject::from_raw(path.as_obj().as_raw()) };
+        // No `mem::forget`: `JObject` is a borrowed handle with no `Drop`
+        // (see the fill-path note above).
         self.draw_path_with_paint(&local);
-        std::mem::forget(local);
     }
 
     fn with_transform<R>(

@@ -14,6 +14,13 @@ mod stub;
 // is ios-only, but the decision it makes is host-testable. See the module docs.
 mod splice_policy;
 
+// Pure passthrough hit-test geometry for the screen_recorder PrivateLayer's
+// overlay window. Kept un-gated so its regression test (the recursion +
+// per-level coordinate conversion that decides whether a canvas touch passes
+// through to the app window beneath) runs from any host; the objc traversal
+// that feeds it is ios-only. See the module docs.
+mod private_layer_hittest;
+
 #[cfg(target_os = "ios")]
 pub use imp::{
     install_global_self, mount_screen_in_vc, pin_to_edges, schedule_layout_pass,

@@ -28,8 +28,8 @@ use std::cell::Cell;
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
-    after_ms, component, presence, ui, unscope, Easing, IdealystSchema, IntoElement, PresenceAnim,
-    PresenceState, Element, Signal, StyleApplication,
+    after_ms_detached, component, presence, ui, unscope, Easing, IdealystSchema, IntoElement,
+    PresenceAnim, PresenceState, Element, Signal, StyleApplication,
 };
 
 use idea_theme::extensible::{installed_alert_sheet, ToneRef, VariantRef};
@@ -125,12 +125,11 @@ pub fn push_toast_with(
     queue().update(|v| v.push(entry));
 
     // Begin exit after the show window, then remove after the exit
-    // animation completes. `mem::forget` keeps the one-shot tasks alive
-    // past this fn — dropping a ScheduledTask cancels it.
-    let start_exit = after_ms(TOAST_SHOW_MS, move || leaving.set(true));
-    std::mem::forget(start_exit);
-    let remove = after_ms(TOAST_SHOW_MS + TOAST_ANIM_MS as i32, move || remove_toast(id));
-    std::mem::forget(remove);
+    // animation completes. These are imperative, off-scope timers (push
+    // is called from anywhere, not inside a component body), so they're
+    // detached: the runtime owns them, they fire once, then sweep away.
+    after_ms_detached(TOAST_SHOW_MS, move || leaving.set(true));
+    after_ms_detached(TOAST_SHOW_MS + TOAST_ANIM_MS as i32, move || remove_toast(id));
     id
 }
 
@@ -145,8 +144,7 @@ pub fn dismiss_toast(id: u64) {
         found = true;
     }
     if found {
-        let remove = after_ms(TOAST_ANIM_MS as i32, move || remove_toast(id));
-        std::mem::forget(remove);
+        after_ms_detached(TOAST_ANIM_MS as i32, move || remove_toast(id));
     }
 }
 

@@ -96,7 +96,12 @@ where
     // re-install on it (while still calling spec_fn so the dep set
     // captures every signal it reads).
     let first_fire = std::cell::Cell::new(true);
-    let _effect = runtime_core::Effect::new(move || {
+    // `install_reactive` runs outside any reactive scope (host bootstrap),
+    // so this effect owns its own slot and would be cancelled when the
+    // handle drops at end-of-fn. `persist()` pins it for the app lifetime
+    // (adopt-or-pin: a no-op had a scope been active). Bounded — at most
+    // one per `install_reactive` call.
+    runtime_core::Effect::new(move || {
         let fresh_spec = spec_fn();
         if first_fire.get() {
             first_fire.set(false);
@@ -105,14 +110,8 @@ where
         backend_macos::with_global_backend(|backend| {
             install_impl(backend, fresh_spec);
         });
-    });
-    // `Effect::new` returns a handle whose drop frees the slot when
-    // no scope is active. install_reactive is called from outside
-    // any reactive scope (host bootstrap), so the handle owns the
-    // slot; leak it so the effect survives the function return.
-    // The leak is bounded — at most one per install_reactive call
-    // per app lifetime.
-    std::mem::forget(_effect);
+    })
+    .persist();
 }
 
 fn install_impl(backend: &mut MacosBackend, spec: MenuBarSpec) {
