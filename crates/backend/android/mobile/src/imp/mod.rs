@@ -35,8 +35,7 @@ use runtime_core::{Backend, ButtonHandle, StyleRules};
 struct NoopNavOps;
 impl NavigatorOps for NoopNavOps {}
 static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
-use jni::objects::{GlobalRef, JFieldID, JMethodID, JObject, JValue};
-use jni::signature::{Primitive, ReturnType};
+use jni::objects::{GlobalRef, JObject, JValue};
 use jni::sys::{jint, jlong, JNI_VERSION_1_6};
 use jni::{JNIEnv, JavaVM};
 use std::collections::HashMap;
@@ -50,6 +49,50 @@ use callbacks::StateCallback;
 /// by the Android runtime. Every JNI call inside the backend goes
 /// through this to attach the current thread.
 static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
+
+/// The app's `ClassLoader`, captured off the Android `Context` on the main
+/// thread in [`init_ndk_context`]. Needed because a bare `JNIEnv::find_class`
+/// on a thread attached via `AttachCurrentThread` resolves against the JVM's
+/// SYSTEM classloader, which only sees platform classes — never the app's
+/// `io.idealyst.*` runtime classes. The async executor's `TaskWaker` fires on
+/// arbitrary background threads (a future completing on a worker), so the
+/// `RustAsyncPoll` it constructs there hit a `ClassNotFoundException` and
+/// aborted the process. Resolving app classes through this loader's
+/// `loadClass` (see [`find_app_class`]) fixes it.
+static APP_CLASS_LOADER: OnceLock<GlobalRef> = OnceLock::new();
+
+/// Resolve a class by its JNI binary name (slash-separated, e.g.
+/// `"io/idealyst/runtime/RustAsyncPoll"`), going through the captured app
+/// [`APP_CLASS_LOADER`] when available so the lookup works from ANY thread —
+/// not just the main thread / JVM-originated threads where `find_class`'s
+/// system-classloader resolution happens to see app classes.
+///
+/// Falls back to `env.find_class` if the loader hasn't been captured yet
+/// (pre-mount, or platform classes which the system loader can resolve
+/// anywhere). Use this for any `io.idealyst.*` class that might be resolved
+/// off a background thread; plain `find_class` is fine for `android.*` /
+/// `java.*` platform classes.
+pub(crate) fn find_app_class<'a>(
+    env: &mut JNIEnv<'a>,
+    binary_name: &str,
+) -> jni::errors::Result<jni::objects::JClass<'a>> {
+    let Some(loader) = APP_CLASS_LOADER.get() else {
+        return env.find_class(binary_name);
+    };
+    // `ClassLoader.loadClass` wants the dotted binary name, not the
+    // slash-separated JNI form.
+    let dotted = binary_name.replace('/', ".");
+    let jname = env.new_string(dotted)?;
+    let class = env
+        .call_method(
+            loader.as_obj(),
+            "loadClass",
+            "(Ljava/lang/String;)Ljava/lang/Class;",
+            &[JValue::Object(&jname)],
+        )?
+        .l()?;
+    Ok(jni::objects::JClass::from(class))
+}
 
 /// Capture the `JavaVM` at library load time.
 ///
@@ -98,6 +141,27 @@ fn init_ndk_context(context: &GlobalRef) {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         let Some(vm) = JAVA_VM.get() else { return };
+        // Capture the app's ClassLoader off the Context while we're on the
+        // main thread. `find_app_class` uses it to resolve `io.idealyst.*`
+        // classes from background threads (e.g. the async executor's waker),
+        // where a bare `find_class` would hit the system loader and fail. See
+        // [`APP_CLASS_LOADER`].
+        let loader = with_env(|env| {
+            let cl = env
+                .call_method(
+                    context.as_obj(),
+                    "getClassLoader",
+                    "()Ljava/lang/ClassLoader;",
+                    &[],
+                )
+                .ok()?
+                .l()
+                .ok()?;
+            env.new_global_ref(&cl).ok()
+        });
+        if let Some(loader) = loader {
+            let _ = APP_CLASS_LOADER.set(loader);
+        }
         let vm_ptr = vm.get_java_vm_pointer() as *mut std::ffi::c_void;
         // A dedicated, process-lifetime ref to the Context.
         let ctx_ref = with_env(|env| {
@@ -345,11 +409,11 @@ pub struct AndroidBackend {
     ///   because it's already added via `WindowManager.addView`, and
     ///   even if it didn't, reparenting into the captured window would
     ///   defeat exclusion.
-    /// - `apply_frame_to_layout_params` SKIPS these roots: the
-    ///   top-level view of a `WindowManager` window is positioned by
-    ///   its `WindowManager.LayoutParams` (full-screen), not by a
-    ///   `MarginLayoutParams` — wrapping it would break the window.
-    ///   Its CHILDREN still get Taffy frames normally.
+    /// - `run_layout_pass` SKIPS these roots when building the frame
+    ///   batch: the top-level view of a `WindowManager` window is
+    ///   positioned by its `WindowManager.LayoutParams` (full-screen),
+    ///   not by a `MarginLayoutParams` — wrapping it would break the
+    ///   window. Its CHILDREN still get Taffy frames normally.
     ///
     /// The entry holds the `WindowManager.LayoutParams` `GlobalRef`
     /// used at `addView` time; `removeView` in
@@ -383,66 +447,7 @@ pub(crate) fn density_of(env: &mut JNIEnv, view: &JObject) -> Option<f32> {
     Some(density)
 }
 
-/// `true` when `view`'s direct parent is a `RustDrawerLayout` (or any
-/// `DrawerLayout` subclass) AND `view` is the drawer panel — i.e. the
-/// drawer-side child, NOT the body content. We approximate "drawer
-/// panel" with "any direct child of a DrawerLayout" because the body
-/// (added via `attachContent` with MATCH_PARENT) already has a fixed
-/// LP that matches what Taffy would write — so skipping it here is a
-/// no-op visually, and a stricter check (read `lp.gravity != 0`) costs
-/// JNI round-trips we don't need.
-fn is_drawer_panel_child(env: &mut JNIEnv, view: &JObject) -> bool {
-    let parent = match env
-        .call_method(view, "getParent", "()Landroid/view/ViewParent;", &[])
-        .and_then(|v| v.l())
-    {
-        Ok(p) if !p.is_null() => p,
-        _ => return false,
-    };
-    // Cache the `DrawerLayout` class globally. `find_class` is one of
-    // the slow JNI calls (string lookup through the classloader graph,
-    // plus a local-ref allocation per call). This function fires per
-    // view per layout pass — for 200 views and a 5ms find_class that's
-    // a 1-second tax on each pass. Cache once into a JVM GlobalRef and
-    // re-use forever.
-    DRAWER_LAYOUT_CLASS.with(|slot| {
-        let mut borrow = slot.borrow_mut();
-        if borrow.is_none() {
-            if let Ok(class) = env.find_class("androidx/drawerlayout/widget/DrawerLayout") {
-                if let Ok(g) = env.new_global_ref(&class) {
-                    *borrow = Some(g);
-                }
-            }
-        }
-        let Some(g) = borrow.as_ref() else {
-            return false;
-        };
-        // SAFETY: `JClass` and `JObject` share representation; the
-        // GlobalRef wraps a JObject we know is a class. We need to
-        // pass it back to `is_instance_of` which takes a `JClass<'_>`.
-        let class_obj = g.as_obj();
-        let class: &jni::objects::JClass = unsafe {
-            std::mem::transmute::<&JObject, &jni::objects::JClass>(class_obj)
-        };
-        env.is_instance_of(&parent, class).unwrap_or(false)
-    })
-}
-
 thread_local! {
-    /// Cached `androidx.drawerlayout.widget.DrawerLayout` class
-    /// reference. Lazily filled on the first `is_drawer_panel_child`
-    /// call; subsequent calls skip the `find_class` round trip.
-    /// `RefCell` (vs `Cell`) because `GlobalRef` isn't `Copy`.
-    static DRAWER_LAYOUT_CLASS: std::cell::RefCell<Option<GlobalRef>> =
-        std::cell::RefCell::new(None);
-
-    /// Cached `android.view.ViewGroup$MarginLayoutParams` class. Same
-    /// reasoning as `DRAWER_LAYOUT_CLASS` — `find_class` is one of the
-    /// slow JNI calls, and `apply_frame_to_layout_params` is the
-    /// per-view-per-pass hot path that needs the MLP class.
-    static MARGIN_LP_CLASS: std::cell::RefCell<Option<GlobalRef>> =
-        std::cell::RefCell::new(None);
-
     /// Cached `android.widget.TextView` class. Used by `is_text_view`
     /// (apply_style's padding + text-styling branches), which fires
     /// once per styled view per apply pass — easily the busiest
@@ -450,18 +455,17 @@ thread_local! {
     static TEXTVIEW_CLASS: std::cell::RefCell<Option<GlobalRef>> =
         std::cell::RefCell::new(None);
 
-    /// Cached `android.view.View` class. Pinned so the `getLayoutParams`
-    /// / `setLayoutParams` `JMethodID`s in `FRAME_APPLY_IDS` stay valid
-    /// (a method ID lives only as long as its declaring class isn't
-    /// unloaded — holding a `GlobalRef` to the class guarantees that).
+    /// Cached `android.view.View` class. Used as the element type when
+    /// building the `View[]` handed to the batch frame applier.
     static VIEW_CLASS: std::cell::RefCell<Option<GlobalRef>> =
         std::cell::RefCell::new(None);
 
-    /// Resolved JNI field/method IDs for the per-view layout write in
-    /// `apply_frame_to_layout_params`. See [`FrameApplyIds`]. `Copy`, so
-    /// a plain `Cell` suffices.
-    static FRAME_APPLY_IDS: std::cell::Cell<Option<FrameApplyIds>> =
-        std::cell::Cell::new(None);
+    /// Cached `io.idealyst.runtime.RustLayoutApply` class — the JVM-side
+    /// batch frame applier. `find_class` is a slow classloader probe; the
+    /// layout pass calls its static `applyFrames` every pass (60 Hz under
+    /// animation), so resolve the class once and reuse.
+    static LAYOUT_APPLY_CLASS: std::cell::RefCell<Option<GlobalRef>> =
+        std::cell::RefCell::new(None);
 
     /// Display density (dp → px scaling), constant for the lifetime of
     /// the Activity. Cached after the first successful read; reused on
@@ -610,66 +614,10 @@ pub(crate) fn is_text_view(env: &mut JNIEnv, view: &JObject) -> bool {
     })
 }
 
-/// Get the `MarginLayoutParams` class as a `GlobalRef`, looking it up
-/// once and reusing on every subsequent call. Returns `None` on
-/// classloader failure (effectively never happens on a valid Android
-/// install but kept fallible so the per-view caller short-circuits
-/// cleanly instead of panicking).
-fn cached_margin_lp_class(env: &mut JNIEnv) -> Option<GlobalRef> {
-    MARGIN_LP_CLASS.with(|slot| {
-        let mut borrow = slot.borrow_mut();
-        if borrow.is_none() {
-            let class = env
-                .find_class("android/view/ViewGroup$MarginLayoutParams")
-                .ok()?;
-            let g = env.new_global_ref(&class).ok()?;
-            *borrow = Some(g);
-        }
-        borrow.clone()
-    })
-}
-
-/// Resolved JNI IDs for the per-view layout write in
-/// [`apply_frame_to_layout_params`]. Each `GetFieldID`/`GetMethodID` is
-/// a reflective, string-keyed lookup; the previous (string-based)
-/// `set_field`/`call_method` path paid eight of them *per view per
-/// layout pass* — the six `MarginLayoutParams` fields plus
-/// `getLayoutParams`/`setLayoutParams`. For a 200-view tree that's
-/// ~1600 reflective probes a pass and, per the comment in that
-/// function, most of its wall-clock budget.
-///
-/// Resolving each ID once and reusing the `JFieldID`/`JMethodID`
-/// collapses every subsequent write to a direct slot/vtable access —
-/// the same dispatch shortcut iOS gets for free from cached objc
-/// selectors (see [[feedback_backend_owns_rendering]]: converge on
-/// behavior, diverge on mechanism).
-///
-/// **Validity invariant:** a field/method ID stays valid only until its
-/// declaring class is unloaded. The `MarginLayoutParams` fields + ctor
-/// hang off `MARGIN_LP_CLASS` and the `View` methods off `VIEW_CLASS`,
-/// both pinned as `GlobalRef`s for the Activity's lifetime, so these
-/// IDs never dangle. Resolve them via [`frame_apply_ids`], never store
-/// one whose class isn't pinned.
-#[derive(Clone, Copy)]
-struct FrameApplyIds {
-    width: JFieldID,
-    height: JFieldID,
-    left_margin: JFieldID,
-    top_margin: JFieldID,
-    right_margin: JFieldID,
-    bottom_margin: JFieldID,
-    /// `MarginLayoutParams(int width, int height)` constructor.
-    mlp_ctor: JMethodID,
-    /// `View.getLayoutParams()` — virtual dispatch via the child view.
-    get_layout_params: JMethodID,
-    /// `View.setLayoutParams(ViewGroup.LayoutParams)`.
-    set_layout_params: JMethodID,
-}
-
 /// Get the `android.view.View` class as a pinned `GlobalRef`, looked up
-/// once. Mirrors [`cached_margin_lp_class`]; needed because the
-/// `getLayoutParams`/`setLayoutParams` method IDs resolve against
-/// `View`, and we must keep that class alive for the IDs to stay valid.
+/// once (mirrors the other lazily-cached class refs). Used as the
+/// element type when allocating the `View[]` handed to
+/// [`apply_frames_batch`].
 fn cached_view_class(env: &mut JNIEnv) -> Option<GlobalRef> {
     VIEW_CLASS.with(|slot| {
         let mut borrow = slot.borrow_mut();
@@ -681,170 +629,80 @@ fn cached_view_class(env: &mut JNIEnv) -> Option<GlobalRef> {
     })
 }
 
-/// Resolve (and cache) the [`FrameApplyIds`] for the layout hot path.
-/// `&GlobalRef` satisfies `Desc<JClass>`, so the class refs go straight
-/// to `get_field_id`/`get_method_id` without a transmute. Returns
-/// `None` only on a classloader/lookup failure (effectively never on a
-/// valid install) so the caller short-circuits cleanly.
-fn frame_apply_ids(env: &mut JNIEnv) -> Option<FrameApplyIds> {
-    if let Some(ids) = FRAME_APPLY_IDS.with(|c| c.get()) {
-        return Some(ids);
-    }
-    let mlp = cached_margin_lp_class(env)?;
-    let view = cached_view_class(env)?;
-    // `width`/`height` are declared on `ViewGroup.LayoutParams` and the
-    // four margins on `MarginLayoutParams`; `GetFieldID` walks the
-    // superclass chain, so resolving all six against the MLP class is
-    // correct and the IDs are valid for any subclass instance
-    // (`FrameLayout.LayoutParams`, drawer LPs, …).
-    let ids = FrameApplyIds {
-        width: env.get_field_id(&mlp, "width", "I").ok()?,
-        height: env.get_field_id(&mlp, "height", "I").ok()?,
-        left_margin: env.get_field_id(&mlp, "leftMargin", "I").ok()?,
-        top_margin: env.get_field_id(&mlp, "topMargin", "I").ok()?,
-        right_margin: env.get_field_id(&mlp, "rightMargin", "I").ok()?,
-        bottom_margin: env.get_field_id(&mlp, "bottomMargin", "I").ok()?,
-        mlp_ctor: env.get_method_id(&mlp, "<init>", "(II)V").ok()?,
-        get_layout_params: env
-            .get_method_id(
-                &view,
-                "getLayoutParams",
-                "()Landroid/view/ViewGroup$LayoutParams;",
-            )
-            .ok()?,
-        set_layout_params: env
-            .get_method_id(
-                &view,
-                "setLayoutParams",
-                "(Landroid/view/ViewGroup$LayoutParams;)V",
-            )
-            .ok()?,
-    };
-    FRAME_APPLY_IDS.with(|c| c.set(Some(ids)));
-    Some(ids)
+/// Get the `io.idealyst.runtime.RustLayoutApply` class as a pinned
+/// `GlobalRef`, looked up once. `find_class` is a slow classloader probe
+/// and the layout pass calls the class's static `applyFrames` every
+/// pass, so cache the class to skip the probe each time.
+fn cached_layout_apply_class(env: &mut JNIEnv) -> Option<GlobalRef> {
+    LAYOUT_APPLY_CLASS.with(|slot| {
+        let mut borrow = slot.borrow_mut();
+        if borrow.is_none() {
+            let class = env
+                .find_class("io/idealyst/runtime/RustLayoutApply")
+                .ok()?;
+            *borrow = Some(env.new_global_ref(&class).ok()?);
+        }
+        borrow.clone()
+    })
 }
 
-/// Apply a Taffy-computed `Frame` to the view's `LayoutParams`. The
-/// view is expected to be a child of a `FrameLayout`-shaped parent —
-/// `FrameLayout.LayoutParams` (which extends `MarginLayoutParams`)
-/// reads `leftMargin`/`topMargin` for the child's top-left and
-/// `width`/`height` for its size. dp-space values are converted to
-/// device pixels via the host's display density.
-fn apply_frame_to_layout_params(
-    env: &mut JNIEnv,
-    view: &GlobalRef,
-    frame: runtime_layout::Frame,
-) {
-    let view_obj = view.as_obj();
-    // Skip drawer-panel children. `RustDrawerLayout.attachDrawer` writes
-    // an explicit `DrawerLayout.LayoutParams` whose width is the
-    // author-configured `drawer_width` (in px after dp→px). The Taffy
-    // frame for the sidebar's root reflects its stylesheet, which is
-    // typically `width: 100%` — overwriting the LP here would expand
-    // the panel to the full DrawerLayout width and defeat the
-    // configured `drawer_width`. DrawerLayout owns its child's
-    // size + position (gravity-based for the drawer panel, full-bleed
-    // for content), so leaving the LP alone is correct.
-    if is_drawer_panel_child(env, &view_obj) {
+/// Apply every Taffy-computed frame in ONE Rust→JVM call.
+///
+/// `views[i]` pairs with the px quad `packed[i*4 .. i*4+4]` =
+/// `[leftMargin, topMargin, width, height]`. We hand the parallel arrays
+/// to `RustLayoutApply.applyFrames`, which performs all the
+/// `MarginLayoutParams` writes JVM-side (cheap virtual calls, no JNI
+/// transition). This replaces the old per-view `apply_frame_to_layout_params`
+/// that paid ~9 JNI crossings per view — for a 200-view tree, ~1800
+/// crossings a pass collapse to the array marshalling plus one call.
+///
+/// The drawer-panel skip and the "wrap non-`MarginLayoutParams`" fallback
+/// moved into the Kotlin loop verbatim; the caller pre-filters zero-size
+/// views and detached window roots. Best-effort: a JNI failure here drops
+/// the whole pass's frame write, which the next pass retries.
+///
+/// NOTE: building the `View[]` still costs one `set_object_array_element`
+/// per view. A future refinement could maintain a persistent JVM-side
+/// `View` registry updated at insert/remove time so a pass passes only
+/// the int quads — getting total crossings per pass down to ~2.
+fn apply_frames_batch(env: &mut JNIEnv, views: &[&GlobalRef], packed: &[i32]) {
+    debug_assert_eq!(views.len() * 4, packed.len());
+    if views.is_empty() {
         return;
     }
-    // `density` is a per-display constant (a DPI scaling factor) that
-    // never varies between views on the same Activity. Read once,
-    // cache, reuse. Avoids 5 JNI calls (getResources +
-    // getDisplayMetrics + get_field, each with a result `.l()`/`.f()`)
-    // per view per layout pass — for a 200-view tree that's a 1000-
-    // call tax we don't need.
-    let density = cached_density(env, &view_obj);
-    let left_px = (frame.x * density).round() as i32;
-    let top_px = (frame.y * density).round() as i32;
-    let w_px = (frame.width * density).round() as i32;
-    let h_px = (frame.height * density).round() as i32;
-    // Resolve the cached field/method IDs for this hot path. A miss
-    // means a classloader failure on a fresh process — punt the view;
-    // the next pass retries (IDs are process-stable once resolved).
-    let Some(ids) = frame_apply_ids(env) else {
+    let Some(view_class) = cached_view_class(env) else {
         return;
     };
-    // Read the current LayoutParams via the cached `getLayoutParams`
-    // method ID. `call_method_unchecked` skips the per-call
-    // `GetMethodID` string probe the old `call_method` paid. If the view
-    // isn't attached yet there may be no LP — fall back to a fresh
-    // `MarginLayoutParams(w, h)`.
-    let _t_get_lp = phase_timer::PhaseTimer::start("apply_frame_getLayoutParams");
-    let lp_obj = unsafe {
-        env.call_method_unchecked(&view_obj, ids.get_layout_params, ReturnType::Object, &[])
+    let Some(apply_class) = cached_layout_apply_class(env) else {
+        return;
+    };
+    let view_arr = match env.new_object_array(views.len() as i32, &view_class, JObject::null()) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+    for (i, v) in views.iter().enumerate() {
+        if env
+            .set_object_array_element(&view_arr, i as i32, v.as_obj())
+            .is_err()
+        {
+            return;
+        }
     }
-    .ok()
-    .and_then(|v| v.l().ok());
-    drop(_t_get_lp);
-    let lp = match lp_obj {
-        Some(o) if !o.is_null() => {
-            // Already a LayoutParams of *some* shape. We need it to be
-            // `MarginLayoutParams` (or a subclass — `FrameLayout`'s own
-            // LP class extends it) so we can write margins. If it isn't,
-            // wrap it. The pinned class `GlobalRef` satisfies
-            // `Desc<JClass>` directly, so no transmute is needed.
-            let Some(mlp) = cached_margin_lp_class(env) else {
-                // Without the class we can't proceed; punt this view.
-                // The next pass can retry.
-                return;
-            };
-            let is_mlp = env.is_instance_of(&o, &mlp).unwrap_or(false);
-            if is_mlp {
-                o
-            } else {
-                match unsafe {
-                    env.new_object_unchecked(
-                        &mlp,
-                        ids.mlp_ctor,
-                        &[JValue::Int(w_px).as_jni(), JValue::Int(h_px).as_jni()],
-                    )
-                } {
-                    Ok(o) => o,
-                    Err(_) => return,
-                }
-            }
-        }
-        _ => {
-            let Some(mlp) = cached_margin_lp_class(env) else {
-                return;
-            };
-            match unsafe {
-                env.new_object_unchecked(
-                    &mlp,
-                    ids.mlp_ctor,
-                    &[JValue::Int(w_px).as_jni(), JValue::Int(h_px).as_jni()],
-                )
-            } {
-                Ok(o) => o,
-                Err(_) => return,
-            }
-        }
+    // One bulk copy for all frame data (`set_int_array_region` is a
+    // single region copy, not per-element).
+    let int_arr = match env.new_int_array(packed.len() as i32) {
+        Ok(a) => a,
+        Err(_) => return,
     };
-    // Write the frame straight into the LP fields via cached field IDs.
-    // `set_field_unchecked` skips the `GetFieldID` probe each of these
-    // used to pay (6 per view per pass).
-    let _t_fields = phase_timer::PhaseTimer::start("apply_frame_set_fields");
-    let _ = env.set_field_unchecked(&lp, ids.width, JValue::Int(w_px));
-    let _ = env.set_field_unchecked(&lp, ids.height, JValue::Int(h_px));
-    let _ = env.set_field_unchecked(&lp, ids.left_margin, JValue::Int(left_px));
-    let _ = env.set_field_unchecked(&lp, ids.top_margin, JValue::Int(top_px));
-    drop(_t_fields);
-    // Zero out trailing margins — they're authored via the same
-    // taffy-computed frame and writing 0 keeps stale values from a
-    // prior layout pass from leaking through.
-    let _ = env.set_field_unchecked(&lp, ids.right_margin, JValue::Int(0));
-    let _ = env.set_field_unchecked(&lp, ids.bottom_margin, JValue::Int(0));
-    let _t_set_lp = phase_timer::PhaseTimer::start("apply_frame_setLayoutParams");
-    let _ = unsafe {
-        env.call_method_unchecked(
-            &view_obj,
-            ids.set_layout_params,
-            ReturnType::Primitive(Primitive::Void),
-            &[JValue::Object(&lp).as_jni()],
-        )
-    };
-    drop(_t_set_lp);
+    if env.set_int_array_region(&int_arr, 0, packed).is_err() {
+        return;
+    }
+    let _ = env.call_static_method(
+        &apply_class,
+        "applyFrames",
+        "([Landroid/view/View;[I)V",
+        &[JValue::Object(&view_arr), JValue::Object(&int_arr)],
+    );
 }
 
 /// Build `Intent(ACTION_VIEW, Uri.parse(url))` and hand it to
@@ -1013,8 +871,8 @@ impl AndroidBackend {
     /// Taffy ROOT sized to the viewport by `run_layout_pass`. The
     /// window itself is full-screen (`MATCH_PARENT`), so the content
     /// view fills it; the layer's controls position inside via normal
-    /// flex/absolute style. The root view itself is excluded from
-    /// `apply_frame_to_layout_params` (it's positioned by the window's
+    /// flex/absolute style. The root view itself is excluded from the
+    /// frame batch in `run_layout_pass` (it's positioned by the window's
     /// `WindowManager.LayoutParams`, not margin params).
     pub fn create_private_layer_window(&mut self) -> GlobalRef {
         // Content holder: a FrameLayout (like the portal overlay) so children
@@ -1535,6 +1393,19 @@ impl AndroidBackend {
                 .collect()
         };
         with_env(|env| {
+            // Build the batch: a parallel `View[]` + packed px quads,
+            // applying the same filters the old per-view path used (skip
+            // zero-size views and detached window roots). The drawer-panel
+            // skip + non-`MarginLayoutParams` wrap moved into the Kotlin
+            // `applyFrames` loop. Density is a per-display constant — read
+            // once off the first view and reuse for every conversion.
+            let _t_apply = phase_timer::PhaseTimer::start("apply_frames_batch");
+            let density = frames
+                .first()
+                .map(|(v, _)| cached_density(env, &v.as_obj()))
+                .unwrap_or(1.0);
+            let mut batch_views: Vec<&GlobalRef> = Vec::with_capacity(frames.len());
+            let mut packed: Vec<i32> = Vec::with_capacity(frames.len() * 4);
             for (view, frame) in &frames {
                 if frame.width <= 0.0 && frame.height <= 0.0 {
                     continue;
@@ -1544,15 +1415,33 @@ impl AndroidBackend {
                 // `WindowManager.LayoutParams` (full-screen), NOT a
                 // `MarginLayoutParams` — applying a Taffy frame here
                 // would wrap it in margin params and break the window.
-                // Its CHILDREN still flow through `apply_frame_to_layout_params`
-                // normally (they're ordinary views inside the content
-                // FrameLayout), so the layer's controls position correctly.
+                // Its CHILDREN are ordinary views that DO flow through
+                // the batch, so the layer's controls position correctly.
                 if self.detached_window_roots.contains_key(&Self::node_key(view)) {
                     continue;
                 }
-                {
-                    let _t = phase_timer::PhaseTimer::start("apply_frame");
-                    apply_frame_to_layout_params(env, view, *frame);
+                batch_views.push(view);
+                packed.push((frame.x * density).round() as i32);
+                packed.push((frame.y * density).round() as i32);
+                packed.push((frame.width * density).round() as i32);
+                packed.push((frame.height * density).round() as i32);
+            }
+            // One Rust→JVM call applies every frame (vs ~9 crossings/view).
+            apply_frames_batch(env, &batch_views, &packed);
+            drop(_t_apply);
+            // Per-view animation/gradient sync — only the minority of
+            // views with active anim state. Kept per-view: it reads
+            // `anim_state` and does percent/radius resolution that doesn't
+            // batch cleanly. Independent of the `LayoutParams` write above
+            // (both read the frame dims passed directly, not the applied
+            // LP), so running it after the batch is equivalent to the old
+            // interleaved order.
+            for (view, frame) in &frames {
+                if frame.width <= 0.0 && frame.height <= 0.0 {
+                    continue;
+                }
+                if self.detached_window_roots.contains_key(&Self::node_key(view)) {
+                    continue;
                 }
                 let key = Self::node_key(view);
                 if let Some(state) = self.anim_state.get(&key) {
@@ -1569,7 +1458,6 @@ impl AndroidBackend {
                             frame.height,
                         );
                     }
-                    let density = cached_density(env, &view.as_obj());
                     let _t = phase_timer::PhaseTimer::start("radial_gradient_resize");
                     // Recompute the radial gradient's px radius now that
                     // the view has a real size.

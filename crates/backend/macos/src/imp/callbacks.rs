@@ -309,3 +309,176 @@ impl ScrollObserverTarget {
         unsafe { msg_send_id![super(this), init] }
     }
 }
+
+// =========================================================================
+// PrivateLayerPassthroughView — the screen_recorder `PrivateLayer` overlay
+// window's root content view. The macOS analogue of iOS's
+// `PrivateLayerPassthroughView` + `PassthroughWindow` (one view does both
+// jobs here because AppKit routes passthrough purely through `hitTest:`).
+//
+// The overlay lives in its own borderless `NSWindow` above the app window.
+// Its content is a viewport-spanning, TRANSPARENT flex root (a Taffy root
+// sized to the window) with the actual controls — a toolbar, a recording
+// preview — nested deep inside and sparse. AppKit's default
+// `NSView.hitTest:` returns the deepest subview whose `frame` contains the
+// point; for a full-screen transparent content view that's the content view
+// itself everywhere, so EVERY click would be delivered to this overlay window
+// and the app's canvas beneath would never see it ("can't draw at all").
+//
+// So we override `hitTest:`: build a HitNode tree from the live subview
+// subtree and ask the host-tested `region_blocks_click` whether the point
+// lands on a view that actually wants it — an interactive control (a
+// `FlippedView` with an installed `on_touch` handler) or a view that paints
+// visible content (a non-clear layer background). If it does, defer to
+// `super` so AppKit resolves the precise deep subview. If it doesn't, return
+// `nil` so AppKit proceeds to the window beneath and the click reaches the
+// app's drawable canvas. This is the exact "captures iff control-or-visible,
+// recurse through transparent containers" behavior the iOS module implements,
+// diverging only in the AppKit mechanism (`hitTest:`-returns-nil vs UIKit's
+// `pointInside:` + window override).
+// =========================================================================
+
+use objc2_app_kit::NSView;
+use objc2_foundation::{CGPoint, CGRect, NSArray};
+
+extern "C" {
+    /// CoreGraphics: alpha component of a `CGColorRef` (0.0 = fully
+    /// transparent). Linked from the system CoreGraphics framework.
+    fn CGColorGetAlpha(color: *const std::ffi::c_void) -> objc2_foundation::CGFloat;
+}
+
+/// Build the [`HitNode`] tree for `view`'s subviews (recursively): each
+/// subview's `frame` in the parent's coordinate space + whether it itself
+/// captures clicks. Hidden subviews are skipped (they can't be hit).
+fn private_layer_hit_nodes(
+    view: &NSView,
+) -> Vec<crate::private_layer_hittest::HitNode> {
+    let subviews: Retained<NSArray<NSView>> = unsafe { msg_send_id![view, subviews] };
+    let mut nodes = Vec::new();
+    for sub in subviews.iter() {
+        let hidden: bool = unsafe { msg_send![&*sub, isHidden] };
+        if hidden {
+            continue;
+        }
+        let frame: CGRect = unsafe { msg_send![&*sub, frame] };
+        nodes.push(crate::private_layer_hittest::HitNode {
+            x: frame.origin.x,
+            y: frame.origin.y,
+            w: frame.size.width,
+            h: frame.size.height,
+            captures: private_layer_view_captures(&sub),
+            children: private_layer_hit_nodes(&sub),
+        });
+    }
+    nodes
+}
+
+/// A single view captures clicks if it's an interactive control (a
+/// `FlippedView` with an installed `on_touch` handler) or paints visible
+/// content (a non-clear layer background, alpha > 0). Mirrors the iOS
+/// `private_layer_view_captures`.
+fn private_layer_view_captures(view: &NSView) -> bool {
+    // Interactive control: a FlippedView with a handler installed. The Taffy
+    // frames place controls with plain frames (no transform), so the recursion
+    // in `region_blocks_click` lines up with these frames exactly.
+    let flipped_cls = super::view::FlippedView::class();
+    let is_flipped: bool = unsafe { msg_send![view, isKindOfClass: flipped_cls] };
+    if is_flipped {
+        // SAFETY: dynamic class just confirmed `FlippedView`; the cast reads
+        // its ivar-backed `has_handler` accessor.
+        let fv: &super::view::FlippedView =
+            unsafe { &*(view as *const NSView as *const super::view::FlippedView) };
+        if fv.has_handler() {
+            return true;
+        }
+    }
+    // Visible content: a layer-backed view with a non-clear backgroundColor
+    // (alpha > 0). A plain transparent layout container has either no layer or
+    // a nil/clear `backgroundColor` → falls through. `setWantsLayer:` is set by
+    // `apply_style_to_view` whenever a background is applied, so a styled panel
+    // has a layer here.
+    let layer: *mut NSObject = unsafe { msg_send![view, layer] };
+    if !layer.is_null() {
+        // CRITICAL: `-[CALayer backgroundColor]` returns a typed `CGColorRef`
+        // (objc2 encoding `^{CGColor=}`), NOT a plain `void*` (`^v`). Receiving
+        // it as `*const c_void` trips objc2's msg_send encoding check and
+        // SIGABRTs inside this `hitTest:` (a non-unwinding callback) — the
+        // crash on the first click. Use the backend's encoding-correct
+        // `CGColorRef` newtype, then read its inner pointer for the C alpha fn.
+        let cg: super::CGColorRef = unsafe { msg_send![layer, backgroundColor] };
+        if !cg.0.is_null() && unsafe { CGColorGetAlpha(cg.0) } > 0.0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Recursive hit-test decision for [`PrivateLayerPassthroughView`]. Returns
+/// `true` if `point` (in the content view's local, top-left coordinate space)
+/// lands on a subview that should CAPTURE the click. Builds the live HitNode
+/// tree and delegates the recursion + coordinate conversion to the
+/// host-tested [`region_blocks_click`](crate::private_layer_hittest::region_blocks_click).
+pub(crate) fn private_layer_blocks_click(view: &NSView, point: CGPoint) -> bool {
+    let nodes = private_layer_hit_nodes(view);
+    crate::private_layer_hittest::region_blocks_click(&nodes, point.x, point.y)
+}
+
+declare_class!(
+    pub(crate) struct PrivateLayerPassthroughView;
+
+    unsafe impl ClassType for PrivateLayerPassthroughView {
+        type Super = NSView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystMacosPrivateLayerPassthroughView";
+    }
+
+    impl DeclaredClass for PrivateLayerPassthroughView {
+        type Ivars = ();
+    }
+
+    unsafe impl PrivateLayerPassthroughView {
+        // Flipped origin so the content view's local coordinate space is
+        // top-left (Y-down), matching Taffy frames + the iOS-authored
+        // `region_blocks_click` math. Without this the subview frames (Taffy,
+        // top-left) and the hit-test point (AppKit, bottom-left) would be in
+        // mismatched spaces and the toolbar would be hit at the wrong Y.
+        #[method(isFlipped)]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[method_id(hitTest:)]
+        fn hit_test(&self, point: CGPoint) -> Option<Retained<NSView>> {
+            // `point` arrives in the SUPERVIEW's coordinate space (AppKit's
+            // `hitTest:` contract). Convert it into THIS view's local space —
+            // `convertPoint:fromView:` against our `superview` — before running
+            // the subtree recursion, whose HitNode frames are all in our local
+            // (Taffy, top-left, since `isFlipped`) coordinate space. When there
+            // is no superview yet (mid-attach) the point is already local.
+            let this: &NSView = unsafe { &*(self as *const Self as *const NSView) };
+            let superview: *mut NSView = unsafe { msg_send![this, superview] };
+            let local: CGPoint = if superview.is_null() {
+                point
+            } else {
+                unsafe { msg_send![this, convertPoint: point, fromView: superview] }
+            };
+            if private_layer_blocks_click(this, local) {
+                // A control IS under the click → let `super` resolve the
+                // precise deep subview so the click reaches the actual button.
+                unsafe { msg_send_id![super(self), hitTest: point] }
+            } else {
+                // No private-layer control under the click → decline so AppKit
+                // delivers the event to the window beneath (the app's canvas).
+                None
+            }
+        }
+    }
+);
+
+impl PrivateLayerPassthroughView {
+    pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(());
+        unsafe { msg_send_id![super(this), init] }
+    }
+}

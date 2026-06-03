@@ -19,6 +19,7 @@ camera = { workspace = true }
 microphone = { workspace = true }
 media-writer = { workspace = true }
 files = { workspace = true }
+file-export = { workspace = true }
 dev-server = { workspace = true, optional = true }
 
 # The app declares the capabilities it needs by depending on `camera` +

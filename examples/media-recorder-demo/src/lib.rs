@@ -152,13 +152,57 @@ pub fn app() -> Element {
     })
     .into_element();
 
+    // Export the saved recording to a user-chosen location via the platform's
+    // save UI (Files / save dialog), using the `file-export` SDK. Demonstrates
+    // the full pipeline: media-writer → files (app sandbox) → file-export.
+    let on_export = move || {
+        let path = saved.get();
+        if path.is_empty() {
+            return;
+        }
+        status.set("Opening save dialog…".to_string());
+        runtime_core::driver::spawn_async(async move {
+            let store = match files::app_files("recordings") {
+                Ok(s) => s,
+                Err(e) => {
+                    status.set(format!("Files error: {e}"));
+                    return;
+                }
+            };
+            // Native gives a real path to copy; web has no path, so read the
+            // bytes out of the store instead.
+            let request = match store.local_path(&path) {
+                Some(local) => file_export::SaveRequest::path("clip.mp4", "video/mp4", local),
+                None => match store.read(&path).await {
+                    Ok(Some(bytes)) => file_export::SaveRequest::bytes("clip.mp4", "video/mp4", bytes),
+                    _ => {
+                        status.set("Nothing to export".to_string());
+                        return;
+                    }
+                },
+            };
+            match file_export::FileExport::new().save(request).await {
+                Ok(file_export::SaveOutcome::Saved { location }) => status.set(match location {
+                    Some(l) => format!("Exported to {l}"),
+                    None => "Exported".to_string(),
+                }),
+                Ok(file_export::SaveOutcome::Cancelled) => {
+                    status.set("Export cancelled".to_string())
+                }
+                Ok(_) => {}
+                Err(e) => status.set(format!("Export error: {e}")),
+            }
+        });
+    };
+
     let body: Vec<Element> = vec![
         ui! { Typography(content = "Media Recorder".to_string(), kind = idea_ui::typography_kind::H1) },
         ui! {
             Typography(
                 content = "Records your camera + microphone to an .mp4 with the \
-                    `media-writer` SDK. Press Record (the OS prompts for camera \
-                    and mic permission the first time), then Stop to save."
+                    `media-writer` SDK, then exports it to a location you choose \
+                    with `file-export`. Press Record (the OS prompts for camera \
+                    and mic permission the first time), Stop to save, then Export."
                     .to_string(),
                 muted = true,
             )
@@ -167,6 +211,7 @@ pub fn app() -> Element {
         saved_text,
         ui! { button(label = "Record".to_string(), on_click = on_record) },
         ui! { button(label = "Stop".to_string(), on_click = on_stop) },
+        ui! { button(label = "Export…".to_string(), on_click = on_export) },
     ];
 
     ui! {

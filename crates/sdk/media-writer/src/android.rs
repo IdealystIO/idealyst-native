@@ -28,9 +28,10 @@
 //! Android backends). Every failure is surfaced as a typed
 //! [`MediaWriterError`] carrying the JNI/Android message.
 
-use jni::objects::{JObject, JValue};
+use jni::objects::{GlobalRef, JObject, JValue};
 use jni::sys::{jint, jlong};
 use jni::{JNIEnv, JavaVM};
+use std::sync::OnceLock;
 
 use crate::{MediaInputs, MediaWriterError, RecordConfig};
 use media_stream::{AudioSubscription, Subscription};
@@ -150,16 +151,28 @@ fn forward_video(token: u64, width: u32, height: u32, pts_us: u64, rgba: &[u8]) 
         let Ok(mut env) = vm.attach_current_thread() else {
             return;
         };
-        let Ok(arr) = env.byte_array_from_slice(rgba) else {
+        // Direct ByteBuffer viewing the RGBA slice — no `byte[]` alloc or
+        // Rust→JVM copy. The encoder reads it (RGBA→YUV) synchronously here.
+        // SAFETY: `rgba` outlives this synchronous `writeVideo` call.
+        let buf = match unsafe {
+            env.new_direct_byte_buffer(rgba.as_ptr() as *mut u8, rgba.len())
+        } {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        // Resolve the helper via the app classloader — this runs on the
+        // capture tap's background thread where a bare `find_class(HELPER)`
+        // can't see app classes.
+        let Some(helper) = helper_class(&mut env) else {
             return;
         };
         let _ = env.call_static_method(
-            HELPER,
+            helper,
             "writeVideo",
-            "(J[BIIJ)V",
+            "(JLjava/nio/ByteBuffer;IIJ)V",
             &[
                 JValue::Long(token as jlong),
-                JValue::Object(&JObject::from(arr)),
+                JValue::Object(&buf),
                 JValue::Int(width as jint),
                 JValue::Int(height as jint),
                 JValue::Long(pts_us as jlong),
@@ -181,16 +194,26 @@ fn forward_audio(token: u64, sample_rate: u32, channels: u16, pts_us: u64, sampl
             let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
             pcm.extend_from_slice(&v.to_le_bytes());
         }
-        let Ok(arr) = env.byte_array_from_slice(&pcm) else {
+        // Direct ByteBuffer viewing the converted PCM — no `byte[]` alloc or
+        // Rust→JVM copy. SAFETY: `pcm` outlives this synchronous `writeAudio`
+        // call; Kotlin copies it into the codec input buffer before we return.
+        let buf = match unsafe {
+            env.new_direct_byte_buffer(pcm.as_mut_ptr(), pcm.len())
+        } {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        // Resolve the helper via the app classloader (background thread).
+        let Some(helper) = helper_class(&mut env) else {
             return;
         };
         let _ = env.call_static_method(
-            HELPER,
+            helper,
             "writeAudio",
-            "(J[BIIJ)V",
+            "(JLjava/nio/ByteBuffer;IIJ)V",
             &[
                 JValue::Long(token as jlong),
-                JValue::Object(&JObject::from(arr)),
+                JValue::Object(&buf),
                 JValue::Int(sample_rate as jint),
                 JValue::Int(channels as jint),
                 JValue::Long(pts_us as jlong),
@@ -208,6 +231,60 @@ fn java_vm() -> Result<JavaVM, MediaWriterError> {
     let vm_ptr = ctx.vm() as *mut jni::sys::JavaVM;
     unsafe { JavaVM::from_raw(vm_ptr) }
         .map_err(|e| MediaWriterError::Backend(format!("invalid JavaVM pointer: {e}")))
+}
+
+/// `RustMediaWriter` class, resolved once via the app's `ClassLoader` and
+/// cached. `call_static_method(HELPER, ...)` does an implicit `find_class` on
+/// the CALLING thread; `forward_video`/`forward_audio` run on the capture
+/// tap's BACKGROUND thread, where `find_class` resolves against the JVM's
+/// system classloader — which can't see `io.idealyst.*`, so it threw
+/// `ClassNotFoundException` and aborted the recorder. We instead load the
+/// class through the Android `Context`'s classloader (an instance method on
+/// the Context object, so it returns the app loader regardless of which
+/// thread calls it), which resolves correctly from any thread.
+static HELPER_CLASS: OnceLock<GlobalRef> = OnceLock::new();
+
+/// Get the cached [`HELPER_CLASS`], resolving + caching it on first use via
+/// `Context.getClassLoader().loadClass(...)`. Returns `None` only if the ndk
+/// context isn't initialized or the lookup fails (the caller then skips the
+/// frame rather than aborting).
+fn helper_class(env: &mut JNIEnv) -> Option<&'static GlobalRef> {
+    if let Some(c) = HELPER_CLASS.get() {
+        return Some(c);
+    }
+    let ctx = ndk_context::android_context();
+    let context_ptr = ctx.context() as jni::sys::jobject;
+    if context_ptr.is_null() {
+        return None;
+    }
+    // SAFETY: `ndk_context` holds a process-lifetime global ref to the
+    // Android Context; we only borrow it for these JNI calls and never free
+    // it. `JObject::from_raw` is a non-owning wrapper (no delete on drop).
+    let context = unsafe { JObject::from_raw(context_ptr) };
+    let loader = env
+        .call_method(
+            &context,
+            "getClassLoader",
+            "()Ljava/lang/ClassLoader;",
+            &[],
+        )
+        .ok()?
+        .l()
+        .ok()?;
+    let dotted = env.new_string("io.idealyst.mediawriter.RustMediaWriter").ok()?;
+    let class = env
+        .call_method(
+            &loader,
+            "loadClass",
+            "(Ljava/lang/String;)Ljava/lang/Class;",
+            &[JValue::Object(&dotted)],
+        )
+        .ok()?
+        .l()
+        .ok()?;
+    let global = env.new_global_ref(&class).ok()?;
+    let _ = HELPER_CLASS.set(global);
+    HELPER_CLASS.get()
 }
 
 fn jni_err(e: jni::errors::Error) -> MediaWriterError {

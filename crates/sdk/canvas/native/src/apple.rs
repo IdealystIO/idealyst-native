@@ -161,8 +161,28 @@ impl ApplePainter {
             DrawOp::Stroke { path, paint, stroke } => {
                 let bezier = self.build_path(path);
                 let _: () = unsafe { msg_send![&bezier, setLineWidth: stroke.width as CGFloat] };
-                let _: () = unsafe { msg_send![&bezier, setLineCapStyle: cg_line_cap(stroke.cap)] };
-                let _: () = unsafe { msg_send![&bezier, setLineJoinStyle: cg_line_join(stroke.join)] };
+                // `setLineCapStyle:` / `setLineJoinStyle:` are the one place the
+                // two toolkits' arg types genuinely diverge: UIKit's
+                // `UIBezierPath` takes `CGLineCap`/`CGLineJoin` (`int32_t`,
+                // encoding `'i'`), AppKit's `NSBezierPath` takes
+                // `NSLineCapStyle`/`NSLineJoinStyle` (`NSUInteger`, `'Q'`). The
+                // numeric values are identical (butt/miter=0, round=1,
+                // square/bevel=2) — only the integer width/signedness differs —
+                // so widen to `usize` on macOS. objc2's msg_send encoding check
+                // requires the exact type; the shim can't absorb it because an
+                // override must match `NSBezierPath`'s `'Q'` signature.
+                #[cfg(target_os = "macos")]
+                unsafe {
+                    let _: () =
+                        msg_send![&bezier, setLineCapStyle: cg_line_cap(stroke.cap) as usize];
+                    let _: () =
+                        msg_send![&bezier, setLineJoinStyle: cg_line_join(stroke.join) as usize];
+                }
+                #[cfg(not(target_os = "macos"))]
+                unsafe {
+                    let _: () = msg_send![&bezier, setLineCapStyle: cg_line_cap(stroke.cap)];
+                    let _: () = msg_send![&bezier, setLineJoinStyle: cg_line_join(stroke.join)];
+                }
                 let _: () = unsafe { msg_send![&bezier, setMiterLimit: stroke.miter_limit as CGFloat] };
                 // Gradient strokes are approximated by their first stop color
                 // (CoreGraphics has no direct gradient-stroke; clipping to a

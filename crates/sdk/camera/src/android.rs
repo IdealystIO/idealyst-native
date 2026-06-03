@@ -39,7 +39,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use futures_channel::oneshot;
-use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
+use jni::objects::{JByteBuffer, JClass, JObject, JString, JValue};
 use jni::sys::{jint, jlong};
 use jni::{JNIEnv, JavaVM};
 
@@ -299,18 +299,26 @@ pub extern "system" fn Java_io_idealyst_camera_RustCamera2Helper_nativeError(
     }
 }
 
-/// `RustCamera2Helper.nativeFrame` — one converted frame. `data` is
-/// tightly-packed top-down `RGBA8` of `width * height * 4` bytes. Delivered
-/// on the shim's ImageReader handler thread.
+/// `RustCamera2Helper.nativeFrameDirect` — one converted frame in a
+/// REUSED direct `ByteBuffer`. `buffer` holds tightly-packed top-down
+/// `RGBA8` of `width * height * 4` bytes in off-heap memory the Kotlin
+/// side reuses across frames; we read it ZERO-COPY via
+/// `GetDirectBufferAddress` — no `byte[]` marshal across JNI and no
+/// per-frame Rust `Vec` allocation (the old `convert_byte_array` path
+/// did both, ~8 MB/frame each at 1080p). Delivered on the shim's
+/// ImageReader handler thread.
 ///
 /// # Safety
-/// Called by the JVM with a valid `env`/`class`; `data` is a Java `byte[]`.
+/// Called by the JVM with a valid `env`/`class`; `buffer` is a direct
+/// `java.nio.ByteBuffer` that stays alive and unmodified for the
+/// duration of this synchronous call (the Kotlin side only reuses it
+/// after `nativeFrameDirect` returns).
 #[no_mangle]
-pub extern "system" fn Java_io_idealyst_camera_RustCamera2Helper_nativeFrame(
+pub extern "system" fn Java_io_idealyst_camera_RustCamera2Helper_nativeFrameDirect(
     env: JNIEnv,
     _class: JClass,
     token: jlong,
-    data: JByteArray,
+    buffer: JByteBuffer,
     width: jint,
     height: jint,
 ) {
@@ -326,16 +334,27 @@ pub extern "system" fn Java_io_idealyst_camera_RustCamera2Helper_nativeFrame(
             return;
         };
 
-        let bytes = match env.convert_byte_array(&data) {
-            Ok(b) => b,
-            Err(_) => return,
+        let needed = (width as usize) * (height as usize) * 4;
+        let addr = match env.get_direct_buffer_address(&buffer) {
+            Ok(p) if !p.is_null() => p,
+            _ => return,
         };
+        // Guard the read against a short buffer (a malformed frame); the
+        // capacity query is cheap and keeps the `from_raw_parts` in bounds.
+        if env.get_direct_buffer_capacity(&buffer).unwrap_or(0) < needed {
+            return;
+        }
+        // SAFETY: `addr` points at the off-heap region of a live direct
+        // ByteBuffer whose capacity we just checked is >= `needed`; we read
+        // exactly `needed` bytes during this synchronous call, before the
+        // Kotlin side reuses the buffer for the next frame.
+        let bytes = unsafe { std::slice::from_raw_parts(addr, needed) };
         // The shim's YUV→RGBA converter is the authority on packing; a
         // mismatch means a malformed frame `write_rgba8` will reject anyway.
-        writer.write_rgba8(width as u32, height as u32, &bytes);
+        writer.write_rgba8(width as u32, height as u32, bytes);
     }));
     if result.is_err() {
-        eprintln!("camera: panic in nativeFrame trampoline; aborting");
+        eprintln!("camera: panic in nativeFrameDirect trampoline; aborting");
         std::process::abort();
     }
 }
@@ -349,5 +368,5 @@ static KEEP_NATIVE_OPENED: extern "system" fn(JNIEnv, JClass, jlong) =
 static KEEP_NATIVE_ERROR: extern "system" fn(JNIEnv, JClass, jlong, jint, JString) =
     Java_io_idealyst_camera_RustCamera2Helper_nativeError;
 #[used]
-static KEEP_NATIVE_FRAME: extern "system" fn(JNIEnv, JClass, jlong, JByteArray, jint, jint) =
-    Java_io_idealyst_camera_RustCamera2Helper_nativeFrame;
+static KEEP_NATIVE_FRAME: extern "system" fn(JNIEnv, JClass, jlong, JByteBuffer, jint, jint) =
+    Java_io_idealyst_camera_RustCamera2Helper_nativeFrameDirect;

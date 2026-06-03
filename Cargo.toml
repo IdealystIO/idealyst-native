@@ -103,6 +103,7 @@ members = [
     "crates/sdk/camera",
     "crates/sdk/media-stream",
     "crates/sdk/media-writer",
+    "crates/sdk/file-export",
     "crates/sdk/credentials",
     "crates/sdk/biometrics",
     "crates/sdk/screen-recorder",
@@ -315,6 +316,7 @@ microphone = { path = "crates/sdk/microphone" }
 camera = { path = "crates/sdk/camera" }
 media-stream = { path = "crates/sdk/media-stream" }
 media-writer = { path = "crates/sdk/media-writer" }
+file-export = { path = "crates/sdk/file-export" }
 credentials = { path = "crates/sdk/credentials" }
 biometrics = { path = "crates/sdk/biometrics" }
 screen-recorder = { path = "crates/sdk/screen-recorder" }

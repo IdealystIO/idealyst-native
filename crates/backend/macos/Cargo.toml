@@ -74,6 +74,9 @@ objc2-app-kit = { version = "0.2", features = [
     "NSSlider",
     "NSSwitch",
     "NSProgressIndicator",
+    # NSWindowOrderingMode + NSBackingStoreType for the screen_recorder
+    # PrivateLayer overlay child-window (addChildWindow:ordered: + init backing).
+    "NSGraphics",
     "NSGraphicsContext",
     "NSTrackingArea",
     "NSCursor",

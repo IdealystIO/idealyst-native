@@ -34,6 +34,26 @@ use std::cell::RefCell;
 
 use crate::apple::{ApplePainter, CGContextRef};
 
+/// Opaque stand-in for CoreGraphics' `CGContext`, defined solely so a
+/// `*mut CGContextOpaque` carries the objc2 type-encoding `^{CGContext=}` —
+/// which is exactly what AppKit's runtime registers `-[NSGraphicsContext
+/// CGContext]` as returning. The painter works in `CGContextRef` (a
+/// `*mut c_void`, encoding `^v`); receiving the msg_send result as that type
+/// trips objc2's encoding verifier and SIGABRTs inside `drawRect:`. We receive
+/// into this typed pointer to satisfy the check, then cast to `CGContextRef`.
+#[repr(C)]
+struct CGContextOpaque {
+    _private: [u8; 0],
+}
+
+// SAFETY: `CGContextOpaque` is never instantiated — only `*mut CGContextOpaque`
+// is used, as the return type of a single msg_send. Its ref-encoding is the
+// pointer-to-struct form `^{CGContext=}` the AppKit method advertises.
+unsafe impl objc2::encode::RefEncode for CGContextOpaque {
+    const ENCODING_REF: objc2::encode::Encoding =
+        objc2::encode::Encoding::Pointer(&objc2::encode::Encoding::Struct("CGContext", &[]));
+}
+
 // ============================================================================
 // NSBezierPath shim — re-adds the UIKit-named selectors the shared painter
 // dispatches, mapping them onto AppKit's NSBezierPath equivalents.
@@ -201,13 +221,23 @@ impl IdealystCanvasMacView {
             return;
         };
         // `-[NSGraphicsContext CGContext]` is the AppKit analogue of
-        // `UIGraphicsGetCurrentContext()`.
-        let ctx: CGContextRef = unsafe { msg_send![&gc, CGContext] };
+        // `UIGraphicsGetCurrentContext()`. CRITICAL: AppKit's runtime registers
+        // this method as returning a TYPED `CGContextRef` (objc2 encoding
+        // `^{CGContext=}`), NOT a plain `void*` (`^v`). objc2's msg_send
+        // encoding check rejects a `*mut c_void`/`CGContextRef` return — and
+        // because `drawRect:` is a non-unwinding Obj-C callback, that mismatch
+        // aborts as a hard SIGABRT (the "no window on macOS" crash). So receive
+        // it into the `CGContextOpaque` typed pointer (which carries the
+        // `^{CGContext=}` encoding) and cast to the painter's `CGContextRef`
+        // (a `*mut c_void`) after. The iOS path avoids all this because its
+        // context comes from the `extern "C"` `UIGraphicsGetCurrentContext`
+        // (no msg_send encoding check).
+        let ctx: *mut CGContextOpaque = unsafe { msg_send![&gc, CGContext] };
         if ctx.is_null() {
             return;
         }
         let scene = self.ivars().scene.borrow();
-        painter().paint_scene(ctx, &scene);
+        painter().paint_scene(ctx as CGContextRef, &scene);
     }
 }
 
@@ -217,50 +247,28 @@ impl IdealystCanvasMacView {
 
 /// Register the macOS canvas renderer against a `MacosBackend`.
 pub fn register(backend: &mut MacosBackend) {
-    wbmac_trace("register: start");
     canvas_core::ensure_wire_serde();
-    wbmac_trace("register: ensure_wire_serde done");
     backend.register_external::<CanvasProps, _>(|props, b| build_canvas(props, b));
-    wbmac_trace("register: done");
-}
-
-fn wbmac_trace(msg: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/wbmac_trace.txt")
-    {
-        let _ = writeln!(f, "{msg}");
-    }
 }
 
 fn build_canvas(
     props: &std::rc::Rc<CanvasProps>,
     b: &mut MacosBackend,
 ) -> backend_macos::MacosNode {
-    wbmac_trace("build_canvas: start");
     let view = IdealystCanvasMacView::new(b.mtm());
-    wbmac_trace("build_canvas: view created");
     // Cast to NSView for layout registration; Obj-C dispatch still reaches
     // IdealystCanvasMacView's drawRect on the same pointer.
     let view_nsview: Retained<NSView> = unsafe { Retained::cast(view) };
     b.register_external_view(&view_nsview);
-    wbmac_trace("build_canvas: registered external view");
     let view_canvas: Retained<IdealystCanvasMacView> =
         unsafe { Retained::cast(view_nsview.clone()) };
 
     let view_for_effect = view_canvas.clone();
     let props_clone = props.clone();
-    wbmac_trace("build_canvas: before Effect::new");
     let _effect = Effect::new(move || {
-        wbmac_trace("build_canvas effect: run start");
         let scene = canvas_core::paint_scene(&props_clone);
-        wbmac_trace("build_canvas effect: paint_scene done");
         view_for_effect.install_scene(scene);
-        wbmac_trace("build_canvas effect: install_scene done");
     });
-    wbmac_trace("build_canvas: after Effect::new (returning node)");
 
     backend_macos::MacosNode::View(view_nsview)
 }

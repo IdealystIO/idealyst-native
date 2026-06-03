@@ -29,7 +29,7 @@ use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_app_kit::{NSColor, NSTextField, NSView};
-use objc2_foundation::{CGFloat, CGRect, CGSize, MainThreadMarker, NSObject, NSString};
+use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker, NSObject, NSString};
 
 use backend_apple_core::color::parse_color;
 
@@ -116,6 +116,19 @@ pub struct MacosBackend {
             std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<MacosBackend>>>,
         >,
     >,
+    /// screen_recorder `PrivateLayer` overlay windows, keyed by their
+    /// content view's pointer → the borderless `NSWindow` that hosts it.
+    /// Mirrors iOS's `detached_window_roots`. Two jobs:
+    ///   1. Keeps the `NSWindow` retained for the overlay's lifetime (a
+    ///      child window is otherwise only weakly held by its parent).
+    ///   2. `insert` / `clear_children` consult it to SKIP the native
+    ///      reparent: the External walker would otherwise yank the
+    ///      content view out of its own (capture-excludable) window and
+    ///      into the main recorded tree.
+    /// The content view is also registered as a Taffy root sized to the
+    /// window, so the layout pass lays the toolbar out inside it.
+    pub(crate) detached_window_roots:
+        HashMap<usize, Retained<objc2_app_kit::NSWindow>>,
 }
 
 // =========================================================================
@@ -233,6 +246,7 @@ impl MacosBackend {
             virtualizer_instances: HashMap::new(),
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
             nav_handler_instances: HashMap::new(),
+            detached_window_roots: HashMap::new(),
         }
     }
 
@@ -375,6 +389,232 @@ impl MacosBackend {
                 }
             }),
         );
+    }
+
+    /// Build the screen_recorder `PrivateLayer` overlay: a separate,
+    /// borderless `NSWindow` pinned above the app's window whose content view
+    /// is a recursive-passthrough `NSView`. The macOS analogue of
+    /// `IosBackend::create_private_layer_window`.
+    ///
+    /// ## Why a child window
+    ///
+    /// On iOS the trick is a second non-key `UIWindow` at a high
+    /// `windowLevel` (ReplayKit records only the key window). On macOS the
+    /// equivalent is a borderless **child** window added via
+    /// `addChildWindow:ordered:Above`: it tracks the parent window's moves +
+    /// Space changes for free and composites above it, so the toolbar stays
+    /// pinned over the app. ScreenCaptureKit exclusion is a *separate*
+    /// `SCContentFilter(excludingWindows:)` step (a later task); this method
+    /// only has to make the overlay show + be interactive, and REGISTER the
+    /// window so that future task can find it via
+    /// [`Self::private_layer_windows`].
+    ///
+    /// ## Layout
+    ///
+    /// The content view is registered in `view_to_layout` as a Taffy ROOT and
+    /// the `finish` layout pass computes every detached root at its window's
+    /// content size, so the content view fills the overlay and the author
+    /// positions the layer's controls inside it with normal flex/absolute
+    /// style — exactly like iOS.
+    ///
+    /// ## Passthrough
+    ///
+    /// The content view is a [`callbacks::PrivateLayerPassthroughView`]: its
+    /// `hitTest:` returns `nil` everywhere except over a real control or a
+    /// painted (non-clear) view, so clicks that miss the layer fall through to
+    /// the app window beneath — the app stays interactive (e.g. the canvas
+    /// stays drawable) everywhere except where the toolbar sits.
+    pub fn create_private_layer_window(&mut self) -> MacosNode {
+        let mtm = self.mtm;
+
+        // Resolve the host NSWindow + its content size. The host's
+        // `setContentView:` runs before render, so `host_root.window` is
+        // non-nil here (same guarantee the `toolbar` SDK relies on). We size
+        // the overlay to the host's content view bounds so the Taffy root that
+        // lays out the toolbar matches the app's drawable area.
+        let host_window: Option<Retained<objc2_app_kit::NSWindow>> =
+            self.host_root().and_then(|root| {
+                let win_ptr: *mut objc2_app_kit::NSWindow =
+                    unsafe { msg_send![root, window] };
+                if win_ptr.is_null() {
+                    None
+                } else {
+                    unsafe { Retained::retain(win_ptr) }
+                }
+            });
+
+        // Content rect in SCREEN coordinates (NSWindow init wants screen
+        // coords). Fall back to the host content view's frame size at a
+        // best-effort origin; if there's no host window the overlay still
+        // builds (it just never shows) so the External never blanks.
+        let content_rect: CGRect = match &host_window {
+            Some(win) => {
+                // `contentView.frame` in window base coords → convert to
+                // screen via the window's `convertRectToScreen:`-style
+                // `frame`/content inset. Simplest robust path: the window's
+                // `contentRectForFrameRect:` against its on-screen frame.
+                let win_frame: CGRect = unsafe { msg_send![win, frame] };
+                let content_rect: CGRect =
+                    unsafe { msg_send![win, contentRectForFrameRect: win_frame] };
+                content_rect
+            }
+            None => CGRect {
+                origin: CGPoint { x: 0.0, y: 0.0 },
+                size: CGSize { width: 800.0, height: 600.0 },
+            },
+        };
+
+        // The borderless overlay window. Borderless + clear background +
+        // non-opaque + no shadow so the app shows through the passthrough
+        // regions. `defer: false` so the window backing is created up front
+        // (it's about to be shown as a child window).
+        let window: Retained<objc2_app_kit::NSWindow> = unsafe {
+            let alloc = mtm.alloc::<objc2_app_kit::NSWindow>();
+            objc2_app_kit::NSWindow::initWithContentRect_styleMask_backing_defer(
+                alloc,
+                content_rect,
+                objc2_app_kit::NSWindowStyleMask::Borderless,
+                objc2_app_kit::NSBackingStoreType::NSBackingStoreBuffered,
+                false,
+            )
+        };
+        let clear = unsafe { NSColor::clearColor() };
+        window.setBackgroundColor(Some(&clear));
+        window.setOpaque(false);
+        window.setHasShadow(false);
+        // Don't pull it into AppKit's "release on close" pool — we own the
+        // `Retained` in `detached_window_roots` and release it ourselves.
+        unsafe { window.setReleasedWhenClosed(false) };
+
+        // Content view = recursive-passthrough flipped NSView, sized to the
+        // window's content rect. `setContentView:` makes AppKit own its
+        // layout/resize; the Taffy pass additionally drives its frame.
+        let content: Retained<NSView> = {
+            let v = callbacks::PrivateLayerPassthroughView::new(mtm);
+            Retained::into_super(v)
+        };
+        let local_bounds = CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: content_rect.size,
+        };
+        let _: () = unsafe { msg_send![&content, setFrame: local_bounds] };
+        // flexibleWidth (2) | flexibleHeight (16) so it tracks the window even
+        // before the next Taffy pass writes a frame.
+        let _: () = unsafe { msg_send![&content, setAutoresizingMask: 0x12u64] };
+        window.setContentView(Some(&content));
+
+        // Pin above the host window as a child window (tracks the parent's
+        // moves + Spaces; composites above it). If there's no host window we
+        // still order it onto the screen so the toolbar is at least visible.
+        match &host_window {
+            Some(host) => unsafe {
+                host.addChildWindow_ordered(
+                    &window,
+                    objc2_app_kit::NSWindowOrderingMode::NSWindowAbove,
+                );
+            },
+            None => {
+                window.orderFront(None);
+            }
+        }
+
+        // Register the content view as a Taffy root + detached window root so
+        // the layout pass sizes it and `insert` skips its reparent. The
+        // window is retained on the entry so it lives as long as the layer.
+        self.register_external_view(&content);
+        let key = &*content as *const NSView as usize;
+        self.detached_window_roots.insert(key, window);
+
+        // Lay the new detached root out immediately against the window size —
+        // it never enters the main tree, so `finish`'s host-root compute won't
+        // touch it unless we kick a pass. The host re-invokes `finish` after
+        // the External's children are inserted; that pass (see the detached-
+        // root loop in `finish`) recomputes it at the right size.
+        self.layout_detached_root(key, content_rect.size);
+
+        MacosNode::View(content)
+    }
+
+    /// Tear down a `PrivateLayer` overlay created by
+    /// [`Self::create_private_layer_window`]. Removes it from the registries,
+    /// orders it off the screen, and drops the Taffy node so the next layout
+    /// pass doesn't lay out a detached subtree. Mirrors
+    /// `IosBackend::release_private_layer_window`.
+    pub fn release_private_layer_window(&mut self, node: &MacosNode) {
+        let key = node.view_key();
+        let Some(window) = self.detached_window_roots.remove(&key) else {
+            return;
+        };
+        // Detach from the parent so AppKit stops tracking it, then order out.
+        let parent: Option<Retained<objc2_app_kit::NSWindow>> =
+            unsafe { window.parentWindow() };
+        if let Some(parent) = parent {
+            unsafe { parent.removeChildWindow(&window) };
+        }
+        window.orderOut(None);
+        if let Some((_, layout_node)) = self.view_to_layout.remove(&key) {
+            self.layout.remove_node(layout_node);
+        }
+    }
+
+    /// Compute layout for one detached (private-layer) root against `size` and
+    /// apply the resulting frames to the views inside that subtree. Detached
+    /// roots never enter the main tree, so the host-root `finish` pass doesn't
+    /// reach them; `finish` calls this for each registered detached root, and
+    /// `create_private_layer_window` calls it once on creation.
+    pub(crate) fn layout_detached_root(&mut self, root_key: usize, size: CGSize) {
+        let w = size.width as f32;
+        let h = size.height as f32;
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let Some(root_layout) = self.view_to_layout.get(&root_key).map(|(_, n)| *n) else {
+            return;
+        };
+        self.layout.compute(root_layout, w, h);
+
+        // Apply frames to every view in this detached subtree. Collect the
+        // Taffy nodes reachable from the root (BFS over `children_of`), then
+        // write each corresponding registered view's frame — the same per-view
+        // frame-write the host pass does, scoped to the detached tree so we
+        // don't disturb the main (recorded) tree's frames or transforms.
+        let mut subtree: std::collections::HashSet<runtime_layout::LayoutNode> =
+            std::collections::HashSet::new();
+        let mut stack = vec![root_layout];
+        while let Some(n) = stack.pop() {
+            if subtree.insert(n) {
+                stack.extend(self.layout.children_of(n));
+            }
+        }
+        let snapshot: Vec<(usize, runtime_layout::LayoutNode)> = self
+            .view_to_layout
+            .iter()
+            .filter(|(_, (_, n))| subtree.contains(n))
+            .map(|(k, (_, n))| (*k, *n))
+            .collect();
+        for (key, layout_node) in snapshot {
+            let frame = self.layout.frame_of(layout_node);
+            let Some((view, _)) = self.view_to_layout.get(&key) else {
+                continue;
+            };
+            let rect = CGRect {
+                origin: CGPoint { x: frame.x as f64, y: frame.y as f64 },
+                size: CGSize {
+                    width: frame.width as f64,
+                    height: frame.height as f64,
+                },
+            };
+            let _: () = unsafe { msg_send![&**view, setFrame: rect] };
+            gradient::sync_gradient_sublayer(view);
+        }
+    }
+
+    /// The registered `PrivateLayer` overlay `NSWindow`s. The future
+    /// ScreenCaptureKit capture path passes these to
+    /// `SCContentFilter(excludingWindows:)` so the overlay is omitted from the
+    /// recording (the macOS analogue of iOS's non-key-window exclusion).
+    pub fn private_layer_windows(&self) -> Vec<Retained<objc2_app_kit::NSWindow>> {
+        self.detached_window_roots.values().cloned().collect()
     }
 }
 
@@ -644,6 +884,29 @@ impl Backend for MacosBackend {
             ),
         );
         node
+    }
+
+    fn install_touch_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::TouchHandler,
+    ) {
+        // Every `create_view` mints a `FlippedView`, which translates
+        // `mouseDown/Dragged/Up` into the handler (see `view.rs`). Other node
+        // kinds (NSTextField labels, native controls) don't carry an `on_touch`
+        // slot, so the walker never calls us with them.
+        let MacosNode::View(view) = node else {
+            return;
+        };
+        let cls = objc2::class!(IdealystFlippedView);
+        let is_flipped: bool = unsafe { msg_send![&**view, isKindOfClass: cls] };
+        if !is_flipped {
+            return;
+        }
+        // SAFETY: just confirmed the dynamic class is `IdealystFlippedView`;
+        // its layout is `NSView` extended with our ivars, ABI-compatible here.
+        let flipped: &FlippedView = unsafe { &*(Retained::as_ptr(view) as *const FlippedView) };
+        flipped.set_handler(handler);
     }
 
     fn create_text(&mut self, content: &str, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
@@ -1370,6 +1633,20 @@ impl Backend for MacosBackend {
         let parent_view = parent.as_view();
         let child_view = child.as_view();
 
+        // Detached window root (screen_recorder private layer): the content
+        // view already lives in its OWN borderless overlay window. The
+        // External walker calls `insert(parent, external_node)` to splice the
+        // handler's returned node into the surrounding tree — but `addSubview`
+        // here would reparent the content view OUT of its overlay window and
+        // INTO the main (recorded/capturable) tree. Skip the native reparent;
+        // the root stays in its window. Its Taffy node remains registered
+        // (sized to the window by the detached-root pass in `finish`) and the
+        // walker's child-insert already populated it. Mirror of iOS.
+        let child_key = child_view as *const NSView as usize;
+        if self.detached_window_roots.contains_key(&child_key) {
+            return;
+        }
+
         // ScrollView routing: if the framework's logical parent
         // is an NSScrollView (created via `create_scroll_view`),
         // children mount inside its documentView so they
@@ -1442,6 +1719,18 @@ impl Backend for MacosBackend {
         for i in 0..count {
             let sub_ptr: *mut NSView = unsafe { msg_send![&copy, objectAtIndex: i] };
             if sub_ptr.is_null() {
+                continue;
+            }
+            // Detached window root (screen_recorder private layer): never
+            // detach an overlay content view that lives in its own borderless
+            // window. It isn't a subview of the recorded tree to begin with
+            // (its `insert` was skipped), but a reactive region rebuild that
+            // clears a shared parent must not pull it out of its window or
+            // unregister its Taffy root. Mirror of the `insert` skip + iOS.
+            if self
+                .detached_window_roots
+                .contains_key(&(sub_ptr as *const NSView as usize))
+            {
                 continue;
             }
             // Mirror iOS's clear_children Taffy sync (see
@@ -1906,11 +2195,16 @@ impl Backend for MacosBackend {
         node
     }
 
-    fn release_external(&mut self, _node: &Self::Node) {
-        // No per-external bookkeeping today. Future SDK leaves that
-        // hold instance state (KVO observers, CADisplayLink-equivalent,
-        // etc.) would clean up here, keyed by view pointer like
-        // portals do on iOS.
+    fn release_external(&mut self, node: &Self::Node) {
+        // Detached window root (screen_recorder private layer): tear down its
+        // borderless overlay window so it stops compositing when the layer
+        // unmounts. `release_private_layer_window` returns early for any node
+        // that isn't a registered detached root, so this is a cheap no-op for
+        // every other external. Mirrors iOS. Future SDK leaves that hold
+        // instance state would also clean up here, keyed by `view_key`.
+        if self.detached_window_roots.contains_key(&node.view_key()) {
+            self.release_private_layer_window(node);
+        }
     }
 
     fn finish(&mut self, root: Self::Node) {
@@ -2071,6 +2365,26 @@ impl Backend for MacosBackend {
             // correct here, post-layout. No-op for views with
             // identity transforms.
             animated::sync_transform_after_layout(view, &self.animated_states);
+        }
+
+        // Lay out every detached (screen_recorder private-layer) root. These
+        // live in their own borderless overlay windows and never enter the
+        // host tree, so the host-root compute above doesn't reach them — but
+        // the External walker has by now inserted their children (toolbar,
+        // preview). Compute each against its overlay window's content size so
+        // the toolbar fills + positions correctly inside its window.
+        let detached: Vec<(usize, CGSize)> = self
+            .detached_window_roots
+            .iter()
+            .map(|(key, window)| {
+                let frame: CGRect = unsafe { msg_send![&**window, frame] };
+                let content: CGRect =
+                    unsafe { msg_send![&**window, contentRectForFrameRect: frame] };
+                (*key, content.size)
+            })
+            .collect();
+        for (key, size) in detached {
+            self.layout_detached_root(key, size);
         }
     }
 

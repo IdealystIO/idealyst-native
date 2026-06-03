@@ -102,16 +102,30 @@ fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> GlobalRef {
 /// Bitmap + setImageBitmap). Called on the UI thread from the frame loop.
 fn show_frame(host: &GlobalRef, rgba: &[u8], width: u32, height: u32) {
     with_jni_env(|env| {
-        let Ok(arr) = env.byte_array_from_slice(rgba) else {
+        let needed = (width as usize) * (height as usize) * 4;
+        if rgba.len() < needed {
             return;
+        }
+        // Hand Kotlin a direct ByteBuffer that VIEWS our RGBA slice — no
+        // `byte[]` allocation and no Rust→JVM copy (the old
+        // `byte_array_from_slice` did both, ~8 MB/frame at 1080p). Kotlin
+        // copies straight into the Bitmap (`copyPixelsFromBuffer`)
+        // synchronously, before this call returns.
+        //
+        // SAFETY: `rgba` outlives this synchronous `showFrame` call; the
+        // direct buffer only aliases the slice for the call's duration, and
+        // Kotlin reads (never retains) it.
+        let buf = match unsafe { env.new_direct_byte_buffer(rgba.as_ptr() as *mut u8, needed) } {
+            Ok(b) => b,
+            Err(_) => return,
         };
         let _ = env.call_static_method(
             SINK,
             "showFrame",
-            "(Landroid/widget/FrameLayout;[BII)V",
+            "(Landroid/widget/FrameLayout;Ljava/nio/ByteBuffer;II)V",
             &[
                 JValue::Object(host.as_obj()),
-                JValue::Object(&JObject::from(arr)),
+                JValue::Object(&buf),
                 JValue::Int(width as i32),
                 JValue::Int(height as i32),
             ],

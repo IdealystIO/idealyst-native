@@ -36,6 +36,9 @@ pub struct KeystoreCredentials {
 }
 
 impl KeystoreCredentials {
+    /// Build a store scoped to `namespace`: derives the AndroidKeyStore key
+    /// alias and the SharedPreferences file name from it, so distinct
+    /// namespaces never share a wrapping key or a ciphertext blob.
     pub fn new(namespace: &str) -> Self {
         Self {
             alias: format!("idealyst.credentials.{namespace}"),

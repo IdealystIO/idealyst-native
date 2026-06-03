@@ -24,12 +24,33 @@ pub(crate) async fn start(
 #[allow(dead_code)]
 pub(crate) struct Recording;
 
-/// Install the `PrivateLayer` external handler — a no-op on this target
-/// (no capture-exclusion mechanism, and these backends don't expose an
-/// `ExternalRegistry` the SDK can reach generically). Generic over
-/// [`Backend`](runtime_core::Backend) so author code can call
-/// `screen_recorder::register(&mut backend)` unconditionally; the
-/// framework's External placeholder renders if a `PrivateLayer` is
-/// actually mounted, making the unbound layer obvious. macOS's
-/// `SCContentFilter(excludingWindows:)` exclusion is a later addition.
-pub fn register<B: runtime_core::Backend>(_backend: &mut B) {}
+// ===========================================================================
+// Private layer — borderless overlay window above the app window.
+// ===========================================================================
+
+use backend_macos::MacosBackend;
+
+/// Install the `PrivateLayer` external handler against a `MacosBackend`.
+///
+/// The handler asks the backend to build a separate, borderless `NSWindow`
+/// (see `MacosBackend::create_private_layer_window`) and returns its content
+/// view. The framework's External walker then parents the layer's children
+/// (toolbar, recording preview) into that content view; the backend's
+/// `insert` / `clear_children` skip reparenting it into the main tree because
+/// the content view is registered as a detached window root.
+///
+/// The overlay is added as a CHILD window above the app window so it tracks
+/// the app's moves + Spaces and composites on top, and its passthrough
+/// `hitTest:` lets clicks fall through to the app everywhere except over a
+/// real control — so the toolbar is interactive while the canvas beneath stays
+/// drawable. Mirrors `ios::register`.
+///
+/// Capture EXCLUSION (omitting the overlay from a ScreenCaptureKit recording
+/// via `SCContentFilter(excludingWindows:)`) is a separate, later task; the
+/// backend already registers every overlay window so that task can enumerate
+/// them via `MacosBackend::private_layer_windows`.
+pub fn register(backend: &mut MacosBackend) {
+    backend.register_external::<crate::PrivateLayerProps, _>(|_props, b| {
+        b.create_private_layer_window()
+    });
+}

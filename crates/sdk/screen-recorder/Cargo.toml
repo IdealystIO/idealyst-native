@@ -120,6 +120,15 @@ futures-channel = "0.3"
 # `AndroidBackend::create_private_layer_window` (lib name `backend_android`).
 backend-android-mobile = { workspace = true }
 
+# macOS: capture (ScreenCaptureKit) is still a stub, but the private-layer
+# `register` handler is real — it builds a capture-excludable borderless
+# overlay window through `MacosBackend::create_private_layer_window`, so it
+# names the concrete backend type (same shape as iOS/Android). The window
+# construction + passthrough hit-test all live in `backend-macos`; this SDK
+# only calls the one backend method, so it needs no objc2-app-kit features.
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
 # The Kotlin shim + foreground service that drive MediaProjection capture and
 # trampoline frames back to the native exports in android.rs. `idealyst run
 # android` discovers and compiles these from here, like the `camera` SDK's

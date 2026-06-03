@@ -21,7 +21,7 @@ import java.util.concurrent.ConcurrentHashMap
  * SDK. Rust calls [open] with a `token` identifying the awaiting native
  * stream; the shim opens the camera, streams `YUV_420_888` frames, converts
  * each to tightly-packed top-down `RGBA8`, and trampolines them back through
- * [nativeFrame]. Lifecycle (success / failure) goes through [nativeOpened] /
+ * [nativeFrameDirect]. Lifecycle (success / failure) goes through [nativeOpened] /
  * [nativeError]. [close] tears the session down.
  *
  * Camera2 is callback-driven and the open must be issued on a looper thread,
@@ -52,6 +52,14 @@ object RustCamera2Helper {
         // frames reach the FrameWriter — the Android analog of the iOS
         // AVCaptureConnection.videoOrientation fix.
         var sensorOrientation: Int = 0
+        // Reused direct RGBA output buffer, allocated once per session
+        // (re-sized only if the frame dimensions change). Converting into
+        // it and handing it to `nativeFrameDirect` means each frame neither
+        // allocates a Java `ByteArray` nor copies across the JNI boundary —
+        // Rust reads the off-heap region zero-copy via
+        // `GetDirectBufferAddress`. At 1080p30 this drops ~480 MB/s of
+        // per-frame heap allocation (Java byte[] + Rust Vec) to zero.
+        var directBuf: java.nio.ByteBuffer? = null
     }
 
     private val sessions = ConcurrentHashMap<Long, Session>()
@@ -125,12 +133,21 @@ object RustCamera2Helper {
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
                 val rot = session.sensorOrientation
-                val rgba = yuv420ToRgba(image, rot)
                 // 90°/270° rotation swaps the frame's width and height.
                 val swap = rot == 90 || rot == 270
                 val outW = if (swap) image.height else image.width
                 val outH = if (swap) image.width else image.height
-                nativeFrame(token, rgba, outW, outH)
+                val needed = outW * outH * 4
+                // Reuse (or first-allocate / resize) the direct output
+                // buffer, then convert straight into its off-heap memory.
+                var buf = session.directBuf
+                if (buf == null || buf.capacity() != needed) {
+                    buf = java.nio.ByteBuffer.allocateDirect(needed)
+                    session.directBuf = buf
+                }
+                buf.clear()
+                yuv420ToRgba(image, rot, buf)
+                nativeFrameDirect(token, buf, outW, outH)
             } catch (_: Throwable) {
                 // Drop the frame; never throw into the listener.
             } finally {
@@ -281,13 +298,17 @@ object RustCamera2Helper {
      * replace this without touching the Rust side.
      *
      * For 90°/270° the output is `height × width` (dimensions swapped); the
-     * caller emits the swapped size to [nativeFrame]. Like the iOS fix this
+     * caller emits the swapped size to [nativeFrameDirect]. Like the iOS fix this
      * assumes a portrait device and does not mirror the front camera.
      */
-    private fun yuv420ToRgba(image: Image, rotation: Int): ByteArray {
+    // Converts `image` (YUV_420_888) to tightly-packed top-down RGBA8,
+    // rotated by `rotation`, writing directly into `out` (a cleared direct
+    // ByteBuffer of `outW * outH * 4` bytes). Indexed `put`s mirror the
+    // indexed `get`s already used to read the YUV planes (which are
+    // themselves direct buffers), so there's no new access-cost class.
+    private fun yuv420ToRgba(image: Image, rotation: Int, out: java.nio.ByteBuffer) {
         val width = image.width
         val height = image.height
-        val out = ByteArray(width * height * 4)
         // Output row stride (in pixels): swapped for 90°/270°.
         val outW = if (rotation == 90 || rotation == 270) height else width
 
@@ -336,13 +357,12 @@ object RustCamera2Helper {
                 }
                 val dst = (dRow * outW + dCol) * 4
 
-                out[dst] = r.toByte()
-                out[dst + 1] = g.toByte()
-                out[dst + 2] = b.toByte()
-                out[dst + 3] = 255.toByte()
+                out.put(dst, r.toByte())
+                out.put(dst + 1, g.toByte())
+                out.put(dst + 2, b.toByte())
+                out.put(dst + 3, 255.toByte())
             }
         }
-        return out
     }
 
     @JvmStatic
@@ -352,5 +372,10 @@ object RustCamera2Helper {
     private external fun nativeError(token: Long, code: Int, message: String?)
 
     @JvmStatic
-    private external fun nativeFrame(token: Long, data: ByteArray, width: Int, height: Int)
+    private external fun nativeFrameDirect(
+        token: Long,
+        buffer: java.nio.ByteBuffer,
+        width: Int,
+        height: Int,
+    )
 }

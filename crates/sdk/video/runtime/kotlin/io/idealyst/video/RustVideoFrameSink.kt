@@ -31,10 +31,14 @@ object RustVideoFrameSink {
         )
 
     /** Show one tightly-packed RGBA8 frame in the host's stream ImageView,
-     *  creating the ImageView on first use. */
+     *  creating the ImageView on first use. `rgba` is a direct ByteBuffer the
+     *  Rust side hands over zero-copy (it views Rust-owned memory for the
+     *  duration of this synchronous call); we copy out of it into the Bitmap
+     *  and never retain it. The Bitmap is reused across frames when the
+     *  dimensions match, so a steady stream allocates nothing per frame. */
     @JvmStatic
-    fun showFrame(host: FrameLayout, rgba: ByteArray, width: Int, height: Int) {
-        if (width <= 0 || height <= 0 || rgba.size < width * height * 4) return
+    fun showFrame(host: FrameLayout, rgba: ByteBuffer, width: Int, height: Int) {
+        if (width <= 0 || height <= 0 || rgba.capacity() < width * height * 4) return
         var image = host.findViewWithTag<View>(IMAGE_TAG) as? ImageView
         if (image == null) {
             image = ImageView(host.context)
@@ -42,10 +46,22 @@ object RustVideoFrameSink {
             image.scaleType = ImageView.ScaleType.FIT_CENTER
             host.addView(image, matchParent())
         }
+        val existing = (image.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+        val reusable = existing != null && !existing.isRecycled &&
+            existing.width == width && existing.height == height &&
+            existing.config == Bitmap.Config.ARGB_8888
         // Android's ARGB_8888 is RGBA in memory order, matching our frames.
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(rgba))
-        image.setImageBitmap(bitmap)
+        val bitmap = if (reusable) existing!! else
+            Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        rgba.rewind()
+        bitmap.copyPixelsFromBuffer(rgba)
+        if (reusable) {
+            // Same Bitmap object already on the ImageView — mutated in place,
+            // so force a redraw without rebuilding the drawable.
+            image.invalidate()
+        } else {
+            image.setImageBitmap(bitmap)
+        }
     }
 
     /** Get (creating if needed) the host's URL VideoView child. */

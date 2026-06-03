@@ -15,6 +15,7 @@ import android.util.DisplayMetrics
 import android.view.PixelCopy
 import android.view.WindowManager
 import io.idealyst.runtime.RustActivityResult
+import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -22,7 +23,7 @@ import java.util.concurrent.ConcurrentHashMap
  * to Rust for the `screen-recorder` SDK. Rust calls [start] with a `token`
  * identifying the awaiting native stream; the shim runs the consent →
  * foreground-service → capture flow and trampolines each captured frame
- * (tightly-packed top-down `RGBA8`) back through [nativeFrame]. Lifecycle
+ * (tightly-packed top-down `RGBA8`) back through [nativeFrameDirect]. Lifecycle
  * (success / failure / declined) goes through [nativeStarted] / [nativeError].
  * [stop] tears the session down.
  *
@@ -60,9 +61,11 @@ object RustScreenCaptureHelper {
         var reader: ImageReader? = null
         var thread: HandlerThread? = null
         var handler: Handler? = null
-        // Reusable tight-packed RGBA scratch sized width*height*4; reallocated
-        // only when the captured dimensions change.
-        var scratch: ByteArray? = null
+        // Reusable DIRECT RGBA output buffer sized width*height*4; reused
+        // across frames so a steady capture allocates nothing per frame, and
+        // Rust reads it zero-copy via GetDirectBufferAddress (no byte[] marshal,
+        // no Rust Vec). Re-allocated only when the captured dimensions change.
+        var directBuf: ByteBuffer? = null
         // Whether nativeStarted has already fired for this token, so a late
         // error after a successful start doesn't double-resolve the Rust
         // oneshot (which would be a no-op anyway, but keeps intent clear).
@@ -160,9 +163,15 @@ object RustScreenCaptureHelper {
                 val s = sessions[token]
                 if (s != null && s.running) {
                     if (result == PixelCopy.SUCCESS) {
-                        val buf = java.nio.ByteBuffer.allocate(dest.width * dest.height * 4)
+                        val needed = dest.width * dest.height * 4
+                        var buf = s.directBuf
+                        if (buf == null || buf.capacity() != needed) {
+                            buf = ByteBuffer.allocateDirect(needed)
+                            s.directBuf = buf
+                        }
+                        buf.clear()
                         dest.copyPixelsToBuffer(buf)
-                        nativeFrame(token, buf.array(), dest.width, dest.height)
+                        nativeFrameDirect(token, buf, dest.width, dest.height)
                     }
                     s.handler?.postDelayed({ pixelCopyFrame(token) }, PIXELCOPY_INTERVAL_MS)
                 }
@@ -259,9 +268,14 @@ object RustScreenCaptureHelper {
         reader.setOnImageAvailableListener({ r ->
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
-                val rgba = packRgba(session, image, width, height)
-                if (rgba != null) {
-                    nativeFrame(token, rgba, width, height)
+                val needed = width * height * 4
+                var buf = session.directBuf
+                if (buf == null || buf.capacity() != needed) {
+                    buf = ByteBuffer.allocateDirect(needed)
+                    session.directBuf = buf
+                }
+                if (packRgba(image, width, height, buf)) {
+                    nativeFrameDirect(token, buf, width, height)
                 }
             } catch (_: Throwable) {
                 // Drop the frame; never throw into the listener.
@@ -295,44 +309,46 @@ object RustScreenCaptureHelper {
     }
 
     /**
-     * Copy an `RGBA_8888` [image]'s `planes[0]` into a tightly-packed top-down
-     * `RGBA8` buffer of `width*height*4` bytes, honoring the plane's
-     * `rowStride`.
+     * Copy an `RGBA_8888` [image]'s `planes[0]` into [out] (a cleared direct
+     * ByteBuffer of `width*height*4` bytes) as tightly-packed top-down `RGBA8`,
+     * honoring the plane's `rowStride`. Returns false on an unexpected plane
+     * shape (caller skips the frame).
      *
      * RGBA_8888 ImageReader rows are padded for alignment: `rowStride` is
      * often larger than `width*4` (and `pixelStride` is 4). Copying the buffer
      * wholesale would interleave padding bytes into the image and shear it, so
      * we copy row-by-row, taking only `width*4` bytes per row and skipping the
-     * stride remainder. Returns null on an unexpected plane shape.
+     * stride remainder. The plane buffer is mutated (position/limit) per row,
+     * which is fine — it's the Image's own buffer, consumed once before close.
      */
-    private fun packRgba(session: Session, image: android.media.Image, width: Int, height: Int): ByteArray? {
+    private fun packRgba(image: android.media.Image, width: Int, height: Int, out: ByteBuffer): Boolean {
         val planes = image.planes
-        if (planes.isEmpty()) return null
+        if (planes.isEmpty()) return false
         val plane = planes[0]
         val rowStride = plane.rowStride
         val pixelStride = plane.pixelStride
-        if (pixelStride != 4) return null // not packed RGBA8 — bail rather than smear
+        if (pixelStride != 4) return false // not packed RGBA8 — bail rather than smear
 
         val rowBytes = width * 4
-        val out = session.scratch?.takeIf { it.size == rowBytes * height }
-            ?: ByteArray(rowBytes * height).also { session.scratch = it }
-
         val buffer = plane.buffer
+        out.clear()
         if (rowStride == rowBytes) {
             // No padding — a single bulk copy. Clamp to available bytes in
             // case the producer's buffer is exactly tight.
-            val n = minOf(out.size, buffer.remaining())
-            buffer.get(out, 0, n)
+            buffer.clear()
+            buffer.limit(minOf(rowBytes * height, buffer.capacity()))
+            out.put(buffer)
         } else {
             // Padded rows: copy width*4 bytes per row, skipping the padding.
-            var pos = 0
             for (row in 0 until height) {
-                buffer.position(row * rowStride)
-                buffer.get(out, pos, rowBytes)
-                pos += rowBytes
+                val start = row * rowStride
+                buffer.clear()
+                buffer.position(start)
+                buffer.limit(start + rowBytes)
+                out.put(buffer)
             }
         }
-        return out
+        return true
     }
 
     /** Primary-display metrics (pixels + densityDpi). */
@@ -399,5 +415,10 @@ object RustScreenCaptureHelper {
     private external fun nativeError(token: Long, code: Int, message: String?)
 
     @JvmStatic
-    private external fun nativeFrame(token: Long, data: ByteArray, width: Int, height: Int)
+    private external fun nativeFrameDirect(
+        token: Long,
+        buffer: ByteBuffer,
+        width: Int,
+        height: Int,
+    )
 }

@@ -387,6 +387,15 @@ pub use android::register;
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 static OPS: &dyn VideoOps = android::OPS;
 
+// Shared CoreGraphics RGBA→CGImage bridge for the Apple backends. The
+// stream-display path is byte-identical on iOS and macOS (pure
+// CoreGraphics), so both modules pull it from here.
+#[cfg(all(
+    any(target_os = "ios", target_os = "macos"),
+    not(target_arch = "wasm32")
+))]
+mod cg_image;
+
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 mod ios;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
@@ -394,10 +403,18 @@ pub use ios::register;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 static OPS: &dyn VideoOps = ios::OPS;
 
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+mod macos;
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+pub use macos::register;
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+static OPS: &dyn VideoOps = macos::OPS;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
+    target_os = "macos",
 )))]
 mod fallback {
     use runtime_core::Backend;
@@ -412,6 +429,7 @@ mod fallback {
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
+    target_os = "macos",
 )))]
 pub use fallback::register;
 
@@ -419,5 +437,6 @@ pub use fallback::register;
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
+    target_os = "macos",
 )))]
 static OPS: &dyn VideoOps = &UnsupportedOps;

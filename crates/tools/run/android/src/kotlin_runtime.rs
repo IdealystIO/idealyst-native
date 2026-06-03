@@ -138,6 +138,12 @@ const RUNTIME_KOTLIN_FILES: &[(&str, &str)] = &[
         ),
     ),
     (
+        "RustLayoutApply.kt",
+        include_str!(
+            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustLayoutApply.kt"
+        ),
+    ),
+    (
         "RustListAdapter.kt",
         include_str!(
             "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustListAdapter.kt"

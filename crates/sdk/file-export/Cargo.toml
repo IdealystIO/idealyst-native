@@ -1,0 +1,83 @@
+[package]
+name = "file-export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Save a file to a user-chosen location through the platform's own "save"
+# UI — the counterpart to `files` (app-private sandbox). Where `files` writes
+# to storage only the app sees, `file-export` hands a file to the *user's*
+# file system at a destination they pick, via the OS picker:
+#
+#   - iOS:     UIDocumentPickerViewController (export) — "Save to Files"
+#   - macOS:   NSSavePanel
+#   - Android: Storage Access Framework (ACTION_CREATE_DOCUMENT)
+#   - Windows: IFileSaveDialog
+#   - Linux:   xdg-desktop-portal FileChooser.SaveFile
+#   - web:     showSaveFilePicker(), with an <a download> Blob fallback
+#
+# A nice property: every one of these is user-initiated UI that grants access
+# to the chosen location, so this SDK needs NO storage permission on any
+# platform. The platform-agnostic surface (FileExport / SaveRequest / Source /
+# SaveOutcome / ExportError) lives here; one cfg-gated backend compiles per
+# target.
+
+[dependencies]
+thiserror = "1"
+
+# iOS / macOS: drive UIDocumentPickerViewController (iOS) / NSSavePanel (macOS)
+# through the Obj-C runtime, the same posture `camera`/`media-writer` take.
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSURL"] }
+block2 = "0.5"
+# Bridges the iOS document-picker delegate callback to async (oneshot), like
+# the camera/biometrics permission flows.
+futures-channel = "0.3"
+
+# Android: Storage Access Framework via a Kotlin shim that launches
+# ACTION_CREATE_DOCUMENT and routes the result back through the shared
+# `RustActivityResult` registry (same path screen-recorder's consent uses).
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+futures-channel = "0.3"
+
+# Web: showSaveFilePicker() (File System Access API) with an anchor-download
+# fallback for browsers without it (Safari/Firefox).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
+    "HtmlAnchorElement",
+    "HtmlElement",
+    "Element",
+] }
+
+# Windows: the native Save dialog (IFileSaveDialog) via the COM Shell API.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_Storage_FileSystem",
+] }
+windows-core = "0.58"
+
+# Linux: the desktop portal's FileChooser.SaveFile, the sandbox-friendly path
+# (same portal posture screen-recorder's Linux capture takes). `ashpd` wraps
+# the D-Bus portal protocol.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = "0.9"
+
+# The Kotlin shim driving the Storage Access Framework. `idealyst run android`
+# discovers and compiles it from here, like camera/media-writer.
+[package.metadata.idealyst.android]
+runtime_kotlin = ["runtime/kotlin/io/idealyst/fileexport/RustFileExport.kt"]

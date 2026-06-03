@@ -48,13 +48,16 @@ object RustMediaWriter {
         }
     }
 
+    // `rgba` / `pcm16` are direct ByteBuffers the Rust side hands over
+    // zero-copy (they view Rust-owned memory for this synchronous call); the
+    // encoder reads out of them and never retains them.
     @JvmStatic
-    fun writeVideo(token: Long, rgba: ByteArray, width: Int, height: Int, ptsUs: Long) {
+    fun writeVideo(token: Long, rgba: ByteBuffer, width: Int, height: Int, ptsUs: Long) {
         recorders[token]?.onVideo(rgba, width, height, ptsUs)
     }
 
     @JvmStatic
-    fun writeAudio(token: Long, pcm16: ByteArray, sampleRate: Int, channels: Int, ptsUs: Long) {
+    fun writeAudio(token: Long, pcm16: ByteBuffer, sampleRate: Int, channels: Int, ptsUs: Long) {
         recorders[token]?.onAudio(pcm16, sampleRate, channels, ptsUs)
     }
 
@@ -94,7 +97,7 @@ private class Recorder(
 
     // --- Video ---------------------------------------------------------------
 
-    fun onVideo(rgba: ByteArray, width: Int, height: Int, ptsUs: Long) {
+    fun onVideo(rgba: ByteBuffer, width: Int, height: Int, ptsUs: Long) {
         try {
             val codec = videoCodec ?: configureVideo(width, height)
             val index = codec.dequeueInputBuffer(0)
@@ -136,7 +139,7 @@ private class Recorder(
     /** BT.601 RGBA → YUV420, written into a (NV12 or I420) [MediaCodec.Image]. */
     private fun fillImageFromRgba(
         image: android.media.Image,
-        rgba: ByteArray,
+        rgba: ByteBuffer,
         width: Int,
         height: Int,
     ) {
@@ -155,9 +158,9 @@ private class Recorder(
         var i = 0
         for (y in 0 until height) {
             for (x in 0 until width) {
-                val r = rgba[i].toInt() and 0xff
-                val g = rgba[i + 1].toInt() and 0xff
-                val b = rgba[i + 2].toInt() and 0xff
+                val r = rgba.get(i).toInt() and 0xff
+                val g = rgba.get(i + 1).toInt() and 0xff
+                val b = rgba.get(i + 2).toInt() and 0xff
                 i += 4
                 val yy = (0.299 * r + 0.587 * g + 0.114 * b).toInt().coerceIn(0, 255)
                 yBuf.put(y * yRow + x, yy.toByte())
@@ -175,16 +178,18 @@ private class Recorder(
 
     // --- Audio ---------------------------------------------------------------
 
-    fun onAudio(pcm16: ByteArray, sampleRate: Int, channels: Int, ptsUs: Long) {
+    fun onAudio(pcm16: ByteBuffer, sampleRate: Int, channels: Int, ptsUs: Long) {
         try {
             val codec = audioCodec ?: configureAudio(sampleRate, channels)
             val index = codec.dequeueInputBuffer(0)
             if (index >= 0) {
                 val buf = codec.getInputBuffer(index)
                 if (buf != null) {
+                    pcm16.rewind()
+                    val size = pcm16.remaining()
                     buf.clear()
                     buf.put(pcm16)
-                    codec.queueInputBuffer(index, 0, pcm16.size, ptsUs, 0)
+                    codec.queueInputBuffer(index, 0, size, ptsUs, 0)
                 }
             }
             drain(codec, video = false, endOfStream = false)

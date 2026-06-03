@@ -183,8 +183,11 @@ pub(crate) fn construct_and_post_async_poll(
     handler: &JObject,
     id: u64,
 ) {
-    let class = env
-        .find_class("io/idealyst/runtime/RustAsyncPoll")
+    // `find_app_class` (not `env.find_class`): this runs on whatever thread
+    // the `TaskWaker` fired on — often a background worker — where a bare
+    // `find_class` resolves against the system classloader and can't see
+    // `io.idealyst.*`, aborting the process with `ClassNotFoundException`.
+    let class = crate::imp::find_app_class(env, "io/idealyst/runtime/RustAsyncPoll")
         .expect("RustAsyncPoll class missing — bundle the kotlin runtime");
     let runnable = env
         .new_object(&class, "(J)V", &[JValue::Long(id as jlong)])

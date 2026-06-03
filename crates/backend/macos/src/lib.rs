@@ -12,6 +12,13 @@ mod imp;
 #[cfg(not(target_os = "macos"))]
 mod stub;
 
+// Pure passthrough hit-test geometry for the screen_recorder PrivateLayer's
+// overlay window. Kept un-gated so its regression test (the recursion +
+// per-level coordinate conversion that decides whether a canvas click passes
+// through to the app window beneath) runs from any host; the objc traversal
+// that feeds it is macos-only. Mirrors the iOS `private_layer_hittest` module.
+mod private_layer_hittest;
+
 #[cfg(target_os = "macos")]
 pub use imp::{
     install_global_self, set_animated_color, set_animated_f32, with_global_backend,

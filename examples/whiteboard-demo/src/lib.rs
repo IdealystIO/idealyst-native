@@ -140,9 +140,7 @@ const PREVIEW_W: f32 = 140.0;
 const PREVIEW_H: f32 = 200.0;
 
 pub fn app() -> Element {
-    wbtrace("app: start");
     idea_ui::install_idea_theme(idea_ui::light_theme());
-    wbtrace("app: theme installed");
 
     // ---- State -----------------------------------------------------------
     let width: Signal<f32> = signal!(WIDTH_MEDIUM);
@@ -151,6 +149,20 @@ pub fn app() -> Element {
 
     let cam_on: Signal<bool> = signal!(false);
     let cam_stream: Signal<Option<MediaStream>> = signal!(None);
+
+    // TEMP (macOS verification): the toolbar (PrivateLayer) isn't built on
+    // macOS yet, so there's no camera button to toggle. Auto-open the camera at
+    // startup so the camera widget surfaces and the video display can be
+    // verified. Remove once the macOS toolbar can toggle it.
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+    {
+        cam_on.set(true);
+        runtime_core::driver::spawn_async(async move {
+            if let Ok(stream) = Camera::new().open(CameraConfig::default()).await {
+                cam_stream.set(Some(stream));
+            }
+        });
+    }
 
     let recording: Signal<bool> = signal!(false);
     let rec_stream: Signal<Option<MediaStream>> = signal!(None);
@@ -188,21 +200,9 @@ pub fn app() -> Element {
         position: Some(Position::Relative),
         ..Default::default()
     };
-    wbtrace("app: tree built, returning root");
     view(vec![canvas_surface, camera_widget, private_layer])
         .with_style(Rc::new(StyleSheet::r#static(fill_root)))
         .into_element()
-}
-
-fn wbtrace(msg: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/wbmac_trace.txt")
-    {
-        let _ = writeln!(f, "{msg}");
-    }
 }
 
 // ============================================================================
