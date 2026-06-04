@@ -120,13 +120,23 @@ futures-channel = "0.3"
 # `AndroidBackend::create_private_layer_window` (lib name `backend_android`).
 backend-android-mobile = { workspace = true }
 
-# macOS: capture (ScreenCaptureKit) is still a stub, but the private-layer
-# `register` handler is real — it builds a capture-excludable borderless
-# overlay window through `MacosBackend::create_private_layer_window`, so it
-# names the concrete backend type (same shape as iOS/Android). The window
-# construction + passthrough hit-test all live in `backend-macos`; this SDK
-# only calls the one backend method, so it needs no objc2-app-kit features.
+# macOS: capture via ScreenCaptureKit (`SCStream` + `SCContentFilter`),
+# driven through the Obj-C runtime (objc2 msg_send + a declared
+# `SCStreamOutput` delegate subclass), the same way the `camera` SDK drives
+# AVFoundation. No typed framework crate — `ScreenCaptureKit` is force-linked
+# with an in-source `#[link]` and we call the CoreMedia/CoreVideo C surface
+# for the CVPixelBuffer bytes. `block2`/`futures-channel` bridge the
+# `getShareableContent`/`startCapture` completion handlers to async.
+#
+# The private-layer `register` handler builds a capture-excludable borderless
+# overlay window through `MacosBackend::create_private_layer_window`, and the
+# capture path reads the overlay window ids back via
+# `backend_macos::private_layer_window_ids` for the SCContentFilter exclusion.
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSArray"] }
+block2 = "0.5"
+futures-channel = "0.3"
 backend-macos = { workspace = true }
 
 # The Kotlin shim + foreground service that drive MediaProjection capture and
@@ -142,9 +152,6 @@ runtime_kotlin = [
 # ---------------------------------------------------------------------------
 # Per-platform capture deps are added as each backend is implemented. The
 # planned dep set per remaining target, for reference when filling them in:
-#
-# [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
-# objc2, objc2-foundation, block2, dispatch2, futures-channel   # ScreenCaptureKit
 #
 # [target.'cfg(target_os = "windows")'.dependencies]
 # windows = { features = ["Graphics_Capture", "Graphics_DirectX_Direct3D11", ...] }

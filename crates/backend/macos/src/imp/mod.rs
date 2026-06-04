@@ -129,6 +129,13 @@ pub struct MacosBackend {
     /// window, so the layout pass lays the toolbar out inside it.
     pub(crate) detached_window_roots:
         HashMap<usize, Retained<objc2_app_kit::NSWindow>>,
+    /// Layout node of the top-of-tree root, stashed by `finish` so a
+    /// post-mount `schedule_layout_pass()` can recompute from it without
+    /// the `root: Node` argument `finish` receives. `finish` runs exactly
+    /// once at mount (the walker calls it after the build); reactive
+    /// Effects that resize a node afterwards have no `root` to hand us, so
+    /// we remember it here. `None` until the first `finish`.
+    pub(crate) root_layout: Option<runtime_layout::LayoutNode>,
 }
 
 // =========================================================================
@@ -138,9 +145,47 @@ pub struct MacosBackend {
 // wraps the backend in Rc<RefCell<>>.
 // =========================================================================
 
+/// Process-global registry of the `windowNumber`s of every live
+/// `PrivateLayer` overlay `NSWindow`. The `screen-recorder` SDK's
+/// ScreenCaptureKit capture path reads this (via [`private_layer_window_ids`])
+/// to match each id against an `SCWindow.windowID` and exclude the overlay
+/// from the recording — otherwise the recorded preview shows itself (a
+/// feedback mirror).
+///
+/// A *process-global* `Mutex<Vec<i64>>` rather than a `MacosBackend` field
+/// because the capture SDK is a separate crate that doesn't borrow the
+/// backend; it needs a stand-alone accessor it can call from its async
+/// `start`. `create_private_layer_window` inserts on build,
+/// `release_private_layer_window` removes on teardown, so the set always
+/// reflects the live overlays.
+///
+/// `windowNumber` is an `NSInteger` (isize); stored as `i64` to match
+/// `SCWindow.windowID`'s `CGWindowID` domain when the SDK compares them.
+static PRIVATE_LAYER_WINDOW_IDS: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
+
+/// The `windowNumber`s of every live `PrivateLayer` overlay window. The
+/// `screen-recorder` macOS capture backend passes these to
+/// `SCContentFilter(excludingWindows:)` (matched against
+/// `SCWindow.windowID`) so the overlay is omitted from the recording.
+/// Returns an empty vec when no overlay is mounted.
+pub fn private_layer_window_ids() -> Vec<i64> {
+    PRIVATE_LAYER_WINDOW_IDS
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default()
+}
+
 thread_local! {
     static MACOS_BACKEND_SELF: RefCell<Option<std::rc::Weak<RefCell<MacosBackend>>>> =
         const { RefCell::new(None) };
+
+    /// Coalescing flag for [`schedule_layout_pass`]: set when a deferred
+    /// layout pass is queued but not yet fired. A reactive batch that calls
+    /// `apply_style` on many resized nodes posts ONE pass, not N — the flag
+    /// is claimed by the first caller and cleared when the microtask runs.
+    /// Mirrors iOS's `LAYOUT_PASS_QUEUED`.
+    static LAYOUT_PASS_QUEUED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 
     /// Last viewport size mirrored into `runtime_core::set_viewport_size`, so
     /// `finish` schedules exactly one deferred mirror per actual change and
@@ -226,6 +271,52 @@ pub fn with_global_backend<F: FnOnce(&mut MacosBackend)>(f: F) {
     }
 }
 
+/// Queue a coalesced, deferred layout pass on the globally-installed backend.
+///
+/// `Backend::finish` lays the tree out once, at mount. Reactive Effects that
+/// resize a node afterwards (a `when`/reactive-style toggle growing a collapsed
+/// `0×0` box to its real size — e.g. the whiteboard-demo recording preview)
+/// push the new size into Taffy via `apply_style` but have no way to drive a
+/// recompute; the NSView keeps its stale frame and the change is invisible.
+/// This schedules `run_layout_pass_global` for the next main-loop turn so the
+/// updated Taffy tree is committed to the view hierarchy.
+///
+/// Coalesced via `LAYOUT_PASS_QUEUED`: a reactive batch touching N nodes posts
+/// exactly one pass. Deferred through `schedule_microtask` (libdispatch on
+/// macOS, same path as `finish`'s viewport mirror) so it runs *after* the
+/// current `apply_style` borrow releases — `with_global_backend`'s
+/// `try_borrow_mut` would otherwise bail while the framework still holds the
+/// backend.
+pub fn schedule_layout_pass() {
+    let should_post = LAYOUT_PASS_QUEUED
+        .with(|q| crate::layout_policy::claim_coalesced_pass(q));
+    if !should_post {
+        return;
+    }
+    runtime_core::schedule_microtask(|| {
+        // Clear the slot BEFORE running so a `schedule_layout_pass` arriving
+        // during the pass re-arms and fires afterward (post-layout state this
+        // pass couldn't have captured). Mirrors iOS's trampoline ordering.
+        LAYOUT_PASS_QUEUED
+            .with(|q| crate::layout_policy::release_coalesced_pass(q));
+        // libdispatch is C; a Rust panic unwinding into it is UB. Per the
+        // crash-loud policy, log + abort rather than let a half-applied
+        // reactive mutation keep running. Mirrors the iOS layout trampoline.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_global_backend(|b| b.run_layout_pass_global());
+        }));
+        if let Err(payload) = result {
+            let msg = payload
+                .downcast_ref::<String>()
+                .map(|s| s.as_str())
+                .or_else(|| payload.downcast_ref::<&'static str>().copied())
+                .unwrap_or("<non-string panic payload>");
+            eprintln!("[backend-macos] layout-pass microtask panic: {msg}");
+            std::process::abort();
+        }
+    });
+}
+
 // =========================================================================
 // Construction + host wiring
 // =========================================================================
@@ -247,6 +338,7 @@ impl MacosBackend {
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
             nav_handler_instances: HashMap::new(),
             detached_window_roots: HashMap::new(),
+            root_layout: None,
         }
     }
 
@@ -486,6 +578,14 @@ impl MacosBackend {
         // `Retained` in `detached_window_roots` and release it ourselves.
         unsafe { window.setReleasedWhenClosed(false) };
 
+        // Belt-and-suspenders capture exclusion: `NSWindowSharingNone` tells
+        // the window server this window's contents may not be read by another
+        // process / capture path. ScreenCaptureKit's `SCContentFilter`
+        // exclusion (driven by `screen-recorder`) is the primary mechanism;
+        // setting `sharingType` here means even a non-SCK capture (legacy
+        // `CGWindowListCreateImage`, AirPlay mirroring) skips the overlay too.
+        window.setSharingType(objc2_app_kit::NSWindowSharingType::NSWindowSharingNone);
+
         // Content view = recursive-passthrough flipped NSView, sized to the
         // window's content rect. `setContentView:` makes AppKit own its
         // layout/resize; the Taffy pass additionally drives its frame.
@@ -523,6 +623,16 @@ impl MacosBackend {
         // window is retained on the entry so it lives as long as the layer.
         self.register_external_view(&content);
         let key = &*content as *const NSView as usize;
+        // Record the overlay's `windowNumber` in the process-global registry so
+        // the `screen-recorder` capture backend can exclude it from a
+        // ScreenCaptureKit recording. Read here (after the window is fully
+        // built + ordered onto the screen) so `windowNumber` is assigned — an
+        // off-screen NSWindow reports 0 until it acquires a backing window
+        // number, which `addChildWindow:`/`orderFront:` above guarantees.
+        let window_number: isize = unsafe { window.windowNumber() };
+        if let Ok(mut ids) = PRIVATE_LAYER_WINDOW_IDS.lock() {
+            ids.push(window_number as i64);
+        }
         self.detached_window_roots.insert(key, window);
 
         // Lay the new detached root out immediately against the window size —
@@ -545,6 +655,13 @@ impl MacosBackend {
         let Some(window) = self.detached_window_roots.remove(&key) else {
             return;
         };
+        // Drop this overlay's id from the process-global capture-exclusion
+        // registry so a subsequent recording doesn't try to exclude a window
+        // number that no longer exists.
+        let window_number: isize = unsafe { window.windowNumber() };
+        if let Ok(mut ids) = PRIVATE_LAYER_WINDOW_IDS.lock() {
+            ids.retain(|&id| id != window_number as i64);
+        }
         // Detach from the parent so AppKit stops tracking it, then order out.
         let parent: Option<Retained<objc2_app_kit::NSWindow>> =
             unsafe { window.parentWindow() };
@@ -814,6 +931,138 @@ fn length_to_px(len: &runtime_core::Length) -> CGFloat {
 // =========================================================================
 // Backend trait implementation
 // =========================================================================
+
+// =========================================================================
+// Layout pass — shared mount + deferred post-mount recompute. Inherent (not
+// trait) methods so the trait impl below stays a contiguous block.
+// =========================================================================
+
+impl MacosBackend {
+    /// Recompute Taffy from `root_layout` against `(width, height)` and commit
+    /// every registered view's frame (plus gradient/corner-radius/transform
+    /// post-layout sync), then lay out the detached private-layer roots.
+    ///
+    /// Shared by `finish` (the one-time mount pass) and `run_layout_pass_global`
+    /// (the deferred post-mount pass scheduled by reactive `apply_style`). Pure
+    /// view-tree commit — the caller owns viewport derivation, root parenting,
+    /// and the reactive-viewport mirror.
+    pub(crate) fn compute_and_apply_layout(
+        &mut self,
+        root_layout: runtime_layout::LayoutNode,
+        width: f32,
+        height: f32,
+    ) {
+        self.layout.compute(root_layout, width, height);
+
+        // Apply frames to every registered view. We don't recurse
+        // through `NSView.subviews` because some views may not yet
+        // be attached at finish time (matches the iOS rationale).
+        let snapshot: Vec<(usize, runtime_layout::LayoutNode)> = self
+            .view_to_layout
+            .iter()
+            .map(|(k, (_, n))| (*k, *n))
+            .collect();
+        for (key, layout_node) in snapshot {
+            let frame = self.layout.frame_of(layout_node);
+            // The map's retained NSView is the source of truth for
+            // applying the frame — we keep that strong ref so the
+            // view is alive while we touch it.
+            let Some((view, _)) = self.view_to_layout.get(&key) else {
+                continue;
+            };
+            // Static percent translates (`transform: translate(50%, -50%)`
+            // from style rules) are applied as frame-origin offsets
+            // here rather than via layer.transform. Layer-backed
+            // NSViews don't honor pure-static transform translates
+            // reliably; baking them into the frame is unambiguous.
+            // See `animated::static_translate_offset` for details.
+            let (static_tx, static_ty) = animated::static_translate_offset(
+                view,
+                &self.animated_states,
+                frame.width,
+                frame.height,
+            );
+            let rect = CGRect {
+                origin: objc2_foundation::CGPoint {
+                    x: frame.x as f64 + static_tx,
+                    y: frame.y as f64 + static_ty,
+                },
+                size: CGSize {
+                    width: frame.width as f64,
+                    height: frame.height as f64,
+                },
+            };
+            let _: () = unsafe { msg_send![&**view, setFrame: rect] };
+            // Sync any gradient sublayer to the new bounds. CALayer
+            // autoresizingMask doesn't drive automatic sublayer
+            // resizing in practice — mirror the resize here. No-op
+            // when the view has no `idealyst_gradient` sublayer.
+            gradient::sync_gradient_sublayer(view);
+            // Re-apply a deferred cornerRadius (stashed when apply_style
+            // ran before bounds were known). Clamps to half the
+            // smaller bound — required so `border-radius: 999px` on a
+            // percent-sized view ("make it a circle") actually
+            // renders instead of blanking the layer. No-op when no
+            // deferred radius was stashed.
+            sync_corner_radius(view);
+            // Re-resolve any percent transforms against the new
+            // bounds. The sun glare's wrapper uses `translate(50%,
+            // -50%)` to offset itself off-screen; that resolves to
+            // 0 at apply-style time (bounds 0×0) and only becomes
+            // correct here, post-layout. No-op for views with
+            // identity transforms.
+            animated::sync_transform_after_layout(view, &self.animated_states);
+        }
+
+        // Lay out every detached (screen_recorder private-layer) root. These
+        // live in their own borderless overlay windows and never enter the
+        // host tree, so the host-root compute above doesn't reach them — but
+        // the External walker has by now inserted their children (toolbar,
+        // preview). Compute each against its overlay window's content size so
+        // the toolbar fills + positions correctly inside its window.
+        let detached: Vec<(usize, CGSize)> = self
+            .detached_window_roots
+            .iter()
+            .map(|(key, window)| {
+                let frame: CGRect = unsafe { msg_send![&**window, frame] };
+                let content: CGRect =
+                    unsafe { msg_send![&**window, contentRectForFrameRect: frame] };
+                (*key, content.size)
+            })
+            .collect();
+        for (key, size) in detached {
+            self.layout_detached_root(key, size);
+        }
+    }
+
+    /// Deferred post-mount layout pass: recompute from the stashed root against
+    /// the host's *current* bounds and re-commit frames. Scheduled (coalesced)
+    /// by [`schedule_layout_pass`] when a reactive `apply_style` resizes an
+    /// already-mounted node — the case `finish` (mount-only) never revisits.
+    /// Bails quietly before the first `finish` (no root yet) or when the host
+    /// has no usable bounds.
+    pub(crate) fn run_layout_pass_global(&mut self) {
+        let Some(root_layout) = self.root_layout else {
+            return;
+        };
+        let Some(host) = self.host_root.clone() else {
+            return;
+        };
+        let mut bounds: CGRect = unsafe { msg_send![&host, bounds] };
+        if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+            let frame: CGRect = unsafe { msg_send![&host, frame] };
+            bounds = frame;
+        }
+        if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+            return;
+        }
+        self.compute_and_apply_layout(
+            root_layout,
+            bounds.size.width as f32,
+            bounds.size.height as f32,
+        );
+    }
+}
 
 impl Backend for MacosBackend {
     type Node = MacosNode;
@@ -1797,6 +2046,24 @@ impl Backend for MacosBackend {
             }
             MacosNode::View(_) => {}
         }
+
+        // Post-mount layout commit. `finish` lays the tree out exactly once, at
+        // mount. A reactive `apply_style` that changes a layout property
+        // afterward (size / position / flex — e.g. the whiteboard-demo
+        // recording-preview box growing from a collapsed 0×0 to its real size
+        // when Record is pressed) updated Taffy via `set_style` above, but
+        // nothing else drives a recompute, so the NSView keeps its stale frame
+        // and the change is invisible. If this view is already in a window —
+        // i.e. we're past the initial build, where views are still floating and
+        // the upcoming `finish` will lay them out — schedule a coalesced pass to
+        // commit the new frames. The window check is what keeps the initial
+        // build from posting N redundant passes. Mirrors the Android
+        // dynamic-update fix.
+        let host_window: *mut objc2_app_kit::NSWindow =
+            unsafe { msg_send![view, window] };
+        if crate::layout_policy::reactive_change_needs_layout_pass(!host_window.is_null()) {
+            schedule_layout_pass();
+        }
     }
 
     fn set_animated_f32(
@@ -2304,88 +2571,11 @@ impl Backend for MacosBackend {
         let Some(root_layout) = self.layout_of(root_view) else {
             return;
         };
-        self.layout
-            .compute(root_layout, viewport.width, viewport.height);
-
-        // Apply frames to every registered view. We don't recurse
-        // through `NSView.subviews` because some views may not yet
-        // be attached at finish time (matches the iOS rationale).
-        let snapshot: Vec<(usize, runtime_layout::LayoutNode)> = self
-            .view_to_layout
-            .iter()
-            .map(|(k, (_, n))| (*k, *n))
-            .collect();
-        for (key, layout_node) in snapshot {
-            let frame = self.layout.frame_of(layout_node);
-            // The map's retained NSView is the source of truth for
-            // applying the frame — we keep that strong ref so the
-            // view is alive while we touch it.
-            let Some((view, _)) = self.view_to_layout.get(&key) else {
-                continue;
-            };
-            // Static percent translates (`transform: translate(50%, -50%)`
-            // from style rules) are applied as frame-origin offsets
-            // here rather than via layer.transform. Layer-backed
-            // NSViews don't honor pure-static transform translates
-            // reliably; baking them into the frame is unambiguous.
-            // See `animated::static_translate_offset` for details.
-            let (static_tx, static_ty) = animated::static_translate_offset(
-                view,
-                &self.animated_states,
-                frame.width,
-                frame.height,
-            );
-            let rect = CGRect {
-                origin: objc2_foundation::CGPoint {
-                    x: frame.x as f64 + static_tx,
-                    y: frame.y as f64 + static_ty,
-                },
-                size: CGSize {
-                    width: frame.width as f64,
-                    height: frame.height as f64,
-                },
-            };
-            let _: () = unsafe { msg_send![&**view, setFrame: rect] };
-            // Sync any gradient sublayer to the new bounds. CALayer
-            // autoresizingMask doesn't drive automatic sublayer
-            // resizing in practice — mirror the resize here. No-op
-            // when the view has no `idealyst_gradient` sublayer.
-            gradient::sync_gradient_sublayer(view);
-            // Re-apply a deferred cornerRadius (stashed when apply_style
-            // ran before bounds were known). Clamps to half the
-            // smaller bound — required so `border-radius: 999px` on a
-            // percent-sized view ("make it a circle") actually
-            // renders instead of blanking the layer. No-op when no
-            // deferred radius was stashed.
-            sync_corner_radius(view);
-            // Re-resolve any percent transforms against the new
-            // bounds. The sun glare's wrapper uses `translate(50%,
-            // -50%)` to offset itself off-screen; that resolves to
-            // 0 at apply-style time (bounds 0×0) and only becomes
-            // correct here, post-layout. No-op for views with
-            // identity transforms.
-            animated::sync_transform_after_layout(view, &self.animated_states);
-        }
-
-        // Lay out every detached (screen_recorder private-layer) root. These
-        // live in their own borderless overlay windows and never enter the
-        // host tree, so the host-root compute above doesn't reach them — but
-        // the External walker has by now inserted their children (toolbar,
-        // preview). Compute each against its overlay window's content size so
-        // the toolbar fills + positions correctly inside its window.
-        let detached: Vec<(usize, CGSize)> = self
-            .detached_window_roots
-            .iter()
-            .map(|(key, window)| {
-                let frame: CGRect = unsafe { msg_send![&**window, frame] };
-                let content: CGRect =
-                    unsafe { msg_send![&**window, contentRectForFrameRect: frame] };
-                (*key, content.size)
-            })
-            .collect();
-        for (key, size) in detached {
-            self.layout_detached_root(key, size);
-        }
+        // Remember the root for post-mount passes (`run_layout_pass_global`):
+        // reactive resizes after this `finish` have no `root` argument to hand
+        // us, so they recompute from this stashed node instead.
+        self.root_layout = Some(root_layout);
+        self.compute_and_apply_layout(root_layout, viewport.width, viewport.height);
     }
 
     // ---------------------------------------------------------------

@@ -134,12 +134,32 @@ struct OwnedAudio {
     pts_micros: u64,
 }
 
+/// Sample-accurate audio timeline. Audio PTS MUST be derived from a running
+/// frame count, not wall-clock-at-delivery: capture threads hand over PCM in
+/// irregular bursts, so `clock::now_micros()` per chunk yields jittery,
+/// frequently non-monotonic timestamps (a later chunk can stamp *earlier* than
+/// the previous one ended). That overlap makes the AAC encoder log "Correcting
+/// overlapping timestamp" and `MediaMuxer.writeSampleData` reject the sample.
+/// Counting frames and anchoring to the shared clock once gives monotonic,
+/// gap-free, lip-syncable PTS regardless of delivery jitter.
+#[derive(Default)]
+struct AudioClock {
+    /// Shared-clock micros at the first chunk — anchors audio to the same
+    /// timeline as video (which stamps `now_micros()` at capture).
+    epoch_micros: Option<u64>,
+    /// Cumulative sample-frames emitted before the current chunk.
+    frames_emitted: u64,
+    /// Sample rate the running count assumes; a change restarts the timeline.
+    sample_rate: u32,
+}
+
 #[derive(Default)]
 struct AudioChannel {
     latest: Mutex<Option<OwnedAudio>>,
     generation: AtomicU64,
     subscribers: Mutex<Vec<(u64, BoxedAudioCallback)>>,
     next_sub_id: AtomicU64,
+    clock: Mutex<AudioClock>,
 }
 
 impl AudioChannel {
@@ -181,6 +201,26 @@ impl AudioChannel {
         self.generation.fetch_add(1, Ordering::Release);
     }
 
+    /// Sample-accurate PTS (micros, shared-clock timeline) for the *start* of
+    /// the next `frame_count`-frame chunk at `sample_rate`, then advance the
+    /// running frame count. Monotonic and gap-free by construction. The first
+    /// chunk (or one after a sample-rate change) re-anchors the epoch to
+    /// `clock::now_micros()`.
+    fn next_pts(&self, sample_rate: u32, frame_count: u64) -> u64 {
+        let mut c = self.clock.lock().unwrap();
+        if c.epoch_micros.is_none() || c.sample_rate != sample_rate {
+            c.epoch_micros = Some(clock::now_micros());
+            c.frames_emitted = 0;
+            c.sample_rate = sample_rate;
+        }
+        let epoch = c.epoch_micros.unwrap();
+        // `frames * 1_000_000 / rate`, ordered to avoid precision loss and
+        // overflow: u128 widens the multiply for long recordings.
+        let offset = (c.frames_emitted as u128 * 1_000_000 / sample_rate.max(1) as u128) as u64;
+        c.frames_emitted += frame_count;
+        epoch + offset
+    }
+
     fn add_subscriber(&self, cb: BoxedAudioCallback) -> u64 {
         let id = self.next_sub_id.fetch_add(1, Ordering::Relaxed);
         self.subscribers.lock().unwrap().push((id, cb));
@@ -204,11 +244,19 @@ pub struct AudioWriter {
 }
 
 impl AudioWriter {
-    /// Push a chunk of interleaved, normalized `f32` PCM, stamped with the
-    /// current [`clock::now_micros`]. Empty chunks and zero formats are
-    /// ignored.
+    /// Push a chunk of interleaved, normalized `f32` PCM. The chunk is stamped
+    /// with a SAMPLE-ACCURATE timestamp derived from a running frame count
+    /// (anchored to [`clock::now_micros`] at the first chunk), NOT wall-clock
+    /// at delivery — see [`AudioClock`] for why. Empty chunks and zero formats
+    /// are ignored. Use [`write_pcm_f32_at`](Self::write_pcm_f32_at) only when
+    /// the producer has a genuine per-chunk hardware capture timestamp.
     pub fn write_pcm_f32(&self, sample_rate: u32, channels: u16, samples: &[f32]) {
-        self.write_pcm_f32_at(sample_rate, channels, samples, clock::now_micros());
+        if sample_rate == 0 || channels == 0 || samples.is_empty() {
+            return;
+        }
+        let frame_count = (samples.len() / channels.max(1) as usize) as u64;
+        let pts = self.channel.next_pts(sample_rate, frame_count);
+        self.write_pcm_f32_at(sample_rate, channels, samples, pts);
     }
 
     /// Like [`write_pcm_f32`](Self::write_pcm_f32) but with an explicit
@@ -474,5 +522,39 @@ mod tests {
         stream.set_native_source(src);
         let got = stream.native_source().expect("source");
         assert_eq!(got.downcast_ref::<String>().map(String::as_str), Some("native-handle"));
+    }
+
+    // Regression: audio PTS must come from a running frame count, NOT
+    // wall-clock-at-delivery. Capture threads deliver PCM in bursts, so a
+    // `now_micros()` per chunk produced jittery / non-monotonic timestamps
+    // that made the AAC encoder log "Correcting overlapping timestamp" and
+    // `MediaMuxer.writeSampleData` reject the sample. Each chunk here is 480
+    // frames @ 48 kHz = exactly 10 ms of audio; PTS must advance by 10_000 µs
+    // per chunk regardless of the (deliberately jittery) inter-write sleeps.
+    #[test]
+    fn audio_pts_is_sample_derived_not_wall_clock() {
+        let (stream, writer) = AudioStream::new();
+        let pts = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+        let captured = pts.clone();
+        let _sub = stream.subscribe(move |f| captured.lock().unwrap().push(f.pts_micros));
+
+        let chunk = vec![0.0f32; 480 * FMT.channels as usize]; // 480 frames = 10ms
+        for _ in 0..4 {
+            // Bursty delivery: a wall-clock stamp would reflect this 5ms gap,
+            // a sample-derived one must not.
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            writer.write_pcm_f32(FMT.sample_rate, FMT.channels, &chunk);
+        }
+
+        let pts = pts.lock().unwrap();
+        assert_eq!(pts.len(), 4, "every chunk delivered");
+        for i in 1..pts.len() {
+            assert!(pts[i] > pts[i - 1], "PTS strictly monotonic");
+            assert_eq!(
+                pts[i] - pts[i - 1],
+                10_000,
+                "PTS advances by the chunk's sample duration (10ms), not wall-clock",
+            );
+        }
     }
 }

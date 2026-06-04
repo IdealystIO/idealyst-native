@@ -95,6 +95,15 @@ private class Recorder(
 
     private val bufferInfo = MediaCodec.BufferInfo()
 
+    // Last presentation timestamp written to each track. `MediaMuxer` rejects
+    // non-monotonic timestamps with "writeSampleData returned an error", and
+    // the audio capture clock can briefly deliver out-of-order PTS at startup
+    // (the AAC encoder logs its own "overlapping timestamp" correction). We
+    // clamp each sample to be strictly after the previous one on its track so
+    // a little PTS jitter doesn't abort the recording.
+    private var lastVideoPtsUs = -1L
+    private var lastAudioPtsUs = -1L
+
     // --- Video ---------------------------------------------------------------
 
     fun onVideo(rgba: ByteBuffer, width: Int, height: Int, ptsUs: Long) {
@@ -181,16 +190,42 @@ private class Recorder(
     fun onAudio(pcm16: ByteBuffer, sampleRate: Int, channels: Int, ptsUs: Long) {
         try {
             val codec = audioCodec ?: configureAudio(sampleRate, channels)
-            val index = codec.dequeueInputBuffer(0)
-            if (index >= 0) {
-                val buf = codec.getInputBuffer(index)
-                if (buf != null) {
-                    pcm16.rewind()
-                    val size = pcm16.remaining()
-                    buf.clear()
-                    buf.put(pcm16)
-                    codec.queueInputBuffer(index, 0, size, ptsUs, 0)
+            pcm16.rewind()
+            val total = pcm16.remaining()
+            // 16-bit interleaved samples: one sample-frame is `channels` shorts.
+            // We split on frame boundaries so a sample is never cut between AAC
+            // input buffers.
+            val bytesPerFrame = (channels * 2).coerceAtLeast(2)
+            var offset = 0
+            // A mic chunk can be larger than a single codec input buffer, so
+            // feed it across as many buffers as it takes (the old single-`put`
+            // path threw BufferOverflowException on the first oversized chunk).
+            while (offset < total) {
+                val index = codec.dequeueInputBuffer(10_000)
+                if (index < 0) {
+                    // No free input buffer — drain encoded output to release
+                    // one, then retry rather than dropping the audio.
+                    drain(codec, video = false, endOfStream = false)
+                    continue
                 }
+                val buf = codec.getInputBuffer(index)
+                if (buf == null) {
+                    codec.queueInputBuffer(index, 0, 0, ptsUs, 0)
+                    continue
+                }
+                buf.clear()
+                var chunk = minOf(buf.capacity(), total - offset)
+                chunk -= chunk % bytesPerFrame
+                if (chunk <= 0) break // sub-frame tail (shouldn't happen on aligned input)
+                // PTS advances by the duration of the samples already fed this call.
+                val framesConsumed = (offset / bytesPerFrame).toLong()
+                val chunkPts = ptsUs + framesConsumed * 1_000_000L / sampleRate
+                pcm16.clear()
+                pcm16.position(offset)
+                pcm16.limit(offset + chunk)
+                buf.put(pcm16)
+                codec.queueInputBuffer(index, 0, chunk, chunkPts, 0)
+                offset += chunk
             }
             drain(codec, video = false, endOfStream = false)
         } catch (e: Throwable) {
@@ -248,6 +283,14 @@ private class Recorder(
                                 buf.limit(bufferInfo.offset + bufferInfo.size)
                                 val track = if (video) videoTrack else audioTrack
                                 if (track >= 0) {
+                                    // Enforce strictly-increasing PTS per track —
+                                    // MediaMuxer errors otherwise.
+                                    val last = if (video) lastVideoPtsUs else lastAudioPtsUs
+                                    if (bufferInfo.presentationTimeUs <= last) {
+                                        bufferInfo.presentationTimeUs = last + 1
+                                    }
+                                    if (video) lastVideoPtsUs = bufferInfo.presentationTimeUs
+                                    else lastAudioPtsUs = bufferInfo.presentationTimeUs
                                     muxer.writeSampleData(track, buf, bufferInfo)
                                 }
                             }

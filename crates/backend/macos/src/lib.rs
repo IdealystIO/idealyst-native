@@ -19,10 +19,15 @@ mod stub;
 // that feeds it is macos-only. Mirrors the iOS `private_layer_hittest` module.
 mod private_layer_hittest;
 
+// Pure coalescing/gating logic behind the post-mount layout-pass scheduler.
+// Un-gated so its regression tests (the recording-preview-stayed-0×0 bug) run
+// from any host; the libdispatch + AppKit machinery it feeds is macos-only.
+mod layout_policy;
+
 #[cfg(target_os = "macos")]
 pub use imp::{
-    install_global_self, set_animated_color, set_animated_f32, with_global_backend,
-    MacosBackend, MacosNode,
+    install_global_self, private_layer_window_ids, schedule_layout_pass, set_animated_color,
+    set_animated_f32, with_global_backend, MacosBackend, MacosNode,
 };
 
 #[cfg(not(target_os = "macos"))]

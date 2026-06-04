@@ -109,6 +109,29 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         None => built.binary.clone(),
     };
 
+    // Code-sign the `.app` with a STABLE Apple Development identity so macOS
+    // TCC grants (Screen Recording, Camera, Microphone) PERSIST across rebuilds.
+    // The Rust linker auto-ad-hoc-signs with a content-hash identifier
+    // (`whiteboard_demo_macos-<hash>`) that changes every build, so the OS sees
+    // each rebuild as a new app and forgets the grant — the "Screen Recording
+    // keeps re-prompting even though the app is enabled in Settings" bug.
+    // Signing with the developer's cert pins a stable code identity (cert +
+    // bundle id), exactly like the iOS path. Honors
+    // `IDEALYST_DEVELOPMENT_TEAM` / `DEVELOPMENT_TEAM` to pick a team; otherwise
+    // uses the first Apple Development cert. No-op (ad-hoc) if none is found.
+    if let Some(app_bundle) = app_bundle_for(&spawn_target) {
+        match resolve_macos_signing_identity() {
+            Some(identity) => codesign_bundle(&app_bundle, &identity)?,
+            None => eprintln!(
+                "[run-macos] no Apple Development signing identity found — \
+                 leaving the linker ad-hoc signature. macOS will re-prompt for \
+                 Screen Recording / Camera permission on every rebuild. Install \
+                 an Apple Development certificate (or set DEVELOPMENT_TEAM) to \
+                 make grants stick."
+            ),
+        }
+    }
+
     eprintln!(
         "[run-macos] launching {} (release={}, background={})",
         spawn_target.display(),
@@ -158,6 +181,76 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         binary: spawn_target,
         child,
     })
+}
+
+/// The `.app` bundle that contains `binary` (walking up the path), if any.
+fn app_bundle_for(binary: &Path) -> Option<PathBuf> {
+    binary
+        .ancestors()
+        .find(|p| p.extension().map(|e| e == "app").unwrap_or(false))
+        .map(|p| p.to_path_buf())
+}
+
+/// Resolve a stable codesigning identity (SHA-1 hash) from the login keychain.
+/// Honors `IDEALYST_DEVELOPMENT_TEAM` / `DEVELOPMENT_TEAM` (the 10-char team OU,
+/// e.g. `SNN2643WAZ`) to pick a specific Apple Development cert; otherwise the
+/// first one found. Returns `None` when there's no Apple Development identity.
+fn resolve_macos_signing_identity() -> Option<String> {
+    let out = Command::new("security")
+        .args(["find-identity", "-v", "-p", "codesigning"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let team = std::env::var("IDEALYST_DEVELOPMENT_TEAM")
+        .or_else(|_| std::env::var("DEVELOPMENT_TEAM"))
+        .ok()
+        .filter(|t| !t.is_empty());
+
+    // Each line: `  1) <40-hex-sha1> "Apple Development: Name (TEAMID)"`.
+    let mut first_dev: Option<String> = None;
+    for line in text.lines() {
+        let Some(paren) = line.find(") ") else { continue };
+        let rest = line[paren + 2..].trim();
+        let mut parts = rest.splitn(2, ' ');
+        let hash = parts.next().unwrap_or("");
+        let name = parts.next().unwrap_or("");
+        if hash.len() != 40 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        if !name.contains("Apple Development") {
+            continue;
+        }
+        if let Some(team) = &team {
+            if name.contains(&format!("({team})")) {
+                return Some(hash.to_string());
+            }
+        }
+        if first_dev.is_none() {
+            first_dev = Some(hash.to_string());
+        }
+    }
+    first_dev
+}
+
+/// `codesign --force --deep --sign <identity> <app>`. Deep-signs the bundle and
+/// its nested binary so the launched executable carries the stable cert
+/// identity TCC keys grants on. No hardened runtime / entitlements — this is a
+/// local dev signature, not a distribution one.
+fn codesign_bundle(app: &Path, identity: &str) -> Result<()> {
+    eprintln!(
+        "[run-macos] codesign --force --deep --sign {} {}",
+        &identity[..identity.len().min(10)],
+        app.display()
+    );
+    let status = Command::new("codesign")
+        .args(["--force", "--deep", "--sign", identity])
+        .arg(app)
+        .status()
+        .context("invoke codesign")?;
+    if !status.success() {
+        anyhow::bail!("codesign failed for {} (status {status})", app.display());
+    }
+    Ok(())
 }
 
 /// Wrap `binary` in a `<App>.app/Contents/{MacOS,Resources}` bundle
