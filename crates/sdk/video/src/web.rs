@@ -21,6 +21,13 @@ pub fn register(backend: &mut WebBackend) {
     backend.register_external::<VideoProps, _>(|props, _backend| build_video(props));
 }
 
+// SPIKE: self-register via inventory. `WebBackend::new` drains these. The
+// question this answers empirically: does this submitted static survive the
+// release `wasm-opt -Oz` DCE pass, or get stripped like the catalog ctors?
+inventory::submit! {
+    backend_web::WebExternalRegistrar(register)
+}
+
 fn build_video(props: &Rc<VideoProps>) -> web_sys::Element {
     let document = web_sys::window()
         .expect("no window")

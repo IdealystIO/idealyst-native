@@ -339,7 +339,7 @@ impl ScrollObserverTarget {
 // =========================================================================
 
 use objc2_app_kit::NSView;
-use objc2_foundation::{CGPoint, CGRect, NSArray};
+use objc2_foundation::{CGPoint, CGRect, CGSize, NSArray};
 
 extern "C" {
     /// CoreGraphics: alpha component of a `CGColorRef` (0.0 = fully
@@ -479,6 +479,96 @@ impl PrivateLayerPassthroughView {
     pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(());
+        unsafe { msg_send_id![super(this), init] }
+    }
+}
+
+// =========================================================================
+// LayoutObserverView — re-runs the Taffy layout pass on window resize.
+//
+// `Backend::finish` lays the tree out ONCE, against the host content view's
+// bounds at mount. Reactive Effects schedule their own passes via
+// `apply_style` → `schedule_layout_pass`, but a raw window resize (drag the
+// frame, full-screen toggle, titlebar/toolbar show-hide) produces NO reactive
+// change — the framework never re-enters `finish`, so the root view and every
+// child keep their stale mount-time frames and the layout no longer fills the
+// window.
+//
+// This is the AppKit analogue of the iOS backend's `LayoutObserverView`
+// (`backend_ios_mobile::imp::callbacks`). The mechanism differs — UIKit calls
+// `layoutSubviews` on every bounds change; AppKit has no such hook, so we
+// override `setFrameSize:`, which AppKit invokes when it autoresizes this view
+// in response to the host content view changing size. The observable behavior
+// converges: a real size change mirrors the reactive `viewport_size()` signal
+// and kicks a coalesced `schedule_layout_pass`, exactly like iOS.
+//
+// The observer is an invisible (hidden → excluded from drawing + hit-testing),
+// zero-cost subview of the host root pinned to fill it via the
+// flexible-width|flexible-height autoresizing mask. It carries no app content;
+// its only job is to receive `setFrameSize:`.
+//
+// We dedupe by remembering the last size we re-laid out at, so the redundant
+// `setFrameSize:` AppKit emits for an unchanged size (and the initial
+// `setFrame:` in `set_host_root`, which is pre-seeded to match) produce no
+// extra passes.
+// =========================================================================
+
+pub(crate) struct LayoutObserverIvars {
+    last_size: std::cell::Cell<(f32, f32)>,
+}
+
+declare_class!(
+    pub(crate) struct LayoutObserverView;
+
+    unsafe impl ClassType for LayoutObserverView {
+        type Super = NSView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystMacosLayoutObserverView";
+    }
+
+    impl DeclaredClass for LayoutObserverView {
+        type Ivars = LayoutObserverIvars;
+    }
+
+    unsafe impl LayoutObserverView {
+        #[method(setFrameSize:)]
+        fn set_frame_size(&self, size: CGSize) {
+            let _: () = unsafe { msg_send![super(self), setFrameSize: size] };
+            let next = (size.width as f32, size.height as f32);
+            let last = self.ivars().last_size.get();
+            // The react/skip/dedupe decision is the host-tested pure function
+            // `resize_observer_reaction` (see `layout_policy`).
+            let reaction = crate::layout_policy::resize_observer_reaction(last, next);
+            if reaction.mirror_viewport {
+                self.ivars().last_size.set(next);
+                // Push to the reactive viewport signal so `viewport_size()`
+                // subscribers (responsive containers, breakpoint hooks, theme-
+                // cohort restyle) re-fire. Safe to call synchronously here: a
+                // window-resize `setFrameSize:` runs on the main runloop OUTSIDE
+                // any framework borrow window, unlike `finish` (which defers
+                // this mirror precisely because it runs mid-borrow).
+                runtime_core::set_viewport_size(runtime_core::ViewportSize {
+                    width: next.0,
+                    height: next.1,
+                });
+            }
+            if reaction.schedule_pass {
+                crate::imp::schedule_layout_pass();
+            }
+        }
+    }
+);
+
+impl LayoutObserverView {
+    /// Construct the observer with `last_size` pre-seeded to the host's
+    /// current bounds, so the initial `setFrame:` in `set_host_root` (which
+    /// matches that size) is a no-op and doesn't fire a redundant viewport
+    /// mirror / layout pass while the backend is still borrowed.
+    pub(crate) fn new(mtm: MainThreadMarker, seed: CGSize) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(LayoutObserverIvars {
+            last_size: std::cell::Cell::new((seed.width as f32, seed.height as f32)),
+        });
         unsafe { msg_send_id![super(this), init] }
     }
 }

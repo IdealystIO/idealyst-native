@@ -95,6 +95,15 @@ pub(crate) async fn start(
         let canvas = canvas.clone();
         let ctx = ctx.clone();
         Closure::<dyn FnMut()>::new(move || {
+            // Display goes through `<video>.srcObject` (zero-copy) — the canvas
+            // pump exists ONLY to feed the CPU RGBA channel. Its `get_image_data`
+            // is a GPU→CPU readback that stalls the wgpu graphics surface every
+            // tick, so skip the whole pump unless a consumer is actually tapping
+            // CPU frames (a `subscribe`r — e.g. a file encoder). A preview-only
+            // recording session does zero readback. See `wants_cpu_frames`.
+            if !writer.wants_cpu_frames() {
+                return;
+            }
             let (w, h) = (video.video_width(), video.video_height());
             if w == 0 || h == 0 {
                 return; // metadata not ready yet
@@ -213,4 +222,10 @@ pub fn register(backend: &mut WebBackend) {
             .create_element("div")
             .expect("create_element(div) failed")
     });
+}
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_web::WebExternalRegistrar(register)
 }

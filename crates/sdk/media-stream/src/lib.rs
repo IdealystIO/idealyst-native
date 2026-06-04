@@ -43,10 +43,28 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub mod clock;
+
+/// Zero-copy Apple frame source shared between a producer (`screen-recorder` /
+/// `camera`) and a same-platform display consumer (`video`). Carries an opaque
+/// retained Apple frame handle for the native fast-path so display never
+/// round-trips pixels through the CPU `RGBA8` channel:
+///
+/// - **macOS** → an `IOSurface` (`CVPixelBufferGetIOSurface`), set directly as
+///   `CALayer.contents`.
+/// - **iOS** → a `CMSampleBuffer`, enqueued into an `AVSampleBufferDisplayLayer`
+///   (iOS `CALayer.contents` doesn't accept an `IOSurface`).
+///
+/// Both are CoreFoundation types managed by the same `CFRetain`/`CFRelease`
+/// dance, so one channel type serves both — each platform's consumer
+/// interprets the handle it knows its producer publishes.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub mod apple_surface;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub use apple_surface::{surface_channel, SurfaceSource, SurfaceWriter};
 
 mod audio;
 pub use audio::{
@@ -155,6 +173,12 @@ struct FrameChannel {
     /// Push consumers, keyed by id so a dropped `Subscription` removes itself.
     subscribers: Mutex<Vec<(u64, BoxedCallback)>>,
     next_sub_id: AtomicU64,
+    /// Live subscriber count, mirrored from `subscribers` for a lock-free read.
+    /// A producer checks this (via [`FrameWriter::wants_cpu_frames`]) to skip
+    /// the per-frame CPU normalization (e.g. the screen-recorder's BGRA→RGBA
+    /// swizzle) when nobody is tapping CPU frames — pure native-source display
+    /// reads the zero-copy handle instead and never needs the RGBA channel.
+    subscriber_count: AtomicUsize,
 }
 
 impl FrameChannel {
@@ -202,12 +226,16 @@ impl FrameChannel {
 
     fn add_subscriber(&self, cb: BoxedCallback) -> u64 {
         let id = self.next_sub_id.fetch_add(1, Ordering::Relaxed);
-        self.subscribers.lock().unwrap().push((id, cb));
+        let mut subs = self.subscribers.lock().unwrap();
+        subs.push((id, cb));
+        self.subscriber_count.store(subs.len(), Ordering::Release);
         id
     }
 
     fn remove_subscriber(&self, id: u64) {
-        self.subscribers.lock().unwrap().retain(|(i, _)| *i != id);
+        let mut subs = self.subscribers.lock().unwrap();
+        subs.retain(|(i, _)| *i != id);
+        self.subscriber_count.store(subs.len(), Ordering::Release);
     }
 }
 
@@ -225,6 +253,17 @@ pub struct FrameWriter {
 }
 
 impl FrameWriter {
+    /// Whether any consumer is currently tapping CPU frames (has an active
+    /// [`MediaStream::subscribe`]). A producer that can also publish a
+    /// zero-copy native source (the Apple [`SurfaceWriter`]) uses this to skip
+    /// per-frame CPU normalization — e.g. the screen-recorder's full-frame
+    /// BGRA→RGBA swizzle — when only a native-source display is attached.
+    /// Pull consumers (`latest`) that need CPU frames should `subscribe` so the
+    /// channel knows to keep producing them.
+    pub fn wants_cpu_frames(&self) -> bool {
+        self.channel.subscriber_count.load(Ordering::Acquire) > 0
+    }
+
     /// Push a tightly-packed top-down `RGBA8` frame, stamped with the current
     /// [`clock::now_micros`]. Frames shorter than `width * height * 4` are
     /// ignored.

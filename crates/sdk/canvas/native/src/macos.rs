@@ -251,6 +251,12 @@ pub fn register(backend: &mut MacosBackend) {
     backend.register_external::<CanvasProps, _>(|props, b| build_canvas(props, b));
 }
 
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_macos::MacosExternalRegistrar(register)
+}
+
 fn build_canvas(
     props: &std::rc::Rc<CanvasProps>,
     b: &mut MacosBackend,

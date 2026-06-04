@@ -50,6 +50,12 @@ extern "C" {
     fn CVPixelBufferGetWidth(pb: *mut c_void) -> usize;
     fn CVPixelBufferGetHeight(pb: *mut c_void) -> usize;
     fn CVPixelBufferGetBytesPerRow(pb: *mut c_void) -> usize;
+    /// The `IOSurface` backing the pixel buffer (camera frames are
+    /// IOSurface-backed), or null. Borrowed — the `SurfaceWriter` retains it.
+    /// Used on macOS for the zero-copy `CALayer.contents = IOSurface` display
+    /// path. (iOS publishes the `CMSampleBuffer` itself instead.)
+    #[cfg(target_os = "macos")]
+    fn CVPixelBufferGetIOSurface(pb: *mut c_void) -> *const c_void;
 }
 
 #[link(name = "CoreMedia", kind = "framework")]
@@ -132,10 +138,15 @@ const AUTH_AUTHORIZED: i64 = 3;
 // is there for `Send + Sync`).
 // ---------------------------------------------------------------------------
 
-/// Callback + reusable repack scratch, shared with the delegate. Holds no
-/// Obj-C handle, so it is `Send + Sync`.
+/// Callback + zero-copy native handle + reusable repack scratch, shared with
+/// the delegate. Holds no Obj-C handle, so it is `Send + Sync`.
 struct State {
     writer: FrameWriter,
+    /// Publishes the frame's native handle for the zero-copy display fast-path
+    /// (an `IOSurface` on macOS, the `CMSampleBuffer` on iOS). Always published
+    /// (retain + pointer swap); the CPU `writer` path only runs when a consumer
+    /// taps RGBA frames via [`FrameWriter::wants_cpu_frames`].
+    surf: media_stream::SurfaceWriter,
     /// Reusable tightly-packed RGBA buffer so steady-state capture doesn't
     /// allocate per frame.
     scratch: Vec<u8>,
@@ -183,22 +194,54 @@ declare_class!(
                 if pixel_buffer.is_null() {
                     return;
                 }
-                if CVPixelBufferLockBaseAddress(pixel_buffer, LOCK_READ_ONLY) != 0 {
-                    return;
-                }
-                let base = CVPixelBufferGetBaseAddress(pixel_buffer) as *const u8;
-                let width = CVPixelBufferGetWidth(pixel_buffer);
-                let height = CVPixelBufferGetHeight(pixel_buffer);
-                let stride = CVPixelBufferGetBytesPerRow(pixel_buffer);
 
-                if !base.is_null() && width > 0 && height > 0 && stride >= width * 4 {
-                    let mut state = self.ivars().state.lock().unwrap();
-                    let State { writer, scratch } = &mut *state;
-                    repack_bgra_to_rgba(base, width, height, stride, scratch);
-                    writer.write_rgba8(width as u32, height as u32, scratch);
+                // One lock for the frame — the delegate is the sole toucher of
+                // `State` and frames arrive serially (the `Mutex` is only for
+                // `Send`).
+                let mut state = self.ivars().state.lock().unwrap();
+
+                // Zero-copy display fast-path: publish the platform native
+                // handle (retain + pointer swap, microseconds). macOS hands the
+                // `video` SDK an IOSurface for `CALayer.contents`; iOS hands it
+                // the CMSampleBuffer for `AVSampleBufferDisplayLayer`. This is
+                // what drops the camera preview off the CPU — no swizzle, no
+                // CGImage, no per-frame upload.
+                #[cfg(target_os = "macos")]
+                {
+                    let surface = CVPixelBufferGetIOSurface(pixel_buffer);
+                    if !surface.is_null() {
+                        state.surf.publish(surface);
+                    }
+                }
+                #[cfg(target_os = "ios")]
+                {
+                    // The CMSampleBuffer itself (BGRA), displayed via
+                    // AVSampleBufferDisplayLayer.
+                    state.surf.publish(sbuf as *const c_void);
                 }
 
-                CVPixelBufferUnlockBaseAddress(pixel_buffer, LOCK_READ_ONLY);
+                // CPU RGBA channel: only do the (expensive, full-frame) BGRA→RGBA
+                // swizzle when a consumer is actually tapping CPU frames (a
+                // `subscribe`r). Native-source display reads the handle above and
+                // needs none of it — a preview-only session pays zero per-pixel
+                // CPU cost. See `FrameWriter::wants_cpu_frames`.
+                if state.writer.wants_cpu_frames() {
+                    if CVPixelBufferLockBaseAddress(pixel_buffer, LOCK_READ_ONLY) != 0 {
+                        return;
+                    }
+                    let base = CVPixelBufferGetBaseAddress(pixel_buffer) as *const u8;
+                    let width = CVPixelBufferGetWidth(pixel_buffer);
+                    let height = CVPixelBufferGetHeight(pixel_buffer);
+                    let stride = CVPixelBufferGetBytesPerRow(pixel_buffer);
+
+                    if !base.is_null() && width > 0 && height > 0 && stride >= width * 4 {
+                        let State { writer, scratch, .. } = &mut *state;
+                        repack_bgra_to_rgba(base, width, height, stride, scratch);
+                        writer.write_rgba8(width as u32, height as u32, scratch);
+                    }
+
+                    CVPixelBufferUnlockBaseAddress(pixel_buffer, LOCK_READ_ONLY);
+                }
             }
         }
     }
@@ -338,11 +381,18 @@ pub(crate) async fn open(
         let _: () = msg_send![&*output, setVideoSettings: &*settings];
         let _: () = msg_send![&*output, setAlwaysDiscardsLateVideoFrames: Bool::YES];
 
+        // Zero-copy display channel. The delegate (capture queue) publishes
+        // each frame's native handle through `surf_writer`; `surf_source` is
+        // returned as the stream's `native_source` so the `video` SDK displays
+        // it with no CPU copy.
+        let (surf_source, surf_writer) = media_stream::surface_channel();
+
         // Delegate + private serial queue.
         let delegate: Retained<FrameDelegate> = {
             let this = FrameDelegate::alloc().set_ivars(DelegateIvars {
                 state: Mutex::new(State {
                     writer,
+                    surf: surf_writer,
                     scratch: Vec::new(),
                 }),
             });
@@ -399,16 +449,17 @@ pub(crate) async fn open(
         let _: () = msg_send![&*session, commitConfiguration];
         let _: () = msg_send![&*session, startRunning];
 
-        // Apple exposes no zero-copy native source yet (CVPixelBuffer→Metal
-        // via CVMetalTextureCache is the GPU-pipeline phase); frames flow
-        // through the CPU channel.
+        // Hand back the native handle source for the zero-copy display path
+        // (IOSurface on macOS → `CALayer.contents`; CMSampleBuffer on iOS →
+        // `AVSampleBufferDisplayLayer`). The CPU RGBA channel still serves
+        // `subscribe`rs; it's just no longer the display path.
         Ok((
             StreamHandle {
                 session,
                 _delegate: delegate,
                 _queue: queue,
             },
-            None,
+            Some(std::rc::Rc::new(surf_source) as NativeSource),
         ))
     }
 }

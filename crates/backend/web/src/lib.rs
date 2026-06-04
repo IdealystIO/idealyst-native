@@ -689,6 +689,15 @@ pub(crate) struct DynamicRule {
     pub(crate) state_rule_indices: Vec<u32>,
 }
 
+/// An inventory-collected external registrar. An SDK's web module
+/// `inventory::submit!`s one of these (carrying a `fn(&mut WebBackend)`);
+/// [`WebBackend::new`] drains them so the SDK self-registers its
+/// `Element::External` handler without the app naming the concrete backend
+/// per platform. Survives the release `wasm-opt -Oz` pass (it's a code
+/// fn-pointer, not prunable data). See [[project_inventory_self_registration]].
+pub struct WebExternalRegistrar(pub fn(&mut WebBackend));
+inventory::collect!(WebExternalRegistrar);
+
 impl WebBackend {
     /// Constructs a backend that will mount its root under `mount_selector`
     /// (e.g. `"#app"`). Panics if the element is not found.
@@ -951,6 +960,18 @@ impl WebBackend {
         }
     }
 
+    /// Install every SDK-submitted external handler. SDKs `inventory::submit!`
+    /// a [`WebExternalRegistrar`] from their web module; this drains them at
+    /// construction so the app needn't call `sdk::register` per platform. The
+    /// submitted statics survive the release `wasm-opt -Oz` pass — they carry a
+    /// function pointer (code), not the prunable string data the catalog uses.
+    /// See [[project_inventory_self_registration]].
+    fn drain_external_registrars(&mut self) {
+        for r in inventory::iter::<WebExternalRegistrar> {
+            (r.0)(self);
+        }
+    }
+
     pub fn new(mount_selector: &str) -> Self {
         let window = web_sys::window().expect("no window");
         let doc = window.document().expect("no document");
@@ -958,7 +979,7 @@ impl WebBackend {
             .query_selector(mount_selector)
             .expect("query failed")
             .expect("mount element not found");
-        Self {
+        let mut backend = Self {
             doc,
             mount,
             #[cfg(feature = "hydrate")]
@@ -1037,7 +1058,9 @@ impl WebBackend {
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
             nav_handler_instances: HashMap::new(),
             animated_states: HashMap::new(),
-        }
+        };
+        backend.drain_external_registrars();
+        backend
     }
 
     /// Register a handler for the third-party external primitive

@@ -44,6 +44,51 @@ pub(crate) fn reactive_change_needs_layout_pass(view_attached_to_window: bool) -
     view_attached_to_window
 }
 
+/// Minimum per-axis delta (in points) before a `setFrameSize:` on the host
+/// resize observer counts as a real resize. AppKit's autoresize math can emit
+/// sub-pixel jitter for a nominally-unchanged size; reacting to it would fire
+/// redundant layout passes.
+pub(crate) const RESIZE_EPSILON: f32 = 0.5;
+
+/// What the macOS host resize observer should do for a `setFrameSize:`, given
+/// the size it last reacted to (`last`) and the incoming size (`next`).
+///
+/// `Backend::finish` lays out once at mount; a raw window resize produces no
+/// reactive render, so the observer is the only thing that re-runs layout.
+/// This is the pure decision behind that observer's objc2 method — the AppKit
+/// `NSView`/`setFrameSize:` plumbing needs the main thread and a live window,
+/// so the logic lives here where `cargo test` can pin it. Mirrors the iOS
+/// `LayoutObserverView` dedupe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResizeReaction {
+    /// Mirror the new size into the reactive `viewport_size()` signal.
+    pub mirror_viewport: bool,
+    /// Kick a coalesced layout pass so every frame is recomputed.
+    pub schedule_pass: bool,
+}
+
+/// Decide how the resize observer reacts. `last` is the size it last reacted to
+/// — `(0.0, 0.0)` means it has never seen a real bounds (the host had no size
+/// at mount). The observer's `last_size` is otherwise pre-seeded to the host's
+/// mount-time bounds, so the first call here that differs is a genuine resize.
+///
+/// - Unchanged within [`RESIZE_EPSILON`] → do nothing (the redundant
+///   `setFrameSize:` AppKit emits, or the seeded initial `setFrame:`).
+/// - Changed, but `last` was `(0, 0)` → mirror the viewport (author code may
+///   want the first real size) but DON'T schedule a pass: `finish` already ran
+///   the mount layout against these same bounds.
+/// - Changed from a real prior size → mirror AND schedule: this is the actual
+///   window resize `finish` never revisits.
+pub(crate) fn resize_observer_reaction(last: (f32, f32), next: (f32, f32)) -> ResizeReaction {
+    let changed =
+        (last.0 - next.0).abs() > RESIZE_EPSILON || (last.1 - next.1).abs() > RESIZE_EPSILON;
+    if !changed {
+        return ResizeReaction { mirror_viewport: false, schedule_pass: false };
+    }
+    let had_real_size = last.0 != 0.0 || last.1 != 0.0;
+    ResizeReaction { mirror_viewport: true, schedule_pass: had_real_size }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +122,55 @@ mod tests {
         assert!(!reactive_change_needs_layout_pass(false));
         // Post-mount (in a window) → finish() already ran; we must schedule.
         assert!(reactive_change_needs_layout_pass(true));
+    }
+
+    // Regression: a window resize must recompute element positions. Before the
+    // observer existed, `finish` laid out once at mount and a raw resize left
+    // every frame stale. These pin the observer's react/skip decision.
+
+    #[test]
+    fn resize_from_real_size_schedules_a_pass() {
+        // Drag the window from 800×600 to 1024×768 → mirror viewport AND
+        // re-run layout. This is the case `finish` never revisits.
+        let r = resize_observer_reaction((800.0, 600.0), (1024.0, 768.0));
+        assert_eq!(
+            r,
+            ResizeReaction { mirror_viewport: true, schedule_pass: true },
+        );
+    }
+
+    #[test]
+    fn unchanged_size_is_a_noop() {
+        // AppKit re-emits `setFrameSize:` for the same size (and the seeded
+        // initial `setFrame:` in set_host_root matches the seed); neither must
+        // fire a pass.
+        let r = resize_observer_reaction((1024.0, 768.0), (1024.0, 768.0));
+        assert_eq!(
+            r,
+            ResizeReaction { mirror_viewport: false, schedule_pass: false },
+        );
+    }
+
+    #[test]
+    fn subpixel_jitter_is_ignored() {
+        // Autoresize math can nudge the size by a fraction of a point; that
+        // isn't a resize.
+        let r = resize_observer_reaction((1024.0, 768.0), (1024.2, 767.9));
+        assert_eq!(
+            r,
+            ResizeReaction { mirror_viewport: false, schedule_pass: false },
+        );
+    }
+
+    #[test]
+    fn first_real_size_after_zero_mirrors_but_skips_pass() {
+        // Host had no bounds at mount (seed 0×0); the first real fill mirrors
+        // the viewport for author code but skips the pass — `finish` already
+        // laid out against these bounds.
+        let r = resize_observer_reaction((0.0, 0.0), (1024.0, 768.0));
+        assert_eq!(
+            r,
+            ResizeReaction { mirror_viewport: true, schedule_pass: false },
+        );
     }
 }

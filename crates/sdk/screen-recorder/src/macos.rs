@@ -116,6 +116,11 @@ extern "C" {
     fn CVPixelBufferGetWidth(pb: *mut c_void) -> usize;
     fn CVPixelBufferGetHeight(pb: *mut c_void) -> usize;
     fn CVPixelBufferGetBytesPerRow(pb: *mut c_void) -> usize;
+    /// The `IOSurface` backing the pixel buffer (SCK frames are always
+    /// IOSurface-backed), or null. Borrowed — retain it (the `SurfaceWriter`
+    /// does) to keep it past the buffer's recycle. Enables the zero-copy
+    /// display fast-path: `CALayer.contents = IOSurface`, no CPU swizzle.
+    fn CVPixelBufferGetIOSurface(pb: *mut c_void) -> *const c_void;
 }
 
 #[link(name = "CoreMedia", kind = "framework")]
@@ -181,10 +186,14 @@ const SC_STREAM_OUTPUT_TYPE_SCREEN: isize = 0;
 // lock is there for `Send + Sync`). Mirrors the `camera` SDK's FrameDelegate.
 // ---------------------------------------------------------------------------
 
-/// The `FrameWriter` + reusable repack scratch, shared with the delegate.
-/// Holds no Obj-C handle, so it is `Send + Sync`.
+/// The `FrameWriter` + zero-copy `SurfaceWriter` + reusable repack scratch,
+/// shared with the delegate. Holds no Obj-C handle, so it is `Send + Sync`.
 struct State {
     writer: FrameWriter,
+    /// Publishes the frame's `IOSurface` for the zero-copy display fast-path.
+    /// Always published (cheap: retain + pointer swap); the CPU `writer` path
+    /// below only runs when a consumer actually taps RGBA frames.
+    surf: media_stream::SurfaceWriter,
     /// Reusable tightly-packed BGRA buffer (row padding stripped) so
     /// steady-state capture doesn't allocate per frame.
     scratch: Vec<u8>,
@@ -241,26 +250,51 @@ declare_class!(
                     // Status-only sample buffer (idle/blank frame) — no image.
                     return;
                 }
-                if CVPixelBufferLockBaseAddress(pixel_buffer, LOCK_READ_ONLY) != 0 {
-                    return;
-                }
-                let base = CVPixelBufferGetBaseAddress(pixel_buffer) as *const u8;
-                let width = CVPixelBufferGetWidth(pixel_buffer);
-                let height = CVPixelBufferGetHeight(pixel_buffer);
-                let stride = CVPixelBufferGetBytesPerRow(pixel_buffer);
 
-                if !base.is_null() && width > 0 && height > 0 && stride >= width * 4 {
-                    let mut state = self.ivars().state.lock().unwrap();
-                    let State { writer, scratch } = &mut *state;
-                    // Repack to tightly-packed BGRA (strip `bytesPerRow`
-                    // padding); `write_bgra8` swizzles B/R → RGBA. It rejects
-                    // a frame shorter than width*height*4, so the packed
-                    // scratch must be exactly that size.
-                    repack_strided_bgra(base, width, height, stride, scratch);
-                    writer.write_bgra8(width as u32, height as u32, scratch);
+                // One lock for the whole frame — the delegate is the sole
+                // toucher of `State` and frames arrive serially, so it's
+                // uncontended (the `Mutex` is only there for `Send`).
+                let mut state = self.ivars().state.lock().unwrap();
+
+                // Zero-copy display fast-path: publish the frame's IOSurface
+                // (retain + pointer swap, microseconds) so the `video` SDK can
+                // set it straight as `CALayer.contents` — no CPU swizzle, no
+                // CGImage, no per-frame upload. This is what keeps the live
+                // preview low-latency: the heavy CPU path below previously
+                // backed up SCK's bounded frame queue (≈ queueDepth × per-frame
+                // swizzle time of latency); the surface publish never stalls.
+                let surface = CVPixelBufferGetIOSurface(pixel_buffer);
+                if !surface.is_null() {
+                    state.surf.publish(surface);
                 }
 
-                CVPixelBufferUnlockBaseAddress(pixel_buffer, LOCK_READ_ONLY);
+                // CPU RGBA channel: only do the (expensive, full-frame) repack +
+                // BGRA→RGBA swizzle when a consumer is actually tapping CPU
+                // frames (a `subscribe`r — e.g. a file encoder). Pure
+                // native-source display reads the IOSurface above and needs
+                // none of this, so a preview-only session pays zero per-pixel
+                // CPU cost. See `FrameWriter::wants_cpu_frames`.
+                if state.writer.wants_cpu_frames() {
+                    if CVPixelBufferLockBaseAddress(pixel_buffer, LOCK_READ_ONLY) != 0 {
+                        return;
+                    }
+                    let base = CVPixelBufferGetBaseAddress(pixel_buffer) as *const u8;
+                    let width = CVPixelBufferGetWidth(pixel_buffer);
+                    let height = CVPixelBufferGetHeight(pixel_buffer);
+                    let stride = CVPixelBufferGetBytesPerRow(pixel_buffer);
+
+                    if !base.is_null() && width > 0 && height > 0 && stride >= width * 4 {
+                        let State { writer, scratch, .. } = &mut *state;
+                        // Repack to tightly-packed BGRA (strip `bytesPerRow`
+                        // padding); `write_bgra8` swizzles B/R → RGBA. It rejects
+                        // a frame shorter than width*height*4, so the packed
+                        // scratch must be exactly that size.
+                        repack_strided_bgra(base, width, height, stride, scratch);
+                        writer.write_bgra8(width as u32, height as u32, scratch);
+                    }
+
+                    CVPixelBufferUnlockBaseAddress(pixel_buffer, LOCK_READ_ONLY);
+                }
             }
         }
     }
@@ -413,11 +447,18 @@ pub(crate) async fn start(
                 .ok_or_else(|| RecorderError::Platform("SCStream init returned nil".into()))?
         };
 
+        // Zero-copy display channel. The delegate (capture queue) publishes
+        // each frame's IOSurface through `surf_writer`; `surf_source` is handed
+        // back as the stream's `native_source` so the `video` SDK displays it
+        // with no CPU copy. Created before the delegate so its writer moves in.
+        let (surf_source, surf_writer) = media_stream::surface_channel();
+
         // Output delegate on a private serial dispatch queue.
         let delegate: Retained<StreamOutput> = {
             let this = StreamOutput::alloc().set_ivars(DelegateIvars {
                 state: Mutex::new(State {
                     writer,
+                    surf: surf_writer,
                     scratch: Vec::new(),
                 }),
             });
@@ -467,15 +508,18 @@ pub(crate) async fn start(
             }
         }
 
-        // No zero-copy native source yet (a CVPixelBuffer→Metal import is the
-        // GPU phase); frames flow through the CPU channel.
+        // Hand back the IOSurface source as the stream's zero-copy native
+        // handle. The `video` SDK downcasts it and sets each frame's surface
+        // straight as `CALayer.contents` — no CPU swizzle, no CGImage. The CPU
+        // RGBA channel still serves `subscribe`rs (file encoders); it's just no
+        // longer the display path.
         Ok((
             Recording {
                 stream,
                 _delegate: delegate,
                 _queue: queue,
             },
-            None,
+            Some(std::rc::Rc::new(surf_source) as NativeSource),
         ))
     }
 }
@@ -671,4 +715,10 @@ pub fn register(backend: &mut MacosBackend) {
     backend.register_external::<crate::PrivateLayerProps, _>(|_props, b| {
         b.create_private_layer_window()
     });
+}
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_macos::MacosExternalRegistrar(register)
 }

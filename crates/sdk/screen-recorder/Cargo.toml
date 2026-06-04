@@ -57,6 +57,8 @@ frameworks = ["ReplayKit", "CoreMedia", "CoreVideo"]
 # `register()`. The capture capability itself is framework-agnostic.
 runtime-core = { workspace = true }
 thiserror = "1"
+# Self-registration of the per-backend PrivateLayer external at construction.
+inventory = "0.3"
 # The live-source currency every capture backend writes into and the public
 # API hands back — shared with `camera` (a sibling producer) and `video` (a
 # consumer). Keeps the per-platform transport hidden from app code.

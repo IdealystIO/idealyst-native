@@ -101,6 +101,11 @@ const RP_ERROR_USER_DECLINED: isize = -5803;
 /// `camera` delegate's `Mutex<State>`.
 struct State {
     writer: FrameWriter,
+    /// Publishes the frame's `CMSampleBuffer` for the zero-copy display path
+    /// (`AVSampleBufferDisplayLayer` renders NV12/BGRA on the GPU directly).
+    /// Always published; the CPU NV12/BGRA→RGBA conversion only runs when a
+    /// consumer taps RGBA frames. See [`FrameWriter::wants_cpu_frames`].
+    surf: media_stream::SurfaceWriter,
     scratch: Vec<u8>,
 }
 
@@ -131,10 +136,16 @@ pub(crate) async fn start(
         ));
     }
 
+    // Zero-copy display channel. The capture handler publishes each video
+    // frame's CMSampleBuffer through `surf_writer`; `surf_source` is returned as
+    // the stream's `native_source` for the `video` SDK's AVSampleBufferDisplayLayer.
+    let (surf_source, surf_writer) = media_stream::surface_channel();
+
     // Capture handler: fires per sample buffer on ReplayKit's internal queue.
     // It owns the `Mutex<State>`; only video buffers are repacked + written.
     let state = Mutex::new(State {
         writer,
+        surf: surf_writer,
         scratch: Vec::new(),
     });
     let capture_handler = RcBlock::new(
@@ -185,14 +196,14 @@ pub(crate) async fn start(
 
     // Hold the recorder + the capture block alive for the recording's
     // lifetime. ReplayKit copies the block, but keeping our `RcBlock` is
-    // explicit and harmless. No zero-copy native source yet (a
-    // CVPixelBuffer→Metal path is the GPU phase), so `None`.
+    // explicit and harmless. Hand back the CMSampleBuffer source as the
+    // stream's zero-copy native handle for AVSampleBufferDisplayLayer display.
     Ok((
         Recording {
             recorder,
             _capture_handler: capture_handler,
         },
-        None,
+        Some(std::rc::Rc::new(surf_source) as NativeSource),
     ))
 }
 
@@ -232,6 +243,21 @@ unsafe fn write_video_frame(sbuf: *mut c_void, state: &Mutex<State>) {
     if pb.is_null() {
         return;
     }
+
+    // Zero-copy display: publish the CMSampleBuffer (retain + pointer swap) for
+    // the AVSampleBufferDisplayLayer path — it renders NV12/BGRA on the GPU with
+    // no CPU touch. Always published; the (expensive, full-frame) NV12/BGRA→RGBA
+    // conversion below runs only when a subscriber taps CPU frames, so a
+    // preview-only session pays zero per-pixel CPU cost.
+    let wants_cpu = {
+        let guard = state.lock().unwrap();
+        guard.surf.publish(sbuf as *const c_void);
+        guard.writer.wants_cpu_frames()
+    };
+    if !wants_cpu {
+        return;
+    }
+
     if CVPixelBufferLockBaseAddress(pb, LOCK_READ_ONLY) != 0 {
         return;
     }
@@ -242,7 +268,7 @@ unsafe fn write_video_frame(sbuf: *mut c_void, state: &Mutex<State>) {
 
     if width > 0 && height > 0 {
         let mut guard = state.lock().unwrap();
-        let State { writer, scratch } = &mut *guard;
+        let State { writer, scratch, .. } = &mut *guard;
         match format {
             PIXEL_FORMAT_32BGRA => {
                 let base = CVPixelBufferGetBaseAddress(pb) as *const u8;

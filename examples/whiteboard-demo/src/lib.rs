@@ -76,9 +76,6 @@ pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
 
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
-    // macOS uses `canvas-native`'s fallback (no native module yet) — the
-    // framework draws its "not supported" placeholder for the canvas, but
-    // the toolbar / camera / record wiring still compiles and runs.
     canvas_native::register(backend);
     video::register(backend);
     screen_recorder::register(backend);

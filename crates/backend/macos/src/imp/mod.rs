@@ -321,9 +321,25 @@ pub fn schedule_layout_pass() {
 // Construction + host wiring
 // =========================================================================
 
+/// An inventory-collected external registrar. An SDK's macOS module
+/// `inventory::submit!`s one of these (carrying a `fn(&mut MacosBackend)`);
+/// `MacosBackend::new` drains them so the SDK self-registers its
+/// `Element::External` handler without the app naming the concrete backend.
+/// See [[project_inventory_self_registration]].
+pub struct MacosExternalRegistrar(pub fn(&mut MacosBackend));
+inventory::collect!(MacosExternalRegistrar);
+
 impl MacosBackend {
+    /// Install every SDK-submitted external handler. Native (non-wasm) so
+    /// inventory's link-time ctors populate the slice before construction.
+    fn drain_external_registrars(&mut self) {
+        for r in inventory::iter::<MacosExternalRegistrar> {
+            (r.0)(self);
+        }
+    }
+
     pub fn new(mtm: MainThreadMarker) -> Self {
-        Self {
+        let mut backend = Self {
             mtm,
             host_root: None,
             layout: runtime_layout::LayoutTree::new(),
@@ -339,7 +355,9 @@ impl MacosBackend {
             nav_handler_instances: HashMap::new(),
             detached_window_roots: HashMap::new(),
             root_layout: None,
-        }
+        };
+        backend.drain_external_registrars();
+        backend
     }
 
     /// Register a `Element::Navigator` handler factory keyed by
@@ -399,6 +417,32 @@ impl MacosBackend {
     /// compute layout against this view's bounds and apply frames
     /// down the registered tree.
     pub fn set_host_root(&mut self, view: Retained<NSView>) {
+        // Attach a size-change observer so we re-run layout when the host's
+        // bounds change (window resize, full-screen toggle, titlebar/toolbar
+        // show-hide). Without it, `finish` lays out once at mount and a raw
+        // window resize — which triggers no reactive render — leaves every
+        // frame stale. The observer is a hidden, zero-impact subview pinned to
+        // fill the host via its autoresizing mask; AppKit calls `setFrameSize:`
+        // on it whenever the host resizes, which dispatches a coalesced layout
+        // pass. Mirrors the iOS backend's `LayoutObserverView`.
+        let bounds: CGRect = unsafe { msg_send![&view, bounds] };
+        let observer = callbacks::LayoutObserverView::new(self.mtm, bounds.size);
+        let _: () = unsafe { msg_send![&observer, setFrame: bounds] };
+        // NSViewWidthSizable (2) | NSViewHeightSizable (16) = 0x12 — keep the
+        // observer the same size as the host across every resize.
+        let _: () = unsafe { msg_send![&observer, setAutoresizingMask: 0x12u64] };
+        // Hidden → excluded from drawing AND hit-testing (so it never
+        // intercepts a click), while still receiving autoresize `setFrameSize:`.
+        let _: () = unsafe { msg_send![&observer, setHidden: true] };
+        unsafe { view.addSubview(&observer) };
+        // Retain alongside other backend-owned ObjC objects so the observer
+        // outlives this scope (the host view keeps a strong ref too, but the
+        // backend owning it matches how the other callback targets are held).
+        let obj: Retained<NSObject> = unsafe {
+            let ptr = Retained::as_ptr(&observer) as *mut NSObject;
+            Retained::retain(ptr).unwrap()
+        };
+        self.callback_targets.push(obj);
         self.host_root = Some(view);
     }
 

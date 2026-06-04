@@ -122,7 +122,14 @@ pub(crate) async fn open(
             if !running.get() {
                 return;
             }
-            pump_frame(&video, &canvas, &ctx, &writer);
+            // Display goes through `<video>.srcObject` (zero-copy); the canvas
+            // readback in `pump_frame` exists only to feed the CPU RGBA channel.
+            // Its `get_image_data` is a GPU→CPU readback that stalls the wgpu
+            // graphics surface, so skip it unless a consumer is tapping CPU
+            // frames (a `subscribe`r). See `FrameWriter::wants_cpu_frames`.
+            if writer.wants_cpu_frames() {
+                pump_frame(&video, &canvas, &ctx, &writer);
+            }
             // Re-arm for the next display frame. rAF calls us later (not
             // re-entrantly), so a plain FnMut closure is safe to re-schedule.
             if let Some(c) = pump.borrow().as_ref() {

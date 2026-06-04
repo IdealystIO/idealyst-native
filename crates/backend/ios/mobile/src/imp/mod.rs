@@ -517,10 +517,26 @@ fn promote_pending_sticky_recursive(
 // Helpers
 // =========================================================================
 
+/// An inventory-collected external registrar. An SDK's iOS module
+/// `inventory::submit!`s one of these (carrying a `fn(&mut IosBackend)`);
+/// [`IosBackend::new`] drains them so the SDK self-registers its
+/// `Element::External` handler without the app naming the concrete backend.
+/// See [[project_inventory_self_registration]].
+pub struct IosExternalRegistrar(pub fn(&mut IosBackend));
+inventory::collect!(IosExternalRegistrar);
+
 impl IosBackend {
+    /// Install every SDK-submitted external handler. Native (non-wasm) so
+    /// inventory's link-time ctors populate the slice before construction.
+    fn drain_external_registrars(&mut self) {
+        for r in inventory::iter::<IosExternalRegistrar> {
+            (r.0)(self);
+        }
+    }
+
     pub fn new(mtm: MainThreadMarker) -> Self {
         phase_timer::install_core_bridge();
-        Self {
+        let mut backend = Self {
             mtm,
             host_root: None,
             callback_targets: Vec::new(),
@@ -542,7 +558,9 @@ impl IosBackend {
             sticky_registry: HashMap::new(),
             pending_sticky: HashMap::new(),
             detached_window_roots: HashMap::new(),
-        }
+        };
+        backend.drain_external_registrars();
+        backend
     }
 
     /// Register a handler for the third-party external primitive whose

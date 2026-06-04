@@ -36,6 +36,12 @@ pub fn register(backend: &mut WebBackend) {
     backend.register_external::<CanvasProps, _>(|props, _backend| build_canvas(props));
 }
 
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_web::WebExternalRegistrar(register)
+}
+
 /// Disconnects the `ResizeObserver` and frees its `Closure` on scope
 /// teardown, so a callback the browser has already queued can't fire
 /// into freed wasm state after unmount (the classic web-listener UAF).

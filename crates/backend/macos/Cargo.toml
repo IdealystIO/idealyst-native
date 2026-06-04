@@ -33,6 +33,7 @@ runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-nativ
 [dependencies]
 runtime-core = { workspace = true }
 runtime-layout = { workspace = true }
+inventory = "0.3"
 # Cross-Apple substrate (NSLog, scheduler, CoreText font registry,
 # color parsing). Shared with backend-ios-core; same Phase 0 lift.
 backend-apple-core = { workspace = true }

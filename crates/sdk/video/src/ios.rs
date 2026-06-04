@@ -60,6 +60,37 @@ pub(crate) static OPS: &dyn VideoOps = &IosVideoOps;
 #[link(name = "AVFoundation", kind = "framework")]
 extern "C" {}
 
+// For the live-stream zero-copy path: enqueue capture `CMSampleBuffer`s into an
+// `AVSampleBufferDisplayLayer`. A live preview has no media timebase, so each
+// buffer is tagged `kCMSampleAttachmentKey_DisplayImmediately` to render the
+// instant it's enqueued (otherwise the layer waits on a timebase that never
+// advances and shows nothing). These are the few C symbols that requires.
+#[allow(non_upper_case_globals)]
+#[link(name = "CoreMedia", kind = "framework")]
+extern "C" {
+    /// The per-sample attachments array (a `CFArray` of `CFMutableDictionary`),
+    /// created if absent when the second arg is non-zero.
+    fn CMSampleBufferGetSampleAttachmentsArray(
+        sbuf: *const std::ffi::c_void,
+        create_if_necessary: u8,
+    ) -> *const std::ffi::c_void;
+    static kCMSampleAttachmentKey_DisplayImmediately: *const std::ffi::c_void;
+}
+
+#[allow(non_upper_case_globals)]
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFArrayGetValueAtIndex(arr: *const std::ffi::c_void, idx: isize) -> *const std::ffi::c_void;
+    fn CFDictionarySetValue(
+        dict: *const std::ffi::c_void,
+        key: *const std::ffi::c_void,
+        value: *const std::ffi::c_void,
+    );
+    static kCFBooleanTrue: *const std::ffi::c_void;
+}
+
+use media_stream::SurfaceSource;
+
 // CoreMedia `CMTime` mirror. objc2 doesn't re-export the CoreMedia
 // types and we deliberately don't pull in `core-media-sys` for the
 // sake of two struct layouts. The shape MUST match CoreMedia's
@@ -148,6 +179,21 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
     let view_layer: Retained<NSObject> = unsafe { msg_send_id![&view, layer] };
     let _: () = unsafe { msg_send![&view_layer, addSublayer: &*player_layer] };
 
+    // AVSampleBufferDisplayLayer for the live-stream (camera / screen-recorder)
+    // path: capture `CMSampleBuffer`s are enqueued straight into it — zero CPU
+    // copy, no swizzle, no CGImage. A sibling sublayer of the AVPlayerLayer; a
+    // given video element is either a URL (player) or a Stream (this layer),
+    // never both, so they don't overlap — the unused one stays empty.
+    let display_layer: Retained<NSObject> = unsafe {
+        msg_send_id![
+            msg_send_id![objc2::class!(AVSampleBufferDisplayLayer), alloc],
+            init
+        ]
+    };
+    let sbdl_gravity = NSString::from_str("AVLayerVideoGravityResizeAspect");
+    let _: () = unsafe { msg_send![&display_layer, setVideoGravity: &*sbdl_gravity] };
+    let _: () = unsafe { msg_send![&view_layer, addSublayer: &*display_layer] };
+
     // Optional behaviors. `muted` mirrors the web backend's autoplay
     // pairing — iOS won't autoplay otherwise on cellular under
     // low-power mode, and the cross-platform expectation is "autoplay
@@ -186,10 +232,14 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
     // the layer's frame each reactive tick. One-frame lag vs. resize,
     // but no dependency on a backend-internal post-layout callback.
     let player_layer_for_sync = player_layer.clone();
+    let display_layer_for_sync = display_layer.clone();
     let view_for_sync = view.clone();
     let _layout_effect = Effect::new(move || {
         let bounds: CGRect = unsafe { msg_send![&*view_for_sync, bounds] };
         let _: () = unsafe { msg_send![&*player_layer_for_sync, setFrame: bounds] };
+        // The stream display layer tracks bounds the same way (CALayer
+        // autoresizing is unreliable here — same rationale as the player layer).
+        let _: () = unsafe { msg_send![&*display_layer_for_sync, setFrame: bounds] };
     });
 
     // Reactive src — initial src was used to construct the player; the
@@ -228,13 +278,97 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
         let _: () = unsafe { msg_send![&view_layer, setContentsGravity: &*gravity] };
 
         let view_for_stream = view.clone();
+        let display_layer_for_stream = display_layer.clone();
         let props_for_stream = props.clone();
         let mut last_gen: u64 = u64::MAX;
+        let mut last_native_gen: u64 = u64::MAX;
         let mut scratch: Vec<u8> = Vec::new();
         runtime_core::raf_loop_scoped(move || {
             let MediaContent::Stream(stream) = props_for_stream.source.resolve() else {
                 return;
             };
+
+            // Zero-copy fast-path. If the producer published a native handle (a
+            // capture `CMSampleBuffer`), enqueue it straight into the
+            // AVSampleBufferDisplayLayer: no swizzle, no CGImage, no per-frame
+            // upload — the GPU decodes/displays the buffer directly. This is the
+            // iOS analogue of the macOS IOSurface→CALayer.contents path.
+            if let Some(native) = stream.native_source() {
+                if let Some(surf) = native.downcast_ref::<SurfaceSource>() {
+                    unsafe {
+                        // Keep the display layer sized to the view EVERY frame.
+                        // The bounds-sync Effect only re-runs on a tracked-signal
+                        // change — it reads `bounds` imperatively (tracking
+                        // nothing) and fires once at 0×0 during the build, so a
+                        // freshly-added sublayer would stay 0×0 and INVISIBLE.
+                        // The raf loop runs per frame, so sizing here is reliable.
+                        // Wrap in a CATransaction with actions disabled so the
+                        // frame change doesn't implicitly animate.
+                        let bounds: CGRect = msg_send![&*view_for_stream, bounds];
+                        let txn = objc2::class!(CATransaction);
+                        let _: () = msg_send![txn, begin];
+                        let _: () = msg_send![txn, setDisableActions: true];
+                        let _: () =
+                            msg_send![&*display_layer_for_stream, setFrame: bounds];
+                        let _: () = msg_send![txn, commit];
+
+                        // A failed layer ignores all enqueues until flushed
+                        // (e.g. after a transient decode error) — recover before
+                        // the readiness check, since flush restores readiness.
+                        const STATUS_FAILED: isize = 2;
+                        let status: isize =
+                            msg_send![&*display_layer_for_stream, status];
+                        if status == STATUS_FAILED {
+                            let _: () = msg_send![&*display_layer_for_stream, flush];
+                        }
+
+                        let generation = surf.generation();
+                        if generation == last_native_gen {
+                            return;
+                        }
+                        // Don't enqueue when the layer can't accept media yet —
+                        // it would be silently dropped. Retry next tick WITHOUT
+                        // consuming the generation.
+                        let ready: bool =
+                            msg_send![&*display_layer_for_stream, isReadyForMoreMediaData];
+                        if !ready {
+                            return;
+                        }
+                        last_native_gen = generation;
+
+                        // `acquire` adds a retain so a concurrent capture-queue
+                        // `publish` can't free the buffer before we enqueue it.
+                        let sbuf = surf.acquire();
+                        if sbuf.is_null() {
+                            return;
+                        }
+                        // Tag DisplayImmediately so the live frame renders now
+                        // (no media timebase on a preview).
+                        let attachments =
+                            CMSampleBufferGetSampleAttachmentsArray(sbuf, 1u8);
+                        if !attachments.is_null() {
+                            let dict = CFArrayGetValueAtIndex(attachments, 0);
+                            if !dict.is_null() {
+                                CFDictionarySetValue(
+                                    dict,
+                                    kCMSampleAttachmentKey_DisplayImmediately,
+                                    kCFBooleanTrue,
+                                );
+                            }
+                        }
+                        let _: () = msg_send![
+                            &*display_layer_for_stream,
+                            enqueueSampleBuffer: sbuf as *const AnyObject
+                        ];
+                        // The layer retains the buffer; drop our acquire-retain.
+                        surf.release(sbuf);
+                    }
+                    return;
+                }
+            }
+
+            // CPU fallback (a stream with no native source): copy the latest
+            // frame into a CGImage and push it to the root layer's contents.
             let generation = stream.generation();
             if generation == last_gen {
                 return;

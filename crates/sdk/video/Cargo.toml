@@ -22,6 +22,8 @@ runtime-core = { workspace = true }
 # A `Video` can display a live `MediaStream` (from `camera` /
 # `screen-recorder`), not just a URL `src`.
 media-stream = { workspace = true }
+# Self-registration of the per-backend Video external at construction.
+inventory = "0.3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }

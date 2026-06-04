@@ -18,6 +18,7 @@
 use crate::cg_image::{cgimage_from_rgba, CGImageRelease};
 use crate::{MediaContent, VideoOps, VideoProps};
 use backend_macos::{MacosBackend, MacosNode};
+use media_stream::SurfaceSource;
 use objc2::msg_send;
 use objc2::msg_send_id;
 use objc2::rc::Retained;
@@ -33,6 +34,12 @@ pub(crate) static OPS: &dyn VideoOps = &MacosVideoOps;
 /// the app's bootstrap.
 pub fn register(backend: &mut MacosBackend) {
     backend.register_external::<VideoProps, _>(|props, b| build_video(props, b));
+}
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_macos::MacosExternalRegistrar(register)
 }
 
 fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
@@ -72,11 +79,47 @@ fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
         let view_for_stream = view.clone();
         let props_for_stream = props.clone();
         let mut last_gen: u64 = u64::MAX;
+        let mut last_native_gen: u64 = u64::MAX;
         let mut scratch: Vec<u8> = Vec::new();
         runtime_core::raf_loop_scoped(move || {
             let MediaContent::Stream(stream) = props_for_stream.source.resolve() else {
                 return;
             };
+
+            // Zero-copy fast-path. If the producer published a native IOSurface
+            // source (the screen-recorder does), set each frame's surface
+            // straight as the layer's `contents`: no BGRA→RGBA swizzle, no
+            // CGImage, no per-frame texture upload — CoreAnimation displays the
+            // IOSurface's GPU texture directly. This is what eliminates the
+            // preview's CPU cost and end-to-end latency.
+            if let Some(native) = stream.native_source() {
+                if let Some(surf) = native.downcast_ref::<SurfaceSource>() {
+                    let generation = surf.generation();
+                    if generation == last_native_gen {
+                        return;
+                    }
+                    last_native_gen = generation;
+                    // `acquire` hands back an extra retain so the surface can't
+                    // be freed by a concurrent capture-queue `publish` between
+                    // here and `setContents:`. The layer takes its own retain;
+                    // we release ours immediately after.
+                    let surface = surf.acquire();
+                    if surface.is_null() {
+                        return;
+                    }
+                    unsafe {
+                        let layer: Retained<AnyObject> =
+                            msg_send_id![&view_for_stream, layer];
+                        let _: () =
+                            msg_send![&layer, setContents: surface as *const AnyObject];
+                        surf.release(surface);
+                    }
+                    return;
+                }
+            }
+
+            // CPU fallback (camera, or any RGBA-only stream with no native
+            // source): copy the latest frame into a CGImage and push it.
             let generation = stream.generation();
             if generation == last_gen {
                 return;
