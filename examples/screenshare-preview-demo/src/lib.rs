@@ -18,44 +18,11 @@ use runtime_core::{
 use screen_recorder::{MediaStream, PrivateLayer, RecorderError, RecordingConfig, ScreenRecorder};
 use std::rc::Rc;
 
-// Register the per-platform external handlers — the CLI-generated
-// wrapper hands us the concrete backend. `video::register` is needed to
-// display the captured stream; `screen_recorder::register` installs the
-// `PrivateLayer` (the ReplayKit/PixelCopy-excluded overlay window) so
-// the 🔴 REC badge renders but stays out of the recording.
-
-#[cfg(target_arch = "wasm32")]
-pub fn register_extensions(backend: &mut backend_web::WebBackend) {
-    video::register(backend);
-    screen_recorder::register(backend);
-}
-
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
-    video::register(backend);
-    screen_recorder::register(backend);
-}
-
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
-    video::register(backend);
-    screen_recorder::register(backend);
-}
-
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
-    video::register(backend);
-    // macOS private-layer exclusion (SCContentFilter) isn't wired yet;
-    // `register` installs the inline no-op so the call is uniform.
-    screen_recorder::register(backend);
-}
-
-#[cfg(not(any(
-    target_arch = "wasm32",
-    target_os = "ios",
-    target_os = "android",
-    target_os = "macos"
-)))]
+// The `video` and `screen-recorder` (`PrivateLayer`) externals each
+// self-register their handler at backend construction via `inventory::submit!`
+// inside their SDK crate — the app just uses `Video` / `PrivateLayer`, no
+// per-platform registration. The hook remains for app-local externals; the CLI
+// bootstrap still calls it. See [[project_inventory_self_registration]].
 pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 
 pub fn app() -> Element {

@@ -21,6 +21,8 @@ runtime-server = ["dep:dev-server", "dep:wire"]
 
 [dependencies]
 runtime-core = { workspace = true }
+# Self-registration of the per-backend navigator handler at construction.
+inventory = "0.3"
 
 # Recording handler deps (feature `runtime-server`, host-side only):
 # emit navigator wire commands instead of rendering. Off by default.

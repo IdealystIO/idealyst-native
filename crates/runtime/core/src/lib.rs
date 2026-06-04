@@ -58,6 +58,30 @@ mod network_state;
 #[cfg(feature = "debug-stats")]
 pub mod debug;
 
+// No-op `debug` shim for when THIS crate's `debug-stats` is off but the
+// `#[component]` macro still emitted `runtime_core::debug::record_component_*`
+// calls. That divergence is real: the macro's emission is gated on
+// `runtime-macros/debug-stats`, which the resolver unifies in the *host*
+// (proc-macro) graph — so enabling debug-stats on ONE workspace package turns
+// the macro on for the whole build, while `runtime-core/debug-stats` (which
+// gates the real module above, in the *target* graph) stays off for packages
+// that didn't ask for it. Without this shim those expansions fail with
+// "cannot find `debug` in `runtime_core`". The two fns are the only debug API
+// the macro emits; they inline to nothing, preserving the feature's
+// zero-overhead-when-off contract. See [[project_inventory_self_registration]]
+// neighbours / the debug-stats notes in Cargo.toml.
+#[cfg(not(feature = "debug-stats"))]
+pub mod debug {
+    /// No-op: component enter instrumentation is compiled out when
+    /// `runtime-core/debug-stats` is off. Present so macro-emitted calls
+    /// still resolve regardless of cross-crate feature unification.
+    #[inline(always)]
+    pub fn record_component_enter(_name: &'static str) {}
+    /// No-op counterpart to [`record_component_enter`].
+    #[inline(always)]
+    pub fn record_component_exit(_name: &'static str) {}
+}
+
 #[cfg(feature = "robot")]
 pub mod robot;
 

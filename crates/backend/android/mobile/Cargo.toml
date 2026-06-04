@@ -38,6 +38,7 @@ debug-stats = ["runtime-core/debug-stats"]
 # the cache dir and calling `Typeface.createFromFile`, so it needs the
 # bytes embedded. See `runtime_core::assets`.
 runtime-core = { workspace = true, features = ["embed-font-bytes"] }
+inventory = "0.3"
 # Shared Android helpers (JNI utilities + render loop driver). Same
 # crate is consumed by `backend-android-tv`.
 backend-android-core = { workspace = true }

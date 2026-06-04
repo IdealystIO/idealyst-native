@@ -61,40 +61,26 @@ mod styles;
 // =============================================================================
 
 #[cfg(target_arch = "wasm32")]
-pub fn register_extensions(backend: &mut backend_web::WebBackend) {
-    drawer_navigator::register(backend);
-    codeblock::register(backend);
-    table::register(backend);
+pub fn register_extensions(_backend: &mut backend_web::WebBackend) {
     backend_web::install_viewport_observer();
 }
 
-// On native, `codeblock::register` and `table::register` are
-// generic no-ops over any `Backend` — the SDKs build their node trees
-// directly from view + text primitives instead of via `Element::External`,
-// so there's nothing per-backend to install. The calls are kept for
-// symmetry with the web path; if either SDK ever grows native-specific
-// setup, this is where it lands.
+// `codeblock` and `table` are converted-External SDKs that now
+// self-register via `inventory` — there are no per-backend register
+// calls to make here. The crates stay linked because their primitives
+// (`codeblock::CodeBlock`, idea-ui's `Table` lowering to the `table`
+// SDK) are referenced in page code; `use table as _` below pins the
+// `table` crate in case the only reference is via idea-ui's re-export.
+use table as _;
 
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
-    drawer_navigator::register(backend);
-    codeblock::register(backend);
-    table::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {}
 
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
-    drawer_navigator::register(backend);
-    codeblock::register(backend);
-    table::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_android::AndroidBackend) {}
 
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
-    drawer_navigator::register(backend);
-    codeblock::register(backend);
-    table::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_macos::MacosBackend) {}
 
 #[cfg(all(
     not(target_arch = "wasm32"),
@@ -102,20 +88,15 @@ pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
     not(target_os = "android"),
     not(target_os = "macos"),
 ))]
-pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
-    drawer_navigator::register(backend);
-    codeblock::register(backend);
-    table::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
 
 // Recorder-side registration for the runtime-server sidecar. A distinct
 // fn name (not an overload of `register_extensions`) so it never
 // collides with the host target's per-backend overload above when both
 // compile in the sidecar build. Only the drawer navigator needs a
-// recording handler: `codeblock` / `table` build their trees from
-// view+text primitives on non-web backends (no `Element::External`), so
-// the recorder captures them as ordinary primitives — nothing to
-// register. Gated by `sidecar` (set only by the generated sidecar
+// recording handler: `codeblock` / `table` self-register via inventory
+// and build their trees from primitives the recorder captures as
+// ordinary nodes — nothing to register. Gated by `sidecar` (set only by the generated sidecar
 // wrapper) so device/web builds never pull `dev-server`.
 #[cfg(feature = "sidecar")]
 pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {

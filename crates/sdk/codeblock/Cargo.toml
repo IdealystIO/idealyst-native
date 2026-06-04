@@ -19,10 +19,18 @@ license.workspace = true
 
 [dependencies]
 runtime-core = { workspace = true }
+# Self-registration of the per-backend external handler at construction.
+inventory = "0.3"
 # Wire serde for `CodeBlockProps` so a `code_block(...)` external renders
 # over the runtime-server wire (recorder serializes the spans; the device
 # deserializes them back + dispatches to its real per-backend handler).
 serde_json = "1"
+
+# Web handler self-registers a `WebExternalRegistrar` (the generic
+# `register` monomorphized to `WebBackend`), so the web backend must be a
+# named dependency on wasm32.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
 
 # Android handler depends on the Android backend's `register_external`
 # inherent method plus its JNI surface for constructing the

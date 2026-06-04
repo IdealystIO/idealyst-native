@@ -417,3 +417,9 @@ pub fn register(backend: &mut TerminalBackend) {
         Box::new(TerminalDrawerHandler::new())
     });
 }
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_terminal::TerminalNavigatorRegistrar(register)
+}

@@ -72,7 +72,10 @@ mod layout_policy;
 mod stub;
 
 #[cfg(target_os = "android")]
-pub use imp::{install_global_self, set_animated_color, set_animated_f32, AndroidBackend};
+pub use imp::{
+    install_global_self, set_animated_color, set_animated_f32, AndroidBackend,
+    AndroidExternalRegistrar, AndroidNavigatorRegistrar,
+};
 
 /// SDK extension point: leaked-box callback wrapper for header bar
 /// buttons. Constructed by the navigator helpers crate when building

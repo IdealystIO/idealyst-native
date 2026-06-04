@@ -754,7 +754,33 @@ fn start_view_intent(
     Ok(())
 }
 
+/// An inventory-collected external registrar. An SDK's Android module
+/// `inventory::submit!`s one of these (carrying a `fn(&mut AndroidBackend)`);
+/// [`AndroidBackend::new`] drains them so the SDK self-registers its
+/// `Element::External` handler without the app naming the concrete backend.
+/// See [[project_inventory_self_registration]].
+pub struct AndroidExternalRegistrar(pub fn(&mut AndroidBackend));
+inventory::collect!(AndroidExternalRegistrar);
+
+/// Navigator analogue of [`AndroidExternalRegistrar`]; a navigator SDK's Android
+/// module submits one so the app needn't call `<nav>::register` per platform.
+/// See [[project_inventory_self_registration]].
+pub struct AndroidNavigatorRegistrar(pub fn(&mut AndroidBackend));
+inventory::collect!(AndroidNavigatorRegistrar);
+
 impl AndroidBackend {
+    /// Install every SDK-submitted external + navigator handler. Native
+    /// (non-wasm) so inventory's link-time ctors populate the slices before
+    /// construction.
+    fn drain_self_registrars(&mut self) {
+        for r in inventory::iter::<AndroidExternalRegistrar> {
+            (r.0)(self);
+        }
+        for r in inventory::iter::<AndroidNavigatorRegistrar> {
+            (r.0)(self);
+        }
+    }
+
     /// Construct a backend rooted at the provided Android `Context`
     /// and a parent `ViewGroup` to mount under.
     pub fn new(context: GlobalRef, root: GlobalRef) -> Self {
@@ -764,7 +790,7 @@ impl AndroidBackend {
         // NativeActivity, so nothing else populates it. Without this, the first
         // SDK call panics "android context was not initialized" → abort.
         init_ndk_context(&context);
-        Self {
+        let mut backend = Self {
             context,
             root,
             anim_state: HashMap::new(),
@@ -782,7 +808,9 @@ impl AndroidBackend {
             pending_sticky: HashMap::new(),
             pending_reveal: Vec::new(),
             detached_window_roots: HashMap::new(),
-        }
+        };
+        backend.drain_self_registrars();
+        backend
     }
 
     /// Register a handler for the third-party external primitive whose

@@ -26,6 +26,8 @@ license.workspace = true
 
 [dependencies]
 runtime-core = { workspace = true }
+# Self-registration of the per-backend external handler at construction.
+inventory = "0.3"
 
 # CommonMark + GFM (strikethrough, task lists) pull parser. Pure Rust,
 # compiles on every target incl. wasm32. `default-features = false`
@@ -38,6 +40,12 @@ pulldown-cmark = { version = "0.12", default-features = false }
 # device deserializes + dispatches to its real per-backend handler).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Web handler self-registers a `WebExternalRegistrar` (the generic
+# `register` monomorphized to `WebBackend`), so the web backend must be a
+# named dependency on wasm32.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
 
 # Android handler builds a plain `android.widget.TextView` + a
 # `SpannableStringBuilder` directly via JNI (no custom Kotlin class — a

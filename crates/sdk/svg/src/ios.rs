@@ -906,8 +906,16 @@ fn build_cg_gradient(
 
 pub(crate) static OPS: &dyn SvgOps = &IosSvgOps;
 
+/// Register the SVG handler against an `IosBackend`. One-line call from
+/// app bootstrap.
 pub fn register(backend: &mut IosBackend) {
     backend.register_external::<SvgProps, _>(|props, b| build_svg(props, b));
+}
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_ios::IosExternalRegistrar(register)
 }
 
 fn build_svg(props: &Rc<SvgProps>, b: &mut IosBackend) -> IosNode {

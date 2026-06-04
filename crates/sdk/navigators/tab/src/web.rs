@@ -186,3 +186,9 @@ impl NavigatorHandler<WebBackend> for WebTabHandler {
 pub fn register(backend: &mut WebBackend) {
     backend.register_navigator::<TabPresentation, _>(|| Box::new(WebTabHandler::new()));
 }
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_web::WebNavigatorRegistrar(register)
+}

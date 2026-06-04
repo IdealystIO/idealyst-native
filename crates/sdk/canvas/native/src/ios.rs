@@ -144,6 +144,12 @@ pub fn register(backend: &mut IosBackend) {
     backend.register_external::<CanvasProps, _>(|props, b| build_canvas(props, b));
 }
 
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_ios::IosExternalRegistrar(register)
+}
+
 fn build_canvas(props: &Rc<CanvasProps>, b: &mut IosBackend) -> IosNode {
     let view = IdealystCanvasView::new(b.mtm());
     // Cast to UIView for layout registration; Obj-C dispatch still reaches

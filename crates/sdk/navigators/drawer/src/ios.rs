@@ -576,3 +576,9 @@ pub fn register(backend: &mut IosBackend) {
         std::rc::Rc::new(cmd) as std::rc::Rc<dyn std::any::Any>
     });
 }
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_ios::IosNavigatorRegistrar(register)
+}

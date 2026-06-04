@@ -62,6 +62,11 @@ pub fn register(backend: &mut IosBackend) {
     backend.register_external::<MapViewProps, _>(|props, b| build_map_view(props, b));
 }
 
+// Self-register at backend construction. See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_ios::IosExternalRegistrar(register)
+}
+
 /// Construct an `MKMapView` at zero rect (Taffy resizes it from the
 /// layout pass), set its `centerCoordinate` + `camera.altitude` from
 /// the props, register it with the backend's layout tree, and wrap it

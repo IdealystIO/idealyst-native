@@ -12,32 +12,18 @@
 //! later enhancement, not needed to demonstrate the renderer.
 
 use canvas::prelude::*;
+// link the chosen canvas renderer so its inventory self-registration survives DCE
+use canvas_native as _;
 use idea_ui::{install_idea_theme, light_theme, Stack, StackGap, StackPadding, Typography};
 use runtime_core::{
     raf_loop_scoped, signal, ui, view, Element, IntoElement, Length, StyleRules, StyleSheet,
 };
 use std::rc::Rc;
 
-/// Register the canvas renderer per platform. The CLI-generated wrapper
-/// hands us the concrete backend; `canvas_native::register` installs the
-/// `CanvasProps` external handler. Only web has a native module this
-/// phase — other targets get the framework's "not supported" placeholder.
-#[cfg(target_arch = "wasm32")]
-pub fn register_extensions(backend: &mut backend_web::WebBackend) {
-    canvas_native::register(backend);
-}
-
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
-    canvas_native::register(backend);
-}
-
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
-    canvas_native::register(backend);
-}
-
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+/// No per-platform registration needed: the canvas renderer external
+/// self-registers via `inventory::submit!` at backend construction (see
+/// [[project_inventory_self_registration]]). The `use canvas_native as _;`
+/// above keeps the renderer crate linked so its inventory entry survives DCE.
 pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 
 /// Fixed logical canvas size every card draws into.

@@ -18,12 +18,10 @@ use idea_ui::{install_idea_theme, light_theme, typography_kind, Stack, StackGap,
 use media_stream::MediaStream;
 use runtime_core::{signal, text, ui, Element, IntoElement, Signal};
 
-#[cfg(target_arch = "wasm32")]
-pub fn register_extensions(backend: &mut backend_web::WebBackend) {
-    video::register(backend);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
+/// No per-platform registration needed: the `video` external self-registers
+/// via `inventory::submit!` at backend construction (see
+/// [[project_inventory_self_registration]]). The crate stays linked through
+/// the `video::Video` references in `app()`.
 pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 
 #[cfg(feature = "sidecar")]

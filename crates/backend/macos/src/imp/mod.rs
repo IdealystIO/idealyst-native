@@ -329,11 +329,21 @@ pub fn schedule_layout_pass() {
 pub struct MacosExternalRegistrar(pub fn(&mut MacosBackend));
 inventory::collect!(MacosExternalRegistrar);
 
+/// Navigator analogue of [`MacosExternalRegistrar`]; a navigator SDK's macOS
+/// module submits one so the app needn't call `<nav>::register` per platform.
+/// See [[project_inventory_self_registration]].
+pub struct MacosNavigatorRegistrar(pub fn(&mut MacosBackend));
+inventory::collect!(MacosNavigatorRegistrar);
+
 impl MacosBackend {
-    /// Install every SDK-submitted external handler. Native (non-wasm) so
-    /// inventory's link-time ctors populate the slice before construction.
-    fn drain_external_registrars(&mut self) {
+    /// Install every SDK-submitted external + navigator handler. Native
+    /// (non-wasm) so inventory's link-time ctors populate the slices before
+    /// construction.
+    fn drain_self_registrars(&mut self) {
         for r in inventory::iter::<MacosExternalRegistrar> {
+            (r.0)(self);
+        }
+        for r in inventory::iter::<MacosNavigatorRegistrar> {
             (r.0)(self);
         }
     }
@@ -356,7 +366,7 @@ impl MacosBackend {
             detached_window_roots: HashMap::new(),
             root_layout: None,
         };
-        backend.drain_external_registrars();
+        backend.drain_self_registrars();
         backend
     }
 
@@ -1058,12 +1068,37 @@ impl MacosBackend {
             animated::sync_transform_after_layout(view, &self.animated_states);
         }
 
-        // Lay out every detached (screen_recorder private-layer) root. These
-        // live in their own borderless overlay windows and never enter the
-        // host tree, so the host-root compute above doesn't reach them — but
-        // the External walker has by now inserted their children (toolbar,
-        // preview). Compute each against its overlay window's content size so
-        // the toolbar fills + positions correctly inside its window.
+        // Keep every detached (screen_recorder private-layer) overlay window
+        // covering the host's content area BEFORE we recompute its contents.
+        // `addChildWindow:ordered:` tracks the host's moves (origin) but not
+        // its size, so on a window resize the overlay would keep its old size
+        // and the toolbar inside it would lay out against stale bounds. Rewrite
+        // each overlay's frame to the host's current content rect (screen
+        // coords) when the size drifts — gated by `detached_overlay_needs_resize`
+        // so we don't fight AppKit's per-frame child-window move tracking.
+        if !self.detached_window_roots.is_empty() {
+            if let Some(host_content) = self.host_content_rect_screen() {
+                let target = (host_content.size.width as f32, host_content.size.height as f32);
+                for window in self.detached_window_roots.values() {
+                    let cur: CGRect = unsafe { msg_send![&**window, frame] };
+                    let current = (cur.size.width as f32, cur.size.height as f32);
+                    if crate::layout_policy::detached_overlay_needs_resize(current, target) {
+                        // `display: true` so the resized backing repaints this
+                        // pass rather than on the next event-loop turn.
+                        let _: () = unsafe {
+                            msg_send![&**window, setFrame: host_content, display: true]
+                        };
+                    }
+                }
+            }
+        }
+
+        // Lay out every detached private-layer root. These live in their own
+        // borderless overlay windows and never enter the host tree, so the
+        // host-root compute above doesn't reach them — but the External walker
+        // has by now inserted their children (toolbar, preview). Compute each
+        // against its overlay window's (now host-synced) content size so the
+        // toolbar fills + positions correctly inside its window.
         let detached: Vec<(usize, CGSize)> = self
             .detached_window_roots
             .iter()
@@ -1077,6 +1112,21 @@ impl MacosBackend {
         for (key, size) in detached {
             self.layout_detached_root(key, size);
         }
+    }
+
+    /// The host window's current content rect in SCREEN coordinates, or `None`
+    /// before the host root is attached to a window. Used to keep the
+    /// private-layer overlay child windows sized to the app's drawable area
+    /// across host resizes (`addChildWindow:` only tracks moves, not size).
+    fn host_content_rect_screen(&self) -> Option<CGRect> {
+        let host = self.host_root.as_ref()?;
+        let win_ptr: *mut objc2_app_kit::NSWindow = unsafe { msg_send![&**host, window] };
+        if win_ptr.is_null() {
+            return None;
+        }
+        let frame: CGRect = unsafe { msg_send![win_ptr, frame] };
+        let content: CGRect = unsafe { msg_send![win_ptr, contentRectForFrameRect: frame] };
+        Some(content)
     }
 
     /// Deferred post-mount layout pass: recompute from the stashed root against
@@ -1967,9 +2017,13 @@ impl Backend for MacosBackend {
         };
 
         // AppKit: `addSubview:` mounts the child. Frame is determined
-        // by the layout pass in `finish()`; here we just establish
-        // the parent/child relationship in both the view tree AND
-        // the Taffy tree.
+        // by the layout pass; at initial build that's `finish()`, but a
+        // POST-mount insert (a `presence`/`when` mount — e.g. the
+        // whiteboard Settings/Preview screens) happens after `finish` has
+        // already run once and won't recompute on its own. Here we just
+        // establish the parent/child relationship in both the view tree
+        // AND the Taffy tree, then (below) kick a coalesced pass when the
+        // parent is already in a window.
         unsafe { target_view.addSubview(child_view) };
 
         // Mirror the parenting in Taffy against the same logical
@@ -1980,6 +2034,18 @@ impl Backend for MacosBackend {
         let parent_layout = self.layout_for_view(&target_view);
         let child_layout = self.layout_for_view(child_view);
         self.layout.add_child(parent_layout, child_layout);
+
+        // Post-mount insert into a window-attached parent → schedule a
+        // coalesced layout pass so the freshly-mounted subtree gets sized.
+        // During the initial build the target isn't in a window yet (the root
+        // is parented to the host in `finish`), so this no-ops then and the
+        // mount pass handles it. Mirrors `apply_style` + the Android `insert`
+        // fix. Without it, `presence` mounts stayed 0×0 and invisible on macOS.
+        let host_window: *mut objc2_app_kit::NSWindow =
+            unsafe { msg_send![&target_view, window] };
+        if crate::layout_policy::insert_needs_layout_pass(!host_window.is_null()) {
+            schedule_layout_pass();
+        }
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {

@@ -15,36 +15,10 @@ use runtime_core::{
 };
 use std::rc::Rc;
 
-// Register the `video` external handler per platform — the CLI-generated
-// wrapper hands us the concrete backend. Needed on every platform we want to
-// display a stream on (the `Video` external isn't registered otherwise).
-
-#[cfg(target_arch = "wasm32")]
-pub fn register_extensions(backend: &mut backend_web::WebBackend) {
-    video::register(backend);
-}
-
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
-    video::register(backend);
-}
-
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
-    video::register(backend);
-}
-
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
-    video::register(backend);
-}
-
-#[cfg(not(any(
-    target_arch = "wasm32",
-    target_os = "ios",
-    target_os = "android",
-    target_os = "macos"
-)))]
+// The `video` external self-registers its handler at backend construction via
+// `inventory::submit!` inside the `video` SDK — the app just uses `Video`, no
+// per-platform registration. The hook remains for app-local externals; the CLI
+// bootstrap still calls it. See [[project_inventory_self_registration]].
 pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 
 #[cfg(feature = "sidecar")]

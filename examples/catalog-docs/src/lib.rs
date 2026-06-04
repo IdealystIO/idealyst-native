@@ -52,6 +52,12 @@ mod theme;
 use catalog::CatalogModel;
 use routes::{decode_entry_route, ENTRY_ROUTE, OVERVIEW_ROUTE};
 
+// `codeblock` / `markdown` are referenced directly in page code (`shell.rs`),
+// but the `table` SDK is only reached transitively via idea-ui's `Table`
+// re-export — pin it so its `inventory` self-registration ctors link into
+// the binary now that the explicit `table::register` calls are gone.
+use table as _;
+
 thread_local! {
     /// The catalog is built once and shared by every screen closure. A
     /// thread-local `Rc` keeps the model alive across navigator screen
@@ -75,42 +81,23 @@ fn model() -> Rc<CatalogModel> {
 // =============================================================================
 
 #[cfg(target_arch = "wasm32")]
-pub fn register_extensions(backend: &mut backend_web::WebBackend) {
-    drawer_navigator::register(backend);
-    codeblock::register(backend);
-    markdown::register(backend);
-    table::register(backend);
+pub fn register_extensions(_backend: &mut backend_web::WebBackend) {
     backend_web::install_viewport_observer();
 }
 
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
-    drawer_navigator::register(backend);
-    codeblock::register(backend);
-    markdown::register(backend);
-    table::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {}
 
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
-    drawer_navigator::register(backend);
-    codeblock::register(backend);
-    markdown::register(backend);
-    table::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_android::AndroidBackend) {}
 
-// macOS/terminal have no native `markdown` handler yet — `register` there
-// only installs the wire serde, so prose nodes show the framework's
-// external placeholder. Harmless: catalog-docs ships web/ios/android (see
-// `[package.metadata.idealyst.app].targets`); these arms exist only for
-// the CLI-generated wrappers.
+// `codeblock` / `markdown` / `table` are converted-External SDKs that now
+// self-register via `inventory`, so there are no per-backend register
+// calls in any of these arms. catalog-docs ships web/ios/android (see
+// `[package.metadata.idealyst.app].targets`); the macOS/terminal arms
+// exist only for the CLI-generated wrappers.
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
-    drawer_navigator::register(backend);
-    codeblock::register(backend);
-    markdown::register(backend);
-    table::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_macos::MacosBackend) {}
 
 #[cfg(all(
     not(target_arch = "wasm32"),
@@ -118,12 +105,7 @@ pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
     not(target_os = "android"),
     not(target_os = "macos"),
 ))]
-pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
-    drawer_navigator::register(backend);
-    codeblock::register(backend);
-    markdown::register(backend);
-    table::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
 
 // Recorder-side registration for the runtime-server sidecar.
 #[cfg(feature = "sidecar")]

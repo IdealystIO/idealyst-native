@@ -11,11 +11,15 @@ crate-type = ["rlib"]
 [dependencies]
 runtime-core = { workspace = true, features = ["async-driver"] }
 idea-ui = { workspace = true }
+icons-lucide = { workspace = true }
 canvas = { workspace = true }
 canvas-native = { workspace = true }
 camera = { workspace = true }
 video = { workspace = true }
 screen-recorder = { workspace = true }
+media-writer = { workspace = true }
+file-export = { workspace = true }
+files = { workspace = true }
 
 # The concrete backend each platform's wrapper hands to `register_extensions`,
 # where the canvas / video / screen-recorder externals register their handlers.

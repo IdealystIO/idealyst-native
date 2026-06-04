@@ -36,6 +36,12 @@ pub fn register(backend: &mut WebBackend) {
     backend.register_external::<FormProps, _>(|props, _backend| build_form(props));
 }
 
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_web::WebExternalRegistrar(register)
+}
+
 fn build_form(props: &Rc<FormProps>) -> web_sys::Element {
     let document = web_sys::window()
         .expect("no window")

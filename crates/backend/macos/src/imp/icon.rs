@@ -26,6 +26,7 @@
 
 use std::ffi::c_void;
 
+use objc2::encode::{Encoding, RefEncode};
 use objc2::msg_send;
 use objc2::msg_send_id;
 use objc2::rc::Retained;
@@ -46,6 +47,15 @@ use super::{color_to_nscolor, FlippedView, MacosNode};
 
 #[repr(C)]
 struct CGPathRef(c_void);
+
+// `-[CAShapeLayer setPath:]` wants a typed `CGPathRef` (`^{CGPath=}`). Without
+// this, passing the pointer as `*const c_void` (`^v`) trips objc2's encoding
+// verifier and SIGABRTs (same family as the CGContext/CGColor traps —
+// [[project_macos_appkit_uikit_diffs]] gotchas #2/#9). `RefEncode` makes
+// `*mut CGPathRef` carry the right `^{CGPath=}` encoding through `msg_send!`.
+unsafe impl RefEncode for CGPathRef {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("CGPath", &[]));
+}
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
@@ -176,20 +186,23 @@ pub(crate) fn create_icon(
     // setPath: retains the CGPathRef; we own one +1 reference from
     // CGPathCreateMutable that we need to release after the layer
     // takes its own retain.
-    let _: () = unsafe { msg_send![&shape_layer, setPath: raw_path as *const c_void] };
+    // `raw_path` is `*mut CGPathRef`, which now encodes as `^{CGPath=}`.
+    let _: () = unsafe { msg_send![&shape_layer, setPath: raw_path] };
     unsafe { CGPathRelease(raw_path) };
 
     // Icon color via NSColor → CGColor. Matches the iOS path's
-    // UIColor → CGColor route.
+    // UIColor → CGColor route. `-[NSColor CGColor]` returns `^{CGColor=}`, so
+    // receive it as the encoding-correct `CGColorRef` newtype (a `^v` receiver
+    // SIGABRTs) — `setFill/StrokeColor:` take the same typed pointer.
     let ns_color: Retained<NSColor> = match color {
         Some(c) => color_to_nscolor(c),
         None => unsafe { msg_send_id![objc2::class!(NSColor), labelColor] },
     };
-    let cg_color: *const c_void = unsafe { msg_send![&ns_color, CGColor] };
+    let cg_color: super::CGColorRef = unsafe { msg_send![&ns_color, CGColor] };
     let clear: Retained<NSColor> = unsafe {
         msg_send_id![objc2::class!(NSColor), clearColor]
     };
-    let cg_clear: *const c_void = unsafe { msg_send![&clear, CGColor] };
+    let cg_clear: super::CGColorRef = unsafe { msg_send![&clear, CGColor] };
 
     if data.filled {
         // Filled / silhouette style: fill with the icon color, no stroke.
@@ -238,9 +251,9 @@ pub(crate) fn create_icon(
 pub(crate) fn update_icon_color(node: &MacosNode, color: &Color) {
     if let Some(shape) = get_shape_layer(node) {
         let ns = color_to_nscolor(color);
-        let cg: *const c_void = unsafe { msg_send![&ns, CGColor] };
-        let cg_fill: *const c_void = unsafe { msg_send![&shape, fillColor] };
-        let is_filled = !cg_fill.is_null() && unsafe { CGColorGetAlpha(cg_fill) } > 0.0;
+        let cg: super::CGColorRef = unsafe { msg_send![&ns, CGColor] };
+        let cg_fill: super::CGColorRef = unsafe { msg_send![&shape, fillColor] };
+        let is_filled = !cg_fill.0.is_null() && unsafe { CGColorGetAlpha(cg_fill.0) } > 0.0;
         if is_filled {
             let _: () = unsafe { msg_send![&shape, setFillColor: cg] };
         } else {
@@ -262,4 +275,25 @@ fn get_shape_layer(node: &MacosNode) -> Option<Retained<NSObject>> {
     }
     let shape: Retained<NSObject> = unsafe { msg_send_id![sublayers, firstObject] };
     Some(shape)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression for the `-[CAShapeLayer setPath:]` SIGABRT: the runtime wants
+    /// the argument typed `^{CGPath=}`, and a `*mut CGPathRef` only carries that
+    /// encoding because `CGPathRef: RefEncode` says so. If someone reverts the
+    /// pointer to a bare `*const c_void` (`^v`) the icon backend crashes the
+    /// instant any `icon()` mounts on macOS (the whiteboard-demo did exactly
+    /// this). A full mount test needs a live AppKit layer + main thread; pinning
+    /// the encoding constant is the closest reachable guard.
+    #[test]
+    fn cgpath_pointer_encodes_as_typed_cgpath() {
+        assert_eq!(
+            CGPathRef::ENCODING_REF,
+            Encoding::Pointer(&Encoding::Struct("CGPath", &[])),
+            "*mut CGPathRef must encode as ^{{CGPath=}} for -[CAShapeLayer setPath:]",
+        );
+    }
 }

@@ -30,6 +30,11 @@ pub fn register(backend: &mut WebBackend) {
     });
 }
 
+// Self-register at backend construction. See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_web::WebExternalRegistrar(register)
+}
+
 /// Build an `<iframe>` embedding OpenStreetMap centered on the
 /// requested lat/lon at the requested zoom. The bounding-box width
 /// shrinks as zoom increases (rough heuristic — production code would

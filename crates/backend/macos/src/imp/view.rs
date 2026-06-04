@@ -147,15 +147,35 @@ impl FlippedView {
         let win: CGPoint = unsafe { msg_send![event, locationInWindow] };
         let local: CGPoint =
             unsafe { msg_send![self, convertPoint: win, fromView: std::ptr::null::<NSView>()] };
+
+        // True top-left WINDOW coords. We can't reuse `local` (it's relative to
+        // THIS view) for `window_position`: a drag handler that moves its own
+        // view by the pointer delta would feed the moving frame back into the
+        // delta → the widget never tracks the cursor and flickers (the macOS
+        // "camera repositioning is janky" bug). Convert the window-space
+        // location into the window's `contentView` — that view is the flipped,
+        // full-window host, so its coordinate space IS top-left window space.
+        let win_tl: CGPoint = unsafe {
+            let window: *mut objc2::runtime::AnyObject = msg_send![self, window];
+            if window.is_null() {
+                local
+            } else {
+                let content: *mut objc2::runtime::AnyObject =
+                    msg_send![window, contentView];
+                if content.is_null() {
+                    local
+                } else {
+                    msg_send![content, convertPoint: win, fromView: std::ptr::null::<NSView>()]
+                }
+            }
+        };
         let ts: f64 = unsafe { msg_send![event, timestamp] };
 
         let ev = TouchEvent {
             id: TouchId(MOUSE_TOUCH_ID),
             phase,
             position: TouchPoint::new(local.x as f32, local.y as f32),
-            // The on_touch surfaces that need window coords (the drawing
-            // canvas) fill the window, so window-relative == local here.
-            window_position: TouchPoint::new(local.x as f32, local.y as f32),
+            window_position: TouchPoint::new(win_tl.x as f32, win_tl.y as f32),
             timestamp_ns: (ts * 1_000_000_000.0) as u64,
             force: None,
         };

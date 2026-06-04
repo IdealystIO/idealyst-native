@@ -42,6 +42,12 @@ pub fn register(backend: &mut AndroidBackend) {
     backend.register_external::<VideoProps, _>(|props, b| build_video(props, b));
 }
 
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_android::AndroidExternalRegistrar(register)
+}
+
 fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> GlobalRef {
     // The host is a FrameLayout; the Kotlin shim adds a VideoView (URL) or
     // ImageView (stream) child as needed.
@@ -79,6 +85,10 @@ fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> GlobalRef {
     // Stream path — poll the latest frame each frame on the UI looper.
     let host_for_stream = host.clone();
     let props_for_stream = props.clone();
+    // object-fit: Cover → CENTER_CROP (fill+crop), Contain → FIT_CENTER
+    // (letterbox). Static; passed to the Kotlin sink which sets the ImageView's
+    // scaleType.
+    let cover = matches!(props.object_fit, crate::ObjectFit::Cover);
     let mut last_gen: u64 = u64::MAX;
     let mut scratch: Vec<u8> = Vec::new();
     runtime_core::raf_loop_scoped(move || {
@@ -91,7 +101,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> GlobalRef {
         }
         last_gen = generation;
         if let Some((w, h)) = stream.latest(&mut scratch) {
-            show_frame(&host_for_stream, &scratch, w, h);
+            show_frame(&host_for_stream, &scratch, w, h, cover);
         }
     });
 
@@ -100,7 +110,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> GlobalRef {
 
 /// Push one RGBA8 frame to the host's stream ImageView (Kotlin makes the
 /// Bitmap + setImageBitmap). Called on the UI thread from the frame loop.
-fn show_frame(host: &GlobalRef, rgba: &[u8], width: u32, height: u32) {
+fn show_frame(host: &GlobalRef, rgba: &[u8], width: u32, height: u32, cover: bool) {
     with_jni_env(|env| {
         let needed = (width as usize) * (height as usize) * 4;
         if rgba.len() < needed {
@@ -122,12 +132,13 @@ fn show_frame(host: &GlobalRef, rgba: &[u8], width: u32, height: u32) {
         let _ = env.call_static_method(
             SINK,
             "showFrame",
-            "(Landroid/widget/FrameLayout;Ljava/nio/ByteBuffer;II)V",
+            "(Landroid/widget/FrameLayout;Ljava/nio/ByteBuffer;IIZ)V",
             &[
                 JValue::Object(host.as_obj()),
                 JValue::Object(&buf),
                 JValue::Int(width as i32),
                 JValue::Int(height as i32),
+                JValue::Bool(cover as u8),
             ],
         );
     });

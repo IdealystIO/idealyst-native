@@ -31,6 +31,11 @@ pub fn register(backend: &mut WebBackend) {
     backend.register_external::<TableCellProps, _>(|props, _backend| build_cell(props));
 }
 
+// Self-register at backend construction. See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_web::WebExternalRegistrar(register)
+}
+
 fn document() -> web_sys::Document {
     web_sys::window()
         .expect("no window")

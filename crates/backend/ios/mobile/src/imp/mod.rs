@@ -525,11 +525,21 @@ fn promote_pending_sticky_recursive(
 pub struct IosExternalRegistrar(pub fn(&mut IosBackend));
 inventory::collect!(IosExternalRegistrar);
 
+/// Navigator analogue of [`IosExternalRegistrar`]; a navigator SDK's iOS module
+/// submits one so the app needn't call `<nav>::register` per platform.
+/// See [[project_inventory_self_registration]].
+pub struct IosNavigatorRegistrar(pub fn(&mut IosBackend));
+inventory::collect!(IosNavigatorRegistrar);
+
 impl IosBackend {
-    /// Install every SDK-submitted external handler. Native (non-wasm) so
-    /// inventory's link-time ctors populate the slice before construction.
-    fn drain_external_registrars(&mut self) {
+    /// Install every SDK-submitted external + navigator handler. Native
+    /// (non-wasm) so inventory's link-time ctors populate the slices before
+    /// construction.
+    fn drain_self_registrars(&mut self) {
         for r in inventory::iter::<IosExternalRegistrar> {
+            (r.0)(self);
+        }
+        for r in inventory::iter::<IosNavigatorRegistrar> {
             (r.0)(self);
         }
     }
@@ -559,7 +569,7 @@ impl IosBackend {
             pending_sticky: HashMap::new(),
             detached_window_roots: HashMap::new(),
         };
-        backend.drain_external_registrars();
+        backend.drain_self_registrars();
         backend
     }
 

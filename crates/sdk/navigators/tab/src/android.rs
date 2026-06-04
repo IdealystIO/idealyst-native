@@ -183,3 +183,9 @@ impl NavigatorOps for NoopTabOps {}
 pub fn register(backend: &mut AndroidBackend) {
     backend.register_navigator::<TabPresentation, _>(|| Box::new(AndroidTabHandler::new()));
 }
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_android::AndroidNavigatorRegistrar(register)
+}

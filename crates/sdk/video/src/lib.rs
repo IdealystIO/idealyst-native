@@ -89,6 +89,11 @@ pub struct VideoProps {
     /// Restart from the beginning when playback reaches the end. Field
     /// name avoids the `loop` keyword. Ignored for a live stream source.
     pub loop_playback: bool,
+    /// How the frame fills its box when their aspect ratios differ. Mirrors
+    /// CSS `object-fit`: [`ObjectFit::Contain`] (default) fits the whole frame
+    /// inside the box (letterboxed); [`ObjectFit::Cover`] fills the box,
+    /// cropping the overflow — what a self-view camera widget wants.
+    pub object_fit: ObjectFit,
 }
 
 impl Default for VideoProps {
@@ -98,8 +103,23 @@ impl Default for VideoProps {
             autoplay: false,
             controls: false,
             loop_playback: false,
+            object_fit: ObjectFit::Contain,
         }
     }
+}
+
+/// How a [`Video`] frame fills its box when their aspect ratios differ —
+/// the cross-platform analogue of CSS `object-fit`. Each backend maps it to
+/// the native gravity/scale: web `object-fit`, Apple `contentsGravity` /
+/// `videoGravity` (`resizeAspect` vs `resizeAspectFill`), Android `ImageView`
+/// `scaleType` (`FIT_CENTER` vs `CENTER_CROP`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema)]
+pub enum ObjectFit {
+    /// Fit the entire frame inside the box, preserving aspect (letterboxed).
+    #[default]
+    Contain,
+    /// Fill the box, preserving aspect, cropping whatever overflows.
+    Cover,
 }
 
 // ============================================================================

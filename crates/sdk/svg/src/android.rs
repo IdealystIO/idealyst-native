@@ -70,8 +70,16 @@ fn read_intrinsic_size(view: &GlobalRef) -> Option<(f32, f32)> {
     INTRINSIC_SIZES.with(|m| m.borrow().get(&key).copied())
 }
 
+/// Register the SVG handler against an `AndroidBackend`. One-line call from
+/// app bootstrap.
 pub fn register(backend: &mut AndroidBackend) {
     backend.register_external::<SvgProps, _>(|props, b| build_svg(props, b));
+}
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_android::AndroidExternalRegistrar(register)
 }
 
 fn build_svg(props: &Rc<SvgProps>, b: &mut AndroidBackend) -> GlobalRef {

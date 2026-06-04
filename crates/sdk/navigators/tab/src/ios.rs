@@ -179,3 +179,9 @@ impl NavigatorHandler<IosBackend> for IosTabHandler {
 pub fn register(backend: &mut IosBackend) {
     backend.register_navigator::<TabPresentation, _>(|| Box::new(IosTabHandler::new()));
 }
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_ios::IosNavigatorRegistrar(register)
+}

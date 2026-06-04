@@ -321,17 +321,11 @@ pub fn start() {
     install_idea_theme(light_theme());
 
     let backend = Rc::new(RefCell::new(backend_web::WebBackend::new("#app")));
-    // Register third-party SDK primitives. The fiddle uses
-    // `codeblock::code_block` for the syntax-highlight overlay
-    // behind the textarea — see `editor_panel()`. `webview::register`
-    // installs the `WebView` SDK so `preview_panel()`'s iframe shows
-    // up; without it the framework's "external not supported"
-    // placeholder renders instead.
-    {
-        let mut b = backend.borrow_mut();
-        codeblock::register(&mut b);
-        webview::register(&mut b);
-    }
+    // No per-platform registration needed: the `codeblock` and `webview`
+    // externals self-register via `inventory::submit!` at backend
+    // construction (see [[project_inventory_self_registration]]). Both crates
+    // stay linked through their `code_block`/`web_view` references elsewhere
+    // in this module (`editor_panel()` / `preview_panel()`).
     let owner = runtime_core::render(backend, app());
     OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
 }

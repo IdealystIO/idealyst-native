@@ -818,6 +818,7 @@ dependencies = [
 name = "backend-terminal"
 version = "0.0.1"
 dependencies = [
+ "inventory",
  "runtime-core",
  "runtime-layout",
 ]
@@ -1505,6 +1506,8 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
  "backend-ios-mobile",
+ "backend-web",
+ "inventory",
  "jni 0.21.1",
  "log",
  "objc2 0.5.2",
@@ -2114,6 +2117,7 @@ dependencies = [
  "backend-web",
  "css",
  "dev-server",
+ "inventory",
  "ios-navigator-helpers",
  "jni 0.21.1",
  "log",
@@ -2482,6 +2486,7 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-web",
+ "inventory",
  "jni 0.21.1",
  "js-sys",
  "objc2 0.5.2",
@@ -4332,6 +4337,7 @@ name = "maps-ios"
 version = "0.0.1"
 dependencies = [
  "backend-ios-mobile",
+ "inventory",
  "maps-core",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
@@ -4344,6 +4350,7 @@ name = "maps-web"
 version = "0.0.1"
 dependencies = [
  "backend-web",
+ "inventory",
  "maps-core",
  "web-sys",
 ]
@@ -4355,6 +4362,8 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
  "backend-ios-mobile",
+ "backend-web",
+ "inventory",
  "jni 0.21.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
@@ -7128,6 +7137,7 @@ dependencies = [
  "backend-terminal",
  "backend-web",
  "dev-server",
+ "inventory",
  "ios-navigator-helpers",
  "jni 0.21.1",
  "runtime-core",
@@ -7238,6 +7248,7 @@ dependencies = [
  "backend-ios-mobile",
  "backend-web",
  "fontdb 0.18.0",
+ "inventory",
  "jni 0.21.1",
  "js-sys",
  "objc2 0.5.2",
@@ -7448,6 +7459,7 @@ dependencies = [
  "backend-ssr",
  "backend-web",
  "dev-server",
+ "inventory",
  "ios-navigator-helpers",
  "jni 0.21.1",
  "runtime-core",
@@ -7461,6 +7473,7 @@ name = "table"
 version = "0.0.1"
 dependencies = [
  "backend-web",
+ "inventory",
  "runtime-core",
  "wasm-bindgen",
  "web-sys",
@@ -8873,6 +8886,7 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-web",
+ "inventory",
  "jni 0.21.1",
  "js-sys",
  "objc2 0.5.2",
@@ -9086,7 +9100,11 @@ dependencies = [
  "camera",
  "canvas",
  "canvas-native",
+ "file-export",
+ "files",
+ "icons-lucide",
  "idea-ui",
+ "media-writer",
  "runtime-core",
  "screen-recorder",
  "video",

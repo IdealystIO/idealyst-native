@@ -211,9 +211,7 @@ fn sync_body_background_to_theme() {
 // =============================================================================
 
 #[cfg(target_arch = "wasm32")]
-pub fn register_extensions(backend: &mut backend_web::WebBackend) {
-    drawer_navigator::register(backend);
-    codeblock::register(backend);
+pub fn register_extensions(_backend: &mut backend_web::WebBackend) {
     // Push the initial window size + wire a resize listener into the
     // framework's reactive viewport signal. The CLI-generated wrapper
     // installs scheduler/time-source/render-loop here too, but the
@@ -225,8 +223,7 @@ pub fn register_extensions(backend: &mut backend_web::WebBackend) {
 }
 
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
-    drawer_navigator::register(backend);
+pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {
     // Install the iOS render-loop driver so the embedded `Simulator`
     // component's wgpu host gets per-frame ticks. The driver is the
     // NSTimer at ~60 Hz from `backend-ios-core::render_loop`; the
@@ -238,19 +235,13 @@ pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
 }
 
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
-    drawer_navigator::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_android::AndroidBackend) {}
 
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
-    drawer_navigator::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_macos::MacosBackend) {}
 
 #[cfg(all(not(feature = "ssr"), not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos"))))]
-pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
-    drawer_navigator::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
 
 // Recorder-side registration for the runtime-server sidecar. Distinct fn
 // name (not an overload of `register_extensions`) so it never collides
@@ -273,5 +264,4 @@ pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBacke
 #[cfg(feature = "ssr")]
 pub fn register_ssr_extensions(backend: &mut backend_ssr::SsrBackend) {
     drawer_navigator::chrome::register(backend);
-    codeblock::register(backend);
 }

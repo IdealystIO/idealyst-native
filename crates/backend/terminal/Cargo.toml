@@ -20,3 +20,4 @@ crate-type = ["rlib"]
 [dependencies]
 runtime-core = { workspace = true }
 runtime-layout = { workspace = true }
+inventory = "0.3"

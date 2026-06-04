@@ -16,8 +16,16 @@ use objc2_ui_kit::UIView;
 
 pub(crate) static OPS: &dyn FormOps = &IosFormOps;
 
+/// Register the Form handler against an `IosBackend`. One-line call from
+/// app bootstrap.
 pub fn register(backend: &mut IosBackend) {
     backend.register_external::<FormProps, _>(|_props, b| build_form(b));
+}
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_ios::IosExternalRegistrar(register)
 }
 
 fn build_form(b: &mut IosBackend) -> IosNode {

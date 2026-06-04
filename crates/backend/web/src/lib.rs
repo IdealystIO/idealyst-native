@@ -698,6 +698,14 @@ pub(crate) struct DynamicRule {
 pub struct WebExternalRegistrar(pub fn(&mut WebBackend));
 inventory::collect!(WebExternalRegistrar);
 
+/// An inventory-collected navigator registrar — the navigator analogue of
+/// [`WebExternalRegistrar`]. A navigator SDK's web module `inventory::submit!`s
+/// one (carrying a `fn(&mut WebBackend)`); [`WebBackend::new`] drains it so the
+/// app needn't call `<nav>::register` per platform.
+/// See [[project_inventory_self_registration]].
+pub struct WebNavigatorRegistrar(pub fn(&mut WebBackend));
+inventory::collect!(WebNavigatorRegistrar);
+
 impl WebBackend {
     /// Constructs a backend that will mount its root under `mount_selector`
     /// (e.g. `"#app"`). Panics if the element is not found.
@@ -966,8 +974,11 @@ impl WebBackend {
     /// submitted statics survive the release `wasm-opt -Oz` pass — they carry a
     /// function pointer (code), not the prunable string data the catalog uses.
     /// See [[project_inventory_self_registration]].
-    fn drain_external_registrars(&mut self) {
+    fn drain_self_registrars(&mut self) {
         for r in inventory::iter::<WebExternalRegistrar> {
+            (r.0)(self);
+        }
+        for r in inventory::iter::<WebNavigatorRegistrar> {
             (r.0)(self);
         }
     }
@@ -1059,7 +1070,7 @@ impl WebBackend {
             nav_handler_instances: HashMap::new(),
             animated_states: HashMap::new(),
         };
-        backend.drain_external_registrars();
+        backend.drain_self_registrars();
         backend
     }
 

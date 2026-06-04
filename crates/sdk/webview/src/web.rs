@@ -37,6 +37,12 @@ pub fn register(backend: &mut WebBackend) {
     backend.register_external::<WebViewProps, _>(|props, _backend| build_iframe(props));
 }
 
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_web::WebExternalRegistrar(register)
+}
+
 fn build_iframe(props: &Rc<WebViewProps>) -> web_sys::Element {
     let document = web_sys::window()
         .expect("no window")

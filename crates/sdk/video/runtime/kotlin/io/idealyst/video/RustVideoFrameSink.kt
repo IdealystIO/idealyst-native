@@ -37,15 +37,18 @@ object RustVideoFrameSink {
      *  and never retain it. The Bitmap is reused across frames when the
      *  dimensions match, so a steady stream allocates nothing per frame. */
     @JvmStatic
-    fun showFrame(host: FrameLayout, rgba: ByteBuffer, width: Int, height: Int) {
+    fun showFrame(host: FrameLayout, rgba: ByteBuffer, width: Int, height: Int, cover: Boolean) {
         if (width <= 0 || height <= 0 || rgba.capacity() < width * height * 4) return
+        // object-fit: Cover → CENTER_CROP (fill the box, crop overflow);
+        // Contain → FIT_CENTER (letterbox). Matches the web/Apple mapping.
+        val scale = if (cover) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.FIT_CENTER
         var image = host.findViewWithTag<View>(IMAGE_TAG) as? ImageView
         if (image == null) {
             image = ImageView(host.context)
             image.tag = IMAGE_TAG
-            image.scaleType = ImageView.ScaleType.FIT_CENTER
             host.addView(image, matchParent())
         }
+        if (image.scaleType != scale) image.scaleType = scale
         val existing = (image.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
         val reusable = existing != null && !existing.isRecycled &&
             existing.width == width && existing.height == height &&

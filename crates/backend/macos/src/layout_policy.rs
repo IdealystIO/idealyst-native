@@ -44,6 +44,16 @@ pub(crate) fn reactive_change_needs_layout_pass(view_attached_to_window: bool) -
     view_attached_to_window
 }
 
+/// Whether a `Backend::insert` should schedule a layout pass. Same gate as a
+/// reactive style change: during the initial build the parent isn't in a window
+/// yet and `finish` lays the whole tree out, so scheduling is waste; but a
+/// POST-mount insert into a window-attached parent (a `presence`/`when` mount —
+/// the Settings/Preview screens) is exactly what `finish` never revisits, so it
+/// must kick a pass or the new subtree stays unsized (0×0) and invisible.
+pub(crate) fn insert_needs_layout_pass(parent_attached_to_window: bool) -> bool {
+    parent_attached_to_window
+}
+
 /// Minimum per-axis delta (in points) before a `setFrameSize:` on the host
 /// resize observer counts as a real resize. AppKit's autoresize math can emit
 /// sub-pixel jitter for a nominally-unchanged size; reacting to it would fire
@@ -89,6 +99,19 @@ pub(crate) fn resize_observer_reaction(last: (f32, f32), next: (f32, f32)) -> Re
     ResizeReaction { mirror_viewport: true, schedule_pass: had_real_size }
 }
 
+/// Whether a `PrivateLayer` overlay child window needs its frame rewritten to
+/// match the host's content area. `addChildWindow:ordered:` tracks the parent
+/// window's *moves* (origin) but NOT its *size*, so on a host resize the
+/// overlay keeps its old size and the toolbar inside it lays out against stale
+/// bounds. We rewrite the overlay frame only when the size actually drifts (a
+/// real host resize) so we don't fight AppKit's per-frame child-window move
+/// tracking on every layout pass. `current` is the overlay's current size,
+/// `host_content` the host window's current content-rect size.
+pub(crate) fn detached_overlay_needs_resize(current: (f32, f32), host_content: (f32, f32)) -> bool {
+    (current.0 - host_content.0).abs() > RESIZE_EPSILON
+        || (current.1 - host_content.1).abs() > RESIZE_EPSILON
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +145,18 @@ mod tests {
         assert!(!reactive_change_needs_layout_pass(false));
         // Post-mount (in a window) → finish() already ran; we must schedule.
         assert!(reactive_change_needs_layout_pass(true));
+    }
+
+    #[test]
+    fn post_mount_insert_into_attached_parent_schedules() {
+        // Regression: a `presence`/`when` mount AFTER the initial render (the
+        // whiteboard Settings/Preview screens) inserts into a window-attached
+        // parent. Without a scheduled pass the new subtree stays 0×0 and
+        // invisible — the macOS "can't open settings / see the preview" bug.
+        assert!(insert_needs_layout_pass(true));
+        // During the initial build the parent isn't in a window yet; `finish`
+        // lays it out, so scheduling then is pure waste.
+        assert!(!insert_needs_layout_pass(false));
     }
 
     // Regression: a window resize must recompute element positions. Before the
@@ -172,5 +207,25 @@ mod tests {
             r,
             ResizeReaction { mirror_viewport: true, schedule_pass: false },
         );
+    }
+
+    // Regression: a PrivateLayer overlay (screen-recorder toolbar) is a child
+    // window that tracks the host's moves but not its size, so a host resize
+    // left the overlay — and the toolbar laid out inside it — at the old size.
+
+    #[test]
+    fn overlay_resizes_when_host_content_grows() {
+        // Host window grew from 800×600 to 1200×800 content → overlay must
+        // follow so the toolbar re-lays-out against the real drawable area.
+        assert!(detached_overlay_needs_resize((800.0, 600.0), (1200.0, 800.0)));
+    }
+
+    #[test]
+    fn overlay_skips_when_size_matches() {
+        // Steady state (only a move, which AppKit's child-window tracking
+        // already handles) → don't rewrite the frame and fight that tracking.
+        assert!(!detached_overlay_needs_resize((1200.0, 800.0), (1200.0, 800.0)));
+        // Sub-pixel drift isn't a resize either.
+        assert!(!detached_overlay_needs_resize((1200.0, 800.0), (1200.3, 799.8)));
     }
 }

@@ -72,8 +72,13 @@ fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
     // for now (the camera widget this unblocks is a Stream, not a URL).
     {
         let view_layer: Retained<AnyObject> = unsafe { msg_send_id![&view, layer] };
-        // Aspect-fit instead of the default stretch — matches the iOS path.
-        let gravity = NSString::from_str("resizeAspect");
+        // Aspect-preserving fill mode, never the default stretch. `resizeAspect`
+        // letterboxes (contain); `resizeAspectFill` crops to fill (cover). Drives
+        // both the IOSurface fast-path and the CGImage fallback (same root layer).
+        let gravity = NSString::from_str(match props.object_fit {
+            crate::ObjectFit::Cover => "resizeAspectFill",
+            crate::ObjectFit::Contain => "resizeAspect",
+        });
         let _: () = unsafe { msg_send![&view_layer, setContentsGravity: &*gravity] };
 
         let view_for_stream = view.clone();

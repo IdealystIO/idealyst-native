@@ -4,54 +4,54 @@
 //!
 //! 1. **Drawable canvas** (`canvas` SDK). A full-screen `canvas::Canvas`
 //!    is the base layer. Freehand drawing is driven by a raw `on_touch`
-//!    handler on the `view` that wraps the canvas: `Began` starts a
-//!    stroke with the current width + color, `Moved` appends a point,
-//!    `Ended`/`Cancelled` finalizes it. Strokes live in a shared
-//!    `Rc<RefCell<Vec<Stroke>>>`; a `version` signal ticks on every
-//!    mutation so the canvas painter (which reads `version`) re-runs
-//!    through the renderer's reactive `Effect` and repaints.
+//!    handler on the wrapping `view`: `Began` starts a stroke with the
+//!    current width + color, `Moved` appends a point, `Ended`/`Cancelled`
+//!    finalizes it. Strokes live in a shared `Rc<RefCell<Vec<Stroke>>>`; a
+//!    `version` signal ticks on every mutation so the canvas painter (which
+//!    reads `version`) repaints through the renderer's reactive `Effect`.
 //!
-//! 2. **Overlay toolbar** inside `screen_recorder::PrivateLayer` — so it
-//!    renders in a separate, capture-excluded window on iOS/Android and
-//!    does NOT appear in the recording. Holds 3 stroke-width buttons, a
-//!    color-swatch row, a camera toggle and a record button.
+//! 2. **Floating tool rail** (right edge, inside `screen_recorder::
+//!    PrivateLayer` so it's excluded from the recording). A collapse toggle
+//!    expands/animates in the tools (stroke widths, a color button that
+//!    opens an in-tree popover, clear, camera). Everything is `presence`-
+//!    animated and reactive.
 //!
-//! 3. **Camera widget** (bottom-right, NORMAL recordable content):
-//!    `Camera::open` → `MediaStream` → `video::Video` in a fixed box.
+//! 3. **Camera widget** (NORMAL recordable content): `Camera::open` →
+//!    `MediaStream` → cover-fit `video::Video`. Draggable anywhere on the
+//!    canvas (clamped to the safe area), so it appears in the recording
+//!    wherever the user parks it.
 //!
-//! 4. **Record button**: `ScreenRecorder::start` → `MediaStream` held in
-//!    a signal (keeps capture alive); pressing again drops it.
+//! 4. **Record control**: a camera-style start/stop button docked
+//!    bottom-center; while recording it becomes a stop button and slides to
+//!    the bottom-right. A separate **recording overlay** (top-right, inside
+//!    the PrivateLayer) shows a REC pill + a live, capture-excluded preview
+//!    of the very `MediaStream` being recorded — no infinite-mirror.
 //!
-//! 5. **Live recording preview** (center-left), rendered INSIDE the
-//!    `PrivateLayer` so the preview is itself excluded from capture —
-//!    avoiding the infinite-mirror feedback loop. It shows the very
-//!    `MediaStream` being recorded.
-//!
-//! Canvas-SDK note: the canvas drawing surface here is the renderer-
-//! agnostic `Scene` replayed by `canvas-native` (CoreGraphics on iOS,
-//! `android.graphics` on Android, Canvas2D on web). No canvas call here
-//! is anything but `Scene` building + the `Canvas` external — both
-//! pure-Rust and stable. See the report for the on-device verification
-//! checklist (the Android canvas renderer is actively under construction).
+//! On iOS/Android the floating chrome + camera bounds are kept inside the
+//! `safe_area_insets()` even though the app is full-screen.
 
 use camera::{Camera, CameraConfig, CameraFacing, MediaStream};
+use icons_lucide::{CAMERA, SETTINGS, TRASH_2, X};
 use runtime_core::{
-    signal, text, view, Color, Element, IntoElement, Length, Position, Signal, StyleApplication,
-    StyleRules, StyleSheet, Tokenized, TouchPhase, TouchResponse,
+    icon, presence, safe_area_insets, signal, text, view, viewport_size, AlignItems, Color, Easing,
+    Element, FlexDirection, IntoElement, JustifyContent, Length, Overflow, Position, PresenceAnim,
+    PresenceState, Signal, StyleApplication, StyleRules, StyleSheet, Tokenized, TouchPhase,
+    TouchResponse,
 };
 use screen_recorder::{PrivateLayer, RecordingConfig, ScreenRecorder};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 // ============================================================================
 // Per-platform external registration
 // ============================================================================
 //
-// The CLI-generated wrapper hands us the concrete backend. We register
-// THREE externals: the canvas renderer (so the drawable surface paints),
-// the video display (so the camera + recording-preview show), and the
-// screen-recorder (which installs the `PrivateLayer` capture-excluded
-// overlay window). `camera` needs no register.
+// The CLI-generated wrapper hands us the concrete backend. We register THREE
+// externals: the canvas renderer (so the drawable surface paints), the video
+// display (camera + recording-preview), and the screen-recorder (which installs
+// the `PrivateLayer` capture-excluded overlay window). `camera` needs no
+// register. Several backends now self-register via `inventory`, so these are
+// belt-and-suspenders for the ones that don't.
 
 #[cfg(target_arch = "wasm32")]
 pub fn register_extensions(backend: &mut backend_web::WebBackend) {
@@ -93,33 +93,42 @@ pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 // Drawing model
 // ============================================================================
 
-/// One completed (or in-progress) freehand stroke: a polyline plus the
-/// width + color it was drawn with. Stored renderer-agnostically as
-/// logical pixels in the canvas's coordinate space (which equals the
-/// wrapping view's local space, so `TouchEvent::position` maps 1:1).
+/// One completed (or in-progress) freehand stroke: a polyline plus the width +
+/// color it was drawn with. Stored renderer-agnostically as logical pixels in
+/// the canvas's coordinate space (which equals the wrapping view's local space,
+/// so `TouchEvent::position` maps 1:1).
 #[derive(Clone)]
 struct Stroke {
     points: Vec<(f32, f32)>,
     width: f32,
-    /// RGBA bytes (kept as a plain tuple so this module doesn't depend on
-    /// a particular color type at the storage layer).
     rgba: (u8, u8, u8, u8),
 }
 
-/// Shared mutable list of strokes. The `on_touch` handler mutates it and
-/// the canvas painter reads it; a `version` signal bridges the two so a
-/// mutation triggers a reactive repaint without cloning the whole vec
-/// into a signal on every pointer-move.
+/// Shared mutable list of strokes. The `on_touch` handler mutates it and the
+/// canvas painter reads it; a `version` signal bridges the two so a mutation
+/// triggers a reactive repaint without cloning the whole vec into a signal.
 type Strokes = Rc<RefCell<Vec<Stroke>>>;
 
-/// The palette of swatch colors, as `(label, css)` — parsed to `Rgba`
-/// at use. Black is first so it's the default.
+/// The live media-writer recording handle, shared between the record button's
+/// start (sets it) and stop (consumes it). `!Send`, main-thread only.
+type RecHandle = Rc<RefCell<Option<media_writer::Recording>>>;
+
+/// Which full-screen surface is showing. The board is always mounted; Settings
+/// and Preview are overlays on top of it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AppScreen {
+    Board,
+    Settings,
+    Preview,
+}
+
+/// The palette of swatch colors, as `(label, css)`. Black is first (default).
 const PALETTE: &[(&str, &str)] = &[
     ("black", "#111827"),
     ("red", "#ef4444"),
-    ("blue", "#3b82f6"),
+    ("orange", "#f59e0b"),
     ("green", "#22c55e"),
-    ("amber", "#f59e0b"),
+    ("blue", "#3b82f6"),
     ("violet", "#8b5cf6"),
 ];
 
@@ -128,67 +137,102 @@ const WIDTH_THIN: f32 = 2.0;
 const WIDTH_MEDIUM: f32 = 6.0;
 const WIDTH_THICK: f32 = 14.0;
 
-/// Camera widget box (bottom-right, recordable content).
-const CAM_W: f32 = 120.0;
-const CAM_H: f32 = 160.0;
+/// Camera widget box (draggable, recordable content).
+const CAM_W: f32 = 132.0;
+const CAM_H: f32 = 176.0;
+/// Keep dragged content this far from the safe-area edges.
+const DRAG_MARGIN: f32 = 8.0;
 
-/// Recording-preview box (center-left, inside the private layer).
-const PREVIEW_W: f32 = 140.0;
-const PREVIEW_H: f32 = 200.0;
+/// Tool-rail metrics — a button is square; the rail is the button + padding.
+const TOOL_BTN: f32 = 44.0;
+const RAIL_EDGE: f32 = 14.0; // gap from the screen edge (added to safe inset)
 
 pub fn app() -> Element {
     idea_ui::install_idea_theme(idea_ui::light_theme());
 
     // ---- State -----------------------------------------------------------
     let width: Signal<f32> = signal!(WIDTH_MEDIUM);
-    // Current draw color as a CSS string (parsed in the painter / swatch).
     let color_css: Signal<&'static str> = signal!(PALETTE[0].1);
 
     let cam_on: Signal<bool> = signal!(false);
     let cam_stream: Signal<Option<MediaStream>> = signal!(None);
+    // Camera widget top-left, in viewport points. `-1` = "not yet placed"; an
+    // Effect drops it bottom-right once the viewport size is known.
+    let cam_x: Signal<f32> = signal!(-1.0);
+    let cam_y: Signal<f32> = signal!(-1.0);
 
-    // TEMP (macOS verification): the toolbar (PrivateLayer) isn't built on
-    // macOS yet, so there's no camera button to toggle. Auto-open the camera at
-    // startup so the camera widget surfaces and the video display can be
-    // verified. Remove once the macOS toolbar can toggle it.
-    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+    let recording: Signal<bool> = signal!(false);
+    let rec_stream: Signal<Option<MediaStream>> = signal!(None);
+    // Recording → file. `rec_handle` holds the live media-writer `Recording`
+    // (consumed on stop); `rec_path` is the finished file's store-relative path.
+    let rec_handle: RecHandle = Rc::new(RefCell::new(None));
+    let rec_path: Signal<Option<String>> = signal!(None);
+
+    // Which screen is showing. The board is always mounted underneath; Settings
+    // and Preview are full-screen overlays in the capture-excluded layer.
+    let screen: Signal<AppScreen> = signal!(AppScreen::Board);
+
+    // UI chrome state.
+    let palette_open: Signal<bool> = signal!(false);
+
+    // Strokes + a repaint tick.
+    let strokes: Strokes = Rc::new(RefCell::new(Vec::new()));
+    let version: Signal<u64> = signal!(0);
+
+    // Place the camera widget bottom-right the first time we learn the viewport
+    // size (it's 0×0 before the first layout). Guarded so a later drag isn't
+    // reset; re-runs on viewport/inset change but no-ops once placed.
     {
-        cam_on.set(true);
-        runtime_core::driver::spawn_async(async move {
-            if let Ok(stream) = Camera::new().open(CameraConfig::default()).await {
-                cam_stream.set(Some(stream));
+        let placed = Rc::new(Cell::new(false));
+        let _ = runtime_core::Effect::new(move || {
+            let vp = viewport_size().get();
+            let ins = safe_area_insets().get();
+            if !placed.get() && vp.width > 1.0 && vp.height > 1.0 {
+                // Default bottom-LEFT — the tool rail + record button live on
+                // the right, so the left corner stays clear and grabbable.
+                cam_x.set(ins.left + 16.0);
+                cam_y.set((vp.height - ins.bottom - CAM_H - 16.0).max(ins.top + DRAG_MARGIN));
+                placed.set(true);
             }
         });
     }
 
-    let recording: Signal<bool> = signal!(false);
-    let rec_stream: Signal<Option<MediaStream>> = signal!(None);
-
-    // Strokes + a repaint tick. `version` is read by the canvas painter so
-    // every mutation re-runs it through the renderer's reactive Effect.
-    let strokes: Strokes = Rc::new(RefCell::new(Vec::new()));
-    let version: Signal<u64> = signal!(0);
-
     // ---- The drawable canvas (base layer) --------------------------------
     let canvas_el = build_canvas(strokes.clone(), version);
-    let canvas_surface = build_drawing_surface(canvas_el, strokes.clone(), version, width, color_css);
+    let canvas_surface =
+        build_drawing_surface(canvas_el, strokes.clone(), version, width, color_css);
 
-    // ---- Camera widget (bottom-right, recordable) ------------------------
-    let camera_widget = build_camera_widget(cam_on, cam_stream);
+    // ---- Camera widget (draggable, recordable) ---------------------------
+    let camera_widget = build_camera_widget(cam_on, cam_stream, cam_x, cam_y);
 
-    // ---- Toolbar + recording preview (inside the PrivateLayer) -----------
-    let toolbar = build_toolbar(
+    // ---- Capture-excluded chrome (inside the PrivateLayer) ---------------
+    let tool_rail = build_tool_rail(
         width,
         color_css,
         cam_on,
         cam_stream,
-        recording,
-        rec_stream,
+        palette_open,
         strokes.clone(),
         version,
     );
-    let rec_preview = build_recording_preview(recording, rec_stream);
-    let private_layer = PrivateLayer(vec![rec_preview, toolbar]).into_element();
+    let palette = build_palette_popover(color_css, palette_open);
+    let rec_dock = build_record_dock(recording, rec_stream, rec_handle.clone(), rec_path, screen);
+    let rec_indicator = build_rec_indicator(recording);
+    let settings_btn = build_settings_button(recording, screen);
+    let settings_screen = build_settings_screen(screen);
+    let preview_screen = build_preview_screen(rec_path, screen);
+    // Order matters: the full-screen Settings / Preview overlays go LAST so
+    // they sit on top of the board chrome when active.
+    let private_layer = PrivateLayer(vec![
+        rec_indicator,
+        palette,
+        tool_rail,
+        rec_dock,
+        settings_btn,
+        settings_screen,
+        preview_screen,
+    ])
+    .into_element();
 
     // ---- Root: canvas base + camera over it + the private overlay --------
     let fill_root = StyleRules {
@@ -203,11 +247,9 @@ pub fn app() -> Element {
 }
 
 // ============================================================================
-// Canvas + drawing surface
+// Canvas + drawing surface (unchanged from the original — it works)
 // ============================================================================
 
-/// The `canvas::Canvas` external whose painter replays every stored
-/// stroke. Reads `version` so a stroke mutation re-runs the painter.
 fn build_canvas(strokes: Strokes, version: Signal<u64>) -> Element {
     use canvas::prelude::*;
 
@@ -219,11 +261,8 @@ fn build_canvas(strokes: Strokes, version: Signal<u64>) -> Element {
 
     canvas::Canvas(CanvasProps {
         draw: canvas::draw(move |s: &mut Scene| {
-            // Reactive dependency: bumping `version` repaints.
-            let _ = version.get();
+            let _ = version.get(); // reactive repaint dependency
 
-            // Paint the board background so the surface is opaque white
-            // (and the strokes read clearly).
             s.path().add_path(Path::rect(0.0, 0.0, 100_000.0, 100_000.0));
             s.fill(Color::new(255, 255, 255, 255));
 
@@ -237,8 +276,6 @@ fn build_canvas(strokes: Strokes, version: Signal<u64>) -> Element {
     .into_element()
 }
 
-/// Replay one stored stroke as a rounded polyline. A single point draws a
-/// filled dot (a tap), so dotting the board leaves a mark.
 fn paint_stroke(s: &mut canvas::Scene, stroke: &Stroke) {
     use canvas::prelude::*;
 
@@ -247,7 +284,8 @@ fn paint_stroke(s: &mut canvas::Scene, stroke: &Stroke) {
 
     if stroke.points.len() == 1 {
         let (x, y) = stroke.points[0];
-        s.path().add_path(Path::circle(x, y, (stroke.width * 0.5).max(1.0)));
+        s.path()
+            .add_path(Path::circle(x, y, (stroke.width * 0.5).max(1.0)));
         s.fill(col);
         return;
     }
@@ -263,13 +301,12 @@ fn paint_stroke(s: &mut canvas::Scene, stroke: &Stroke) {
     }
     s.stroke(
         col,
-        Stroke::width(stroke.width).cap(LineCap::Round).join(LineJoin::Round),
+        Stroke::width(stroke.width)
+            .cap(LineCap::Round)
+            .join(LineJoin::Round),
     );
 }
 
-/// Wrap the canvas in a full-screen `view` that captures raw touches and
-/// turns them into strokes. Touch coordinates are view-local, which match
-/// the canvas's logical coordinate space 1:1.
 fn build_drawing_surface(
     canvas_el: Element,
     strokes: Strokes,
@@ -286,10 +323,6 @@ fn build_drawing_surface(
         ..Default::default()
     };
 
-    // `drawing` tracks whether the active TouchId is one we're drawing
-    // with. We only ever draw the single primary touch (multi-touch
-    // strokes aren't part of the MVP); a `RefCell<Option<TouchId>>` gates
-    // it so a second finger doesn't fork the in-progress stroke.
     let active: Rc<RefCell<Option<runtime_core::TouchId>>> = Rc::new(RefCell::new(None));
 
     view(vec![canvas_el])
@@ -299,7 +332,6 @@ fn build_drawing_surface(
             match ev.phase {
                 TouchPhase::Began => {
                     if active.is_some() {
-                        // Already drawing with another finger — ignore.
                         return TouchResponse::IGNORED;
                     }
                     *active = Some(ev.id);
@@ -310,7 +342,6 @@ fn build_drawing_surface(
                         rgba,
                     });
                     version.set(version.get().wrapping_add(1));
-                    // Claim so a parent scroll/gesture can't steal the drag.
                     TouchResponse::CLAIMED
                 }
                 TouchPhase::Moved => {
@@ -328,7 +359,6 @@ fn build_drawing_surface(
                         return TouchResponse::IGNORED;
                     }
                     *active = None;
-                    // Final point for Ended; Cancelled leaves the stroke as-is.
                     if ev.phase == TouchPhase::Ended {
                         if let Some(last) = strokes.borrow_mut().last_mut() {
                             last.points.push((ev.position.x, ev.position.y));
@@ -342,391 +372,1049 @@ fn build_drawing_surface(
         .into_element()
 }
 
-/// Parse a CSS color string into RGBA bytes via the framework's canonical
-/// parser, falling back to opaque black.
 fn parse_rgba(css: &str) -> (u8, u8, u8, u8) {
     let c = runtime_core::color::parse_or(css, runtime_core::color::Rgba::BLACK);
     (c.r, c.g, c.b, c.a)
 }
 
 // ============================================================================
-// Camera widget (recordable content, bottom-right)
+// Reactive-style helper (closure form → StyleSource::Reactive)
 // ============================================================================
 
-fn build_camera_widget(cam_on: Signal<bool>, cam_stream: Signal<Option<MediaStream>>) -> Element {
-    // Reactive presence: mount the camera box only when `cam_on`. The Video
-    // carries a reactive stream source, so it populates once `cam_stream` is
-    // set. The dynamically-mounted box gets sized because the backend kicks a
-    // layout pass for inserts into a live (window-attached) parent — see the
-    // Android `insert` / `layout_policy::insert_needs_layout_pass`.
-    // Always-mounted box with reactive visibility. We avoid `when` here: on the
-    // Android backend `Element::When` content doesn't reliably mount+lay out
-    // after the initial paint (dynamic-mount gap), so the widget would never
-    // appear. Keeping the box mounted from first paint sidesteps that; only its
-    // size toggles with `cam_on`. The inner `Video`'s reactive `stream(...)`
-    // source is blank while `cam_stream` is `None`, so a collapsed box is empty.
-    stream_box_reactive(cam_stream, cam_on, camera_box_rules())
-}
-
 /// Wrap a signal-reading `StyleRules` builder into a REACTIVE style source.
-///
-/// `.with_style(Rc<StyleSheet>)` resolves to `StyleSource::Static` (resolved
-/// once at mount and memoized by `RESOLUTION_CACHE`) — so a `StyleSheet::new`
-/// closure that reads a *signal* is evaluated once and never again, even though
-/// the signal changes (the cache key is `(sheet_ptr, variants)`, which never
-/// moves). A closure `Fn() -> StyleApplication` resolves to
-/// `StyleSource::Reactive`: the walker wraps it in an Effect that re-runs every
-/// time a signal read *inside* `f` changes, calling `apply_style` with the new
-/// rules. Building a fresh `r#static` sheet per run also sidesteps the
-/// resolution cache (unique sheet pointer ⇒ no stale hit). This is the idiom
-/// idea-ui uses (`.with_style(move || StyleApplication::new(...))`).
+/// `.with_style(Rc<StyleSheet>)` resolves once and memoizes; a closure
+/// `Fn() -> StyleApplication` re-runs whenever a signal it reads changes.
 fn reactive_style(f: impl Fn() -> StyleRules + 'static) -> impl Fn() -> StyleApplication {
     move || StyleApplication::new(Rc::new(StyleSheet::r#static(f())))
 }
 
-/// Always-mounted `Video` box whose size is reactive: `box_rules` when
-/// `visible`, collapsed to 0×0 otherwise. See `build_camera_widget` for why we
-/// don't use `when` on Android.
-fn stream_box_reactive(
-    stream_sig: Signal<Option<MediaStream>>,
-    visible: Signal<bool>,
-    box_rules: StyleRules,
+/// Shorthand: equal border-radius on all corners.
+fn radius(px: f32) -> StyleRules {
+    StyleRules {
+        border_top_left_radius: Some(Length::Px(px).into()),
+        border_top_right_radius: Some(Length::Px(px).into()),
+        border_bottom_left_radius: Some(Length::Px(px).into()),
+        border_bottom_right_radius: Some(Length::Px(px).into()),
+        ..Default::default()
+    }
+}
+
+/// Equal border on all sides.
+fn border_all(px: f32, color: &str) -> StyleRules {
+    let c = Tokenized::Literal(Color(color.to_string()));
+    StyleRules {
+        border_top_width: Some(px.into()),
+        border_bottom_width: Some(px.into()),
+        border_left_width: Some(px.into()),
+        border_right_width: Some(px.into()),
+        border_top_color: Some(c.clone()),
+        border_bottom_color: Some(c.clone()),
+        border_left_color: Some(c.clone()),
+        border_right_color: Some(c),
+        ..Default::default()
+    }
+}
+
+/// Overlay `extra`'s set fields onto `base`. Lets the radius/border shorthands
+/// compose with a base `StyleRules` literal.
+fn merge(base: &mut StyleRules, extra: StyleRules) {
+    macro_rules! take {
+        ($($f:ident),* $(,)?) => { $( if extra.$f.is_some() { base.$f = extra.$f; } )* };
+    }
+    take!(
+        border_top_left_radius,
+        border_top_right_radius,
+        border_bottom_left_radius,
+        border_bottom_right_radius,
+        border_top_width,
+        border_bottom_width,
+        border_left_width,
+        border_right_width,
+        border_top_color,
+        border_bottom_color,
+        border_left_color,
+        border_right_color,
+    );
+}
+
+// ============================================================================
+// Camera widget (draggable, cover-fit, recordable content)
+// ============================================================================
+
+fn build_camera_widget(
+    cam_on: Signal<bool>,
+    cam_stream: Signal<Option<MediaStream>>,
+    cam_x: Signal<f32>,
+    cam_y: Signal<f32>,
 ) -> Element {
+    // The live feed, cover-fit so it fills the rounded box (no letterboxing).
     let fill = StyleRules {
         width: Some(Length::pct(100.0).into()),
         height: Some(Length::pct(100.0).into()),
         ..Default::default()
     };
     let video_el = video::Video(video::VideoProps {
-        source: video::stream(move || stream_sig.get()),
+        source: video::stream(move || cam_stream.get()),
         autoplay: true,
+        object_fit: video::ObjectFit::Cover,
         ..Default::default()
     })
     .with_style(Rc::new(StyleSheet::r#static(fill)))
     .into_element();
-    view(vec![video_el])
+
+    // Drag state: (start_touch_x, start_touch_y, start_cam_x, start_cam_y).
+    let drag: Rc<RefCell<Option<(f32, f32, f32, f32)>>> = Rc::new(RefCell::new(None));
+
+    // A TRANSPARENT overlay that fills the widget and carries the drag handler.
+    // Putting the handler here (not on the wrapper) makes the overlay the
+    // direct hit-test target on every backend — the video child can't swallow
+    // the press (the earlier "can't move the camera" bug: on macOS the video
+    // NSView was the hit target and the wrapper never saw the drag). It claims
+    // the gesture so the canvas underneath doesn't draw.
+    let drag_overlay = view(vec![])
+        .with_style(Rc::new(StyleSheet::r#static(StyleRules {
+            position: Some(Position::Absolute),
+            top: Some(Length::Px(0.0).into()),
+            left: Some(Length::Px(0.0).into()),
+            right: Some(Length::Px(0.0).into()),
+            bottom: Some(Length::Px(0.0).into()),
+            ..Default::default()
+        })))
+        .on_touch(move |ev| match ev.phase {
+            TouchPhase::Began => {
+                *drag.borrow_mut() = Some((
+                    ev.window_position.x,
+                    ev.window_position.y,
+                    cam_x.get(),
+                    cam_y.get(),
+                ));
+                TouchResponse::CLAIMED
+            }
+            TouchPhase::Moved => {
+                let start = *drag.borrow();
+                if let Some((sx, sy, cx, cy)) = start {
+                    let vp = viewport_size().get();
+                    let ins = safe_area_insets().get();
+                    let min_x = ins.left + DRAG_MARGIN;
+                    let min_y = ins.top + DRAG_MARGIN;
+                    let max_x = (vp.width - ins.right - CAM_W - DRAG_MARGIN).max(min_x);
+                    let max_y = (vp.height - ins.bottom - CAM_H - DRAG_MARGIN).max(min_y);
+                    cam_x.set((cx + (ev.window_position.x - sx)).clamp(min_x, max_x));
+                    cam_y.set((cy + (ev.window_position.y - sy)).clamp(min_y, max_y));
+                }
+                TouchResponse::CONSUMED
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                *drag.borrow_mut() = None;
+                TouchResponse::CONSUMED
+            }
+        })
+        .into_element();
+
+    view(vec![video_el, drag_overlay])
         .with_style(reactive_style(move || {
-            if visible.get() {
-                box_rules.clone()
-            } else {
-                StyleRules {
+            if !cam_on.get() {
+                // Collapsed + parked off-flow while the camera is off.
+                return StyleRules {
                     position: Some(Position::Absolute),
                     width: Some(Length::Px(0.0).into()),
                     height: Some(Length::Px(0.0).into()),
-                    overflow: Some(runtime_core::Overflow::Hidden),
+                    overflow: Some(Overflow::Hidden),
                     ..Default::default()
-                }
+                };
             }
+            let mut s = StyleRules {
+                position: Some(Position::Absolute),
+                left: Some(Length::Px(cam_x.get().max(0.0)).into()),
+                top: Some(Length::Px(cam_y.get().max(0.0)).into()),
+                width: Some(Length::Px(CAM_W).into()),
+                height: Some(Length::Px(CAM_H).into()),
+                background: Some(Tokenized::Literal(Color("#0b1220".into()))),
+                overflow: Some(Overflow::Hidden),
+                ..Default::default()
+            };
+            merge(&mut s, radius(18.0));
+            merge(&mut s, border_all(2.0, "rgba(255,255,255,0.9)"));
+            s
         }))
         .into_element()
 }
 
-/// Fixed camera box, absolutely positioned bottom-right.
-fn camera_box_rules() -> StyleRules {
-    StyleRules {
-        position: Some(Position::Absolute),
-        right: Some(Length::Px(16.0).into()),
-        bottom: Some(Length::Px(16.0).into()),
-        width: Some(Length::Px(CAM_W).into()),
-        height: Some(Length::Px(CAM_H).into()),
-        background: Some(Tokenized::Literal(Color("#000000".into()))),
-        border_top_left_radius: Some(Length::Px(12.0).into()),
-        border_top_right_radius: Some(Length::Px(12.0).into()),
-        border_bottom_left_radius: Some(Length::Px(12.0).into()),
-        border_bottom_right_radius: Some(Length::Px(12.0).into()),
-        overflow: Some(runtime_core::Overflow::Hidden),
-        ..Default::default()
-    }
-}
-
-
-/// An empty, zero-size view — the inert `otherwise` branch for `when`.
-
 // ============================================================================
-// Recording preview (inside PrivateLayer, center-left) — NOT recorded
-// ============================================================================
-
-fn build_recording_preview(
-    recording: Signal<bool>,
-    rec_stream: Signal<Option<MediaStream>>,
-) -> Element {
-    stream_box_reactive(rec_stream, recording, preview_box_rules())
-}
-
-/// Fixed recording-preview box, absolutely positioned center-left.
-fn preview_box_rules() -> StyleRules {
-    StyleRules {
-        position: Some(Position::Absolute),
-        left: Some(Length::Px(16.0).into()),
-        top: Some(Length::pct(50.0).into()),
-        width: Some(Length::Px(PREVIEW_W).into()),
-        height: Some(Length::Px(PREVIEW_H).into()),
-        background: Some(Tokenized::Literal(Color("rgba(0,0,0,0.85)".into()))),
-        border_top_left_radius: Some(Length::Px(10.0).into()),
-        border_top_right_radius: Some(Length::Px(10.0).into()),
-        border_bottom_left_radius: Some(Length::Px(10.0).into()),
-        border_bottom_right_radius: Some(Length::Px(10.0).into()),
-        overflow: Some(runtime_core::Overflow::Hidden),
-        ..Default::default()
-    }
-}
-
-// ============================================================================
-// Toolbar (inside PrivateLayer, bottom-center) — NOT recorded
+// Floating tool rail (right edge, inside the PrivateLayer)
 // ============================================================================
 
 #[allow(clippy::too_many_arguments)]
-fn build_toolbar(
+fn build_tool_rail(
     width: Signal<f32>,
     color_css: Signal<&'static str>,
     cam_on: Signal<bool>,
     cam_stream: Signal<Option<MediaStream>>,
-    recording: Signal<bool>,
-    rec_stream: Signal<Option<MediaStream>>,
+    palette_open: Signal<bool>,
     strokes: Strokes,
     version: Signal<u64>,
 ) -> Element {
-    let mut row: Vec<Element> = Vec::new();
-
-    // -- Stroke-width buttons (thin / medium / thick) ----------------------
-    row.push(width_button("·", WIDTH_THIN, width));
-    row.push(width_button("—", WIDTH_MEDIUM, width));
-    row.push(width_button("▬", WIDTH_THICK, width));
-    row.push(separator());
-
-    // -- Color swatches ----------------------------------------------------
-    for (_label, css) in PALETTE {
-        row.push(swatch(css, color_css));
-    }
-    row.push(separator());
-
-    // -- Clear board -------------------------------------------------------
-    {
-        let strokes = strokes.clone();
-        let on_clear = move || {
-            strokes.borrow_mut().clear();
-            version.set(version.get().wrapping_add(1));
+    // Bare icon/shape buttons on a soft frosted rail — always visible (no
+    // collapse). The icon IS the affordance; no per-button background.
+    let pill = view(vec![
+        width_button(WIDTH_THIN, width),
+        width_button(WIDTH_MEDIUM, width),
+        width_button(WIDTH_THICK, width),
+        rail_divider(),
+        color_button(color_css, palette_open),
+        clear_button(strokes, version),
+        rail_divider(),
+        camera_toggle(cam_on, cam_stream),
+    ])
+    .with_style(Rc::new(StyleSheet::r#static({
+        let mut s = StyleRules {
+            flex_direction: Some(FlexDirection::Column),
+            align_items: Some(AlignItems::Center),
+            gap: Some(Length::Px(2.0).into()),
+            padding_top: Some(Length::Px(8.0).into()),
+            padding_bottom: Some(Length::Px(8.0).into()),
+            padding_left: Some(Length::Px(6.0).into()),
+            padding_right: Some(Length::Px(6.0).into()),
+            background: Some(Tokenized::Literal(Color("rgba(255,255,255,0.92)".into()))),
+            ..Default::default()
         };
-        row.push(
-            view(vec![text("🗑").into_element()])
-                .with_style(Rc::new(StyleSheet::r#static(tool_btn_rules("rgba(31,41,55,0.06)"))))
-                .on_touch(move |ev| {
-                    if ev.phase == TouchPhase::Ended {
-                        on_clear();
-                    }
-                    TouchResponse::CONSUMED
-                })
-                .into_element(),
-        );
-    }
-    row.push(separator());
+        merge(&mut s, radius(24.0));
+        merge(&mut s, border_all(1.0, "rgba(17,24,39,0.08)"));
+        s
+    })))
+    .into_element();
 
-    // -- Camera toggle -----------------------------------------------------
-    row.push(camera_toggle(cam_on, cam_stream));
+    dock_right(pill)
+}
 
-    // -- Record button -----------------------------------------------------
-    row.push(record_button(recording, rec_stream));
-
-    // The toolbar bar: a rounded pill, bottom-center, absolutely
-    // positioned inside the full-screen private layer.
-    let bar_rules = StyleRules {
-        position: Some(Position::Absolute),
-        bottom: Some(Length::Px(28.0).into()),
-        // Span the width with side margins and WRAP, instead of auto-sizing +
-        // centering: ~12 tools at 40px overflow a phone's width, so let the
-        // row flow onto a second line and stay on-screen on any device.
-        left: Some(Length::Px(12.0).into()),
-        right: Some(Length::Px(12.0).into()),
-        flex_direction: Some(runtime_core::FlexDirection::Row),
-        flex_wrap: Some(runtime_core::FlexWrap::Wrap),
-        align_items: Some(runtime_core::AlignItems::Center),
-        justify_content: Some(runtime_core::JustifyContent::Center),
-        gap: Some(Length::Px(8.0).into()),
-        padding_top: Some(Length::Px(10.0).into()),
-        padding_bottom: Some(Length::Px(10.0).into()),
-        padding_left: Some(Length::Px(14.0).into()),
-        padding_right: Some(Length::Px(14.0).into()),
-        background: Some(Tokenized::Literal(Color("rgba(255,255,255,0.96)".into()))),
-        border_top_left_radius: Some(Length::Px(22.0).into()),
-        border_top_right_radius: Some(Length::Px(22.0).into()),
-        border_bottom_left_radius: Some(Length::Px(22.0).into()),
-        border_bottom_right_radius: Some(Length::Px(22.0).into()),
-        ..Default::default()
-    };
-
-    view(row)
-        .with_style(Rc::new(StyleSheet::r#static(bar_rules)))
+/// Position a child vertically centered against the right edge, inset by the
+/// safe area. The dock fills the screen but only lays the child out at center-
+/// right; the empty area passes touches through (it has no background).
+fn dock_right(child: Element) -> Element {
+    view(vec![child])
+        .with_style(reactive_style(move || {
+            let ins = safe_area_insets().get();
+            StyleRules {
+                position: Some(Position::Absolute),
+                top: Some(Length::Px(0.0).into()),
+                bottom: Some(Length::Px(0.0).into()),
+                right: Some(Length::Px(RAIL_EDGE + ins.right).into()),
+                flex_direction: Some(FlexDirection::Column),
+                justify_content: Some(JustifyContent::Center),
+                align_items: Some(AlignItems::FlexEnd),
+                ..Default::default()
+            }
+        }))
         .into_element()
 }
 
-/// Shared base style for a round-ish tool button.
-fn tool_btn_rules(bg: &str) -> StyleRules {
-    StyleRules {
-        width: Some(Length::Px(40.0).into()),
-        height: Some(Length::Px(40.0).into()),
-        align_items: Some(runtime_core::AlignItems::Center),
-        justify_content: Some(runtime_core::JustifyContent::Center),
-        background: Some(Tokenized::Literal(Color(bg.into()))),
-        border_top_left_radius: Some(Length::Px(12.0).into()),
-        border_top_right_radius: Some(Length::Px(12.0).into()),
-        border_bottom_left_radius: Some(Length::Px(12.0).into()),
-        border_bottom_right_radius: Some(Length::Px(12.0).into()),
-        ..Default::default()
-    }
-}
-
-/// A stroke-width button. Reactively highlights when `width` matches its
-/// preset.
-fn width_button(glyph: &'static str, w: f32, width: Signal<f32>) -> Element {
-    let label = text(glyph).into_element();
-    // Reactive background: selected → tinted.
-    let bg = runtime_core::view(vec![label]);
-    bg.with_style(reactive_style(move || {
-        let selected = (width.get() - w).abs() < f32::EPSILON;
-        tool_btn_rules(if selected { "rgba(59,130,246,0.18)" } else { "rgba(31,41,55,0.06)" })
-    }))
+/// A bare `TOOL_BTN`-sized tap target — no background, content centered. The
+/// icon/shape inside is the whole affordance.
+fn bare_btn(content: Element, on_press: impl Fn() + 'static) -> Element {
+    view(vec![content])
+        .with_style(Rc::new(StyleSheet::r#static(StyleRules {
+            width: Some(Length::Px(TOOL_BTN).into()),
+            height: Some(Length::Px(TOOL_BTN).into()),
+            align_items: Some(AlignItems::Center),
+            justify_content: Some(JustifyContent::Center),
+            ..Default::default()
+        })))
         .on_touch(move |ev| {
             if ev.phase == TouchPhase::Ended {
-                width.set(w);
+                on_press();
             }
             TouchResponse::CONSUMED
         })
         .into_element()
 }
 
-/// A color swatch. Tapping sets `color_css`; a ring shows the selection.
-fn swatch(css: &'static str, color_css: Signal<&'static str>) -> Element {
+/// Wrap an `icon(...)` element so it renders at a consistent 22×22 box.
+fn icon_box(el: Element) -> Element {
+    view(vec![el])
+        .with_style(Rc::new(StyleSheet::r#static(StyleRules {
+            width: Some(Length::Px(22.0).into()),
+            height: Some(Length::Px(22.0).into()),
+            align_items: Some(AlignItems::Center),
+            justify_content: Some(JustifyContent::Center),
+            ..Default::default()
+        })))
+        .into_element()
+}
+
+/// A horizontal divider inside the vertical rail.
+fn rail_divider() -> Element {
+    view(vec![])
+        .with_style(Rc::new(StyleSheet::r#static(StyleRules {
+            width: Some(Length::Px(24.0).into()),
+            height: Some(Length::Px(1.0).into()),
+            background: Some(Tokenized::Literal(Color("rgba(17,24,39,0.12)".into()))),
+            ..Default::default()
+        })))
+        .into_element()
+}
+
+/// A stroke-width button: a bare filled dot whose size tracks the stroke width
+/// it sets. Accent-blue when selected, muted grey otherwise — color, not a
+/// background box, carries the state.
+fn width_button(w: f32, width: Signal<f32>) -> Element {
+    let dot = view(vec![])
+        .with_style(reactive_style(move || {
+            let selected = (width.get() - w).abs() < f32::EPSILON;
+            let d = 6.0 + w; // dot grows with the stroke width it represents
+            let mut s = StyleRules {
+                width: Some(Length::Px(d).into()),
+                height: Some(Length::Px(d).into()),
+                background: Some(Tokenized::Literal(Color(
+                    if selected { "#2563eb" } else { "#9ca3af" }.to_string(),
+                ))),
+                ..Default::default()
+            };
+            merge(&mut s, radius(d / 2.0));
+            s
+        }))
+        .into_element();
+    bare_btn(dot, move || width.set(w))
+}
+
+/// The color button: a bare disc of the current color with a thin ring (so a
+/// light color still reads on the rail). Tapping toggles the palette popover.
+fn color_button(color_css: Signal<&'static str>, palette_open: Signal<bool>) -> Element {
+    let disc = view(vec![])
+        .with_style(reactive_style(move || {
+            let open = palette_open.get();
+            let mut s = StyleRules {
+                width: Some(Length::Px(22.0).into()),
+                height: Some(Length::Px(22.0).into()),
+                background: Some(Tokenized::Literal(Color(color_css.get().to_string()))),
+                ..Default::default()
+            };
+            merge(&mut s, radius(11.0));
+            merge(
+                &mut s,
+                border_all(
+                    if open { 2.0 } else { 1.5 },
+                    if open { "#2563eb" } else { "rgba(17,24,39,0.28)" },
+                ),
+            );
+            s
+        }))
+        .into_element();
+    bare_btn(disc, move || palette_open.set(!palette_open.get()))
+}
+
+/// Clear the board — a bare trash icon.
+fn clear_button(strokes: Strokes, version: Signal<u64>) -> Element {
+    let glyph = icon_box(icon(TRASH_2).color(|| Color::from("#374151")).into_element());
+    bare_btn(glyph, move || {
+        strokes.borrow_mut().clear();
+        version.set(version.get().wrapping_add(1));
+    })
+}
+
+/// Camera on/off toggle: a bare camera icon, green when live, grey when off.
+fn camera_toggle(cam_on: Signal<bool>, cam_stream: Signal<Option<MediaStream>>) -> Element {
+    let glyph = icon_box(
+        icon(CAMERA)
+            .color(move || {
+                if cam_on.get() {
+                    Color::from("#16a34a")
+                } else {
+                    Color::from("#374151")
+                }
+            })
+            .into_element(),
+    );
+    bare_btn(glyph, move || {
+        if cam_on.get() {
+            cam_on.set(false);
+            cam_stream.set(None);
+        } else {
+            cam_on.set(true);
+            runtime_core::driver::spawn_async(async move {
+                let config = CameraConfig {
+                    facing: CameraFacing::Front,
+                    ..Default::default()
+                };
+                match Camera::new().open(config).await {
+                    Ok(stream) => cam_stream.set(Some(stream)),
+                    Err(_) => cam_on.set(false),
+                }
+            });
+        }
+    })
+}
+
+// ============================================================================
+// Color palette popover (in-tree presence panel, left of the rail)
+// ============================================================================
+
+fn build_palette_popover(color_css: Signal<&'static str>, palette_open: Signal<bool>) -> Element {
+    let panel = presence(move || {
+        let mut swatches: Vec<Element> = Vec::new();
+        for (_label, css) in PALETTE {
+            swatches.push(swatch(css, color_css, palette_open));
+        }
+        let grid = view(swatches)
+            .with_style(Rc::new(StyleSheet::r#static(StyleRules {
+                flex_direction: Some(FlexDirection::Row),
+                flex_wrap: Some(runtime_core::FlexWrap::Wrap),
+                width: Some(Length::Px(108.0).into()),
+                gap: Some(Length::Px(10.0).into()),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::Center),
+                ..Default::default()
+            })))
+            .into_element();
+        view(vec![grid])
+            .with_style(Rc::new(StyleSheet::r#static({
+                let mut s = StyleRules {
+                    padding_top: Some(Length::Px(12.0).into()),
+                    padding_bottom: Some(Length::Px(12.0).into()),
+                    padding_left: Some(Length::Px(12.0).into()),
+                    padding_right: Some(Length::Px(12.0).into()),
+                    background: Some(Tokenized::Literal(Color("rgba(255,255,255,0.97)".into()))),
+                    ..Default::default()
+                };
+                merge(&mut s, radius(18.0));
+                merge(&mut s, border_all(1.0, "rgba(17,24,39,0.08)"));
+                s
+            })))
+            .into_element()
+    })
+    .present(move || palette_open.get())
+    .enter(PresenceAnim::new(
+        PresenceState {
+            opacity: Some(0.0),
+            translate_x: Some(12.0),
+            scale: Some(0.96),
+            ..Default::default()
+        },
+        170,
+        Easing::EaseOut,
+    ))
+    .exit(PresenceAnim::new(
+        PresenceState {
+            opacity: Some(0.0),
+            translate_x: Some(12.0),
+            scale: Some(0.96),
+            ..Default::default()
+        },
+        130,
+        Easing::EaseIn,
+    ))
+    .into_element();
+
+    // Dock to the right edge, offset left of the rail so it sits beside the
+    // color button. Vertically centered, safe-area aware.
+    view(vec![panel])
+        .with_style(reactive_style(move || {
+            let ins = safe_area_insets().get();
+            let rail_w = TOOL_BTN + 16.0 + 12.0; // button + rail padding + gap
+            StyleRules {
+                position: Some(Position::Absolute),
+                top: Some(Length::Px(0.0).into()),
+                bottom: Some(Length::Px(0.0).into()),
+                right: Some(Length::Px(RAIL_EDGE + ins.right + rail_w).into()),
+                flex_direction: Some(FlexDirection::Column),
+                justify_content: Some(JustifyContent::Center),
+                align_items: Some(AlignItems::FlexEnd),
+                ..Default::default()
+            }
+        }))
+        .into_element()
+}
+
+/// A color swatch in the popover. Tapping sets the color and closes the popover.
+fn swatch(css: &'static str, color_css: Signal<&'static str>, palette_open: Signal<bool>) -> Element {
     view(vec![])
         .with_style(reactive_style(move || {
             let selected = color_css.get() == css;
-            let bw: f32 = if selected { 3.0 } else { 0.0 };
-            let ring = Tokenized::Literal(Color("#1f2937".into()));
-            StyleRules {
+            let mut s = StyleRules {
                 width: Some(Length::Px(28.0).into()),
                 height: Some(Length::Px(28.0).into()),
                 background: Some(Tokenized::Literal(Color(css.to_string()))),
-                border_top_left_radius: Some(Length::Px(14.0).into()),
-                border_top_right_radius: Some(Length::Px(14.0).into()),
-                border_bottom_left_radius: Some(Length::Px(14.0).into()),
-                border_bottom_right_radius: Some(Length::Px(14.0).into()),
-                border_top_width: Some(bw.into()),
-                border_bottom_width: Some(bw.into()),
-                border_left_width: Some(bw.into()),
-                border_right_width: Some(bw.into()),
-                border_top_color: Some(ring.clone()),
-                border_bottom_color: Some(ring.clone()),
-                border_left_color: Some(ring.clone()),
-                border_right_color: Some(ring),
                 ..Default::default()
-            }
+            };
+            merge(&mut s, radius(14.0));
+            merge(&mut s, border_all(if selected { 3.0 } else { 0.0 }, "#1f2937"));
+            s
         }))
         .on_touch(move |ev| {
             if ev.phase == TouchPhase::Ended {
                 color_css.set(css);
+                palette_open.set(false);
             }
             TouchResponse::CONSUMED
         })
         .into_element()
 }
 
-/// A thin vertical separator between toolbar groups.
-fn separator() -> Element {
-    let rules = StyleRules {
-        width: Some(Length::Px(1.0).into()),
-        height: Some(Length::Px(28.0).into()),
-        background: Some(Tokenized::Literal(Color("rgba(31,41,55,0.15)".into()))),
-        ..Default::default()
-    };
-    view(vec![]).with_style(Rc::new(StyleSheet::r#static(rules))).into_element()
-}
+// ============================================================================
+// Record control — camera-style start/stop button
+// ============================================================================
 
-/// Camera on/off toggle. ON → open the camera and stash the stream;
-/// OFF → drop the stream (stops capture).
-fn camera_toggle(cam_on: Signal<bool>, cam_stream: Signal<Option<MediaStream>>) -> Element {
-    let label = runtime_core::text(move || {
-        if cam_on.get() { "📷●".to_string() } else { "📷".to_string() }
-    })
-    .into_element();
-    view(vec![label])
-        .with_style(reactive_style(move || {
-            tool_btn_rules(if cam_on.get() { "rgba(34,197,94,0.18)" } else { "rgba(31,41,55,0.06)" })
-        }))
-        .on_touch(move |ev| {
-            if ev.phase != TouchPhase::Ended {
-                return TouchResponse::CONSUMED;
-            }
-            let was_on = cam_on.get();
-            if was_on {
-                // Turn off: drop the stream (last clone → capture stops).
-                cam_on.set(false);
-                cam_stream.set(None);
-            } else {
-                cam_on.set(true);
-                runtime_core::driver::spawn_async(async move {
-                    // Front ("selfie") camera. On the Android emulator the back
-                    // camera is `virtualscene`, which disconnects mid-config on
-                    // some images; the front `emulated` camera is stable. On a
-                    // real device the front camera is the natural choice for a
-                    // self-view widget anyway.
-                    let config = CameraConfig {
-                        facing: CameraFacing::Front,
-                        ..Default::default()
-                    };
-                    match Camera::new().open(config).await {
-                        Ok(stream) => cam_stream.set(Some(stream)),
-                        Err(_) => {
-                            // Failed to open — revert the toggle.
-                            cam_on.set(false);
-                        }
-                    }
-                });
-            }
-            TouchResponse::CONSUMED
-        })
-        .into_element()
-}
+fn build_record_dock(
+    recording: Signal<bool>,
+    rec_stream: Signal<Option<MediaStream>>,
+    rec_handle: RecHandle,
+    rec_path: Signal<Option<String>>,
+    screen: Signal<AppScreen>,
+) -> Element {
+    let button = record_button(recording, rec_stream, rec_handle, rec_path, screen);
 
-/// Record toggle. ON → start screen capture and hold the stream (keeps
-/// capture alive); OFF → drop it (stops). Shows ● red while recording.
-fn record_button(recording: Signal<bool>, rec_stream: Signal<Option<MediaStream>>) -> Element {
-    let label = runtime_core::text(move || {
-        if recording.get() { "● REC".to_string() } else { "● Rec".to_string() }
-    })
-    .into_element();
-    view(vec![label])
+    // A full-width bottom dock; idle → centered, recording → slid to the right.
+    view(vec![button])
         .with_style(reactive_style(move || {
-            let bg = if recording.get() { "rgba(220,38,38,0.95)" } else { "rgba(220,38,38,0.12)" };
+            let ins = safe_area_insets().get();
             StyleRules {
-                height: Some(Length::Px(40.0).into()),
-                align_items: Some(runtime_core::AlignItems::Center),
-                justify_content: Some(runtime_core::JustifyContent::Center),
-                padding_left: Some(Length::Px(14.0).into()),
-                padding_right: Some(Length::Px(14.0).into()),
-                background: Some(Tokenized::Literal(Color(bg.into()))),
-                border_top_left_radius: Some(Length::Px(20.0).into()),
-                border_top_right_radius: Some(Length::Px(20.0).into()),
-                border_bottom_left_radius: Some(Length::Px(20.0).into()),
-                border_bottom_right_radius: Some(Length::Px(20.0).into()),
+                position: Some(Position::Absolute),
+                left: Some(Length::Px(0.0).into()),
+                right: Some(Length::Px(0.0).into()),
+                bottom: Some(Length::Px(28.0 + ins.bottom).into()),
+                flex_direction: Some(FlexDirection::Row),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(if recording.get() {
+                    JustifyContent::FlexEnd
+                } else {
+                    JustifyContent::Center
+                }),
+                padding_right: Some(
+                    Length::Px(if recording.get() { 24.0 + ins.right } else { 0.0 }).into(),
+                ),
                 ..Default::default()
             }
         }))
+        .into_element()
+}
+
+/// The record button: a white ring with a red core. Idle = red disc (record);
+/// recording = red rounded square (stop). Starts a screen capture AND a
+/// media-writer recording of it to a file; stopping finalizes the file and
+/// opens the Preview screen.
+fn record_button(
+    recording: Signal<bool>,
+    rec_stream: Signal<Option<MediaStream>>,
+    rec_handle: RecHandle,
+    rec_path: Signal<Option<String>>,
+    screen: Signal<AppScreen>,
+) -> Element {
+    // Inner core morphs disc ↔ square via reactive radius + size.
+    let core = view(vec![])
+        .with_style(reactive_style(move || {
+            let rec = recording.get();
+            let size = if rec { 26.0 } else { 44.0 };
+            let mut s = StyleRules {
+                width: Some(Length::Px(size).into()),
+                height: Some(Length::Px(size).into()),
+                background: Some(Tokenized::Literal(Color("#ef4444".into()))),
+                ..Default::default()
+            };
+            merge(&mut s, radius(if rec { 7.0 } else { 22.0 }));
+            s
+        }))
+        .into_element();
+
+    view(vec![core])
+        .with_style(Rc::new(StyleSheet::r#static({
+            let mut s = StyleRules {
+                width: Some(Length::Px(64.0).into()),
+                height: Some(Length::Px(64.0).into()),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::Center),
+                background: Some(Tokenized::Literal(Color("rgba(255,255,255,0.96)".into()))),
+                ..Default::default()
+            };
+            merge(&mut s, radius(32.0));
+            merge(&mut s, border_all(3.0, "rgba(17,24,39,0.12)"));
+            s
+        })))
         .on_touch(move |ev| {
             if ev.phase != TouchPhase::Ended {
                 return TouchResponse::CONSUMED;
             }
             if recording.get() {
+                // STOP → finalize the file, then open the Preview screen.
                 recording.set(false);
-                rec_stream.set(None);
-            } else {
-                recording.set(true);
+                let rec_handle = rec_handle.clone();
                 runtime_core::driver::spawn_async(async move {
-                    // `ThisApp` (the default) → app-only capture: PixelCopy
-                    // on Android (no consent), ReplayKit on iOS.
-                    match ScreenRecorder::new().start(RecordingConfig::new()).await {
-                        Ok(stream) => rec_stream.set(Some(stream)),
-                        Err(_) => recording.set(false),
+                    // Bind the take() out of the RefMut so we don't hold the
+                    // borrow across `.await` (see refmut-lifetime memory).
+                    let taken = rec_handle.borrow_mut().take();
+                    if let Some(rec) = taken {
+                        if let Ok(path) = rec.stop().await {
+                            rec_path.set(Some(path));
+                            screen.set(AppScreen::Preview);
+                        }
+                    }
+                    rec_stream.set(None); // drop the stream → capture stops
+                });
+            } else {
+                // START → screen capture + media-writer recording to a file.
+                recording.set(true);
+                let rec_handle = rec_handle.clone();
+                runtime_core::driver::spawn_async(async move {
+                    let stream = match ScreenRecorder::new().start(RecordingConfig::new()).await {
+                        Ok(s) => s,
+                        Err(_) => {
+                            recording.set(false);
+                            return;
+                        }
+                    };
+                    let store = match files::app_files(REC_STORE) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            recording.set(false);
+                            return;
+                        }
+                    };
+                    let cfg = media_writer::RecordConfig::new(store, REC_FILE);
+                    match media_writer::MediaWriter::new()
+                        .record(media_writer::MediaInputs::video(&stream), cfg)
+                        .await
+                    {
+                        Ok(rec) => {
+                            *rec_handle.borrow_mut() = Some(rec);
+                            // Keep the stream alive so capture (and the encoder
+                            // subscription feeding off it) keeps running.
+                            rec_stream.set(Some(stream));
+                        }
+                        Err(_) => recording.set(false), // stream drops → capture stops
                     }
                 });
+            }
+            TouchResponse::CONSUMED
+        })
+        .into_element()
+}
+
+/// The `files` store + filename a recording is written to.
+const REC_STORE: &str = "recordings";
+const REC_FILE: &str = "recording.mp4";
+
+// ============================================================================
+// Minimal REC indicator (top-center, inside the PrivateLayer — NOT recorded)
+// ============================================================================
+
+fn build_rec_indicator(recording: Signal<bool>) -> Element {
+    let pill = presence(move || {
+        let dot = view(vec![])
+            .with_style(Rc::new(StyleSheet::r#static({
+                let mut s = StyleRules {
+                    width: Some(Length::Px(9.0).into()),
+                    height: Some(Length::Px(9.0).into()),
+                    background: Some(Tokenized::Literal(Color("#ef4444".into()))),
+                    ..Default::default()
+                };
+                merge(&mut s, radius(5.0));
+                s
+            })))
+            .into_element();
+        view(vec![dot, text("REC").into_element()])
+            .with_style(Rc::new(StyleSheet::r#static({
+                let mut s = StyleRules {
+                    flex_direction: Some(FlexDirection::Row),
+                    align_items: Some(AlignItems::Center),
+                    gap: Some(Length::Px(7.0).into()),
+                    padding_top: Some(Length::Px(6.0).into()),
+                    padding_bottom: Some(Length::Px(6.0).into()),
+                    padding_left: Some(Length::Px(12.0).into()),
+                    padding_right: Some(Length::Px(12.0).into()),
+                    background: Some(Tokenized::Literal(Color("rgba(17,24,39,0.82)".into()))),
+                    color: Some(Tokenized::Literal(Color("#ffffff".into()))),
+                    ..Default::default()
+                };
+                merge(&mut s, radius(13.0));
+                s
+            })))
+            .into_element()
+    })
+    .present(move || recording.get())
+    .enter(PresenceAnim::new(
+        PresenceState { opacity: Some(0.0), translate_y: Some(-8.0), ..Default::default() },
+        180,
+        Easing::EaseOut,
+    ))
+    .exit(PresenceAnim::new(
+        PresenceState { opacity: Some(0.0), translate_y: Some(-8.0), ..Default::default() },
+        130,
+        Easing::EaseIn,
+    ))
+    .into_element();
+
+    // Dock top-center, safe-area aware.
+    view(vec![pill])
+        .with_style(reactive_style(move || {
+            let ins = safe_area_insets().get();
+            StyleRules {
+                position: Some(Position::Absolute),
+                top: Some(Length::Px(16.0 + ins.top).into()),
+                left: Some(Length::Px(0.0).into()),
+                right: Some(Length::Px(0.0).into()),
+                flex_direction: Some(FlexDirection::Row),
+                justify_content: Some(JustifyContent::Center),
+                ..Default::default()
+            }
+        }))
+        .into_element()
+}
+
+// ============================================================================
+// Settings — a FAB (top-left, while not recording) + a placeholder screen
+// ============================================================================
+
+fn build_settings_button(recording: Signal<bool>, screen: Signal<AppScreen>) -> Element {
+    let fab = presence(move || {
+        let glyph = icon_box(icon(SETTINGS).color(|| Color::from("#374151")).into_element());
+        view(vec![glyph])
+            .with_style(Rc::new(StyleSheet::r#static({
+                let mut s = StyleRules {
+                    width: Some(Length::Px(44.0).into()),
+                    height: Some(Length::Px(44.0).into()),
+                    align_items: Some(AlignItems::Center),
+                    justify_content: Some(JustifyContent::Center),
+                    background: Some(Tokenized::Literal(Color("rgba(255,255,255,0.92)".into()))),
+                    ..Default::default()
+                };
+                merge(&mut s, radius(22.0));
+                merge(&mut s, border_all(1.0, "rgba(17,24,39,0.08)"));
+                s
+            })))
+            .on_touch(move |ev| {
+                if ev.phase == TouchPhase::Ended {
+                    screen.set(AppScreen::Settings);
+                }
+                TouchResponse::CONSUMED
+            })
+            .into_element()
+    })
+    // Only when NOT recording.
+    .present(move || !recording.get())
+    .enter(PresenceAnim::new(
+        PresenceState { opacity: Some(0.0), scale: Some(0.9), ..Default::default() },
+        160,
+        Easing::EaseOut,
+    ))
+    .exit(PresenceAnim::new(
+        PresenceState { opacity: Some(0.0), scale: Some(0.9), ..Default::default() },
+        120,
+        Easing::EaseIn,
+    ))
+    .into_element();
+
+    view(vec![fab])
+        .with_style(reactive_style(move || {
+            let ins = safe_area_insets().get();
+            StyleRules {
+                position: Some(Position::Absolute),
+                top: Some(Length::Px(16.0 + ins.top).into()),
+                left: Some(Length::Px(16.0 + ins.left).into()),
+                ..Default::default()
+            }
+        }))
+        .into_element()
+}
+
+fn build_settings_screen(screen: Signal<AppScreen>) -> Element {
+    let header = screen_header("Settings", move || screen.set(AppScreen::Board));
+    let rows = view(vec![
+        setting_row("Smooth strokes", true),
+        setting_row("Show grid", false),
+        setting_row("Pressure sensitivity", false),
+        setting_row("High-quality recording", true),
+    ])
+    .with_style(Rc::new(StyleSheet::r#static(StyleRules {
+        flex_direction: Some(FlexDirection::Column),
+        gap: Some(Length::Px(2.0).into()),
+        padding_left: Some(Length::Px(20.0).into()),
+        padding_right: Some(Length::Px(20.0).into()),
+        ..Default::default()
+    })))
+    .into_element();
+    let note = text("Placeholder — these don't do anything yet.").into_element();
+    let note_box = view(vec![note])
+        .with_style(Rc::new(StyleSheet::r#static(StyleRules {
+            padding_left: Some(Length::Px(20.0).into()),
+            padding_top: Some(Length::Px(8.0).into()),
+            color: Some(Tokenized::Literal(Color("#9ca3af".into()))),
+            ..Default::default()
+        })))
+        .into_element();
+    screen_overlay(
+        move || screen.get() == AppScreen::Settings,
+        vec![header, rows, note_box],
+    )
+}
+
+/// One placeholder settings row: a label + a static pill "switch".
+fn setting_row(label: &'static str, on: bool) -> Element {
+    let knob_x = if on { JustifyContent::FlexEnd } else { JustifyContent::FlexStart };
+    let track_bg = if on { "#2563eb" } else { "#d1d5db" };
+    let knob = view(vec![])
+        .with_style(Rc::new(StyleSheet::r#static({
+            let mut s = StyleRules {
+                width: Some(Length::Px(18.0).into()),
+                height: Some(Length::Px(18.0).into()),
+                background: Some(Tokenized::Literal(Color("#ffffff".into()))),
+                ..Default::default()
+            };
+            merge(&mut s, radius(9.0));
+            s
+        })))
+        .into_element();
+    let track = view(vec![knob])
+        .with_style(Rc::new(StyleSheet::r#static({
+            let mut s = StyleRules {
+                width: Some(Length::Px(40.0).into()),
+                height: Some(Length::Px(24.0).into()),
+                padding_left: Some(Length::Px(3.0).into()),
+                padding_right: Some(Length::Px(3.0).into()),
+                flex_direction: Some(FlexDirection::Row),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(knob_x),
+                background: Some(Tokenized::Literal(Color(track_bg.into()))),
+                ..Default::default()
+            };
+            merge(&mut s, radius(12.0));
+            s
+        })))
+        .into_element();
+    view(vec![text(label).into_element(), track])
+        .with_style(Rc::new(StyleSheet::r#static(StyleRules {
+            flex_direction: Some(FlexDirection::Row),
+            align_items: Some(AlignItems::Center),
+            justify_content: Some(JustifyContent::SpaceBetween),
+            padding_top: Some(Length::Px(14.0).into()),
+            padding_bottom: Some(Length::Px(14.0).into()),
+            // Explicit dark text — the macOS default label color follows the
+            // SYSTEM appearance (white in dark mode), which would be invisible
+            // on this light screen.
+            color: Some(Tokenized::Literal(Color("#111827".into()))),
+            ..Default::default()
+        })))
+        .into_element()
+}
+
+// ============================================================================
+// Preview / export screen (after a recording stops)
+// ============================================================================
+
+fn build_preview_screen(rec_path: Signal<Option<String>>, screen: Signal<AppScreen>) -> Element {
+    let header = screen_header("Recording", move || screen.set(AppScreen::Board));
+
+    // The recorded file plays back via a REACTIVE url — resolved from `rec_path`
+    // (a `file://` to the store's real path on native; empty on web, where blob
+    // playback needs an async read, leaving the dark stage). Reactive so it
+    // populates when a recording finishes, not at build time.
+    let stage_video = video::Video(video::VideoProps {
+        source: video::url(move || {
+            rec_path
+                .get()
+                .and_then(|p| recording_url(&p))
+                .unwrap_or_default()
+        }),
+        autoplay: true,
+        controls: true,
+        loop_playback: true,
+        object_fit: video::ObjectFit::Contain,
+    })
+    .with_style(Rc::new(StyleSheet::r#static(StyleRules {
+        width: Some(Length::pct(100.0).into()),
+        height: Some(Length::pct(100.0).into()),
+        ..Default::default()
+    })))
+    .into_element();
+    let stage_box = view(vec![stage_video])
+        .with_style(Rc::new(StyleSheet::r#static({
+            let mut s = StyleRules {
+                flex_grow: Some(Tokenized::Literal(1.0)),
+                margin_left: Some(Length::Px(20.0).into()),
+                margin_right: Some(Length::Px(20.0).into()),
+                background: Some(Tokenized::Literal(Color("#0b1220".into()))),
+                overflow: Some(Overflow::Hidden),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::Center),
+                ..Default::default()
+            };
+            merge(&mut s, radius(16.0));
+            s
+        })))
+        .into_element();
+
+    // Actions: Discard (delete + back) · Export (save via picker).
+    let discard = action_button("Discard", false, move || {
+        if let Some(p) = rec_path.get() {
+            runtime_core::driver::spawn_async(async move {
+                if let Ok(store) = files::app_files(REC_STORE) {
+                    let _ = store.delete(&p).await;
+                }
+            });
+        }
+        rec_path.set(None);
+        screen.set(AppScreen::Board);
+    });
+    let export = action_button("Export", true, move || {
+        if let Some(p) = rec_path.get() {
+            runtime_core::driver::spawn_async(async move {
+                if let Ok(store) = files::app_files(REC_STORE) {
+                    if let Ok(Some(bytes)) = store.read(&p).await {
+                        let req = file_export::SaveRequest::bytes(REC_FILE, "video/mp4", bytes);
+                        let _ = file_export::FileExport::new().save(req).await;
+                    }
+                }
+            });
+        }
+    });
+    let actions = view(vec![discard, export])
+        .with_style(Rc::new(StyleSheet::r#static(StyleRules {
+            flex_direction: Some(FlexDirection::Row),
+            gap: Some(Length::Px(12.0).into()),
+            justify_content: Some(JustifyContent::Center),
+            padding_top: Some(Length::Px(16.0).into()),
+            padding_bottom: Some(Length::Px(20.0).into()),
+            padding_left: Some(Length::Px(20.0).into()),
+            padding_right: Some(Length::Px(20.0).into()),
+            ..Default::default()
+        })))
+        .into_element();
+
+    screen_overlay(
+        move || screen.get() == AppScreen::Preview,
+        vec![header, stage_box, actions],
+    )
+}
+
+/// Resolve a played-back URL for a recorded file. Native → a `file://` URL via
+/// the store's real path. Web → `None` (a blob URL needs an async read; the
+/// Preview screen shows a card there instead).
+fn recording_url(path: &str) -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let store = files::app_files(REC_STORE).ok()?;
+        let p = store.local_path(path)?;
+        Some(format!("file://{}", p.display()))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        None
+    }
+}
+
+// ============================================================================
+// Shared screen chrome
+// ============================================================================
+
+/// An always-mounted, opaque full-screen Settings/Preview overlay that toggles
+/// on `active`. When inactive it collapses to `0×0` (clipped) so it's invisible
+/// AND passes touches through to the board — an always-present full-screen
+/// layer would block every click. When active it fills the viewport.
+///
+/// We use this reactive-size pattern (the camera-widget idiom that lays out
+/// reliably on every backend) instead of wrapping the content in a `presence`:
+/// a `presence`'s absolutely-positioned child resolves its `inset:0` against
+/// the presence PLACEHOLDER, not the viewport, so on macOS/Taffy the screen
+/// never actually filled the window (the "no background" bug). As a direct
+/// PrivateLayer child, `inset:0` fills the full-screen overlay correctly.
+fn screen_overlay(active: impl Fn() -> bool + 'static, children: Vec<Element>) -> Element {
+    view(children)
+        .with_style(reactive_style(move || {
+            if !active() {
+                return StyleRules {
+                    position: Some(Position::Absolute),
+                    width: Some(Length::Px(0.0).into()),
+                    height: Some(Length::Px(0.0).into()),
+                    overflow: Some(Overflow::Hidden),
+                    ..Default::default()
+                };
+            }
+            let ins = safe_area_insets().get();
+            StyleRules {
+                position: Some(Position::Absolute),
+                top: Some(Length::Px(0.0).into()),
+                left: Some(Length::Px(0.0).into()),
+                right: Some(Length::Px(0.0).into()),
+                bottom: Some(Length::Px(0.0).into()),
+                flex_direction: Some(FlexDirection::Column),
+                padding_top: Some(Length::Px(12.0 + ins.top).into()),
+                padding_bottom: Some(Length::Px(ins.bottom).into()),
+                background: Some(Tokenized::Literal(Color("#f7f8fb".into()))),
+                // Explicit dark text — macOS's default label color follows the
+                // system appearance (white in dark mode).
+                color: Some(Tokenized::Literal(Color("#111827".into()))),
+                ..Default::default()
+            }
+        }))
+        .into_element()
+}
+
+/// A screen header: a title + a close (×) button that runs `on_close`.
+fn screen_header(title: &'static str, on_close: impl Fn() + 'static) -> Element {
+    let close = view(vec![icon_box(icon(X).color(|| Color::from("#374151")).into_element())])
+        .with_style(Rc::new(StyleSheet::r#static({
+            let mut s = StyleRules {
+                width: Some(Length::Px(40.0).into()),
+                height: Some(Length::Px(40.0).into()),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::Center),
+                background: Some(Tokenized::Literal(Color("rgba(17,24,39,0.05)".into()))),
+                ..Default::default()
+            };
+            merge(&mut s, radius(20.0));
+            s
+        })))
+        .on_touch(move |ev| {
+            if ev.phase == TouchPhase::Ended {
+                on_close();
+            }
+            TouchResponse::CONSUMED
+        })
+        .into_element();
+    view(vec![text(title).into_element(), close])
+        .with_style(Rc::new(StyleSheet::r#static(StyleRules {
+            flex_direction: Some(FlexDirection::Row),
+            align_items: Some(AlignItems::Center),
+            justify_content: Some(JustifyContent::SpaceBetween),
+            padding_left: Some(Length::Px(20.0).into()),
+            padding_right: Some(Length::Px(16.0).into()),
+            padding_top: Some(Length::Px(8.0).into()),
+            padding_bottom: Some(Length::Px(12.0).into()),
+            // Explicit dark title text (macOS dark-mode default is white).
+            color: Some(Tokenized::Literal(Color("#111827".into()))),
+            ..Default::default()
+        })))
+        .into_element()
+}
+
+/// A labeled action button. `primary` → filled blue; else neutral.
+fn action_button(label: &'static str, primary: bool, on_press: impl Fn() + 'static) -> Element {
+    let (bg, fg) = if primary {
+        ("#2563eb", "#ffffff")
+    } else {
+        ("rgba(17,24,39,0.06)", "#111827")
+    };
+    let lbl = view(vec![text(label).into_element()])
+        .with_style(Rc::new(StyleSheet::r#static(StyleRules {
+            color: Some(Tokenized::Literal(Color(fg.into()))),
+            ..Default::default()
+        })))
+        .into_element();
+    view(vec![lbl])
+        .with_style(Rc::new(StyleSheet::r#static({
+            let mut s = StyleRules {
+                height: Some(Length::Px(46.0).into()),
+                padding_left: Some(Length::Px(28.0).into()),
+                padding_right: Some(Length::Px(28.0).into()),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::Center),
+                background: Some(Tokenized::Literal(Color(bg.into()))),
+                ..Default::default()
+            };
+            merge(&mut s, radius(23.0));
+            s
+        })))
+        .on_touch(move |ev| {
+            if ev.phase == TouchPhase::Ended {
+                on_press();
             }
             TouchResponse::CONSUMED
         })

@@ -59,8 +59,16 @@ use std::rc::Rc;
 
 pub(crate) static OPS: &dyn WebViewOps = &IosWebViewOps;
 
+/// Register the WebView handler against an `IosBackend`. One-line call from
+/// app bootstrap.
 pub fn register(backend: &mut IosBackend) {
     backend.register_external::<WebViewProps, _>(|props, b| build_web_view(props, b));
+}
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_ios::IosExternalRegistrar(register)
 }
 
 // =========================================================================

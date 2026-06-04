@@ -232,3 +232,9 @@ impl NavigatorHandler<IosBackend> for IosStackHandler {
 pub fn register(backend: &mut IosBackend) {
     backend.register_navigator::<StackPresentation, _>(|| Box::new(IosStackHandler::new()));
 }
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_ios::IosNavigatorRegistrar(register)
+}

@@ -274,3 +274,9 @@ pub fn register(backend: &mut MacosBackend) {
         Box::new(MacosTabHandler::new())
     });
 }
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_macos::MacosNavigatorRegistrar(register)
+}

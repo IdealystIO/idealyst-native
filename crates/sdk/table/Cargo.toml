@@ -35,6 +35,8 @@ crate-type = ["rlib"]
 
 [dependencies]
 runtime-core = { workspace = true }
+# Self-registration of the per-backend external handler at construction.
+inventory = "0.3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }

@@ -23,25 +23,10 @@ use runtime_core::{
     Tokenized,
 };
 
-/// Register the markdown handler per platform. The CLI-generated wrapper
-/// hands us the concrete backend; `markdown::register` installs the
-/// `MarkdownDoc` external handler (and the wire serde).
-#[cfg(target_arch = "wasm32")]
-pub fn register_extensions(backend: &mut backend_web::WebBackend) {
-    markdown::register(backend);
-}
-
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
-    markdown::register(backend);
-}
-
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
-    markdown::register(backend);
-}
-
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+/// No per-platform registration needed: the `markdown` external
+/// self-registers via `inventory::submit!` at backend construction (see
+/// [[project_inventory_self_registration]]). The crate stays linked through
+/// the `Markdown`/`MdTheme` references in this module.
 pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 
 /// The document we render — covers every block + inline feature the SDK

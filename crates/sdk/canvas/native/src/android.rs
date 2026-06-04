@@ -49,6 +49,12 @@ pub fn register(backend: &mut AndroidBackend) {
     backend.register_external::<CanvasProps, _>(|props, b| build_canvas(props, b));
 }
 
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_android::AndroidExternalRegistrar(register)
+}
+
 fn build_canvas(props: &Rc<CanvasProps>, b: &mut AndroidBackend) -> GlobalRef {
     let view = b.with_jni(|env, ctx| {
         let class = env

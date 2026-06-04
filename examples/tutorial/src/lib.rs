@@ -103,33 +103,23 @@ pub fn app() -> Element {
 // =============================================================================
 
 #[cfg(target_arch = "wasm32")]
-pub fn register_extensions(backend: &mut backend_web::WebBackend) {
-    drawer_navigator::register(backend);
-    codeblock::register(backend);
+pub fn register_extensions(_backend: &mut backend_web::WebBackend) {
     // Wire the framework's reactive viewport signal so `current_breakpoint()`
     // (taught in the Media queries track) actually updates on resize.
     backend_web::install_viewport_observer();
 }
 
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
-    drawer_navigator::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {}
 
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
-    drawer_navigator::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_android::AndroidBackend) {}
 
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
-    drawer_navigator::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_macos::MacosBackend) {}
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))]
-pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
-    drawer_navigator::register(backend);
-}
+pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
 
 // Recorder-side registration for the runtime-server sidecar. Distinct fn
 // name (not an overload of `register_extensions`) so it never collides

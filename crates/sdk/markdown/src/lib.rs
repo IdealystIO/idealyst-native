@@ -191,6 +191,12 @@ pub fn register<B: runtime_core::RegisterExternal>(backend: &mut B) {
     backend.register_external::<MarkdownDoc, _>(web::build::<B>);
 }
 
+// Self-register at backend construction. See [[project_inventory_self_registration]].
+#[cfg(target_arch = "wasm32")]
+inventory::submit! {
+    backend_web::WebExternalRegistrar(register::<backend_web::WebBackend>)
+}
+
 /// Android — registers the `android` handler (one `TextView` +
 /// `SpannableStringBuilder`).
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
@@ -199,12 +205,24 @@ pub fn register(backend: &mut backend_android::AndroidBackend) {
     backend.register_external::<MarkdownDoc, _>(android::build);
 }
 
+// Self-register at backend construction. See [[project_inventory_self_registration]].
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+inventory::submit! {
+    backend_android::AndroidExternalRegistrar(register)
+}
+
 /// iOS — registers the `ios` handler (one `UILabel` +
 /// `NSAttributedString`).
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub fn register(backend: &mut backend_ios::IosBackend) {
     ensure_wire_serde();
     backend.register_external::<MarkdownDoc, _>(ios::build);
+}
+
+// Self-register at backend construction. See [[project_inventory_self_registration]].
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+inventory::submit! {
+    backend_ios::IosExternalRegistrar(register)
 }
 
 /// Fallback for other targets (macOS / terminal / gpu). No native

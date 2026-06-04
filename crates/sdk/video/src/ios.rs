@@ -150,6 +150,12 @@ pub fn register(backend: &mut IosBackend) {
     backend.register_external::<VideoProps, _>(|props, b| build_video(props, b));
 }
 
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_ios::IosExternalRegistrar(register)
+}
+
 /// Resolve a source to a URL for the AVPlayer path. A live `Stream` source
 /// has no native iOS player binding yet (that's the GPU/compositing phase);
 /// it resolves to no URL, leaving the player idle.
@@ -173,7 +179,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
 
     let initial_src = resolved_url(props).unwrap_or_default();
     let player = build_player(&initial_src);
-    let player_layer = build_player_layer(&player);
+    let player_layer = build_player_layer(&player, props.object_fit);
 
     // Add the AVPlayerLayer as a sublayer of the view's root layer.
     let view_layer: Retained<NSObject> = unsafe { msg_send_id![&view, layer] };
@@ -190,7 +196,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
             init
         ]
     };
-    let sbdl_gravity = NSString::from_str("AVLayerVideoGravityResizeAspect");
+    let sbdl_gravity = NSString::from_str(av_layer_gravity(props.object_fit));
     let _: () = unsafe { msg_send![&display_layer, setVideoGravity: &*sbdl_gravity] };
     let _: () = unsafe { msg_send![&view_layer, addSublayer: &*display_layer] };
 
@@ -273,8 +279,9 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
     // this renders correctly and stays simple.
     {
         let view_layer: Retained<NSObject> = unsafe { msg_send_id![&view, layer] };
-        // Aspect-fit instead of the default stretch.
-        let gravity = NSString::from_str("resizeAspect");
+        // Aspect-preserving fill, never the default stretch — drives the CPU
+        // CGImage fallback's root layer (contain → letterbox, cover → crop).
+        let gravity = NSString::from_str(contents_gravity(props.object_fit));
         let _: () = unsafe { msg_send![&view_layer, setContentsGravity: &*gravity] };
 
         let view_for_stream = view.clone();
@@ -428,15 +435,35 @@ fn build_player(src: &str) -> Retained<NSObject> {
     }
 }
 
-fn build_player_layer(player: &Retained<NSObject>) -> Retained<NSObject> {
+fn build_player_layer(
+    player: &Retained<NSObject>,
+    object_fit: crate::ObjectFit,
+) -> Retained<NSObject> {
     let layer: Retained<NSObject> = unsafe {
         msg_send_id![objc2::class!(AVPlayerLayer), playerLayerWithPlayer: &**player]
     };
-    // `AVLayerVideoGravityResizeAspect` — fit while preserving aspect.
-    // Matches the web `<video>` default (`object-fit: contain`).
-    let gravity = NSString::from_str("AVLayerVideoGravityResizeAspect");
+    // Aspect-preserving: ResizeAspect (contain) vs ResizeAspectFill (cover).
+    let gravity = NSString::from_str(av_layer_gravity(object_fit));
     let _: () = unsafe { msg_send![&layer, setVideoGravity: &*gravity] };
     layer
+}
+
+/// `AVLayerVideoGravity*` string for an [`crate::ObjectFit`] — used by the
+/// AVPlayerLayer (URL) and AVSampleBufferDisplayLayer (stream) paths.
+fn av_layer_gravity(fit: crate::ObjectFit) -> &'static str {
+    match fit {
+        crate::ObjectFit::Cover => "AVLayerVideoGravityResizeAspectFill",
+        crate::ObjectFit::Contain => "AVLayerVideoGravityResizeAspect",
+    }
+}
+
+/// `CALayer.contentsGravity` string for an [`crate::ObjectFit`] — used by the
+/// CPU CGImage fallback's root layer.
+fn contents_gravity(fit: crate::ObjectFit) -> &'static str {
+    match fit {
+        crate::ObjectFit::Cover => "resizeAspectFill",
+        crate::ObjectFit::Contain => "resizeAspect",
+    }
 }
 
 /// Register an NSNotificationCenter observer for

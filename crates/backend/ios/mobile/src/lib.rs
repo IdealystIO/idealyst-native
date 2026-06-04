@@ -24,7 +24,8 @@ mod private_layer_hittest;
 #[cfg(target_os = "ios")]
 pub use imp::{
     install_global_self, mount_screen_in_vc, pin_to_edges, schedule_layout_pass,
-    set_animated_color, set_animated_f32, with_backend, IosBackend, IosExternalRegistrar, IosNode,
+    set_animated_color, set_animated_f32, with_backend, IosBackend, IosExternalRegistrar,
+    IosNavigatorRegistrar, IosNode,
 };
 
 /// Re-export of the helpers crate's most common ObjC anchor type so

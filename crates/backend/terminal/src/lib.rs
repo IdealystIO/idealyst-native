@@ -109,9 +109,24 @@ impl Default for TerminalBackend {
     }
 }
 
+/// An inventory-collected navigator registrar. A navigator SDK's terminal
+/// module `inventory::submit!`s one (carrying a `fn(&mut TerminalBackend)`);
+/// [`TerminalBackend::new`] drains them so the app needn't call
+/// `<nav>::register` per platform. See [[project_inventory_self_registration]].
+pub struct TerminalNavigatorRegistrar(pub fn(&mut TerminalBackend));
+inventory::collect!(TerminalNavigatorRegistrar);
+
 impl TerminalBackend {
+    /// Install every SDK-submitted navigator handler. Native (non-wasm) so
+    /// inventory's link-time ctors populate the slice before construction.
+    fn drain_self_registrars(&mut self) {
+        for r in inventory::iter::<TerminalNavigatorRegistrar> {
+            (r.0)(self);
+        }
+    }
+
     pub fn new() -> Self {
-        Self {
+        let mut backend = Self {
             layout: LayoutTree::new(),
             nodes: HashMap::new(),
             next_id: 1,
@@ -121,7 +136,9 @@ impl TerminalBackend {
             cell_size: (1.0, 1.0),
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
             nav_handler_instances: HashMap::new(),
-        }
+        };
+        backend.drain_self_registrars();
+        backend
     }
 
     /// Register a `NavigatorHandler` factory for the SDK-defined

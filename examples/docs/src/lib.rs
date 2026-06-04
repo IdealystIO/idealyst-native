@@ -44,51 +44,11 @@ mod pages;
 #[cfg(test)]
 mod macro_test;
 
-// Web SDK-handler registration called by the CLI-generated wrapper
-// before mount. Used here to register the drawer navigator SDK; any
-// other per-backend extensions (external primitives, custom assets)
-// would also hook in here.
-#[cfg(target_arch = "wasm32")]
-pub fn register_extensions(backend: &mut backend_web::WebBackend) {
-    drawer_navigator::register(backend);
-}
-
-// iOS equivalent — same name + role, different backend type. The
-// iOS wrapper template invokes this before `mount`. Without it, the
-// drawer navigator's factory isn't in `IosBackend::navigator_handlers`
-// and the first `Backend::create_navigator` call panics —
-// abort-trapped because it bubbles up through `ios_main`'s C-ABI.
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
-    drawer_navigator::register(backend);
-}
-
-// Android equivalent — invoked from the generated Android wrapper
-// before `mount`. Same registration contract: without it, the first
-// `Backend::create_navigator` call panics because the drawer's
-// factory isn't installed in `AndroidBackend::navigator_handlers`.
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
-    drawer_navigator::register(backend);
-}
-
-// macOS desktop (AppKit) equivalent — invoked from the macOS host
-// wrapper before mount. `drawer_navigator::register` resolves to its
-// macOS impl (`&mut MacosBackend`) on this host, so the signature must
-// match or the drawer factory never lands in the backend's handlers.
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
-    drawer_navigator::register(backend);
-}
-
-// Terminal (TTY) equivalent — invoked from the CLI-generated terminal
-// wrapper before mount. Without it the first `create_navigator` call
-// panics because the drawer factory isn't in
-// `TerminalBackend::navigator_handlers`.
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))]
-pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
-    drawer_navigator::register(backend);
-}
+// Navigators + externals self-register at backend construction via
+// `inventory::submit!` inside their SDK crates — the app just uses them, no
+// per-platform registration. The hook remains for app-local externals; the CLI
+// bootstrap still calls it. See [[project_inventory_self_registration]].
+pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 
 // Recorder-side registration for the runtime-server sidecar. Distinct fn
 // name (not an overload of `register_extensions`) so it never collides

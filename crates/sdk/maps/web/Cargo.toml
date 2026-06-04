@@ -13,4 +13,6 @@ license.workspace = true
 [dependencies]
 maps-core = { workspace = true }
 backend-web = { workspace = true }
+# Self-registration of the per-backend external handler at construction.
+inventory = "0.3"
 web-sys = { version = "0.3", features = ["Document", "Element", "HtmlIFrameElement", "Window"] }

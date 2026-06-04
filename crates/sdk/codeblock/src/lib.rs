@@ -192,6 +192,12 @@ pub fn register<B: RegisterExternal>(backend: &mut B) {
     backend.register_external::<CodeBlockProps, _>(build_code_block::<B>);
 }
 
+// Self-register at backend construction. See [[project_inventory_self_registration]].
+#[cfg(target_arch = "wasm32")]
+inventory::submit! {
+    backend_web::WebExternalRegistrar(register::<backend_web::WebBackend>)
+}
+
 /// Android — registers the [`android::build`] handler. Produces a
 /// single `RustCodeBlock` (HorizontalScrollView + TextView with
 /// SpannableString). See `android.rs` for the JNI plumbing.
@@ -201,6 +207,12 @@ pub fn register(backend: &mut backend_android::AndroidBackend) {
     backend.register_external::<CodeBlockProps, _>(android::build);
 }
 
+// Self-register at backend construction. See [[project_inventory_self_registration]].
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+inventory::submit! {
+    backend_android::AndroidExternalRegistrar(register)
+}
+
 /// iOS — registers the [`ios::build`] handler. Produces a single
 /// UIScrollView (horizontal) wrapping a UILabel with
 /// NSAttributedString. See `ios.rs` for the obj-c plumbing.
@@ -208,6 +220,12 @@ pub fn register(backend: &mut backend_android::AndroidBackend) {
 pub fn register(backend: &mut backend_ios::IosBackend) {
     ensure_wire_serde();
     backend.register_external::<CodeBlockProps, _>(ios::build);
+}
+
+// Self-register at backend construction. See [[project_inventory_self_registration]].
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+inventory::submit! {
+    backend_ios::IosExternalRegistrar(register)
 }
 
 /// Fallback for other targets (macOS / terminal / gpu). No-op generic

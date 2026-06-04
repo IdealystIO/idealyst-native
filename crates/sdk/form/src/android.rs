@@ -16,8 +16,16 @@ use jni::objects::{GlobalRef, JValue};
 
 pub(crate) static OPS: &dyn FormOps = &AndroidFormOps;
 
+/// Register the Form handler against an `AndroidBackend`. One-line call from
+/// app bootstrap.
 pub fn register(backend: &mut AndroidBackend) {
     backend.register_external::<FormProps, _>(|_props, b| build_form(b));
+}
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_android::AndroidExternalRegistrar(register)
 }
 
 fn build_form(b: &mut AndroidBackend) -> GlobalRef {

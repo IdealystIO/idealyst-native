@@ -378,3 +378,9 @@ pub fn register(backend: &mut AndroidBackend) {
         b.create_private_layer_window()
     });
 }
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_android::AndroidExternalRegistrar(register)
+}

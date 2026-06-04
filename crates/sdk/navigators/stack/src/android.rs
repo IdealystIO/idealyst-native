@@ -185,3 +185,9 @@ fn stack_options_to_android(opts: Option<Box<StackScreenOptions>>) -> AndroidScr
 pub fn register(backend: &mut AndroidBackend) {
     backend.register_navigator::<StackPresentation, _>(|| Box::new(AndroidStackHandler::new()));
 }
+
+// Self-register at backend construction (no app-side `register` call needed).
+// See [[project_inventory_self_registration]].
+inventory::submit! {
+    backend_android::AndroidNavigatorRegistrar(register)
+}

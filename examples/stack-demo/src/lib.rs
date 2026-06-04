@@ -23,30 +23,11 @@ use stack_navigator::{Navigator, StackBuilder, StackHandle, StackScreenExt};
 // the navigator SDK can install its handler factory on the backend.
 // ---------------------------------------------------------------------------
 
-#[cfg(target_arch = "wasm32")]
-pub fn register_extensions(backend: &mut backend_web::WebBackend) {
-    stack_navigator::register(backend);
-}
-
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
-    stack_navigator::register(backend);
-}
-
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
-    stack_navigator::register(backend);
-}
-
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
-    stack_navigator::register(backend);
-}
-
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))]
-pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
-    stack_navigator::register(backend);
-}
+// Navigators + externals self-register at backend construction via
+// `inventory::submit!` inside their SDK crates — the app just uses them, no
+// per-platform registration. The hook remains for app-local externals; the CLI
+// bootstrap still calls it. See [[project_inventory_self_registration]].
+pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 
 // Recorder-side registration for the runtime-server sidecar. Distinct fn
 // name (not an overload of `register_extensions`) so it never collides

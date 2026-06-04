@@ -21,6 +21,8 @@ crate-type = ["rlib"]
 maps-core = { workspace = true }
 backend-ios-mobile = { workspace = true }
 runtime-core = { workspace = true }
+# Self-registration of the per-backend external handler at construction.
+inventory = "0.3"
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = [
     "NSString",

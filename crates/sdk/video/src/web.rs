@@ -21,9 +21,9 @@ pub fn register(backend: &mut WebBackend) {
     backend.register_external::<VideoProps, _>(|props, _backend| build_video(props));
 }
 
-// SPIKE: self-register via inventory. `WebBackend::new` drains these. The
-// question this answers empirically: does this submitted static survive the
-// release `wasm-opt -Oz` DCE pass, or get stripped like the catalog ctors?
+// Self-register at backend construction (no app-side `register` call needed).
+// Survives the release `wasm-opt -Oz` pass (code fn-pointer, not prunable
+// data). See [[project_inventory_self_registration]].
 inventory::submit! {
     backend_web::WebExternalRegistrar(register)
 }
@@ -51,6 +51,18 @@ fn build_video(props: &Rc<VideoProps>) -> web_sys::Element {
         let _ = video.set_attribute("loop", "");
     }
     let _ = video.set_attribute("data-external-kind", "video::VideoProps");
+
+    // object-fit: contain (letterbox) vs cover (fill + crop). Set the single
+    // CSS property so the framework's width/height style on the external node
+    // isn't clobbered. `<video>` defaults to `fill` (stretch), which we never
+    // want — always pin one of the aspect-preserving modes.
+    let fit = match props.object_fit {
+        crate::ObjectFit::Contain => "contain",
+        crate::ObjectFit::Cover => "cover",
+    };
+    if let Some(html) = video.dyn_ref::<web_sys::HtmlElement>() {
+        let _ = html.style().set_property("object-fit", fit);
+    }
 
     // One reactive populate effect: resolve the source each run, then set
     // `src` (URL) or `srcObject` (stream) / clear. The walker calls us inside
