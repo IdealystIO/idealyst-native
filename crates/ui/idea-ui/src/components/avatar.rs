@@ -59,7 +59,7 @@ pub fn Avatar(props: &AvatarProps) -> Element {
     let color = props.color;
 
     let container_style = move || {
-        let _ = crate::theme_runtime::active_theme()
+        let _ = crate::theme_runtime::active_theme_untracked()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
         StyleApplication::new(AvatarStyle::sheet())
@@ -68,7 +68,7 @@ pub fn Avatar(props: &AvatarProps) -> Element {
     };
 
     let text_style = move || {
-        let _ = crate::theme_runtime::active_theme()
+        let _ = crate::theme_runtime::active_theme_untracked()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
         StyleApplication::new(AvatarText::sheet())

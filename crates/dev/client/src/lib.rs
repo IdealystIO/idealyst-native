@@ -258,6 +258,45 @@ where
         &self.outbound
     }
 
+    /// Whether the wrapped real backend can capture its rendered
+    /// surface. The shell ships this in its `AppToDev::Hello` so the
+    /// server knows whether the `screenshot` verb's `client`/`auto`
+    /// source can be served by a real-surface capture.
+    pub fn supports_screenshot(&self) -> bool {
+        self.backend.borrow().supports_screenshot()
+    }
+
+    /// Handle a [`DevToApp::CaptureScreenshot`]: capture the real
+    /// backend's surface and reply with an [`AppToDev::ScreenshotResult`]
+    /// carrying the same `request_id`. Native backends invoke the
+    /// capture callback synchronously, so the reply is sent inline; the
+    /// callback owns a clone of the outbound sender so an async backend
+    /// (future web/DOM) would still reply when its capture completes.
+    pub fn capture_screenshot_and_reply(&self, request_id: u64) {
+        let outbound = self.outbound.clone();
+        self.backend
+            .borrow()
+            .capture_screenshot(Box::new(move |result| {
+                let msg = match result {
+                    Ok(shot) => AppToDev::ScreenshotResult {
+                        request_id,
+                        png: Some(shot.png),
+                        width: shot.width,
+                        height: shot.height,
+                        error: None,
+                    },
+                    Err(e) => AppToDev::ScreenshotResult {
+                        request_id,
+                        png: None,
+                        width: 0,
+                        height: 0,
+                        error: Some(e),
+                    },
+                };
+                let _ = outbound.send(msg);
+            }));
+    }
+
     /// Install a `GraphicsRegistry`, replacing whatever's there. The
     /// registry owns the app-local `(on_ready, on_resize, on_lost)`
     /// factories that the wire `CreateGraphics { renderer }` command

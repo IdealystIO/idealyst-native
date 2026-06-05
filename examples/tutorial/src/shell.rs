@@ -10,12 +10,12 @@ use std::rc::Rc;
 
 use runtime_core::{derived, ui, Element, Signal};
 use drawer_navigator::SlotProps;
-use idea_ui::{dark_theme, light_theme, set_idea_theme, Spacer, Switch, Typography};
+use idea_ui::{dark_theme, light_theme, set_idea_theme, Switch, Typography};
 
 use crate::routes::SECTIONS;
 use crate::styles::{
     NavLink, NavLinkActive, ScreenScroll, SidebarBody, SidebarFooter, SidebarHeader,
-    SidebarSection,
+    SidebarScroll, SidebarSection,
 };
 
 /// Wrap a step page in its own scroll surface (background, text color).
@@ -46,18 +46,24 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Element {
     let active_route = slot.active_route;
 
     ui! {
-        view(style = body_style) {
-            view(style = header_style) { header_children }
-            for section in SECTIONS {
-                (!section.title.is_empty()).then(|| ui! {
-                    text(style = SidebarSection()) { section.title.to_string() }
-                })
-                for entry in section.entries {
-                    nav_link(entry.route, entry.label, active_route)
+        // The WHOLE sidebar scrolls as one — header, nav list, and the theme
+        // toggle all move together when the content is taller than the panel.
+        // The scroll surface fills the drawer's sidebar panel; `SidebarBody`
+        // (background + padding, `min_height: 100%`) is the scrolled content so
+        // its background still spans the full panel when the content is short.
+        scroll_view(style = SidebarScroll()) {
+            view(style = body_style) {
+                view(style = header_style) { header_children }
+                for section in SECTIONS {
+                    (!section.title.is_empty()).then(|| ui! {
+                        text(style = SidebarSection()) { section.title.to_string() }
+                    })
+                    for entry in section.entries {
+                        nav_link(entry.route, entry.label, active_route)
+                    }
                 }
+                theme_toggle(footer_style, is_dark)
             }
-            Spacer()
-            theme_toggle(footer_style, is_dark)
         }
     }
 }

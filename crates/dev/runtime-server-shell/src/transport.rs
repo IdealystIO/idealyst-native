@@ -58,6 +58,7 @@ where
         // pass can plumb `WireBackend::viewport()` through if/when
         // backends expose one.
         viewport: None,
+        supports_screenshot: wire.supports_screenshot(),
     };
     send(&mut ws, &hello)?;
 
@@ -130,6 +131,11 @@ where
         }
         DevToApp::ThemeChanged { .. } => {
             // See Hello comment.
+        }
+        DevToApp::CaptureScreenshot { request_id } => {
+            // Capture the real client surface; the reply is queued on the
+            // outbound channel and flushed by the caller's drain loop.
+            wire.capture_screenshot_and_reply(request_id);
         }
     }
     Ok(())

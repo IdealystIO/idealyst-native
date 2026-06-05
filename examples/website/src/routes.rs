@@ -31,6 +31,7 @@ pub const WHY_RUST_ROUTE: Route<()> = Route::<()>::new("why-rust", "/why-rust");
 pub const DEMO_ROUTE: Route<()> = Route::<()>::new("demo", "/demo");
 
 // ---- Reference ----
+pub const ARCHITECTURE_ROUTE: Route<()> = Route::<()>::new("architecture", "/architecture");
 pub const BACKENDS_ROUTE: Route<()> = Route::<()>::new("backends", "/backends");
 pub const AGENTIC_ROUTE: Route<()> = Route::<()>::new("agentic", "/agentic");
 pub const ROADMAP_ROUTE: Route<()> = Route::<()>::new("roadmap", "/roadmap");
@@ -143,6 +144,7 @@ pub const SECTIONS: &[IndexSection] = &[
         title: "Reference",
         entries: &[
             IndexEntry { route: &DEMO_ROUTE, label: "Demo" },
+            IndexEntry { route: &ARCHITECTURE_ROUTE, label: "Architecture" },
             IndexEntry { route: &BACKENDS_ROUTE, label: "Backends" },
             IndexEntry { route: &AGENTIC_ROUTE, label: "Robot & MCP" },
             IndexEntry { route: &ROADMAP_ROUTE, label: "Roadmap" },

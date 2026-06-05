@@ -7,6 +7,7 @@ pub(crate) mod icon;
 pub(crate) mod image;
 pub(crate) mod portal;
 pub(crate) mod phase_timer;
+pub(crate) mod screenshot;
 pub(crate) mod sticky;
 pub(crate) mod text_inset;
 pub(crate) mod touch;
@@ -1126,6 +1127,24 @@ impl Backend for IosBackend {
         } else {
             runtime_core::Platform::Ios
         }
+    }
+
+    fn supports_screenshot(&self) -> bool {
+        // Capability, not current state: UIKit can always rasterize a
+        // view hierarchy. A capture before the host root is installed
+        // returns an error rather than failing this gate.
+        true
+    }
+
+    fn capture_screenshot(
+        &self,
+        done: Box<dyn FnOnce(Result<runtime_core::Screenshot, String>)>,
+    ) {
+        let result = match self.host_root.as_ref() {
+            Some(view) => screenshot::capture(view),
+            None => Err("no host root installed yet".into()),
+        };
+        done(result);
     }
 
     fn url_opener(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {

@@ -355,7 +355,9 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGraphicsCallback_nati
         return;
     }
 
-    let event = OnResizeEvent { size: new_size };
+    // 1.0 keeps the historical physical-scale behavior; Android's density-aware
+    // scale is a separate validated follow-up (would change the active vello path).
+    let event = OnResizeEvent { size: new_size, scale: 1.0 };
     let mut on_resize = std::mem::replace(
         &mut *cb.on_resize.borrow_mut(),
         Box::new(|_| {}),
@@ -437,6 +439,7 @@ unsafe fn fire_on_ready(
     let event = OnReadyEvent {
         surface: surface_handle,
         size: cb.last_size,
+        scale: 1.0,
     };
     let mut on_ready = std::mem::replace(
         &mut *cb.on_ready.borrow_mut(),

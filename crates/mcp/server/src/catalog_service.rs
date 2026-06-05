@@ -797,7 +797,7 @@ impl CatalogService {
         self.robot_call("invoke_method", app.as_deref(), body).await
     }
 
-    #[tool(description = "Capture a PNG screenshot of the running app and return it as base64. Works even when the app is mocked (runtime-server / headless dev mode) — the dev-server rasterizes the current scene with the same GPU renderer the real app uses. Optional `width`/`height` in physical pixels (default: the session's viewport size). Response JSON: { png_base64, width, height }. Requires the session to have registered the screenshot verb; returns an error otherwise.")]
+    #[tool(description = "Capture a PNG screenshot of the running app and return it as base64. Two capture sources, selected via the optional `source` arg: `client` snapshots the REAL rendered native surface (macOS/iOS/Android — native widgets, fonts, the live view hierarchy), working both for a `--local` native app and for a runtime-server session by asking the connected client to capture over the wire; `replay` rasterizes the current scene with the wgpu renderer server-side (always available, even with no client attached, but uses the framework's renderer not the platform's). `auto` (the default) tries the real client and falls back to replay. Optional `width`/`height` in physical pixels are honored by the replay path (default: the session's viewport size); real-client capture always returns the device's own pixel dimensions. Response JSON: { png_base64, width, height }. Requires the session to have registered the screenshot verb; returns an error otherwise.")]
     async fn screenshot(
         &self,
         Parameters(args): Parameters<RobotScreenshotArgs>,

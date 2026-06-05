@@ -101,6 +101,12 @@ pub enum SidecarOut {
     /// the clients attached to it (they'll typically reconnect and
     /// land on a fresh session).
     SessionEnded { session: String },
+    /// The `screenshot` Robot verb wants a **real client** capture. The
+    /// host forwards this to `session`'s connected client(s) as a
+    /// `wire::DevToApp::CaptureScreenshot { request_id }`; the client's
+    /// `wire::AppToDev::ScreenshotResult` comes back as a
+    /// [`SidecarIn::ScreenshotResult`] carrying the same `request_id`.
+    CaptureScreenshot { session: String, request_id: u64 },
 }
 
 /// Frames going *from* the host *to* the sidecar. Carries the
@@ -160,6 +166,104 @@ pub enum SidecarIn {
         /// it to `dev_hot::apply_patch`.
         table_json: String,
     },
+    /// A client's reply to [`SidecarOut::CaptureScreenshot`]. The host
+    /// received `wire::AppToDev::ScreenshotResult` from the client and
+    /// forwards it here so the blocked `screenshot` Robot verb (waiting
+    /// on `request_id` in the process-global pending map) wakes with the
+    /// PNG. Handled on the sidecar's main stdin-reader thread — NOT
+    /// routed to the (blocked) session thread — so there's no deadlock.
+    ScreenshotResult {
+        request_id: u64,
+        png: Option<Vec<u8>>,
+        width: u32,
+        height: u32,
+        error: Option<String>,
+    },
+}
+
+/// A resolved real-client screenshot: `Ok((png, width, height))` or an
+/// error string (unsupported client, no host root, timeout).
+type ShotResult = Result<(Vec<u8>, u32, u32), String>;
+
+/// Process-global correlation map for in-flight real-client screenshot
+/// requests. The `screenshot` Robot verb (running on a session thread)
+/// inserts a `request_id → Sender` and blocks on the paired `Receiver`;
+/// the sidecar's stdin-reader thread fulfills it when the matching
+/// [`SidecarIn::ScreenshotResult`] arrives. Process-global (not
+/// per-session) because the reader thread isn't session-scoped and
+/// `request_id`s are unique across the process.
+static SHOT_PENDING: std::sync::OnceLock<Mutex<std::collections::HashMap<u64, mpsc::Sender<ShotResult>>>> =
+    std::sync::OnceLock::new();
+static SHOT_NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn shot_pending() -> &'static Mutex<std::collections::HashMap<u64, mpsc::Sender<ShotResult>>> {
+    SHOT_PENDING.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Allocate a `request_id` and register a one-shot sink for its result.
+fn register_shot_request() -> (u64, mpsc::Receiver<ShotResult>) {
+    let id = SHOT_NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (tx, rx) = mpsc::channel();
+    shot_pending().lock().expect("shot pending poisoned").insert(id, tx);
+    (id, rx)
+}
+
+/// Drop a pending request without delivering (timeout cleanup).
+fn cancel_shot_request(id: u64) {
+    let _ = shot_pending().lock().expect("shot pending poisoned").remove(&id);
+}
+
+/// Deliver a client's screenshot reply to the blocked verb, if still
+/// waiting. Called from the stdin-reader thread.
+fn fulfill_shot_request(id: u64, result: ShotResult) {
+    if let Some(tx) = shot_pending().lock().expect("shot pending poisoned").remove(&id) {
+        let _ = tx.send(result);
+    }
+}
+
+/// Request a real-client capture and block (with timeout) for the reply.
+/// Writes a [`SidecarOut::CaptureScreenshot`] to the host, which forwards
+/// it to the session's client; the client's reply arrives as a
+/// [`SidecarIn::ScreenshotResult`] on the stdin-reader thread and
+/// fulfills this request's one-shot. The 4s bound covers "no capable
+/// client connected" without hanging the Robot bridge connection.
+#[cfg(feature = "screenshot")]
+fn capture_via_client(out: &Arc<Mutex<std::io::Stdout>>, session: &str) -> ShotResult {
+    let (request_id, rx) = register_shot_request();
+    {
+        let mut o = out.lock().map_err(|_| "stdout lock poisoned".to_string())?;
+        write_frame(
+            &mut *o,
+            &SidecarOut::CaptureScreenshot {
+                session: session.to_string(),
+                request_id,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let _ = o.flush();
+    }
+    match rx.recv_timeout(std::time::Duration::from_secs(4)) {
+        Ok(result) => result,
+        Err(_) => {
+            cancel_shot_request(request_id);
+            Err("timed out waiting for client reply (no capable client connected?)".into())
+        }
+    }
+}
+
+/// Encode a captured PNG as the Robot verb's `ok` payload —
+/// `{png_base64, width, height}` — matching the replay verb's contract
+/// so callers don't care which path produced the image.
+#[cfg(feature = "screenshot")]
+fn screenshot_json(png: &[u8], width: u32, height: u32) -> Result<String, String> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(png);
+    serde_json::to_string(&serde_json::json!({
+        "png_base64": b64,
+        "width": width,
+        "height": height,
+    }))
+    .map_err(|e| format!("screenshot response encode failed: {e}"))
 }
 
 /// Handle to a running sidecar. Owns the child process, the writer
@@ -572,6 +676,13 @@ pub use runtime::run;
 #[cfg(feature = "runtime-server")]
 mod runtime {
     use super::{is_eof, read_frame, write_frame, SidecarIn, SidecarOut};
+    // Screenshot-request correlation helpers live in the parent module
+    // (process-global state shared with the stdin reader). `fulfill` is
+    // used unconditionally by the `ScreenshotResult` arm; the capture +
+    // encode helpers only exist under the `screenshot` feature.
+    use super::fulfill_shot_request;
+    #[cfg(feature = "screenshot")]
+    use super::{capture_via_client, screenshot_json};
     use crate::WireRecordingBackend;
     use runtime_core::{mount, Owner, Element};
     use std::cell::RefCell;
@@ -804,6 +915,24 @@ mod runtime {
                         }
                     }
                 }
+                SidecarIn::ScreenshotResult {
+                    request_id,
+                    png,
+                    width,
+                    height,
+                    error,
+                } => {
+                    // Fulfilled HERE on the stdin-reader thread — NOT
+                    // routed to the (blocked) session thread — so the
+                    // `screenshot` verb waiting on `request_id` wakes
+                    // without deadlocking.
+                    let result = match (png, error) {
+                        (Some(bytes), _) => Ok((bytes, width, height)),
+                        (None, Some(e)) => Err(e),
+                        (None, None) => Err("client returned neither PNG nor error".to_string()),
+                    };
+                    fulfill_shot_request(request_id, result);
+                }
             }
         }
 
@@ -889,7 +1018,44 @@ mod runtime {
             let size = initial_viewport
                 .map(|v| (v.width.round() as u32, v.height.round() as u32))
                 .unwrap_or((393, 800));
-            headless_screenshot::register_screenshot_command(size, move || snap_recorder.snapshot());
+            let out_for_shot = out.clone();
+            let session_for_shot = session.clone();
+            // The `screenshot` verb now takes an optional `source` arg:
+            //   - "replay" → wgpu re-render of the recorded scene (the
+            //      original behavior; works with no client attached).
+            //   - "client" → capture the real client's native surface over
+            //      the wire; errors if no capable client replies.
+            //   - "auto"   → try the real client, fall back to replay on
+            //      error/timeout. Default.
+            // Response payload is identical either way:
+            // {png_base64, width, height}.
+            runtime_core::robot::bridge::register_command("screenshot", move |args| {
+                let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("auto");
+
+                if source == "client" || source == "auto" {
+                    match capture_via_client(&out_for_shot, &session_for_shot) {
+                        Ok((png, w, h)) => return screenshot_json(&png, w, h),
+                        Err(e) => {
+                            if source == "client" {
+                                return Err(format!("real-client capture failed: {e}"));
+                            }
+                            // auto → fall through to the wgpu replay.
+                            eprintln!(
+                                "[runtime-server-app] screenshot: client capture unavailable \
+                                 ({e}); falling back to wgpu replay"
+                            );
+                        }
+                    }
+                }
+
+                // Replay path. Honour explicit width/height like the
+                // original verb; default to the session viewport.
+                let w = args.get("width").and_then(|v| v.as_u64()).unwrap_or(size.0 as u64) as u32;
+                let h = args.get("height").and_then(|v| v.as_u64()).unwrap_or(size.1 as u64) as u32;
+                let commands = snap_recorder.snapshot();
+                let png = headless_screenshot::screenshot_commands(w, h, commands)?;
+                screenshot_json(&png, w, h)
+            });
         }
 
         let mut cursor = recorder.command_count();
@@ -1095,6 +1261,10 @@ mod runtime {
             Error { message } => {
                 eprintln!("[runtime-server-app] client reported error: {message}");
             }
+            // Correlation data, not a session event — the host forwards
+            // it as a dedicated `SidecarIn::ScreenshotResult` and never
+            // routes it here. Present only for match exhaustiveness.
+            ScreenshotResult { .. } => {}
         }
     }
 }

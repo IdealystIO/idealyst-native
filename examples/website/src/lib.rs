@@ -46,7 +46,7 @@ mod styles;
 mod typeface;
 
 use routes::{
-    AGENTIC_ROUTE, BACKENDS_ROUTE, CODE_SPLITTING_ROUTE, COMPARE_DIOXUS_ROUTE,
+    AGENTIC_ROUTE, ARCHITECTURE_ROUTE, BACKENDS_ROUTE, CODE_SPLITTING_ROUTE, COMPARE_DIOXUS_ROUTE,
     COMPARE_ELECTRON_ROUTE, COMPARE_FLUTTER_ROUTE, COMPARE_REACT_ROUTE,
     COMPARE_WEB_FRAMEWORKS_ROUTE, COMPARE_WHEN_NOT_ROUTE, COMPARISONS_ROUTE, CONCEPTS_ROUTE,
     CROSS_PLATFORM_ROUTE, DEMO_ROUTE, FEATURES_ROUTE, FURTHER_READING_ROUTE, HOME_ROUTE,
@@ -142,6 +142,7 @@ pub fn app() -> Element {
         .screen(NAVIGATION_ROUTE, move |_| titled(&NAVIGATION_ROUTE, pages::navigation::page()))
         .screen(WHY_RUST_ROUTE, move |_| titled(&WHY_RUST_ROUTE, pages::why_rust::page()))
         .screen(DEMO_ROUTE, move |_| titled(&DEMO_ROUTE, pages::demo::page()))
+        .screen(ARCHITECTURE_ROUTE, move |_| titled(&ARCHITECTURE_ROUTE, pages::architecture::page()))
         .screen(BACKENDS_ROUTE, move |_| titled(&BACKENDS_ROUTE, pages::backends::page()))
         .screen(SERVER_FUNCTIONS_ROUTE, move |_| titled(&SERVER_FUNCTIONS_ROUTE, pages::server_functions::page()))
         .screen(CODE_SPLITTING_ROUTE, move |_| titled(&CODE_SPLITTING_ROUTE, pages::code_splitting::page()))

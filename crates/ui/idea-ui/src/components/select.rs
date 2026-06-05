@@ -109,7 +109,7 @@ pub fn Select(props: SelectProps) -> Element {
     );
     let label_child = runtime_core::text(label_source).into_element();
     let trigger_style = move || {
-        let _ = idea_theme::active_theme()
+        let _ = idea_theme::active_theme_untracked()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
         StyleApplication::new(SelectTrigger::sheet())
@@ -169,7 +169,7 @@ fn menu_build(
 
         let opt_id_for_style = opt_id.clone();
         let row_style = move || {
-            let _ = idea_theme::active_theme()
+            let _ = idea_theme::active_theme_untracked()
                 .downcast_ref::<IdeaThemeRef>()
                 .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
             let variant = if value.get() == opt_id_for_style { "on" } else { "off" };

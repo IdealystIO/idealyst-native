@@ -57,3 +57,29 @@ objc2-foundation = { version = "0.2", features = [
 ] }
 objc2-ui-kit = { version = "0.2", features = ["UIScrollView", "UILabel"] }
 
+# macOS handler: one `NSScrollView` (horizontal) wrapping an `NSTextField`
+# label whose `attributedStringValue` carries per-run `NSColor` ranges. Mirrors
+# the iOS handler. objc2 versions match `backend-macos` so the `NSView` type in
+# `MacosNode::View(...)` is identical across the crate boundary.
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSAttributedString",
+    "NSDictionary",
+    "NSString",
+    "NSRange",
+] }
+objc2-app-kit = { version = "0.2", features = [
+    "NSScrollView",
+    "NSTextField",
+    "NSText",
+    "NSControl",
+    "NSCell",
+    "NSActionCell",
+    "NSColor",
+    "NSFont",
+    "NSView",
+    "NSResponder",
+] }
+

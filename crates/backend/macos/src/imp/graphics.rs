@@ -189,6 +189,10 @@ pub(crate) fn create_graphics(
             cb(OnReadyEvent {
                 surface: surface.clone(),
                 size: (w, h),
+                // Physical `size` = logical frame × backingScaleFactor; report the
+                // factor so a logical-coordinate renderer (vello) fills the
+                // physical surface instead of under-filling on retina.
+                scale: scale as f32,
             });
         }
     });

@@ -1279,6 +1279,7 @@ dependencies = [
 name = "canvas-core"
 version = "0.0.1"
 dependencies = [
+ "media-stream",
  "runtime-core",
  "serde",
  "serde_json",
@@ -1324,6 +1325,12 @@ name = "canvas-vello"
 version = "0.0.1"
 dependencies = [
  "canvas-core",
+ "media-stream",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "objc2-io-surface",
+ "objc2-metal 0.3.2",
  "pollster",
  "raw-window-handle",
  "runtime-core",
@@ -1506,11 +1513,13 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
  "backend-ios-mobile",
+ "backend-macos",
  "backend-web",
  "inventory",
  "jni 0.21.1",
  "log",
  "objc2 0.5.2",
+ "objc2-app-kit",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "runtime-core",
@@ -1974,6 +1983,7 @@ name = "dev-server"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "base64",
  "ctrlc",
  "dev-hot",
  "headless-screenshot",
@@ -5069,7 +5079,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
 dependencies = [
  "bitflags 2.11.1",
+ "block2 0.6.2",
  "dispatch2",
+ "libc",
  "objc2 0.6.4",
 ]
 
@@ -5136,6 +5148,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags 2.11.1",
+ "block2 0.6.2",
+ "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
 ]
@@ -5147,8 +5161,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
 dependencies = [
  "bitflags 2.11.1",
+ "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -5183,8 +5199,11 @@ checksum = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794"
 dependencies = [
  "bitflags 2.11.1",
  "block2 0.6.2",
+ "dispatch2",
  "objc2 0.6.4",
+ "objc2-core-foundation",
  "objc2-foundation 0.3.2",
+ "objc2-io-surface",
 ]
 
 [[package]]
@@ -6315,6 +6334,7 @@ dependencies = [
 name = "runtime-core"
 version = "0.0.1"
 dependencies = [
+ "base64",
  "bitflags 2.11.1",
  "dev-hot",
  "log",
@@ -6604,6 +6624,20 @@ dependencies = [
  "runtime-core",
  "screen-recorder",
  "video",
+]
+
+[[package]]
+name = "screenshot-demo"
+version = "0.0.1"
+dependencies = [
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-macos",
+ "backend-terminal",
+ "backend-web",
+ "dev-server",
+ "idea-ui",
+ "runtime-core",
 ]
 
 [[package]]
@@ -9100,14 +9134,20 @@ dependencies = [
  "camera",
  "canvas",
  "canvas-native",
+ "canvas-vello",
  "file-export",
  "files",
  "icons-lucide",
  "idea-ui",
+ "js-sys",
+ "media-stream",
  "media-writer",
  "runtime-core",
  "screen-recorder",
+ "stack-navigator",
  "video",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

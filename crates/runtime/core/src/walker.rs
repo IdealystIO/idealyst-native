@@ -195,6 +195,19 @@ where
         crate::robot::bridge::start_auto_polling(
             crate::robot::bridge::DEFAULT_PORT,
         );
+        // Register the live `"screenshot"` verb only when this backend
+        // can snapshot its real surface. Gating on the capability keeps a
+        // `MockBackend` (or any backend without native capture) from
+        // shadowing the headless wgpu-replay `"screenshot"` the
+        // dev-server registers for mocked sessions. The capture closure
+        // borrows the backend on the UI thread — the same thread the
+        // bridge polls on — so no cross-thread handoff is needed.
+        if backend.borrow().supports_screenshot() {
+            let backend = backend.clone();
+            crate::robot::screenshot::register_native_screenshot(move |done| {
+                backend.borrow().capture_screenshot(done);
+            });
+        }
     }
 
     let mut scope = Box::new(reactive::Scope::new());

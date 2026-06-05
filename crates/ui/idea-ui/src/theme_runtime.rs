@@ -2,6 +2,6 @@
 
 #[allow(unused_imports)]
 pub use idea_theme::{
-    active_theme, install_theme, install_themes, set_theme, ThemeTokens, TokenEntry, TokenValue,
+    active_theme, active_theme_untracked, install_theme, install_themes, set_theme, ThemeTokens, TokenEntry, TokenValue,
     Tokenized,
 };

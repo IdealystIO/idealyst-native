@@ -51,7 +51,7 @@ runtime-server = ["dep:dev-hot", "dep:subsecond-types", "dep:libc", "dep:anyhow"
 # Implies `runtime-server` (the verb lives in the sidecar session loop)
 # and `robot` (the bridge it registers on). The generated sidecar build
 # enables this; the lightweight recorder/transport consumers don't.
-screenshot = ["dep:headless-screenshot", "runtime-server", "robot"]
+screenshot = ["dep:headless-screenshot", "dep:base64", "runtime-server", "robot"]
 
 [dependencies]
 runtime-core = { workspace = true }
@@ -63,6 +63,10 @@ serde_json = "1"
 # in only by the `screenshot` feature (drags render-wgpu/wgpu). Leaf
 # crate; depends on neither dev-server nor mock-backend, so no cycle.
 headless-screenshot = { workspace = true, optional = true }
+
+# Base64-encodes the captured PNG for the `screenshot` verb's JSON
+# response. Optional — pulled in only by the `screenshot` feature.
+base64 = { version = "0.22", optional = true }
 
 # Activated by the `sidecar-runtime` feature. `dev-hot` is the
 # subsecond facade — exposes `apply_patch(JumpTable)`. We pick up the

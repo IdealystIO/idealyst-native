@@ -14,6 +14,12 @@ pub const HOME_ROUTE: Route<()> = Route::<()>::new("home", "/");
 pub const CORE_ENGINE_ROUTE: Route<()> = Route::<()>::new("core-engine", "/core/engine");
 pub const CORE_PERF_ROUTE: Route<()> = Route::<()>::new("core-performance", "/core/performance");
 
+// ---- Architecture: how the framework is layered ----
+pub const ARCH_OVERVIEW_ROUTE: Route<()> = Route::<()>::new("arch-overview", "/architecture/overview");
+pub const ARCH_BACKENDS_ROUTE: Route<()> = Route::<()>::new("arch-backends", "/architecture/backends");
+pub const ARCH_CATALOG_ROUTE: Route<()> = Route::<()>::new("arch-catalog", "/architecture/catalog");
+pub const ARCH_SDKS_ROUTE: Route<()> = Route::<()>::new("arch-sdks", "/architecture/sdks");
+
 // ---- Track 1: Reactivity ----
 pub const RX_SIGNALS_ROUTE: Route<()> = Route::<()>::new("rx-signals", "/reactivity/signals");
 pub const RX_EFFECTS_ROUTE: Route<()> = Route::<()>::new("rx-effects", "/reactivity/effects");
@@ -61,6 +67,15 @@ pub const SECTIONS: &[IndexSection] = &[
         entries: &[
             IndexEntry { route: &CORE_ENGINE_ROUTE, label: "One reactive engine" },
             IndexEntry { route: &CORE_PERF_ROUTE, label: "Under the hood: batching" },
+        ],
+    },
+    IndexSection {
+        title: "Architecture",
+        entries: &[
+            IndexEntry { route: &ARCH_OVERVIEW_ROUTE, label: "The layered model" },
+            IndexEntry { route: &ARCH_BACKENDS_ROUTE, label: "Direct vs hosted runtime" },
+            IndexEntry { route: &ARCH_CATALOG_ROUTE, label: "Catalog, docs & MCP" },
+            IndexEntry { route: &ARCH_SDKS_ROUTE, label: "SDKs" },
         ],
     },
     IndexSection {

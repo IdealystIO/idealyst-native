@@ -194,9 +194,13 @@ impl<B: Backend + 'static> RuntimeServerShell<B> {
         // different size post-layout. Without seeding, every
         // first-call would emit a redundant message.
         let initial_viewport = options.viewport.clone();
+        // Read the real backend's capture capability now, on the thread
+        // that owns the client, and hand it to the worker for its Hello —
+        // the worker thread can't touch the `!Send` client itself.
+        let supports_screenshot = client.borrow().supports_screenshot();
         let options_for_worker = options;
         std::thread::spawn(move || {
-            ws_worker_loop(url, inbound_tx, outbound_rx, options_for_worker);
+            ws_worker_loop(url, inbound_tx, outbound_rx, options_for_worker, supports_screenshot);
         });
 
         Self {
@@ -406,6 +410,13 @@ fn apply_dev_msg<B: Backend + 'static>(client: &mut RuntimeServerClient<B>, msg:
         DevToApp::Rebuilding => eprintln!("[runtime-server-shell] dev rebuilding…"),
         DevToApp::Error { message } => eprintln!("[runtime-server-shell] dev error: {}", message),
         DevToApp::ThemeChanged { .. } => {}
+        DevToApp::CaptureScreenshot { request_id } => {
+            // Capture the real client surface and reply over the wire.
+            // Runs on the thread that owns the client; native capture
+            // fires its callback inline, so the `AppToDev::ScreenshotResult`
+            // is queued on the outbound channel before this returns.
+            client.capture_screenshot_and_reply(request_id);
+        }
     }
 }
 
@@ -421,6 +432,7 @@ fn ws_worker_loop(
     inbound_tx: mpsc::Sender<DevToApp>,
     outbound_rx: mpsc::Receiver<AppToDev>,
     options: RuntimeServerShellOptions,
+    supports_screenshot: bool,
 ) {
     eprintln!("[runtime-server-shell] worker starting; url={:?}", url);
     loop {
@@ -450,6 +462,7 @@ fn ws_worker_loop(
                 device_label: options.device_label.clone(),
             },
             viewport: options.viewport.clone(),
+            supports_screenshot,
         };
         let _ = ws_send(&mut ws, &hello);
         eprintln!("[runtime-server-shell] connected");

@@ -15,7 +15,7 @@
 //! etc.) builds directly on the surface defined here.
 //!
 //! ```no_run
-//! use idea_ui::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
+//! use idea_theme::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
 //!
 //! struct MyTheme { accent: runtime_core::Color }
 //! impl ThemeTokens for MyTheme {
@@ -226,6 +226,22 @@ pub fn active_theme() -> Rc<dyn Any> {
             .expect("no theme installed; call idea_ui::install_theme(...) before rendering")
             .get()
     })
+}
+
+/// Read the active theme *without* subscribing the current effect to theme
+/// changes.
+///
+/// Use this for install/type assertions inside reactive style closures that
+/// discard the value (`let _ = active_theme_untracked()...`). The active
+/// theme is a hot, rarely-written signal; subscribing to it from a
+/// per-instance style closure that doesn't actually consume the value leaves
+/// a dead subscriber behind on every mount/unmount cycle (pruned only on the
+/// next, rare, `set_theme`). Components that genuinely react to theme changes
+/// should still use [`active_theme`].
+///
+/// Panics if no theme has been installed, exactly like [`active_theme`].
+pub fn active_theme_untracked() -> Rc<dyn Any> {
+    runtime_core::untrack(active_theme)
 }
 
 #[cfg(test)]

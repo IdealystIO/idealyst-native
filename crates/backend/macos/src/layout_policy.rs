@@ -112,9 +112,126 @@ pub(crate) fn detached_overlay_needs_resize(current: (f32, f32), host_content: (
         || (current.1 - host_content.1).abs() > RESIZE_EPSILON
 }
 
+/// Content bounding box (max right edge, max bottom edge) of a scroll view's
+/// Taffy subtree, projected into the scroll view's content coordinate space.
+///
+/// The macOS backend parents a scroll view's children directly under the OUTER
+/// scroll-view Taffy node (mirroring iOS's single-`UIScrollView` model), so the
+/// layout pass sizes them — but the inner `NSScrollView` documentView is a
+/// native-only container Taffy never positions. This computes the size the
+/// documentView must take so AppKit can scroll: without it the documentView
+/// stays 0×0 and clips every (correctly laid-out) child to nothing — the macOS
+/// "scroll page renders blank" bug.
+///
+/// `roots` are the scroll node's direct Taffy children. `frame_of(n)` returns
+/// `(x, y, w, h)` relative to `n`'s parent; `children_of(n)` returns `n`'s
+/// children. The walk descends the FULL subtree, not just the direct children:
+/// authors routinely set `min_height: 100%` on a page's outermost container,
+/// which Taffy clamps to the scroll view's bounds, while a Spacer-pushed footer
+/// (or any overflowing grandchild) sits past that clamped frame. Stopping at
+/// direct children would under-report the content height and the tail wouldn't
+/// scroll into view. Mirrors the iOS backend's `contentSize` sync.
+///
+/// Returns `(0.0, 0.0)` for an empty subtree.
+pub(crate) fn scroll_content_bbox<N: Copy>(
+    roots: &[N],
+    frame_of: impl Fn(N) -> (f32, f32, f32, f32),
+    children_of: impl Fn(N) -> Vec<N>,
+) -> (f32, f32) {
+    let mut max_x = 0.0_f32;
+    let mut max_y = 0.0_f32;
+    // (node, parent_origin_x, parent_origin_y) — accumulate the running origin
+    // while descending so a deep descendant's frame projects into content space.
+    let mut stack: Vec<(N, f32, f32)> = roots.iter().map(|&n| (n, 0.0, 0.0)).collect();
+    while let Some((node, origin_x, origin_y)) = stack.pop() {
+        let (fx, fy, fw, fh) = frame_of(node);
+        let nx = origin_x + fx;
+        let ny = origin_y + fy;
+        max_x = max_x.max(nx + fw);
+        max_y = max_y.max(ny + fh);
+        for child in children_of(node) {
+            stack.push((child, nx, ny));
+        }
+    }
+    (max_x, max_y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A tiny tree fixture: each node is an index into `frames`/`kids`.
+    struct Tree {
+        frames: Vec<(f32, f32, f32, f32)>,
+        kids: Vec<Vec<usize>>,
+    }
+    impl Tree {
+        fn bbox(&self, roots: &[usize]) -> (f32, f32) {
+            scroll_content_bbox(
+                roots,
+                |n| self.frames[n],
+                |n| self.kids[n].clone(),
+            )
+        }
+    }
+
+    #[test]
+    fn empty_scroll_has_zero_content() {
+        let t = Tree { frames: vec![], kids: vec![] };
+        assert_eq!(t.bbox(&[]), (0.0, 0.0));
+    }
+
+    #[test]
+    fn single_child_drives_content_size() {
+        // One content view filling the column, shorter than the viewport.
+        let t = Tree { frames: vec![(0.0, 0.0, 744.0, 500.0)], kids: vec![vec![]] };
+        assert_eq!(t.bbox(&[0]), (744.0, 500.0));
+    }
+
+    #[test]
+    fn deep_descendant_past_clamped_parent_extends_content() {
+        // Regression: the macOS scroll-page-blank fix. A page container (node 0)
+        // is clamped to the scroll view's 744×768 bounds (min_height: 100%), but
+        // a footer (node 1) sits at local y=900 — past the clamped parent. A
+        // direct-children-only walk would report height 768 and the footer would
+        // never scroll into view; the deep walk projects it to y=900 → 940.
+        let t = Tree {
+            frames: vec![(0.0, 0.0, 744.0, 768.0), (0.0, 900.0, 200.0, 40.0)],
+            kids: vec![vec![1], vec![]],
+        };
+        assert_eq!(t.bbox(&[0]), (744.0, 940.0));
+    }
+
+    #[test]
+    fn horizontal_overflow_extends_width() {
+        // Two siblings under a row; the second starts at x=744 and is 300 wide,
+        // so content width is 1044 (scrolls horizontally).
+        let t = Tree {
+            frames: vec![
+                (0.0, 0.0, 1044.0, 200.0), // row container
+                (0.0, 0.0, 744.0, 200.0),
+                (744.0, 0.0, 300.0, 200.0),
+            ],
+            kids: vec![vec![1, 2], vec![], vec![]],
+        };
+        assert_eq!(t.bbox(&[0]), (1044.0, 200.0));
+    }
+
+    #[test]
+    fn nested_origins_accumulate() {
+        // child at (0, 100) is only 40 tall (bottom 140); its grandchild at
+        // local (10, 20) size 50×30 projects to (10, 120) with bottom 150 —
+        // overflowing the child. The bbox bottom must follow the grandchild
+        // (150), not stop at the child (140).
+        let t = Tree {
+            frames: vec![
+                (0.0, 100.0, 744.0, 40.0), // child, bottom 140
+                (10.0, 20.0, 50.0, 30.0),  // grandchild overflows to y=150
+            ],
+            kids: vec![vec![1], vec![]],
+        };
+        assert_eq!(t.bbox(&[0]), (744.0, 150.0));
+    }
 
     #[test]
     fn first_claim_posts_subsequent_drop() {

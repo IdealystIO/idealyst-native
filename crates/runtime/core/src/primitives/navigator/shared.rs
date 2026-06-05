@@ -900,6 +900,41 @@ pub fn use_focus() -> impl Fn() -> bool + 'static {
     }
 }
 
+/// Returns a function `() -> bool` that reads as `true` when the ambient
+/// navigator has a screen to pop back to — i.e. the active screen is NOT the
+/// root of its stack. Reactive: read it inside an `effect!` block (or any
+/// reactive context) and it re-fires whenever the stack depth changes (push,
+/// pop, or a native back gesture).
+///
+/// ```ignore
+/// use runtime_core::primitives::navigator::use_can_go_back;
+///
+/// let can_go_back = use_can_go_back();
+/// // e.g. show a root-only FAB while at the stack root:
+/// presence(|| fab()).present(move || !can_go_back());
+/// ```
+///
+/// **Prefer this over [`use_focus`] for "am I the root screen" gating that must
+/// survive a native back.** `use_focus` keys off `active_route`, which the
+/// framework updates on push/replace/reset but a bare `pop` leaves to the SDK
+/// handler's `active_changed` — and the native stack handlers (macOS/iOS/
+/// Android) don't all emit it, so `active_route` can read stale after a pop.
+/// `can_go_back` is derived from `depth`, which every backend updates on BOTH
+/// push and pop via `depth_changed`, so it stays correct.
+///
+/// Returns `|| false` when called outside a navigator scope (no ambient
+/// navigator).
+pub fn use_can_go_back() -> impl Fn() -> bool + 'static {
+    // Capture the `can_go_back` signal at use-time — cheap `Rc` clone that
+    // outlives the `NavigatorControl`, same as [`use_focus`].
+    let sig = ambient_navigator()
+        .and_then(|n| n.nav_state.borrow().as_ref().map(|s| s.can_go_back));
+    move || match sig {
+        Some(s) => s.get(),
+        None => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Headless initial-path override (server-side rendering).
 //
@@ -1108,5 +1143,59 @@ mod nav_state_lifetime_tests {
         let nav_state = with_scope(&mut ambient, fresh_nav_state);
         drop(ambient); // frees the signals — the bug
         nav_state.active_route.set("detail"); // hits a freed slot → panic
+    }
+}
+
+#[cfg(test)]
+mod use_can_go_back_tests {
+    //! Regression: `use_can_go_back` must track the `depth`-derived
+    //! `can_go_back` signal — which every backend updates on push AND pop via
+    //! `depth_changed` — NOT `active_route`, which native stack handlers leave
+    //! stale after a bare `pop`. The whiteboard-demo gates its capture-excluded
+    //! board chrome on this: a stale read would leave the toolbar hidden forever
+    //! after returning from a pushed screen ("the private layer goes missing").
+
+    use super::*;
+    use crate::reactive::{with_scope, Scope};
+
+    fn control_with_state() -> (Rc<NavigatorControl>, NavState, Box<Scope>) {
+        let control = Rc::new(NavigatorControl::new());
+        let mut nav_scope = Box::new(Scope::new());
+        let nav_state = with_scope(&mut nav_scope, || NavState {
+            active_route: crate::Signal::new("board"),
+            active_path: crate::Signal::new("/".to_string()),
+            depth: crate::Signal::new(1),
+            can_go_back: crate::Signal::new(false),
+        });
+        control.attach_nav_state(nav_state.clone());
+        (control, nav_state, nav_scope)
+    }
+
+    #[test]
+    fn tracks_can_go_back_across_push_and_pop() {
+        let (control, nav_state, _scope) = control_with_state();
+        let _guard = AmbientNavGuard::push(control.clone());
+
+        let can_go_back = use_can_go_back();
+        // At the stack root: nothing to pop back to.
+        assert!(!can_go_back(), "root screen: can_go_back is false");
+
+        // Push a screen (depth 2): now there's a back target.
+        nav_state.depth.set(2);
+        nav_state.can_go_back.set(true);
+        assert!(can_go_back(), "after push: can_go_back is true");
+
+        // Pop back to the root (depth 1). This is the case `active_route` would
+        // read stale on native handlers — `can_go_back` must flip back.
+        nav_state.depth.set(1);
+        nav_state.can_go_back.set(false);
+        assert!(!can_go_back(), "after pop to root: can_go_back is false again");
+    }
+
+    #[test]
+    fn false_without_an_ambient_navigator() {
+        // No `AmbientNavGuard` in scope → no navigator → reads false.
+        let can_go_back = use_can_go_back();
+        assert!(!can_go_back());
     }
 }

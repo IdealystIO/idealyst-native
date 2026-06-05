@@ -83,6 +83,13 @@ mod imp;
 #[path = "stub.rs"]
 mod imp;
 
+// Waker-based single-shot signal used by the web backend's `stop()`. Compiled
+// on every target (not just wasm32) so its regression tests — which pin that it
+// parks instead of spin-looping the executor — run under a plain host
+// `cargo test`. Unused outside the wasm backend + tests, hence the gated allow.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod oneshot;
+
 // ---------------------------------------------------------------------------
 // Public API.
 // ---------------------------------------------------------------------------

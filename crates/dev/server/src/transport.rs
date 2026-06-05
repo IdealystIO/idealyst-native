@@ -481,6 +481,25 @@ fn drain_sidecar_inbound(
                     }
                 });
             }
+            crate::SidecarOut::CaptureScreenshot { session, request_id } => {
+                // The sidecar's `screenshot` verb wants a real-surface
+                // capture. Forward it to every client on that session;
+                // the first to reply (via `AppToDev::ScreenshotResult`)
+                // wins the `request_id`. If none is attached, the verb
+                // times out and falls back to the wgpu replay.
+                let mut sent = false;
+                for client in clients.iter_mut().filter(|c| c.session == session) {
+                    if send(&mut client.ws, &DevToApp::CaptureScreenshot { request_id }).is_ok() {
+                        sent = true;
+                    }
+                }
+                if !sent {
+                    eprintln!(
+                        "[dev-server] CaptureScreenshot req {request_id}: no client attached to \
+                         session {session:?}; verb will time out and fall back to replay"
+                    );
+                }
+            }
         }
     }
 }
@@ -722,6 +741,7 @@ fn extract_hello(
             initial_url,
             identity,
             viewport,
+            ..
         } => Ok((app_name, color_scheme, initial_url, identity, viewport)),
         other => Err(TransportError::Decode(format!(
             "expected AppToDev::Hello, got {:?}",
@@ -807,6 +827,28 @@ fn handle_app_msg(
     // log + drop.
     if matches!(msg, AppToDev::Hello { .. }) {
         eprintln!("[dev-server] late Hello on session {}; ignoring", client_session);
+        return;
+    }
+
+    // A real-client screenshot reply is correlation data, not a session
+    // event — forward it as a dedicated `SidecarIn::ScreenshotResult` so
+    // the sidecar fulfills it on its reader thread (the session thread is
+    // blocked in the `screenshot` verb). Routing it as a normal `Event`
+    // would deadlock.
+    if let AppToDev::ScreenshotResult { request_id, png, width, height, error } = &msg {
+        if let Some(slot) = sidecar_slot {
+            if let Ok(guard) = slot.lock() {
+                if let Some(sidecar) = guard.as_ref() {
+                    sidecar.send(crate::SidecarIn::ScreenshotResult {
+                        request_id: *request_id,
+                        png: png.clone(),
+                        width: *width,
+                        height: *height,
+                        error: error.clone(),
+                    });
+                }
+            }
+        }
         return;
     }
 
@@ -904,6 +946,9 @@ fn handle_app_msg(
         AppToDev::Error { message } => {
             eprintln!("[dev-server] app reported error: {}", message);
         }
+        // Single-process mode has no real client capture path; the verb
+        // falls back to the wgpu replay, so a result never arrives here.
+        AppToDev::ScreenshotResult { .. } => {}
     }
 }
 

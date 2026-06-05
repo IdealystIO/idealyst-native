@@ -16,6 +16,7 @@ pub(crate) mod handles;
 pub(crate) mod icon;
 pub(crate) mod image;
 pub(crate) mod node;
+pub(crate) mod screenshot;
 pub(crate) mod text_style;
 pub(crate) mod view;
 pub(crate) mod virtualizer;
@@ -27,7 +28,7 @@ use std::rc::Rc;
 use runtime_core::{Backend, Color, StyleRules};
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
-use objc2::{msg_send, msg_send_id};
+use objc2::{msg_send, msg_send_id, ClassType};
 use objc2_app_kit::{NSColor, NSTextField, NSView};
 use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker, NSObject, NSString};
 
@@ -413,6 +414,59 @@ impl MacosBackend {
     /// `IosBackend::register_external_view`.
     pub fn register_external_view(&mut self, view: &NSView) {
         let _ = self.layout_for_view(view);
+    }
+
+    /// SDK extension helper for an external primitive whose own view has no
+    /// intrinsic size (e.g. an `NSScrollView`) but whose `content` view does
+    /// (e.g. the codeblock's text label). Installs a Taffy `measure_fn` on
+    /// `node` driven by the content's natural size, so the wrapper fills its
+    /// parent's offered width and scrolls content wider than that, and reports
+    /// the content height. Without a measure a bare scroll view collapses to
+    /// 0×0 in a flex column and the primitive renders blank. Mirrors
+    /// `IosBackend::install_external_content_measure`.
+    ///
+    /// `pad` (points) is added on each axis to match a `contentInset` the
+    /// handler draws inside the scroll view.
+    pub fn install_external_content_measure(
+        &mut self,
+        node: &NSView,
+        content: &NSView,
+        pad: f32,
+    ) {
+        let layout = self.layout_for_view(node);
+        let content: Retained<NSView> =
+            unsafe { Retained::retain(content as *const NSView as *mut NSView).unwrap() };
+        self.layout.set_measure_fn(
+            layout,
+            std::rc::Rc::new(move |known_dimensions, available_space| {
+                // Probe the content's natural size. For a text control, ask its
+                // cell at an effectively-unbounded width so multi-line code
+                // reports the longest line + full height (single-axis scrollers
+                // don't wrap); otherwise fall back to the view's fittingSize.
+                let cell: *mut NSObject = unsafe { msg_send![&*content, cell] };
+                let fit: CGSize = if cell.is_null() {
+                    unsafe { msg_send![&*content, fittingSize] }
+                } else {
+                    let huge = CGRect {
+                        origin: objc2_foundation::CGPoint { x: 0.0, y: 0.0 },
+                        size: CGSize { width: 1.0e6, height: 1.0e6 },
+                    };
+                    unsafe { msg_send![cell, cellSizeForBounds: huge] }
+                };
+                let content_w = (fit.width as f32).max(0.0).ceil() + pad * 2.0;
+                let content_h = (fit.height as f32).max(0.0).ceil() + pad * 2.0;
+                let avail_w = match available_space.width {
+                    runtime_layout::AvailableSpace::Definite(w) => Some(w),
+                    _ => None,
+                };
+                runtime_layout::Size {
+                    width: known_dimensions
+                        .width
+                        .unwrap_or_else(|| avail_w.unwrap_or(content_w)),
+                    height: known_dimensions.height.unwrap_or(content_h),
+                }
+            }),
+        );
     }
 
     /// `MainThreadMarker` accessor for third-party SDK extension code
@@ -815,6 +869,51 @@ struct NoopNavOps;
 impl runtime_core::primitives::navigator::NavigatorOps for NoopNavOps {}
 static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 
+/// Maximum pointer travel (in points, window space) between mouse-down and
+/// mouse-up for the gesture to still count as a tap. A press that drags farther
+/// is a scroll/drag and must NOT fire the click — matches the cancel behavior of
+/// iOS's `UITapGestureRecognizer`.
+const TAP_SLOP_PT: f32 = 10.0;
+
+/// Build a tap-detecting [`TouchHandler`] that fires `on_click` on a mouse-up
+/// which stayed within [`TAP_SLOP_PT`] of the mouse-down. macOS pressables /
+/// links have no native AppKit control to lean on (NSButton is used only for
+/// `create_button`), so the `FlippedView` `mouseDown`→handler path is the click
+/// delivery mechanism. Consuming every phase keeps the gesture on this view for
+/// the whole down→up sequence; a drag beyond slop disarms the tap so dragging a
+/// finger off a link doesn't navigate.
+fn make_tap_handler(on_click: Rc<dyn Fn()>) -> runtime_core::TouchHandler {
+    use runtime_core::{TouchEvent, TouchPhase, TouchResponse};
+    use std::cell::Cell;
+    let start = Rc::new(Cell::new((0.0f32, 0.0f32)));
+    let armed = Rc::new(Cell::new(false));
+    Rc::new(move |ev: &TouchEvent| match ev.phase {
+        TouchPhase::Began => {
+            start.set((ev.window_position.x, ev.window_position.y));
+            armed.set(true);
+            TouchResponse::CONSUMED
+        }
+        TouchPhase::Moved => {
+            let (sx, sy) = start.get();
+            let (dx, dy) = (ev.window_position.x - sx, ev.window_position.y - sy);
+            if (dx * dx + dy * dy).sqrt() > TAP_SLOP_PT {
+                armed.set(false);
+            }
+            TouchResponse::CONSUMED
+        }
+        TouchPhase::Ended => {
+            if armed.replace(false) {
+                (on_click)();
+            }
+            TouchResponse::CONSUMED
+        }
+        TouchPhase::Cancelled => {
+            armed.set(false);
+            TouchResponse::CONSUMED
+        }
+    })
+}
+
 /// `true` if `view` is an `NSScrollView`. Used by `insert` to
 /// redirect children into the scroll view's documentView so
 /// the scroll machinery actually works. Implemented via
@@ -992,6 +1091,59 @@ fn length_to_px(len: &runtime_core::Length) -> CGFloat {
 // =========================================================================
 
 impl MacosBackend {
+    /// Resize every `NSScrollView`'s documentView to its content's bounding
+    /// box so AppKit can scroll. The framework parents a scroll view's children
+    /// under the OUTER scroll-view Taffy node (see `insert`), so the layout pass
+    /// gives each child a real frame relative to the scroll view's content
+    /// origin — but Taffy never positions the inner documentView (it has no
+    /// Taffy parent). Without sizing it here the documentView stays 0×0 and
+    /// clips every laid-out child to nothing. We walk each scroll view's Taffy
+    /// descendants (not just direct children — a `min_height: 100%` inner
+    /// container clamps to the clip bounds while a Spacer-pushed footer
+    /// overflows past it), accumulate the bounding box, and set the documentView
+    /// frame to it. Mirrors the iOS backend's `contentSize` sync.
+    fn sync_scroll_document_views(&mut self) {
+        // Snapshot scroll views first so we don't hold a `view_to_layout`
+        // borrow across the per-view frame writes.
+        let scrolls: Vec<(Retained<NSView>, runtime_layout::LayoutNode)> = self
+            .view_to_layout
+            .values()
+            .filter(|(v, _)| is_scroll_view(v))
+            .map(|(v, n)| (v.clone(), *n))
+            .collect();
+        for (scroll_view, scroll_layout) in scrolls {
+            // Bounding box across the scroll view's Taffy descendants. The
+            // walk + projection lives in `layout_policy` so `cargo test` pins
+            // it (the AppKit `setFrame:` below needs the main thread + a live
+            // window). See `scroll_content_bbox` for the deep-descendant
+            // rationale.
+            let layout = &self.layout;
+            let roots = layout.children_of(scroll_layout);
+            let (max_x, max_y) = crate::layout_policy::scroll_content_bbox(
+                &roots,
+                |n| {
+                    let f = layout.frame_of(n);
+                    (f.x, f.y, f.width, f.height)
+                },
+                |n| layout.children_of(n),
+            );
+            // The documentView fills at least the clip view so short content
+            // still paints edge-to-edge; it grows past that to enable scroll.
+            let clip: CGRect = unsafe { msg_send![&*scroll_view, bounds] };
+            let content_w = max_x.max(clip.size.width as f32);
+            let content_h = max_y.max(clip.size.height as f32);
+            let doc_ptr: *mut NSView = unsafe { msg_send![&*scroll_view, documentView] };
+            if doc_ptr.is_null() {
+                continue;
+            }
+            let rect = CGRect {
+                origin: objc2_foundation::CGPoint { x: 0.0, y: 0.0 },
+                size: CGSize { width: content_w as f64, height: content_h as f64 },
+            };
+            let _: () = unsafe { msg_send![doc_ptr, setFrame: rect] };
+        }
+    }
+
     /// Recompute Taffy from `root_layout` against `(width, height)` and commit
     /// every registered view's frame (plus gradient/corner-radius/transform
     /// post-layout sync), then lay out the detached private-layer roots.
@@ -1067,6 +1219,16 @@ impl MacosBackend {
             // identity transforms.
             animated::sync_transform_after_layout(view, &self.animated_states);
         }
+
+        // Size every NSScrollView's documentView to its content's bounding
+        // box. The framework parents a scroll view's children under the OUTER
+        // scroll-view Taffy node (mirroring iOS's single-UIScrollView model) so
+        // the layout pass actually reaches and sizes them; the inner
+        // documentView is a native-only container that AppKit scrolls. Taffy
+        // never positions the documentView, so without this it stays 0×0 and
+        // the (correctly laid-out) children are clipped to nothing — the macOS
+        // "scroll page renders blank" bug. Mirrors iOS's contentSize sync.
+        self.sync_scroll_document_views();
 
         // Keep every detached (screen_recorder private-layer) overlay window
         // covering the host's content area BEFORE we recompute its contents.
@@ -1156,6 +1318,34 @@ impl MacosBackend {
             bounds.size.height as f32,
         );
     }
+
+    /// Run a layout pass **synchronously** — compute from the stashed root and
+    /// commit frames now, instead of the coalesced microtask that
+    /// [`schedule_layout_pass`] posts. A navigator screen-swap calls this right
+    /// after inserting the incoming screen so it is laid out BEFORE the next
+    /// paint; without it the freshly-inserted subtree shows for one runloop turn
+    /// unsized (the navigation "flash"/delay). Safe to call from inside a
+    /// `with_global_backend` block — it only needs `&mut self`.
+    pub fn run_layout_pass_now(&mut self) {
+        self.run_layout_pass_global();
+    }
+}
+
+/// Lets SDKs register an `Element::External` handler via the generic
+/// `register<B: RegisterExternal>(b)` entry without naming `MacosBackend` —
+/// the same path web/ssr expose. Forwards to the same `external_handlers`
+/// registry as the inherent [`MacosBackend::register_external`], so an explicit
+/// call (e.g. `canvas_vello::register`) overrides an inventory-registered
+/// handler for the same payload type (last-registration-wins). Mirrors
+/// `impl RegisterExternal for WebBackend`.
+impl runtime_core::RegisterExternal for MacosBackend {
+    fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&std::rc::Rc<T>, &mut MacosBackend) -> MacosNode + 'static,
+    {
+        self.external_handlers.register::<T, _>(handler);
+    }
 }
 
 impl Backend for MacosBackend {
@@ -1163,6 +1353,25 @@ impl Backend for MacosBackend {
 
     fn platform(&self) -> runtime_core::Platform {
         runtime_core::Platform::MacOs
+    }
+
+    fn supports_screenshot(&self) -> bool {
+        // Capability, not current state: AppKit can always rasterize a
+        // view hierarchy. A capture before the host root is installed
+        // (or before first layout) returns an error rather than failing
+        // this gate — see `capture_screenshot`.
+        true
+    }
+
+    fn capture_screenshot(
+        &self,
+        done: Box<dyn FnOnce(Result<runtime_core::Screenshot, String>)>,
+    ) {
+        let result = match self.host_root.as_ref() {
+            Some(view) => screenshot::capture(view),
+            None => Err("no host root installed yet".into()),
+        };
+        done(result);
     }
 
     fn url_opener(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
@@ -1189,11 +1398,23 @@ impl Backend for MacosBackend {
     }
 
     fn color_scheme(&self) -> runtime_core::ColorScheme {
-        // NSAppearance.currentAppearance.name → light/dark.
-        // For now treat anything that isn't aqua as dark; refine
-        // later if vibrant variants matter.
-        let cls = objc2::class!(NSAppearance);
-        let appearance: *const NSObject = unsafe { msg_send![cls, currentAppearance] };
+        // Read the *application's* effective appearance, NOT
+        // `NSAppearance.currentAppearance`: the latter is a per-draw thread-local
+        // that is `nil` outside a drawing pass (e.g. at mount, when the app reads
+        // `color_scheme()` to pick its initial theme), so it would always report
+        // `Auto`. `NSApp.effectiveAppearance` reflects the system Dark Mode at any
+        // time. Map its name to light/dark.
+        let appearance: *const NSObject = unsafe {
+            let app_cls = objc2::class!(NSApplication);
+            let app: *const NSObject = msg_send![app_cls, sharedApplication];
+            if app.is_null() {
+                // No app yet — fall back to the drawing-context appearance.
+                let cls = objc2::class!(NSAppearance);
+                msg_send![cls, currentAppearance]
+            } else {
+                msg_send![app, effectiveAppearance]
+            }
+        };
         if appearance.is_null() {
             return runtime_core::ColorScheme::Auto;
         }
@@ -1252,17 +1473,74 @@ impl Backend for MacosBackend {
         flipped.set_handler(handler);
     }
 
+    fn create_pressable(
+        &mut self,
+        on_click: Rc<dyn Fn()>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // The trait-default `create_pressable` drops `on_click` (it just calls
+        // `create_view`), so Pressable-backed controls (idea-ui Button, Tabs, …)
+        // never fired on macOS. Mirror iOS: a tappable view wired to the click.
+        // We reuse the FlippedView `on_touch` path (`mouseDown`→`Began`,
+        // `mouseUp`→`Ended`) rather than an NSClickGestureRecognizer so no extra
+        // AppKit feature is needed and the responder semantics match every other
+        // framework view. (Labels are hit-transparent — see `IdealystLabel` — so
+        // a click on the visible text reaches this view.)
+        let flipped = FlippedView::new(self.mtm);
+        flipped.set_handler(make_tap_handler(on_click));
+        let view: Retained<NSView> = Retained::into_super(flipped);
+        let _ = self.layout_for_view(&view);
+        let node = MacosNode::View(view);
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Button));
+        node
+    }
+
+    fn create_link(
+        &mut self,
+        config: runtime_core::primitives::link::LinkConfig,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // Same tappable-view wiring as `create_pressable`; navigation lives in
+        // `config.on_activate` (the framework's Link primitive turns it into the
+        // right `NavCommand` — `Select` for the drawer). The trait default drops
+        // it, so sidebar / in-body links never navigated on macOS.
+        let flipped = FlippedView::new(self.mtm);
+        flipped.set_handler(make_tap_handler(config.on_activate));
+        let view: Retained<NSView> = Retained::into_super(flipped);
+        let _ = self.layout_for_view(&view);
+        let node = MacosNode::View(view);
+        // Default the a11y label to the route / URL when the author gave none,
+        // matching iOS so VoiceOver announces the link target.
+        let resolved_label = a11y.label.clone().unwrap_or_else(|| {
+            if config.external {
+                config.url.clone()
+            } else {
+                config.route.to_string()
+            }
+        });
+        let effective_a11y = runtime_core::accessibility::AccessibilityProps {
+            label: Some(resolved_label),
+            ..a11y.clone()
+        };
+        a11y::apply(
+            &node,
+            &effective_a11y,
+            Some(runtime_core::accessibility::Role::Link),
+        );
+        node
+    }
+
     fn create_text(&mut self, content: &str, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         // NSTextField in label mode is AppKit's UILabel equivalent.
         // `+[NSTextField labelWithString:]` configures it as
         // non-editable, non-selectable, no border, no background.
         let ns = NSString::from_str(content);
-        let label: Retained<NSTextField> = unsafe {
-            msg_send_id![
-                objc2::class!(NSTextField),
-                labelWithString: &*ns
-            ]
-        };
+        // Use the hit-transparent `IdealystLabel` subclass (not plain
+        // NSTextField) so a label sitting inside a Link / Pressable doesn't
+        // swallow the click (and so scroll-wheel events under the text still
+        // reach the enclosing NSScrollView). See `view::IdealystLabel`.
+        let label: Retained<NSTextField> =
+            crate::imp::view::IdealystLabel::label_with_string(self.mtm, &ns);
 
         // Multi-line wrap: NSTextField's cell needs `wraps = true` +
         // `usesSingleLineMode = false` for the same behavior iOS's
@@ -1290,18 +1568,25 @@ impl Backend for MacosBackend {
                         runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
                         runtime_layout::AvailableSpace::MinContent => 0.0,
                     });
-                let avail_h = known_dimensions
-                    .height
-                    .unwrap_or(match available_space.height {
-                        runtime_layout::AvailableSpace::Definite(h) => h,
-                        runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
-                        runtime_layout::AvailableSpace::MinContent => 0.0,
-                    });
+                // A wrapping label's height is a function of its WIDTH (how many
+                // lines the text breaks into), never of the available height.
+                // Measure against an effectively-unbounded height so
+                // `cellSizeForBounds:` returns the natural wrapped height.
+                //
+                // CRITICAL: do NOT feed `available_space.height` into the bounds.
+                // Taffy probes a flex item's MIN-content height (available height
+                // = MinContent) to apply the flexbox `min-height: auto` floor
+                // that stops items shrinking below their content. Mapping
+                // MinContent → height 0 and passing it here makes
+                // `cellSizeForBounds:` clip to ~0, so Taffy thinks the label's
+                // minimum height is ~0 and flex-shrinks every paragraph/heading
+                // to a sliver (H1 worst — shrink is weighted by base size). The
+                // height the cell reports must be width-driven only.
                 let bounds = CGRect {
                     origin: objc2_foundation::CGPoint { x: 0.0, y: 0.0 },
                     size: CGSize {
                         width: if avail_w.is_finite() { avail_w as f64 } else { 10_000.0 },
-                        height: if avail_h.is_finite() { avail_h as f64 } else { 10_000.0 },
+                        height: 10_000.0,
                     },
                 };
                 let cell: *mut NSObject = unsafe { msg_send![&label_for_measure, cell] };
@@ -1846,20 +2131,47 @@ impl Backend for MacosBackend {
         };
         let _: () = unsafe { msg_send![&scroll_view, setAutohidesScrollers: true] };
 
+        // Transparent by default — matching iOS's UIScrollView. By default an
+        // NSScrollView AND its NSClipView (`contentView`) both fill with the
+        // opaque `controlBackgroundColor` (dark in dark mode), which composites
+        // OVER the author's `background` and reads as a dark void. We disable
+        // BOTH here; `apply_style` re-enables painting with the author's color
+        // when a `background` style is present. Disabling only the scroll view
+        // (not the clip view) leaves the clip painting dark — the bug where the
+        // body stayed dark even with `background: #f7f5ef`.
+        let _: () = unsafe { msg_send![&scroll_view, setDrawsBackground: false] };
+        let clip_for_bg: *mut NSObject = unsafe { msg_send![&scroll_view, contentView] };
+        if !clip_for_bg.is_null() {
+            let _: () = unsafe { msg_send![clip_for_bg, setDrawsBackground: false] };
+        }
+
         // Install the documentView. NSScrollView retains it; we
         // can drop our local Retained after this call without
         // losing the document.
         let _: () = unsafe { msg_send![&scroll_view, setDocumentView: &*document_view] };
 
-        // Register BOTH views in the layout map. The outer
-        // NSScrollView is what Taffy positions; the inner
-        // documentView is what `insert` routes children into.
-        // The documentView's frame is sized by NSScrollView
-        // (via the content size we don't expose here — Taffy
-        // controls per-child frames inside the document, and
-        // NSScrollView's content size grows to fit).
-        let _ = self.layout_for_view(&scroll_view);
-        let _ = self.layout_for_view(&document_view);
+        // Register ONLY the outer NSScrollView in the layout map — it is what
+        // Taffy positions, and (mirroring iOS's single-`UIScrollView` model)
+        // the scroll view's children are parented directly under its Taffy
+        // node by `insert`. The inner documentView is deliberately NOT a Taffy
+        // node: it is a native-only container that AppKit scrolls, sized to its
+        // children's bounding box each layout pass by `sync_scroll_document_views`.
+        // Registering it would make the apply loop stamp it with an
+        // uncomputed-orphan frame.
+        let scroll_layout = self.layout_for_view(&scroll_view);
+
+        // Mark the Taffy node as a scroll container on the scroll axis. Because
+        // we parent the scroll view's children directly under THIS node
+        // (iOS-style), without `Overflow::Scroll` Taffy treats them as ordinary
+        // flex items in a viewport-height column and shrinks them to fit (the
+        // content is taller than the viewport), crushing each label to a sliver
+        // — H1 worst, since flex-shrink is weighted by base size. `Overflow::Scroll`
+        // makes Taffy give the node a definite size from its parent and lets the
+        // children overflow at their natural size (which `sync_scroll_document_views`
+        // then reads as the documentView's scrollable content size). `set_style`
+        // (called later by `apply_style`) is a partial merge that never writes
+        // `overflow`, so this survives the author's `ScreenScroll` style.
+        self.layout.set_overflow_scroll(scroll_layout, horizontal);
 
         // Wire `on_scroll` via NSViewBoundsDidChangeNotification on
         // the scroll view's contentView (the NSClipView). We flip
@@ -1990,15 +2302,17 @@ impl Backend for MacosBackend {
             return;
         }
 
-        // ScrollView routing: if the framework's logical parent
-        // is an NSScrollView (created via `create_scroll_view`),
-        // children mount inside its documentView so they
-        // participate in the scroll machinery. `documentView`
-        // returns the inner FlippedView we installed. Without
-        // this redirect, addSubview would add the child to the
-        // scroll view's clip view at fixed coordinates and the
-        // scroll wouldn't take effect.
-        let target_view: Retained<NSView> = if is_scroll_view(parent_view) {
+        // ScrollView routing: if the framework's logical parent is an
+        // NSScrollView (created via `create_scroll_view`), children mount
+        // inside its documentView so they participate in the scroll machinery.
+        // `documentView` returns the inner FlippedView we installed. Without
+        // this redirect, addSubview would add the child to the scroll view's
+        // clip view at fixed coordinates and the scroll wouldn't take effect.
+        //
+        // NOTE: this affects only the *native* mount target. The *Taffy*
+        // parent stays the scroll view itself (see below).
+        let is_scroll = is_scroll_view(parent_view);
+        let native_target: Retained<NSView> = if is_scroll {
             let doc_ptr: *mut NSView =
                 unsafe { msg_send![parent_view, documentView] };
             if doc_ptr.is_null() {
@@ -2024,14 +2338,20 @@ impl Backend for MacosBackend {
         // establish the parent/child relationship in both the view tree
         // AND the Taffy tree, then (below) kick a coalesced pass when the
         // parent is already in a window.
-        unsafe { target_view.addSubview(child_view) };
+        unsafe { native_target.addSubview(child_view) };
 
-        // Mirror the parenting in Taffy against the same logical
-        // target — children of a ScrollView live under its
-        // documentView in Taffy too, so the layout pass sizes
-        // them inside the document's coordinate space rather
-        // than the outer scroll view's clip rect.
-        let parent_layout = self.layout_for_view(&target_view);
+        // Mirror the parenting in Taffy against the framework's LOGICAL
+        // parent — the scroll view itself, NOT its documentView. This mirrors
+        // iOS's single-`UIScrollView` model: children are direct Taffy children
+        // of the scroll node, so the layout pass reaches and sizes them, and
+        // their frames are relative to the scroll view's content origin (== the
+        // documentView origin, which sits at the clip view's top-left). The
+        // documentView is then resized to the children's bounding box in
+        // `sync_scroll_document_views` so AppKit can scroll. Parenting children
+        // under the documentView instead orphans the whole subtree (the
+        // documentView has no Taffy parent), and every child computes to 0×0 —
+        // the macOS "scroll page renders blank" bug.
+        let parent_layout = self.layout_for_view(parent_view);
         let child_layout = self.layout_for_view(child_view);
         self.layout.add_child(parent_layout, child_layout);
 
@@ -2042,7 +2362,7 @@ impl Backend for MacosBackend {
         // mount pass handles it. Mirrors `apply_style` + the Android `insert`
         // fix. Without it, `presence` mounts stayed 0×0 and invisible on macOS.
         let host_window: *mut objc2_app_kit::NSWindow =
-            unsafe { msg_send![&target_view, window] };
+            unsafe { msg_send![&native_target, window] };
         if crate::layout_policy::insert_needs_layout_pass(!host_window.is_null()) {
             schedule_layout_pass();
         }
@@ -2063,10 +2383,26 @@ impl Backend for MacosBackend {
 
     fn clear_children(&mut self, node: &Self::Node) {
         let view = node.as_view();
+        // A scroll view hosts its content inside the documentView (see
+        // `insert`), so walk THAT subview list — `view.subviews` is just the
+        // clip view. The Taffy parent stays the scroll node itself (its
+        // children are parented there), so `remove_child` below still uses
+        // `layout_of(view)`.
+        let native_host: Retained<NSView> = if is_scroll_view(view) {
+            let doc_ptr: *mut NSView = unsafe { msg_send![view, documentView] };
+            if doc_ptr.is_null() {
+                unsafe { Retained::retain(view as *const NSView as *mut NSView) }.unwrap()
+            } else {
+                unsafe { Retained::retain(doc_ptr) }.expect("documentView retain")
+            }
+        } else {
+            unsafe { Retained::retain(view as *const NSView as *mut NSView) }.unwrap()
+        };
+        let native_host: &NSView = &native_host;
         // AppKit: removeFromSuperview on each subview. Walk a
         // snapshot because removeFromSuperview mutates the
         // subviews array we'd otherwise iterate.
-        let subviews_arr: *mut NSObject = unsafe { msg_send![view, subviews] };
+        let subviews_arr: *mut NSObject = unsafe { msg_send![native_host, subviews] };
         if subviews_arr.is_null() {
             return;
         }
@@ -2147,6 +2483,25 @@ impl Backend for MacosBackend {
         match node {
             MacosNode::Label(_) => {
                 text_style::apply_text_style(view, style, true, &self.font_registry);
+                // Author `padding_*` on a `text()` node: Taffy reserves the
+                // padding (sizing the outer label frame), but the glyphs would
+                // paint flush in a corner without an inset. Push the same per-
+                // side padding into the cell's draw inset (see
+                // `view::IdealystLabelCell`) so the text lands in the content
+                // rect. `length_to_px` yields 0 for Percent/Auto (no defined
+                // sizing parent for a leaf), matching the iOS handler.
+                let resolve = |t: &Option<runtime_core::Tokenized<runtime_core::Length>>| {
+                    t.as_ref().map(|tok| length_to_px(&tok.resolve())).unwrap_or(0.0)
+                };
+                view::set_label_insets(
+                    view,
+                    view::LabelInsets {
+                        top: resolve(&style.padding_top),
+                        left: resolve(&style.padding_left),
+                        bottom: resolve(&style.padding_bottom),
+                        right: resolve(&style.padding_right),
+                    },
+                );
                 // Label height depends on font + width; both can
                 // change via apply_style. Dirty the layout node so
                 // the measure_fn runs again.
@@ -2154,7 +2509,57 @@ impl Backend for MacosBackend {
                     self.layout.mark_dirty(layout_node);
                 }
             }
-            MacosNode::View(_) => {}
+            MacosNode::View(_) => {
+                // NSScrollView + its NSClipView paint their background through
+                // AppKit's `drawsBackground`, NOT the CALayer `backgroundColor`
+                // that `apply_style_to_view` set — and AppKit's fill composites
+                // over the layer. So mirror the author's `background` onto both
+                // AppKit backgrounds (and re-enable drawing, which
+                // `create_scroll_view` disabled for a transparent default). A
+                // scroll view with no `background` stays transparent and shows
+                // its parent, matching iOS's UIScrollView.
+                if is_scroll_view(view) {
+                    if let Some(bg) = &style.background {
+                        let bg_val = bg.resolve();
+                        let ns = color_to_nscolor(&bg_val);
+                        let _: () = unsafe { msg_send![view, setDrawsBackground: true] };
+                        let _: () = unsafe { msg_send![view, setBackgroundColor: &*ns] };
+                        let clip: *mut NSObject = unsafe { msg_send![view, contentView] };
+                        if !clip.is_null() {
+                            let _: () = unsafe { msg_send![clip, setDrawsBackground: true] };
+                            let _: () = unsafe { msg_send![clip, setBackgroundColor: &*ns] };
+                        }
+                        // Match the scroll view's appearance to its background
+                        // luminance so the OVERLAY SCROLLER's knob contrasts — a
+                        // dark knob on a light surface, light on dark —
+                        // regardless of the SYSTEM light/dark setting. Without
+                        // this, a light sidebar viewed under a dark-mode system
+                        // inherits a light knob that's invisible on the white
+                        // background (the "scrollbar disappeared" report). The
+                        // forced appearance also keeps any native controls in the
+                        // scrolled content consistent with the author's theme.
+                        let rgba = runtime_core::color::parse_or(
+                            &bg_val.0,
+                            runtime_core::color::Rgba::BLACK,
+                        );
+                        let lum = 0.299 * rgba.r as f32
+                            + 0.587 * rgba.g as f32
+                            + 0.114 * rgba.b as f32;
+                        let name = if lum > 140.0 {
+                            "NSAppearanceNameAqua"
+                        } else {
+                            "NSAppearanceNameDarkAqua"
+                        };
+                        let ns_name = NSString::from_str(name);
+                        let appearance: *mut NSObject = unsafe {
+                            msg_send![objc2::class!(NSAppearance), appearanceNamed: &*ns_name]
+                        };
+                        if !appearance.is_null() {
+                            let _: () = unsafe { msg_send![view, setAppearance: appearance] };
+                        }
+                    }
+                }
+            }
         }
 
         // Post-mount layout commit. `finish` lays the tree out exactly once, at

@@ -261,33 +261,9 @@ fn canvas_capture(
     Ok((canvas, sub))
 }
 
-// A tiny oneshot over `std::sync::mpsc` (futures-channel isn't a dep here, and
-// the web backend is single-threaded so a channel-backed future is fine).
-fn futures_oneshot() -> (OneshotTx, OneshotRx) {
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
-    (OneshotTx(tx), OneshotRx(rx))
-}
-
-struct OneshotTx(std::sync::mpsc::Sender<()>);
-impl OneshotTx {
-    fn send(self, _: ()) -> Result<(), ()> {
-        self.0.send(()).map_err(|_| ())
-    }
-}
-
-struct OneshotRx(std::sync::mpsc::Receiver<()>);
-impl std::future::Future for OneshotRx {
-    type Output = ();
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<()> {
-        match self.0.try_recv() {
-            Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected) => std::task::Poll::Ready(()),
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                cx.waker().wake_by_ref();
-                std::task::Poll::Pending
-            }
-        }
-    }
-}
+// The `onstop`-wait future is a WAKER-BASED single-shot signal (see
+// `crate::oneshot`). It MUST NOT busy-spin the waker — an earlier mpsc version
+// re-woke itself on every empty poll, starving the wasm event loop so the
+// `onstop` DOM event never fired and the tab FROZE on stop. The shared module
+// carries the regression tests.
+use crate::oneshot::futures_oneshot;

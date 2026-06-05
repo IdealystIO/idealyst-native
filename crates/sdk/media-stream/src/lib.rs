@@ -64,7 +64,7 @@ pub mod clock;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod apple_surface;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-pub use apple_surface::{surface_channel, SurfaceSource, SurfaceWriter};
+pub use apple_surface::{surface_channel, NativeTap, SurfaceSource, SurfaceWriter};
 
 mod audio;
 pub use audio::{
@@ -250,9 +250,53 @@ impl FrameChannel {
 #[derive(Clone)]
 pub struct FrameWriter {
     channel: Arc<FrameChannel>,
+    /// macOS zero-copy capture sink: present only when the pair was built via
+    /// [`MediaStream::with_surface_capture`]. The GPU producer publishes each
+    /// rendered IOSurface here; the stream's `native_source` is the paired
+    /// [`SurfaceSource`].
+    #[cfg(target_os = "macos")]
+    surface: Option<apple_surface::SurfaceWriter>,
 }
 
 impl FrameWriter {
+    fn from_channel(channel: Arc<FrameChannel>) -> Self {
+        FrameWriter {
+            channel,
+            #[cfg(target_os = "macos")]
+            surface: None,
+        }
+    }
+
+    /// Whether a native-surface consumer (a recorder) is currently tapping the
+    /// zero-copy path (holds a [`NativeTap`]). A GPU producer gates its
+    /// per-frame IOSurface blit + [`publish_surface`](Self::publish_surface) on
+    /// this — the native analogue of [`wants_cpu_frames`](Self::wants_cpu_frames).
+    /// Always false unless built via [`MediaStream::with_surface_capture`].
+    pub fn wants_native(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.surface.as_ref().is_some_and(|s| s.wants_surface())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    /// Publish a rendered `IOSurface` (raw `IOSurfaceRef`) to the native source
+    /// — the macOS GPU self-capture seam. No-op if this writer wasn't built with
+    /// a surface sink. Publishing retains the surface for the slot; a consumer
+    /// reads it via the stream's [`SurfaceSource`].
+    ///
+    /// # Safety
+    /// `surface` must be a valid `IOSurfaceRef` (or null, ignored).
+    #[cfg(target_os = "macos")]
+    pub unsafe fn publish_surface(&self, surface: *const std::ffi::c_void) {
+        if let Some(s) = &self.surface {
+            s.publish(surface);
+        }
+    }
+
     /// Whether any consumer is currently tapping CPU frames (has an active
     /// [`MediaStream::subscribe`]). A producer that can also publish a
     /// zero-copy native source (the Apple [`SurfaceWriter`]) uses this to skip
@@ -365,7 +409,37 @@ impl MediaStream {
                 stopper: RefCell::new(None),
             }),
         };
-        (stream, FrameWriter { channel })
+        (stream, FrameWriter::from_channel(channel))
+    }
+
+    /// Like [`new`](Self::new), but wires a zero-copy native surface sink: the
+    /// returned `FrameWriter` can publish rendered IOSurfaces
+    /// ([`FrameWriter::publish_surface`]) and the stream's
+    /// [`native_source`](Self::native_source) is the matching [`SurfaceSource`].
+    /// This is the GPU self-capture path (a canvas renders into an IOSurface and
+    /// publishes it; a recorder consumes it with no CPU readback). On non-macOS
+    /// it's exactly [`new`](Self::new) (no IOSurface), so callers stay portable.
+    #[cfg(target_os = "macos")]
+    pub fn with_surface_capture() -> (MediaStream, FrameWriter) {
+        let channel = Arc::new(FrameChannel::default());
+        let (surf_source, surf_writer) = apple_surface::surface_channel();
+        let stream = MediaStream {
+            inner: Rc::new(StreamInner {
+                channel: channel.clone(),
+                native: RefCell::new(Some(Rc::new(surf_source) as Rc<dyn Any>)),
+                stopper: RefCell::new(None),
+            }),
+        };
+        let mut writer = FrameWriter::from_channel(channel);
+        writer.surface = Some(surf_writer);
+        (stream, writer)
+    }
+
+    /// Non-macOS: no IOSurface path, so identical to [`new`](Self::new). Keeps
+    /// cross-platform callers (the canvas capture) compiling everywhere.
+    #[cfg(not(target_os = "macos"))]
+    pub fn with_surface_capture() -> (MediaStream, FrameWriter) {
+        Self::new()
     }
 
     /// Record the platform's zero-copy frame source (e.g. a web

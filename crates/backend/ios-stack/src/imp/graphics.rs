@@ -77,6 +77,8 @@ pub(crate) fn create_graphics(
             cb(OnReadyEvent {
                 surface: surface.clone(),
                 size: (w, h),
+                // iOS rides canvas-native (no vello yet); 1.0 until iOS GPU canvas.
+                scale: 1.0,
             });
             eprintln!("[ios-backend] on_ready callback returned");
         }

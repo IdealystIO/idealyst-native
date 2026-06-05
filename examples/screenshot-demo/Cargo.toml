@@ -1,0 +1,41 @@
+[package]
+name = "screenshot-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Demo for the native screen-capture debug utility. Renders a distinctive, live screen; capture it via the Robot bridge's `screenshot` verb (see README) to get a PNG of the real rendered surface on macOS / iOS / Android."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
+# (build-runtime-server). Pulls `dev-server` so the recorder backend is
+# available. Mirrors `stack-demo`.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
+backend-terminal = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Screenshot Demo"
+bundle_id = "ai.truday.idealyst.screenshotdemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]

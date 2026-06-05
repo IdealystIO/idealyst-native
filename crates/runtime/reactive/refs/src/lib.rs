@@ -24,6 +24,17 @@
 //! 4. The arena slot is freed deterministically when its owning scope
 //!    drops, matching `reactive-arena`'s lifetime model.
 //!
+//! ## Lifetime & aliasing
+//!
+//! Slots are addressed by generational `RefId`s (`{ index, generation }`)
+//! and freed indices are returned to a free-list for reuse — so the arena
+//! stays bounded by *peak concurrent* refs rather than total-ever-allocated.
+//! Reuse is made safe by the generation guard: freeing a slot bumps its
+//! generation, so a stale `Ref` copy that outlives its scope can never alias
+//! the next occupant of the same index. A stale `Ref::with` reads as a clean
+//! `None` (matching React's "ref.current may be null"), exactly as a
+//! never-mounted ref does — it never reaches an unrelated handle.
+//!
 //! ## What's intentionally excluded
 //!
 //! - Macros. The `methods!` block expansion is left for runtime-macros.
@@ -40,50 +51,96 @@ use std::marker::PhantomData;
 // IDs and arena
 // ----------------------------------------------------------------------------
 
-/// Index into the arena's ref slot table.
+/// Generational address of a ref slot. `generation` guards against a reused
+/// index: a `Ref` is only valid while the slot's live generation matches.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct RefId(u32);
+pub struct RefId {
+    index: u32,
+    generation: u32,
+}
 
 thread_local! {
     static ARENA: RefCell<Arena> = RefCell::new(Arena::new());
 }
 
+/// One ref slot. `alive` is the outer liveness (false once the owning scope
+/// frees it); `handle` is the inner mount state (`None` until a component
+/// fills it, `Some` once mounted). `generation` advances every time the slot
+/// is freed so reused indices can't be aliased by stale handles.
+struct RefSlot {
+    generation: u32,
+    alive: bool,
+    handle: Option<Box<dyn Any>>,
+}
+
 struct Arena {
-    /// Each slot is `Option<Option<Box<dyn Any>>>`:
-    /// - outer `Option`: `None` once the slot is freed by its scope.
-    /// - inner `Option`: `None` while the ref exists but hasn't been
-    ///   filled by a mount yet; `Some` once mounted.
-    refs: Vec<Option<Option<Box<dyn Any>>>>,
+    refs: Vec<RefSlot>,
+    free: Vec<u32>,
 }
 
 impl Arena {
-    fn new() -> Self { Self { refs: Vec::new() } }
+    fn new() -> Self {
+        Self { refs: Vec::new(), free: Vec::new() }
+    }
 
     fn insert(&mut self) -> RefId {
-        let id = RefId(self.refs.len() as u32);
-        self.refs.push(Some(None));
-        id
+        if let Some(index) = self.free.pop() {
+            let slot = &mut self.refs[index as usize];
+            debug_assert!(!slot.alive, "free-listed ref slot was still live");
+            slot.alive = true;
+            slot.handle = None;
+            RefId { index, generation: slot.generation }
+        } else {
+            let index = self.refs.len() as u32;
+            self.refs.push(RefSlot { generation: 0, alive: true, handle: None });
+            RefId { index, generation: 0 }
+        }
+    }
+
+    /// Returns the slot for `id` only if it is the same live generation.
+    fn live(&self, id: RefId) -> Option<&RefSlot> {
+        self.refs
+            .get(id.index as usize)
+            .filter(|s| s.generation == id.generation && s.alive)
     }
 
     fn fill<H: 'static>(&mut self, id: RefId, handle: H) {
-        if let Some(slot) = self.refs.get_mut(id.0 as usize) {
-            // Slot must exist (i.e. scope not dropped). Overwrite is
-            // legal — happens on remount.
-            if let Some(inner) = slot.as_mut() {
-                *inner = Some(Box::new(handle));
+        match self.refs.get_mut(id.index as usize) {
+            Some(slot) if slot.generation == id.generation && slot.alive => {
+                // Overwrite is legal — happens on remount.
+                slot.handle = Some(Box::new(handle));
+            }
+            _ => {
+                // Filling a freed slot means a component mounted after its
+                // owning scope was torn down — a mount/unmount ordering bug.
+                // Surface it loudly in dev rather than silently dropping the
+                // handle (which would leave the ref permanently dead).
+                debug_assert!(
+                    false,
+                    "Ref::fill on a freed slot (id {:?}) — a component filled its ref \
+                     after the owning scope was dropped; check mount/unmount ordering",
+                    id
+                );
             }
         }
     }
 
     fn clear(&mut self, id: RefId) {
-        if let Some(Some(inner)) = self.refs.get_mut(id.0 as usize) {
-            *inner = None;
+        if let Some(slot) = self.refs.get_mut(id.index as usize) {
+            if slot.generation == id.generation && slot.alive {
+                slot.handle = None;
+            }
         }
     }
 
     fn free(&mut self, id: RefId) {
-        if let Some(slot) = self.refs.get_mut(id.0 as usize) {
-            *slot = None;
+        if let Some(slot) = self.refs.get_mut(id.index as usize) {
+            if slot.generation == id.generation && slot.alive {
+                slot.alive = false;
+                slot.handle = None;
+                slot.generation = slot.generation.wrapping_add(1);
+                self.free.push(id.index);
+            }
         }
     }
 }
@@ -101,8 +158,10 @@ impl Arena {
 /// [`Ref::fill`] to populate the slot; unmount calls [`Ref::clear`].
 ///
 /// Reading via [`Ref::with`] is a no-op if the slot has not been filled
-/// yet — pre-mount calls are silently skipped, matching React's
-/// "ref.current may be null" semantics but without the boilerplate.
+/// yet *or* the owning scope has been dropped — pre-mount and post-teardown
+/// calls are silently skipped, matching React's "ref.current may be null"
+/// semantics but without the boilerplate. The generation guard ensures a
+/// post-teardown `Ref` never observes an unrelated handle in a reused slot.
 pub struct Ref<H> {
     id: RefId,
     _phantom: PhantomData<H>,
@@ -110,7 +169,9 @@ pub struct Ref<H> {
 
 impl<H> Copy for Ref<H> {}
 impl<H> Clone for Ref<H> {
-    fn clone(&self) -> Self { *self }
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 
 impl<H: 'static> Ref<H> {
@@ -135,7 +196,8 @@ impl<H: 'static> Ref<H> {
     }
 
     /// Runs `f` against the filled handle, if any. Returns `None` if
-    /// the component hasn't mounted yet (or has been torn down).
+    /// the component hasn't mounted yet, has been torn down, or the owning
+    /// scope has been freed.
     ///
     /// The handle is held by `&` reference inside `f`, so method calls
     /// on it must take `&self`. Since handles only mutate via Signals
@@ -144,25 +206,23 @@ impl<H: 'static> Ref<H> {
     pub fn with<R>(&self, f: impl FnOnce(&H) -> R) -> Option<R> {
         ARENA.with(|arena| {
             let arena = arena.borrow();
-            let slot = arena.refs.get(self.id.0 as usize)?.as_ref()?;
-            let inner = slot.as_ref()?;
-            let handle = inner.downcast_ref::<H>()
+            let slot = arena.live(self.id)?;
+            let handle = slot.handle.as_ref()?;
+            let handle = handle
+                .downcast_ref::<H>()
                 .expect("internal: ref handle type mismatch");
             Some(f(handle))
         })
     }
 
-    /// True if the slot has been filled and not subsequently cleared.
-    /// Useful for parent components that want to render differently
-    /// depending on mount state, though in practice `with(...).is_some()`
-    /// reads as well.
+    /// True if the slot has been filled and not subsequently cleared (and
+    /// its owning scope is still alive).
     pub fn is_mounted(&self) -> bool {
         ARENA.with(|arena| {
-            let arena = arena.borrow();
-            arena.refs
-                .get(self.id.0 as usize)
-                .and_then(|s| s.as_ref())
-                .map(|inner| inner.is_some())
+            arena
+                .borrow()
+                .live(self.id)
+                .map(|s| s.handle.is_some())
                 .unwrap_or(false)
         })
     }
@@ -178,7 +238,9 @@ pub struct Scope {
 }
 
 impl Scope {
-    pub fn new() -> Self { Self { refs: Vec::new() } }
+    pub fn new() -> Self {
+        Self { refs: Vec::new() }
+    }
 
     pub fn ref_<H: 'static>(&mut self) -> Ref<H> {
         let r = Ref::<H>::new();
@@ -188,7 +250,9 @@ impl Scope {
 }
 
 impl Default for Scope {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Drop for Scope {
@@ -284,18 +348,13 @@ mod tests {
     /// Models a "component" — owns its state, exposes a handle. The
     /// real `#[component]` macro will generate this shape from a
     /// `methods!` block.
-    fn mount_date_picker(r: Ref<DatePickerHandle>)
-        -> (Rc<Cell<i32>>, Rc<Cell<bool>>)
-    {
+    fn mount_date_picker(r: Ref<DatePickerHandle>) -> (Rc<Cell<i32>>, Rc<Cell<bool>>) {
         // Component-local state. In a real component these are Signals.
         let value = Rc::new(Cell::new(0));
         let open = Rc::new(Cell::new(false));
 
         // Mount: fill the ref with a handle that closes over the state.
-        r.fill(DatePickerHandle {
-            value: value.clone(),
-            open: open.clone(),
-        });
+        r.fill(DatePickerHandle { value: value.clone(), open: open.clone() });
         (value, open)
     }
 
@@ -308,8 +367,7 @@ mod tests {
 
         // Parent calls the custom method.
         picker_ref.with(|p| p.jump_to_date(20260514));
-        assert_eq!(value.get(), 20260514,
-            "method closure mutated component-local state");
+        assert_eq!(value.get(), 20260514, "method closure mutated component-local state");
 
         picker_ref.with(|p| p.open_picker());
         assert!(open.get());
@@ -327,11 +385,10 @@ mod tests {
             id = r.id;
             assert!(r.is_mounted());
         }
-        // Scope dropped: slot is gone.
+        // Scope dropped: slot is no longer live for this generation.
         ARENA.with(|a| {
             let a = a.borrow();
-            assert!(a.refs[id.0 as usize].is_none(),
-                "scope drop must free the ref slot");
+            assert!(a.live(id).is_none(), "scope drop must free the ref slot");
         });
     }
 
@@ -346,7 +403,9 @@ mod tests {
 
         // Two independent closures, both capturing `r` by Copy — no
         // .clone() ceremony.
-        let call_focus = move || { r.with(|h| h.focus()); };
+        let call_focus = move || {
+            r.with(|h| h.focus());
+        };
         let check_mounted = move || r.is_mounted();
 
         assert!(check_mounted());
@@ -386,19 +445,56 @@ mod tests {
     /// `with` still asserts the invariant, panicking if it ever fails.
     #[test]
     fn handle_type_is_compile_time_safe() {
-        // This test exists mostly as a compile-only check. The fact
-        // that the following code compiles without complaint is the
-        // assertion.
         let mut scope = Scope::new();
         let input_ref: Ref<InputHandle> = scope.ref_();
         let picker_ref: Ref<DatePickerHandle> = scope.ref_();
-
-        // A user cannot accidentally `picker_ref.with(|i: &InputHandle| ...)`
-        // — the closure parameter type drives inference back to
-        // DatePickerHandle, so the wrong type would be a compile error
-        // at the call site, not a runtime panic. The downcast in `with`
-        // is purely a belt-and-braces check.
         let _ = input_ref;
         let _ = picker_ref;
+    }
+
+    // --- Test 7: generational reuse never aliases ---------------------------
+
+    /// Regression: a freed slot's index is reused, but a stale `Ref` copy
+    /// that outlived its scope must NOT alias the reused slot's handle. It
+    /// must read as a clean `None`, never reach the new occupant's handle.
+    #[test]
+    fn freed_ref_index_reused_without_aliasing() {
+        let stale: Ref<InputHandle>;
+        {
+            let mut scope = Scope::new();
+            stale = scope.ref_();
+            stale.fill(InputHandle { focus_count: Rc::new(Cell::new(0)) });
+            assert!(stale.is_mounted());
+        }
+        // The freed index is reclaimed by the next allocation.
+        let mut scope2 = Scope::new();
+        let fresh: Ref<InputHandle> = scope2.ref_();
+        assert_eq!(stale.id.index, fresh.id.index, "index should be reused from the free-list");
+        assert_ne!(stale.id.generation, fresh.id.generation, "generation must advance on reuse");
+
+        assert!(!stale.is_mounted(), "stale ref must not see the reused slot");
+        let count = Rc::new(Cell::new(0));
+        fresh.fill(InputHandle { focus_count: count.clone() });
+        let reached = stale.with(|h| h.focus());
+        assert!(reached.is_none(), "stale ref must not reach the reused slot's handle");
+        assert_eq!(count.get(), 0, "stale ref must not invoke the new handle's method");
+    }
+
+    // --- Test 8: filling a freed slot is caught in debug --------------------
+
+    /// Regression: a component that fills its ref after the owning scope was
+    /// dropped is a mount/unmount ordering bug. In debug builds it must be
+    /// surfaced loudly rather than silently leaving the ref permanently dead.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "freed slot")]
+    fn fill_on_freed_slot_panics_in_debug() {
+        let r: Ref<InputHandle>;
+        {
+            let mut scope = Scope::new();
+            r = scope.ref_();
+        }
+        // Scope dropped — the slot is freed. Filling now is the bug.
+        r.fill(InputHandle { focus_count: Rc::new(Cell::new(0)) });
     }
 }

@@ -60,9 +60,9 @@ idealyst dev --all        # every buildable target at once"##.to_string())
             Callout(label = "First build is slow, the rest are fast".to_string()) {
                 Typography(
                     content = "The initial compile warms the whole dependency graph; subsequent \
-                        runs are incremental. If a device target won't build, run idealyst doctor \
-                        \u{2014} it checks your Rust targets, Xcode, and Android NDK and tells you \
-                        what's missing.".to_string(),
+                        runs are incremental. If a device target won't build, the platform builder \
+                        reports what it couldn't find \u{2014} a missing Rust target, Xcode, or the \
+                        Android NDK.".to_string(),
                     muted = true,
                 )
             }

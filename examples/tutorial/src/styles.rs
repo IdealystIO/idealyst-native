@@ -26,6 +26,29 @@ stylesheet! {
     }
 }
 
+// The sidebar's scroll surface. Carries the sidebar background + right divider
+// so they span the whole panel/viewport — the scrolled CONTENT (SidebarBody) is
+// transparent and can be shorter than the panel, so the background must live on
+// the scroll view (its clip fills the viewport) rather than on the content,
+// which otherwise ends partway down and leaves the overflow on a bare window.
+stylesheet! {
+    pub SidebarScroll<()> {
+        base(_t) {
+            flex_grow: 1.0,
+            flex_basis: 0.0,
+            width: Length::pct(100.0),
+            flex_direction: FlexDirection::Column,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_right_width: 1.0,
+            border_right_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_right_color: 250ms EaseInOut,
+        }
+    }
+}
+
 stylesheet! {
     pub ScreenScroll<()> {
         base(_t) {
@@ -65,17 +88,22 @@ stylesheet! {
 stylesheet! {
     pub SidebarBody<()> {
         base(_t) {
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
-            border_right_width: 1.0,
-            border_right_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            // Background + right divider now live on `SidebarScroll` (the scroll
+            // surface) so they span the full viewport; this content layer is
+            // transparent and only owns padding/spacing.
+            //
+            // NO `min_height: 100%`: as a flex child of the scroll container it
+            // would set the shrink floor to the viewport (not the content), so
+            // flex-shrink clamped this container to the window height and its
+            // overflowing children fell OUTSIDE its frame — invisible to AppKit
+            // hit-testing (clicks below the window height did nothing even when
+            // scrolled into view). Sizing to content keeps the frame around all
+            // children. The scroll surface's background fills the viewport when
+            // the list is short, so the floor isn't needed for looks.
             padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
             gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             flex_direction: FlexDirection::Column,
-            min_height: Length::pct(100.0),
-        }
-        transitions {
-            background: 250ms EaseInOut,
-            border_right_color: 250ms EaseInOut,
+            flex_shrink: 0.0,
         }
     }
 }

@@ -34,8 +34,21 @@ use std::ffi::c_void;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::thread::JoinHandle;
+
+/// Max video frames allowed in-flight (queued but not yet dequeued by the
+/// encoder) before the producer drops new ones. A live render thread
+/// (`write_rgba8` on every raf frame) outruns the H.264 encoder, so an
+/// unbounded channel backs up GBs of full-res RGBA — and `stop()` then spends
+/// SECONDS draining that backlog before it can finalize (measured ~1.9s for a
+/// 5s 2048×1536 recording: the whiteboard "stop is super delayed" bug). Real-
+/// time recording policy: drop at the source when the encoder is behind so the
+/// queue stays tiny and finalize is prompt. Small (a few frames) bounds memory
+/// AND latency; the encoder's own `isReadyForMoreMediaData` does the final drop.
+const MAX_INFLIGHT_VIDEO_FRAMES: usize = 3;
 
 use block2::RcBlock;
 use objc2::encode::{Encode, Encoding, RefEncode};
@@ -85,6 +98,21 @@ extern "C" {
     fn CVPixelBufferUnlockBaseAddress(pb: *mut c_void, flags: u64) -> i32;
     fn CVPixelBufferGetBaseAddress(pb: *mut c_void) -> *mut c_void;
     fn CVPixelBufferGetBytesPerRow(pb: *mut c_void) -> usize;
+    /// Zero-copy: wrap an existing `IOSurface` in a `CVPixelBuffer` that the
+    /// encoder appends directly — no allocation, no pixel copy. The pixel format
+    /// + dimensions come from the surface itself.
+    fn CVPixelBufferCreateWithIOSurface(
+        allocator: *const c_void,
+        surface: *const c_void,
+        attrs: *const c_void,
+        out: *mut *mut c_void,
+    ) -> i32;
+}
+
+#[link(name = "IOSurface", kind = "framework")]
+extern "C" {
+    fn IOSurfaceGetWidth(surface: *const c_void) -> usize;
+    fn IOSurfaceGetHeight(surface: *const c_void) -> usize;
 }
 
 #[link(name = "CoreMedia", kind = "framework")]
@@ -247,8 +275,9 @@ enum Msg {
         pts_us: u64,
         samples: Vec<f32>,
     },
-    /// Finalize the file and exit; the encoder replies through the channel.
-    Stop(Sender<Result<(), MediaWriterError>>),
+    /// Finalize the file and exit; the encoder replies through a thread-safe,
+    /// awaitable oneshot (NOT a blocking channel — see `stop` below).
+    Stop(crate::oneshot::SyncTx<Result<(), MediaWriterError>>),
 }
 
 struct WorkerParams {
@@ -270,6 +299,10 @@ pub(crate) struct RecordingHandle {
     join: Option<JoinHandle<()>>,
     _video_sub: Option<Subscription>,
     _audio_sub: Option<AudioSubscription>,
+    /// Held while recording from a zero-copy native source (the encoder thread
+    /// polls the surface). Dropping it lets the GPU producer stop publishing.
+    #[cfg(target_os = "macos")]
+    _native_tap: Option<media_stream::NativeTap>,
 }
 
 impl RecordingHandle {
@@ -278,13 +311,33 @@ impl RecordingHandle {
         // encoder to finalize and report.
         self._video_sub = None;
         self._audio_sub = None;
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        // Release the native tap too, so a GPU producer stops the per-frame
+        // IOSurface blit + publish immediately (the encoder polls the surface).
+        #[cfg(target_os = "macos")]
+        {
+            self._native_tap = None;
+        }
+
+        // AWAIT the finalize result — never block on it. `stop` runs on the
+        // single-threaded main executor; a synchronous `recv()` here freezes the
+        // run loop, which starves AVFoundation's `finishWritingWithCompletion-
+        // Handler:` completion (it needs the run loop pumping) → the encoder
+        // hangs on its 15s timeout while the whole UI is frozen. Awaiting the
+        // parking `SyncRx` yields to the run loop so the completion fires and the
+        // encoder finalizes promptly. See `oneshot::sync_oneshot` +
+        // `sync_cross_thread_send_delivers_payload` for the regression test of
+        // this park-don't-block contract.
+        let (done_tx, done_rx) = crate::oneshot::sync_oneshot();
         self.tx
             .send(Msg::Stop(done_tx))
             .map_err(|_| MediaWriterError::Backend("encoder thread gone".into()))?;
         let result = done_rx
-            .recv()
-            .map_err(|_| MediaWriterError::Backend("encoder thread dropped before finishing".into()))?;
+            .await
+            .ok_or_else(|| MediaWriterError::Backend(
+                "encoder thread dropped before finishing".into(),
+            ))?;
+        // The encoder `return`s immediately after replying, so this join is
+        // effectively instantaneous (it does NOT block the run loop on finalize).
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -329,23 +382,69 @@ pub(crate) async fn start(
         audio_bitrate: config.audio_bitrate,
     };
 
-    let (tx, rx) = std::sync::mpsc::channel::<Msg>();
-    let join = std::thread::Builder::new()
-        .name("media-writer".into())
-        .spawn(move || encoder_thread(rx, params))
-        .map_err(|e| MediaWriterError::Backend(format!("spawn encoder thread: {e}")))?;
+    // Zero-copy native video source: a GPU canvas publishes rendered IOSurfaces
+    // as the stream's `native_source`. When present we record those directly
+    // (the encoder thread polls the surface) and SKIP the CPU video tap, so the
+    // recording never touches a CPU frame. macOS only (IOSurface); other apple
+    // targets fall through to the CPU path.
+    #[cfg(target_os = "macos")]
+    let (native_source, native_tap): (Option<media_stream::SurfaceSource>, _) = match inputs
+        .video
+        .and_then(|s| s.native_source())
+        .and_then(|ns| ns.downcast::<media_stream::SurfaceSource>().ok())
+    {
+        Some(src) => {
+            let tap = src.register_tap();
+            (Some((*src).clone()), Some(tap))
+        }
+        None => (None, None),
+    };
+    #[cfg(not(target_os = "macos"))]
+    let native_source: Option<media_stream::SurfaceSource> = None;
+    let is_native = native_source.is_some();
 
-    let video_sub = inputs.video.map(|stream| {
+    let (tx, rx) = std::sync::mpsc::channel::<Msg>();
+    // Bounds the video backlog (see `MAX_INFLIGHT_VIDEO_FRAMES`). Incremented by
+    // the producer on enqueue, decremented by the encoder on dequeue.
+    let inflight = Arc::new(AtomicUsize::new(0));
+    let join = {
+        let inflight = inflight.clone();
+        std::thread::Builder::new()
+            .name("media-writer".into())
+            .spawn(move || encoder_thread(rx, params, inflight, native_source))
+            .map_err(|e| MediaWriterError::Backend(format!("spawn encoder thread: {e}")))?
+    };
+
+    let video_sub = if is_native {
+        None
+    } else {
+        inputs.video.map(|stream| {
         let tx = tx.clone();
+        let inflight = inflight.clone();
         stream.subscribe(move |f| {
-            let _ = tx.send(Msg::Video {
-                width: f.width,
-                height: f.height,
-                pts_us: f.pts_micros,
-                rgba: f.data.to_vec(),
-            });
+            // Real-time drop: if the encoder is already `MAX_INFLIGHT_VIDEO_FRAMES`
+            // behind, skip this frame rather than clone+queue it (which would
+            // grow the backlog `stop()` must later drain). Lowers effective fps
+            // under load instead of unbounded memory + finalize latency.
+            if inflight.load(Ordering::Acquire) >= MAX_INFLIGHT_VIDEO_FRAMES {
+                return;
+            }
+            inflight.fetch_add(1, Ordering::AcqRel);
+            if tx
+                .send(Msg::Video {
+                    width: f.width,
+                    height: f.height,
+                    pts_us: f.pts_micros,
+                    rgba: f.data.to_vec(),
+                })
+                .is_err()
+            {
+                // Encoder gone: undo the reservation we won't see dequeued.
+                inflight.fetch_sub(1, Ordering::AcqRel);
+            }
         })
-    });
+        })
+    };
     let audio_sub = inputs.audio.map(|stream| {
         let tx = tx.clone();
         stream.subscribe(move |f| {
@@ -363,6 +462,8 @@ pub(crate) async fn start(
         join: Some(join),
         _video_sub: video_sub,
         _audio_sub: audio_sub,
+        #[cfg(target_os = "macos")]
+        _native_tap: native_tap,
     })
 }
 
@@ -370,16 +471,38 @@ pub(crate) async fn start(
 // Encoder thread — the sole owner of every Obj-C handle.
 // ---------------------------------------------------------------------------
 
-fn encoder_thread(rx: Receiver<Msg>, params: WorkerParams) {
+fn encoder_thread(
+    rx: Receiver<Msg>,
+    params: WorkerParams,
+    inflight: Arc<AtomicUsize>,
+    native: Option<media_stream::SurfaceSource>,
+) {
+    use std::sync::mpsc::RecvTimeoutError;
     let mut enc = Encoder::new(params);
+    // Last native generation appended — only macOS polls native surfaces.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables, unused_mut))]
+    let mut last_native_gen = u64::MAX;
     loop {
-        match rx.recv() {
+        // With a native source, poll it on a short timeout between messages
+        // (the producer publishes the latest surface; we pull it). Without one,
+        // block on `recv` so an idle CPU-only recording wastes nothing.
+        let msg = if native.is_some() {
+            rx.recv_timeout(std::time::Duration::from_millis(8))
+        } else {
+            rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        };
+        match msg {
             Ok(Msg::Video {
                 width,
                 height,
                 pts_us,
                 rgba,
-            }) => guard(&mut enc, |e| e.on_video(width, height, pts_us, rgba)),
+            }) => {
+                // Release the in-flight reservation as soon as we own the frame,
+                // so the producer can enqueue the next one while we encode this.
+                inflight.fetch_sub(1, Ordering::AcqRel);
+                guard(&mut enc, |e| e.on_video(width, height, pts_us, rgba));
+            }
             Ok(Msg::Audio {
                 sample_rate,
                 channels,
@@ -394,8 +517,26 @@ fn encoder_thread(rx: Receiver<Msg>, params: WorkerParams) {
                 let _ = reply.send(result);
                 return;
             }
+            // Timeout: pull the latest native surface, if a new one was published.
+            Err(RecvTimeoutError::Timeout) => {
+                #[cfg(target_os = "macos")]
+                if let Some(src) = &native {
+                    let gen = src.generation();
+                    if gen != last_native_gen {
+                        last_native_gen = gen;
+                        let ptr = src.acquire();
+                        if !ptr.is_null() {
+                            let pts = media_stream::clock::now_micros();
+                            guard(&mut enc, |e| e.on_native(ptr, pts));
+                            // Balance the `acquire` retain (the pixel buffer took
+                            // its own during the append).
+                            unsafe { src.release(ptr) };
+                        }
+                    }
+                }
+            }
             // Channel closed without a Stop (handle dropped): abort.
-            Err(_) => {
+            Err(RecvTimeoutError::Disconnected) => {
                 let _ = run_guarded(|| enc.abort());
                 return;
             }
@@ -549,7 +690,15 @@ impl Encoder {
             }
             return;
         }
-        if let Err(e) = self.build_writer() {
+        let session_start_us = self
+            .pending
+            .iter()
+            .map(|p| match p {
+                Pending::Video { pts_us, .. } | Pending::Audio { pts_us, .. } => *pts_us,
+            })
+            .min()
+            .unwrap_or(0);
+        if let Err(e) = self.build_writer(session_start_us) {
             self.failed = Some(e);
             self.pending.clear();
             return;
@@ -580,16 +729,7 @@ impl Encoder {
 
     /// Build the `AVAssetWriter`, its inputs, `startWriting`, and start the
     /// session at the earliest buffered timestamp.
-    fn build_writer(&mut self) -> Result<(), String> {
-        let session_start_us = self
-            .pending
-            .iter()
-            .map(|p| match p {
-                Pending::Video { pts_us, .. } | Pending::Audio { pts_us, .. } => *pts_us,
-            })
-            .min()
-            .unwrap_or(0);
-
+    fn build_writer(&mut self, session_start_us: u64) -> Result<(), String> {
         unsafe {
             let path_str = NSString::from_str(&self.params.path.to_string_lossy());
             let url: Retained<AnyObject> =
@@ -727,6 +867,59 @@ impl Encoder {
             Ok(())
         } else {
             Err(self.writer_error_string("appendPixelBuffer"))
+        }
+    }
+
+    /// Zero-copy native video frame: the producer (a GPU canvas) rendered into
+    /// an `IOSurface` and published it; we wrap that surface in a `CVPixelBuffer`
+    /// and append it — no allocation, no `fill_bgra` swizzle, no CPU touch. The
+    /// first native frame starts the writer (live surfaces can't be buffered in
+    /// `pending` like CPU frames — the producer's ring reuses them).
+    #[cfg(target_os = "macos")]
+    fn on_native(&mut self, surface: *const c_void, pts_us: u64) {
+        if self.failed.is_some() {
+            return;
+        }
+        if !self.started {
+            let (w, h) = unsafe {
+                (IOSurfaceGetWidth(surface) as u32, IOSurfaceGetHeight(surface) as u32)
+            };
+            if w == 0 || h == 0 {
+                return;
+            }
+            self.first_video = Some((w, h));
+            if let Err(e) = self.build_writer(pts_us) {
+                self.failed = Some(e);
+                return;
+            }
+            self.started = true;
+        }
+        self.append_native(surface, pts_us);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn append_native(&mut self, surface: *const c_void, pts_us: u64) {
+        let Some(input) = self.video_input.as_ref() else {
+            return;
+        };
+        unsafe {
+            let ready: Bool = msg_send![&**input, isReadyForMoreMediaData];
+            if !ready.as_bool() {
+                // Real-time policy: drop a frame rather than stall.
+                return;
+            }
+            let mut pb: *mut c_void = ptr::null_mut();
+            let rc = CVPixelBufferCreateWithIOSurface(ptr::null(), surface, ptr::null(), &mut pb);
+            if rc != 0 || pb.is_null() {
+                self.failed = Some(format!("CVPixelBufferCreateWithIOSurface failed ({rc})"));
+                return;
+            }
+            let time = CMTimeMake(pts_us as i64, TIMESCALE_US);
+            let appended = self.append_pixel_buffer(pb, time);
+            CFRelease(pb);
+            if let Err(e) = appended {
+                self.failed = Some(e);
+            }
         }
     }
 

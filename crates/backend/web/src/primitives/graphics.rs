@@ -248,7 +248,10 @@ fn fire_ready(instance: &Rc<RefCell<GraphicsInstance>>) {
         GraphicsSurface::new(inst.provider.clone() as Arc<dyn SurfaceProvider + Send + Sync>)
     };
 
-    invoke_on_ready(instance, OnReadyEvent { surface, size });
+    // `size` already accounts for devicePixelRatio; `scale: 1.0` keeps the
+    // historical "size is physical, no separate scale" contract (web has no
+    // vello path that needs the logical→physical base transform).
+    invoke_on_ready(instance, OnReadyEvent { surface, size, scale: 1.0 });
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +312,7 @@ fn fire_resize(instance: &Rc<RefCell<GraphicsInstance>>) {
         inst.provider.canvas.set_height(new_size.1);
     }
 
-    invoke_on_resize(instance, OnResizeEvent { size: new_size });
+    invoke_on_resize(instance, OnResizeEvent { size: new_size, scale: 1.0 });
 }
 
 // ---------------------------------------------------------------------------

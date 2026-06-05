@@ -142,7 +142,8 @@ pub use assets::{
     TypefaceId,
 };
 pub use backend::{
-    color_scheme, open_url, platform, Backend, ColorScheme, Platform, VirtualizerCallbacks,
+    color_scheme, open_url, platform, Backend, ColorScheme, Platform, Screenshot,
+    VirtualizerCallbacks,
 };
 pub use page_meta::{set_page_metadata, take_page_metadata, PageMetadata};
 pub use batch::{BackendBatch, BatchOp};

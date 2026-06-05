@@ -105,7 +105,7 @@ use serde::{Deserialize, Serialize};
 /// deserializes — `wrap` defaults to `true` (the primitive default).
 /// (Content-height "autogrow" needs no wire field: it's intrinsic
 /// sizing, reproduced by the client's own backend from the style.)
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -204,6 +204,15 @@ pub enum DevToApp {
         theme: WireTheme,
         styles: Vec<(StyleId, WireStyleRules)>,
     },
+
+    /// Ask the client to capture its **real rendered surface** (native
+    /// AppKit/UIKit/Android pixels) and reply with
+    /// [`AppToDev::ScreenshotResult`] carrying the same `request_id`.
+    /// This is the on-device counterpart to the server-side wgpu replay
+    /// screenshot — it shows what the client is actually drawing. Only
+    /// sent to clients that advertised
+    /// [`AppToDev::Hello::supports_screenshot`].
+    CaptureScreenshot { request_id: u64 },
 }
 
 /// Messages sent from the app to the dev process.
@@ -238,6 +247,14 @@ pub enum AppToDev {
         /// fallback".
         #[serde(default)]
         viewport: Option<WireViewport>,
+        /// Whether this client's real backend can capture its rendered
+        /// surface (`Backend::supports_screenshot`). The server uses it
+        /// to decide whether the `screenshot` Robot verb's `client` /
+        /// `auto` source can be served by a real-surface capture or must
+        /// fall back to the wgpu replay. `#[serde(default)]` → older
+        /// clients report `false`.
+        #[serde(default)]
+        supports_screenshot: bool,
     },
 
     /// A user-driven event fired against a registered handler.
@@ -310,6 +327,20 @@ pub enum AppToDev {
     /// from a `resize` event listener; native sends on window /
     /// trait collection changes.
     ViewportChanged { width: f32, height: f32 },
+
+    /// Reply to [`DevToApp::CaptureScreenshot`]. Carries the same
+    /// `request_id` so the server can correlate it with the blocked
+    /// `screenshot` verb call. On success `png` is the encoded PNG and
+    /// `error` is `None`; on failure `png` is `None` and `error` holds
+    /// the reason (unsupported backend, no host root yet, etc.). `Vec<u8>`
+    /// crosses the JSON codec as base64 — same as `WireAssetSource`.
+    ScreenshotResult {
+        request_id: u64,
+        png: Option<Vec<u8>>,
+        width: u32,
+        height: u32,
+        error: Option<String>,
+    },
 
     /// App-side error. Lets dev surface backend panics.
     Error { message: String },
@@ -1806,6 +1837,52 @@ mod tests {
     }
 
     #[test]
+    fn capture_screenshot_request_roundtrips() {
+        let msg = DevToApp::CaptureScreenshot { request_id: 7 };
+        let bytes = codec::encode(&msg).expect("encode");
+        match codec::decode::<DevToApp>(&bytes).expect("decode") {
+            DevToApp::CaptureScreenshot { request_id } => assert_eq!(request_id, 7),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn screenshot_result_preserves_png_bytes() {
+        let png = vec![0x89u8, 0x50, 0x4E, 0x47, 1, 2, 3, 4];
+        let msg = AppToDev::ScreenshotResult {
+            request_id: 7,
+            png: Some(png.clone()),
+            width: 320,
+            height: 240,
+            error: None,
+        };
+        let bytes = codec::encode(&msg).expect("encode");
+        match codec::decode::<AppToDev>(&bytes).expect("decode") {
+            AppToDev::ScreenshotResult { request_id, png: got, width, height, error } => {
+                assert_eq!(request_id, 7);
+                assert_eq!(got, Some(png), "PNG bytes survive the JSON codec");
+                assert_eq!((width, height), (320, 240));
+                assert!(error.is_none());
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hello_supports_screenshot_defaults_false_for_old_clients() {
+        // An old client's Hello (no `supports_screenshot` field) must
+        // decode with the flag defaulted to false, not fail.
+        let legacy = serde_json::json!({
+            "Hello": { "app_name": "old", "color_scheme": "Light" }
+        });
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        match codec::decode::<AppToDev>(&bytes).expect("decode legacy Hello") {
+            AppToDev::Hello { supports_screenshot, .. } => assert!(!supports_screenshot),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
     fn register_asset_bundled_roundtrip() {
         let cmd = Command::RegisterAsset {
             id: AssetId(42),
@@ -1956,6 +2033,7 @@ mod tests {
             initial_url: None,
             identity: ClientIdentity::default(),
             viewport: None,
+            supports_screenshot: false,
         };
         let bytes = codec::encode(&h).unwrap();
         match codec::decode::<AppToDev>(&bytes).unwrap() {
@@ -1976,6 +2054,7 @@ mod tests {
                 device_label: Some("iPhone 15 Pro Sim".into()),
             },
             viewport: None,
+            supports_screenshot: false,
         };
         let bytes = codec::encode(&h).unwrap();
         match codec::decode::<AppToDev>(&bytes).unwrap() {

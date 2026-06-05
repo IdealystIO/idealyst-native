@@ -279,6 +279,7 @@ fn run_with_budget(
         initial_url: None,
         identity: wire::ClientIdentity::default(),
         viewport: None,
+        supports_screenshot: false,
     };
     let bytes = serde_json::to_vec(&hello).unwrap();
     ws.send(Message::Binary(bytes.into())).ok();
@@ -354,6 +355,7 @@ fn server_hello_carries_primary_session_in_single_process_mode() {
             device_label: Some("client-a".into()),
         },
         viewport: None,
+        supports_screenshot: false,
     };
     ws_a.send(Message::Binary(serde_json::to_vec(&hello_a).unwrap().into()))
         .unwrap();
@@ -376,6 +378,7 @@ fn server_hello_carries_primary_session_in_single_process_mode() {
         initial_url: None,
         identity: wire::ClientIdentity::default(),
         viewport: None,
+        supports_screenshot: false,
     };
     ws_b.send(Message::Binary(serde_json::to_vec(&hello_b).unwrap().into()))
         .unwrap();

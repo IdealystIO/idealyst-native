@@ -78,7 +78,7 @@ pub fn Skeleton(props: &SkeletonProps) -> Element {
         // Ensure the active theme is wrapped in IdeaThemeRef; the
         // background comes from the stylesheet's base closure
         // against that theme.
-        let _ = crate::theme_runtime::active_theme()
+        let _ = crate::theme_runtime::active_theme_untracked()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
         let mut app = StyleApplication::new(SkeletonStyle::sheet())

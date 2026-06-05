@@ -74,6 +74,92 @@ pub struct CanvasProps {
     /// may invoke it on every frame / dependency change.
     #[schema(constraint = "a Fn(&mut Scene) painter — build with canvas::draw(...)")]
     pub draw: DrawFn,
+
+    /// Optional self-capture sink. When set, a GPU renderer publishes each
+    /// rendered frame into this `FrameWriter` (the producer half of a
+    /// [`media_stream::MediaStream`] the app holds), so the canvas's OWN output
+    /// can be recorded: `let (stream, writer) = MediaStream::new();
+    /// Canvas { capture: Some(writer), .. }`, then record `stream`. The renderer
+    /// only does the (GPU→CPU) read-back while a consumer is actually tapping
+    /// frames (`writer.wants_cpu_frames()`), so an idle canvas pays nothing.
+    /// `None` = no capture (the default). Renderer support is GPU-only
+    /// (canvas-vello) for now; the CPU renderers ignore it.
+    #[schema(constraint = "optional media_stream::FrameWriter to record the canvas output")]
+    pub capture: Option<media_stream::FrameWriter>,
+
+    /// Texture layers composited ON TOP of the painted scene, in order — each a
+    /// live `MediaStream` (a camera, screen share, …) drawn as a positioned,
+    /// rounded, opacity-blended rectangle. They become part of the rendered
+    /// output, so both the on-screen canvas AND the self-capture recording show
+    /// them (WYSIWYG). A GPU renderer imports each stream's native surface (an
+    /// IOSurface on macOS) and composites it every frame — zero CPU copy. Empty
+    /// by default. GPU-only (canvas-vello); the CPU renderers ignore it (an app
+    /// overlays a `video` widget there instead).
+    #[schema(constraint = "texture layers (e.g. a camera) composited over the scene")]
+    pub layers: Vec<TextureLayer>,
+}
+
+/// How a [`TextureLayer`]'s source maps into its destination rectangle.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Fit {
+    /// Stretch to fill the rect exactly (may distort).
+    Fill,
+    /// Scale to fill the rect preserving aspect; crop the overflow (centered).
+    #[default]
+    Cover,
+    /// Scale to fit inside the rect preserving aspect; letterbox the remainder.
+    Contain,
+}
+
+/// A `MediaStream` composited into the canvas at a reactive rectangle, with a
+/// fit mode, rounded corners, and opacity. See [`CanvasProps::layers`].
+#[derive(Clone)]
+pub struct TextureLayer {
+    /// The stream to draw, resolved every frame so a source that opens/closes
+    /// (or swaps) after the canvas is built is picked up reactively — read a
+    /// `Signal<Option<MediaStream>>` here. `None` → nothing drawn this frame. On
+    /// macOS the stream's `native_source` (an IOSurface) is imported as a GPU
+    /// texture; no CPU frame is touched.
+    pub source: Rc<dyn Fn() -> Option<media_stream::MediaStream>>,
+    /// The destination rectangle `(x, y, w, h)` in the canvas's LOGICAL
+    /// coordinate space (the same points the author's `Scene` uses). Read every
+    /// frame, so a reactive drag position follows live. The renderer scales it
+    /// by the device pixel ratio to hit the physical-pixel target.
+    pub rect: Rc<dyn Fn() -> (f32, f32, f32, f32)>,
+    /// How the source maps into [`rect`](Self::rect).
+    pub fit: Fit,
+    /// Corner radius in LOGICAL points (0 = square). Scaled to physical pixels.
+    pub corner_radius: f32,
+    /// Layer opacity `0.0..=1.0` (1 = opaque).
+    pub opacity: f32,
+}
+
+impl TextureLayer {
+    /// A full-opacity, square, cover-fit layer from a reactive source + rect.
+    pub fn new(
+        source: Rc<dyn Fn() -> Option<media_stream::MediaStream>>,
+        rect: Rc<dyn Fn() -> (f32, f32, f32, f32)>,
+    ) -> Self {
+        Self { source, rect, fit: Fit::Cover, corner_radius: 0.0, opacity: 1.0 }
+    }
+
+    /// Set the corner radius (logical points).
+    pub fn corner_radius(mut self, r: f32) -> Self {
+        self.corner_radius = r;
+        self
+    }
+
+    /// Set the fit mode.
+    pub fn fit(mut self, fit: Fit) -> Self {
+        self.fit = fit;
+        self
+    }
+
+    /// Set the opacity (`0.0..=1.0`).
+    pub fn opacity(mut self, o: f32) -> Self {
+        self.opacity = o;
+        self
+    }
 }
 
 /// The boxed scene-painter closure [`CanvasProps::draw`] holds. Build
@@ -84,7 +170,7 @@ impl Default for CanvasProps {
     fn default() -> Self {
         // A no-op painter renders an empty canvas rather than panicking
         // on an unset field.
-        Self { draw: Box::new(|_| {}) }
+        Self { draw: Box::new(|_| {}), capture: None, camera: None }
     }
 }
 
@@ -157,7 +243,9 @@ pub fn ensure_wire_serde() {
             // scene. `Rc` so the closure is `Fn` (clonable into effects).
             let scene = Rc::new(scene);
             let draw: DrawFn = Box::new(move |s: &mut Scene| *s = (*scene).clone());
-            Some(Rc::new(CanvasProps { draw }) as Rc<dyn Any>)
+            // `capture` is a runtime-only sink (a live `FrameWriter`); it never
+            // crosses the wire, so a wire-adopted canvas has no self-capture.
+            Some(Rc::new(CanvasProps { draw, capture: None, camera: None }) as Rc<dyn Any>)
         },
     );
 }
@@ -167,7 +255,7 @@ pub fn ensure_wire_serde() {
 /// scene-model types ([`Scene`], [`Path`], [`Paint`], [`Stroke`],
 /// [`Color`], …).
 pub mod prelude {
-    pub use super::{draw, Canvas, CanvasProps};
+    pub use super::{draw, Canvas, CameraLayer, CanvasProps};
     pub use crate::scene::{
         color, Color, FillRule, GradientStop, LineCap, LineJoin, LinearGradient, Paint, PaintKind,
         Path, PathSeg, RadialGradient, Scene, Stroke, Transform,

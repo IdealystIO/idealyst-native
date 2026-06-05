@@ -357,10 +357,10 @@ where
 
     // Match `memo`'s pattern: the active scope (if any) adopts the
     // effect's slot (`owns: false`, drop is no-op). Outside any scope
-    // the handle's drop would free the slot — `forget` keeps the
+    // the handle's drop would free the slot — `persist` keeps the
     // resource alive for the lifetime of the thread, the way bare
     // `Signal::new` outside a scope persists.
-    std::mem::forget(e);
+    e.persist();
 
     Resource {
         state,

@@ -22,6 +22,15 @@ default = []
 # Forward `runtime-core/debug-stats` so PhaseTimer counters exist
 # in this crate's hot paths (apply-style, layout, batched insert).
 debug-stats = ["runtime-core/debug-stats"]
+# Install the cooperative, libdispatch-backed async executor (in
+# `backend-apple-core`) so `runtime_core::driver::spawn_async` polls futures on
+# the main queue instead of falling back to `pollster::block_on`, which BLOCKS
+# the main thread/run loop for the whole future. Without this, any
+# run-loop-dependent future (e.g. `media-writer`'s AVAssetWriter
+# `finishWriting` completion) deadlocks the UI on `.await` — the whiteboard
+# "stop recording freezes the app" bug. Mirrors `backend-ios-mobile`'s
+# `async-driver` (ios-mobile → ios-core → apple-core). Enabled by `host-appkit`.
+async-driver = ["runtime-core/async-driver", "backend-apple-core/async-driver"]
 # Optional: compile in the runtime-server-client entry point + main-thread
 # drain helper so the macOS app can run as a thin client of an runtime-server
 # dev-server (instead of mounting the user's tree locally). When
@@ -64,6 +73,9 @@ objc2-app-kit = { version = "0.2", features = [
     "NSButton",
     "NSControl",
     "NSCell",
+    # `NSActionCell` is the direct superclass of `NSTextFieldCell`; the struct is
+    # cfg-gated on it (+ NSCell), so without it `NSTextFieldCell` won't compile in.
+    "NSActionCell",
     "NSTextField",
     "NSTextFieldCell",
     "NSTextView",

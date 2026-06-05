@@ -69,6 +69,8 @@ use std::rc::Rc;
 mod android;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 mod ios;
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+mod macos;
 
 /// Type-erased payload for the CodeBlock external primitive. Lives
 /// here because the framework dispatches handlers by [`TypeId`], and
@@ -228,7 +230,22 @@ inventory::submit! {
     backend_ios::IosExternalRegistrar(register)
 }
 
-/// Fallback for other targets (macOS / terminal / gpu). No-op generic
+/// macOS — registers the [`macos::build`] handler. Produces a single
+/// `NSScrollView` (horizontal) wrapping an `NSTextField` label with an
+/// `NSAttributedString`. See `macos.rs` for the obj-c plumbing.
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+pub fn register(backend: &mut backend_macos::MacosBackend) {
+    ensure_wire_serde();
+    backend.register_external::<CodeBlockProps, _>(macos::build);
+}
+
+// Self-register at backend construction. See [[project_inventory_self_registration]].
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+inventory::submit! {
+    backend_macos::MacosExternalRegistrar(register)
+}
+
+/// Fallback for other targets (terminal / gpu). No-op generic
 /// over any `Backend`. Authors get the framework's standard
 /// external-not-registered placeholder until a per-backend handler
 /// lands.
@@ -236,6 +253,7 @@ inventory::submit! {
     not(target_arch = "wasm32"),
     not(target_os = "android"),
     not(target_os = "ios"),
+    not(target_os = "macos"),
 ))]
 pub fn register<B: runtime_core::Backend>(_backend: &mut B) {
     // No per-backend native handler here, but still register the wire

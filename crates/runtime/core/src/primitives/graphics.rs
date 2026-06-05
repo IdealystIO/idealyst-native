@@ -128,6 +128,15 @@ pub struct OnReadyEvent {
     /// pixel-buffer size directly. Authors should size their
     /// swapchain / depth buffer to match.
     pub size: (u32, u32),
+    /// Device pixel ratio (physical px per logical point) of the
+    /// surface — `backingScaleFactor` (macOS), `UIScreen.scale` (iOS),
+    /// display density (Android), `devicePixelRatio` (web). Renderers
+    /// drawing a LOGICAL-coordinate scene into the physical-pixel
+    /// `size` must apply `scale` as a base transform, or the content
+    /// under-fills on a HiDPI surface (e.g. retina → top-left quarter).
+    /// `1.0` from a backend means "not yet reported" (renders at
+    /// physical scale, the historical behavior).
+    pub scale: f32,
 }
 
 /// Event delivered to `on_resize`. Fires whenever the drawable
@@ -136,6 +145,9 @@ pub struct OnReadyEvent {
 /// the initial size — read `on_ready.size` for that.
 pub struct OnResizeEvent {
     pub size: (u32, u32),
+    /// Device pixel ratio — see [`OnReadyEvent::scale`]. Can change
+    /// when a window moves between displays of different density.
+    pub scale: f32,
 }
 
 /// Closure invoked once the platform surface is ready (or every time

@@ -4,6 +4,7 @@
 
 pub mod accessibility;
 pub mod advanced;
+pub mod architecture;
 pub mod foundations;
 pub mod home;
 pub mod media_queries;

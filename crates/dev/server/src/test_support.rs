@@ -71,6 +71,7 @@ impl MockClient {
             initial_url: None,
             identity,
             viewport: None,
+            supports_screenshot: false,
         };
         ws.send(Message::Binary(
             serde_json::to_vec(&hello).expect("encode AppToDev::Hello").into(),
@@ -181,6 +182,9 @@ impl MockClient {
                 self.assigned_session, message
             ),
             DevToApp::ThemeChanged { .. } => {}
+            DevToApp::CaptureScreenshot { .. } => {
+                // MockClient doesn't render a real surface; ignore.
+            }
         }
     }
 }

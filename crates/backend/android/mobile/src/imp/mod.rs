@@ -16,6 +16,7 @@ mod font;
 mod jni_exports;
 mod primitives;
 pub(crate) mod scheduler;
+mod screenshot;
 pub(crate) mod sticky;
 mod style;
 // `view_screen_rect` lives here because it depends on this crate's
@@ -2001,6 +2002,20 @@ impl Backend for AndroidBackend {
 
     fn platform(&self) -> runtime_core::Platform {
         runtime_core::Platform::Android
+    }
+
+    fn supports_screenshot(&self) -> bool {
+        // Capability, not current state: Android can always draw a view
+        // hierarchy to a Bitmap. A capture before the root is laid out
+        // returns an error rather than failing this gate.
+        true
+    }
+
+    fn capture_screenshot(
+        &self,
+        done: Box<dyn FnOnce(Result<runtime_core::Screenshot, String>)>,
+    ) {
+        done(screenshot::capture(&self.root));
     }
 
     fn url_opener(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {

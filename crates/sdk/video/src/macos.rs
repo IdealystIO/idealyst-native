@@ -1,34 +1,103 @@
 //! macOS (AppKit) implementation of the Video SDK.
 //!
-//! Scope: the **live `MediaStream` display path** only (the camera case).
-//! A `MediaStream` (from `camera` / `screen-recorder`) is not a URL, so this
-//! module deliberately does not port the iOS `AVPlayer`/URL path. A
-//! `MediaContent::Url` source no-ops here for now (see the TODO in
-//! [`build_video`]).
+//! Covers BOTH source kinds, mirroring iOS:
 //!
-//! Mechanism: a plain, layer-backed `NSView` hosts the frames. Unlike UIKit,
-//! AppKit's `NSView` is **not** layer-backed by default — we must
-//! `setWantsLayer: true` before touching `.layer`, or the layer is nil (see
-//! the `project_macos_appkit_uikit_diffs` memory, gotcha #3). We set the
-//! root layer's `contentsGravity = "resizeAspect"` (aspect-fit, matching the
-//! iOS path) and run the same `raf_loop_scoped` stream→CGImage→`setContents`
-//! loop iOS uses. The CoreGraphics RGBA→CGImage conversion is shared via
-//! [`crate::cg_image`] — it's identical CoreGraphics on both platforms.
+//! - **`MediaContent::Url`** (a recorded file / remote URL): an `AVPlayer`
+//!   driving an `AVPlayerLayer` sublayer of the host view's root layer. This is
+//!   what makes the whiteboard's recording preview play — before it, a URL
+//!   source no-op'd and the preview showed only its dark stage box.
+//! - **`MediaContent::Stream`** (a live `camera` / `screen-recorder` feed): the
+//!   universal CPU CGImage path (and IOSurface zero-copy fast-path) pushing
+//!   frames into the root CALayer's `contents`.
+//!
+//! A given video element is one or the other; the unused layer stays empty, so
+//! the two paths coexist without overlapping — same design as the iOS module.
+//!
+//! Mechanism notes:
+//! - AppKit's `NSView` is **not** layer-backed by default — we `setWantsLayer:
+//!   true` before touching `.layer`, or it's nil (see
+//!   `project_macos_appkit_uikit_diffs`, gotcha #3).
+//! - `AVPlayerLayer` doesn't auto-track its host view's bounds; we size it from
+//!   the view's `bounds` every frame in a `raf_loop_scoped` (an `Effect`
+//!   reading `bounds` imperatively tracks no signal, so it would fire once at
+//!   0×0 during build and leave the layer invisible).
+//! - AVFoundation is reached via raw `msg_send!` + `class!(...)` (no
+//!   `objc2-av-foundation`, whose 0.3 line needs a newer objc2 than this
+//!   crate's pinned 0.5) and force-linked below.
 
 use crate::cg_image::{cgimage_from_rgba, CGImageRelease};
 use crate::{MediaContent, VideoOps, VideoProps};
 use backend_macos::{MacosBackend, MacosNode};
 use media_stream::SurfaceSource;
+use objc2::encode::{Encode, Encoding, RefEncode};
 use objc2::msg_send;
 use objc2::msg_send_id;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::NSView;
-use objc2_foundation::NSString;
+use objc2_foundation::{CGRect, NSObject, NSString};
+use runtime_core::Effect;
 use std::any::Any;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::ptr::NonNull;
 use std::rc::Rc;
 
 pub(crate) static OPS: &dyn VideoOps = &MacosVideoOps;
+
+// AVFoundation ships with macOS; force the linker to pull it in (the AVPlayer /
+// AVPlayerLayer selectors below are sent dynamically, so nothing else
+// references the framework at link time). Mirrors the iOS module.
+#[link(name = "AVFoundation", kind = "framework")]
+extern "C" {}
+
+// CoreMedia `CMTime` mirror (objc2 doesn't re-export it and we don't pull in
+// core-media-sys for two struct layouts). Field order/widths MUST match
+// `<CoreMedia/CMTime.h>` exactly or AVPlayer reads garbage on `seekToTime:`.
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct CMTime {
+    value: i64,
+    timescale: i32,
+    flags: u32,
+    epoch: i64,
+}
+
+unsafe impl Encode for CMTime {
+    const ENCODING: Encoding = Encoding::Struct(
+        "?",
+        &[
+            Encoding::LongLong,
+            Encoding::Int,
+            Encoding::UInt,
+            Encoding::LongLong,
+        ],
+    );
+}
+unsafe impl RefEncode for CMTime {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
+}
+
+const CM_TIME_FLAG_VALID: u32 = 1;
+
+/// Per-video state retained in the side-table. `loop_observer` is held purely
+/// for its retention side-effect — releasing it removes the notification
+/// observer.
+struct VideoEntry {
+    player: Retained<AnyObject>,
+    #[allow(dead_code)]
+    player_layer: Retained<AnyObject>,
+    #[allow(dead_code)]
+    loop_observer: Option<Retained<NSObject>>,
+}
+
+thread_local! {
+    /// view-pointer → AVPlayer side-table. Populated by `build_video` at mount;
+    /// entries are never removed (matches the iOS module's v1 leak model — SDK
+    /// v2 swaps to an associated object that releases on dealloc).
+    static PLAYER_TABLE: RefCell<HashMap<usize, VideoEntry>> =
+        RefCell::new(HashMap::new());
+}
 
 /// Register the Video handler against a `MacosBackend`. One-line call from
 /// the app's bootstrap.
@@ -43,38 +112,102 @@ inventory::submit! {
 }
 
 fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
-    // Plain NSView — no subclass needed. Taffy drives the view's frame via
-    // the regular apply_frames path; the root CALayer hosts the stream's
-    // frames as its `contents`.
+    // Plain NSView — no subclass needed. Taffy drives the view's frame via the
+    // regular apply_frames path; the root CALayer hosts the AVPlayerLayer
+    // sublayer (URL) and/or the stream's frames as its `contents`.
     let view: Retained<NSView> = unsafe {
         let alloc = b.mtm().alloc::<NSView>();
         msg_send_id![alloc, init]
     };
 
-    // AppKit gotcha #3: NSView is not layer-backed by default. `.layer` is
-    // nil until `setWantsLayer: true`, so set it BEFORE reaching for the
-    // layer below.
+    // AppKit gotcha #3: NSView is not layer-backed by default — set wantsLayer
+    // BEFORE reaching for `.layer` (else it's nil).
     let _: () = unsafe { msg_send![&view, setWantsLayer: true] };
 
-    // Register with the backend's Taffy tree so a flex parent sizes +
-    // positions the view. Without this it lays out as 0×0.
+    // Register with the backend's Taffy tree so a flex parent sizes + positions
+    // the view. Without this it lays out as 0×0.
     b.register_external_view(&view);
 
-    // Live MediaStream display. A `Stream` source has no AVPlayer URL; we
-    // poll the stream's latest frame on the main thread (via the scope-tied
-    // frame loop) and push it to the view's root CALayer `contents` as a
-    // CGImage. This is the universal CPU path — works for ANY MediaStream
-    // (camera, screen, a compositor's output). A faster native path
-    // (AVSampleBufferDisplayLayer / a Metal texture) is the GPU phase; this
-    // renders correctly and stays simple.
-    //
-    // TODO: AVPlayer URL path — a `MediaContent::Url` source no-ops on macOS
-    // for now (the camera widget this unblocks is a Stream, not a URL).
+    // ---- URL / AVPlayer path -------------------------------------------------
+    // Build an AVPlayer + AVPlayerLayer and add the layer as a sublayer of the
+    // view's root layer. A Stream source resolves to no URL, so the player just
+    // stays idle (and the layer empty) for the camera case.
+    {
+        let initial_src = resolved_url(props).unwrap_or_default();
+        let player = build_player(&initial_src);
+        let player_layer = build_player_layer(&player, props.object_fit);
+
+        let view_layer: Retained<AnyObject> = unsafe { msg_send_id![&view, layer] };
+        let _: () = unsafe { msg_send![&view_layer, addSublayer: &*player_layer] };
+
+        // Autoplay: muted (mirrors the web/iOS "autoplay = silent autoplay"
+        // expectation) + play.
+        if props.autoplay {
+            let _: () = unsafe { msg_send![&player, setMuted: true] };
+            let _: () = unsafe { msg_send![&player, play] };
+        }
+
+        let loop_observer = if props.loop_playback {
+            Some(install_loop_observer(&player))
+        } else {
+            None
+        };
+
+        let key = &*view as *const NSView as usize;
+        PLAYER_TABLE.with(|t| {
+            t.borrow_mut().insert(
+                key,
+                VideoEntry {
+                    player: player.clone(),
+                    player_layer: player_layer.clone(),
+                    loop_observer,
+                },
+            );
+        });
+
+        // Size the AVPlayerLayer to the view's bounds EVERY frame. The layer
+        // doesn't auto-track its parent; an Effect reading `bounds` imperatively
+        // tracks no signal (fires once at 0×0 → invisible video), so the raf
+        // loop is the reliable home for sizing. CATransaction disables the
+        // implicit frame-change animation.
+        let player_layer_for_size = player_layer.clone();
+        let view_for_size = view.clone();
+        runtime_core::raf_loop_scoped(move || unsafe {
+            let bounds: CGRect = msg_send![&*view_for_size, bounds];
+            let txn = objc2::class!(CATransaction);
+            let _: () = msg_send![txn, begin];
+            let _: () = msg_send![txn, setDisableActions: true];
+            let _: () = msg_send![&*player_layer_for_size, setFrame: bounds];
+            let _: () = msg_send![txn, commit];
+        });
+
+        // Reactive src — the initial URL built the player; subsequent reactive
+        // swaps go through `replaceCurrentItemWithPlayerItem:` (keeps the layer
+        // attachment, no layout disruption). Skip the first run (already loaded).
+        let player_for_src = player.clone();
+        let props_for_src = props.clone();
+        let first_run = Cell::new(true);
+        let _src_effect = Effect::new(move || {
+            let url = resolved_url(&props_for_src).unwrap_or_default();
+            if first_run.replace(false) {
+                return;
+            }
+            if let Some(item) = build_player_item(&url) {
+                let _: () = unsafe {
+                    msg_send![&player_for_src, replaceCurrentItemWithPlayerItem: &*item]
+                };
+                if props_for_src.autoplay {
+                    let _: () = unsafe { msg_send![&player_for_src, play] };
+                }
+            }
+        });
+    }
+
+    // ---- Live MediaStream display path (unchanged) ---------------------------
     {
         let view_layer: Retained<AnyObject> = unsafe { msg_send_id![&view, layer] };
-        // Aspect-preserving fill mode, never the default stretch. `resizeAspect`
-        // letterboxes (contain); `resizeAspectFill` crops to fill (cover). Drives
-        // both the IOSurface fast-path and the CGImage fallback (same root layer).
+        // Aspect-preserving fill, never the default stretch. `resizeAspect`
+        // letterboxes (contain); `resizeAspectFill` crops to fill (cover).
         let gravity = NSString::from_str(match props.object_fit {
             crate::ObjectFit::Cover => "resizeAspectFill",
             crate::ObjectFit::Contain => "resizeAspect",
@@ -151,19 +284,139 @@ fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
 }
 
 // =============================================================================
-// VideoOps impl — play/pause/seek are no-ops on macOS for now.
-//
-// The live MediaStream path is display-only (the stream owns its own
-// lifecycle); there is no AVPlayer to drive. Imperative ops are wired only
-// once the AVPlayer/URL path lands (see the TODO in `build_video`). Until
-// then they degrade silently rather than panicking — matching `VideoOps`'
-// default no-op contract.
+// Helpers (private) — mirror the iOS module.
+// =============================================================================
+
+/// Resolve a source to a URL for the AVPlayer path. A live `Stream` source has
+/// no native player binding (that's the GPU/compositing phase); it resolves to
+/// no URL, leaving the player idle.
+fn resolved_url(props: &VideoProps) -> Option<String> {
+    match props.source.resolve() {
+        MediaContent::Url(u) => Some(u),
+        MediaContent::Stream(_) | MediaContent::None => None,
+    }
+}
+
+fn build_nsurl(s: &str) -> Option<Retained<AnyObject>> {
+    let ns_str = NSString::from_str(s);
+    unsafe { msg_send_id![objc2::class!(NSURL), URLWithString: &*ns_str] }
+}
+
+fn build_player_item(src: &str) -> Option<Retained<AnyObject>> {
+    let url = build_nsurl(src)?;
+    let item: Retained<AnyObject> = unsafe {
+        msg_send_id![
+            msg_send_id![objc2::class!(AVPlayerItem), alloc],
+            initWithURL: &*url
+        ]
+    };
+    Some(item)
+}
+
+fn build_player(src: &str) -> Retained<AnyObject> {
+    // Empty URL → a player with no item (populated later via the reactive src
+    // Effect). `URLWithString:""` returns nil and `playerWithURL:nil` crashes
+    // AVPlayer's designated initializer, so guard it.
+    match build_nsurl(src) {
+        Some(url) => unsafe { msg_send_id![objc2::class!(AVPlayer), playerWithURL: &*url] },
+        None => unsafe { msg_send_id![objc2::class!(AVPlayer), new] },
+    }
+}
+
+fn build_player_layer(
+    player: &Retained<AnyObject>,
+    object_fit: crate::ObjectFit,
+) -> Retained<AnyObject> {
+    let layer: Retained<AnyObject> = unsafe {
+        msg_send_id![objc2::class!(AVPlayerLayer), playerLayerWithPlayer: &**player]
+    };
+    let gravity = NSString::from_str(av_layer_gravity(object_fit));
+    let _: () = unsafe { msg_send![&layer, setVideoGravity: &*gravity] };
+    layer
+}
+
+/// `AVLayerVideoGravity*` string for an [`crate::ObjectFit`].
+fn av_layer_gravity(fit: crate::ObjectFit) -> &'static str {
+    match fit {
+        crate::ObjectFit::Cover => "AVLayerVideoGravityResizeAspectFill",
+        crate::ObjectFit::Contain => "AVLayerVideoGravityResizeAspect",
+    }
+}
+
+/// Observe `AVPlayerItemDidPlayToEndTimeNotification` (nil object → any item the
+/// player uses); on receipt seek to zero and resume. Returns the retained
+/// observer token (kept alive for the video's lifetime).
+fn install_loop_observer(player: &Retained<AnyObject>) -> Retained<NSObject> {
+    let center: Retained<NSObject> =
+        unsafe { msg_send_id![objc2::class!(NSNotificationCenter), defaultCenter] };
+    let name = NSString::from_str("AVPlayerItemDidPlayToEndTimeNotification");
+    let nil_obj: *const AnyObject = std::ptr::null();
+    let nil_queue: *const AnyObject = std::ptr::null();
+
+    let player_for_block = player.clone();
+    let block = block2::StackBlock::new(move |_note: NonNull<NSObject>| {
+        // kCMTimeZero == {0, 1, kCMTimeFlags_Valid, 0}
+        let zero = CMTime {
+            value: 0,
+            timescale: 1,
+            flags: CM_TIME_FLAG_VALID,
+            epoch: 0,
+        };
+        let _: () = unsafe { msg_send![&player_for_block, seekToTime: zero] };
+        let _: () = unsafe { msg_send![&player_for_block, play] };
+    });
+    let block = block.copy();
+
+    unsafe {
+        msg_send_id![
+            &center,
+            addObserverForName: &*name,
+            object: nil_obj,
+            queue: nil_queue,
+            usingBlock: &*block
+        ]
+    }
+}
+
+fn lookup_player(node: &dyn Any) -> Option<Retained<AnyObject>> {
+    let macos_node = node.downcast_ref::<MacosNode>()?;
+    let MacosNode::View(view) = macos_node else {
+        return None;
+    };
+    let key = &**view as *const NSView as usize;
+    PLAYER_TABLE.with(|t| t.borrow().get(&key).map(|e| e.player.clone()))
+}
+
+// =============================================================================
+// VideoOps impl — drives play/pause/seek from `VideoHandle` calls (URL path).
+// Stream sources have no AVPlayer entry, so the lookups no-op for them.
 // =============================================================================
 
 struct MacosVideoOps;
 
 impl VideoOps for MacosVideoOps {
-    fn play(&self, _node: &dyn Any) {}
-    fn pause(&self, _node: &dyn Any) {}
-    fn seek(&self, _node: &dyn Any, _seconds: f32) {}
+    fn play(&self, node: &dyn Any) {
+        let Some(player) = lookup_player(node) else { return };
+        let _: () = unsafe { msg_send![&*player, play] };
+    }
+
+    fn pause(&self, node: &dyn Any) {
+        let Some(player) = lookup_player(node) else { return };
+        let _: () = unsafe { msg_send![&*player, pause] };
+    }
+
+    fn seek(&self, node: &dyn Any, seconds: f32) {
+        let Some(player) = lookup_player(node) else { return };
+        // Mirror `CMTimeMakeWithSeconds(seconds, 600)` — 600 divides common
+        // framerates evenly; building the struct avoids linking CoreMedia.
+        let timescale = 600i32;
+        let value = (seconds as f64 * timescale as f64).round() as i64;
+        let t = CMTime {
+            value,
+            timescale,
+            flags: CM_TIME_FLAG_VALID,
+            epoch: 0,
+        };
+        let _: () = unsafe { msg_send![&*player, seekToTime: t] };
+    }
 }

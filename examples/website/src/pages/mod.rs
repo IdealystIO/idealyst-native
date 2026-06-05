@@ -2,6 +2,7 @@
 //! that the Navigator mounts for the matching route.
 
 pub mod agentic;
+pub mod architecture;
 pub mod backends;
 pub mod code_splitting;
 pub mod comparisons;

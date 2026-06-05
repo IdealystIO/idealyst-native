@@ -14,12 +14,12 @@
 //! the step body. Each step ends with a prev/next bar derived from the
 //! linear order in `routes`.
 
-use runtime_core::{component, signal, ui, Element, Ref, Route, Signal};
+use runtime_core::{color_scheme, component, signal, ui, ColorScheme, Element, Ref, Route, Signal};
 use runtime_core::primitives::navigator::Screen;
 use drawer_navigator::{
     install_navigator_pin_width, DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerScreenExt,
 };
-use idea_ui::{install_idea_theme, light_theme};
+use idea_ui::{dark_theme, install_idea_theme, light_theme};
 
 /// Wrap a lesson's `Element` in a `Screen` whose nav-bar title is
 /// the sidebar `IndexEntry::label` for the route. Without this the
@@ -41,6 +41,7 @@ fn label_for_route(route_name: &'static str) -> Option<&'static str> {
     None
 }
 
+mod chart;
 mod common;
 mod lessons;
 mod routes;
@@ -49,19 +50,25 @@ mod styles;
 
 use routes::{
     A11Y_DEFAULTS_ROUTE, A11Y_MODEL_ROUTE, ADV_BACKENDS_ROUTE, ADV_CLI_ROUTE, ADV_EMBEDDED_ROUTE,
-    CORE_ENGINE_ROUTE, CORE_PERF_ROUTE, HOME_ROUTE, MQ_BREAKPOINTS_ROUTE, MQ_MOBILE_FIRST_ROUTE,
-    MQ_SIGNAL_ROUTE, RX_BATCHING_ROUTE, RX_DERIVED_ROUTE, RX_EFFECTS_ROUTE, RX_SIGNALS_ROUTE,
-    ST_STYLESHEETS_ROUTE, ST_TOKENS_ROUTE, ST_VARIANTS_ROUTE,
+    ARCH_BACKENDS_ROUTE, ARCH_CATALOG_ROUTE, ARCH_OVERVIEW_ROUTE, ARCH_SDKS_ROUTE, CORE_ENGINE_ROUTE,
+    CORE_PERF_ROUTE, HOME_ROUTE, MQ_BREAKPOINTS_ROUTE, MQ_MOBILE_FIRST_ROUTE, MQ_SIGNAL_ROUTE,
+    RX_BATCHING_ROUTE, RX_DERIVED_ROUTE, RX_EFFECTS_ROUTE, RX_SIGNALS_ROUTE, ST_STYLESHEETS_ROUTE,
+    ST_TOKENS_ROUTE, ST_VARIANTS_ROUTE,
 };
 
 #[component]
 pub fn app() -> Element {
-    install_idea_theme(light_theme());
+    // Start in whatever theme the OS is using. `color_scheme()` is stashed at
+    // mount from the backend (here, macOS `NSApp.effectiveAppearance`); install
+    // the matching idea-ui theme up front so there's no light→dark flash, and
+    // seed the dark-mode toggle to match.
+    let start_dark = matches!(color_scheme(), ColorScheme::Dark);
+    install_idea_theme(if start_dark { dark_theme() } else { light_theme() });
 
     let nav: Ref<DrawerHandle> = Ref::new();
     // App-level dark-mode state — lifted out of any screen scope so it
     // survives navigation. Captured by the sidebar builder below.
-    let is_dark: Signal<bool> = signal!(false);
+    let is_dark: Signal<bool> = signal!(start_dark);
 
     // Pin the sidebar (vs. modal slide-in) at wide viewports.
     install_navigator_pin_width(900.0);
@@ -71,6 +78,11 @@ pub fn app() -> Element {
         // Idealyst 101
         .screen(CORE_ENGINE_ROUTE, move |_| titled(&CORE_ENGINE_ROUTE, lessons::foundations::engine()))
         .screen(CORE_PERF_ROUTE, move |_| titled(&CORE_PERF_ROUTE, lessons::foundations::performance()))
+        // Architecture
+        .screen(ARCH_OVERVIEW_ROUTE, move |_| titled(&ARCH_OVERVIEW_ROUTE, lessons::architecture::overview()))
+        .screen(ARCH_BACKENDS_ROUTE, move |_| titled(&ARCH_BACKENDS_ROUTE, lessons::architecture::backends()))
+        .screen(ARCH_CATALOG_ROUTE, move |_| titled(&ARCH_CATALOG_ROUTE, lessons::architecture::catalog()))
+        .screen(ARCH_SDKS_ROUTE, move |_| titled(&ARCH_SDKS_ROUTE, lessons::architecture::sdks()))
         // Reactivity
         .screen(RX_SIGNALS_ROUTE, move |_| titled(&RX_SIGNALS_ROUTE, lessons::reactivity::signals()))
         .screen(RX_EFFECTS_ROUTE, move |_| titled(&RX_EFFECTS_ROUTE, lessons::reactivity::effects()))

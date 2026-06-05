@@ -12,9 +12,11 @@ crate-type = ["rlib"]
 runtime-core = { workspace = true, features = ["async-driver"] }
 idea-ui = { workspace = true }
 icons-lucide = { workspace = true }
+stack-navigator = { workspace = true }
 canvas = { workspace = true }
 canvas-native = { workspace = true }
 camera = { workspace = true }
+media-stream = { workspace = true }
 video = { workspace = true }
 screen-recorder = { workspace = true }
 media-writer = { workspace = true }
@@ -25,6 +27,11 @@ files = { workspace = true }
 # where the canvas / video / screen-recorder externals register their handlers.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
+# Blob-URL playback of a recorded file (web has no `file://`; IndexedDB bytes →
+# `URL.createObjectURL`). See `resolve_playback_url`.
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Url"] }
 
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }
@@ -34,6 +41,8 @@ backend-android-mobile = { workspace = true }
 
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 backend-macos = { workspace = true }
+# GPU canvas on macOS (vello/Metal) — overrides canvas-native (last-wins).
+canvas-vello = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Whiteboard"

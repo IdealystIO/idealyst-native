@@ -30,7 +30,13 @@ runtime-server = ["backend-macos/runtime-server"]
 
 [dependencies]
 runtime-core = { workspace = true }
-backend-macos = { workspace = true }
+# `async-driver`: install the libdispatch-backed cooperative async executor at
+# boot (this host calls `backend_apple_core::scheduler::install_scheduler`,
+# which only installs the executor when apple-core's `async-driver` is on).
+# Without it `spawn_async` falls back to `pollster::block_on`, freezing the run
+# loop on any run-loop-dependent `.await` (e.g. media-writer stop). See the
+# `async-driver` feature note in `backend-macos/Cargo.toml`.
+backend-macos = { workspace = true, features = ["async-driver"] }
 backend-apple-core = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -56,6 +56,7 @@
 pub mod bridge;
 pub mod components;
 pub mod logs;
+pub mod screenshot;
 
 pub use components::{
     invoke_method, list_components, register_component, ComponentInstanceId,
@@ -329,7 +330,7 @@ impl Element {
 #[derive(Clone, Debug)]
 pub enum Query {
     /// Match by author-assigned test ID (exact).
-    TestId(&'static str),
+    TestId(String),
     /// Match by label text (exact).
     Label(String),
     /// Match by label text (contains substring).
@@ -341,8 +342,8 @@ pub enum Query {
 }
 
 impl Query {
-    pub fn test_id(id: &'static str) -> Self {
-        Self::TestId(id)
+    pub fn test_id(id: impl Into<String>) -> Self {
+        Self::TestId(id.into())
     }
 
     pub fn label(text: impl Into<String>) -> Self {
@@ -430,7 +431,7 @@ impl Robot {
         REGISTRY.with(|r| {
             let reg = r.borrow();
             match query {
-                Query::TestId(id) => {
+                Query::TestId(ref id) => {
                     let eid = reg.find_by_test_id(id)?;
                     reg.get(eid).map(|e| Element::from_registry(eid, e))
                 }
@@ -468,7 +469,7 @@ impl Robot {
         REGISTRY.with(|r| {
             let reg = r.borrow();
             match query {
-                Query::TestId(id) => {
+                Query::TestId(ref id) => {
                     reg.find_by_test_id(id)
                         .and_then(|eid| reg.get(eid).map(|e| vec![Element::from_registry(eid, e)]))
                         .unwrap_or_default()

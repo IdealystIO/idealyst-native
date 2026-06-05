@@ -160,6 +160,10 @@ where
             // hardcoded fallback (393×800) and planets anchor at
             // the wrong x on any other browser width.
             viewport: browser_viewport(),
+            // Web DOM has no synchronous native rasterize path wired up,
+            // so the web client can't serve a real-surface capture; the
+            // server keeps using the wgpu replay for this session.
+            supports_screenshot: false,
         };
         if let Ok(bytes) = serde_json::to_vec(&hello) {
             // Send as binary to match the dev server's send format.
@@ -556,6 +560,13 @@ where
         }
         DevToApp::ThemeChanged { .. } => {
             // Theme application is a follow-up.
+        }
+        DevToApp::CaptureScreenshot { request_id } => {
+            // Web can't rasterize the DOM natively, so this replies with
+            // an unsupported error (the WebBackend's default
+            // `capture_screenshot`) rather than leaving the server's
+            // verb blocked until timeout — it then falls back to replay.
+            wire.borrow().capture_screenshot_and_reply(request_id);
         }
     }
 }

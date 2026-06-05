@@ -34,7 +34,7 @@
 //! keeping `media-stream` thin.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -64,6 +64,12 @@ struct Shared {
     /// Bumped on every `publish`; a display consumer compares it to skip work
     /// when no new frame has arrived.
     generation: AtomicU64,
+    /// Live count of consumers that want the producer to keep publishing native
+    /// surfaces (held via a [`NativeTap`] guard). A GPU producer (the canvas)
+    /// reads this through [`SurfaceWriter::wants_surface`] to skip the per-frame
+    /// IOSurface blit + publish when nobody is recording — the native analogue
+    /// of [`FrameWriter::wants_cpu_frames`](crate::FrameWriter::wants_cpu_frames).
+    native_taps: AtomicUsize,
 }
 
 /// Producer half (capture queue, `Send`): publishes the latest captured
@@ -87,6 +93,7 @@ pub fn surface_channel() -> (SurfaceSource, SurfaceWriter) {
     let shared = Arc::new(Shared {
         slot: Mutex::new(SurfaceSlot { surface: 0 }),
         generation: AtomicU64::new(0),
+        native_taps: AtomicUsize::new(0),
     });
     (
         SurfaceSource {
@@ -97,6 +104,13 @@ pub fn surface_channel() -> (SurfaceSource, SurfaceWriter) {
 }
 
 impl SurfaceWriter {
+    /// Whether any consumer currently wants native surfaces (holds a
+    /// [`NativeTap`]). A GPU producer uses this to gate the per-frame IOSurface
+    /// blit + publish: do the GPU capture work only while something records.
+    pub fn wants_surface(&self) -> bool {
+        self.shared.native_taps.load(Ordering::Acquire) > 0
+    }
+
     /// Publish a freshly captured `IOSurface` (its raw `IOSurfaceRef` pointer).
     /// Retains it for the slot and releases the previously held surface. A null
     /// pointer is ignored. Safe to call from the capture queue.
@@ -154,6 +168,27 @@ impl SurfaceSource {
         if !surface.is_null() {
             CFRelease(surface);
         }
+    }
+
+    /// Register interest in native surfaces. While the returned [`NativeTap`] is
+    /// alive, [`SurfaceWriter::wants_surface`] is true, so the producer publishes
+    /// each frame's surface. A recorder holds this for the recording's lifetime;
+    /// dropping it lets a GPU producer stop the per-frame IOSurface work.
+    pub fn register_tap(&self) -> NativeTap {
+        self.shared.native_taps.fetch_add(1, Ordering::AcqRel);
+        NativeTap { shared: self.shared.clone() }
+    }
+}
+
+/// A consumer's "keep publishing native surfaces" guard (see
+/// [`SurfaceSource::register_tap`]). Decrements the live tap count on drop.
+pub struct NativeTap {
+    shared: Arc<Shared>,
+}
+
+impl Drop for NativeTap {
+    fn drop(&mut self) {
+        self.shared.native_taps.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

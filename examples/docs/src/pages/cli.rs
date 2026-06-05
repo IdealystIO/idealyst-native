@@ -54,14 +54,6 @@ pub fn page() -> Element {
                         idealyst run android".to_string(),
             )
 
-            SectionWithCode(
-                title = "Doctor".to_string(),
-                body = "Diagnose your local toolchain — what's installed, what's missing, \
-                        what's the wrong version. Run this first whenever a build fails for \
-                        tooling reasons.".to_string(),
-                code = "idealyst doctor".to_string(),
-            )
-
             Card {
                 Typography(content = "Other commands".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(

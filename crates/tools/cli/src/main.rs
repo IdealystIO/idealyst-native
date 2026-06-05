@@ -52,7 +52,7 @@ enum Command {
     Check(cmd::check::Args),
     /// Remove build artifacts.
     Clean(cmd::clean::Args),
-    /// Diagnose the local toolchain (Rust targets, Xcode, Android NDK).
+    /// Diagnose the local toolchain (Rust, web, iOS, Android; Roku pending).
     Doctor(cmd::doctor::Args),
     /// Regenerate icons, splash, and other derived assets.
     Sync(cmd::sync::Args),

@@ -33,11 +33,24 @@ use crate::imp::MacosNode;
 /// them in once Taffy has assigned a frame.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct AnimatedState {
+    // STATIC transform components — written by `apply_static_transform` from
+    // `style.transform`. Reset to identity on every restyle.
     pub(crate) translate_x: f32,
     pub(crate) translate_y: f32,
     pub(crate) scale_x: f32,
     pub(crate) scale_y: f32,
     pub(crate) rotate_z: f32,
+    // ANIMATED transform components — written by `set_animated_f32` from a bound
+    // `AnimatedValue`. Kept SEPARATE from the static slots so a restyle (e.g. a
+    // theme swap re-running `apply_style`) doesn't clobber an in-flight
+    // animation: the Switch thumb's `TranslateX` survived as a static slot until
+    // a theme toggle reset it to 0 and slammed the thumb back to "off".
+    // `rebuild_transform` composes static ∘ animated.
+    pub(crate) anim_translate_x: f32,
+    pub(crate) anim_translate_y: f32,
+    pub(crate) anim_scale_x: f32,
+    pub(crate) anim_scale_y: f32,
+    pub(crate) anim_rotate_z: f32,
     /// Pending percent translateX in 0..=100 units. `None` if no
     /// percent translate is set; the layout pass resolves it
     /// against the view's width on each frame.
@@ -53,6 +66,11 @@ impl AnimatedState {
             scale_x: 1.0,
             scale_y: 1.0,
             rotate_z: 0.0,
+            anim_translate_x: 0.0,
+            anim_translate_y: 0.0,
+            anim_scale_x: 1.0,
+            anim_scale_y: 1.0,
+            anim_rotate_z: 0.0,
             static_translate_pct_x: None,
             static_translate_pct_y: None,
         }
@@ -190,30 +208,32 @@ pub(crate) fn set_animated_f32(
             // CALayer-independent — works even for layer-less NSViews.
             let _: () = unsafe { msg_send![view, setAlphaValue: value as f64] };
         }
+        // Animated transforms write the `anim_*` slots, NOT the static ones, so
+        // a concurrent restyle (which resets the static slots) can't wipe them.
         AnimProp::TranslateX => {
-            state.borrow_mut().translate_x = value;
+            state.borrow_mut().anim_translate_x = value;
             rebuild_transform(view, &state.borrow());
         }
         AnimProp::TranslateY => {
-            state.borrow_mut().translate_y = value;
+            state.borrow_mut().anim_translate_y = value;
             rebuild_transform(view, &state.borrow());
         }
         AnimProp::Scale => {
             let mut s = state.borrow_mut();
-            s.scale_x = value;
-            s.scale_y = value;
+            s.anim_scale_x = value;
+            s.anim_scale_y = value;
             rebuild_transform(view, &s);
         }
         AnimProp::ScaleX => {
-            state.borrow_mut().scale_x = value;
+            state.borrow_mut().anim_scale_x = value;
             rebuild_transform(view, &state.borrow());
         }
         AnimProp::ScaleY => {
-            state.borrow_mut().scale_y = value;
+            state.borrow_mut().anim_scale_y = value;
             rebuild_transform(view, &state.borrow());
         }
         AnimProp::RotateZ => {
-            state.borrow_mut().rotate_z = value;
+            state.borrow_mut().anim_rotate_z = value;
             rebuild_transform(view, &state.borrow());
         }
         AnimProp::ZIndex => {
@@ -318,18 +338,22 @@ fn rebuild_transform(view: &NSView, state: &AnimatedState) {
     let cx = w / 2.0;
     let cy = h / 2.0;
 
-    let tx = state.translate_x as f64;
-    let ty = state.translate_y as f64;
+    // Compose static ∘ animated: translates add, scales multiply, rotations
+    // add. So a view with no static transform but an animated `TranslateX`
+    // (the Switch thumb) keeps that translate across a restyle, and a static
+    // transform + an animated one combine rather than overwrite.
+    let tx = (state.translate_x + state.anim_translate_x) as f64;
+    let ty = (state.translate_y + state.anim_translate_y) as f64;
 
     // 2x2 linear part: rotate then scale. Mirrors the matrix
     // `build_transform_matrix` produced — keeping the derivation
     // explicit here so the center-pivot compensation right below
     // can refer to the entries by name.
-    let rz_rad = (state.rotate_z as f64).to_radians();
+    let rz_rad = ((state.rotate_z + state.anim_rotate_z) as f64).to_radians();
     let cos = rz_rad.cos();
     let sin = rz_rad.sin();
-    let sx = state.scale_x as f64;
-    let sy = state.scale_y as f64;
+    let sx = (state.scale_x * state.anim_scale_x) as f64;
+    let sy = (state.scale_y * state.anim_scale_y) as f64;
     let a = cos * sx; //  column 1, row 1 — x-basis x
     let b = sin * sx; //  column 1, row 2 — x-basis y
     let c = -sin * sy; // column 2, row 1 — y-basis x

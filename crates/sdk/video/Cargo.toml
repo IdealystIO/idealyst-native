@@ -63,15 +63,20 @@ objc2-ui-kit = { version = "0.2", features = [
     "UIResponder",
 ] }
 
-# macOS (AppKit): live `MediaStream` display only — a plain layer-backed
-# NSView whose root CALayer's `contents` is updated with each frame's
-# CGImage. The AVPlayer/URL path is not ported (the camera is a Stream, not
-# a URL). No `AVFoundation`/`block2` needed for this path.
+# macOS (AppKit): both the live `MediaStream` display path (layer-backed NSView,
+# CALayer `contents` ← per-frame CGImage / IOSurface) AND the AVPlayer/URL path
+# (an `AVPlayerLayer` sublayer), mirroring iOS — so a recorded-file preview
+# (`MediaContent::Url`) plays. `block2` drives the loop-playback notification
+# observer; `AVFoundation` is force-linked in `macos.rs`.
 [target.'cfg(target_os = "macos")'.dependencies]
 backend-macos = { workspace = true }
+block2 = "0.5"
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = [
     "NSString",
+    "NSURL",
+    "NSNotification",
+    "NSGeometry",
 ] }
 objc2-app-kit = { version = "0.2", features = [
     "NSView",

@@ -31,8 +31,9 @@ use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
-use objc2_app_kit::{NSEvent, NSView};
-use objc2_foundation::{CGPoint, MainThreadMarker};
+use objc2_app_kit::{NSEvent, NSTextField, NSTextFieldCell, NSView};
+use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSString};
+use std::cell::Cell as StdCell;
 
 use runtime_core::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
 
@@ -197,3 +198,168 @@ impl FlippedView {
         response.consumed || self.ivars().active.get()
     }
 }
+
+declare_class!(
+    /// Non-interactive display label — the framework's `text()` primitive.
+    ///
+    /// Overrides `hitTest:` to return `nil` so mouse events (clicks AND
+    /// scroll-wheel) pass THROUGH the text to whatever is behind/under it: a
+    /// `Link` / `Pressable` parent that owns the tap, or an enclosing
+    /// `NSScrollView` that owns the scroll. A plain `NSTextField` label sits in
+    /// the hit-test path and `NSControl`'s mouse tracking SWALLOWS the click
+    /// (and the scroll wheel) on a non-editable/non-selectable cell — so a
+    /// button whose face is mostly its text never fired, and a page whose body
+    /// is mostly text wouldn't scroll when the pointer was over the text. This
+    /// is the macOS analogue of iOS labels' `userInteractionEnabled = false`.
+    pub struct IdealystLabel;
+
+    unsafe impl ClassType for IdealystLabel {
+        type Super = NSTextField;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystLabel";
+    }
+
+    impl DeclaredClass for IdealystLabel {
+        type Ivars = ();
+    }
+
+    unsafe impl IdealystLabel {
+        #[method_id(hitTest:)]
+        fn hit_test(&self, _point: CGPoint) -> Option<Retained<NSView>> {
+            // Always decline: a display label must not capture mouse events.
+            // AppKit then resolves the interactive view behind it.
+            None
+        }
+    }
+);
+
+impl IdealystLabel {
+    /// Create a hit-transparent display label configured like
+    /// `+[NSTextField labelWithString:]` (non-editable, non-selectable, no
+    /// bezel/border, transparent background). `create_text` applies the cell's
+    /// wrap config + font/color styling on top, exactly as it did for the
+    /// stock label.
+    pub(crate) fn label_with_string(mtm: MainThreadMarker, s: &NSString) -> Retained<NSTextField> {
+        let this: Retained<Self> =
+            unsafe { msg_send_id![mtm.alloc::<Self>(), initWithFrame: CGRect::default()] };
+        // Swap in an `IdealystLabelCell` so author `padding_*` on a `text()`
+        // node insets the drawn glyphs (see that type). Must happen BEFORE the
+        // configuration below so `setStringValue:` etc. land on the new cell.
+        let cell = IdealystLabelCell::new(mtm);
+        unsafe {
+            let _: () = msg_send![&this, setCell: &*cell];
+            let _: () = msg_send![&this, setStringValue: s];
+            let _: () = msg_send![&this, setEditable: false];
+            let _: () = msg_send![&this, setSelectable: false];
+            let _: () = msg_send![&this, setBordered: false];
+            let _: () = msg_send![&this, setBezeled: false];
+            let _: () = msg_send![&this, setDrawsBackground: false];
+        }
+        // IdealystLabel IS-A NSTextField; expose it as the super type the rest
+        // of the backend (measure_fn, MacosNode::Label) already speaks.
+        Retained::into_super(this)
+    }
+}
+
+/// Per-side text inset in points (top, left, bottom, right).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LabelInsets {
+    pub top: f64,
+    pub left: f64,
+    pub bottom: f64,
+    pub right: f64,
+}
+
+pub(crate) struct CellIvars {
+    insets: StdCell<LabelInsets>,
+}
+
+declare_class!(
+    /// `NSTextFieldCell` subclass that draws its text inset by author
+    /// `padding_*`.
+    ///
+    /// The framework's `StyleRules.padding_*` is applied by Taffy as the text
+    /// node's padding rect, which grows the label's outer frame but does NOT
+    /// push the glyphs in — `NSTextFieldCell` paints at `cellFrame.origin`, so
+    /// `text(style = padding: 12)` rendered its glyphs flush in a corner with the
+    /// padding space dumped on the opposite sides. Overriding
+    /// `drawInteriorWithFrame:inView:` to inset the frame by the same padding
+    /// puts the glyphs in the content rect — the macOS analogue of iOS's
+    /// `IdealystLabel.drawText(in:)` inset.
+    ///
+    /// We intentionally do NOT touch `cellSizeForBounds:`: Taffy keeps the
+    /// padding on the node (reserving the outer size) and hands the measure the
+    /// content-box width, so the glyphs wrap to the same width they're drawn in.
+    /// Inset only the drawing — sizing already accounts for the padding.
+    pub(crate) struct IdealystLabelCell;
+
+    unsafe impl ClassType for IdealystLabelCell {
+        type Super = NSTextFieldCell;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystLabelCell";
+    }
+
+    impl DeclaredClass for IdealystLabelCell {
+        type Ivars = CellIvars;
+    }
+
+    unsafe impl IdealystLabelCell {
+        #[method(drawInteriorWithFrame:inView:)]
+        fn draw_interior(&self, frame: CGRect, view: &NSView) {
+            let i = self.ivars().insets.get();
+            let inset = CGRect {
+                origin: CGPoint {
+                    x: frame.origin.x + i.left,
+                    y: frame.origin.y + i.top,
+                },
+                size: CGSize {
+                    width: (frame.size.width - i.left - i.right).max(0.0),
+                    height: (frame.size.height - i.top - i.bottom).max(0.0),
+                },
+            };
+            let _: () = unsafe { msg_send![super(self), drawInteriorWithFrame: inset, inView: view] };
+        }
+    }
+);
+
+impl IdealystLabelCell {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(CellIvars {
+            insets: StdCell::new(LabelInsets::default()),
+        });
+        let empty = NSString::from_str("");
+        unsafe { msg_send_id![super(this), initTextCell: &*empty] }
+    }
+
+    /// Update the per-side text insets. Called by `apply_style` from the text
+    /// node's `padding_*`. Repaints via the control view so the change shows
+    /// without a relayout (`setNeedsDisplay:` is an `NSView` method — an
+    /// `NSCell` redraws through its `controlView`).
+    pub(crate) fn set_insets(&self, insets: LabelInsets) {
+        self.ivars().insets.set(insets);
+        let cv: *mut NSView = unsafe { msg_send![self, controlView] };
+        if !cv.is_null() {
+            let _: () = unsafe { msg_send![cv, setNeedsDisplay: true] };
+        }
+    }
+}
+
+/// Set per-side text insets on `label` if its cell is an [`IdealystLabelCell`].
+/// `apply_style` calls this for every `MacosNode::Label` so author `padding_*`
+/// on a `text()` node insets the glyphs. No-op for any other cell class.
+pub(crate) fn set_label_insets(label: &NSView, insets: LabelInsets) {
+    let cell: *mut NSTextFieldCell = unsafe { msg_send![label, cell] };
+    if cell.is_null() {
+        return;
+    }
+    let cls = IdealystLabelCell::class();
+    let is_ours: bool = unsafe { msg_send![cell, isKindOfClass: cls] };
+    if !is_ours {
+        return;
+    }
+    // SAFETY: just confirmed the dynamic class is `IdealystLabelCell`.
+    let cell: &IdealystLabelCell = unsafe { &*(cell as *const IdealystLabelCell) };
+    cell.set_insets(insets);
+}
+

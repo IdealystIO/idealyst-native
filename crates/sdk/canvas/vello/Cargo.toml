@@ -21,17 +21,44 @@ license.workspace = true
 [dependencies]
 runtime-core = { workspace = true }
 canvas-core = { workspace = true }
+# Self-capture: read rendered frames back into the app's `MediaStream` via the
+# `CanvasProps.capture` `FrameWriter`. Thin, GPU-free currency crate.
+media-stream = { workspace = true }
 
-# vello/wgpu's Metal backend depends on `objc2-foundation 0.3`, which
-# collides (via the objc2 sys crates' `links` keys) with the framework's
-# Apple backends on `objc2-foundation 0.2` — the two cannot coexist on an
-# Apple target. So vello is gated to NON-APPLE: Android (Vulkan), desktop
-# Linux/Windows (Vulkan/DX). On iOS/macOS `register` is a documented no-op
-# (use `canvas-native` there). Web is excluded too (WebGL-only wgpu; web has
-# Canvas2D via `canvas-native`). The benchmark runs vello-vs-native on
-# Android. Same wgpu major (29) the gpu-backend uses; vello 0.9 pins it too.
-[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios"), not(target_os = "macos")))'.dependencies]
+# vello/wgpu's Metal backend pulls `objc2-foundation 0.3` (the objc2 0.6-gen),
+# the framework's Apple backends use `objc2-foundation 0.2` (0.5-gen). These
+# COEXIST in one binary — verified by spike: vello compiles AND links into a
+# macOS `.app` alongside `backend-macos`, because none of the objc2 framework
+# crates carry a `links` key (only the shared `objc-sys` does, with a versioned
+# name) and `canvas-vello` reaches the GPU via `raw-window-handle` (raw ptrs),
+# never crossing objc2 types with the backend. So vello is enabled on macOS
+# (GPU canvas via Metal). iOS stays on `canvas-native` for now (retest later).
+# Web is excluded (WebGL-only wgpu; web has Canvas2D via `canvas-native`). Same
+# wgpu major (29) the gpu-backend uses; vello 0.9 pins it too.
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))'.dependencies]
 vello = "0.9"
 wgpu = "29"
 raw-window-handle = "0.6"
 pollster = "0.4"
+
+# Zero-copy GPU capture on macOS: render vello into an IOSurface-backed Metal
+# texture (imported into the canvas wgpu device via `wgpu::Device::as_hal` +
+# `create_texture_from_hal`) and publish that IOSurface as the stream's native
+# source — no CPU readback, no swizzle. These are the SAME objc2 0.6-gen crates
+# wgpu-hal 29's Metal backend already uses (so the `ProtocolObject<dyn MTL*>`
+# types are ABI-identical with what `as_hal` hands back), and they coexist with
+# backend-macos's 0.5-gen (see the objc2-coexistence note above).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-metal = { version = "0.3", features = [
+    "MTLDevice",
+    "MTLTexture",
+    "MTLPixelFormat",
+    "MTLResource",
+    "MTLAllocation",
+    # Enables `newTextureWithDescriptor:iosurface:plane:` on MTLDevice.
+    "objc2-io-surface",
+] }
+objc2-io-surface = { version = "0.3", features = ["IOSurfaceRef"] }
+objc2-foundation = { version = "0.3", features = ["NSDictionary", "NSValue"] }
+objc2-core-foundation = { version = "0.3", features = ["CFCGTypes"] }

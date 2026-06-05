@@ -782,8 +782,7 @@ fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String
 
 fn parse_query(args: &serde_json::Value) -> Result<Query, String> {
     if let Some(id) = args["test_id"].as_str() {
-        let leaked: &'static str = Box::leak(id.to_string().into_boxed_str());
-        Ok(Query::TestId(leaked))
+        Ok(Query::TestId(id.to_string()))
     } else if let Some(label) = args["label"].as_str() {
         Ok(Query::Label(label.to_string()))
     } else if let Some(sub) = args["label_contains"].as_str() {

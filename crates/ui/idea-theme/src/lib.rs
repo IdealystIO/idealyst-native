@@ -40,7 +40,7 @@ pub mod theme;
 // callers can reach `install_theme`, `set_theme`, `ThemeTokens`, and
 // the token-entry primitives without an extra `theme_runtime::` path.
 pub use theme_runtime::{
-    active_theme, install_theme, install_themes, set_theme, ThemeTokens, TokenEntry, TokenValue,
+    active_theme, active_theme_untracked, install_theme, install_themes, set_theme, ThemeTokens, TokenEntry, TokenValue,
     Tokenized,
 };
 

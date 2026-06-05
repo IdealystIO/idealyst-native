@@ -362,6 +362,9 @@ declare_class!(
                     cb(OnReadyEvent {
                         surface,
                         size: new_size,
+                        // iOS rides canvas-native (no vello yet); 1.0 keeps the
+                        // physical-size contract until iOS GPU canvas is wired.
+                        scale: 1.0,
                     });
                 }
                 self.ivars().ready_fired.set(true);
@@ -374,7 +377,7 @@ declare_class!(
             // Bounds changed after on_ready — fire on_resize.
             let mut handler = self.ivars().on_resize.borrow_mut();
             if let Some(cb) = handler.as_mut() {
-                cb(OnResizeEvent { size: new_size });
+                cb(OnResizeEvent { size: new_size, scale: 1.0 });
             }
             self.ivars().last_size.set(new_size);
         }

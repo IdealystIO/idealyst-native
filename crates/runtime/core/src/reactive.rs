@@ -758,13 +758,12 @@ where
     });
 
     // The effect must outlive this function. Inside an active scope,
-    // the scope already adopted the slot (`e.owns == false`) and
-    // forgetting is a no-op. Outside any scope, the local binding's
-    // Drop would free the slot — `forget` prevents that, leaving the
-    // memo's update logic live for the lifetime of the thread, the
-    // same way a bare `Signal::new` outside a scope is never reclaimed
+    // the scope already adopted the slot (`e.owns == false`) and this is
+    // a no-op. Outside any scope, the local binding's Drop would free the
+    // slot — `persist` pins it for the lifetime of the thread instead,
+    // the same way a bare `Signal::new` outside a scope is never reclaimed
     // (the returned handle is `Copy` with no `Drop`).
-    std::mem::forget(e);
+    e.persist();
 
     signal
 }

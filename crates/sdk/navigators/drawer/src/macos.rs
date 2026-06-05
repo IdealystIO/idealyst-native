@@ -19,7 +19,10 @@
 //! `with_global_backend` for the microtask re-entry. The handler
 //! is portable across SDK refactors and stays small.
 
-use crate::{DrawerCmd, DrawerPresentation, DrawerScreenOptions, DrawerSide, DrawerSlotProps, MountPolicy};
+use crate::{
+    DrawerCmd, DrawerPresentation, DrawerScreenOptions, DrawerSide, DrawerSlotProps, LeadingIntent,
+    MountPolicy, SlotProps, TrailingIntent,
+};
 use backend_macos::{with_global_backend, MacosBackend, MacosNode};
 use runtime_core::primitives::navigator::{
     AmbientNavGuard, NavCommand, NavigatorHandler, NavigatorHost, NavigatorOps,
@@ -175,11 +178,18 @@ impl NavigatorHandler<MacosBackend> for MacosDrawerHandler {
         });
         control.install_link_activator(select_activator);
 
-        // Materialise the sidebar Element via the SDK's builder.
-        // Must run outside the outer backend borrow window per the
-        // host docs — defer via `schedule_microtask`.
-        let sidebar_slot = presentation.sidebar.borrow().clone();
-        if let Some(sidebar_builder) = sidebar_slot {
+        // Materialise the sidebar Element via the SDK's builder. Must run
+        // outside the outer backend borrow window per the host docs — defer
+        // via `schedule_microtask`.
+        //
+        // Two API surfaces (mirrors iOS / web / Android): prefer the new
+        // `leading_slot` (SlotProps-based, set via `leading_with` — the
+        // tutorial / website path) over the legacy `sidebar` closure
+        // (DrawerSlotProps). Without the leading_slot branch the macOS sidebar
+        // was never built — apps using `.leading_with(...)` got a blank panel.
+        let leading_slot = presentation.leading_slot.borrow_mut().take();
+        let legacy_sidebar = presentation.sidebar.borrow().clone();
+        if leading_slot.is_some() || legacy_sidebar.is_some() {
             let build_node = host.build_node.clone();
             let control_for_sidebar = control.clone();
             let nav_state_for_sidebar = nav_state.clone();
@@ -196,31 +206,65 @@ impl NavigatorHandler<MacosBackend> for MacosDrawerHandler {
                         });
                     })
                 };
-                let on_close: Rc<dyn Fn()> = {
-                    let control = control_for_sidebar.clone();
-                    Rc::new(move || {
-                        control.dispatch(NavCommand::Custom(Rc::new(
-                            DrawerCmd::Close,
-                        )));
-                    })
-                };
-                let props = DrawerSlotProps {
-                    active_route: nav_state_for_sidebar.active_route,
-                    active_path: nav_state_for_sidebar.active_path.clone(),
-                    depth: nav_state_for_sidebar.depth,
-                    can_go_back: nav_state_for_sidebar.can_go_back,
-                    is_open,
-                    on_select,
-                    on_close,
-                };
-                // Push the navigator onto the ambient stack so
-                // `Link` primitives inside the sidebar capture this
-                // navigator as their dispatch target — without it,
-                // `ambient_navigator()` returns `None` and every
-                // sidebar link's on_activate silently no-ops.
+                // Push the navigator onto the ambient stack so `Link`
+                // primitives inside the sidebar capture this navigator as their
+                // dispatch target — without it, `ambient_navigator()` returns
+                // `None` and every sidebar link's on_activate silently no-ops.
                 // See `[[project_drawer_sidebar_ambient_nav]]`.
                 let _guard = AmbientNavGuard::push(control_for_sidebar.clone());
-                let prim = sidebar_builder(props);
+                let prim = if let Some(builder) = leading_slot {
+                    let open_drawer: Rc<dyn Fn()> = {
+                        let c = control_for_sidebar.clone();
+                        Rc::new(move || {
+                            c.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Open)));
+                        })
+                    };
+                    let close_drawer: Rc<dyn Fn()> = {
+                        let c = control_for_sidebar.clone();
+                        Rc::new(move || {
+                            c.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Close)));
+                        })
+                    };
+                    // The drawer has no stack, so `pop` is a no-op (matches the
+                    // semantics the SlotProps contract documents for navigators
+                    // without a stack).
+                    let pop: Rc<dyn Fn()> = Rc::new(|| {});
+                    let props = SlotProps {
+                        active_route: nav_state_for_sidebar.active_route,
+                        active_path: nav_state_for_sidebar.active_path.clone(),
+                        depth: nav_state_for_sidebar.depth,
+                        can_go_back: nav_state_for_sidebar.can_go_back,
+                        is_open,
+                        leading_intent: runtime_core::signal!(LeadingIntent::OpenDrawer),
+                        trailing_intent: runtime_core::signal!(TrailingIntent::None),
+                        screen_title: runtime_core::signal!(String::new()),
+                        on_select,
+                        open_drawer,
+                        close_drawer,
+                        pop,
+                        scroll: None,
+                    };
+                    builder(props)
+                } else if let Some(sidebar_builder) = legacy_sidebar {
+                    let on_close: Rc<dyn Fn()> = {
+                        let control = control_for_sidebar.clone();
+                        Rc::new(move || {
+                            control.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Close)));
+                        })
+                    };
+                    let props = DrawerSlotProps {
+                        active_route: nav_state_for_sidebar.active_route,
+                        active_path: nav_state_for_sidebar.active_path.clone(),
+                        depth: nav_state_for_sidebar.depth,
+                        can_go_back: nav_state_for_sidebar.can_go_back,
+                        is_open,
+                        on_select,
+                        on_close,
+                    };
+                    sidebar_builder(props)
+                } else {
+                    return;
+                };
                 let sidebar_node_materialised = build_node(prim);
                 with_global_backend(|b| {
                     let mut sb = sidebar_node.clone();
@@ -308,6 +352,14 @@ impl NavigatorHandler<MacosBackend> for MacosDrawerHandler {
                         b.clear_children(&outlet_node);
                     }
                     b.insert(&mut outlet_node, incoming_node.clone());
+                    // Lay out the incoming screen SYNCHRONOUSLY before returning
+                    // to the event loop. `insert` only schedules a coalesced
+                    // (microtask-deferred) pass, so without this the new screen
+                    // paints once unsized — the visible navigation delay/flash.
+                    // We already hold the backend borrow here, so a direct
+                    // synchronous pass is both correct and cheaper than waiting a
+                    // runloop turn.
+                    b.run_layout_pass_now();
                 });
                 if let Some(prev) = prev {
                     match prev.effective_policy {

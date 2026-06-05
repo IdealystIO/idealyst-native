@@ -21,6 +21,23 @@ use crate::{
 };
 
 // ---------------------------------------------------------------------------
+// Screenshot
+// ---------------------------------------------------------------------------
+
+/// A captured frame of the backend's real rendered surface, returned by
+/// [`Backend::capture_screenshot`]. `png` is a complete PNG file; the
+/// backend owns the encode so each platform uses its native encoder
+/// (AppKit `NSBitmapImageRep`, UIKit `UIImagePNGRepresentation`, Android
+/// `Bitmap.compress`). `width`/`height` are the PNG's pixel dimensions
+/// (post device-scale), carried alongside so the bridge can report them
+/// without re-decoding.
+pub struct Screenshot {
+    pub png: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+// ---------------------------------------------------------------------------
 // VirtualizerCallbacks
 // ---------------------------------------------------------------------------
 
@@ -1735,6 +1752,35 @@ pub trait Backend {
     #[allow(unused_variables)]
     fn absolute_frame(&self, node: &Self::Node) -> Option<primitives::portal::ViewportRect> {
         None
+    }
+
+    /// Whether this backend can capture its rendered surface via
+    /// [`capture_screenshot`](Backend::capture_screenshot). Default
+    /// `false`. The Robot bridge only registers the live `"screenshot"`
+    /// verb when this returns `true`, so a backend that can't snapshot
+    /// natively (and a `MockBackend`) leaves the headless wgpu-replay
+    /// `"screenshot"` verb in place instead of clobbering it.
+    fn supports_screenshot(&self) -> bool {
+        false
+    }
+
+    /// Capture the backend's **real rendered surface** as PNG bytes — a
+    /// debug utility that snapshots what the device is actually drawing
+    /// (native widgets, fonts, the live view hierarchy), distinct from
+    /// the headless wgpu re-render of the scene model.
+    ///
+    /// The result is delivered through `done` rather than returned so
+    /// that asynchronous backends (a future web/DOM rasterizer) fit the
+    /// same signature; the native backends (AppKit / UIKit / Android)
+    /// capture synchronously on the UI thread and invoke `done` inline
+    /// before returning. Callers that need the value synchronously (the
+    /// Robot bridge handler) stash it from the callback.
+    ///
+    /// Default: report unsupported. Override alongside
+    /// [`supports_screenshot`](Backend::supports_screenshot).
+    #[allow(unused_variables)]
+    fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<Screenshot, String>)>) {
+        done(Err("screenshot capture is not supported on this backend".into()));
     }
 
     /// Wires the backend's native interaction events (hover, press,

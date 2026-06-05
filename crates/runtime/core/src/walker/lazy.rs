@@ -27,8 +27,35 @@ use crate::element::Element;
 use crate::primitives::lazy::{LazyLoader, LazyState};
 use crate::reactive;
 use crate::sources::StyleSource;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+
+/// Dropped when the surrounding scope tears down (it is captured by the
+/// `_cleanup_effect`, whose arena slot the surrounding scope owns). Its
+/// `Drop` cancels any in-flight load and tears the chunk scope down at the
+/// *right moment* — parent teardown — instead of whenever a still-pending
+/// load happens to resolve.
+///
+/// Without the cancel flag, a load that resolves *after* the parent
+/// unmounted would call `build_inner` against an orphaned scope and
+/// `insert` into a detached container (stale-mount / use-after-teardown).
+/// The async continuation checks `cancelled` after its await and bails.
+struct LazyCancelGuard {
+    cancelled: Rc<Cell<bool>>,
+    chunk_scope: Rc<RefCell<Option<Box<reactive::Scope>>>>,
+}
+
+impl Drop for LazyCancelGuard {
+    fn drop(&mut self) {
+        // Signal in-flight loads to abandon their post-await work.
+        self.cancelled.set(true);
+        // Drop the chunk's reactive scope now so its cleanup effects (e.g.
+        // `release_graphics`) run at teardown rather than at late resolution.
+        // Taking the `Option` also makes the future's `as_mut()` fail closed.
+        let scope = self.chunk_scope.borrow_mut().take();
+        drop(scope);
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build<B: Backend + 'static>(
@@ -89,6 +116,11 @@ pub(super) fn build<B: Backend + 'static>(
     let chunk_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> =
         Rc::new(RefCell::new(Some(Box::new(reactive::Scope::new()))));
 
+    // Set when the surrounding scope tears down (see `LazyCancelGuard`).
+    // The async continuation reads it after its await to abandon a load
+    // that resolved after the parent unmounted.
+    let cancelled: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+
     // Drive the loader inside an async task. The closure captures
     // the container node, the chunk slot, and the state callback.
     // On native the future resolves on first poll; on wasm the
@@ -117,16 +149,25 @@ pub(super) fn build<B: Backend + 'static>(
         let container = n.clone();
         let chunk_slot = chunk_node.clone();
         let chunk_scope_for_async = chunk_scope.clone();
+        let cancelled_for_async = cancelled.clone();
         let state_cb = on_state.clone();
         crate::driver::spawn_async(async move {
             let chunk_primitive = (loader)().await;
+            // The surrounding scope may have torn down while we awaited the
+            // load (web: a real async chunk fetch). If so, the chunk scope is
+            // gone and the container is detached — building/inserting now
+            // would mount into a dead tree. Bail before touching either.
+            if cancelled_for_async.get() {
+                return;
+            }
             let child_node = {
                 let mut scope_borrow = chunk_scope_for_async.borrow_mut();
-                let scope = scope_borrow
-                    .as_mut()
-                    .expect("chunk scope dropped before chunk loaded")
-                    .as_mut();
-                reactive::with_scope(scope, || {
+                // Fail closed if the scope was taken out from under us by a
+                // teardown that raced the cancel check above.
+                let Some(scope) = scope_borrow.as_mut() else {
+                    return;
+                };
+                reactive::with_scope(scope.as_mut(), || {
                     super::build_inner(&backend_for_async, chunk_primitive)
                 })
             };
@@ -151,21 +192,59 @@ pub(super) fn build<B: Backend + 'static>(
     {
         // Suppress unused warnings; the loader is dropped (chunk
         // never loads) and Rendered is never fired.
-        let _ = (loader, &chunk_node, &chunk_scope);
+        let _ = (loader, &chunk_node, &chunk_scope, &cancelled);
     }
 
-    // Hold the chunk_node slot + chunk's reactive scope for
-    // cleanup-on-surrounding-scope-drop. When the surrounding scope
-    // drops, this Effect drops, its closure drops, dropping both
-    // captured Rcs. The chunk_scope's last Rc holder is this
-    // closure (the spawn_async closure dropped its clone after
-    // mount), so dropping it frees the chunk's `Scope`, which frees
-    // every Effect / Signal / cleanup the chunk registered — that's
-    // where `release_graphics` correctly fires.
+    // Hold the chunk_node slot + a cancel guard for
+    // cleanup-on-surrounding-scope-drop. When the surrounding scope drops,
+    // this Effect's slot is freed, its closure drops, and with it the
+    // `LazyCancelGuard` — which cancels any in-flight load and tears the
+    // chunk's `Scope` down (running every cleanup the chunk registered,
+    // e.g. `release_graphics`). Dropping `chunk_node` releases the chunk's
+    // backend node through the standard path.
+    let cancel_guard = LazyCancelGuard { cancelled, chunk_scope };
     let _cleanup_effect = crate::reactive::Effect::new(move || {
         let _ = &chunk_node;
-        let _ = &chunk_scope;
+        let _ = &cancel_guard;
     });
 
     n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: when the surrounding scope tears down, the cancel guard
+    /// (dropped with the cleanup effect's closure) must both flip the
+    /// cancellation flag and drop the chunk scope. The async continuation
+    /// reads that flag after its await to abandon a late-resolving load
+    /// instead of building into the orphaned scope / detached container.
+    ///
+    /// A full end-to-end async-teardown test would need a backend, an
+    /// installed async executor, and a manually-resolved future to
+    /// deterministically interleave teardown with resolution — none of
+    /// which are reachable at this layer. This exercises the exact drop
+    /// mechanism the fix relies on.
+    #[test]
+    fn cancel_guard_cancels_and_drops_scope_on_teardown() {
+        let cancelled: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+        let chunk_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> =
+            Rc::new(RefCell::new(Some(Box::new(reactive::Scope::new()))));
+
+        {
+            let _guard = LazyCancelGuard {
+                cancelled: cancelled.clone(),
+                chunk_scope: chunk_scope.clone(),
+            };
+            assert!(!cancelled.get(), "not cancelled while the guard is live");
+            assert!(chunk_scope.borrow().is_some(), "chunk scope live while the guard is live");
+        }
+
+        assert!(cancelled.get(), "teardown must cancel any in-flight load");
+        assert!(
+            chunk_scope.borrow().is_none(),
+            "teardown must drop the chunk scope so its cleanups run at the right moment"
+        );
+    }
 }

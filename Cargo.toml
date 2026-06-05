@@ -168,6 +168,7 @@ members = [
     "examples/animation-test",
     "examples/welcome",
     "examples/stack-demo",
+    "examples/screenshot-demo",
     "examples/server-fn-demo",
     "examples/mic-demo",
     "examples/screen-recorder-demo",
