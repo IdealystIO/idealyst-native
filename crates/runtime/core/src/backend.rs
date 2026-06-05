@@ -323,6 +323,65 @@ pub fn install_url_opener(opener: Option<Rc<dyn Fn(&str)>>) {
     URL_OPENER.with(|cell| *cell.borrow_mut() = opener);
 }
 
+thread_local! {
+    static FULLSCREEN_SETTER: std::cell::RefCell<Option<Rc<dyn Fn(bool)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Enter (`true`) or leave (`false`) full-screen / immersive mode —
+/// the host's "maximize the canvas, hide system chrome" state.
+///
+/// The observable intent is uniform — give the app the whole display
+/// and get the platform's own chrome out of the way — but the
+/// mechanism is per-backend (rule 7: converge in behavior, diverge in
+/// mechanism):
+///
+/// - **Android** — immersive-sticky (hides the status + navigation
+///   bars) PLUS full-bounds `setSystemGestureExclusionRects` on the
+///   decor view. Immersive is the only state in which the system lifts
+///   its 200dp-per-edge cap on gesture exclusion; with the cap lifted,
+///   the exclusion hands left/right edge swipes to the app as ordinary
+///   touches instead of the system back gesture. Net on a full-screen
+///   canvas: an edge swipe becomes a stroke — no back-arrow indicator,
+///   no navigation, and no transient-bar flash (the swipe never reaches
+///   the reveal-bars path). The bottom home gesture stays mandatory.
+///   Pair with a navigator's `back_enabled(false)` as the commit-time
+///   safety net.
+/// - **iOS** — hides the status bar and the home indicator on the
+///   root view controller.
+/// - **macOS** — toggles native window full-screen.
+/// - **Web** — best-effort Fullscreen API (`requestFullscreen` /
+///   `exitFullscreen`); browsers require a user gesture, so a call
+///   outside one may be ignored.
+/// - **Terminal / other** — no system chrome to hide; no-op.
+///
+/// Routes to the setter the active backend installed during
+/// [`mount`](crate::mount). Before any mount — or on a backend with no
+/// full-screen concept — this is a no-op that logs once at debug
+/// level. It's an explicit, navigation-independent app control: any
+/// screen can enter or leave full-screen, drawing surface or not.
+pub fn set_fullscreen(enabled: bool) {
+    // Clone the Rc out before invoking so the setter can re-enter
+    // framework code without tripping a RefCell double-borrow.
+    let setter = FULLSCREEN_SETTER.with(|cell| cell.borrow().clone());
+    match setter {
+        Some(set) => set(enabled),
+        None => crate::logging::log(
+            crate::logging::LogLevel::Debug,
+            "set_fullscreen: no full-screen setter installed for the active \
+             backend; ignoring",
+        ),
+    }
+}
+
+/// Internal: invoked by `mount(...)` to stash the active backend's
+/// full-screen setter (from [`Backend::fullscreen_setter`]). Not part
+/// of the public API surface; backends override `fullscreen_setter`.
+#[doc(hidden)]
+pub fn install_fullscreen_setter(setter: Option<Rc<dyn Fn(bool)>>) {
+    FULLSCREEN_SETTER.with(|cell| *cell.borrow_mut() = setter);
+}
+
 // ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
@@ -374,6 +433,27 @@ pub trait Backend {
     /// navigation — see [`open_url`](crate::open_url) for why the two
     /// are separate.
     fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
+        None
+    }
+
+    /// Hand the framework a self-contained closure that toggles the
+    /// host's full-screen / immersive mode (`true` = enter, `false` =
+    /// leave). Read once by [`mount`](crate::mount) and stashed in a
+    /// thread-local so author code can call
+    /// [`set_fullscreen`](crate::set_fullscreen) without a `Backend`
+    /// reference.
+    ///
+    /// Like [`url_opener`](Backend::url_opener), the closure must not
+    /// borrow the view tree — it makes a stateless window/system call
+    /// (Android `WindowInsetsController`, iOS status-bar/home-indicator
+    /// override, macOS `toggleFullScreen:`, web Fullscreen API). It may
+    /// capture cheap platform handles (Android `Activity`, an `NSWindow`
+    /// pointer) the call needs.
+    ///
+    /// Default `None`: the backend has no full-screen concept (terminal,
+    /// CPU, runtime-server); [`set_fullscreen`](crate::set_fullscreen)
+    /// becomes a logged no-op there.
+    fn fullscreen_setter(&self) -> Option<Rc<dyn Fn(bool)>> {
         None
     }
 
@@ -2781,6 +2861,49 @@ mod tests {
         install_url_opener(None);
         // Must not panic.
         open_url("https://example.com");
+    }
+
+    /// `set_fullscreen` must forward each call to the installed setter,
+    /// preserving the boolean — the spine the per-backend
+    /// `fullscreen_setter` rides on (Android immersive, macOS
+    /// toggleFullScreen, web Fullscreen API).
+    #[test]
+    fn set_fullscreen_dispatches_to_installed_setter() {
+        let seen = Rc::new(RefCell::new(Vec::<bool>::new()));
+        let seen_for_setter = seen.clone();
+        install_fullscreen_setter(Some(Rc::new(move |enabled: bool| {
+            seen_for_setter.borrow_mut().push(enabled);
+        })));
+
+        set_fullscreen(true);
+        set_fullscreen(false);
+
+        assert_eq!(
+            *seen.borrow(),
+            vec![true, false],
+            "set_fullscreen must forward each value to the installed setter in order",
+        );
+
+        // Restore default so sibling tests on this thread aren't
+        // surprised by a leftover setter.
+        install_fullscreen_setter(None);
+    }
+
+    /// With no setter installed (default backend, pre-mount, terminal),
+    /// `set_fullscreen` must be a silent no-op, not a panic.
+    #[test]
+    fn set_fullscreen_without_setter_is_noop() {
+        install_fullscreen_setter(None);
+        set_fullscreen(true);
+        set_fullscreen(false);
+    }
+
+    /// The default `Backend::fullscreen_setter` reports no capability,
+    /// mirroring `url_opener` — backends opt in by overriding it.
+    #[test]
+    fn default_fullscreen_setter_is_none() {
+        let backend = StubBackend::new();
+        assert!(backend.fullscreen_setter().is_none());
     }
 
     /// `attach_locals` ordering must be preserved into `insert_many`

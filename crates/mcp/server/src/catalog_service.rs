@@ -296,6 +296,14 @@ pub struct RobotScreenshotArgs {
     /// Capture height in physical pixels. Optional — see `width`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
+    /// Capture source. One of `"auto"` (default — try the live client's
+    /// native surface, fall back to the wgpu replay renderer on error),
+    /// `"client"` (force the real client surface), or `"replay"` (force
+    /// the server-side scene re-render). The sidecar reads this at
+    /// `sidecar.rs`; without it declared here the field is dropped at the
+    /// typed MCP boundary and `auto` can never be overridden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -1423,107 +1431,234 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Fulltext search over every catalog slice — components, primitives, utilities, macros, guides, types, methods. Returns matches as a JSON array of { kind, name, fqn, docs_excerpt } tagged with the slice the match came from.")]
+    #[tool(description = "List the opt-in SDK crates — peripheral capabilities that ship OUTSIDE runtime-core (networking, persistence, camera, the component library, …) and are invisible to list_components/list_primitives/list_utilities because they expose plain functions/types or `Element::External` primitives. THIS is how you discover which crate makes a network request (`net`), persists data (`storage`/`credentials`), or renders a map (`maps`). Lightweight { name, category, kind, dep_line, summary }; pass `filter` (case-insensitive, glob `*`, matches name/category/kind) to narrow, then `describe_sdk` for the full record. Prose home: the `sdks` guide (read_guide).")]
+    async fn list_sdks(
+        &self,
+        Parameters(req): Parameters<FilterRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let json: Vec<serde_json::Value> = cat
+            .sdks()
+            .iter()
+            .filter(|s| {
+                matches_filter(&req.filter, &[s.name, s.category.as_str(), s.kind.as_str()])
+            })
+            .map(|s| {
+                serde_json::json!({
+                    "name": s.name,
+                    "category": s.category.as_str(),
+                    "kind": s.kind.as_str(),
+                    "dep_line": s.dep_line,
+                    "summary": s.summary,
+                })
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Get the full record for one opt-in SDK crate: summary, the `Cargo.toml` dependency line to add, capability category, whether its surface is plain API or a `ui!` `Element::External` primitive, and the guide that documents it. Accepts the crate name (`net`, `storage`, `idea-ui`).")]
+    async fn describe_sdk(
+        &self,
+        Parameters(req): Parameters<NameRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let entry = cat
+            .sdks()
+            .iter()
+            .find(|s| s.name == req.name)
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!(
+                        "SDK crate {:?} not found — use list_sdks to see what's available, \
+                         or read_guide(\"sdks\") for the full roster",
+                        req.name
+                    ),
+                    None,
+                )
+            })?;
+        let json = serde_json::json!({
+            "name": entry.name,
+            "summary": entry.summary,
+            "dep_line": entry.dep_line,
+            "category": entry.category.as_str(),
+            "kind": entry.kind.as_str(),
+            "guide": entry.guide,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Fulltext search over EVERY catalog slice — components, primitives, utilities, macros, guides, types, methods, recipes, scopes, tools, states, animations. Multi-word queries are tokenized on whitespace and OR'd: an entry matches if ANY term appears in its name or docs, and results are ranked by how many distinct query terms each entry hit (best first). So `search('http fetch network request')` surfaces the networking guide/utility even though no single field contains the whole phrase. Returns a JSON array of { kind, name, fqn, score, matched_terms, docs_excerpt } tagged with the slice the match came from.")]
     async fn search(
         &self,
         Parameters(req): Parameters<SearchRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let needle = req.query.to_lowercase();
+        // Tokenize on whitespace and lowercase each term. A whole-phrase
+        // query with no spaces degrades to a single-term search (the old
+        // behavior), so single-word queries are unaffected. Multi-word
+        // queries OR across terms and rank by distinct-term hit count —
+        // the gap the old contiguous-substring `contains(&full_query)`
+        // left, which returned `[]` for any multi-word query.
+        let terms: Vec<String> = req
+            .query
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect();
+        if terms.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text("[]".to_string())]));
+        }
+
         let cat = self.catalog.read().await;
-        let mut hits: Vec<serde_json::Value> = Vec::new();
+        // (score, kind, name, fqn, excerpt-source-text, matched-terms)
+        let mut hits: Vec<(usize, &'static str, String, String, String, Vec<String>)> = Vec::new();
+
+        // Push a hit if the entry matches at least one term. `fields` are
+        // the searchable strings (name + invocation/title/etc.); `body` is
+        // the longer text the excerpt is drawn from (docs / guide body).
+        let consider =
+            |kind: &'static str,
+             name: String,
+             fqn: String,
+             fields: &[&str],
+             body: &str,
+             hits: &mut Vec<(usize, &'static str, String, String, String, Vec<String>)>| {
+                let matched = matched_terms(&terms, fields, body);
+                if !matched.is_empty() {
+                    hits.push((matched.len(), kind, name, fqn, body.to_string(), matched));
+                }
+            };
 
         for e in cat.entries() {
-            if e.name.to_lowercase().contains(&needle)
-                || e.docs.to_lowercase().contains(&needle)
-            {
-                hits.push(serde_json::json!({
-                    "kind": "component",
-                    "name": e.name,
-                    "fqn": format!("{}::{}", e.module_path, e.name),
-                    "docs_excerpt": docs_excerpt_around(e.docs, &needle),
-                }));
-            }
+            let fqn = format!("{}::{}", e.module_path, e.name);
+            consider("component", e.name.to_string(), fqn, &[e.name], e.docs, &mut hits);
         }
         for p in cat.primitives() {
-            if p.name.to_lowercase().contains(&needle)
-                || p.pascal_name.to_lowercase().contains(&needle)
-                || p.docs.to_lowercase().contains(&needle)
-            {
-                hits.push(serde_json::json!({
-                    "kind": "primitive",
-                    "name": p.name,
-                    "fqn": p.name,
-                    "docs_excerpt": docs_excerpt_around(p.docs, &needle),
-                }));
-            }
+            consider(
+                "primitive",
+                p.name.to_string(),
+                p.name.to_string(),
+                &[p.name, p.pascal_name],
+                p.docs,
+                &mut hits,
+            );
         }
         for u in cat.utilities() {
-            if u.name.to_lowercase().contains(&needle)
-                || u.docs.to_lowercase().contains(&needle)
-            {
-                hits.push(serde_json::json!({
-                    "kind": "utility",
-                    "name": u.name,
-                    "fqn": format!("{}::{}", u.module_path, u.name),
-                    "docs_excerpt": docs_excerpt_around(u.docs, &needle),
-                }));
-            }
-        }
-        for g in cat.guides() {
-            if g.slug.to_lowercase().contains(&needle)
-                || g.title.to_lowercase().contains(&needle)
-                || g.body.to_lowercase().contains(&needle)
-            {
-                hits.push(serde_json::json!({
-                    "kind": "guide",
-                    "name": g.slug,
-                    "fqn": g.slug,
-                    "docs_excerpt": docs_excerpt_around(g.body, &needle),
-                }));
-            }
-        }
-        for t in cat.types() {
-            if t.short_name.to_lowercase().contains(&needle)
-                || t.docs.to_lowercase().contains(&needle)
-            {
-                hits.push(serde_json::json!({
-                    "kind": "type",
-                    "name": t.short_name,
-                    "fqn": format!("{}::{}", t.module_path, t.short_name),
-                    "docs_excerpt": docs_excerpt_around(t.docs, &needle),
-                }));
-            }
-        }
-        for m in cat.methods() {
-            if m.name.to_lowercase().contains(&needle)
-                || m.docs.to_lowercase().contains(&needle)
-            {
-                hits.push(serde_json::json!({
-                    "kind": "method",
-                    "name": m.name,
-                    "fqn": format!("{}::{}.{}", m.parent_module_path, m.parent_name, m.name),
-                    "docs_excerpt": docs_excerpt_around(m.docs, &needle),
-                }));
-            }
+            let fqn = format!("{}::{}", u.module_path, u.name);
+            consider("utility", u.name.to_string(), fqn, &[u.name], u.docs, &mut hits);
         }
         for m in cat.macros() {
-            if m.name.to_lowercase().contains(&needle)
-                || m.invocation.to_lowercase().contains(&needle)
-                || m.docs.to_lowercase().contains(&needle)
-            {
-                hits.push(serde_json::json!({
-                    "kind": "macro",
-                    "name": m.name,
-                    "fqn": format!("{}::{}", m.module_path, m.name),
-                    "docs_excerpt": docs_excerpt_around(m.docs, &needle),
-                }));
-            }
+            let fqn = format!("{}::{}", m.module_path, m.name);
+            consider(
+                "macro",
+                m.name.to_string(),
+                fqn,
+                &[m.name, m.invocation],
+                m.docs,
+                &mut hits,
+            );
+        }
+        for g in cat.guides() {
+            consider(
+                "guide",
+                g.slug.to_string(),
+                g.slug.to_string(),
+                &[g.slug, g.title],
+                g.body,
+                &mut hits,
+            );
+        }
+        for t in cat.types() {
+            let fqn = format!("{}::{}", t.module_path, t.short_name);
+            consider("type", t.short_name.to_string(), fqn, &[t.short_name], t.docs, &mut hits);
+        }
+        for m in cat.methods() {
+            let fqn = format!("{}::{}.{}", m.parent_module_path, m.parent_name, m.name);
+            consider("method", m.name.to_string(), fqn, &[m.name], m.docs, &mut hits);
+        }
+        for r in cat.recipes() {
+            let fqn = format!("{}::{}", r.module_path, r.name);
+            consider("recipe", r.name.to_string(), fqn, &[r.name, r.target], r.docs, &mut hits);
+        }
+        for s in cat.scopes() {
+            consider(
+                "scope",
+                s.slug.to_string(),
+                s.slug.to_string(),
+                &[s.slug, s.title],
+                s.docs,
+                &mut hits,
+            );
+        }
+        for t in cat.tools() {
+            let fqn = format!("{}::{}", t.module_path, t.name);
+            consider("tool", t.name.to_string(), fqn, &[t.name], t.docs, &mut hits);
+        }
+        for s in cat.states() {
+            consider("state", s.name.to_string(), s.name.to_string(), &[s.name], s.docs, &mut hits);
+        }
+        for a in cat.animations() {
+            let fqn = format!("{}::{}.{}", a.parent_module_path, a.parent_name, a.binding);
+            consider("animation", a.binding.to_string(), fqn, &[a.binding], a.initial, &mut hits);
+        }
+        for s in cat.sdks() {
+            consider("sdk", s.name.to_string(), s.name.to_string(), &[s.name], s.summary, &mut hits);
         }
 
+        // Rank: most distinct query terms first, then a stable
+        // (kind, name) tie-break so output is deterministic.
+        hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| (a.1, &a.2).cmp(&(b.1, &b.2))));
+
+        let json: Vec<serde_json::Value> = hits
+            .iter()
+            .map(|(score, kind, name, fqn, body, matched)| {
+                // Excerpt around the first matched term that actually
+                // occurs in the body (terms may match only the name).
+                let anchor = matched
+                    .iter()
+                    .find(|t| body.to_lowercase().contains(t.as_str()))
+                    .cloned()
+                    .unwrap_or_default();
+                serde_json::json!({
+                    "kind": kind,
+                    "name": name,
+                    "fqn": fqn,
+                    "score": score,
+                    "matched_terms": matched,
+                    "docs_excerpt": docs_excerpt_around(body, &anchor),
+                })
+            })
+            .collect();
+
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&hits).unwrap(),
+            serde_json::to_string_pretty(&json).unwrap(),
         )]))
     }
+}
+
+/// Which of `terms` appear (case-insensitively) in any of `fields` or in
+/// `body`. Returns the matched subset in query order; empty means the
+/// entry is not a hit. The OR + rank-by-count semantics of `search` are
+/// built on this — an entry's score is the length of this set.
+fn matched_terms(terms: &[String], fields: &[&str], body: &str) -> Vec<String> {
+    let haystack: String = {
+        let mut s = String::new();
+        for f in fields {
+            s.push_str(&f.to_lowercase());
+            s.push(' ');
+        }
+        s.push_str(&body.to_lowercase());
+        s
+    };
+    let mut matched = Vec::new();
+    for t in terms {
+        if haystack.contains(t.as_str()) {
+            matched.push(t.clone());
+        }
+    }
+    matched
 }
 
 /// Locate an entry by exact short-name match first, then by FQN.
@@ -1863,8 +1998,9 @@ impl ServerHandler for CatalogService {
                  list_utilities, describe_utility, list_states. \
                  Types: list_types, describe_type. \
                  Tools (#[idealyst_tool]): list_tools, describe_tool. \
+                 SDK crates (net, storage, credentials, server, …): list_sdks, describe_sdk. \
                  Guides: list_guides, read_guide (bundled framework docs). \
-                 Cross-slice: search. \
+                 Cross-slice: search (multi-word tokenized + ranked across every slice). \
                  Resource: idealyst://catalog returns the full denormalized \
                  catalog JSON (every slice).{}",
                 robot_status
@@ -2066,6 +2202,21 @@ impl ServerHandler for CatalogService {
                     })
                     .collect();
 
+                let sdks: Vec<serde_json::Value> = cat
+                    .sdks()
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "name": s.name,
+                            "summary": s.summary,
+                            "dep_line": s.dep_line,
+                            "category": s.category.as_str(),
+                            "kind": s.kind.as_str(),
+                            "guide": s.guide,
+                        })
+                    })
+                    .collect();
+
                 let body = serde_json::json!({
                     "catalog_version": 2,
                     "components": components,
@@ -2077,6 +2228,7 @@ impl ServerHandler for CatalogService {
                     "animations": animations,
                     "types": types,
                     "tools": tools,
+                    "sdks": sdks,
                 });
                 let text = serde_json::to_string_pretty(&body).unwrap();
                 Ok(ReadResourceResult::new(vec![ResourceContents::text(
@@ -2197,6 +2349,175 @@ mod tests {
             .unwrap();
         assert!(!component_names(&miss)
             .contains(&"list_components_regression_canary".to_string()));
+    }
+
+    /// Parse a tool's JSON-array result into a `serde_json::Value`.
+    fn parse_array(result: &CallToolResult) -> serde_json::Value {
+        let payload = result
+            .content
+            .iter()
+            .find_map(|c| c.as_text().map(|t| t.text.clone()))
+            .expect("tool result has a text content block");
+        serde_json::from_str(&payload).expect("response is valid JSON")
+    }
+
+    /// A2 regression: a multi-word `search` query must tokenize + OR
+    /// across terms instead of demanding the whole phrase as one
+    /// contiguous substring (which returned `[]` for ANY multi-word
+    /// query). The in-process catalog carries the framework macros /
+    /// guides, so a query whose terms hit different slices returns
+    /// ranked hits, with the best-matching entry (most distinct terms)
+    /// ranked first.
+    #[tokio::test]
+    async fn search_multi_word_query_tokenizes_and_ranks() {
+        let svc = CatalogService::new();
+
+        // Single-word still works (the old behavior is a subset).
+        let one = svc
+            .search(Parameters(SearchRequest { query: "effect".into(), app: None }))
+            .await
+            .unwrap();
+        let ov = parse_array(&one);
+        assert!(
+            ov.as_array().map(|a| !a.is_empty()).unwrap_or(false),
+            "single-word search still returns hits; got {ov}",
+        );
+
+        // Multi-word: terms drawn from the `effect!` macro docs +
+        // names. Pre-fix this returned `[]` because no single field
+        // contains the literal phrase "effect signal reactive".
+        let many = svc
+            .search(Parameters(SearchRequest {
+                query: "effect signal reactive".into(),
+                app: None,
+            }))
+            .await
+            .unwrap();
+        let mv = parse_array(&many);
+        let arr = mv.as_array().expect("array");
+        assert!(!arr.is_empty(), "multi-word search must not be empty; got {mv}");
+
+        // Results are ranked: every entry carries a numeric score and a
+        // matched_terms list, and the list is sorted best-first.
+        let first = &arr[0];
+        assert!(first["score"].as_u64().unwrap_or(0) >= 1, "hit carries a score; {first}");
+        assert!(first["matched_terms"].is_array(), "hit lists matched terms; {first}");
+        let scores: Vec<u64> = arr
+            .iter()
+            .map(|h| h["score"].as_u64().unwrap_or(0))
+            .collect();
+        assert!(
+            scores.windows(2).all(|w| w[0] >= w[1]),
+            "search results must be ranked best-first; got scores {scores:?}",
+        );
+    }
+
+    /// A2 (coverage half): the search index must span more than guide
+    /// prose — a query that only matches a macro name surfaces a `macro`
+    /// kind, proving non-guide slices are indexed.
+    #[tokio::test]
+    async fn search_covers_non_guide_slices() {
+        let svc = CatalogService::new();
+        let r = svc
+            .search(Parameters(SearchRequest { query: "stylesheet".into(), app: None }))
+            .await
+            .unwrap();
+        let v = parse_array(&r);
+        let kinds: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|h| h["kind"].as_str())
+            .collect();
+        assert!(
+            kinds.contains(&"macro"),
+            "search should index the macros slice (stylesheet! macro); kinds {kinds:?}",
+        );
+    }
+
+    /// A5 regression: `list_macros` must not be empty and `describe_macro`
+    /// must resolve a known macro — the field-report symptom was `[]` /
+    /// "macro not found" at the SERVER-TOOL layer even though the slice
+    /// existed.
+    #[tokio::test]
+    async fn list_and_describe_macros_are_populated() {
+        let svc = CatalogService::new();
+        let listed = svc
+            .list_macros(Parameters(FilterRequest::default()))
+            .await
+            .unwrap();
+        let lv = parse_array(&listed);
+        let names: Vec<&str> = lv
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|m| m["name"].as_str())
+            .collect();
+        assert!(names.contains(&"ui"), "list_macros must include `ui`; got {names:?}");
+        assert!(names.contains(&"signal"), "list_macros must include `signal`; got {names:?}");
+
+        // describe_macro resolves bare name AND a trailing `!`.
+        for needle in ["ui", "signal!"] {
+            let d = svc
+                .describe_macro(Parameters(NameRequest { name: needle.into(), app: None }))
+                .await
+                .unwrap_or_else(|e| panic!("describe_macro({needle:?}) errored: {e:?}"));
+            let dv = parse_array(&d);
+            assert!(dv["name"].is_string(), "describe_macro({needle:?}) returns a record; {dv}");
+        }
+    }
+
+    /// A1 regression: the opt-in SDK crates are discoverable through the
+    /// server tools — `list_sdks` returns the data-layer crates and
+    /// `describe_sdk` hands back the dep line an agent needs to add them.
+    #[tokio::test]
+    async fn list_and_describe_sdks_expose_non_ui_crates() {
+        let svc = CatalogService::new();
+        let listed = svc
+            .list_sdks(Parameters(FilterRequest::default()))
+            .await
+            .unwrap();
+        let lv = parse_array(&listed);
+        let names: Vec<&str> = lv
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s["name"].as_str())
+            .collect();
+        for required in ["net", "storage", "credentials", "server"] {
+            assert!(
+                names.contains(&required),
+                "list_sdks must surface `{required}`; got {names:?}",
+            );
+        }
+
+        let d = svc
+            .describe_sdk(Parameters(NameRequest { name: "net".into(), app: None }))
+            .await
+            .unwrap();
+        let dv = parse_array(&d);
+        assert_eq!(dv["name"], "net");
+        assert!(
+            dv["dep_line"].as_str().unwrap_or("").contains("net ="),
+            "describe_sdk returns a copy-pasteable dep line; {dv}",
+        );
+
+        // A bad name is an actionable error, not a silent empty.
+        let err = svc
+            .describe_sdk(Parameters(NameRequest { name: "nope".into(), app: None }))
+            .await;
+        assert!(err.is_err(), "describe_sdk on an unknown crate errors");
+
+        // Filter narrows to the data crates.
+        let filtered = svc
+            .list_sdks(Parameters(FilterRequest { filter: Some("data".into()) }))
+            .await
+            .unwrap();
+        let fv = parse_array(&filtered);
+        assert!(
+            fv.as_array().unwrap().iter().all(|s| s["category"] == "data"),
+            "data filter yields only data-category SDKs; {fv}",
+        );
     }
 
     #[test]

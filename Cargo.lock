@@ -1333,7 +1333,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
- "pollster",
+ "pollster 0.4.0",
  "raw-window-handle",
  "runtime-core",
  "vello",
@@ -1992,11 +1992,13 @@ dependencies = [
  "idea-ui",
  "libc",
  "notify-debouncer-mini",
+ "pollster 0.3.0",
  "runtime-core",
  "runtime-server-shell-native",
  "serde",
  "serde_json",
  "subsecond-types",
+ "tokio",
  "tungstenite 0.24.0",
  "wire",
 ]
@@ -3365,7 +3367,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-app-kit",
  "objc2-foundation 0.2.2",
- "pollster",
+ "pollster 0.4.0",
  "raw-window-handle",
  "render-api",
  "render-wgpu",
@@ -5625,6 +5627,12 @@ dependencies = [
 
 [[package]]
 name = "pollster"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22686f4785f02a4fcc856d3b3bb19bf6c8160d103f7a99cc258bddd0251dc7f2"
+
+[[package]]
+name = "pollster"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
@@ -6162,7 +6170,7 @@ dependencies = [
  "glyphon",
  "image",
  "log",
- "pollster",
+ "pollster 0.4.0",
  "render-api",
  "runtime-core",
  "runtime-layout",
@@ -6357,9 +6365,10 @@ dependencies = [
  "base64",
  "bitflags 2.11.1",
  "dev-hot",
+ "libc",
  "log",
  "mcp-catalog",
- "pollster",
+ "pollster 0.4.0",
  "raw-window-handle",
  "runtime-macros",
  "serde",

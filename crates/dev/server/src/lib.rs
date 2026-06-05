@@ -45,6 +45,13 @@ mod scene_model;
 pub mod scheduler;
 #[cfg(feature = "runtime-server")]
 pub mod crash_handler;
+// Tokio-backed `AsyncExecutor` installed on each AAS session thread so
+// app-initiated async work (a server-fn lowering to reqwest) runs inside
+// a live Tokio reactor instead of `pollster` on a reactor-less thread.
+// Sidecar-only — gated on `runtime-server` so recorder/transport
+// consumers don't drag tokio.
+#[cfg(feature = "runtime-server")]
+pub mod async_executor;
 pub mod sidecar;
 // Always compiled — the test-support module is small and its only
 // non-trivial cost is the `tungstenite` symbols, which the crate

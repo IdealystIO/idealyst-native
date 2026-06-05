@@ -45,6 +45,16 @@ pub struct SceneModel {
     parent_of: HashMap<NodeId, NodeId>,
     /// Registered style rules by id.
     styles: HashMap<StyleId, WireStyleRules>,
+    /// Style rules whose `RegisterStyle` was followed by an
+    /// `UnregisterStyle`, but which a still-live node referenced via
+    /// `ApplyStyle`/`ApplyStyledStates`. Retained here (not in `styles`)
+    /// so the snapshot can re-`RegisterStyle` them before the node's
+    /// retained `ApplyStyle` runs. Without this, an unregister of a
+    /// stylesheet whose styles are still applied to live nodes produced
+    /// a snapshot with `ApplyStyle{id}` and no `RegisterStyle{id}` →
+    /// replay bailed `UnknownStyle(id)` → all-white screenshot. Pruned
+    /// when no node references the id any more (see `gc_retired_styles`).
+    retired_styles: HashMap<StyleId, WireStyleRules>,
     /// Per-node style application command (`ApplyStyle` or
     /// `ApplyStyledStates`). Cleared by `OnNodeUnstyled`.
     node_style: HashMap<NodeId, Command>,
@@ -283,9 +293,22 @@ impl SceneModel {
             // -- Styles.
             Command::RegisterStyle { id, rules } => {
                 self.styles.insert(*id, rules.clone());
+                // A re-register of a previously-retired id supersedes the
+                // retired copy (live registry wins).
+                self.retired_styles.remove(id);
             }
             Command::UnregisterStyle { id } => {
-                self.styles.remove(id);
+                // If a live node still applies this style, retain its rules
+                // so the snapshot can re-register before the node's
+                // `ApplyStyle` replays. Otherwise drop it outright. This is
+                // the fix for the `UnknownStyle` / all-white-screenshot
+                // bug: an unregistered-but-still-applied style must survive
+                // into the snapshot.
+                if let Some(rules) = self.styles.remove(id) {
+                    if self.style_id_referenced(*id) {
+                        self.retired_styles.insert(*id, rules);
+                    }
+                }
             }
             Command::ApplyStyle { node, .. }
             | Command::ApplyStyledStates { node, .. } => {
@@ -296,6 +319,9 @@ impl SceneModel {
             }
             Command::OnNodeUnstyled { node } => {
                 self.node_style.remove(node);
+                // The unstyled node may have been the last referent of a
+                // retired style — drop any retired rules now unreferenced.
+                self.gc_retired_styles();
             }
 
             // -- Presence.
@@ -497,6 +523,9 @@ impl SceneModel {
                 self.node_icon_anim.remove(node);
                 self.node_a11y.remove(node);
                 self.node_safe_area.remove(node);
+                // Releasing this node may have removed the last referent of
+                // a retired style — collect any now-unreferenced rules.
+                self.gc_retired_styles();
                 // Released drawer navigator: clear its open-state so a
                 // post-release snapshot doesn't replay `OpenDrawer` for
                 // a node the client side no longer has.
@@ -588,6 +617,44 @@ impl SceneModel {
     ///      then drawer sidebar attachment, then style-slot
     ///      applications.
     ///   6. `Finish { root }` if a root was set.
+    /// StyleIds a single `ApplyStyle`/`ApplyStyledStates` command
+    /// references (the base style plus any overlay styles). Empty for
+    /// other commands.
+    fn style_ids_of(cmd: &Command) -> Vec<StyleId> {
+        match cmd {
+            Command::ApplyStyle { style, .. } => vec![*style],
+            Command::ApplyStyledStates { base, overlays, .. } => {
+                let mut v = Vec::with_capacity(1 + overlays.len());
+                v.push(*base);
+                v.extend(overlays.iter().map(|(_, sid)| *sid));
+                v
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Is `id` referenced by any node's current `node_style` command?
+    fn style_id_referenced(&self, id: StyleId) -> bool {
+        self.node_style
+            .values()
+            .any(|cmd| Self::style_ids_of(cmd).contains(&id))
+    }
+
+    /// Drop retired style rules no node references any more. Bounds the
+    /// `retired_styles` map across long sessions (many theme swaps /
+    /// hot-reloads) so it can't grow without limit.
+    fn gc_retired_styles(&mut self) {
+        if self.retired_styles.is_empty() {
+            return;
+        }
+        let referenced: HashSet<StyleId> = self
+            .node_style
+            .values()
+            .flat_map(Self::style_ids_of)
+            .collect();
+        self.retired_styles.retain(|id, _| referenced.contains(id));
+    }
+
     pub fn snapshot_commands(&self) -> Vec<Command> {
         let reachable = self.compute_reachable();
         let mut out = Vec::new();
@@ -617,11 +684,23 @@ impl SceneModel {
             }
         }
 
-        // 1. Styles.
-        let mut style_ids: Vec<StyleId> = self.styles.keys().copied().collect();
+        // 1. Styles. Emit every live style, plus any *retired* style
+        //    (unregistered while still applied to a live node) so the
+        //    node's retained `ApplyStyle` in step 4a has a registration to
+        //    resolve against. Skipping the retired ones is exactly what
+        //    produced the `UnknownStyle` replay bail / all-white
+        //    screenshot.
+        let mut style_ids: Vec<StyleId> = self
+            .styles
+            .keys()
+            .chain(self.retired_styles.keys())
+            .copied()
+            .collect();
         style_ids.sort_by_key(|s| s.0);
+        style_ids.dedup();
         for id in style_ids {
-            if let Some(rules) = self.styles.get(&id) {
+            // Live registry wins over a retired copy of the same id.
+            if let Some(rules) = self.styles.get(&id).or_else(|| self.retired_styles.get(&id)) {
                 out.push(Command::RegisterStyle {
                     id,
                     rules: rules.clone(),
@@ -1002,5 +1081,104 @@ mod tests {
             },
             _ => unreachable!(),
         }
+    }
+
+    /// Build a reachable node + a style applied to it, then unregister
+    /// the style. Models the field scenario: an idea-ui / raw-primitive
+    /// stylesheet whose `Rc` drops (scope teardown) emits
+    /// `UnregisterStyle` while the styled node is still live.
+    fn model_with_styled_node_then_unregister(style_id: u64) -> SceneModel {
+        let mut model = SceneModel::new();
+        let node = wire::NodeId(1);
+        model.apply(&Command::CreateView {
+            id: node,
+            a11y: Default::default(),
+        });
+        model.apply(&register_style(style_id));
+        model.apply(&Command::ApplyStyle {
+            node,
+            style: wire::StyleId(style_id),
+        });
+        // Node is the finish-root so reachability keeps it (and its
+        // ApplyStyle) in the snapshot.
+        model.apply(&Command::Finish { root: node });
+        // Stylesheet torn down while the node still references it.
+        model.apply(&Command::UnregisterStyle {
+            id: wire::StyleId(style_id),
+        });
+        model
+    }
+
+    /// E3 regression: a style unregistered while still applied to a live
+    /// node MUST stay registerable in the snapshot, so replay doesn't bail
+    /// `UnknownStyle` and render an all-white frame. The snapshot's
+    /// `RegisterStyle{id}` must precede the node's `ApplyStyle{style:id}`.
+    #[test]
+    fn regression_unregistered_but_applied_style_survives_snapshot() {
+        let model = model_with_styled_node_then_unregister(67);
+        let snap = model.snapshot_commands();
+
+        let reg_idx = snap.iter().position(|c| {
+            matches!(c, Command::RegisterStyle { id, .. } if *id == wire::StyleId(67))
+        });
+        let apply_idx = snap.iter().position(|c| {
+            matches!(c, Command::ApplyStyle { style, .. } if *style == wire::StyleId(67))
+        });
+
+        let reg_idx = reg_idx.expect(
+            "RegisterStyle(67) must be in the snapshot even though it was unregistered — \
+             a still-applied style can't go missing or replay hits UnknownStyle",
+        );
+        let apply_idx = apply_idx.expect("ApplyStyle(67) should still be in the snapshot");
+        assert!(
+            reg_idx < apply_idx,
+            "RegisterStyle must come before the ApplyStyle that resolves it",
+        );
+    }
+
+    /// Bound check: once the styled node is released, the retired style is
+    /// no longer referenced and must NOT linger in the snapshot (or the
+    /// `retired_styles` map across a long session).
+    #[test]
+    fn retired_style_pruned_once_node_released() {
+        let mut model = model_with_styled_node_then_unregister(81);
+        assert!(
+            model.retired_styles.contains_key(&wire::StyleId(81)),
+            "while the node is live the retired style is retained",
+        );
+
+        model.apply(&Command::ReleaseNode { node: wire::NodeId(1) });
+        assert!(
+            !model.retired_styles.contains_key(&wire::StyleId(81)),
+            "releasing the last referent must GC the retired style",
+        );
+
+        let snap = model.snapshot_commands();
+        assert!(
+            !snap
+                .iter()
+                .any(|c| matches!(c, Command::RegisterStyle { id, .. } if *id == wire::StyleId(81))),
+            "an unreferenced retired style should not appear in the snapshot",
+        );
+    }
+
+    /// A re-`RegisterStyle` of a retired id promotes it back to the live
+    /// registry (and drops the retired copy), so the snapshot emits the
+    /// fresh rules exactly once.
+    #[test]
+    fn re_register_supersedes_retired_style() {
+        let mut model = model_with_styled_node_then_unregister(42);
+        assert!(model.retired_styles.contains_key(&wire::StyleId(42)));
+
+        model.apply(&register_style(42));
+        assert!(!model.retired_styles.contains_key(&wire::StyleId(42)));
+        assert!(model.styles.contains_key(&wire::StyleId(42)));
+
+        let regs: Vec<_> = model
+            .snapshot_commands()
+            .into_iter()
+            .filter(|c| matches!(c, Command::RegisterStyle { id, .. } if *id == wire::StyleId(42)))
+            .collect();
+        assert_eq!(regs.len(), 1, "exactly one RegisterStyle(42) in the snapshot");
     }
 }

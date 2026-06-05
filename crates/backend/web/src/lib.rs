@@ -1951,6 +1951,26 @@ impl Backend for WebBackend {
         }))
     }
 
+    fn fullscreen_setter(&self) -> Option<std::rc::Rc<dyn Fn(bool)>> {
+        // Best-effort Fullscreen API. `requestFullscreen` MUST be called
+        // from a user-gesture event handler or the browser rejects it
+        // (the returned Promise rejects) — a `set_fullscreen(true)` fired
+        // outside one is silently ignored by the UA. `exit_fullscreen`
+        // has no such restriction. We fire-and-forget either way, matching
+        // the no-success-signal posture of `open_url`.
+        Some(std::rc::Rc::new(|enabled: bool| {
+            let Some(win) = web_sys::window() else { return };
+            let Some(doc) = win.document() else { return };
+            if enabled {
+                if let Some(el) = doc.document_element() {
+                    let _ = el.request_fullscreen();
+                }
+            } else {
+                doc.exit_fullscreen();
+            }
+        }))
+    }
+
     fn color_scheme(&self) -> runtime_core::ColorScheme {
         let window = match self.doc.default_view() {
             Some(w) => w,

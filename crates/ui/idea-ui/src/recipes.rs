@@ -37,6 +37,62 @@ recipe!(
 );
 
 recipe!(
+    Button,
+    /// A full-width call-to-action with a leading icon. `block = true`
+    /// stretches the button to its container's width; `leading_icon` /
+    /// `trailing_icon` take an `IconData` constant (from an icon pack
+    /// like `icons_lucide`) and render it inline beside the label,
+    /// inheriting the button's text color.
+    pub fn button_icon_block() -> ::runtime_core::Element {
+        use crate::Button;
+        use ::runtime_core::{ui, FillRule, IconData};
+        use ::std::rc::Rc;
+
+        // In real code this is a pack constant, e.g. `icons_lucide::PLUS`.
+        const PLUS: IconData = IconData {
+            view_box: (24, 24),
+            paths: &["M12 5v14M5 12h14"],
+            fill_rule: FillRule::NonZero,
+            filled: false,
+        };
+        let on_click: Rc<dyn Fn()> = Rc::new(|| { /* create */ });
+        ui! {
+            Button(
+                label = "New project",
+                on_click = on_click,
+                leading_icon = Some(PLUS),
+                block = true,
+            )
+        }
+    }
+);
+
+recipe!(
+    Icon,
+    /// A sized, optionally tinted vector icon. `data` is an `IconData`
+    /// constant (from an icon pack like `icons_lucide`); `size` sets the
+    /// square in points. Pass `tone = Some(...)` to paint it in a
+    /// semantic intent color, or `color = Some(...)` for an explicit one
+    /// — with neither, it inherits the ambient text color.
+    pub fn icon_tinted() -> ::runtime_core::Element {
+        use crate::components::icon::Icon;
+        use crate::tone;
+        use ::runtime_core::{ui, FillRule, IconData};
+
+        // In real code this is a pack constant, e.g. `icons_lucide::HEART`.
+        const HEART: IconData = IconData {
+            view_box: (24, 24),
+            paths: &["M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1a5.5 5.5 0 1 0-7.8 7.8l1 1L12 21l7.8-7.5 1-1a5.5 5.5 0 0 0 0-7.9z"],
+            fill_rule: FillRule::NonZero,
+            filled: true,
+        };
+        ui! {
+            Icon(data = HEART, size = 24.0, tone = Some(tone::Danger.into()))
+        }
+    }
+);
+
+recipe!(
     Select,
     /// A controlled dropdown. The host owns the `value` signal (the
     /// chosen option's `id`); `on_change` writes the picked id back into
@@ -149,6 +205,25 @@ recipe!(
             Card(variant = variant::Elevated, padding = CardPadding::Md) {
                 Typography(content = "Monthly stats", kind = typography_kind::H2)
                 Typography(content = "Up 12% from last month.", muted = true)
+            }
+        }
+    }
+);
+
+recipe!(
+    Card,
+    /// An intent-tinted card. Setting `tone = Some(...)` paints the card
+    /// with a muted tone background + matching border (the Soft tint Alert
+    /// uses) — for support/crisis/info panels that need to read as
+    /// intent-colored. Works with either variant.
+    pub fn card_toned() -> ::runtime_core::Element {
+        use crate::{tone, typography_kind, Card, CardPadding, Typography};
+        use ::runtime_core::ui;
+
+        ui! {
+            Card(padding = CardPadding::Md, tone = Some(tone::Danger.into())) {
+                Typography(content = "Account at risk", kind = typography_kind::H3)
+                Typography(content = "Verify your email to avoid suspension.")
             }
         }
     }
@@ -335,6 +410,36 @@ recipe!(
                 on_click = on_click,
                 tone = tone::Neutral,
                 variant = variant::Ghost,
+                size = IconButtonSize::Md,
+            )
+        }
+    }
+);
+
+recipe!(
+    IconButton,
+    /// A square icon button rendering a vector (Lucide) icon rather than
+    /// a text glyph. Pass `icon = Some(IconData)` and it takes precedence
+    /// over `glyph`, tinting to match the tone × variant.
+    pub fn icon_button_vector() -> ::runtime_core::Element {
+        use crate::{tone, variant, IconButton, IconButtonSize};
+        use ::runtime_core::{ui, FillRule, IconData};
+        use ::std::rc::Rc;
+
+        // In real code this is a pack constant, e.g. `icons_lucide::TRASH`.
+        const TRASH: IconData = IconData {
+            view_box: (24, 24),
+            paths: &["M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"],
+            fill_rule: FillRule::NonZero,
+            filled: false,
+        };
+        let on_click: Rc<dyn Fn()> = Rc::new(|| { /* delete */ });
+        ui! {
+            IconButton(
+                icon = Some(TRASH),
+                on_click = on_click,
+                tone = tone::Danger,
+                variant = variant::Soft,
                 size = IconButtonSize::Md,
             )
         }

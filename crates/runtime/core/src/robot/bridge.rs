@@ -273,6 +273,12 @@ fn write_app_registration(port: u16, identity: &AppIdentity) {
         );
         return;
     }
+    // Sweep ghost registrations from prior runs that crashed / were
+    // SIGKILLed before their RAII `Drop` could remove their file. The MCP
+    // server also prunes at scan time, but a proactive sweep here keeps the
+    // directory honest even when no scan happens, and prevents the MCP
+    // server from trying to dial a dead app's port. Best-effort.
+    prune_dead_registrations(&dir);
     let name_label = identity.name.replace('.', "-").replace(' ', "-");
     let pid = std::process::id();
     let path = dir.join(format!("{name_label}-{pid}.json"));
@@ -326,6 +332,81 @@ fn apps_registry_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)?;
     Some(home.join(".idealyst").join("apps"))
+}
+
+/// Remove `*.json` registration files in `dir` whose process is gone.
+/// Each file carries a `"pid":N` field; we read it and drop the file when
+/// `pid_is_live(N)` is false. Files we can't parse a pid out of are left
+/// alone (conservative — don't delete something we don't understand).
+/// Best-effort: I/O errors are ignored so a transient FS hiccup never
+/// blocks the bind path.
+#[cfg(not(target_arch = "wasm32"))]
+fn prune_dead_registrations(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(pid) = parse_pid_field(&body) else {
+            continue;
+        };
+        // Never prune our own (not-yet-written) entry; `std::process::id()`
+        // is this live process, so the liveness check below already keeps
+        // it. The check is the single source of truth.
+        if !pid_is_live(pid) {
+            if std::fs::remove_file(&path).is_ok() {
+                eprintln!(
+                    "[robot-bridge] pruned stale registration {} (pid {} gone)",
+                    path.display(),
+                    pid,
+                );
+            }
+        }
+    }
+}
+
+/// Pull the `pid` integer out of a registration JSON body without a full
+/// serde parse (the bridge writes the JSON by hand via `format!`, so the
+/// shape is stable). Returns `None` if the field is absent or malformed.
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_pid_field(body: &str) -> Option<u32> {
+    let after = body.split("\"pid\":").nth(1)?;
+    let digits: String = after
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
+/// `kill(pid, 0)` — succeeds if the process is alive (or alive but not
+/// signalable by us → EPERM); fails with ESRCH when gone. Mirrors the MCP
+/// server's `app_discovery::pid_is_live` so both sides agree on liveness.
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+fn pid_is_live(pid: u32) -> bool {
+    // SAFETY: `kill` with signal 0 is a no-op liveness probe on POSIX.
+    let rc = unsafe { libc::kill(pid as i32, 0) };
+    if rc == 0 {
+        return true;
+    }
+    matches!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EPERM)
+    )
+}
+
+/// Non-unix, non-wasm (Windows): no cheap liveness probe wired up yet, so
+/// treat every registration as live and rely on the RAII `Drop` cleanup.
+/// A future pass can use `OpenProcess` + `GetExitCodeProcess`.
+#[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+fn pid_is_live(_pid: u32) -> bool {
+    true
 }
 
 /// Auto-polling variant of [`start`]: spawns the TCP listener AND
@@ -942,6 +1023,77 @@ mod tests {
         assert_eq!(parsed["port"].as_u64(), Some(12345));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn parse_pid_field_extracts_pid_from_registration_body() {
+        let body = bridge_registration_json(
+            55,
+            &AppIdentity {
+                name: "demo".into(),
+                bundle_id: None,
+                project_root: None,
+            },
+        );
+        let pid = parse_pid_field(&body).expect("pid must parse out of the registration JSON");
+        assert_eq!(pid, std::process::id());
+        // Malformed / missing → None, never a panic.
+        assert_eq!(parse_pid_field("{\"port\":1}"), None);
+        assert_eq!(parse_pid_field("{\"pid\":\"oops\"}"), None);
+    }
+
+    /// E1(a) regression: a registration file whose process is gone is
+    /// swept by `prune_dead_registrations`, while a live one (this test
+    /// process) is kept. Before the prune, a crashed prior run left a
+    /// ghost the MCP server would try to dial.
+    #[test]
+    fn prune_removes_dead_pid_keeps_live() {
+        let dir = std::env::temp_dir().join(format!(
+            "idealyst-prune-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A guaranteed-dead pid: spawn a no-op child, wait for it to exit,
+        // then reuse its (now-reaped) pid. `kill(pid, 0)` reports ESRCH.
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .or_else(|_| std::process::Command::new("cmd").args(["/C", "exit"]).spawn())
+            .expect("spawn a short-lived child for a dead pid");
+        let dead_pid = child.id();
+        let _ = child.wait();
+
+        let live_body = bridge_registration_json(
+            100,
+            &AppIdentity {
+                name: "live".into(),
+                bundle_id: None,
+                project_root: None,
+            },
+        );
+        // Forge a dead-pid body by swapping the pid in.
+        let dead_body = live_body.replace(
+            &format!("\"pid\":{}", std::process::id()),
+            &format!("\"pid\":{dead_pid}"),
+        );
+
+        let live_path = dir.join(format!("live-{}.json", std::process::id()));
+        let dead_path = dir.join(format!("dead-{dead_pid}.json"));
+        std::fs::write(&live_path, live_body.as_bytes()).unwrap();
+        std::fs::write(&dead_path, dead_body.as_bytes()).unwrap();
+        // A non-json sibling must be left untouched.
+        let other = dir.join("notes.txt");
+        std::fs::write(&other, b"keep me").unwrap();
+
+        prune_dead_registrations(&dir);
+
+        assert!(live_path.exists(), "live-pid registration must be kept");
+        assert!(!dead_path.exists(), "dead-pid registration must be pruned");
+        assert!(other.exists(), "non-json files must be left alone");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -144,7 +144,11 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
         Rc::new(move || (cam_x.get(), cam_y.get(), CAM_W, CAM_H)),
     )
     .fit(canvas::Fit::Cover)
-    .corner_radius(CAM_RADIUS);
+    .corner_radius(CAM_RADIUS)
+    // The frame is drawn by the canvas WITH the camera image, so it stays locked
+    // to the picture while dragging (a separate framework-view border lagged the
+    // moving image — they update on different clocks).
+    .border(2.0, canvas::Color::new(255, 255, 255, 230));
 
     let canvas_el = build_canvas(strokes.clone(), version, capture_writer, vec![camera_layer]);
 
@@ -299,21 +303,19 @@ pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
                 ..Default::default()
             };
         }
-        // Transparent — the canvas composites the camera behind the frame, which
-        // shows through. A border + matching corner radius dress the composited
-        // region (the layer rounds the video to the same `CAM_RADIUS`).
-        styled(
-            StyleRules {
-                position: Some(Position::Absolute),
-                left: Some(Length::Px(cam_x.get().max(0.0)).into()),
-                top: Some(Length::Px(cam_y.get().max(0.0)).into()),
-                width: Some(Length::Px(CAM_W).into()),
-                height: Some(Length::Px(CAM_H).into()),
-                overflow: Some(Overflow::Hidden),
-                ..Default::default()
-            },
-            [radius(18.0), border_all(2.0, "rgba(255,255,255,0.9)")],
-        )
+        // Invisible drag target only: the canvas composites the camera AND its
+        // frame (rounded corners + border) at the same `cam_x/cam_y`, so they stay
+        // pixel-locked while dragging. This box just provides the hit-test rect —
+        // its position can lag a frame without any visible effect (nothing is
+        // drawn here).
+        StyleRules {
+            position: Some(Position::Absolute),
+            left: Some(Length::Px(cam_x.get().max(0.0)).into()),
+            top: Some(Length::Px(cam_y.get().max(0.0)).into()),
+            width: Some(Length::Px(CAM_W).into()),
+            height: Some(Length::Px(CAM_H).into()),
+            ..Default::default()
+        }
     });
 
     ui! {

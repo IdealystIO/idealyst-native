@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 
 use crate::{
     AnimationEntry, ComponentEntry, GuideEntry, MacroEntry, MethodEntry, PrimitiveEntry,
-    RecipeEntry, ScopeEntry, StateEntry, ToolEntry, TypeEntry, TypeShape, UtilityEntry,
+    RecipeEntry, ScopeEntry, SdkEntry, StateEntry, ToolEntry, TypeEntry, TypeShape, UtilityEntry,
 };
 
 /// Writer side: a catalog entry type that knows its JSON array key, how
@@ -477,6 +477,31 @@ impl CatalogSlice for ScopeEntry {
             "docs": self.docs,
             "module_path": self.module_path,
             "order": self.order,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------
+// SDK
+// ---------------------------------------------------------------------
+
+impl CatalogSlice for SdkEntry {
+    const KEY: &'static str = "sdks";
+
+    fn collect_sorted() -> Vec<&'static Self> {
+        let mut v: Vec<&'static SdkEntry> = crate::sdks().collect();
+        v.sort_by_key(|s| s.name);
+        v
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "name": self.name,
+            "summary": self.summary,
+            "dep_line": self.dep_line,
+            "category": self.category.as_str(),
+            "kind": self.kind.as_str(),
+            "guide": self.guide,
         })
     }
 }

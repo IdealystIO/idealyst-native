@@ -89,7 +89,18 @@ mod imp;
 #[path = "android.rs"]
 mod imp;
 
-#[cfg(all(any(target_os = "ios", target_os = "macos"), not(target_arch = "wasm32")))]
+// iOS SIMULATOR: synthetic camera (no AVCaptureSession hardware exists there).
+// Routed ahead of `apple.rs` and excluded from it below, so the simulator gets a
+// fake stream while iOS DEVICES + macOS keep the real AVFoundation backend.
+#[cfg(all(target_os = "ios", target_abi = "sim", not(target_arch = "wasm32")))]
+#[path = "sim_camera.rs"]
+mod imp;
+
+#[cfg(all(
+    any(target_os = "ios", target_os = "macos"),
+    not(target_arch = "wasm32"),
+    not(all(target_os = "ios", target_abi = "sim"))
+))]
 #[path = "apple.rs"]
 mod imp;
 

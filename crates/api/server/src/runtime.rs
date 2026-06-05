@@ -65,11 +65,57 @@ fn version_mismatch_response(path: &str, client_schema: u64, server_schema: u64)
 /// inventory at request time. That's a hash-map probe per call (not
 /// a per-call route table rebuild), and keeps the router size flat
 /// regardless of how many server fns the app declares.
+/// Boot-time guard against the dead-strip trap. Given how many
+/// `#[server]` fns and `#[channel]`s the linker actually kept, return a
+/// loud warning string when BOTH are zero — the symptom of a relay
+/// binary that references nothing from its app lib, so the linker
+/// garbage-collected the lib's `inventory::submit!` route statics and
+/// every `/_srv/<fn>` request silently 404s.
+///
+/// Pure + side-effect-free so it can be unit-tested; `router()` is the
+/// only caller and it prints the result to stderr. A server with
+/// genuinely no server fns is degenerate, so the false-positive cost of
+/// the warning is nil.
+fn zero_routes_warning(fn_count: usize, ws_count: usize) -> Option<String> {
+    if fn_count == 0 && ws_count == 0 {
+        Some(
+            "[server] WARNING: router() registered 0 server functions and 0 channels. \
+             Every /_srv/<fn> request will return 404. This usually means the relay \
+             binary doesn't reference its app lib, so the linker dead-stripped the \
+             lib's `inventory::submit!` route registrations. Add a force-link \
+             reference to the app lib in your `src/bin/server.rs` (e.g. `pub use \
+             app_lib::...` or call into it) so the routes survive linking."
+                .to_string(),
+        )
+    } else {
+        None
+    }
+}
+
 pub fn router() -> Router {
     // Force the dispatch map to build now, so a duplicate-path collision
     // fails loudly at server startup (router build) rather than silently
     // shadowing one handler at request time.
     let _ = entry_map();
+
+    // Boot-time guard against the dead-strip trap: if the relay binary
+    // calls `router()` but references NOTHING from the app lib, the
+    // linker garbage-collects the lib's `inventory::submit!` statics and
+    // we register ZERO routes — every `/_srv/<fn>` then 404s with no
+    // build error and no runtime hint. (The fix is a force-link
+    // reference in the server bin; the scaffold template now emits one.)
+    // We can't detect the *cause* here, but we can make the *symptom*
+    // loud instead of silent: warn at startup when both inventories are
+    // empty. A server with genuinely no `#[server]`/`#[channel]` fns is
+    // degenerate, so the false-positive cost is nil.
+    let fn_count = inventory::iter::<ServerFnEntry>.into_iter().count();
+    let ws_count = inventory::iter::<crate::__private::WsEntry>
+        .into_iter()
+        .count();
+    if let Some(msg) = zero_routes_warning(fn_count, ws_count) {
+        eprintln!("{msg}");
+    }
+
     let mut app = Router::new()
         // Batch route is declared first so axum's path matcher prefers
         // the exact `/_srv/_batch` over the catch-all `/_srv/*path`.
@@ -349,6 +395,26 @@ mod tests {
             panic!("collision must be rejected");
         };
         assert!(err.contains("duplicate server fn path 'dup'"), "got: {err}");
+    }
+
+    // Regression: a relay binary that dead-strips its app lib registers
+    // ZERO routes and every /_srv/<fn> silently 404s. `router()` must
+    // shout at startup when both inventories are empty.
+    #[test]
+    fn zero_routes_emits_warning() {
+        let msg = zero_routes_warning(0, 0).expect("0 fns + 0 channels must warn");
+        assert!(msg.contains("registered 0 server functions"), "got: {msg}");
+        assert!(msg.contains("404"), "got: {msg}");
+        assert!(msg.contains("dead-stripped"), "got: {msg}");
+    }
+
+    #[test]
+    fn registered_routes_do_not_warn() {
+        // Any server fn registered → no warning.
+        assert!(zero_routes_warning(1, 0).is_none());
+        // Any channel registered → no warning.
+        assert!(zero_routes_warning(0, 1).is_none());
+        assert!(zero_routes_warning(3, 2).is_none());
     }
 }
 

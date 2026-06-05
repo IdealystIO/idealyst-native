@@ -80,7 +80,10 @@ strict-docs = ["runtime-macros/strict-docs"]
 # should leave this off.
 # `dep:base64` powers the Robot bridge's `"screenshot"` verb, which
 # returns the captured PNG as base64 in its JSON response.
-robot = ["dep:base64"]
+# `dep:libc` is the unix `kill(pid, 0)` liveness check the bridge uses to
+# sweep dead-pid registration files from `~/.idealyst/apps/` on bind (so
+# a crashed prior run doesn't leave a ghost the MCP server tries to dial).
+robot = ["dep:base64", "dep:libc"]
 
 # `dev` umbrella feature — the one `idealyst dev` flips. Bundles
 # every feature that "the user is running locally for development"
@@ -171,4 +174,7 @@ wasm-split = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = { version = "0.4", optional = true }
 log = { version = "0.4", optional = true }
+# `kill(pid, 0)` for the Robot bridge's stale-registration sweep. Only
+# linked under `robot` (non-wasm); ordinary app builds don't pull it.
+libc = { version = "0.2", optional = true }
 

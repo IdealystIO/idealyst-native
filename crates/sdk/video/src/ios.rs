@@ -45,7 +45,7 @@ use objc2_foundation::{CGRect, NSObject, NSString};
 use objc2_ui_kit::UIView;
 use runtime_core::effect;
 use std::any::Any;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -199,6 +199,11 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
     let sbdl_gravity = NSString::from_str(av_layer_gravity(props.object_fit));
     let _: () = unsafe { msg_send![&display_layer, setVideoGravity: &*sbdl_gravity] };
     let _: () = unsafe { msg_send![&view_layer, addSublayer: &*display_layer] };
+    // The stream layer is the TOP sublayer (over the AVPlayerLayer). An empty
+    // AVSampleBufferDisplayLayer is opaque, so it must start hidden — otherwise it
+    // covers the player layer and a URL (recorded-file) preview renders blank. The
+    // per-frame raf below unhides it only for `Stream` sources.
+    let _: () = unsafe { msg_send![&display_layer, setHidden: true] };
 
     // Optional behaviors. `muted` mirrors the web backend's autoplay
     // pairing — iOS won't autoplay otherwise on cellular under
@@ -233,40 +238,34 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
 
     b.register_external_view(&view);
 
-    // Layer-frame sync. AVPlayerLayer doesn't auto-track its parent's
-    // bounds; reading the host view's bounds inside an Effect re-syncs
-    // the layer's frame each reactive tick. One-frame lag vs. resize,
-    // but no dependency on a backend-internal post-layout callback.
-    let player_layer_for_sync = player_layer.clone();
-    let display_layer_for_sync = display_layer.clone();
-    let view_for_sync = view.clone();
-    effect!({
-        let bounds: CGRect = unsafe { msg_send![&*view_for_sync, bounds] };
-        let _: () = unsafe { msg_send![&*player_layer_for_sync, setFrame: bounds] };
-        // The stream display layer tracks bounds the same way (CALayer
-        // autoresizing is unreliable here — same rationale as the player layer).
-        let _: () = unsafe { msg_send![&*display_layer_for_sync, setFrame: bounds] };
-    });
+    // Layer-frame sync happens in the per-frame raf below (see "Size both
+    // sublayers" there). AVPlayerLayer doesn't auto-track its parent's bounds,
+    // and a reactive `Effect` reading `bounds` imperatively tracks no signal —
+    // it fires ONCE at build (0×0) and never again, leaving the layer 0×0 and
+    // invisible. The raf re-syncs every frame, robust to layout + rotation.
+    let player_layer_for_raf = player_layer.clone();
 
-    // Reactive src — initial src was used to construct the player; the
-    // Effect handles subsequent reactive swaps via
-    // `replaceCurrentItemWithPlayerItem:`, which preserves the
-    // AVPlayerLayer + sublayer attachment (so no layout disruption).
+    // Reactive src. Load a new item whenever the resolved URL CHANGES to a
+    // non-empty value, tracking the last-loaded URL. (A `first_run`-skip flag is
+    // wrong: the URL often resolves asynchronously — a recorded-file path lands
+    // AFTER mount — so the effect's first run already sees the real URL and would
+    // skip it, never loading anything. `replaceCurrentItemWithPlayerItem:`
+    // preserves the AVPlayerLayer + sublayer attachment, so swaps don't disrupt
+    // layout.) `last_url` starts as whatever the player was built with, so an
+    // unchanged URL doesn't double-load.
     let player_for_src = player.clone();
     let props_clone = props.clone();
-    let first_run = Cell::new(true);
+    let last_url = RefCell::new(initial_src.clone());
     effect!({
         let url = resolved_url(&props_clone).unwrap_or_default();
-        if first_run.replace(false) {
-            // Initial run: AVPlayer already has this URL; skip the
-            // replaceCurrentItemWithPlayerItem call so we don't double-
-            // load the same media.
+        if url.is_empty() || url == *last_url.borrow() {
             return;
         }
         if let Some(item) = build_player_item(&url) {
             let _: () = unsafe {
                 msg_send![&player_for_src, replaceCurrentItemWithPlayerItem: &*item]
             };
+            *last_url.borrow_mut() = url;
         }
     });
 
@@ -291,7 +290,28 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
         let mut last_native_gen: u64 = u64::MAX;
         let mut scratch: Vec<u8> = Vec::new();
         runtime_core::raf_loop_scoped(move || {
-            let MediaContent::Stream(stream) = props_for_stream.source.resolve() else {
+            let source = props_for_stream.source.resolve();
+            let is_stream = matches!(source, MediaContent::Stream(_));
+            // Size both sublayers to the host view's bounds EVERY frame, and show
+            // the stream layer ONLY for `Stream` sources. The two layers don't
+            // auto-track the host UIView's bounds (a freshly-added sublayer stays
+            // at its 0×0 construction frame and is INVISIBLE), so we sync per
+            // frame. The stream layer is opaque and sits OVER the AVPlayerLayer, so
+            // for a URL source it must be hidden or it blanks the video. Both fixes
+            // are why the recorded-file preview rendered dark before. CATransaction
+            // with actions disabled so the resize doesn't implicitly animate.
+            unsafe {
+                let bounds: CGRect = msg_send![&*view_for_stream, bounds];
+                let txn = objc2::class!(CATransaction);
+                let _: () = msg_send![txn, begin];
+                let _: () = msg_send![txn, setDisableActions: true];
+                let _: () = msg_send![&*player_layer_for_raf, setFrame: bounds];
+                let _: () = msg_send![&*display_layer_for_stream, setFrame: bounds];
+                let _: () = msg_send![&*display_layer_for_stream, setHidden: !is_stream];
+                let _: () = msg_send![txn, commit];
+            }
+
+            let MediaContent::Stream(stream) = source else {
                 return;
             };
 
@@ -303,21 +323,8 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
             if let Some(native) = stream.native_source() {
                 if let Some(surf) = native.downcast_ref::<SurfaceSource>() {
                     unsafe {
-                        // Keep the display layer sized to the view EVERY frame.
-                        // The bounds-sync Effect only re-runs on a tracked-signal
-                        // change — it reads `bounds` imperatively (tracking
-                        // nothing) and fires once at 0×0 during the build, so a
-                        // freshly-added sublayer would stay 0×0 and INVISIBLE.
-                        // The raf loop runs per frame, so sizing here is reliable.
-                        // Wrap in a CATransaction with actions disabled so the
-                        // frame change doesn't implicitly animate.
-                        let bounds: CGRect = msg_send![&*view_for_stream, bounds];
-                        let txn = objc2::class!(CATransaction);
-                        let _: () = msg_send![txn, begin];
-                        let _: () = msg_send![txn, setDisableActions: true];
-                        let _: () =
-                            msg_send![&*display_layer_for_stream, setFrame: bounds];
-                        let _: () = msg_send![txn, commit];
+                        // (The display layer is already sized to the view at the
+                        // top of this raf, for all source kinds.)
 
                         // A failed layer ignores all enqueues until flushed
                         // (e.g. after a transient decode error) — recover before
@@ -406,8 +413,20 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
 // =============================================================================
 
 fn build_nsurl(s: &str) -> Option<Retained<NSObject>> {
-    let ns_str = NSString::from_str(s);
-    unsafe { msg_send_id![objc2::class!(NSURL), URLWithString: &*ns_str] }
+    // A `file://` path MUST go through `fileURLWithPath:`, not `URLWithString:`.
+    // `URLWithString:` parses an already-percent-encoded URL and returns nil on a
+    // raw path containing a space or other reserved character — and the canonical
+    // recordings store lives under "Application Support" (a space), so a
+    // `file://…/Application Support/…recording.mp4` string yields nil, the
+    // AVPlayer gets no item, and the preview renders blank. `fileURLWithPath:`
+    // percent-encodes the path itself, so file playback is robust to any path.
+    if let Some(path) = s.strip_prefix("file://") {
+        let ns_path = NSString::from_str(path);
+        unsafe { msg_send_id![objc2::class!(NSURL), fileURLWithPath: &*ns_path] }
+    } else {
+        let ns_str = NSString::from_str(s);
+        unsafe { msg_send_id![objc2::class!(NSURL), URLWithString: &*ns_str] }
+    }
 }
 
 fn build_player_item(src: &str) -> Option<Retained<NSObject>> {

@@ -270,6 +270,97 @@ fn tree_label(
     None
 }
 
+/// Does the robot `snapshot()` tree contain a node with this `test_id`
+/// anywhere in the hierarchy (root or descendant)?
+fn tree_has_test_id(nodes: &[runtime_core::robot::TreeNode], test_id: &str) -> bool {
+    nodes.iter().any(|n| {
+        n.test_id == Some(test_id) || tree_has_test_id(&n.children, test_id)
+    })
+}
+
+/// **Regression: a reactive `when()` (`if/else`) branch swap must
+/// remove the old branch's nodes from the robot registry.**
+///
+/// Field report (§2.4): after `onboarded` flips, `get_snapshot` showed
+/// BOTH the onboarding subtree AND the main screen as live nodes in the
+/// AAS host. The robot registry tracks every mounted primitive in a
+/// thread-local map and never had its entries removed on scope
+/// teardown — `deregister` had zero callers. So when the `When` Effect
+/// drops the old branch's reactive `Scope` (freeing its signals/effects
+/// and clearing the backend's children), the registry kept the stale
+/// entries forever. `snapshot()` (which an MCP / AI client reads to
+/// inspect "what's on screen") then reported a phantom second screen.
+///
+/// This drives a top-level `when` over a `bool` signal (the exact
+/// onboarding → main shape), flips it, and asserts the old branch's
+/// node is gone and the new branch's node is present.
+///
+/// Fails before the fix (the "onboarding" test_id is still in the
+/// snapshot after the flip); passes after.
+#[test]
+fn regression_when_branch_swap_disposes_old_branch_from_robot_registry() {
+    use runtime_core::{text, view, when};
+
+    let robot = Robot::new();
+    // Thread-local registry is shared across tests on the same thread;
+    // start clean so a sibling test's leftover entries can't masquerade
+    // as this tree's branches.
+    robot.reset();
+
+    // `onboarded` starts false → the onboarding branch is live.
+    let onboarded = signal!(false);
+
+    let tree: Element = when(
+        move || onboarded.get(),
+        || view(vec![text("Welcome").test_id("main-screen").into()]).into(),
+        || view(vec![text("Skip for now").test_id("onboarding-screen").into()]).into(),
+    );
+
+    let recorder = WireRecordingBackend::new();
+    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
+    let _owner = render(backend_rc, tree);
+
+    // Pre-flip: the onboarding branch is the live one; main is not yet
+    // built.
+    let snap = robot.snapshot();
+    assert!(
+        tree_has_test_id(&snap, "onboarding-screen"),
+        "onboarding branch should be live before the flip; got {snap:#?}"
+    );
+    assert!(
+        !tree_has_test_id(&snap, "main-screen"),
+        "main branch must NOT be built while onboarded == false; got {snap:#?}"
+    );
+
+    // Flip the condition — the When Effect drops the onboarding scope
+    // and builds the main branch (the "Skip for now" click).
+    onboarded.set(true);
+
+    let snap = robot.snapshot();
+    assert!(
+        tree_has_test_id(&snap, "main-screen"),
+        "main branch must be live after the flip; got {snap:#?}"
+    );
+    assert!(
+        !tree_has_test_id(&snap, "onboarding-screen"),
+        "the disposed onboarding branch must NOT linger in the robot \
+         snapshot after the condition flips — a stale registry entry is a \
+         phantom second live root; got {snap:#?}"
+    );
+
+    // Belt-and-suspenders: find() by test_id must agree with snapshot().
+    assert!(
+        robot
+            .find(Query::test_id("onboarding-screen"))
+            .is_none(),
+        "find() must not resolve the disposed onboarding branch"
+    );
+    assert!(
+        robot.find(Query::test_id("main-screen")).is_some(),
+        "find() must resolve the live main branch"
+    );
+}
+
 #[derive(Default)]
 struct MethodCounterProps {}
 

@@ -333,6 +333,23 @@ impl IdealystCanvasView {
     }
 }
 
+/// `CGDataProviderReleaseDataCallback` — frees the heap pixel copy that
+/// [`composite_layer`]'s data provider owns. The provider stored the `data`
+/// pointer + `size` we passed; reconstruct the `Box<[u8]>` from them and drop it.
+/// Fires when the last `CGImage` referencing the provider is released.
+extern "C" fn release_boxed_pixels(_info: *mut c_void, data: *const c_void, size: usize) {
+    if data.is_null() {
+        return;
+    }
+    // SAFETY: `data`/`size` are exactly the pointer + length of the `Box<[u8]>`
+    // leaked in `composite_layer`; CoreGraphics hands them back verbatim, and this
+    // callback runs at most once (on the provider's final release).
+    unsafe {
+        let slice = std::slice::from_raw_parts_mut(data as *mut u8, size);
+        drop(Box::from_raw(slice as *mut [u8]));
+    }
+}
+
 /// Composite one [`TextureLayer`] over the canvas: pull the stream's latest RGBA
 /// frame, wrap it as a `CGImage`, crop to the source rect, and draw it into a
 /// rounded, alpha-blended destination rect using the shared
@@ -352,17 +369,31 @@ fn composite_layer(ctx: CGContextRef, layer: &TextureLayer) {
     let ((sx, sy, sw, sh), (ox, oy, ow, oh)) =
         layer.fit.map_rects(vw as f32, vh as f32, dx, dy, dw, dh);
 
-    // SAFETY: `rgba` outlives the whole block; the data provider references it
-    // without copying and every pixel read happens inside `drawInRect:` below,
-    // before `rgba` is dropped. All CG objects created here are released here.
+    // The data provider OWNS a heap copy of the pixels, freed by
+    // `release_boxed_pixels` when the last referencing CGImage is released. A
+    // no-copy provider over the local `rgba` flickers: CoreGraphics may decode the
+    // image LAZILY — after this fn returns and `rgba` is dropped — so it reads
+    // freed memory (intermittent garbage frames). This surfaced the first time the
+    // iOS canvas composited a live per-frame stream (the simulator camera). All CG
+    // objects created here are released here.
     unsafe {
         let cs = CGColorSpaceCreateDeviceRGB();
+        let boxed: Box<[u8]> = rgba.into_boxed_slice();
+        let len = boxed.len();
+        let data_ptr = Box::into_raw(boxed) as *mut u8 as *const c_void;
         let provider = CGDataProviderCreateWithData(
             null_mut(),
-            rgba.as_ptr() as *const c_void,
-            rgba.len(),
-            null(),
+            data_ptr,
+            len,
+            release_boxed_pixels as *const c_void,
         );
+        // If the provider failed to take the data, free the copy ourselves so it
+        // doesn't leak (CoreGraphics won't call the release callback then).
+        if provider.is_null() {
+            release_boxed_pixels(null_mut(), data_ptr, len);
+            CGColorSpaceRelease(cs);
+            return;
+        }
         let img = CGImageCreate(
             vw as usize,
             vh as usize,
@@ -415,6 +446,31 @@ fn composite_layer(ctx: CGContextRef, layer: &TextureLayer) {
             let _: () = msg_send![&image, drawInRect: dst];
         }
         CGImageRelease(cropped);
+
+        // Border frame, composited WITH the image so it stays locked to the moving
+        // picture (a separate framework-view border lags during a drag). Stroked on
+        // a rounded rect inset by half the width, so the whole stroke sits inside
+        // the layer rect and traces the image's rounded edge.
+        let bw = layer.border_width;
+        if bw > 0.0 {
+            let inset = (bw * 0.5) as CGFloat;
+            let brect = CGRect::new(
+                CGPoint::new(ox as CGFloat + inset, oy as CGFloat + inset),
+                CGSize::new((ow - bw) as CGFloat, (oh - bw) as CGFloat),
+            );
+            let br = (r - inset).max(0.0);
+            if let Some(cls) = AnyClass::get("UIBezierPath") {
+                let path: Retained<NSObject> = if br > 0.0 {
+                    msg_send_id![cls, bezierPathWithRoundedRect: brect, cornerRadius: br]
+                } else {
+                    msg_send_id![cls, bezierPathWithRect: brect]
+                };
+                let _: () = msg_send![&path, setLineWidth: bw as CGFloat];
+                let stroke_color = ui_color(layer.border_color);
+                let _: () = msg_send![&stroke_color, setStroke];
+                let _: () = msg_send![&path, stroke];
+            }
+        }
         CGContextRestoreGState(ctx);
     }
 }

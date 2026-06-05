@@ -1417,6 +1417,35 @@ impl Backend for MacosBackend {
         }))
     }
 
+    fn fullscreen_setter(&self) -> Option<std::rc::Rc<dyn Fn(bool)>> {
+        Some(std::rc::Rc::new(|enabled: bool| {
+            // NSApp.mainWindow.toggleFullScreen: — raw msg_send + class!()
+            // to avoid pulling typed NSApplication/NSWindow bindings,
+            // matching `url_opener` / `color_scheme`. `toggleFullScreen:`
+            // FLIPS state, so read the current state first
+            // (NSWindowStyleMaskFullScreen = 1 << 14) and only toggle when
+            // it differs from the requested one — keeps `set_fullscreen`
+            // idempotent.
+            unsafe {
+                let app: *mut NSObject =
+                    msg_send![objc2::class!(NSApplication), sharedApplication];
+                if app.is_null() {
+                    return;
+                }
+                let window: *mut NSObject = msg_send![app, mainWindow];
+                if window.is_null() {
+                    return;
+                }
+                let style_mask: usize = msg_send![window, styleMask];
+                let is_fullscreen = (style_mask & (1 << 14)) != 0;
+                if is_fullscreen != enabled {
+                    let _: () =
+                        msg_send![window, toggleFullScreen: std::ptr::null::<NSObject>()];
+                }
+            }
+        }))
+    }
+
     fn color_scheme(&self) -> runtime_core::ColorScheme {
         // Read the *application's* effective appearance, NOT
         // `NSAppearance.currentAppearance`: the latter is a per-draw thread-local

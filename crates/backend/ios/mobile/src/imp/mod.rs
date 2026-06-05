@@ -1192,6 +1192,22 @@ impl Backend for IosBackend {
         }))
     }
 
+    fn fullscreen_setter(&self) -> Option<std::rc::Rc<dyn Fn(bool)>> {
+        // Deliberately `None` for now — `set_fullscreen` is a logged
+        // no-op on iOS. Hiding the status bar + home indicator is driven
+        // by `prefersStatusBarHidden` / `prefersHomeIndicatorAutoHidden`
+        // overrides on the *root* view controller, but on iOS that VC is
+        // created by the Swift host template (`AppDelegate.swift`), not
+        // this backend — so honoring it needs a host-side root-VC
+        // subclass with a Rust→Swift toggle, plus on-device verification.
+        // It is also lower-value here than on Android: iOS has no system
+        // back-gesture arrow to suppress (disabling
+        // `interactivePopGestureRecognizer` fully removes the swipe-back
+        // affordance), which is the problem `set_fullscreen` solves on
+        // Android. Tracked as the iOS half of the app-controls surface.
+        None
+    }
+
     fn color_scheme(&self) -> runtime_core::ColorScheme {
         // UITraitCollection.currentTraitCollection.userInterfaceStyle
         // 0 = Unspecified, 1 = Light, 2 = Dark (UIUserInterfaceStyle).
@@ -2791,6 +2807,18 @@ impl Backend for IosBackend {
             }
             _ => {}
         }
+
+        // `set_style` above updated the Taffy node, but Taffy only recomputes on
+        // a layout pass — and a POST-MOUNT reactive style change (a `style = move
+        // || …` closure firing when a signal changes) has no other trigger. Schedule
+        // a (coalesced) pass so the new size/position is actually computed AND
+        // written to the UIView frame. Without this the visual could update via a
+        // sibling path (e.g. the whiteboard camera, whose canvas-composited image
+        // tracks `cam_x/cam_y` directly) while the view's own frame — and thus its
+        // hit-test rect — stayed stale, so touches missed it intermittently.
+        // `schedule_layout_pass` coalesces to one pass per runloop turn, so the
+        // many `apply_style` calls during a build collapse into the build's pass.
+        schedule_layout_pass();
     }
 
     fn set_animated_f32(

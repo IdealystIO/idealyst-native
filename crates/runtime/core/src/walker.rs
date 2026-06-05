@@ -178,6 +178,12 @@ where
     // singleton, so it survives past this borrow.
     crate::backend::install_url_opener(backend.borrow().url_opener());
 
+    // Stash the backend's full-screen / immersive-mode setter so author
+    // code can call `runtime_core::set_fullscreen(...)` from any event
+    // handler without a Backend reference. Same one-shot read as the URL
+    // opener — a self-contained closure making a window/system call.
+    crate::backend::install_fullscreen_setter(backend.borrow().fullscreen_setter());
+
     // Auto-start the Robot bridge when the `dev` feature is on so
     // the MCP server's runtime tools can attach without the user
     // wiring `bridge::start(...)` themselves. The call is
@@ -400,6 +406,18 @@ pub(super) fn build_inner<B: Backend + 'static>(
             if let Some(pid) = parent {
                 robot::add_child(pid, id);
             }
+            // Deregister when this element's owning reactive scope drops.
+            // A `when`/`switch`/`each` branch builds inside a fresh
+            // `Scope` (via `with_scope`); when the condition flips and the
+            // old scope is dropped, this fires and removes the stale
+            // entry. Without it the robot registry leaks every torn-down
+            // branch as a phantom live root in `snapshot()` — the
+            // double-live-root the AAS host reported (onboarding subtree
+            // surviving alongside the main screen). Registration runs
+            // inside `untrack`, so `on_cleanup` anchors to the active
+            // SCOPE (not the outer `When` effect, which would re-run, not
+            // drop, on every flip).
+            crate::reactive::on_cleanup(move || robot::deregister(id));
             robot::push_parent(id);
             Some(id)
         } else {

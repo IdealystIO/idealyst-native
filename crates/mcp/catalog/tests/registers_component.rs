@@ -454,6 +454,59 @@ fn macros_table_documents_effect_and_signal() {
 }
 
 #[test]
+fn sdks_table_indexes_non_ui_capability_crates() {
+    // A1 regression: non-UI SDK crates (net / storage / credentials /
+    // server) were invisible to every catalog surface, so an agent
+    // couldn't discover how to make a network request or persist data.
+    // The `sdks` slice closes that — assert the data-layer crates are
+    // present with a usable dep line and the right classification.
+    let by_name = |needle: &str| {
+        mcp_catalog::sdks()
+            .find(|s| s.name == needle)
+            .unwrap_or_else(|| panic!("`{needle}` SDK registered; got {:?}",
+                mcp_catalog::sdks().map(|s| s.name).collect::<Vec<_>>()))
+    };
+
+    let net = by_name("net");
+    assert_eq!(net.category, mcp_catalog::SdkCategory::Data);
+    assert_eq!(net.kind, mcp_catalog::SdkKind::Api);
+    assert!(net.dep_line.contains("net ="), "dep line is copy-pasteable: {:?}", net.dep_line);
+    assert!(net.summary.to_lowercase().contains("http"), "net summary names HTTP");
+
+    // The other capabilities the field report flagged as undiscoverable.
+    for required in &["storage", "credentials", "server", "files"] {
+        let s = by_name(required);
+        assert_eq!(s.category, mcp_catalog::SdkCategory::Data, "{required} is a data crate");
+    }
+
+    // The component library + an Element::External primitive are tagged.
+    assert_eq!(by_name("idea-ui").category, mcp_catalog::SdkCategory::Ui);
+    assert_eq!(by_name("webview").kind, mcp_catalog::SdkKind::External);
+
+    // Lookup helper resolves by crate name.
+    assert!(mcp_catalog::lookup_sdk("net").is_some());
+    assert!(mcp_catalog::lookup_sdk("no-such-crate").is_none());
+}
+
+#[test]
+fn sdks_guide_enumerates_the_data_crates() {
+    // The structured slice's prose home: the `sdks` guide must exist and
+    // name the data crates so `read_guide("sdks")` is a real fallback.
+    let guide = mcp_catalog::lookup_guide("sdks").expect("sdks guide registered");
+    for required in &["net", "storage", "credentials", "server"] {
+        assert!(
+            guide.body.contains(required),
+            "sdks guide should mention `{required}`; body len {}",
+            guide.body.len(),
+        );
+    }
+    // And the server-functions guide exists for the #[server] flow.
+    let srv = mcp_catalog::lookup_guide("server-functions")
+        .expect("server-functions guide registered");
+    assert!(srv.body.contains("#[server]"), "server-functions guide covers the macro");
+}
+
+#[test]
 fn primitive_entry_is_construct_locked_to_this_crate() {
     // Compile-time check: external callers can read every pub field
     // but cannot construct one. This test asserts the read surface
@@ -1129,6 +1182,7 @@ fn catalog_json_v2_includes_every_new_slice() {
         "types",
         "tools",
         "scopes",
+        "sdks",
     ] {
         assert!(
             json[slice].is_array(),
@@ -1173,6 +1227,7 @@ fn catalog_json_round_trips_through_build_from_json() {
     assert_eq!(rebuilt.tools().len(), direct.tools().len(), "tools");
     assert_eq!(rebuilt.recipes().len(), direct.recipes().len(), "recipes");
     assert_eq!(rebuilt.scopes().len(), direct.scopes().len(), "scopes");
+    assert_eq!(rebuilt.sdks().len(), direct.sdks().len(), "sdks");
 
     // A scope survives the JSON boundary with its fields intact.
     let rebuilt_inner = rebuilt
@@ -1189,6 +1244,17 @@ fn catalog_json_round_trips_through_build_from_json() {
         .find(|r| r.name == "compute_thing_example")
         .expect("recipe survives round-trip");
     assert_eq!(rebuilt_recipe.target, "compute_thing", "recipe target lost in round-trip");
+
+    // An SDK keeps its dep line + classification across the wire — the
+    // fields an agent needs to actually add the crate.
+    let rebuilt_net = rebuilt
+        .sdks()
+        .iter()
+        .find(|s| s.name == "net")
+        .expect("net SDK survives round-trip");
+    assert!(rebuilt_net.dep_line.contains("net ="), "sdk dep_line lost in round-trip");
+    assert_eq!(rebuilt_net.category, mcp_catalog::SdkCategory::Data, "sdk category lost");
+    assert_eq!(rebuilt_net.kind, mcp_catalog::SdkKind::Api, "sdk kind lost");
 
     // Field-level fidelity: a component carries its docs, composes, and
     // params across the boundary intact.

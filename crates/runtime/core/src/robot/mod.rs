@@ -245,6 +245,17 @@ impl Registry {
             if let Some(test_id) = entry.test_id {
                 self.by_test_id.remove(test_id);
             }
+            // Unlink from the parent's children list so a still-live
+            // parent (e.g. a `View` wrapping a reactive `when` region)
+            // doesn't keep a dangling id that a recycled slot could later
+            // re-point at a different element. Without this, `snapshot()`
+            // / `children_of` would walk a stale child id whose freed slot
+            // was reused by an unrelated registration.
+            if let Some(pid) = entry.parent {
+                if let Some(Some(parent)) = self.entries.get_mut(pid.0 as usize) {
+                    parent.children.retain(|c| *c != id);
+                }
+            }
             self.free.push(id.0);
         }
     }
@@ -812,9 +823,12 @@ pub(crate) fn attach_frame_actions(
     });
 }
 
-/// Remove a previously-registered element. Called when its owning
-/// scope drops.
-#[allow(dead_code)]
+/// Remove a previously-registered element. Wired by the walker as an
+/// `on_cleanup` against the element's owning reactive scope, so a
+/// `when`/`switch`/`each` branch swap (or any scope teardown) drops the
+/// old subtree's registry entries instead of leaking them as phantom
+/// live roots in `snapshot()` — see
+/// `regression_when_branch_swap_disposes_old_branch_from_robot_registry`.
 pub(crate) fn deregister(id: ElementId) {
     REGISTRY.with(|r| r.borrow_mut().remove(id));
 }

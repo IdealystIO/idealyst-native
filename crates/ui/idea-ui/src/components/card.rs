@@ -27,7 +27,7 @@ use runtime_core::{
 };
 
 use idea_theme::active_theme;
-use idea_theme::extensible::{tone as tones, ResolutionCtx, VariantRef};
+use idea_theme::extensible::{tone as tones, ResolutionCtx, ToneRef, VariantRef};
 use idea_theme::theme::IdeaThemeRef;
 
 pub use crate::stylesheets::CardPadding;
@@ -202,6 +202,12 @@ pub struct CardProps {
     /// Inner padding scale (None/Sm/Md/Lg → theme spacing tokens).
     /// Default Md.
     pub padding: CardPadding,
+    /// Optional intent tint. When `Some`, the card paints a muted
+    /// tone-tinted background and matching border (the same "Soft"
+    /// treatment Alert uses) instead of the variant's surface color —
+    /// for support/crisis/info panels that need to read as intent-colored.
+    /// When `None` (the default), Flat/Elevated keep their surface look.
+    pub tone: Option<ToneRef>,
     /// Card contents. Incoming fragments are flattened via
     /// `ChildList::append_to` before rendering inside the surface.
     pub children: Vec<Element>,
@@ -212,6 +218,7 @@ impl Default for CardProps {
         Self {
             variant: variant::Flat.into(),
             padding: CardPadding::default(),
+            tone: None,
             children: Vec::new(),
         }
     }
@@ -226,13 +233,107 @@ pub fn Card(props: CardProps) -> Element {
     let padding_key = props.padding.as_variant_str().to_string();
 
     // Static style — build-time apply, no flicker (see Button).
-    let style = StyleApplication::new(card_sheet())
+    let mut style = StyleApplication::new(card_sheet())
         .with("variant", variant_key)
         .with("padding", padding_key);
+
+    // Intent tint — when a tone is set, overlay the variant's surface
+    // bg/border with the tone's Soft slots (the same tint Alert's Soft
+    // variant uses). Rides a computed layer keyed on the tone so the
+    // framework caches one resolved StyleRules per tone. Without a tone
+    // the layer is absent and Flat/Elevated keep their surface look.
+    if let Some(tone) = props.tone.clone() {
+        let tone_for_key = tone.clone();
+        style = style.with_computed(format!("tone_{}", tone_for_key.key()), move || {
+            let theme_rc = active_theme();
+            let theme_ref = theme_rc
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("idea-ui: no IdeaTheme installed");
+            let bg = tone.soft_bg(theme_ref);
+            let border = tone.stroke_color(theme_ref);
+            let fg = tone.soft_fg(theme_ref);
+            StyleRules {
+                background: Some(bg),
+                color: Some(fg),
+                border_top_color: Some(border.clone()),
+                border_right_color: Some(border.clone()),
+                border_bottom_color: Some(border.clone()),
+                border_left_color: Some(border),
+                ..Default::default()
+            }
+        });
+    }
 
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut children);
     }
     ui! { view(style = style) { children } }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use idea_theme::extensible::{tone, Tone};
+    use idea_theme::theme::{install_idea_theme, light_theme};
+    use runtime_core::{resolve_style, StyleSource};
+
+    fn theme() {
+        install_idea_theme(light_theme());
+    }
+
+    fn view_style(card: Element) -> StyleApplication {
+        match card {
+            Element::View { style, .. } => match style.expect("Card view has a style") {
+                StyleSource::Static(a) => a,
+                _ => panic!("Card uses a static style source"),
+            },
+            _ => panic!("Card renders a view"),
+        }
+    }
+
+    // D7: a toned Card paints the tone's Soft tint as its background,
+    // distinct from the surface bg a tone-less Flat card renders.
+    #[test]
+    fn tone_tints_background_distinct_from_surface() {
+        theme();
+        let toned = CardProps {
+            tone: Some(tone::Danger.into()),
+            ..Default::default()
+        };
+        let toned_bg = resolve_style(&view_style(Card(toned)))
+            .background
+            .clone()
+            .expect("toned card sets a background");
+
+        let plain = CardProps::default();
+        let plain_bg = resolve_style(&view_style(Card(plain)))
+            .background
+            .clone()
+            .expect("Flat card sets a surface background");
+
+        assert_ne!(
+            toned_bg, plain_bg,
+            "a Danger-toned card must read differently from a plain surface card"
+        );
+        // The tint matches the Danger tone's Soft slot (the same tint
+        // Alert's Soft variant uses).
+        let theme_rc = active_theme();
+        let expected =
+            tone::Danger.soft_bg(theme_rc.downcast_ref::<IdeaThemeRef>().unwrap());
+        assert_eq!(toned_bg, expected, "tint is the tone's soft_bg");
+    }
+
+    // D7: with no tone, Flat/Elevated keep their surface look unchanged —
+    // the computed tint layer is absent entirely.
+    #[test]
+    fn no_tone_keeps_surface_look() {
+        theme();
+        let plain = CardProps::default();
+        let app = view_style(Card(plain));
+        assert!(
+            app.computed().is_none(),
+            "a tone-less Card attaches no tint layer"
+        );
+    }
 }

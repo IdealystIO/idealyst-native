@@ -967,6 +967,15 @@ mod runtime {
         // survives `reset_log_and_scene` (only live instances clear), so
         // once per session is enough — re-renders reuse the factories.
         register_extensions(&mut recorder);
+        // Install the Tokio-backed async executor on THIS session thread
+        // before any app code runs. Without it, `runtime_core::spawn_async`
+        // falls back to `pollster::block_on` on this reactor-less thread,
+        // and an app server-fn that lowers to reqwest (the desktop `net`
+        // transport) panics with "no reactor running" — killing the
+        // session and timing out every later robot call. Installing here,
+        // per session thread, gives each its own current-thread runtime
+        // (the global handle is idempotent; first install wins).
+        crate::async_executor::install();
         let backend_rc = Rc::new(RefCell::new(recorder.clone()));
         // Plant the viewport BEFORE `mount` runs. The user's `app()`
         // executes inside `mount`'s root scope and may immediately

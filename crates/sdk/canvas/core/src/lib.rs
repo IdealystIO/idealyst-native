@@ -197,20 +197,46 @@ pub struct TextureLayer {
     pub corner_radius: f32,
     /// Layer opacity `0.0..=1.0` (1 = opaque).
     pub opacity: f32,
+    /// Border (frame) stroke width in LOGICAL points (0 = no border). Drawn by
+    /// the renderer as a rounded-rect outline INSIDE the layer's `rect`, matching
+    /// `corner_radius` — so the frame is composited together with the image and
+    /// stays pixel-locked to it (e.g. a draggable camera widget whose frame must
+    /// not lag the moving picture; a separate framework-view border would).
+    pub border_width: f32,
+    /// Border stroke color (used only when `border_width > 0`).
+    pub border_color: Color,
 }
 
 impl TextureLayer {
-    /// A full-opacity, square, cover-fit layer from a reactive source + rect.
+    /// A full-opacity, square, cover-fit, border-less layer from a reactive
+    /// source + rect.
     pub fn new(
         source: Rc<dyn Fn() -> Option<media_stream::MediaStream>>,
         rect: Rc<dyn Fn() -> (f32, f32, f32, f32)>,
     ) -> Self {
-        Self { source, rect, fit: Fit::Cover, corner_radius: 0.0, opacity: 1.0 }
+        Self {
+            source,
+            rect,
+            fit: Fit::Cover,
+            corner_radius: 0.0,
+            opacity: 1.0,
+            border_width: 0.0,
+            border_color: Color::new(0, 0, 0, 0),
+        }
     }
 
     /// Set the corner radius (logical points).
     pub fn corner_radius(mut self, r: f32) -> Self {
         self.corner_radius = r;
+        self
+    }
+
+    /// Set a border (frame) drawn with the image, in logical points. Width `0`
+    /// removes it. The frame is composited with the texture, so it stays locked
+    /// to the picture even while the layer's `rect` moves.
+    pub fn border(mut self, width: f32, color: Color) -> Self {
+        self.border_width = width;
+        self.border_color = color;
         self
     }
 

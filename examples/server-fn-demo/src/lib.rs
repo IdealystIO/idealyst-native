@@ -264,8 +264,10 @@ pub fn register_extensions_recorder(_backend: &mut dev_server::WireRecordingBack
 // The whole thing fits in one function for the demo. State is two
 // signals: the live todo list, and a status message that surfaces
 // loading / error states. Three actions: refresh (re-fetch from
-// server), add (canned titles, since the demo doesn't include a
-// TextInput primitive yet), toggle (per-row button).
+// server), add (canned titles — kept deliberately simple so the demo
+// stays focused on the server-fn round-trip, not on input wiring; the
+// `text_input` / `text_area` primitives do exist if you want to swap in
+// a real entry field), toggle (per-row button).
 //
 // Server-fn calls happen inside `spawn_async`-backed event
 // handlers. `list_todos` / `create_todo` etc. are the macro-

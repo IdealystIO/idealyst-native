@@ -101,6 +101,12 @@ const TICK_INTERVAL: Duration = Duration::from_millis(20);
 /// short timeout is fine; if no Hello arrives we close the socket.
 const HANDSHAKE_DEADLINE: Duration = Duration::from_millis(2_000);
 
+/// Grace period before the host logs a one-time "no client connected;
+/// robot bridge is session-gated" hint (sidecar mode only). Long enough
+/// that a normal `--macos`/`--ios` client connect beats it, short enough
+/// to surface the `--web` + server_bin "no live apps" topology quickly.
+const NO_CLIENT_HINT_AFTER: Duration = Duration::from_secs(5);
+
 /// One connected client. Holds the WebSocket plus the per-client
 /// cursor into the session mirror's append-only log.
 struct ClientConn {
@@ -387,6 +393,21 @@ where
         }
     };
 
+    // One-time hint when the host runs but no client ever attaches.
+    // In sidecar mode the Robot bridge (and its `screenshot` verb) is
+    // registered *per session*, on the session thread the sidecar spins
+    // up only when a client connects (see `run_session_thread`). The
+    // `idealyst dev --web` + `server_bin` topology serves a standalone
+    // wasm bundle that runs the app *in the browser* — that browser is
+    // not a runtime-server client, so the host never gets a session, the
+    // bridge never registers, and robot tooling reports "no live apps
+    // discovered." Surface that clearly instead of leaving the user to
+    // guess. Single-process mode already has a robot-capable recorder, so
+    // the hint only applies to the sidecar path.
+    let started = std::time::Instant::now();
+    let mut idle_hint_logged = false;
+    let mut any_client_ever = false;
+
     loop {
         accept_new(
             &listener,
@@ -397,6 +418,25 @@ where
             pinned_session_id.as_deref(),
             session_tracker.as_ref(),
         );
+        if !clients.is_empty() {
+            any_client_ever = true;
+        }
+        if !single_process_mode
+            && !any_client_ever
+            && !idle_hint_logged
+            && started.elapsed() >= NO_CLIENT_HINT_AFTER
+        {
+            idle_hint_logged = true;
+            eprintln!(
+                "[dev-server] no runtime-server client has connected after {}s. The Robot bridge \
+                 (and the `screenshot` verb) attaches per session, only once a client connects — \
+                 so robot tools will report \"no live apps discovered\" until then. If you ran \
+                 `idealyst dev --web` with a server_bin, the app runs in the browser (not as a \
+                 runtime-server client), so no session is created here. Use the native sidecar \
+                 (`idealyst dev --macos`) for robot/screenshot tooling.",
+                NO_CLIENT_HINT_AFTER.as_secs(),
+            );
+        }
         poll_reads(
             &mut clients,
             sidecar_slot.as_ref(),

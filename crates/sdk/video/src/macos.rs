@@ -38,7 +38,7 @@ use objc2_app_kit::NSView;
 use objc2_foundation::{CGRect, NSObject, NSString};
 use runtime_core::effect;
 use std::any::Any;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -181,21 +181,27 @@ fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
             let _: () = msg_send![txn, commit];
         });
 
-        // Reactive src — the initial URL built the player; subsequent reactive
-        // swaps go through `replaceCurrentItemWithPlayerItem:` (keeps the layer
-        // attachment, no layout disruption). Skip the first run (already loaded).
+        // Reactive src. Load a new item whenever the resolved URL CHANGES to a
+        // non-empty value, tracking the last-loaded URL. A `first_run`-skip flag is
+        // wrong: the URL often resolves asynchronously (a recorded-file path lands
+        // AFTER mount), so the effect's first run already sees the real URL and
+        // would skip it, leaving the player empty and the preview blank.
+        // `replaceCurrentItemWithPlayerItem:` keeps the layer attachment, so swaps
+        // don't disrupt layout. `last_url` starts as whatever the player was built
+        // with, so an unchanged URL doesn't double-load.
         let player_for_src = player.clone();
         let props_for_src = props.clone();
-        let first_run = Cell::new(true);
+        let last_url = RefCell::new(initial_src.clone());
         effect!({
             let url = resolved_url(&props_for_src).unwrap_or_default();
-            if first_run.replace(false) {
+            if url.is_empty() || url == *last_url.borrow() {
                 return;
             }
             if let Some(item) = build_player_item(&url) {
                 let _: () = unsafe {
                     msg_send![&player_for_src, replaceCurrentItemWithPlayerItem: &*item]
                 };
+                *last_url.borrow_mut() = url;
                 if props_for_src.autoplay {
                     let _: () = unsafe { msg_send![&player_for_src, play] };
                 }
@@ -298,8 +304,20 @@ fn resolved_url(props: &VideoProps) -> Option<String> {
 }
 
 fn build_nsurl(s: &str) -> Option<Retained<AnyObject>> {
-    let ns_str = NSString::from_str(s);
-    unsafe { msg_send_id![objc2::class!(NSURL), URLWithString: &*ns_str] }
+    // A `file://` path MUST go through `fileURLWithPath:`, not `URLWithString:`.
+    // `URLWithString:` parses an already-percent-encoded URL and returns nil on a
+    // raw path containing a space or other reserved character — and the canonical
+    // recordings store lives under "Application Support" (a space), so a
+    // `file://…/Application Support/…recording.mp4` string yields nil, the
+    // AVPlayer gets no item, and the preview renders blank. `fileURLWithPath:`
+    // percent-encodes the path itself, so file playback is robust to any path.
+    if let Some(path) = s.strip_prefix("file://") {
+        let ns_path = NSString::from_str(path);
+        unsafe { msg_send_id![objc2::class!(NSURL), fileURLWithPath: &*ns_path] }
+    } else {
+        let ns_str = NSString::from_str(s);
+        unsafe { msg_send_id![objc2::class!(NSURL), URLWithString: &*ns_str] }
+    }
 }
 
 fn build_player_item(src: &str) -> Option<Retained<AnyObject>> {

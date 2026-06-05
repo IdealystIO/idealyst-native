@@ -121,12 +121,15 @@ pub mod tooltip;
 pub mod button;
 pub mod card;
 pub mod center;
+pub mod chip;
 pub mod collapsible;
 pub mod divider;
 pub mod field;
+pub mod icon;
 pub mod icon_button;
 pub mod modal;
 pub mod popover;
+pub mod segmented_control;
 pub mod select;
 pub mod skeleton;
 pub mod spacer;
@@ -137,3 +140,8 @@ pub mod table;
 pub mod tabs;
 pub mod tag;
 pub mod typography;
+
+// `Icon` is re-exported here (rather than only at the crate root in
+// lib.rs) so it's reachable as `crate::components::Icon`. The crate-root
+// `idea_ui::Icon` alias lives in lib.rs alongside the other components.
+pub use icon::{Icon, IconProps};

@@ -46,10 +46,20 @@ everywhere:
 
 | Target | Mechanism | Native layout → normalized |
 | --- | --- | --- |
-| iOS / macOS | `AVCaptureSession` + `AVCaptureVideoDataOutput` | `BGRA` → `RGBA8` |
+| iOS device / macOS | `AVCaptureSession` + `AVCaptureVideoDataOutput` | `BGRA` → `RGBA8` |
+| **iOS Simulator** | **synthetic test-pattern stream** (no camera hardware exists) | `RGBA8` |
 | Android | `Camera2` + `ImageReader` (via a Kotlin shim) | `YUV_420_888` → `RGBA8` |
 | Web (wasm32) | `getUserMedia` + a `<video>`/`<canvas>` frame pump | canvas `RGBA8` |
 | desktop Linux / Windows | *not yet implemented* — returns `Unsupported` | — |
+
+**iOS Simulator note:** the iOS Simulator has no camera hardware
+(`AVCaptureSession` finds no device), so on the simulator `Camera::open` returns
+a **synthetic animated stream** — a calm gradient with a slowly bouncing ball, at
+the requested resolution/fps — delivered as a normal `MediaStream`. This lets you
+exercise camera UI on the sim with no code changes; the real `AVFoundation`
+backend runs on physical devices. The synthetic path is gated `cfg(target_abi =
+"sim")`, so it isn't compiled into device builds. (Android emulators already ship
+their own synthetic camera, so this is iOS-only.)
 
 The subscribe callback is `FnMut`, so it can own and mutate state across
 frames. It must be `Send` on native/Android (it runs on the capture thread)

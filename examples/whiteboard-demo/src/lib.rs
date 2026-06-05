@@ -388,6 +388,19 @@ pub fn app() -> Element {
         raf: Rc::new(RefCell::new(None)),
     };
 
+    // Immersive full-screen on mount. This is the right model for a full-bleed
+    // drawing surface, and on Android it's the *only* state where the system
+    // lifts its 200dp gesture-exclusion cap — so combined with the decor-view
+    // exclusion it hands the whole canvas's edge swipes to the app as strokes
+    // (no back chevron, no navigation) instead of the system back gesture.
+    // iOS/macOS/web do their own native full-screen equivalent; backends
+    // without one no-op. `back_enabled(false)` stays as the commit-time safety
+    // net. Runs once on mount (no signal reads) — `mount(...)` has already
+    // installed the backend's full-screen setter.
+    runtime_core::effect!({
+        runtime_core::set_fullscreen(true);
+    });
+
     // Place the camera widget bottom-left the first time we learn the viewport
     // size (it's 0×0 before the first layout). In the root scope so it runs once
     // regardless of which screen is mounted; guarded so a later drag isn't

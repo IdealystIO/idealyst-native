@@ -115,7 +115,9 @@ pub use components::breadcrumbs::{Breadcrumbs, BreadcrumbsProps, Crumb};
 pub use components::card::{Card, CardPadding, CardProps};
 pub use components::center::{Center, CenterProps};
 pub use components::checkbox::{Checkbox, CheckboxProps};
+pub use components::chip::{Chip, ChipProps};
 pub use components::grid::{Grid, GridProps};
+pub use components::icon::{Icon, IconProps};
 pub use components::image::{Image, ImageProps};
 pub use components::link::{Link, LinkProps};
 pub use components::list::{List, ListItem, ListItemProps, ListProps};
@@ -139,6 +141,9 @@ pub use components::icon_button::{IconButton, IconButtonProps, IconButtonSize};
 pub use components::modal::{Modal, ModalProps};
 pub use components::popover::{Popover, PopoverProps};
 pub use components::progress::{Progress, ProgressProps};
+pub use components::segmented_control::{
+    SegmentOption, SegmentedControl, SegmentedControlProps,
+};
 pub use components::select::{Select, SelectOption, SelectProps, SelectSize};
 pub use components::skeleton::{Skeleton, SkeletonProps, SkeletonWidth};
 pub use components::spacer::{Spacer, SpacerProps};

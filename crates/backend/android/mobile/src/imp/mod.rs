@@ -2060,6 +2060,49 @@ impl Backend for AndroidBackend {
         }))
     }
 
+    fn fullscreen_setter(&self) -> Option<std::rc::Rc<dyn Fn(bool)>> {
+        // Same capture pattern as `url_opener`: the Activity Context's
+        // GlobalRef rides into the closure (JVM keeps it alive). The
+        // closure calls the static Kotlin helper `RustSystemUi`, which
+        // owns the per-API-level WindowInsetsController dance.
+        let context = self.context.clone();
+        Some(std::rc::Rc::new(move |enabled: bool| {
+            with_env(|env| {
+                // `RustSystemUi` is additive runtime — an embedded Kotlin
+                // runtime older than this native lib won't have it. Clear
+                // the pending exception and soft-fail so full-screen is
+                // silently absent rather than poisoning later JNI calls.
+                let class = match env.find_class("io/idealyst/runtime/RustSystemUi") {
+                    Ok(c) => c,
+                    Err(_) => {
+                        let _ = env.exception_clear();
+                        runtime_core::log(
+                            runtime_core::LogLevel::Warn,
+                            "set_fullscreen: RustSystemUi runtime class unavailable — \
+                             full-screen skipped; rebuild the idealyst CLI to ship it.",
+                        );
+                        return;
+                    }
+                };
+                if let Err(e) = env.call_static_method(
+                    class,
+                    "setFullscreen",
+                    "(Landroid/content/Context;Z)V",
+                    &[
+                        JValue::Object(&context.as_obj()),
+                        JValue::Bool(enabled as jni::sys::jboolean),
+                    ],
+                ) {
+                    let _ = env.exception_clear();
+                    runtime_core::log(
+                        runtime_core::LogLevel::Warn,
+                        &format!("set_fullscreen: RustSystemUi.setFullscreen failed: {e:?}"),
+                    );
+                }
+            });
+        }))
+    }
+
     fn color_scheme(&self) -> runtime_core::ColorScheme {
         // context.getResources().getConfiguration().uiMode & UI_MODE_NIGHT_MASK
         // UI_MODE_NIGHT_UNDEFINED = 0x00, UI_MODE_NIGHT_NO = 0x10,

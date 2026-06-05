@@ -42,6 +42,8 @@ That's it. No `main` function in your crate — the per-platform host (web/iOS/A
 2. **[[components|Components]]** — your own reusable units, declared with `#[component]`. Compose them inside `ui!` just like primitives.
 3. **[[reactivity|Reactivity]]** — `Signal<T>` values, `bind!`, and the closure-form reactive bindings inside `ui!`.
 
+Beyond the UI core, capabilities like networking, persistence, and a full component library live in **opt-in SDK crates** you add as you need them — see **[[sdks|SDKs & opt-in crates]]** for the index (and **[[server-functions]]** for the `#[server]` RPC layer). `net` makes HTTP requests, `storage`/`credentials` persist data, `idea-ui` provides ready-made components.
+
 ## Where to look in the catalog
 
 The MCP server (running automatically when you launch the project in Claude Code) exposes the entire framework surface:

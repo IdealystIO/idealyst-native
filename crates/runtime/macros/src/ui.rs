@@ -921,6 +921,52 @@ where
     })
 }
 
+/// Does `expr` have the "reactive call" shape — a single-segment
+/// function call whose every argument is a bare single-segment path
+/// (a signal reference)? This is the SAME syntactic shape
+/// `try_emit_derived_call` / `try_emit_structured_match` accept, and
+/// it is the shape that, by contract, reads signals: the structured
+/// lowering calls `(arg).get()` on each argument.
+///
+/// `condition_is_reactive` only fires on a literal `.get()` substring,
+/// so a scrutinee like `key(state)` (the signal read is hidden inside
+/// `key`, the args are bare `Signal`s) is NOT caught by it. For `if`
+/// this didn't matter — `if key(state) { … }` is always claimed by the
+/// structured `try_emit_derived_call::<bool>` path, which makes it
+/// reactive. But `match`'s structured path requires *literal* arm
+/// keys, so `match key(state) { Enum::A => …, _ => … }` (enum/non-literal
+/// arms) fell through `try_emit_structured_match` AND past
+/// `condition_is_reactive`, landing on the static plain-`match` arm —
+/// it built once and never re-ran when `state` changed. This predicate
+/// closes that gap so the closure-`switch` reactive path also claims
+/// the bare-call shape (matching `if`'s behavior).
+fn is_reactive_call_shape(expr: &Expr) -> bool {
+    let call = match expr {
+        Expr::Call(c) => c,
+        _ => return false,
+    };
+    // Function position must be a single-segment path with no generic args.
+    match &*call.func {
+        Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
+            if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+    if call.args.is_empty() {
+        return false;
+    }
+    // Every arg must be a bare single-segment path (a signal reference).
+    call.args.iter().all(|a| {
+        matches!(
+            a,
+            Expr::Path(syn::ExprPath { qself: None, path, .. })
+                if path.segments.len() == 1 && path.segments[0].arguments.is_empty()
+        )
+    })
+}
+
 /// Per-type hooks for `try_emit_derived_call`. `String` wraps the
 /// call in `format!("{}", _)` so authors don't have to make their
 /// `#[method]` return `String` directly; `bool` passes through
@@ -1711,6 +1757,36 @@ fn emit_if(
     //    can ship the binding declaratively.
     // 2. Closure-reactive (`.get()` in the condition): `when()` with the
     //    closure form; the framework's Effect path rebuilds on change.
+    //
+    // NON-`Copy` CAPTURE IN A NESTED `else if` ARM (field report "B5"):
+    // a chained `if a {…} else if b {…} else { foo(app) }` lowers each
+    // `else if` to a `when` nested INSIDE the parent's `otherwise`
+    // closure. Every `when` branch closure is `Fn` (re-invoked whenever
+    // its branch activates), and the parent's `otherwise` MUST rebuild
+    // the inner `when` Element on each call — which MOVES any non-`Copy`
+    // value the deeper arm uses into the inner closure. An `Fn` closure
+    // can't move out a captured non-`Copy` value on repeat calls, so the
+    // chain fails to compile with "cannot move out of value, a captured
+    // variable in an `Fn` closure" (the error points at the deep arm).
+    //
+    // Note this is the SAME `Fn`-branch constraint a flat reactive
+    // `switch`/`when` has — but there a single dispatcher owns the value,
+    // so an in-arm `app.clone()` reads it by ref and compiles. In the
+    // nested-`else if` form the move happens at the *construction* of the
+    // inner `when` (one level up from the arm), so an in-arm `.clone()`
+    // is too late to help.
+    //
+    // Author workarounds (no macro change avoids it without rewriting the
+    // whole if-chain to a single flat `switch`, which would regress the
+    // anchorless-`when` lowering many tests + the Android device fix rely
+    // on — out of proportion for this ergonomic edge):
+    //   - Move the non-`Copy` use into a flat `match` over a discriminant
+    //     (`match pick(a, b) { 0 => …, 1 => …, _ => foo(app.clone()) }`).
+    //     A flat `match` is a single `switch` dispatcher, so an in-arm
+    //     `.clone()` works (verified in
+    //     `tests/match_reactive_call_regression.rs::b5_*`).
+    //   - Wrap the value in `Rc`/`Arc` and clone a handle per arm, or hoist
+    //     it into an owner the arm borrows rather than moves.
     if let Some(structured_cond) = try_emit_derived_call::<bool>(cond) {
         let then_expr = emit_block_as_primitive(then_body);
         let else_expr = else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
@@ -1799,14 +1875,49 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
     //      the default). Lower to a structured `Element::Switch`
     //      so generator backends (Roku) can ship the binding
     //      declaratively.
-    //   2. Reactive closure — scrutinee reads a signal via `.get()`.
-    //      Lower to `runtime_core::switch(..)` — one Element per arm.
+    //   2. Reactive closure — scrutinee reads a signal, EITHER via a
+    //      literal `.get()` (`match screen.get()`) OR via the
+    //      reactive-call shape `match key(state)` where `key` reads the
+    //      bare signal args internally (matching the structured `if`
+    //      path, so a non-literal-arm `match` is reactive like
+    //      `if key(state)`). Lower to `runtime_core::switch(..)` — one
+    //      Element per arm.
     //   3. Plain Rust `match` — no reactivity. Flattens in children-slot.
     if let Some(structured) = try_emit_structured_match(scrutinee, arms) {
         return structured;
     }
 
-    if condition_is_reactive(scrutinee) {
+    // Reactive scrutinee — two shapes funnel into the closure-`switch`:
+    //   (a) `.get()` appears literally in the scrutinee
+    //       (`match screen.get() { … }`), caught by
+    //       `condition_is_reactive`.
+    //   (b) the "reactive call" shape `match key(state) { … }` where the
+    //       signal read lives inside `key` and the args are bare signals.
+    //       `try_emit_structured_match` (above) already claims this shape
+    //       WHEN every arm key is a literal; the enum/non-literal-arm case
+    //       falls through to here. Without (b), `match key(state)` over an
+    //       enum lowered to a STATIC plain `match` and never re-rendered
+    //       on signal change — unlike the equivalent `if key(state) { … }`,
+    //       which the structured `if` path always makes reactive.
+    let reactive_call = is_reactive_call_shape(scrutinee);
+    if condition_is_reactive(scrutinee) || reactive_call {
+        // Build the scrutinee the closure evaluates. For shape (b) we
+        // rewrite `key(state)` → `key((state).get())` so the closure
+        // subscribes to each signal arg (the structured paths do the
+        // same). Shape (a) already reads via `.get()`, so it's verbatim.
+        let scrutinee_expr: TokenStream2 = if reactive_call {
+            // Safe to unwrap: `is_reactive_call_shape` guaranteed `Expr::Call`.
+            if let Expr::Call(call) = scrutinee {
+                let func = &call.func;
+                let get_args = call.args.iter().map(|a| quote! { (#a).get() });
+                quote! { #func( #(#get_args),* ) }
+            } else {
+                quote! { #scrutinee }
+            }
+        } else {
+            quote! { #scrutinee }
+        };
+
         // Reactive: each arm is a single subtree (`switch` rebuilds the
         // active arm). Multi-node arms wrap by necessity.
         let arm_tokens: Vec<TokenStream2> = arms
@@ -1824,7 +1935,7 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
             .collect();
         return quote! {
             ::runtime_core::switch(
-                move || #scrutinee,
+                move || #scrutinee_expr,
                 move |__v| match __v {
                     #( #arm_tokens, )*
                 },

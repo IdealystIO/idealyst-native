@@ -42,7 +42,7 @@ test-support = []
 # `libc` saves single-digit KB of link time. Off for any consumer
 # that only wants the dev-side recorder / transport — those callers
 # stay anyhow-free + don't drag subsecond through their build.
-runtime-server = ["dep:dev-hot", "dep:subsecond-types", "dep:libc", "dep:anyhow", "dep:ctrlc"]
+runtime-server = ["dep:dev-hot", "dep:subsecond-types", "dep:libc", "dep:anyhow", "dep:ctrlc", "dep:tokio", "dep:pollster", "runtime-core/async-driver"]
 
 # Registers a `"screenshot"` Robot-bridge verb in each runtime-server
 # session so Robot / the MCP server can rasterize the (mocked) app's
@@ -98,6 +98,19 @@ tungstenite = { version = "0.24", default-features = false, features = ["handsha
 # dev side; never ships into an app binary.
 notify-debouncer-mini = { version = "0.4", default-features = false }
 
+# Tokio current-thread runtime for the AAS session thread's async
+# executor (`async_executor.rs`). The desktop `net` transport is reqwest
+# (→ `tokio::net::TcpStream`), which panics with "no reactor running"
+# unless app-initiated futures are driven inside a Tokio runtime context.
+# Optional — pulled in only by the `runtime-server` (sidecar) feature.
+# `rt` + `net` + `time` give a current-thread runtime with the I/O reactor
+# and timer driver reqwest needs; `io-util` covers reqwest's stream body.
+tokio = { version = "1", features = ["rt", "net", "time", "io-util"], optional = true }
+# Reentrant `spawn_async` fallback in the sidecar async executor (a
+# `block_on` already on the stack can't start a second Tokio runtime).
+# Optional — pulled in only by `runtime-server`.
+pollster = { version = "0.3", optional = true }
+
 [dev-dependencies]
 # Used by the `dump_wire` example to pretty-print the captured
 # command stream as JSON.
@@ -117,3 +130,17 @@ idea-ui = { workspace = true }
 # No dependency cycle: the shell crate depends on dev-client/wire/
 # runtime-core, never on dev-server.
 runtime-server-shell-native = { workspace = true, features = ["runtime-server"] }
+# `tests/aas_async_reactor.rs` stands up a loopback TCP listener and
+# drives a `tokio::net::TcpStream` through `spawn_async` to prove the
+# session-thread async executor provides a reactor (the E2 regression).
+# `rt-multi-thread` is only for the test's own listener task; the code
+# under test uses the crate's current-thread runtime.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "time"] }
+
+# E2 regression: app-initiated async work on an AAS session thread must
+# run inside a Tokio reactor (the executor in `src/async_executor.rs`),
+# not on a bare reactor-less thread. Only meaningful when the sidecar's
+# async machinery is compiled in.
+[[test]]
+name = "aas_async_reactor"
+required-features = ["runtime-server"]

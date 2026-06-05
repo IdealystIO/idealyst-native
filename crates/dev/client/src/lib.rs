@@ -69,6 +69,28 @@ pub enum ReplayError {
     MissingHandler(HandlerId),
 }
 
+thread_local! {
+    /// `StyleId`s we've already warned about, so a snapshot that
+    /// references the same dropped style on every node doesn't spam the
+    /// log once per node.
+    static WARNED_STYLES: RefCell<std::collections::HashSet<StyleId>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// Log (once per id) that a wire command referenced a `StyleId` with no
+/// live `RegisterStyle`. The replay skips that style's application and
+/// keeps rendering rather than blanking the frame — see the call sites
+/// for why bailing was the wrong default.
+fn warn_unknown_style(id: StyleId, ctx: &str) {
+    let first = WARNED_STYLES.with(|w| w.borrow_mut().insert(id));
+    if first {
+        eprintln!(
+            "[dev-client] {ctx}: unknown {id:?} (no RegisterStyle in this stream) — \
+             skipping this style apply, node keeps its default; replay continues"
+        );
+    }
+}
+
 /// Outbound channel for messages flowing app → dev.
 ///
 /// Wraps `Option<mpsc::Sender<AppToDev>>` behind an `Rc<RefCell<...>>`
@@ -873,21 +895,38 @@ where
             }
             Command::ApplyStyle { node, style } => {
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
-                let s = self.styles.get(&style).ok_or(ReplayError::UnknownStyle(style))?.clone();
-                self.backend.borrow_mut().apply_style(&n, &s);
+                // Degrade gracefully on an unknown style rather than
+                // aborting the whole batch. A snapshot can legitimately
+                // reference a `StyleId` whose `RegisterStyle` was dropped
+                // (a stylesheet unregistered while a node still carried
+                // its `ApplyStyle` — the scene-mirror's
+                // unregister-while-referenced gap). Bailing here renders a
+                // BLANK frame for the entire scene (the reported all-white
+                // screenshot); skipping just this one apply leaves the
+                // node with its create-time default style and lets the
+                // rest of the tree render. Warn so the gap is still
+                // visible in logs.
+                match self.styles.get(&style).cloned() {
+                    Some(s) => self.backend.borrow_mut().apply_style(&n, &s),
+                    None => warn_unknown_style(style, "ApplyStyle"),
+                }
             }
             Command::ApplyStyledStates { node, base, overlays } => {
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
-                let b = self
-                    .styles
-                    .get(&base)
-                    .ok_or(ReplayError::UnknownStyle(base))?
-                    .clone();
+                // Same graceful-degrade rationale as `ApplyStyle`: a
+                // missing base or overlay style skips this node's styled-
+                // state apply instead of blanking the frame.
+                let Some(b) = self.styles.get(&base).cloned() else {
+                    warn_unknown_style(base, "ApplyStyledStates(base)");
+                    return Ok(());
+                };
                 let mut o: Vec<(StateBits, Rc<StyleRules>)> = Vec::with_capacity(overlays.len());
                 for (bit, sid) in overlays {
                     let bits = convert::wire_state_bit(bit);
-                    let rules = self.styles.get(&sid).ok_or(ReplayError::UnknownStyle(sid))?.clone();
-                    o.push((bits, rules));
+                    match self.styles.get(&sid).cloned() {
+                        Some(rules) => o.push((bits, rules)),
+                        None => warn_unknown_style(sid, "ApplyStyledStates(overlay)"),
+                    }
                 }
                 self.backend.borrow_mut().apply_styled_states(&n, &b, &o);
             }

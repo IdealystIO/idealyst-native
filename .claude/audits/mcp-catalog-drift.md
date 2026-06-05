@@ -1,11 +1,12 @@
 ---
 name: mcp-catalog-drift
-description: Check the locked MCP catalog tables (`PrimitiveEntry`, `UtilityEntry`, `MacroEntry`, `StateEntry`, `GuideEntry`) against their underlying truth — the `Element` enum, the framework's utility surface, the authoring-macro definitions, the `stylesheet!` parser's state whitelist, and the guides directory.
+description: Check the locked MCP catalog tables (`PrimitiveEntry`, `UtilityEntry`, `MacroEntry`, `StateEntry`, `GuideEntry`, `SdkEntry`) against their underlying truth — the `Element` enum, the framework's utility surface, the authoring-macro definitions, the `stylesheet!` parser's state whitelist, the guides directory, and the `crates/{sdk,api,ui}/*` crate roster.
 targets:
   - crates/mcp/catalog/src/primitives.rs
   - crates/mcp/catalog/src/utilities.rs
   - crates/mcp/catalog/src/macros.rs
   - crates/mcp/catalog/src/states.rs
+  - crates/mcp/catalog/src/sdks.rs
   - crates/mcp/catalog/guides
   - crates/runtime/core/src/element.rs
   - crates/runtime/core/src/lib.rs
@@ -18,9 +19,9 @@ severity: medium
 
 ## Background
 
-The framework's MCP catalog ships five **locked** slices — only `mcp-catalog` can construct entries (via a private `_seal: ()` field on each entry type). The lock means third parties can't add their own primitives/utilities/macros/states/guides, which is what we want, but it also means the framework itself has to keep the hand-curated tables in sync with their underlying truth.
+The framework's MCP catalog ships six **locked** slices — only `mcp-catalog` can construct entries (via a private `_seal: ()` field on each entry type). The lock means third parties can't add their own primitives/utilities/macros/states/guides/SDK-entries, which is what we want, but it also means the framework itself has to keep the hand-curated tables in sync with their underlying truth.
 
-Four drift surfaces matter:
+Five drift surfaces matter:
 
 1. **Primitive tables vs. the `Element` enum.** Adding a variant to `crates/runtime/core/src/element.rs` without a corresponding `inventory::submit!` in `crates/mcp/catalog/src/primitives.rs` means the new primitive is invisible to AI/idea-ui/the doc-site. The `tests/registers_component.rs::primitives_table_includes_core_set` test catches missing core entries but isn't exhaustive over every variant.
 
@@ -29,6 +30,8 @@ Four drift surfaces matter:
 3. **State table vs. the `stylesheet!` parser whitelist.** `crates/runtime/macros/src/stylesheet.rs` hard-codes the four valid state names (`hovered`, `pressed`, `focused`, `disabled`). Changing either side without the other is a silent drift — the parser would accept a state the catalog doesn't document, or vice versa.
 
 4. **Guide cross-references.** Each `guides/*.md` may reference catalog entries via `[[name]]`. If a primitive is renamed or removed, every dangling `[[name]]` becomes a broken link. Same for `[[memory]]` references that ship as part of in-repo memory-style cross-links.
+
+5. **SDK table vs. the `crates/{sdk,api,ui}/*` roster.** `crates/mcp/catalog/src/sdks.rs` hand-curates one `SdkEntry` per opt-in crate (networking, persistence, the component library, …). The truth is the set of crate directories under `crates/sdk/`, `crates/api/`, and `crates/ui/`. Adding a crate without a table entry makes it undiscoverable from the MCP (the A1 gap this slice closed: `net`/`storage`/`credentials`/`server` were invisible); removing/renaming one without updating the table leaves a stale claim with a dep line that won't resolve. The `dep_line` must stay copy-pasteable and the `category`/`kind` accurate.
 
 ## Checklist
 
@@ -57,6 +60,14 @@ Four drift surfaces matter:
 - [ ] Compare with the four `inventory::submit!` calls in `crates/mcp/catalog/src/states.rs`. They must be set-equal.
 - [ ] Flag any mismatch as `severity: high` — a parser-accepted state without a catalog entry (or vice versa) breaks the cross-platform contract.
 
+### SDK roster coverage
+
+- [ ] List the crate directories under `crates/sdk/`, `crates/api/`, and `crates/ui/` (each with a `Cargo.toml`). Exclude internal/proc-macro-only helpers that aren't author-facing deps (e.g. `server-macros`, `idea-ui-docs-derive`).
+- [ ] For each author-facing crate, search `crates/mcp/catalog/src/sdks.rs` for an `sdk!("<crate>", …)` entry. Flag any crate with no entry — it's undiscoverable from `list_sdks` / `describe_sdk` / `search`.
+- [ ] Flag any `SdkEntry` whose `name` no longer matches a directory under `crates/{sdk,api,ui}/` — a stale claim whose `dep_line` won't resolve.
+- [ ] Spot-check `category` (data / media / ui / device) and `kind` (api vs external — does the crate expose plain functions/types, or a `ui!` `Element::External` primitive?). A `MapView`/`WebView`/`Video`-style primitive is `External`; `net`/`storage`/`server` are `Api`.
+- [ ] Verify the `sdks` and `server-functions` guides still exist (`guides/sdks.md`, `guides/server-functions.md`) and that the `sdks` guide enumerates the data crates the structured slice indexes (the prose fallback for `read_guide("sdks")`).
+
 ### Guide link integrity
 
 - [ ] For every `guides/*.md` file, grep for `[[name]]` references.
@@ -76,7 +87,8 @@ Four drift surfaces matter:
 
 ### Test coverage
 
-- [ ] `cargo test -p mcp-catalog` should still pass. In particular: `catalog_json_v2_includes_every_new_slice`, `catalog_json_round_trips_through_build_from_json`, `primitives_table_includes_core_set`, `states_table_has_exactly_the_four_interaction_states`, `utilities_table_includes_platform_accessor`, `macros_table_documents_effect_and_signal`, `guides_table_includes_getting_started`.
+- [ ] `cargo test -p mcp-catalog` should still pass. In particular: `catalog_json_v2_includes_every_new_slice`, `catalog_json_round_trips_through_build_from_json`, `primitives_table_includes_core_set`, `states_table_has_exactly_the_four_interaction_states`, `utilities_table_includes_platform_accessor`, `macros_table_documents_effect_and_signal`, `guides_table_includes_getting_started`, `sdks_table_indexes_non_ui_capability_crates`, `sdks_guide_enumerates_the_data_crates`.
+- [ ] `cargo test -p mcp-server` should still pass. In particular the server-tool regressions: `search_multi_word_query_tokenizes_and_ranks`, `search_covers_non_guide_slices`, `list_and_describe_macros_are_populated`, `list_and_describe_sdks_expose_non_ui_crates`.
 
 ## Output format
 

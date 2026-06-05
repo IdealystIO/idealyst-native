@@ -30,6 +30,7 @@ mod macros;
 mod states;
 mod guides;
 mod scopes;
+mod sdks;
 
 /// A single composition edge emitted by `#[component]` when it walked
 /// the function body. `name` is the bare ident as written at the call
@@ -137,6 +138,7 @@ inventory::collect!(AnimationEntry);
 inventory::collect!(TypeEntry);
 inventory::collect!(RecipeEntry);
 inventory::collect!(ScopeEntry);
+inventory::collect!(SdkEntry);
 
 /// A built-in framework primitive — the leaf nodes of the `ui!` /
 /// `jsx!` grammar (`View`, `Text`, `Button`, `ScrollView`, ...).
@@ -510,6 +512,95 @@ pub struct ScopeEntry {
     pub order: u32,
 }
 
+/// An opt-in **SDK crate** — a peripheral capability that ships outside
+/// `runtime-core` (networking, persistence, camera, the component
+/// library, …) and that an author adds to `Cargo.toml` as a dependency.
+///
+/// These are invisible to the component/primitive/utility slices because
+/// they expose plain Rust functions and types (`net::Client`,
+/// `storage::platform_storage()`) or `Element::External` primitives, not
+/// `#[component]`s the inventory walker can see. This slice is the
+/// discovery surface an agent uses to learn "which crate makes a network
+/// request / persists data / renders a map" — backed by the
+/// [`sdks`](crate::sdks) guide for the prose.
+///
+/// **Locked** — same `_seal: ()` pattern as [`PrimitiveEntry`]. The SDK
+/// roster ships with the framework version; a third-party crate that
+/// wants to be discoverable documents itself, it doesn't register here.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct SdkEntry {
+    /// Crate name as written in `Cargo.toml` (no `idealyst-` prefix) —
+    /// `"net"`, `"storage"`, `"idea-ui"`. Doubles as the `describe_sdk`
+    /// lookup key.
+    pub name: &'static str,
+    /// One-line summary of what the crate gives you.
+    pub summary: &'static str,
+    /// The `Cargo.toml` dependency line to add — e.g.
+    /// `"net = { workspace = true }"`. A copy-pasteable starting point;
+    /// the source (git/rev/path) mirrors the project's `runtime-core`
+    /// line.
+    pub dep_line: &'static str,
+    /// Broad classification for grouping in `list_sdks`.
+    pub category: SdkCategory,
+    /// Whether the crate's surface is plain functions/types (`Api`) or a
+    /// `ui!` primitive wired through `Element::External` (`External`).
+    pub kind: SdkKind,
+    /// Slug of the guide (this slice's prose home) for cross-reference —
+    /// always `"sdks"` today; present so a future per-SDK guide can
+    /// override it.
+    pub guide: &'static str,
+    #[doc(hidden)]
+    pub _seal: (),
+}
+
+/// Broad classification for [`SdkEntry`] — the capability area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdkCategory {
+    /// HTTP / sockets / server relay / persistence: `net`, `server`,
+    /// `storage`, `credentials`, `files`, `file-export`, `i18n`.
+    Data,
+    /// Capture / playback / drawing: `camera`, `microphone`,
+    /// `screen-recorder`, `media-writer`, `media-stream`, `video`,
+    /// `canvas`.
+    Media,
+    /// UI components / `Element::External` primitives: `idea-ui`,
+    /// `idea-theme`, `icons-lucide`, `webview`, `maps`, `svg`,
+    /// `markdown`, `codeblock`, `table`, `form`, `toolbar`, `menu`.
+    Ui,
+    /// Device capabilities that don't fit the above: `biometrics`.
+    Device,
+}
+
+impl SdkCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Data => "data",
+            Self::Media => "media",
+            Self::Ui => "ui",
+            Self::Device => "device",
+        }
+    }
+}
+
+/// Whether an [`SdkEntry`]'s surface is plain API or a `ui!` primitive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdkKind {
+    /// Plain Rust functions/types called outside `ui!` (`net::Client`).
+    Api,
+    /// A `ui!` primitive wired through `Element::External`.
+    External,
+}
+
+impl SdkKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Api => "api",
+            Self::External => "external",
+        }
+    }
+}
+
 /// Generalized type-catalog entry. Subsumes [`PropsSchemaEntry`]:
 /// every props struct also produces a `TypeEntry` (shape `Struct`).
 /// Enums get a `TypeEntry` with shape `Enum` listing their variants
@@ -642,6 +733,16 @@ pub fn lookup_scope(slug: &str) -> Option<&'static ScopeEntry> {
     scopes().find(|s| s.slug == slug)
 }
 
+/// Iterate every [`SdkEntry`] in the locked opt-in-crate table.
+pub fn sdks() -> impl Iterator<Item = &'static SdkEntry> {
+    inventory::iter::<SdkEntry>()
+}
+
+/// Look up an SDK crate by its `name` (the `Cargo.toml` crate name).
+pub fn lookup_sdk(name: &str) -> Option<&'static SdkEntry> {
+    sdks().find(|s| s.name == name)
+}
+
 /// Look up a primitive by its `name` (snake_case) or `pascal_name`.
 pub fn lookup_primitive(needle: &str) -> Option<&'static PrimitiveEntry> {
     primitives().find(|p| p.name == needle || p.pascal_name == needle)
@@ -702,6 +803,7 @@ pub fn catalog_json() -> serde_json::Value {
         "tools": slice_array::<ToolEntry>(),
         "recipes": slice_array::<RecipeEntry>(),
         "scopes": slice_array::<ScopeEntry>(),
+        "sdks": slice_array::<SdkEntry>(),
     })
 }
 

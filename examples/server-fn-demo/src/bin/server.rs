@@ -14,12 +14,22 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
+// FORCE-LINK: importing (and using, via `install_state` below) something
+// from the app lib is what keeps the linker from dead-stripping the lib's
+// `inventory::submit!` route statics. Without a reference into the lib,
+// `server::router()` registers ZERO routes and every `/_srv/<fn>` 404s with
+// no build error and no runtime hint. This `AppState` use is that reference;
+// if a future refactor drops it, add an explicit `let _ = server_fn_demo::…`
+// touch instead — don't leave the bin referencing nothing from the lib.
+// (As a backstop, `server::router()` now warns at startup when it finds 0
+// registered routes.)
 use server_fn_demo::state::AppState;
 use tower_http::services::ServeDir;
 
 #[tokio::main]
 async fn main() {
-    // App-level state. Real apps install a DB pool here.
+    // App-level state. Real apps install a DB pool here. This call is also
+    // the force-link reference into the app lib (see the import comment).
     server::install_state(Arc::new(AppState::new()));
 
     // Absolute crate directory, baked in at compile time — robust to the CWD

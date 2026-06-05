@@ -31,7 +31,8 @@ use crate::slice::LeakFromJson;
 use crate::{
     AnimationEntry, ComponentEntry, EdgeRef, GuideEntry, MacroEntry, MacroKind, MethodEntry,
     ParamSpec, PrimitiveCategory, PrimitiveEntry, PropFieldSpec, RecipeEntry, ScopeEntry,
-    StateEntry, ToolEntry, TypeEntry, TypeShape, UtilityCategory, UtilityEntry, VariantSpec,
+    SdkCategory, SdkEntry, SdkKind, StateEntry, ToolEntry, TypeEntry, TypeShape, UtilityCategory,
+    UtilityEntry, VariantSpec,
 };
 
 /// A `(module_path, name)` pair, the canonical identity for a
@@ -126,6 +127,7 @@ pub struct ResolvedCatalog {
     tools: Vec<&'static crate::ToolEntry>,
     recipes: Vec<&'static crate::RecipeEntry>,
     scopes: Vec<&'static crate::ScopeEntry>,
+    sdks: Vec<&'static crate::SdkEntry>,
 }
 
 impl ResolvedCatalog {
@@ -144,6 +146,7 @@ impl ResolvedCatalog {
         cat.tools = crate::tools().collect();
         cat.recipes = crate::recipes().collect();
         cat.scopes = crate::scopes().collect();
+        cat.sdks = crate::sdks().collect();
         cat
     }
 
@@ -187,6 +190,7 @@ impl ResolvedCatalog {
         cat.tools = slice_vec::<ToolEntry>(&value);
         cat.recipes = slice_vec::<RecipeEntry>(&value);
         cat.scopes = slice_vec::<ScopeEntry>(&value);
+        cat.sdks = slice_vec::<SdkEntry>(&value);
         Ok(cat)
     }
 
@@ -222,6 +226,9 @@ impl ResolvedCatalog {
     }
     pub fn scopes(&self) -> &[&'static crate::ScopeEntry] {
         &self.scopes
+    }
+    pub fn sdks(&self) -> &[&'static crate::SdkEntry] {
+        &self.sdks
     }
 
     /// Recipes that demonstrate `name` — either as their primary
@@ -840,6 +847,40 @@ fn leak_scope_from_json(v: &serde_json::Value) -> Option<&'static ScopeEntry> {
     })))
 }
 
+fn sdk_category_from_str(s: &str) -> SdkCategory {
+    match s {
+        "media" => SdkCategory::Media,
+        "ui" => SdkCategory::Ui,
+        "device" => SdkCategory::Device,
+        _ => SdkCategory::Data,
+    }
+}
+
+fn sdk_kind_from_str(s: &str) -> SdkKind {
+    match s {
+        "external" => SdkKind::External,
+        _ => SdkKind::Api,
+    }
+}
+
+fn leak_sdk_from_json(v: &serde_json::Value) -> Option<&'static SdkEntry> {
+    let name = v["name"].as_str()?.to_string();
+    let summary = v["summary"].as_str().unwrap_or("").to_string();
+    let dep_line = v["dep_line"].as_str().unwrap_or("").to_string();
+    let category = sdk_category_from_str(v["category"].as_str().unwrap_or("data"));
+    let kind = sdk_kind_from_str(v["kind"].as_str().unwrap_or("api"));
+    let guide = v["guide"].as_str().unwrap_or("sdks").to_string();
+    Some(Box::leak(Box::new(SdkEntry {
+        name: leak_str(name),
+        summary: leak_str(summary),
+        dep_line: leak_str(dep_line),
+        category,
+        kind,
+        guide: leak_str(guide),
+        _seal: (),
+    })))
+}
+
 /// `value[S::KEY]` as a Vec of leaked entries, or empty when the key is
 /// absent / not an array. The generic reader half of `build_from_json`.
 fn slice_vec<S: LeakFromJson>(value: &serde_json::Value) -> Vec<&'static S> {
@@ -907,6 +948,11 @@ impl LeakFromJson for RecipeEntry {
 impl LeakFromJson for ScopeEntry {
     fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
         leak_scope_from_json(v)
+    }
+}
+impl LeakFromJson for SdkEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_sdk_from_json(v)
     }
 }
 

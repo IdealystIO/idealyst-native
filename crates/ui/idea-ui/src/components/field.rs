@@ -16,17 +16,21 @@
 //! `error` is `Some(...)`, `tone::Danger` is applied automatically if
 //! no explicit tone is given. `size` is a closed enum (`FieldSize`).
 //!
-//! Styles are STATIC `StyleApplication`s resolved from a programmatic
-//! sheet (size × tone axes + focused/disabled states), installed
-//! lazily. Static = applied at build time, theme-swapped in bulk by
-//! the cohort — no per-node Effect, no first-paint transition flicker.
+//! Styles are resolved from a programmatic sheet (size × tone axes +
+//! focused/disabled states), installed lazily. The input style is a
+//! STATIC `StyleApplication` (applied at build time, theme-swapped in
+//! bulk by the cohort — no per-node Effect, no first-paint flicker)
+//! WHENEVER the tone is fixed at build. When the tone is *derived from a
+//! live `error` signal*, the input style is instead attached as a
+//! reactive closure so the border color re-resolves on each validation
+//! change (see the `INVARIANT (D9)` note in [`Field`]).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, Easing, IdealystSchema, Length, Element, Reactive, Signal, StyleApplication,
-    StyleRules, StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
+    component, ui, Easing, IdealystSchema, IntoElement, Length, Element, Reactive, Signal,
+    StyleApplication, StyleRules, StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
 };
 
 use idea_theme::active_theme;
@@ -72,6 +76,17 @@ pub struct FieldProps {
     /// Mask the entered text (password entry). Forwarded to the underlying
     /// `text_input` primitive's `secure` flag.
     pub secure: bool,
+    /// Pin an exact minimum input height in pixels. When set, it layers a
+    /// `min-height` on top of the size-derived height so the input can't
+    /// shrink below it — use this to match a design's exact px floor (e.g.
+    /// `min_height = Some(48.0)`) instead of guessing a `size`. `None`
+    /// (the default) leaves the height fully size-derived.
+    #[schema(constraint = "pixels; None = size-derived height")]
+    pub min_height: Option<f32>,
+    /// Pin an exact input width in pixels. `None` (the default) lets the
+    /// input fill its column as usual; `Some(px)` fixes the width.
+    #[schema(constraint = "pixels; None = fill column")]
+    pub width: Option<f32>,
 }
 
 impl Default for FieldProps {
@@ -87,6 +102,8 @@ impl Default for FieldProps {
             size: FieldSize::default(),
             variant: FieldAppearance::default(),
             secure: false,
+            min_height: None,
+            width: None,
         }
     }
 }
@@ -313,28 +330,71 @@ pub fn Field(props: &FieldProps) -> Element {
     let on_change = props.on_change.clone();
     let placeholder = props.placeholder.clone();
     let size = props.size;
-    // Error TEXT is reactive (see `help_combined` below), but the
-    // error-driven TONE is a static style decision (per the framework's
-    // static-style fast path), so it reads the error's value once. A
-    // reactive border-on-validation would use the reactive-style path.
-    let has_error = props.error.get().is_some();
+    let appearance = props.variant.as_variant_str().to_string();
+    let min_height = props.min_height;
+    let width = props.width;
 
-    // Tone resolution: explicit `tone` wins; Danger on error; else none.
-    let tone: Option<ToneRef> = props.tone.clone().or_else(|| {
-        if has_error {
-            Some(tones::Danger.into())
-        } else {
-            None
+    // The effective tone is reactive iff it's *derived* from a live error
+    // signal — i.e. no explicit tone was given AND `error` is `Dynamic`.
+    // An explicit `tone`, or a `Static` error, fixes the tone at build.
+    let explicit_tone = props.tone.clone();
+    let error = props.error.clone();
+    let tone_is_reactive = explicit_tone.is_none() && !error.is_static();
+
+    // Derive the effective tone key from the *current* error value.
+    // Explicit tone wins; otherwise Danger when error is present.
+    let tone_key_for = {
+        let explicit_tone = explicit_tone.clone();
+        let error = error.clone();
+        move || -> String {
+            let tone: Option<ToneRef> = explicit_tone.clone().or_else(|| {
+                if error.get().is_some() {
+                    Some(tones::Danger.into())
+                } else {
+                    None
+                }
+            });
+            tone.as_ref().map(|t| t.key()).unwrap_or("default").to_string()
         }
-    });
-    let tone_key = tone.as_ref().map(|t| t.key()).unwrap_or("default").to_string();
+    };
 
-    // STATIC styles — no per-node Effect, no first-paint flicker.
-    let input_style = StyleApplication::new(field_input_sheet())
-        .with("size", size_key(size).to_string())
-        .with("appearance", props.variant.as_variant_str().to_string())
-        .with("tone", tone_key.clone());
-    let help_style = StyleApplication::new(field_help_sheet()).with("tone", tone_key);
+    // Build the input's `StyleApplication` for a given tone key. Factored
+    // into a closure so it can be evaluated once (static fast path) or per
+    // apply-style fire (reactive path); see the dispatch below.
+    let make_input_style = {
+        let appearance = appearance.clone();
+        let size_str = size_key(size).to_string();
+        move |tone_key: String| -> StyleApplication {
+            let mut app = StyleApplication::new(field_input_sheet())
+                .with("size", size_str.clone())
+                .with("appearance", appearance.clone())
+                .with("tone", tone_key);
+            // Pin an exact min-height / width on top of the size-derived
+            // box. Keyed by the px values so identical configs dedupe to
+            // one backend class.
+            if min_height.is_some() || width.is_some() {
+                app = app.with_computed(
+                    format!("field-dim-{:?}-{:?}", min_height, width),
+                    move || StyleRules {
+                        min_height: min_height
+                            .map(|h| Tokenized::Literal(Length::Px(h))),
+                        width: width.map(|w| Tokenized::Literal(Length::Px(w))),
+                        ..Default::default()
+                    },
+                );
+            }
+            app
+        }
+    };
+
+    // The help-text tone tracks the input tone. When the tone is reactive
+    // the error text already re-paints via `help_combined` below; the help
+    // *color* is a static decision keyed off the build-time tone (a tone
+    // flip from a live error still shows the right color because the help
+    // node only exists when `error`/`help` is `Some`, and Danger is the
+    // only error tone). Resolve the build-time key for it.
+    let help_style =
+        StyleApplication::new(field_help_sheet()).with("tone", tone_key_for());
 
     let label_node =
         crate::components::optional_reactive_text(props.label.clone(), FieldLabel());
@@ -349,25 +409,29 @@ pub fn Field(props: &FieldProps) -> Element {
     let help_node = crate::components::optional_reactive_text(help_combined, help_style);
 
     let secure = props.secure;
-    let input_node: Element = if let Some(p) = placeholder {
-        ui! {
-            text_input(
-                value = value,
-                on_change = move |v: String| (on_change)(v),
-                placeholder = p,
-                secure = secure,
-                style = input_style
-            )
-        }
+    let mut input = runtime_core::text_input(value, move |v: String| (on_change)(v))
+        .secure(secure);
+    if let Some(p) = placeholder {
+        input = input.placeholder(p);
+    }
+    // INVARIANT (D9): when the tone is derived from a live `error` signal,
+    // the input style MUST be attached as a *reactive* closure (read
+    // `error.get()` inside it) so the apply-style Effect re-subscribes and
+    // re-resolves the border on every validation change. A pre-built
+    // `StyleApplication` is `StyleSource::Static` — applied once at mount,
+    // only re-run on theme swaps — so it would snapshot the border color at
+    // build time and never turn it red on live validation (the error TEXT
+    // updates regardless, via `help_combined`, which is why only the border
+    // regressed). Keep the static fast path when the tone is fixed to avoid
+    // a per-Field Effect + first-paint flicker.
+    let input_node: Element = if tone_is_reactive {
+        let make_input_style = make_input_style.clone();
+        let tone_key_for = tone_key_for.clone();
+        input
+            .with_style(move || make_input_style(tone_key_for()))
+            .into_element()
     } else {
-        ui! {
-            text_input(
-                value = value,
-                on_change = move |v: String| (on_change)(v),
-                secure = secure,
-                style = input_style
-            )
-        }
+        input.with_style(make_input_style(tone_key_for())).into_element()
     };
 
     let mut children: Vec<Element> = Vec::with_capacity(3);
@@ -380,4 +444,132 @@ pub fn Field(props: &FieldProps) -> Element {
     }
 
     ui! { view(style = FieldGroup()) { children } }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use idea_theme::theme::install_idea_theme;
+    use idea_theme::theme::light_theme;
+    use runtime_core::{resolve_style, StyleSource};
+
+    /// Pull the `StyleSource` off the `text_input` node inside a built
+    /// `Field` element tree (a `view` wrapping label/input/help).
+    fn input_style_source(field: Element) -> StyleSource {
+        let children = match field {
+            Element::View { children, .. } => children,
+            _ => panic!("Field renders a view wrapper"),
+        };
+        for c in children {
+            if let Element::TextInput { style, .. } = c {
+                return style.expect("Field's text_input always has a style");
+            }
+        }
+        panic!("Field tree has no text_input node");
+    }
+
+    fn theme() {
+        install_idea_theme(light_theme());
+    }
+
+    // D9 regression: a Field whose `error` is a live signal must attach
+    // its input style as `StyleSource::Reactive`, and flipping the error
+    // signal must change the resolved border color. Before the fix the
+    // tone was snapshotted into a `StyleSource::Static` at build, so the
+    // border never turned red on live validation (only the error TEXT did).
+    #[test]
+    fn reactive_error_drives_border_color_live() {
+        theme();
+        let err: Signal<Option<String>> = Signal::new(None);
+        let props = FieldProps {
+            error: err.into(),
+            ..Default::default()
+        };
+        let src = input_style_source(Field(&props));
+
+        let closure = match src {
+            StyleSource::Reactive(f) => f,
+            _ => panic!(
+                "a Field with a reactive `error` must attach a reactive style \
+                 source so the border re-resolves on validation (D9 regression)"
+            ),
+        };
+
+        // No error → neutral border. The closure reads the signal each call.
+        let border_none = resolve_style(&closure()).border_top_color.clone();
+        err.set(Some("Required".into()));
+        let border_err = resolve_style(&closure()).border_top_color.clone();
+
+        assert!(
+            border_none.is_some() && border_err.is_some(),
+            "border color is set in both states"
+        );
+        assert_ne!(
+            border_none, border_err,
+            "flipping the error signal must change the input's border color \
+             (Danger tone vs neutral)"
+        );
+    }
+
+    // An explicit tone (or a static error) keeps the static fast path —
+    // no per-Field Effect, no first-paint flicker.
+    #[test]
+    fn fixed_tone_uses_static_style_source() {
+        theme();
+        // Static error: tone is fixed at build → Static.
+        let props = FieldProps {
+            error: Reactive::Static(Some("bad".into())),
+            ..Default::default()
+        };
+        assert!(
+            matches!(input_style_source(Field(&props)), StyleSource::Static(_)),
+            "a static error fixes the tone at build → static fast path"
+        );
+
+        // Explicit tone with a reactive error: explicit tone wins → Static.
+        let err: Signal<Option<String>> = Signal::new(None);
+        let props = FieldProps {
+            error: err.into(),
+            tone: Some(tones::Warning.into()),
+            ..Default::default()
+        };
+        assert!(
+            matches!(input_style_source(Field(&props)), StyleSource::Static(_)),
+            "an explicit tone overrides error-derived tone → static fast path"
+        );
+    }
+
+    // D6: a `min_height` prop pins the exact min-height in px.
+    #[test]
+    fn min_height_prop_sets_min_height_style() {
+        theme();
+        let props = FieldProps {
+            min_height: Some(48.0),
+            ..Default::default()
+        };
+        let rules = match input_style_source(Field(&props)) {
+            StyleSource::Static(app) => resolve_style(&app),
+            _ => panic!("a Field without a reactive error is static"),
+        };
+        assert_eq!(
+            rules.min_height,
+            Some(Tokenized::Literal(Length::Px(48.0))),
+            "min_height prop must pin an exact px min-height"
+        );
+    }
+
+    // D6: width prop pins an exact px width.
+    #[test]
+    fn width_prop_sets_width_style() {
+        theme();
+        let props = FieldProps {
+            width: Some(240.0),
+            ..Default::default()
+        };
+        let rules = match input_style_source(Field(&props)) {
+            StyleSource::Static(app) => resolve_style(&app),
+            _ => unreachable!(),
+        };
+        assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(240.0))));
+    }
 }

@@ -78,6 +78,16 @@ pub struct TextareaProps {
     /// scrolls. `0` (the default) leaves the autogrow uncapped.
     #[schema(constraint = "text lines; 0 = uncapped, otherwise clamped up to `rows`")]
     pub max_rows: u32,
+    /// Pin an exact minimum height in pixels, overriding the `rows`-derived
+    /// floor. Use this to match a design's exact px min-height (e.g.
+    /// `min_height = Some(92.0)`) instead of guessing a `rows` count.
+    /// `None` (the default) keeps the `rows`/`size`-derived floor.
+    #[schema(constraint = "pixels; None = rows-derived floor")]
+    pub min_height: Option<f32>,
+    /// Pin an exact width in pixels. `None` (the default) lets the input
+    /// fill its column; `Some(px)` fixes the width.
+    #[schema(constraint = "pixels; None = fill column")]
+    pub width: Option<f32>,
 }
 
 impl Default for TextareaProps {
@@ -94,6 +104,8 @@ impl Default for TextareaProps {
             variant: FieldAppearance::default(),
             rows: 3,
             max_rows: 0,
+            min_height: None,
+            width: None,
         }
     }
 }
@@ -140,31 +152,63 @@ pub fn Textarea(props: &TextareaProps) -> Element {
     let on_change = props.on_change.clone();
     let placeholder = props.placeholder.clone();
     let size = props.size;
-    let has_error = props.error.get().is_some();
-
-    let tone: Option<ToneRef> = props.tone.clone().or_else(|| {
-        if has_error { Some(tones::Danger.into()) } else { None }
-    });
-    let tone_key = tone.as_ref().map(|t| t.key()).unwrap_or("default").to_string();
+    let appearance = props.variant.as_variant_str().to_string();
     let size_key = size.as_variant_str().to_string();
 
-    let (min_height, max_height, rows, max_rows) =
-        height_bounds(props.rows, props.max_rows, size);
+    // The effective tone is reactive iff it's *derived* from a live error
+    // signal — no explicit tone given AND `error` is `Dynamic`. (Mirrors
+    // Field; see the `INVARIANT (D9)` note below.)
+    let explicit_tone = props.tone.clone();
+    let error = props.error.clone();
+    let tone_is_reactive = explicit_tone.is_none() && !error.is_static();
+    let tone_key_for = {
+        let explicit_tone = explicit_tone.clone();
+        let error = error.clone();
+        move || -> String {
+            let tone: Option<ToneRef> = explicit_tone.clone().or_else(|| {
+                if error.get().is_some() { Some(tones::Danger.into()) } else { None }
+            });
+            tone.as_ref().map(|t| t.key()).unwrap_or("default").to_string()
+        }
+    };
 
-    // STATIC style (reuse Field's sheets) + a computed min/max-height
-    // layer keyed by rows+max_rows+size so identical configs dedupe to
-    // one class. The primitive sizes the box to its content; these
-    // bounds set the resting floor and the grow-then-scroll cap.
-    let input_style = StyleApplication::new(field_input_sheet())
-        .with("size", size_key.clone())
-        .with("appearance", props.variant.as_variant_str().to_string())
-        .with("tone", tone_key.clone())
-        .with_computed(format!("ta-h-{}-{}-{}", rows, max_rows, size_key), move || StyleRules {
-            min_height: Some(Tokenized::Literal(Length::Px(min_height))),
-            max_height: max_height.map(|h| Tokenized::Literal(Length::Px(h))),
-            ..Default::default()
-        });
-    let help_style = StyleApplication::new(field_help_sheet()).with("tone", tone_key);
+    let (rows_min_height, max_height, _rows, _max_rows) =
+        height_bounds(props.rows, props.max_rows, size);
+    // An explicit `min_height` prop overrides the rows-derived floor; else
+    // keep the `rows`/`size`-derived height as the default.
+    let min_height = props.min_height.unwrap_or(rows_min_height);
+    let width = props.width;
+    // Key the computed dim layer by the *resolved* px values so a textarea
+    // pinned via `min_height` dedupes with the same-config siblings.
+    let dim_key = format!(
+        "ta-dim-{}-{:?}-{:?}-{}",
+        min_height, max_height, width, size_key
+    );
+
+    // STATIC style (reuse Field's sheets) + a computed min/max-height +
+    // width layer keyed so identical configs dedupe to one class. The
+    // primitive sizes the box to its content; these bounds set the resting
+    // floor and the grow-then-scroll cap.
+    let make_input_style = {
+        let appearance = appearance.clone();
+        let size_key = size_key.clone();
+        move |tone_key: String| -> StyleApplication {
+            let dim_key = dim_key.clone();
+            StyleApplication::new(field_input_sheet())
+                .with("size", size_key.clone())
+                .with("appearance", appearance.clone())
+                .with("tone", tone_key)
+                .with_computed(dim_key, move || StyleRules {
+                    min_height: Some(Tokenized::Literal(Length::Px(min_height))),
+                    max_height: max_height.map(|h| Tokenized::Literal(Length::Px(h))),
+                    width: width.map(|w| Tokenized::Literal(Length::Px(w))),
+                    ..Default::default()
+                })
+        }
+    };
+
+    let help_style =
+        StyleApplication::new(field_help_sheet()).with("tone", tone_key_for());
 
     let label_node = crate::components::optional_reactive_text(props.label.clone(), FieldLabel());
 
@@ -174,11 +218,22 @@ pub fn Textarea(props: &TextareaProps) -> Element {
     };
     let help_node = crate::components::optional_reactive_text(help_combined, help_style);
 
-    let mut input = runtime_core::text_area(value, move |v: String| (on_change)(v))
-        .with_style(input_style);
+    let mut input = runtime_core::text_area(value, move |v: String| (on_change)(v));
     if let Some(p) = placeholder {
         input = input.placeholder(p);
     }
+    // INVARIANT (D9): see Field. A live-error-derived border MUST be a
+    // reactive style closure (re-reads `error.get()` inside the apply
+    // Effect) or it snapshots the border color at build time — only the
+    // error TEXT would update on validation, not the border. Static fast
+    // path stays when the tone is fixed.
+    let input = if tone_is_reactive {
+        let make_input_style = make_input_style.clone();
+        let tone_key_for = tone_key_for.clone();
+        input.with_style(move || make_input_style(tone_key_for()))
+    } else {
+        input.with_style(make_input_style(tone_key_for()))
+    };
     let input_node = input.into_element();
 
     let mut children: Vec<Element> = Vec::with_capacity(3);
@@ -235,5 +290,99 @@ mod tests {
         assert_eq!(rows, 4);
         assert_eq!(max_rows, 4);
         assert_eq!(max, Some(min));
+    }
+
+    use idea_theme::theme::{install_idea_theme, light_theme};
+    use runtime_core::{resolve_style, StyleSource};
+
+    /// Pull the `StyleSource` off the `text_area` node inside a built
+    /// `Textarea` element tree.
+    fn input_style_source(ta: Element) -> StyleSource {
+        let children = match ta {
+            Element::View { children, .. } => children,
+            _ => panic!("Textarea renders a view wrapper"),
+        };
+        for c in children {
+            if let Element::TextArea { style, .. } = c {
+                return style.expect("Textarea's text_area always has a style");
+            }
+        }
+        panic!("Textarea tree has no text_area node");
+    }
+
+    // D9 regression (mirror of Field): a live `error` signal must drive
+    // the border color reactively, not snapshot it at build.
+    #[test]
+    fn reactive_error_drives_border_color_live() {
+        install_idea_theme(light_theme());
+        let err: Signal<Option<String>> = Signal::new(None);
+        let props = TextareaProps {
+            error: err.into(),
+            ..Default::default()
+        };
+        let closure = match input_style_source(Textarea(&props)) {
+            StyleSource::Reactive(f) => f,
+            _ => panic!(
+                "a Textarea with a reactive `error` must attach a reactive style \
+                 source (D9 regression)"
+            ),
+        };
+        let border_none = resolve_style(&closure()).border_top_color.clone();
+        err.set(Some("Required".into()));
+        let border_err = resolve_style(&closure()).border_top_color.clone();
+        assert!(border_none.is_some() && border_err.is_some());
+        assert_ne!(
+            border_none, border_err,
+            "flipping the error signal must change the border color"
+        );
+    }
+
+    #[test]
+    fn fixed_tone_uses_static_style_source() {
+        install_idea_theme(light_theme());
+        let props = TextareaProps {
+            error: Reactive::Static(Some("bad".into())),
+            ..Default::default()
+        };
+        assert!(matches!(
+            input_style_source(Textarea(&props)),
+            StyleSource::Static(_)
+        ));
+    }
+
+    // D6: an explicit `min_height` prop overrides the rows-derived floor.
+    #[test]
+    fn min_height_prop_overrides_rows_floor() {
+        install_idea_theme(light_theme());
+        let props = TextareaProps {
+            // rows would derive a different floor; the prop wins.
+            rows: 3,
+            min_height: Some(92.0),
+            ..Default::default()
+        };
+        let rules = match input_style_source(Textarea(&props)) {
+            StyleSource::Static(app) => resolve_style(&app),
+            _ => panic!("no reactive error → static"),
+        };
+        assert_eq!(
+            rules.min_height,
+            Some(Tokenized::Literal(Length::Px(92.0))),
+            "min_height prop pins the exact px floor, overriding rows"
+        );
+    }
+
+    // D6: width prop pins an exact px width.
+    #[test]
+    fn width_prop_sets_width_style() {
+        install_idea_theme(light_theme());
+        let props = TextareaProps {
+            width: Some(320.0),
+            ..Default::default()
+        };
+        let rules = match input_style_source(Textarea(&props)) {
+            StyleSource::Static(app) => resolve_style(&app),
+            _ => unreachable!(),
+        };
+        assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(320.0))));
     }
 }
