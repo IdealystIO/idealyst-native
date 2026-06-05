@@ -22,7 +22,7 @@
 
 use backend_macos::MacosBackend;
 use canvas_core::{CanvasProps, Color};
-use runtime_core::Effect;
+use runtime_core::effect;
 
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, NSObject};
@@ -271,7 +271,7 @@ fn build_canvas(
 
     let view_for_effect = view_canvas.clone();
     let props_clone = props.clone();
-    let _effect = Effect::new(move || {
+    effect!({
         let scene = canvas_core::paint_scene(&props_clone);
         view_for_effect.install_scene(scene);
     });

@@ -19,7 +19,7 @@ use canvas_core::{
     paint_scene, CanvasProps, Color, DrawOp, FillRule, LineCap, LineJoin, LinearGradient, Paint,
     PaintKind, Path, PathSeg, RadialGradient, Scene, TextureLayer,
 };
-use runtime_core::Effect;
+use runtime_core::effect;
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
@@ -124,7 +124,7 @@ fn build_canvas(props: &Rc<CanvasProps>) -> web_sys::Element {
     // Reactive repaint. The walker runs us inside the mount scope, so this
     // Effect (and the `guard` + `render` it owns) live until unmount.
     let props = props.clone();
-    let _effect = Effect::new(move || {
+    effect!({
         // Capture the observer guard into the scope-owned effect so it is
         // dropped (→ disconnected) exactly when the canvas unmounts.
         let _keep = &guard;

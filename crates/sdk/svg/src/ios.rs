@@ -30,7 +30,7 @@
 use crate::tree_walker::{map_point, render_tree, MaskKind, Rect as SvgRect, StrokeParams, SvgPainter};
 use crate::{SvgOps, SvgProps};
 use backend_ios::{IosBackend, IosNode};
-use runtime_core::Effect;
+use runtime_core::effect;
 
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject, NSObject};
@@ -933,7 +933,7 @@ fn build_svg(props: &Rc<SvgProps>, b: &mut IosBackend) -> IosNode {
 
     let view_for_effect = view_svg.clone();
     let props_clone = props.clone();
-    let _effect = Effect::new(move || {
+    effect!({
         let markup = (props_clone.markup)();
         match usvg::Tree::from_str(&markup, &usvg::Options::default()) {
             Ok(tree) => {

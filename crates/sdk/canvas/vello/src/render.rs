@@ -55,10 +55,23 @@ pub fn register<B: RegisterExternal>(backend: &mut B) {
     }
 }
 
-/// Probe the default adapter for vello compatibility. Returns `false` only when
-/// vello's shaders are known to fail: Vulkan without the f16 capability (e.g.
-/// the Android emulator). A headless adapter request — no surface needed; runs
-/// once at startup. If no GPU adapter exists at all, vello can't run → `false`.
+/// Probe the default adapter for vello compatibility. Returns `false` when
+/// vello's GPU-driven pipeline is known to fail on this adapter. A headless
+/// adapter request — no surface needed; runs once at startup. If no GPU adapter
+/// exists at all, vello can't run → `false`.
+///
+/// Two known-bad classes, both *emulator/simulator* GPUs (real devices pass):
+/// - **Vulkan without f16** — the Android emulator's Goldfish GFXStream Vulkan
+///   never exposes `SHADER_F16`, which vello's `flatten` shader requires (naga
+///   rejects it: "requires capability SHADER_FLOAT16_IN_FLOAT32"). Metal/DX12
+///   don't enforce the explicit feature.
+/// - **No INDIRECT_EXECUTION** — the iOS Simulator's Metal lacks indirect GPU
+///   dispatch (`create_buffer 'vello.reduced_buf'` fails: "Downlevel flags
+///   INDIRECT_EXECUTION are required but not supported"). vello is GPU-driven and
+///   needs it unconditionally; every real iOS/Apple GPU (A11+) supports it.
+///
+/// Both are capability checks, NOT platform checks — any GPU lacking the
+/// capability steps aside for canvas-native, uniformly.
 fn gpu_can_run_vello() -> bool {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
@@ -74,18 +87,22 @@ fn gpu_can_run_vello() -> bool {
     })) else {
         return false;
     };
-    // Vulkan needs the explicit f16 capability for `vello.flatten`; Metal/DX12
-    // don't enforce it. Block only the known-bad combination.
     let info = adapter.get_info();
     let has_f16 = adapter.features().contains(wgpu::Features::SHADER_F16);
-    let ok = !(info.backend == wgpu::Backend::Vulkan && !has_f16);
+    let has_indirect = adapter
+        .get_downlevel_capabilities()
+        .flags
+        .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
+    let f16_ok = !(info.backend == wgpu::Backend::Vulkan && !has_f16);
+    let ok = f16_ok && has_indirect;
     if !ok {
         // One-line startup diagnostic for the recurring "why isn't the GPU canvas
-        // active?" question — e.g. the Android emulator's Goldfish GFXStream
-        // Vulkan never exposes f16 (no image version does), so vello steps aside
-        // for canvas-native. Real Adreno/Mali GPUs report f16 and vello wins.
+        // active?" question. The Android emulator (Vulkan, no f16) and the iOS
+        // Simulator (Metal, no INDIRECT_EXECUTION) both land here and fall back to
+        // canvas-native; real devices report both and vello wins.
+        let missing = if !has_indirect { "INDIRECT_EXECUTION" } else { "SHADER_F16" };
         log::warn!(
-            "canvas-vello: {:?} adapter {:?} lacks f16 — using canvas-native (GPU canvas needs SHADER_F16)",
+            "canvas-vello: {:?} adapter {:?} lacks {missing} — using canvas-native (GPU canvas unsupported here)",
             info.backend, info.name
         );
     }
@@ -269,10 +286,19 @@ impl RenderState {
         // (e.g. the Android emulator's Vulkan) can't run vello at all; it stays
         // on canvas-native there.
         let f16 = wgpu::Features::SHADER_F16 & adapter.features();
+        // Request the adapter's OWN limits, not `Limits::default()`. The default
+        // baseline asks for `max_inter_stage_shader_variables: 16`, but iOS Metal
+        // (simulator AND device) caps that at 15 — so `request_device` with the
+        // default fails outright (`LimitsExceeded`). macOS Metal allows 16, which
+        // is why the default worked there and masked this. Taking `adapter.limits()`
+        // requests exactly what the GPU provides — always grantable, never over-asks
+        // — and it's uniform across backends (a no-op widening on macOS/desktop,
+        // the needed downgrade on iOS). vello's own minimums are validated by
+        // `Renderer::new` below; a GPU too weak for vello fails there → canvas-native.
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("canvas-vello-device"),
             required_features: f16,
-            required_limits: wgpu::Limits::default(),
+            required_limits: adapter.limits(),
             memory_hints: wgpu::MemoryHints::default(),
             experimental_features: wgpu::ExperimentalFeatures::default(),
             trace: wgpu::Trace::Off,
@@ -442,6 +468,22 @@ impl RenderState {
         // CPU read-back fallback only when the zero-copy path ISN'T carrying the
         // recording (non-macOS, or a CPU-only `subscribe` consumer).
         let native_active = self.native_capture.as_ref().is_some_and(|nc| nc.wants());
+        let cpu_active = self.capture.as_ref().is_some_and(|w| w.wants_cpu_frames());
+        if native_active || cpu_active {
+            // Announce the GPU recording mode ONCE. This is the FAST path (the
+            // scene is GPU-rendered by vello); the CPU-renderer fallback on
+            // sim/emulator warns separately. `wants()`/`wants_cpu_frames` only
+            // flip true while a recorder taps, so this fires on a recording's
+            // first frame. (`log::info!` reaches logcat/console on Android/desktop;
+            // it's a no-op on iOS, which is fine — iOS recording is GPU on device.)
+            static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                log::info!(
+                    "canvas-vello: recording on the GPU renderer ({})",
+                    if native_active { "zero-copy IOSurface" } else { "GPU\u{2192}CPU read-back" }
+                );
+            }
+        }
         if !native_active {
             self.capture_frame();
         }

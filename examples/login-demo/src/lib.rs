@@ -30,7 +30,7 @@
 #[cfg(not(feature = "server"))]
 use idea_ui::{install_idea_theme, light_theme, Stack, StackGap, StackPadding, Typography};
 #[cfg(not(feature = "server"))]
-use runtime_core::{signal, text, ui, Effect, Element, IntoElement, Signal};
+use runtime_core::{effect, signal, text, ui, Element, IntoElement, Signal};
 use serde::{Deserialize, Serialize};
 use server::{server, ServerError};
 
@@ -235,7 +235,7 @@ pub fn app() -> Element {
     // On mount, ask the server who we are — if a session cookie survives a
     // reload, this restores the logged-in state without re-entering creds.
     {
-        let e = Effect::new(move || {
+        effect!({
             runtime_core::driver::spawn_async(async move {
                 if let Ok(name) = me().await {
                     user.set(Some(name.clone()));
@@ -243,7 +243,6 @@ pub fn app() -> Element {
                 }
             });
         });
-        std::mem::forget(e);
     }
 
     let on_login = move || {

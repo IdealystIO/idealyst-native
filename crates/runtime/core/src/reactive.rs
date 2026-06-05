@@ -695,6 +695,13 @@ where
     (state, dispatch)
 }
 
+/// A cached derived signal: recomputes `f` whenever a signal it reads
+/// changes, and notifies subscribers only when the new value differs
+/// from the old (`T: PartialEq`). Use it for derived state that's read
+/// in several places or is expensive to compute — the work runs once
+/// per dependency change, not once per read. For a value without
+/// `PartialEq`, or a custom "close enough" comparison, use
+/// [`memo_with`]. The `memo!` macro is the terse call-site form.
 pub fn memo<T>(f: impl Fn() -> T + 'static) -> Signal<T>
 where
     T: Clone + PartialEq + 'static,

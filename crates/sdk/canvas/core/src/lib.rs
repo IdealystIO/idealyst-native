@@ -75,15 +75,23 @@ pub struct CanvasProps {
     #[schema(constraint = "a Fn(&mut Scene) painter — build with canvas::draw(...)")]
     pub draw: DrawFn,
 
-    /// Optional self-capture sink. When set, a GPU renderer publishes each
+    /// Optional self-capture sink. When set, the active renderer publishes each
     /// rendered frame into this `FrameWriter` (the producer half of a
     /// [`media_stream::MediaStream`] the app holds), so the canvas's OWN output
     /// can be recorded: `let (stream, writer) = MediaStream::new();
     /// Canvas { capture: Some(writer), .. }`, then record `stream`. The renderer
-    /// only does the (GPU→CPU) read-back while a consumer is actually tapping
-    /// frames (`writer.wants_cpu_frames()`), so an idle canvas pays nothing.
-    /// `None` = no capture (the default). Renderer support is GPU-only
-    /// (canvas-vello) for now; the CPU renderers ignore it.
+    /// only does the read-back while a consumer is actually tapping frames
+    /// (`writer.wants_cpu_frames()`), so an idle canvas pays nothing.
+    /// `None` = no capture (the default).
+    ///
+    /// Captured by: the GPU renderer (`canvas-vello`) — zero-copy IOSurface on
+    /// macOS, GPU→CPU read-back elsewhere; AND the CPU renderers (`canvas-native`)
+    /// — `android.graphics` bitmap read-back on Android, and an offscreen
+    /// CoreGraphics read-back on the iOS **simulator** (`cfg(target_abi = "sim")`,
+    /// where vello can't run). On real iOS devices vello handles capture, so the
+    /// CPU path isn't compiled. Web records via `captureStream`. The CPU-renderer
+    /// paths are simulator/emulator fallbacks and are markedly slower — record on
+    /// a physical device for representative performance.
     #[schema(constraint = "optional media_stream::FrameWriter to record the canvas output")]
     pub capture: Option<media_stream::FrameWriter>,
 
@@ -221,6 +229,11 @@ impl TextureLayer {
 
 #[doc(no_inline)]
 pub use media_stream::Subscription;
+/// Re-export so renderer crates (`canvas-native`, `canvas-vello`) can name the
+/// self-capture sink type from `CanvasProps::capture` without a direct
+/// `media-stream` dependency.
+#[doc(no_inline)]
+pub use media_stream::FrameWriter;
 
 /// Keep one no-op CPU-frame subscription alive per layer whose source is
 /// currently present, resizing `slots` to match `layers`.

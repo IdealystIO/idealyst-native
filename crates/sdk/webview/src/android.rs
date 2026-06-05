@@ -15,7 +15,6 @@ use crate::{WebViewOps, WebViewProps};
 // `[lib].name` is `backend_android` (preserved historically so the
 // JNI `System.loadLibrary("backend_android")` call keeps working).
 use backend_android::{with_jni_env, AndroidBackend};
-use runtime_core::Effect;
 use jni::objects::{GlobalRef, JObject, JValue};
 use std::any::Any;
 use std::rc::Rc;
@@ -56,7 +55,7 @@ fn build_web_view(props: &Rc<WebViewProps>, b: &mut AndroidBackend) -> GlobalRef
     // outlives the handler return.
     let view_for_url = view.clone();
     let props_clone = props.clone();
-    let _effect = Effect::new(move || {
+    runtime_core::effect!({
         let url = (props_clone.url)();
         load_url(&view_for_url, &url);
     });

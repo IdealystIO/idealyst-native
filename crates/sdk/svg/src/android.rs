@@ -31,7 +31,7 @@ use crate::tree_walker::{
 };
 use crate::{SvgOps, SvgProps};
 use backend_android::{with_jni_env, AndroidBackend};
-use runtime_core::Effect;
+use runtime_core::effect;
 
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::sys::{jfloat, jint};
@@ -123,7 +123,7 @@ fn build_svg(props: &Rc<SvgProps>, b: &mut AndroidBackend) -> GlobalRef {
 
     let view_for_effect = view.clone();
     let props_clone = props.clone();
-    let _effect = Effect::new(move || {
+    effect!({
         let markup = (props_clone.markup)();
         match usvg::Tree::from_str(&markup, &usvg::Options::default()) {
             Ok(tree) => {

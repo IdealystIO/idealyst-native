@@ -203,6 +203,15 @@ pub struct AndroidScreenOptions {
     /// `DrawerScreenExt::mount_policy(...)` declaration works on
     /// both mobile backends.
     pub mount_policy: Option<MountPolicy>,
+    /// Whether the system back affordance may pop this screen
+    /// (`StackScreenOptions::back_enabled`, defaulting to `true`).
+    /// `Some(false)` ⇒ the stack's `RustNavigator` arms an
+    /// `OnBackPressedCallback` that swallows the edge-swipe-back *and*
+    /// the system back button while this screen is on top — Android
+    /// routes both through the same `OnBackPressedDispatcher`, so the
+    /// lock is necessarily all-or-nothing. Honored by the stack
+    /// navigator only.
+    pub back_enabled: Option<bool>,
 }
 
 // =============================================================================
@@ -260,7 +269,10 @@ pub fn attach_initial(
     scope_id: u64,
     options: &AndroidScreenOptions,
 ) {
-    if stack::attach_initial(navigator, &screen, scope_id) {
+    // `back_enabled == Some(false)` ⇒ lock back on the root screen.
+    // Absent / `Some(true)` ⇒ back works normally.
+    let back_locked = options.back_enabled.map(|enabled| !enabled).unwrap_or(false);
+    if stack::attach_initial(navigator, &screen, scope_id, back_locked) {
         return;
     }
     tab_drawer::attach_initial(navigator, screen, scope_id, options);

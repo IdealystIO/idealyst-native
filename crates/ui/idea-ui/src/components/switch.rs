@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::{
-    component, ui, Effect, Element, IdealystSchema, IntoElement, Reactive, Ref, Signal,
+    component, effect, ui, Element, IdealystSchema, IntoElement, Reactive, Ref, Signal,
     StyleApplication, ViewHandle,
 };
 
@@ -106,7 +106,7 @@ pub fn Switch(props: &SwitchProps) -> Element {
     // Scope-adopted: the component's reactive scope owns this effect and
     // frees it on teardown, so the handle's drop is a no-op — no
     // `mem::forget` (a leak outside framework core).
-    let _slide = Effect::new(move || {
+    effect!({
         let target = if value.get() { travel } else { 0.0 };
         av.animate(TweenTo::new(target, Duration::from_millis(SWITCH_ANIM_MS)).ease_out());
     });

@@ -206,3 +206,32 @@ fn memo_dynamic_deps() {
         "a is no longer subscribed after cond flipped"
     );
 }
+
+/// `memo!(expr)` is sugar for `memo(move || expr)` — same caching, same
+/// one-recompute-per-effective-change behavior. Pins the macro to the
+/// fn it wraps so the two can't drift.
+#[test]
+fn memo_macro_is_sugar_for_memo_fn() {
+    use runtime_core::memo; // also brings the `memo!` macro into scope
+
+    let s: Signal<i32> = signal!(2);
+
+    // Macro and fn over the same body must agree at every step.
+    let via_macro = memo!(s.get() * 3);
+    let via_fn = memo(move || s.get() * 3);
+    assert_eq!(via_macro.get(), 6);
+    assert_eq!(via_fn.get(), 6);
+
+    s.set(5);
+    assert_eq!(via_macro.get(), 15, "memo! recomputes when its dep changes");
+    assert_eq!(via_fn.get(), 15);
+
+    // Multi-dep body captures `Copy` signal handles by value via the
+    // macro's `move ||`, exactly like the fn form.
+    let a: Signal<i32> = signal!(1);
+    let b: Signal<i32> = signal!(10);
+    let sum = memo!(a.get() + b.get());
+    assert_eq!(sum.get(), 11);
+    b.set(40);
+    assert_eq!(sum.get(), 41);
+}

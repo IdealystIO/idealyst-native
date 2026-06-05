@@ -277,7 +277,11 @@ This is not a "binary size optimization" trade-off — it's a correctness requir
 
 ### 9.3 Third-party component crates
 
-Crates outside the workspace that expose `#[component]`s should automatically appear in the MCP catalog as long as they depend on `runtime-core` (which re-exports the macros) with the `mcp` feature on. `inventory`'s behavior across rlib boundaries is well-trodden on the host targets we care about. Needs validation; expected to work.
+A dependency that exposes `#[component]`s appears in the MCP catalog as long as it depends on `runtime-core` (which re-exports the macros) with the catalog emission on. The one subtlety is `inventory`'s cross-rlib behavior: its linker-section ctors only survive linking if the linker actually pulls that crate's object code into the catalog binary. Merely listing a component library in `[dependencies]` does **not** guarantee that — if the project doesn't yet reference any of the library's symbols, the linker can drop the whole object file and its registrations with it.
+
+**Resolved by force-linking in the catalog wrapper.** `idealyst mcp`'s managed wrapper (`crates/tools/cli/src/cmd/catalog_wrapper.rs`) walks the project's `cargo metadata`, finds every direct dependency that itself depends on `runtime-core`, declares each as a direct wrapper dependency (sourced to match how the project resolves it — `path` in workspace mode, `git` in git mode — so cargo unifies them into one instance), and emits a `use <dep> as _;` for it. That pins each component library's object code, so its registrations are always present regardless of whether the project references the library.
+
+Validated against `examples/login-demo` (depends on `idea-ui`): the generated wrapper force-links `idea-ui`, and all 45 of its components surface in the emitted catalog. In git mode a force-linked dependency is required to originate from the framework's own git repo; a component library resolved from a *different* foreign source is skipped (re-declaring a foreign source would fork the crate graph), and its components still appear once the project references the crate.
 
 ### 9.4 Catalog schema versioning
 

@@ -304,13 +304,14 @@ pub fn install_drawer_open_observer(
         // returning `None` is silently skipped — the next signal
         // change will retry.
         //
-        // The effect is **forgotten** intentionally: the observer
+        // The effect is **pinned** via `.persist()`: the observer
         // outlives the sidebar build closure that installed it (the
-        // closure returns; without leaking the Effect handle it
-        // would Drop and stop firing). Page-lifetime is the intended
-        // scope.
+        // closure returns; without pinning, the Effect handle would
+        // Drop and stop firing). `.persist()` holds it for page
+        // lifetime (a no-op had a render scope adopted it) and keeps
+        // `mem::forget` out of app code.
         let backdrop_for_effect = backdrop;
-        let effect = Effect::new(move || {
+        Effect::new(move || {
             let open = is_open.get();
             let Some(win) = web_sys::window() else { return };
             let Some(doc) = win.document() else { return };
@@ -328,8 +329,8 @@ pub fn install_drawer_open_observer(
             } else {
                 let _ = class_list.remove_1("is-on");
             }
-        });
-        std::mem::forget(effect);
+        })
+        .persist();
     }
 }
 

@@ -7,7 +7,7 @@
 
 use crate::{MediaContent, VideoOps, VideoProps};
 use backend_web::WebBackend;
-use runtime_core::Effect;
+use runtime_core::effect;
 use std::any::Any;
 use std::rc::Rc;
 use wasm_bindgen::JsCast;
@@ -71,7 +71,7 @@ fn build_video(props: &Rc<VideoProps>) -> web_sys::Element {
     // — one mechanism for URL change, stream change, or swap-to-none.
     let video_for_effect = video.clone();
     let props_clone = props.clone();
-    let _effect = Effect::new(move || {
+    effect!({
         let video_el = video_for_effect.dyn_ref::<web_sys::HtmlVideoElement>();
         match props_clone.source.resolve() {
             MediaContent::Url(u) => {

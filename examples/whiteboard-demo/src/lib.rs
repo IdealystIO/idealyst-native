@@ -4,7 +4,9 @@
 //! `BOARD` (root, full-bleed canvas), `SETTINGS`, and `PREVIEW`. The board sets
 //! `unmount_on_blur(false)`, so pushing Settings/Preview leaves it mounted
 //! underneath — the camera keeps running and strokes persist — with native
-//! push/pop + back gesture on iOS/Android/web (a child-swap on macOS). The
+//! push/pop on iOS/Android/web (a child-swap on macOS). The board also sets
+//! `back_enabled(false)` so an edge-swipe-back mid-stroke can't pop it (or, on
+//! the Android root, background the app); Settings/Preview keep normal back. The
 //! Settings/Preview screens carry their own in-content header (`header_shown` is
 //! off everywhere) so they're navigable on macOS too, where the stack handler
 //! renders no native chrome.
@@ -95,6 +97,10 @@ pub fn register_extensions(backend: &mut backend_web::WebBackend) {
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
     canvas_native::register(backend);
+    // GPU canvas via vello/Metal. iOS uses host Metal (f16/compute), so vello
+    // runs; register AFTER native so it wins (last-registration). Same uniform
+    // registration as macOS/Android.
+    canvas_vello::register(backend);
     video::register(backend);
 }
 
@@ -351,7 +357,7 @@ pub fn app() -> Element {
         let cam_on = state.cam_on;
         let cam_raf: Rc<RefCell<Option<runtime_core::scheduling::RafLoop>>> =
             Rc::new(RefCell::new(None));
-        let _ = runtime_core::Effect::new(move || {
+        runtime_core::effect!({
             if cam_on.get() {
                 if cam_raf.borrow().is_none() {
                     *cam_raf.borrow_mut() =
@@ -390,7 +396,7 @@ pub fn app() -> Element {
         let placed = Rc::new(Cell::new(false));
         let cam_x = state.cam_x;
         let cam_y = state.cam_y;
-        let _ = runtime_core::Effect::new(move || {
+        runtime_core::effect!({
             let vp = viewport_size().get();
             let ins = safe_area_insets().get();
             if !placed.get() && vp.width > 1.0 && vp.height > 1.0 {
@@ -443,6 +449,13 @@ pub fn app() -> Element {
                     )
                 })
                 .header_shown(false)
+                // The board IS the drawing surface — an edge-swipe-back
+                // mid-stroke is exactly the accidental gesture we want to
+                // suppress (on Android root it would otherwise background
+                // the app; on a pushed board it would pop). Lock the
+                // system back affordance here; the in-content chrome still
+                // drives navigation to Settings/Preview explicitly.
+                .back_enabled(false)
             }
         })
         .screen(SETTINGS, move |_| {

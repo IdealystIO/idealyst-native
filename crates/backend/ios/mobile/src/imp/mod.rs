@@ -1112,6 +1112,20 @@ pub fn mount_screen_in_vc(mtm: MainThreadMarker, screen: &UIView) -> Retained<UI
 // Backend trait implementation
 // =========================================================================
 
+/// Generic external-registration entry (mirrors the macOS/Android impls): lets
+/// `register<B: RegisterExternal>(b)` — e.g. `canvas_vello::register` — target
+/// iOS without naming the concrete backend. Forwards to the same
+/// `external_handlers` registry as the inherent [`IosBackend::register_external`].
+impl runtime_core::RegisterExternal for IosBackend {
+    fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&std::rc::Rc<T>, &mut IosBackend) -> IosNode + 'static,
+    {
+        self.external_handlers.register::<T, _>(handler);
+    }
+}
+
 impl Backend for IosBackend {
     type Node = IosNode;
 

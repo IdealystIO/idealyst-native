@@ -1030,6 +1030,60 @@ impl CatalogService {
         )]))
     }
 
+    #[tool(description = "List the framework authoring macros — the verbs of writing an app (`signal!`, `effect!`, `ui!`, `#[component]`, `stylesheet!`, `animated!`). Lightweight { name, invocation, kind, summary }; pass `filter` (case-insensitive, glob `*`, matches name/invocation/kind) to narrow, then `describe_macro` for full docs + what it expands to.")]
+    async fn list_macros(
+        &self,
+        Parameters(req): Parameters<FilterRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let json: Vec<serde_json::Value> = cat
+            .macros()
+            .iter()
+            .filter_map(|m| {
+                if !matches_filter(&req.filter, &[m.name, m.invocation, m.kind.as_str()]) {
+                    return None;
+                }
+                Some(serde_json::json!({
+                    "name": m.name,
+                    "invocation": m.invocation,
+                    "kind": m.kind.as_str(),
+                    "summary": doc_summary(m.docs),
+                }))
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Get the full record for one authoring macro: what it does, the crate it's exported from, the canonical invocation syntax, and a one-line sketch of what it expands to (so you see the primitive underneath — e.g. `effect!` → `let _effect = Effect::new(move || …)`). Accepts the bare name or a trailing `!` (`effect` and `effect!` both resolve).")]
+    async fn describe_macro(
+        &self,
+        Parameters(req): Parameters<NameRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let needle = req.name.trim_end_matches('!');
+        let entry = cat
+            .macros()
+            .iter()
+            .find(|m| m.name == needle)
+            .ok_or_else(|| {
+                McpError::invalid_params(format!("macro {:?} not found", req.name), None)
+            })?;
+        let json = serde_json::json!({
+            "name": entry.name,
+            "invocation": entry.invocation,
+            "kind": entry.kind.as_str(),
+            "module_path": entry.module_path,
+            "fqn": format!("{}::{}", entry.module_path, entry.name),
+            "docs": entry.docs,
+            "expansion": entry.expansion,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
     #[tool(description = "List the four framework interaction states (`hovered`, `pressed`, `focused`, `disabled`) — the valid names for `state foo(theme) { … }` arms in `stylesheet!`. Returns { name, docs, backends }.")]
     async fn list_states(&self) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
@@ -1369,7 +1423,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Fulltext search over every catalog slice — components, primitives, utilities, guides, types, methods. Returns matches as a JSON array of { kind, name, fqn, docs_excerpt } tagged with the slice the match came from.")]
+    #[tool(description = "Fulltext search over every catalog slice — components, primitives, utilities, macros, guides, types, methods. Returns matches as a JSON array of { kind, name, fqn, docs_excerpt } tagged with the slice the match came from.")]
     async fn search(
         &self,
         Parameters(req): Parameters<SearchRequest>,
@@ -1448,6 +1502,19 @@ impl CatalogService {
                     "kind": "method",
                     "name": m.name,
                     "fqn": format!("{}::{}.{}", m.parent_module_path, m.parent_name, m.name),
+                    "docs_excerpt": docs_excerpt_around(m.docs, &needle),
+                }));
+            }
+        }
+        for m in cat.macros() {
+            if m.name.to_lowercase().contains(&needle)
+                || m.invocation.to_lowercase().contains(&needle)
+                || m.docs.to_lowercase().contains(&needle)
+            {
+                hits.push(serde_json::json!({
+                    "kind": "macro",
+                    "name": m.name,
+                    "fqn": format!("{}::{}", m.module_path, m.name),
                     "docs_excerpt": docs_excerpt_around(m.docs, &needle),
                 }));
             }

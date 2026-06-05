@@ -29,9 +29,9 @@ use std::collections::HashMap;
 
 use crate::slice::LeakFromJson;
 use crate::{
-    AnimationEntry, ComponentEntry, EdgeRef, GuideEntry, MethodEntry, ParamSpec,
-    PrimitiveCategory, PrimitiveEntry, PropFieldSpec, RecipeEntry, ScopeEntry, StateEntry,
-    ToolEntry, TypeEntry, TypeShape, UtilityCategory, UtilityEntry, VariantSpec,
+    AnimationEntry, ComponentEntry, EdgeRef, GuideEntry, MacroEntry, MacroKind, MethodEntry,
+    ParamSpec, PrimitiveCategory, PrimitiveEntry, PropFieldSpec, RecipeEntry, ScopeEntry,
+    StateEntry, ToolEntry, TypeEntry, TypeShape, UtilityCategory, UtilityEntry, VariantSpec,
 };
 
 /// A `(module_path, name)` pair, the canonical identity for a
@@ -117,6 +117,7 @@ pub struct ResolvedCatalog {
     reverse: HashMap<EntryRef, Vec<EntryRef>>,
     primitives: Vec<&'static crate::PrimitiveEntry>,
     utilities: Vec<&'static crate::UtilityEntry>,
+    macros: Vec<&'static crate::MacroEntry>,
     states: Vec<&'static crate::StateEntry>,
     guides: Vec<&'static crate::GuideEntry>,
     methods: Vec<&'static crate::MethodEntry>,
@@ -134,6 +135,7 @@ impl ResolvedCatalog {
         let mut cat = Self::build_from(entries);
         cat.primitives = crate::primitives().collect();
         cat.utilities = crate::utilities().collect();
+        cat.macros = crate::macros().collect();
         cat.states = crate::states().collect();
         cat.guides = crate::guides().collect();
         cat.methods = crate::methods().collect();
@@ -176,6 +178,7 @@ impl ResolvedCatalog {
         // `slice_vec`) so v1 producers keep working unchanged.
         cat.primitives = slice_vec::<PrimitiveEntry>(&value);
         cat.utilities = slice_vec::<UtilityEntry>(&value);
+        cat.macros = slice_vec::<MacroEntry>(&value);
         cat.states = slice_vec::<StateEntry>(&value);
         cat.guides = slice_vec::<GuideEntry>(&value);
         cat.methods = slice_vec::<MethodEntry>(&value);
@@ -192,6 +195,9 @@ impl ResolvedCatalog {
     }
     pub fn utilities(&self) -> &[&'static crate::UtilityEntry] {
         &self.utilities
+    }
+    pub fn macros(&self) -> &[&'static crate::MacroEntry] {
+        &self.macros
     }
     pub fn states(&self) -> &[&'static crate::StateEntry] {
         &self.states
@@ -647,6 +653,35 @@ fn leak_utility_from_json(v: &serde_json::Value) -> Option<&'static UtilityEntry
     })))
 }
 
+fn macro_kind_from_str(s: &str) -> MacroKind {
+    match s {
+        "markup" => MacroKind::Markup,
+        "animation" => MacroKind::Animation,
+        "styling" => MacroKind::Styling,
+        "component" => MacroKind::Component,
+        "catalog" => MacroKind::Catalog,
+        _ => MacroKind::Reactive,
+    }
+}
+
+fn leak_macro_from_json(v: &serde_json::Value) -> Option<&'static MacroEntry> {
+    let name = v["name"].as_str()?.to_string();
+    let invocation = v["invocation"].as_str().unwrap_or("").to_string();
+    let module_path = v["module_path"].as_str().unwrap_or("").to_string();
+    let docs = v["docs"].as_str().unwrap_or("").to_string();
+    let expansion = v["expansion"].as_str().unwrap_or("").to_string();
+    let kind = macro_kind_from_str(v["kind"].as_str().unwrap_or("reactive"));
+    Some(Box::leak(Box::new(MacroEntry {
+        name: leak_str(name),
+        invocation: leak_str(invocation),
+        kind,
+        module_path: leak_str(module_path),
+        docs: leak_str(docs),
+        expansion: leak_str(expansion),
+        _seal: (),
+    })))
+}
+
 fn leak_state_from_json(v: &serde_json::Value) -> Option<&'static StateEntry> {
     let name = v["name"].as_str()?.to_string();
     let docs = v["docs"].as_str().unwrap_or("").to_string();
@@ -827,6 +862,11 @@ impl LeakFromJson for PrimitiveEntry {
 impl LeakFromJson for UtilityEntry {
     fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
         leak_utility_from_json(v)
+    }
+}
+impl LeakFromJson for MacroEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_macro_from_json(v)
     }
 }
 impl LeakFromJson for StateEntry {

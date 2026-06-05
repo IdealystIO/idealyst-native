@@ -37,9 +37,17 @@ let _tree = Navigator::new(&home)
 
 A `Navigator::new(initial)` builder, fluent `.screen(...)` registration,
 per-screen options via the `StackScreenExt` trait (`title`,
-`header_left`, `header_right`, header colors, `unmount_on_blur`), and a
-typed `StackHandle` (bound via `.bind(ref)`) that drives the stack
-imperatively: `push`, `pop`, `replace`, `reset`, `depth`.
+`header_left`, `header_right`, header colors, `unmount_on_blur`,
+`back_enabled`), and a typed `StackHandle` (bound via `.bind(ref)`) that
+drives the stack imperatively: `push`, `pop`, `replace`, `reset`,
+`depth`.
+
+`back_enabled(false)` is a **full back-lock**: the iOS swipe-back +
+chevron and the Android edge-swipe + system back button are all
+suppressed while that screen is on top (handy for a canvas or carousel
+that owns the edge gesture). Imperative `StackHandle::pop` still works.
+No-op on web (browsers don't allow disabling the back button) and on
+backends with no system back affordance.
 
 ## Architecture — the `Element::Navigator` path
 

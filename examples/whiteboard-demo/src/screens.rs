@@ -14,7 +14,7 @@ use icons_lucide::X;
 use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::{
     component, icon, safe_area_insets, ui, view, viewport_size, AlignItems, ChildList, Color,
-    Effect, Element, FlexDirection, FontWeight, IntoElement, JustifyContent, Length, Overflow, Ref,
+    Element, FlexDirection, FontWeight, IntoElement, JustifyContent, Length, Overflow, Ref,
     Signal, StyleRules, Tokenized, TouchPhase, TouchResponse, ViewHandle,
 };
 use std::time::Duration;
@@ -268,7 +268,7 @@ pub fn SettingRow(props: &SettingRowProps) -> Element {
     let knob_ref: Ref<ViewHandle> = Ref::new();
     let av: AnimatedValue<f32> = AnimatedValue::new(if props.on { TRAVEL } else { 0.0 });
     av.bind(knob_ref, AnimProp::TranslateX);
-    let _slide = Effect::new(move || {
+    runtime_core::effect!({
         let target = if toggled.get() { TRAVEL } else { 0.0 };
         av.animate(TweenTo::new(target, Duration::from_millis(160)).ease_out());
     });

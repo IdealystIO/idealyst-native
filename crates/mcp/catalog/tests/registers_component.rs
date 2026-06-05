@@ -423,6 +423,37 @@ fn guides_table_includes_getting_started() {
 }
 
 #[test]
+fn macros_table_documents_effect_and_signal() {
+    // Regression for the gap this slice closes: the authoring macros
+    // were undocumented in the catalog, so `effect!` was invisible and
+    // authors fell back to a bare `Effect::new`. `describe_macro` must
+    // surface `effect`, mark it the recommended form, and show what it
+    // expands to (the primitive underneath).
+    let effect = mcp_catalog::lookup_macro("effect").expect("`effect!` macro registered");
+    assert_eq!(effect.module_path, "runtime_core");
+    assert_eq!(effect.kind, mcp_catalog::MacroKind::Reactive);
+    assert!(
+        effect.expansion.contains("Effect::new"),
+        "effect! expansion should name the primitive it lowers to: {:?}",
+        effect.expansion,
+    );
+    assert!(
+        effect.docs.to_lowercase().contains("recommend"),
+        "effect! docs should steer authors to it over a bare Effect::new",
+    );
+
+    // A trailing `!` resolves the same entry — `list_macros` consumers
+    // pass either spelling.
+    assert!(mcp_catalog::lookup_macro("effect!").is_some());
+    assert!(mcp_catalog::lookup_macro("signal").is_some());
+
+    // The attribute macros live here too, keyed by bare name.
+    let component = mcp_catalog::lookup_macro("component").expect("`#[component]` registered");
+    assert_eq!(component.invocation, "#[component]");
+    assert_eq!(component.kind, mcp_catalog::MacroKind::Component);
+}
+
+#[test]
 fn primitive_entry_is_construct_locked_to_this_crate() {
     // Compile-time check: external callers can read every pub field
     // but cannot construct one. This test asserts the read surface
@@ -1090,6 +1121,7 @@ fn catalog_json_v2_includes_every_new_slice() {
     for slice in &[
         "primitives",
         "utilities",
+        "macros",
         "states",
         "guides",
         "methods",
@@ -1132,6 +1164,7 @@ fn catalog_json_round_trips_through_build_from_json() {
     );
     assert_eq!(rebuilt.primitives().len(), direct.primitives().len(), "primitives");
     assert_eq!(rebuilt.utilities().len(), direct.utilities().len(), "utilities");
+    assert_eq!(rebuilt.macros().len(), direct.macros().len(), "macros");
     assert_eq!(rebuilt.states().len(), direct.states().len(), "states");
     assert_eq!(rebuilt.guides().len(), direct.guides().len(), "guides");
     assert_eq!(rebuilt.methods().len(), direct.methods().len(), "methods");

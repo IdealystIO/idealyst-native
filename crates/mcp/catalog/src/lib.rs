@@ -26,6 +26,7 @@ pub use slice::{CatalogSlice, LeakFromJson};
 
 mod primitives;
 mod utilities;
+mod macros;
 mod states;
 mod guides;
 mod scopes;
@@ -128,6 +129,7 @@ inventory::collect!(PropsSchemaEntry);
 inventory::collect!(ToolEntry);
 inventory::collect!(PrimitiveEntry);
 inventory::collect!(UtilityEntry);
+inventory::collect!(MacroEntry);
 inventory::collect!(StateEntry);
 inventory::collect!(GuideEntry);
 inventory::collect!(MethodEntry);
@@ -261,6 +263,79 @@ impl UtilityCategory {
             Self::Theme => "theme",
             Self::Layout => "layout",
             Self::Math => "math",
+        }
+    }
+}
+
+/// A framework authoring macro — `signal!`, `effect!`, `ui!`,
+/// `#[component]`, `stylesheet!`, etc. These are the *verbs* of
+/// writing an idealyst app: the `macro_rules!` and proc-macros an
+/// author types directly, as opposed to the [`UtilityEntry`] free
+/// functions they call. The slice exists because the original macro
+/// surface was undocumented in the catalog — agents reached for the
+/// lower-level primitive (`Effect::new`) because nothing told them
+/// `effect!` existed or what it expanded to.
+///
+/// **Locked** — same `_seal: ()` pattern as [`PrimitiveEntry`]. The
+/// macro surface ships with the framework version; third-party crates
+/// extend behavior through `#[idealyst_tool]` / `Element::External`,
+/// not by registering new entries here.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct MacroEntry {
+    /// Bare identifier with no `!` / `#[…]` decoration — `"effect"`,
+    /// `"ui"`, `"component"`. Doubles as the `describe_macro` lookup
+    /// key.
+    pub name: &'static str,
+    /// Canonical call syntax as an author writes it: `"effect!({ … })"`,
+    /// `"ui! { … }"`, `"#[component]"`, `"#[derive(IdealystSchema)]"`.
+    /// Carries the `!` / attribute shape the bare `name` drops.
+    pub invocation: &'static str,
+    pub kind: MacroKind,
+    /// Crate the macro is exported from — `"runtime_core"` for the
+    /// `macro_rules!` set, `"runtime_macros"` for the proc-macros.
+    pub module_path: &'static str,
+    pub docs: &'static str,
+    /// One-line sketch of what the macro expands to, so a reader sees
+    /// the primitive underneath — e.g. `effect!` →
+    /// `"let _effect = Effect::new(move || { … });"`. Empty when the
+    /// expansion is codegen too large to usefully summarize (`ui!`,
+    /// `jsx!`, `stylesheet!`).
+    pub expansion: &'static str,
+    #[doc(hidden)]
+    pub _seal: (),
+}
+
+/// Classification for [`MacroEntry`] — the role a macro plays in
+/// authoring. Mirrors the `as_str()` lowercase tags used in the
+/// catalog JSON and the `list_macros` filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacroKind {
+    /// State + reactivity: `signal!`, `effect!`, `rx!`, `bind!`.
+    Reactive,
+    /// Element-tree construction: `ui!`, `jsx!`, `text_fmt!`, `lazy!`,
+    /// `node_ref!`, `children!`.
+    Markup,
+    /// Motion: `animated!`, `animate_at!`, `timeline!`.
+    Animation,
+    /// Typed styles: `stylesheet!`.
+    Styling,
+    /// Component declaration: `#[component]`.
+    Component,
+    /// Documentation + introspection tooling: `recipe!`, `doc_scope!`,
+    /// `#[derive(IdealystSchema)]`, `#[idealyst_tool]`.
+    Catalog,
+}
+
+impl MacroKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reactive => "reactive",
+            Self::Markup => "markup",
+            Self::Animation => "animation",
+            Self::Styling => "styling",
+            Self::Component => "component",
+            Self::Catalog => "catalog",
         }
     }
 }
@@ -577,6 +652,19 @@ pub fn lookup_utility(needle: &str) -> Option<&'static UtilityEntry> {
     utilities().find(|u| u.name == needle)
 }
 
+/// Iterate every [`MacroEntry`] in the locked authoring-macro table.
+pub fn macros() -> impl Iterator<Item = &'static MacroEntry> {
+    inventory::iter::<MacroEntry>()
+}
+
+/// Look up an authoring macro by bare `name` (no `!`), tolerating a
+/// trailing `!` the caller may have typed (`"effect"` and `"effect!"`
+/// both resolve).
+pub fn lookup_macro(needle: &str) -> Option<&'static MacroEntry> {
+    let trimmed = needle.trim_end_matches('!');
+    macros().find(|m| m.name == trimmed)
+}
+
 /// Look up a guide by slug.
 pub fn lookup_guide(slug: &str) -> Option<&'static GuideEntry> {
     guides().find(|g| g.slug == slug)
@@ -591,7 +679,8 @@ pub fn lookup_type(short_name: &str) -> Option<&'static TypeEntry> {
 
 /// Build the catalog as a JSON value. Schema version 2 surfaces
 /// every catalog slice in a single document: components, primitives,
-/// utilities, states, guides, methods, animations, types, and tools.
+/// utilities, macros, states, guides, methods, animations, types, and
+/// tools.
 /// Entries within each slice are sorted by a stable key
 /// (`module_path::name`, slug, etc.) so JSON diffs are minimal.
 ///
@@ -604,6 +693,7 @@ pub fn catalog_json() -> serde_json::Value {
         "components": slice_array::<ComponentEntry>(),
         "primitives": slice_array::<PrimitiveEntry>(),
         "utilities": slice_array::<UtilityEntry>(),
+        "macros": slice_array::<MacroEntry>(),
         "states": slice_array::<StateEntry>(),
         "guides": slice_array::<GuideEntry>(),
         "methods": slice_array::<MethodEntry>(),

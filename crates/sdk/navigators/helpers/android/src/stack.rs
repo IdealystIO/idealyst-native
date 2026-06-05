@@ -9,7 +9,7 @@
 //! `RustHostFragment.onDestroyView` trampolining back through JNI to
 //! release the matching scope.
 
-use crate::{node_key, AndroidNavCallbacks};
+use crate::{node_key, AndroidNavCallbacks, AndroidScreenOptions};
 use backend_android::{with_jni_env, AndroidBackend};
 use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;
@@ -45,6 +45,55 @@ thread_local! {
     /// moved here so the SDK owns it.
     pub(crate) static NAVIGATOR_INSTANCES: RefCell<HashMap<usize, NavigatorEntry>> =
         RefCell::new(HashMap::new());
+}
+
+/// `true` when the mounted screen requested a full back-lock
+/// (`AndroidScreenOptions::back_enabled == Some(false)`). Missing or
+/// non-matching options default to "back works normally" (`false`).
+/// The flag is threaded to the Kotlin `RustNavigator`, which arms an
+/// `OnBackPressedCallback` whenever the top fragment is back-locked.
+fn back_locked_of(options: &dyn std::any::Any) -> bool {
+    options
+        .downcast_ref::<AndroidScreenOptions>()
+        .and_then(|o| o.back_enabled)
+        .map(|enabled| !enabled)
+        .unwrap_or(false)
+}
+
+/// Apply the top screen's back-lock via the Kotlin controller's
+/// *additive* `setBackLockedForTop` method, AFTER the mount op itself.
+///
+/// Kept separate from the mount JNI calls (`push`/`mountRoot`/…), which
+/// retain their original signatures, so the critical mount path can
+/// never fail on a runtime-version skew. If the embedded Kotlin runtime
+/// predates this method (older CLI than the app's native lib), the call
+/// raises `NoSuchMethodError`; we clear the pending exception so the
+/// caller's `env` stays usable and log once — back-lock is silently
+/// absent, but the screen still renders. No-op for unlocked screens, so
+/// an older runtime only ever sees this call when back-lock is actually
+/// requested.
+fn apply_back_lock(env: &mut jni::JNIEnv, controller: &GlobalRef, back_locked: bool) {
+    if !back_locked {
+        return;
+    }
+    let ok = env
+        .call_method(
+            controller.as_obj(),
+            "setBackLockedForTop",
+            "(Z)V",
+            &[JValue::Bool(true as jni::sys::jboolean)],
+        )
+        .is_ok();
+    if !ok {
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+        log::warn!(
+            "RustNavigator.setBackLockedForTop unavailable — back-lock skipped. \
+             The app's native lib is newer than the embedded Kotlin runtime; \
+             rebuild the idealyst CLI to pick up the runtime change."
+        );
+    }
 }
 
 // =============================================================================
@@ -140,6 +189,7 @@ pub(crate) fn create(
         control.install(Box::new(move |cmd| match cmd {
             NavCommand::Push { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
+                let back_locked = back_locked_of(&*result.options);
                 let view = result.node;
                 let scope_id = result.scope_id;
                 let new_depth = with_jni_env(|env| {
@@ -152,6 +202,7 @@ pub(crate) fn create(
                             JValue::Long(scope_id as jlong),
                         ],
                     );
+                    apply_back_lock(env, &controller, back_locked);
                     env.call_method(controller.as_obj(), "depth", "()I", &[])
                         .and_then(|v| v.i())
                         .unwrap_or(0)
@@ -169,6 +220,7 @@ pub(crate) fn create(
             }
             NavCommand::Replace { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
+                let back_locked = back_locked_of(&*result.options);
                 let view = result.node;
                 let scope_id = result.scope_id;
                 let new_depth = with_jni_env(|env| {
@@ -181,6 +233,7 @@ pub(crate) fn create(
                             JValue::Long(scope_id as jlong),
                         ],
                     );
+                    apply_back_lock(env, &controller, back_locked);
                     env.call_method(controller.as_obj(), "depth", "()I", &[])
                         .and_then(|v| v.i())
                         .unwrap_or(0)
@@ -189,6 +242,7 @@ pub(crate) fn create(
             }
             NavCommand::Reset { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
+                let back_locked = back_locked_of(&*result.options);
                 let view = result.node;
                 let scope_id = result.scope_id;
                 let new_depth = with_jni_env(|env| {
@@ -201,6 +255,7 @@ pub(crate) fn create(
                             JValue::Long(scope_id as jlong),
                         ],
                     );
+                    apply_back_lock(env, &controller, back_locked);
                     env.call_method(controller.as_obj(), "depth", "()I", &[])
                         .and_then(|v| v.i())
                         .unwrap_or(0)
@@ -248,7 +303,12 @@ pub(crate) fn create(
 /// [`crate::attach_initial`] can short-circuit. Returns `false` if the
 /// node belongs to a different kind (tab/drawer) — the unified entry
 /// point falls through to the tab_drawer module.
-pub(crate) fn attach_initial(navigator: &GlobalRef, screen: &GlobalRef, scope_id: u64) -> bool {
+pub(crate) fn attach_initial(
+    navigator: &GlobalRef,
+    screen: &GlobalRef,
+    scope_id: u64,
+    back_locked: bool,
+) -> bool {
     let key = node_key(navigator);
     let controller = NAVIGATOR_INSTANCES.with(|m| {
         m.borrow().get(&key).map(|e| e.controller.clone())
@@ -271,6 +331,9 @@ pub(crate) fn attach_initial(navigator: &GlobalRef, screen: &GlobalRef, scope_id
             }
             log::error!("RustNavigator.mountRoot JNI call failed: {:?}", e);
         }
+        // Additive, soft-failing back-lock — never on the critical
+        // mountRoot path (see `apply_back_lock`).
+        apply_back_lock(env, &controller, back_locked);
     });
     log::info!("Navigator attach_initial: mountRoot JNI call returned");
     true
@@ -304,6 +367,25 @@ pub(crate) fn release(node: &GlobalRef) -> bool {
             drop(Box::from_raw(ptr as *mut AndroidNavCallbacks));
         }
     }
+    // Detach the back-lock `OnBackPressedCallback` from the activity's
+    // dispatcher BEFORE dropping the controller ref. A back-locked
+    // navigator torn down while its activity survives would otherwise
+    // leave back suppressed app-wide (and pin the controller via the
+    // dispatcher's strong reference). `dispose` is a no-op when the
+    // callback was never armed.
+    with_jni_env(|env| {
+        // `dispose` is additive too — an older embedded runtime won't
+        // have it. Clear any resulting exception so this teardown
+        // doesn't leave the thread's JNI env poisoned for later calls.
+        if env
+            .call_method(entry.controller.as_obj(), "dispose", "()V", &[])
+            .is_err()
+        {
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
+            }
+        }
+    });
     // Drop the controller GlobalRef so the JVM can GC the
     // RustNavigator (along with its FrameLayout, which by this point
     // has been removed from its parent by the framework's

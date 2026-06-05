@@ -36,7 +36,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::NSView;
 use objc2_foundation::{CGRect, NSObject, NSString};
-use runtime_core::Effect;
+use runtime_core::effect;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -187,7 +187,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
         let player_for_src = player.clone();
         let props_for_src = props.clone();
         let first_run = Cell::new(true);
-        let _src_effect = Effect::new(move || {
+        effect!({
             let url = resolved_url(&props_for_src).unwrap_or_default();
             if first_run.replace(false) {
                 return;

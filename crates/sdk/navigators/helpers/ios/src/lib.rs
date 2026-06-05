@@ -201,6 +201,13 @@ pub struct IosScreenOptions {
     /// per-screen `mount_policy` builder is used, the platform handler
     /// fills this so `select_screen` can branch on it for cache-vs-dispose.
     pub mount_policy: Option<MountPolicy>,
+    /// Whether the system back affordance (swipe-back gesture + nav-bar
+    /// back chevron) may pop this screen. `None`/`Some(true)` ⇒ normal;
+    /// `Some(false)` ⇒ the stack engine disables
+    /// `interactivePopGestureRecognizer` and hides the back chevron
+    /// while this screen is on top. Honored by the stack engine only
+    /// (tab/drawer have no native back affordance to lock).
+    pub back_enabled: Option<bool>,
 }
 
 /// Drawer-specific commands ridden across the substrate's

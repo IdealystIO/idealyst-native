@@ -409,6 +409,32 @@ macro_rules! effect {
     };
 }
 
+/// Shorthand for [`memo`](crate::memo) — a cached derived `Signal<T>`
+/// whose body recomputes when the signals it reads change, notifying
+/// subscribers only when the value actually differs (`T: PartialEq`).
+///
+/// Use it for derived state read in multiple places or expensive to
+/// recompute; the work runs once per dependency change, not once per
+/// read. For a cheap one-off derivation, a plain closure or [`rx!`] is
+/// lighter.
+///
+/// ```ignore
+/// let count = signal!(0);
+/// let doubled = memo!(count.get() * 2);
+/// // `doubled` is a Signal<i32>; reads stay cached until `count` changes.
+/// ```
+///
+/// The body is wrapped in `move ||`, so `Copy` signal handles are
+/// captured by value — same ergonomics as [`effect!`]. For a type
+/// without `PartialEq` (or a tolerance-based comparison), call
+/// [`memo_with`](crate::memo_with) directly.
+#[macro_export]
+macro_rules! memo {
+    ($body:expr) => {
+        $crate::memo(move || $body)
+    };
+}
+
 /// Builds a `Vec<Element>` from a mixed-shape list of children.
 ///
 /// Each argument must implement [`ChildList`]; the macro flattens

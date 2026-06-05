@@ -40,7 +40,6 @@
 
 use crate::{ToolbarItem, ToolbarOps, ToolbarProps};
 use backend_windows::{WindowsBackend, WindowsNode};
-use runtime_core::Effect;
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -195,7 +194,7 @@ fn build_toolbar(props: &Rc<ToolbarProps>, b: &mut WindowsBackend) -> WindowsNod
     // ADD new commands reactively (only labels can change). Stable-
     // item authors get correct behavior; the corner case where the
     // item list changes ITS LENGTH is a follow-up.
-    let _items_effect = Effect::new(move || {
+    runtime_core::effect!({
         let items = (props_for_effect.items)();
         apply_items(hwnd_for_effect, &items);
     });

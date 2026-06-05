@@ -30,7 +30,7 @@ use std::rc::Rc;
 
 use runtime_core::{
     async_reducer, component, fixed_size, flat_list, signal, ui, AsyncReducer, AsyncStatus,
-    Effect, Element, FlexDirection, IntoElement, Length, Signal, StyleRules, StyleSheet,
+    effect, Element, FlexDirection, IntoElement, Length, Signal, StyleRules, StyleSheet,
 };
 use serde::{Deserialize, Serialize};
 use server::{server, ServerError};
@@ -328,8 +328,7 @@ pub fn app() -> Element {
     // Fire the initial list fetch on mount.
     {
         let refresh = refresh.clone();
-        let e = Effect::new(move || refresh.trigger(()));
-        std::mem::forget(e);
+        effect!(refresh.trigger(()));
     }
 
     // Reactive status line — projects refresh's lifecycle into text.

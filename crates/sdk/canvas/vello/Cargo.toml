@@ -32,11 +32,11 @@ log = "0.4"
 # macOS `.app` alongside `backend-macos`, because none of the objc2 framework
 # crates carry a `links` key (only the shared `objc-sys` does, with a versioned
 # name) and `canvas-vello` reaches the GPU via `raw-window-handle` (raw ptrs),
-# never crossing objc2 types with the backend. So vello is enabled on macOS
-# (GPU canvas via Metal). iOS stays on `canvas-native` for now (retest later).
-# Web is excluded (WebGL-only wgpu; web has Canvas2D via `canvas-native`). Same
-# wgpu major (29) the gpu-backend uses; vello 0.9 pins it too.
-[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))'.dependencies]
+# never crossing objc2 types with the backend. So vello is enabled on macOS AND
+# iOS (GPU canvas via Metal — same objc2-coexistence trick; iOS uses host Metal
+# which has f16/compute). Web is excluded (WebGL-only wgpu; web has Canvas2D via
+# `canvas-native`). Same wgpu major (29) the gpu-backend uses; vello 0.9 pins it too.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 vello = "0.9"
 wgpu = "29"
 raw-window-handle = "0.6"

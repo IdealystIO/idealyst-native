@@ -27,7 +27,6 @@
 use crate::{ToolbarItem, ToolbarOps, ToolbarProps};
 use backend_linux::{LinuxBackend, LinuxNode};
 use gtk4::prelude::*;
-use runtime_core::Effect;
 use std::any::Any;
 use std::rc::Rc;
 
@@ -62,7 +61,7 @@ fn build_toolbar(props: &Rc<ToolbarProps>, b: &mut LinuxBackend) -> LinuxNode {
     // rebuilds the HeaderBar's packed children.
     let headerbar_for_effect = headerbar.clone();
     let props_for_effect = props.clone();
-    let _items_effect = Effect::new(move || {
+    runtime_core::effect!({
         let items = (props_for_effect.items)();
         apply_items(&headerbar_for_effect, items);
     });

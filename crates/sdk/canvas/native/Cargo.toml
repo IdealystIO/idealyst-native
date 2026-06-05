@@ -54,6 +54,13 @@ objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSGeometry"] }
 objc2-ui-kit = { version = "0.2", features = ["UIView", "UIResponder"] }
 
+# iOS SIMULATOR only: the CPU self-capture (recording) fallback lives here
+# because vello can't run on the sim. `backend-ios-core` provides `ios_log` for
+# the one-time "you're on the slow CPU path" NSLog warning. Not pulled into
+# device builds, where vello owns capture and the CPU path isn't compiled.
+[target.'cfg(all(target_os = "ios", target_abi = "sim", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-core = { workspace = true }
+
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 backend-macos = { workspace = true }
 objc2 = "0.5"

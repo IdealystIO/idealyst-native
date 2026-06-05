@@ -34,6 +34,9 @@ web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Url"] }
 
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }
+# GPU canvas on iOS (vello/Metal) — overrides canvas-native (last-wins). iOS uses
+# host Metal (f16/compute), so vello renders.
+canvas-vello = { workspace = true }
 
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 backend-android-mobile = { workspace = true }

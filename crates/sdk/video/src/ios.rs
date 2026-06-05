@@ -43,7 +43,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{CGRect, NSObject, NSString};
 use objc2_ui_kit::UIView;
-use runtime_core::Effect;
+use runtime_core::effect;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -240,7 +240,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
     let player_layer_for_sync = player_layer.clone();
     let display_layer_for_sync = display_layer.clone();
     let view_for_sync = view.clone();
-    let _layout_effect = Effect::new(move || {
+    effect!({
         let bounds: CGRect = unsafe { msg_send![&*view_for_sync, bounds] };
         let _: () = unsafe { msg_send![&*player_layer_for_sync, setFrame: bounds] };
         // The stream display layer tracks bounds the same way (CALayer
@@ -255,7 +255,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
     let player_for_src = player.clone();
     let props_clone = props.clone();
     let first_run = Cell::new(true);
-    let _src_effect = Effect::new(move || {
+    effect!({
         let url = resolved_url(&props_clone).unwrap_or_default();
         if first_run.replace(false) {
             // Initial run: AVPlayer already has this URL; skip the

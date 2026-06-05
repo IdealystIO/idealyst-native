@@ -5,6 +5,7 @@ import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import androidx.activity.OnBackPressedCallback
 import androidx.fragment.app.FragmentActivity
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentTransaction
@@ -59,14 +60,34 @@ class RustNavigator(
      *  one). If not, the controller refuses to commit transactions
      *  and the navigator degrades to a one-screen container — there
      *  is no reasonable fallback for fragment-less hosts. */
-    private val fragmentManager: FragmentManager? =
-        (context as? FragmentActivity)?.supportFragmentManager
+    private val activity: FragmentActivity? = context as? FragmentActivity
+    private val fragmentManager: FragmentManager? = activity?.supportFragmentManager
 
     /** Stack of fragment tags we've added, top-of-stack last. Used
      *  for `pop` (we pop the topmost tag) and for `reset` (we pop
      *  everything before adding the new root). */
     private val tagStack = mutableListOf<String>()
     private var nextTag = 0
+
+    /** Parallel to [tagStack]: whether each screen requested a full
+     *  back-lock (`StackScreenOptions.back_enabled == Some(false)`).
+     *  Only the top entry matters at any moment — [syncBackLock]
+     *  arms [backLockCallback] from `backLockStack.last()`. */
+    private val backLockStack = mutableListOf<Boolean>()
+
+    /** Single back-interceptor. When the top screen is back-locked we
+     *  add this to the activity's [androidx.activity.OnBackPressedDispatcher]
+     *  (which is LIFO) so it sits AHEAD of the FragmentManager's own
+     *  back callback and swallows the gesture/button before a pop can
+     *  happen. Re-added on each lock so it stays most-recent. */
+    private val backLockCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            // Intentional no-op: the top screen is back-locked, so the
+            // edge-swipe / system back button does nothing. Android
+            // routes both through this dispatcher, so this covers both.
+            Log.d("idealyst", "RustNavigator: back suppressed (screen back-locked)")
+        }
+    }
 
     /** Queued mount operations awaiting container attach. Drained in
      *  [onContainerAttached]. While empty, container is attached and
@@ -123,6 +144,26 @@ class RustNavigator(
         for (op in drained) op()
     }
 
+    /** Point [backLockCallback] at the current top screen's lock state.
+     *  Call after any change to [backLockStack]. Safe to run before the
+     *  container attaches — it only touches the activity's back
+     *  dispatcher, not the fragment transaction.
+     *
+     *  We `remove()` then re-`addCallback` when locking so the callback
+     *  is the most-recently-registered in the dispatcher's LIFO order,
+     *  taking precedence over the FragmentManager's own back callback
+     *  (which would otherwise pop the back stack first). When unlocked
+     *  we remove it entirely so normal fragment-back resumes. */
+    private fun syncBackLock() {
+        val a = activity ?: return
+        val lock = backLockStack.lastOrNull() ?: false
+        backLockCallback.remove()
+        if (lock) {
+            a.onBackPressedDispatcher.addCallback(backLockCallback)
+        }
+        backLockCallback.isEnabled = lock
+    }
+
     /**
      * Push a new screen. The framework has already built the view
      * (via `NavigatorCallbacks.mount_screen`) and allocated a scope
@@ -136,6 +177,12 @@ class RustNavigator(
         val fm = fragmentManager ?: return
         val tag = "rust-nav-${nextTag++}"
         tagStack.add(tag)
+        // New screens start unlocked; Rust calls [setBackLockedForTop]
+        // right after if the screen opted into a back-lock. Keeping the
+        // lock OUT of this method's signature means an older embedded
+        // runtime stays call-compatible on this critical mount path.
+        backLockStack.add(false)
+        syncBackLock()
         runOrQueue {
             val fragment = RustHostFragment().apply { installView(nativePtr, scopeId, view) }
             val tx = fm.beginTransaction()
@@ -181,6 +228,8 @@ class RustNavigator(
             return
         }
         val poppedTag = tagStack.removeAt(tagStack.size - 1)
+        if (backLockStack.isNotEmpty()) backLockStack.removeAt(backLockStack.size - 1)
+        syncBackLock()
         runOrQueue {
             // popBackStack reverses the matching `push` transaction —
             // the new top fragment is automatically un-hidden, the
@@ -202,8 +251,11 @@ class RustNavigator(
             return
         }
         val oldTag = tagStack.removeAt(tagStack.size - 1)
+        if (backLockStack.isNotEmpty()) backLockStack.removeAt(backLockStack.size - 1)
         val newTag = "rust-nav-${nextTag++}"
         tagStack.add(newTag)
+        backLockStack.add(false)
+        syncBackLock()
         runOrQueue {
             // Pop the old top off the back stack. This un-hides the
             // fragment that was below it (if any), so we re-hide it
@@ -236,8 +288,11 @@ class RustNavigator(
         val fm = fragmentManager ?: return
         val firstTag = tagStack.firstOrNull()
         tagStack.clear()
+        backLockStack.clear()
         val tag = "rust-nav-${nextTag++}"
         tagStack.add(tag)
+        backLockStack.add(false)
+        syncBackLock()
         runOrQueue {
             if (firstTag != null) {
                 // Pop the whole back stack — the framework's
@@ -256,6 +311,39 @@ class RustNavigator(
     fun depth(): Int = tagStack.size
 
     /**
+     * Set the back-lock state of the CURRENT top screen, then re-arm
+     * the interceptor. Rust calls this immediately after a mount op
+     * (`mountRoot`/`push`/`replace`/`reset`) for a screen that opted
+     * into `back_enabled(false)`.
+     *
+     * This is deliberately a SEPARATE, additive method rather than a
+     * parameter on the mount methods: an embedded Kotlin runtime older
+     * than the app's native lib won't have it, and the Rust caller
+     * catches the resulting `NoSuchMethodError` and carries on. That
+     * keeps the critical mount path call-compatible across runtime
+     * versions — back-lock degrades to "absent", never to a blank app.
+     */
+    fun setBackLockedForTop(backLocked: Boolean) {
+        if (backLockStack.isNotEmpty()) {
+            backLockStack[backLockStack.size - 1] = backLocked
+        }
+        syncBackLock()
+    }
+
+    /**
+     * Detach the back-lock interceptor from the activity's back
+     * dispatcher. Called from Rust `release()` when the navigator is
+     * torn down. Without this, a navigator removed while its host
+     * activity lives on (e.g. a `when` flips past it) would leave
+     * [backLockCallback] registered and enabled — suppressing back
+     * *app-wide* and pinning this controller in memory via the
+     * dispatcher's strong reference.
+     */
+    fun dispose() {
+        backLockCallback.remove()
+    }
+
+    /**
      * Mount the very first screen as the root. Distinct from `push`
      * because the root isn't added to the back stack (the user can't
      * pop it).
@@ -264,6 +352,8 @@ class RustNavigator(
         val fm = fragmentManager ?: return
         val tag = "rust-nav-${nextTag++}"
         tagStack.add(tag)
+        backLockStack.add(false)
+        syncBackLock()
         Log.i("idealyst", "RustNavigator.mountRoot called (attached=$attached, view=$view)")
         runOrQueue {
             try {

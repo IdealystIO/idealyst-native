@@ -130,7 +130,7 @@ fn app_data_dir(name: &str) -> Result<PathBuf, FileError> {
 /// framework crate needed.
 #[cfg(target_os = "ios")]
 fn app_data_dir(name: &str) -> Result<PathBuf, FileError> {
-    use objc2::runtime::AnyObject;
+    use objc2::runtime::{AnyObject, Bool};
     use objc2::{class, msg_send};
     use std::ffi::CStr;
     use std::os::raw::c_char;
@@ -141,18 +141,29 @@ fn app_data_dir(name: &str) -> Result<PathBuf, FileError> {
 
     unsafe {
         let fm: *mut AnyObject = msg_send![class!(NSFileManager), defaultManager];
-        let urls: *mut AnyObject = msg_send![
+        // Single-URL API (NOT `URLsForDirectory:inDomains:`): returns ONE NSURL
+        // directly, so we never touch an array's `count`. `URLsForDirectory`
+        // returns a Swift-bridged `__SwiftDeferredNSArray` whose `count`
+        // selector is encoded `'Q'` (NSUInteger), while objc2 encodes Rust
+        // `usize` as `'q'` — a signedness mismatch that objc2's debug-build
+        // runtime encoding check turns into a non-unwinding panic → abort, which
+        // crashed the app the instant a record tap resolved the recordings store
+        // (regular `CALayer.sublayers` arrays don't trip it; the Swift bridge
+        // does). `error:` is ignored — a nil return is handled below.
+        let mut err: *mut AnyObject = std::ptr::null_mut();
+        let url: *mut AnyObject = msg_send![
             fm,
-            URLsForDirectory: NS_APPLICATION_SUPPORT_DIRECTORY,
-            inDomains: NS_USER_DOMAIN_MASK,
+            URLForDirectory: NS_APPLICATION_SUPPORT_DIRECTORY,
+            inDomain: NS_USER_DOMAIN_MASK,
+            appropriateForURL: std::ptr::null::<AnyObject>(),
+            create: Bool::NO,
+            error: &mut err,
         ];
-        let count: usize = msg_send![urls, count];
-        if count == 0 {
+        if url.is_null() {
             return Err(FileError::NoAppDir(
-                "NSFileManager returned no Application Support URL".into(),
+                "NSFileManager could not resolve the Application Support URL".into(),
             ));
         }
-        let url: *mut AnyObject = msg_send![urls, objectAtIndex: 0usize];
         // NSURL.path → NSString → UTF-8.
         let path_ns: *mut AnyObject = msg_send![url, path];
         if path_ns.is_null() {

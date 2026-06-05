@@ -83,3 +83,10 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# E2E test for `idealyst mcp` live-reload: drive the real server binary
+# over stdio as an MCP client. `client` + `transport-child-process` give
+# us `TokioChildProcess` + the client peer; the extra tokio features are
+# for spawning/awaiting that child and polling with timeouts.
+rmcp = { version = "1", features = ["client", "transport-child-process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "io-util"] }
+serde_json = "1"

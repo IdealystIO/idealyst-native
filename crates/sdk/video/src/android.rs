@@ -28,7 +28,7 @@ use crate::{MediaContent, VideoOps, VideoProps};
 // keeps working).
 use backend_android::{with_jni_env, AndroidBackend};
 use jni::objects::{GlobalRef, JObject, JValue};
-use runtime_core::Effect;
+use runtime_core::effect;
 use std::any::Any;
 use std::rc::Rc;
 
@@ -73,7 +73,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> GlobalRef {
     let host_for_url = host.clone();
     let props_for_url = props.clone();
     let first_run = std::cell::Cell::new(true);
-    let _src_effect = Effect::new(move || {
+    effect!({
         let url = match props_for_url.source.resolve() {
             MediaContent::Url(u) => u,
             MediaContent::Stream(_) | MediaContent::None => return,

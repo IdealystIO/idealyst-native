@@ -9,7 +9,6 @@
 
 use crate::{WebViewOps, WebViewProps};
 use backend_web::WebBackend;
-use runtime_core::Effect;
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -64,7 +63,7 @@ fn build_iframe(props: &Rc<WebViewProps>) -> web_sys::Element {
     // of this function is fine, the scope keeps it alive.
     let iframe_for_url = iframe.clone();
     let url_fn = SharedUrl::new(props);
-    let _effect = Effect::new(move || {
+    runtime_core::effect!({
         let url = url_fn.read();
         let _ = iframe_for_url.set_attribute("src", &url);
     });

@@ -17,7 +17,7 @@
 
 use backend_ios::{IosBackend, IosNode};
 use canvas_core::{CanvasProps, Color, TextureLayer};
-use runtime_core::Effect;
+use runtime_core::effect;
 
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject, NSObject};
@@ -30,10 +30,38 @@ use std::ffi::c_void;
 use std::ptr::{null, null_mut};
 use std::rc::Rc;
 
+// Self-capture (recording) is a CPU read-back path. On iOS it's compiled ONLY
+// for the Simulator (`target_abi = "sim"`), where vello can't run (its Metal
+// lacks INDIRECT_EXECUTION) so canvas-native is the active renderer. On real
+// devices vello owns the canvas and captures on-GPU, so none of this compiles.
+#[cfg(target_abi = "sim")]
+use canvas_core::FrameWriter;
+#[cfg(target_abi = "sim")]
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::apple::{ApplePainter, CGContextRef};
 
 extern "C" {
     fn UIGraphicsGetCurrentContext() -> CGContextRef;
+}
+
+// Offscreen-rasterization bindings for the Simulator-only CPU self-capture path.
+#[cfg(target_abi = "sim")]
+extern "C" {
+    fn CGBitmapContextCreate(
+        data: *mut c_void,
+        width: usize,
+        height: usize,
+        bits_per_component: usize,
+        bytes_per_row: usize,
+        space: CGColorSpaceRef,
+        bitmap_info: u32,
+    ) -> CGContextRef;
+    fn CGContextRelease(c: CGContextRef);
+    fn CGContextTranslateCTM(c: CGContextRef, tx: CGFloat, ty: CGFloat);
+    fn CGContextScaleCTM(c: CGContextRef, sx: CGFloat, sy: CGFloat);
+    fn UIGraphicsPushContext(ctx: CGContextRef);
+    fn UIGraphicsPopContext();
 }
 
 // ============================================================================
@@ -131,6 +159,10 @@ pub(crate) struct CanvasViewIvars {
     /// producer keeps feeding the frames our `latest()` pull reads (see
     /// [`canvas_core::sync_layer_subscriptions`]).
     layer_subs: RefCell<Vec<Option<canvas_core::Subscription>>>,
+    /// Self-capture sink (iOS Simulator only — the CPU recording fallback). On a
+    /// real device vello owns the canvas + its GPU capture, so this isn't stored.
+    #[cfg(target_abi = "sim")]
+    capture: RefCell<Option<FrameWriter>>,
 }
 
 declare_class!(
@@ -172,6 +204,8 @@ impl IdealystCanvasView {
             scene: RefCell::new(canvas_core::Scene::new()),
             layers: RefCell::new(Vec::new()),
             layer_subs: RefCell::new(Vec::new()),
+            #[cfg(target_abi = "sim")]
+            capture: RefCell::new(None),
         });
         let this: Retained<Self> = unsafe {
             msg_send_id![
@@ -210,6 +244,92 @@ impl IdealystCanvasView {
         for layer in self.ivars().layers.borrow().iter() {
             composite_layer(ctx, layer);
         }
+        // Simulator-only: while recording, re-rasterize offscreen and read back.
+        #[cfg(target_abi = "sim")]
+        self.capture_frame_if_recording(&scene);
+    }
+
+    /// Store the self-capture sink (iOS Simulator only).
+    #[cfg(target_abi = "sim")]
+    fn set_capture(&self, writer: Option<FrameWriter>) {
+        *self.ivars().capture.borrow_mut() = writer;
+    }
+
+    /// While a recorder is tapping the capture stream, re-render the scene +
+    /// layers into an offscreen RGBA bitmap and push it to the `FrameWriter`
+    /// (self-capture). The iOS canvas paints straight into the on-screen
+    /// `drawRect:` context, which has no readable backing buffer — so recording
+    /// needs this second, offscreen rasterization. Simulator-only: it's the CPU
+    /// fallback for when vello (which would capture on-GPU, zero re-render) can't
+    /// run. Gated on `wants_cpu_frames` so a non-recording canvas does nothing.
+    #[cfg(target_abi = "sim")]
+    fn capture_frame_if_recording(&self, scene: &canvas_core::Scene) {
+        let writer = match self.ivars().capture.borrow().as_ref() {
+            Some(w) if w.wants_cpu_frames() => w.clone(),
+            _ => return,
+        };
+
+        // Announce the slow path ONCE so a developer recording on the simulator
+        // knows why it's sluggish and to validate perf on a real device. The
+        // `log` crate facade isn't routed to the iOS console, so use NSLog.
+        static LOGGED: AtomicBool = AtomicBool::new(false);
+        if !LOGGED.swap(true, Ordering::Relaxed) {
+            backend_ios_core::ios_log(
+                "[canvas] recording via the CoreGraphics CPU renderer (iOS Simulator \
+                 fallback — vello can't run here). Expect SEVERE performance loss; \
+                 record on a physical device for representative performance.",
+            );
+        }
+
+        let bounds: CGRect = unsafe { msg_send![self, bounds] };
+        let scale: CGFloat = unsafe { msg_send![self, contentScaleFactor] };
+        let scale = if scale > 0.0 { scale } else { 1.0 };
+        let w_px = (bounds.size.width * scale).round() as usize;
+        let h_px = (bounds.size.height * scale).round() as usize;
+        if w_px == 0 || h_px == 0 {
+            return;
+        }
+
+        let mut buf = vec![0u8; w_px * h_px * 4];
+        // SAFETY: `buf` outlives the context (released below, before `write_rgba8`
+        // reads it). Every CG object created here is released here. The bitmap
+        // context is pushed as the current UIGraphics context so the painter's
+        // `UIBezierPath.fill/stroke` (which target the *current* context) AND the
+        // explicit-`ctx` CGContext calls both land in `buf`.
+        unsafe {
+            let cs = CGColorSpaceCreateDeviceRGB();
+            let ctx = CGBitmapContextCreate(
+                buf.as_mut_ptr() as *mut c_void,
+                w_px,
+                h_px,
+                8,
+                w_px * 4,
+                cs,
+                RGBA_BITMAP_INFO,
+            );
+            if ctx.is_null() {
+                CGColorSpaceRelease(cs);
+                return;
+            }
+            // A fresh CGBitmapContext has a bottom-left origin; flip to top-left
+            // and scale logical points → device pixels (the same setup
+            // `UIGraphicsBeginImageContext` applies). After this, buffer row 0 is
+            // the TOP scanline — the order `write_rgba8` expects.
+            CGContextTranslateCTM(ctx, 0.0, h_px as CGFloat);
+            CGContextScaleCTM(ctx, scale, -scale);
+
+            UIGraphicsPushContext(ctx);
+            painter().paint_scene(ctx, scene);
+            for layer in self.ivars().layers.borrow().iter() {
+                composite_layer(ctx, layer);
+            }
+            UIGraphicsPopContext();
+
+            CGContextRelease(ctx);
+            CGColorSpaceRelease(cs);
+        }
+
+        writer.write_rgba8(w_px as u32, h_px as u32, &buf);
     }
 }
 
@@ -323,9 +443,14 @@ fn build_canvas(props: &Rc<CanvasProps>, b: &mut IosBackend) -> IosNode {
     b.register_external_view(&view_uiview);
     let view_canvas: Retained<IdealystCanvasView> = unsafe { Retained::cast(view_uiview.clone()) };
 
+    // Simulator-only: hand the view the self-capture sink so `drawRect:` can read
+    // frames back for recording (on a device vello captures on-GPU instead).
+    #[cfg(target_abi = "sim")]
+    view_canvas.set_capture(props.capture.clone());
+
     let view_for_effect = view_canvas.clone();
     let props_clone = props.clone();
-    let _effect = Effect::new(move || {
+    effect!({
         let scene = canvas_core::paint_scene(&props_clone);
         // Clone the layer descriptors (cheap — Rc closures); their sources are
         // resolved per `drawRect:` so the live camera + drag rect stay current.

@@ -22,7 +22,7 @@
 
 use crate::{SvgOps, SvgProps};
 use backend_web::WebBackend;
-use runtime_core::Effect;
+use runtime_core::effect;
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -70,7 +70,7 @@ fn build_svg(props: &Rc<SvgProps>) -> web_sys::Element {
     let wrapper_for_effect = wrapper.clone();
     let props_for_effect = props.clone();
     let last_for_effect = last.clone();
-    let _effect = Effect::new(move || {
+    effect!({
         let markup = (props_for_effect.markup)();
         {
             let cached = last_for_effect.borrow();

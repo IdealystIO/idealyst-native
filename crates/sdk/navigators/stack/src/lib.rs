@@ -176,6 +176,33 @@ pub struct StackScreenOptions {
     /// for finer-grained "still mounted but pause work" semantics
     /// (e.g. pause a wgpu host without dropping the whole scope).
     pub unmount_on_blur: Option<bool>,
+    /// Whether the platform's *system back affordance* may pop this
+    /// screen. `None` (the default) or `Some(true)` ⇒ normal back: the
+    /// iOS swipe-back gesture + back chevron and the Android
+    /// edge-swipe-back + system back button all pop as usual.
+    /// `Some(false)` ⇒ **full back-lock**: this screen cannot be popped
+    /// by any system back affordance while it's on top. Imperative
+    /// [`StackHandle::pop`] still works — this only governs the
+    /// *user-initiated* system gesture/button, not programmatic pops.
+    ///
+    /// The intended use is a screen that owns a conflicting edge
+    /// gesture (a canvas you draw on, a horizontally-paged carousel)
+    /// where an accidental edge-swipe-back is disruptive.
+    ///
+    /// # Cross-platform reach
+    ///
+    /// - **iOS** — disables `interactivePopGestureRecognizer` (swipe)
+    ///   and hides the nav-bar back chevron for the locked screen.
+    /// - **Android** — an `OnBackPressedCallback` swallows the edge
+    ///   swipe *and* the system back button (Android routes both
+    ///   through the same `OnBackPressedDispatcher`; they cannot be
+    ///   separated, so full back-lock is the only honest semantic).
+    /// - **Web** — no-op. Browsers do not permit disabling the back
+    ///   button; a `history`-fighting hack is hostile and unreliable,
+    ///   so this knob is deliberately inert on web rather than faking
+    ///   a guarantee it can't keep.
+    /// - **macOS / terminal** — no system back gesture; inert.
+    pub back_enabled: Option<bool>,
 }
 
 impl StackScreenOptions {
@@ -209,6 +236,10 @@ pub trait StackScreenExt: Sized {
     /// when a screen is pushed above it (vs. keeping it mounted, the
     /// default). See [`StackScreenOptions::unmount_on_blur`].
     fn unmount_on_blur(self, unmount: bool) -> Self;
+    /// Enable / disable the system back affordance (swipe-back +
+    /// back button) for this screen. `false` fully locks back —
+    /// see [`StackScreenOptions::back_enabled`].
+    fn back_enabled(self, enabled: bool) -> Self;
 }
 
 impl StackScreenExt for Screen {
@@ -235,6 +266,9 @@ impl StackScreenExt for Screen {
     }
     fn unmount_on_blur(self, unmount: bool) -> Self {
         with_stack_options(self, |o| o.unmount_on_blur = Some(unmount))
+    }
+    fn back_enabled(self, enabled: bool) -> Self {
+        with_stack_options(self, |o| o.back_enabled = Some(enabled))
     }
 }
 
@@ -663,4 +697,55 @@ pub mod prelude {
         register, BarButton, HeaderStyle, Navigator, StackBuilder, StackHandle, StackPresentation,
         StackScreenExt, StackScreenOptions,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_core::primitives::navigator::Screen;
+
+    /// A minimal body Element for a test screen — a zero-count `Repeat`
+    /// never invokes its builder, so this needs no backend / runtime.
+    fn empty_body() -> Element {
+        Element::Repeat {
+            count: 0,
+            row_builder: Box::new(|_| unreachable!("zero-count Repeat never builds a row")),
+        }
+    }
+
+    // Regression: `.back_enabled(false)` must persist the lock into the
+    // screen's typed options so the per-backend handler can read it on
+    // mount. This is the closest reachable test — the actual
+    // gesture-suppression behavior lives in UIKit (interactivePopGesture)
+    // and the Android OnBackPressedDispatcher, neither unit-testable from
+    // host Rust. See `StackScreenOptions::back_enabled`.
+    #[test]
+    fn back_enabled_false_locks_back_in_options() {
+        let screen = Screen::new(empty_body()).back_enabled(false);
+        let opts = screen
+            .options_as::<StackScreenOptions>()
+            .expect("back_enabled() must attach StackScreenOptions");
+        assert_eq!(opts.back_enabled, Some(false));
+    }
+
+    // The knob is opt-in: a screen that never calls `.back_enabled(...)`
+    // leaves `None`, which every backend treats as "back works normally".
+    #[test]
+    fn back_enabled_defaults_to_none() {
+        assert_eq!(StackScreenOptions::default().back_enabled, None);
+        // Setting an unrelated option must not implicitly flip back-lock.
+        let screen = Screen::new(empty_body()).title("Home");
+        let opts = screen.options_as::<StackScreenOptions>().unwrap();
+        assert_eq!(opts.back_enabled, None);
+    }
+
+    // `.back_enabled(true)` is a meaningful explicit value (distinct from
+    // the `None` default) so an app can re-enable back on a screen that a
+    // higher layer might otherwise want locked.
+    #[test]
+    fn back_enabled_true_is_explicit() {
+        let screen = Screen::new(empty_body()).back_enabled(true);
+        let opts = screen.options_as::<StackScreenOptions>().unwrap();
+        assert_eq!(opts.back_enabled, Some(true));
+    }
 }

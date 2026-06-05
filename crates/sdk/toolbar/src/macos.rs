@@ -42,7 +42,6 @@ use objc2_app_kit::NSView;
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSObject, NSString,
 };
-use runtime_core::Effect;
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -395,7 +394,7 @@ fn build_toolbar(props: &Rc<ToolbarProps>, b: &mut MacosBackend) -> MacosNode {
     // is freed when that scope drops. The closure keeps strong
     // refs to `toolbar` + `delegate` alive in the meantime — see
     // the lifetime notes above the function.
-    let _items_effect = Effect::new(move || {
+    runtime_core::effect!({
         let items = (props_for_effect.items)();
         apply_items(&toolbar_for_effect, &delegate_for_effect, items);
     });

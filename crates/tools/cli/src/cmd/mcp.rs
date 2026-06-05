@@ -93,10 +93,22 @@ pub struct Args {
     pub from_bin: Option<std::path::PathBuf>,
 
     /// Watch source directories and refresh the catalog on change.
-    /// Requires `--from-bin` or `--project-root` to be useful — the
-    /// watcher re-runs the extractor on every save. Pass once per dir.
+    /// Overrides the default watch set (the project's `src/` +
+    /// `Cargo.toml`). The watcher re-runs the catalog extractor on
+    /// every save, so adding a component or a dependency refreshes the
+    /// catalog without restarting the server. Pass once per dir.
     #[arg(long = "watch", value_name = "DIR")]
     pub watch_dirs: Vec<std::path::PathBuf>,
+
+    /// Disable the default catalog file-watch. By default `idealyst mcp`
+    /// watches the project's `src/` + `Cargo.toml` and rebuilds the
+    /// catalog (via the managed wrapper) on change, so new components /
+    /// dependencies appear in a running session. `--no-watch` turns that
+    /// off: the catalog is loaded once at startup and a pre-built
+    /// `target/{debug,release}/catalog` binary is preferred (lock-free,
+    /// no `cargo run` contending with `idealyst dev`'s build lock).
+    #[arg(long)]
+    pub no_watch: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -158,21 +170,39 @@ pub fn run(args: Args) -> Result<()> {
         };
     }
 
+    // The project root the catalog source and the default watch set are
+    // both derived from. With NO flags this is the cwd, because Claude
+    // Code launches `idealyst mcp` with the project root as cwd via the
+    // scaffolded `.mcp.json` (`{"args": ["mcp"]}`).
+    let cwd = std::env::current_dir().ok();
+    let project_root = args.project_root.clone().or_else(|| cwd.clone());
+
+    // Whether we'll watch + auto-refresh. Default ON (so adding a
+    // component or dependency refreshes the catalog without restarting
+    // the server); `--no-watch` opts out. An explicit `--watch DIR`
+    // overrides the default watch set but still implies watching.
+    let explicit_watch = !args.watch_dirs.is_empty();
+    let want_watch = !args.no_watch;
+
     // Catalog source resolution (see `resolve_catalog_source`). The
-    // factory the server preloads — and re-runs under `--watch` — must
-    // print the project's catalog JSON to stdout.
+    // factory the server preloads — and re-runs on each watch event —
+    // must print the project's catalog JSON to stdout.
     //
-    // The key behavior fixed here: with NO flags the server defaults to
-    // the current directory, because Claude Code launches `idealyst mcp`
-    // with the project root as cwd via the scaffolded `.mcp.json`
-    // (`{"args": ["mcp"]}`). Before this default existed, the no-flag
-    // invocation wired no catalog subprocess at all, so `list_components`
-    // served the (empty-of-user-components) in-process catalog — the
-    // "no components appear" bug.
+    // When watching, we force the rebuilding managed wrapper
+    // (`prefer_rebuild = true`): a pre-built `catalog` binary can't
+    // recompile, so re-running it on a source change would just re-serve
+    // a stale snapshot. The managed wrapper rebuilds via `cargo run`, so
+    // new components and dependencies actually surface. With `--no-watch`
+    // we keep the lock-free pre-built fast-path.
+    //
+    // `managed` records whether the chosen source rebuilds, so we only
+    // default-enable the watcher when refreshing it would do something.
+    let mut managed = false;
     match resolve_catalog_source(
         args.from_bin.clone(),
         args.project_root.clone(),
-        std::env::current_dir().ok(),
+        cwd.clone(),
+        want_watch,
     ) {
         CatalogSource::Prebuilt(bin) => {
             let bin = std::sync::Arc::new(bin);
@@ -184,16 +214,26 @@ pub fn run(args: Args) -> Result<()> {
         }
         CatalogSource::Managed(root) => {
             // Generate the catalog wrapper crate now (cheap, idempotent)
-            // and point the subprocess factory at it. The factory runs
-            // `cargo run` in the wrapper dir on every (re)load, so the
-            // first run builds the wrapper and later runs reuse the
-            // cache. `-q` keeps cargo's progress chatter off stdout so
-            // the child's stdout is pure catalog JSON; build diagnostics
-            // still go to stderr.
+            // — this both validates that `root` is a real project and
+            // builds the initial wrapper. The subprocess factory then
+            // regenerates it on every (re)load: regeneration re-reads the
+            // project's `Cargo.toml`, so a dependency added mid-session
+            // is force-linked into the wrapper (see `catalog_wrapper`)
+            // before the rebuild. `cargo run -q` keeps progress chatter
+            // off stdout so the child's stdout stays pure catalog JSON;
+            // build diagnostics still go to stderr.
             match super::catalog_wrapper::generate(&root) {
                 Ok(wrapper_dir) => {
+                    managed = true;
+                    let root = std::sync::Arc::new(root);
                     let wrapper_dir = std::sync::Arc::new(wrapper_dir);
                     opts = opts.with_subprocess_catalog(move || {
+                        // Idempotent — only rewrites files when their
+                        // contents change, so a steady-state reload (no
+                        // dep change) doesn't churn cargo fingerprints.
+                        if let Err(e) = super::catalog_wrapper::generate(&root) {
+                            eprintln!("[idealyst mcp] catalog wrapper regenerate failed: {:#}", e);
+                        }
                         let mut c = std::process::Command::new("cargo");
                         c.current_dir(wrapper_dir.as_path());
                         c.args(["run", "-q", "--bin", "catalog"]);
@@ -214,8 +254,21 @@ pub fn run(args: Args) -> Result<()> {
         }
         CatalogSource::None => {}
     }
-    if !args.watch_dirs.is_empty() {
-        opts = opts.with_watch(args.watch_dirs);
+
+    // Wire the watcher. Explicit `--watch DIR` always wins. Otherwise,
+    // when watching is on and the source can rebuild, default to the
+    // project's `src/` + `Cargo.toml`. We deliberately do NOT watch the
+    // whole project root — `target/` holds the wrapper's own build
+    // output, so a recursive watch there would self-trigger forever.
+    let watch_paths = if explicit_watch {
+        args.watch_dirs.clone()
+    } else if want_watch && managed {
+        default_watch_paths(project_root.as_deref())
+    } else {
+        Vec::new()
+    };
+    if !watch_paths.is_empty() {
+        opts = opts.with_watch(watch_paths);
     }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -256,13 +309,21 @@ enum CatalogSource {
 ///    given, else the current directory. This cwd default is what makes
 ///    the scaffolded `.mcp.json` (`{"args": ["mcp"]}`) populate the
 ///    catalog — Claude Code launches the server with the project root
-///    as cwd. Within that root, prefer a project's own pre-built
-///    `target/{debug,release}/catalog` (lock-free, backward compatible),
-///    otherwise let the CLI generate + run a managed wrapper.
+///    as cwd. Within that root, the CLI generates + runs a managed
+///    wrapper.
+///
+/// `prefer_rebuild` is set when the server will watch + auto-refresh.
+/// A pre-built `target/{debug,release}/catalog` binary can't recompile,
+/// so re-running it on a source change re-serves a stale snapshot —
+/// when watching, we therefore skip that fast-path and always use the
+/// managed wrapper (which rebuilds via `cargo run`). With watching off
+/// (`--no-watch`) we keep the lock-free pre-built fast-path: it never
+/// takes a cargo build lock, so it can't contend with `idealyst dev`.
 fn resolve_catalog_source(
     from_bin: Option<std::path::PathBuf>,
     project_root: Option<std::path::PathBuf>,
     cwd: Option<std::path::PathBuf>,
+    prefer_rebuild: bool,
 ) -> CatalogSource {
     if let Some(bin) = from_bin {
         return CatalogSource::Prebuilt(bin);
@@ -270,10 +331,37 @@ fn resolve_catalog_source(
     let Some(root) = project_root.or(cwd) else {
         return CatalogSource::None;
     };
-    match find_catalog_binary(&root) {
-        Some(bin) => CatalogSource::Prebuilt(bin),
-        None => CatalogSource::Managed(root),
+    if !prefer_rebuild {
+        if let Some(bin) = find_catalog_binary(&root) {
+            return CatalogSource::Prebuilt(bin);
+        }
     }
+    CatalogSource::Managed(root)
+}
+
+/// The default set of paths to watch when the user didn't pass an
+/// explicit `--watch`: the project's `src/` directory and its
+/// `Cargo.toml`. A source edit refreshes new/changed components; a
+/// `Cargo.toml` edit refreshes added/removed dependencies.
+///
+/// Crucially this does NOT include the project root itself: the managed
+/// catalog wrapper writes its build output under `<root>/target/...`, so
+/// a recursive watch on the root would observe the wrapper's own rebuild
+/// and re-trigger endlessly.
+fn default_watch_paths(project_root: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
+    let Some(root) = project_root else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    let src = root.join("src");
+    if src.is_dir() {
+        paths.push(src);
+    }
+    let cargo = root.join("Cargo.toml");
+    if cargo.is_file() {
+        paths.push(cargo);
+    }
+    paths
 }
 
 /// Resolve a project's catalog binary by looking at the scaffolded
@@ -399,12 +487,12 @@ mod tests {
     fn no_flags_defaults_to_cwd_not_none() {
         let cwd = tmp_dir("cwd-default");
         // Fresh project: no prebuilt binary yet → managed wrapper.
-        let src = resolve_catalog_source(None, None, Some(cwd.clone()));
+        let src = resolve_catalog_source(None, None, Some(cwd.clone()), false);
         assert_eq!(src, CatalogSource::Managed(cwd));
 
         // The pre-fix behavior we must never regress to:
         assert_ne!(
-            resolve_catalog_source(None, None, Some(std::env::temp_dir())),
+            resolve_catalog_source(None, None, Some(std::env::temp_dir()), false),
             CatalogSource::None,
             "no-flag invocation must not yield an empty catalog source \
              when a cwd is available"
@@ -412,18 +500,36 @@ mod tests {
     }
 
     #[test]
-    fn prebuilt_binary_preferred_over_managed_wrapper() {
+    fn prebuilt_binary_preferred_over_managed_wrapper_when_not_watching() {
+        // With `prefer_rebuild = false` (i.e. `--no-watch`), the
+        // lock-free pre-built fast-path applies.
         let root = tmp_dir("prebuilt");
         let bin = write_catalog_bin(&root, "debug");
         // cwd default
         assert_eq!(
-            resolve_catalog_source(None, None, Some(root.clone())),
+            resolve_catalog_source(None, None, Some(root.clone()), false),
             CatalogSource::Prebuilt(bin.clone())
         );
         // explicit --project-root
         assert_eq!(
-            resolve_catalog_source(None, Some(root.clone()), None),
+            resolve_catalog_source(None, Some(root.clone()), None, false),
             CatalogSource::Prebuilt(bin)
+        );
+    }
+
+    #[test]
+    fn watching_forces_managed_wrapper_over_prebuilt_binary() {
+        // Regression: with the watcher on (the default), a stale
+        // pre-built `catalog` binary must NOT be preferred — re-running
+        // it on a source change would re-serve the same frozen catalog,
+        // defeating auto-refresh. `prefer_rebuild = true` forces the
+        // managed wrapper so reloads recompile and pick up new
+        // components / dependencies.
+        let root = tmp_dir("watch-forces-managed");
+        write_catalog_bin(&root, "debug");
+        assert_eq!(
+            resolve_catalog_source(None, None, Some(root.clone()), true),
+            CatalogSource::Managed(root)
         );
     }
 
@@ -432,7 +538,7 @@ mod tests {
         let root = tmp_dir("release-only");
         let bin = write_catalog_bin(&root, "release");
         assert_eq!(
-            resolve_catalog_source(None, Some(root), None),
+            resolve_catalog_source(None, Some(root), None, false),
             CatalogSource::Prebuilt(bin)
         );
     }
@@ -441,15 +547,20 @@ mod tests {
     fn from_bin_wins_over_everything() {
         let root = tmp_dir("from-bin");
         // Even with a prebuilt under the project root and a cwd, an
-        // explicit --from-bin takes precedence.
+        // explicit --from-bin takes precedence — and even when watching.
         write_catalog_bin(&root, "debug");
         let explicit = root.join("custom-catalog");
         assert_eq!(
             resolve_catalog_source(
                 Some(explicit.clone()),
                 Some(root.clone()),
-                Some(root)
+                Some(root.clone()),
+                false,
             ),
+            CatalogSource::Prebuilt(explicit.clone())
+        );
+        assert_eq!(
+            resolve_catalog_source(Some(explicit.clone()), Some(root.clone()), Some(root), true),
             CatalogSource::Prebuilt(explicit)
         );
     }
@@ -458,7 +569,7 @@ mod tests {
     fn project_root_with_no_binary_uses_managed_wrapper() {
         let root = tmp_dir("no-bin");
         assert_eq!(
-            resolve_catalog_source(None, Some(root.clone()), None),
+            resolve_catalog_source(None, Some(root.clone()), None, false),
             CatalogSource::Managed(root)
         );
     }
@@ -468,8 +579,44 @@ mod tests {
         // Only when there is genuinely no project context (no cwd, no
         // flags) do we leave the catalog to live apps / in-process.
         assert_eq!(
-            resolve_catalog_source(None, None, None),
+            resolve_catalog_source(None, None, None, false),
             CatalogSource::None
         );
+        assert_eq!(
+            resolve_catalog_source(None, None, None, true),
+            CatalogSource::None
+        );
+    }
+
+    #[test]
+    fn default_watch_paths_are_src_and_cargo_toml_only() {
+        // The watch set must be src/ + Cargo.toml — never the project
+        // root, whose target/ holds the wrapper's own build output and
+        // would cause the watcher to self-trigger forever.
+        let root = tmp_dir("watch-paths");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("Cargo.toml"), b"[package]\n").unwrap();
+        // A target/ dir exists, as it would after a build — it must not
+        // be watched.
+        fs::create_dir_all(root.join("target").join("idealyst")).unwrap();
+
+        let paths = default_watch_paths(Some(root.as_path()));
+        assert_eq!(paths, vec![root.join("src"), root.join("Cargo.toml")]);
+        assert!(
+            !paths.iter().any(|p| p.ends_with("target")),
+            "target/ must never be in the default watch set: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn default_watch_paths_skip_missing_entries() {
+        // Only existing paths are watched; a project missing src/ (or
+        // not yet written) shouldn't hand notify a non-existent path.
+        let root = tmp_dir("watch-paths-missing");
+        fs::write(root.join("Cargo.toml"), b"[package]\n").unwrap();
+        let paths = default_watch_paths(Some(root.as_path()));
+        assert_eq!(paths, vec![root.join("Cargo.toml")]);
+
+        assert!(default_watch_paths(None).is_empty());
     }
 }

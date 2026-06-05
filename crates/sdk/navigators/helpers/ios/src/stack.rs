@@ -60,6 +60,53 @@ pub(crate) struct ScreenEntry {
     /// whole app via `mem::forget`.
     #[allow(dead_code)]
     pub(crate) header_targets: Vec<Retained<NSObject>>,
+    /// Whether the system back affordance may pop THIS screen
+    /// (`IosScreenOptions::back_enabled`, defaulting to `true`). The
+    /// nav controller's `interactivePopGestureRecognizer` is global, so
+    /// it's re-synced to the *top* entry's value after every transition
+    /// (see [`sync_back_gesture`]); the back chevron is per-VC and set
+    /// once at mount.
+    pub(crate) back_enabled: bool,
+}
+
+/// Resolve the back-lock flag from a mounted screen's options. Missing
+/// or non-`IosScreenOptions` options mean "back works normally" (`true`).
+fn back_enabled_of(options: &dyn Any) -> bool {
+    options
+        .downcast_ref::<IosScreenOptions>()
+        .and_then(|o| o.back_enabled)
+        .unwrap_or(true)
+}
+
+/// Hide / show the nav-bar back chevron for one screen. UIKit's
+/// `interactivePopGestureRecognizer` is a separate, controller-global
+/// affordance — toggling the chevron alone leaves the swipe live — so
+/// this pairs with [`sync_back_gesture`] for a full lock.
+fn set_back_chevron_hidden(vc: &UIViewController, hidden: bool) {
+    // Raw msg_send avoids pulling the UINavigationItem binding (and its
+    // objc2-ui-kit feature gate) in just for one setter. `navigationItem`
+    // is non-null on every UIViewController.
+    unsafe {
+        let item: Retained<NSObject> = msg_send_id![vc, navigationItem];
+        let _: () = msg_send![&item, setHidesBackButton: hidden];
+    }
+}
+
+/// Re-sync the controller-global swipe-back recognizer to the TOP
+/// screen's `back_enabled`. Called after every push/pop/replace/reset
+/// and on the delegate's `didShow` (which fires after an interactive or
+/// programmatic pop reveals a new top). An empty stack leaves the swipe
+/// enabled — there's nothing to lock.
+fn sync_back_gesture(nav: &UINavigationController, stack: &[ScreenEntry]) {
+    let enabled = stack.last().map(|e| e.back_enabled).unwrap_or(true);
+    unsafe {
+        // `interactivePopGestureRecognizer` is nullable (nil before the
+        // controller has a navigation bar), so receive it as Option.
+        let gr: Option<Retained<NSObject>> = msg_send_id![nav, interactivePopGestureRecognizer];
+        if let Some(gr) = gr {
+            let _: () = msg_send![&gr, setEnabled: enabled];
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +163,10 @@ declare_class!(
             for scope_id in popped_scopes {
                 (ivars.release)(scope_id);
             }
+            // A pop just revealed a (possibly different) top screen — the
+            // swipe recognizer is controller-global, so re-point it at the
+            // newly-revealed top's back-lock state.
+            sync_back_gesture(nav, &ivars.stack.borrow());
             (ivars.depth_changed)(visible_depth);
         }
     }
@@ -214,7 +265,10 @@ pub(crate) fn create(
                     .downcast_ref::<IosScreenOptions>()
                     .map(|opts| apply_header_options(&vc, opts, mtm))
                     .unwrap_or_default();
-                stack.push(ScreenEntry { vc, scope_id, header_targets });
+                let back_enabled = back_enabled_of(&*result.options);
+                set_back_chevron_hidden(&vc, !back_enabled);
+                stack.push(ScreenEntry { vc, scope_id, header_targets, back_enabled });
+                sync_back_gesture(&nav_for_dispatch, &stack);
                 depth_for_dispatch(stack.len());
                 schedule_layout_pass();
             }
@@ -226,6 +280,8 @@ pub(crate) fn create(
                 if let Some(popped) = stack.pop() {
                     release_for_dispatch(popped.scope_id);
                 }
+                // Revealed the screen beneath — re-sync the swipe to it.
+                sync_back_gesture(&nav_for_dispatch, &stack);
                 depth_for_dispatch(stack.len());
                 schedule_layout_pass();
             }
@@ -238,10 +294,13 @@ pub(crate) fn create(
                     .downcast_ref::<IosScreenOptions>()
                     .map(|opts| apply_header_options(&vc, opts, mtm))
                     .unwrap_or_default();
+                let back_enabled = back_enabled_of(&*result.options);
+                set_back_chevron_hidden(&vc, !back_enabled);
                 if let Some(old) = stack.pop() {
                     release_for_dispatch(old.scope_id);
                 }
-                stack.push(ScreenEntry { vc, scope_id, header_targets });
+                stack.push(ScreenEntry { vc, scope_id, header_targets, back_enabled });
+                sync_back_gesture(&nav_for_dispatch, &stack);
                 let vcs: Vec<Retained<UIViewController>> =
                     stack.iter().map(|e| e.vc.clone()).collect();
                 unsafe {
@@ -262,10 +321,13 @@ pub(crate) fn create(
                     .downcast_ref::<IosScreenOptions>()
                     .map(|opts| apply_header_options(&vc, opts, mtm))
                     .unwrap_or_default();
+                let back_enabled = back_enabled_of(&*result.options);
+                set_back_chevron_hidden(&vc, !back_enabled);
                 while let Some(prev) = stack.pop() {
                     release_for_dispatch(prev.scope_id);
                 }
-                stack.push(ScreenEntry { vc: vc.clone(), scope_id, header_targets });
+                stack.push(ScreenEntry { vc: vc.clone(), scope_id, header_targets, back_enabled });
+                sync_back_gesture(&nav_for_dispatch, &stack);
                 unsafe {
                     nav_for_dispatch.setViewControllers_animated(
                         &objc2_foundation::NSArray::from_vec(vec![vc]),
@@ -322,10 +384,13 @@ pub(crate) fn attach_initial(
         );
     }
     let header_targets = apply_header_options(&root_vc, options, mtm);
+    let back_enabled = options.back_enabled.unwrap_or(true);
+    set_back_chevron_hidden(&root_vc, !back_enabled);
     entry
         .stack
         .borrow_mut()
-        .push(ScreenEntry { vc: root_vc, scope_id, header_targets });
+        .push(ScreenEntry { vc: root_vc, scope_id, header_targets, back_enabled });
+    sync_back_gesture(&entry.controller, &entry.stack.borrow());
 
     // If this was a deep link (resolved route != configured initial), insert
     // the index UNDER the detail once the walker's borrow releases.
@@ -381,14 +446,23 @@ fn reconstruct_back_stack(
     let header_targets = apply_header_options(&index_vc, &IosScreenOptions::default(), mtm);
 
     // Insert the index UNDER the existing detail entry in the rust stack mirror.
+    // The reconstructed index is the configured `initial` route, which carries
+    // no per-screen options here — back works normally on it.
     {
         let mut stack = entry.stack.borrow_mut();
         let detail = stack.pop();
-        stack.push(ScreenEntry { vc: index_vc, scope_id: index.scope_id, header_targets });
+        stack.push(ScreenEntry {
+            vc: index_vc,
+            scope_id: index.scope_id,
+            header_targets,
+            back_enabled: true,
+        });
         if let Some(detail) = detail {
             stack.push(detail);
         }
     }
+    // Detail is back on top after re-seating — re-sync the swipe to it.
+    sync_back_gesture(&entry.controller, &entry.stack.borrow());
     (entry.depth_changed)(entry.stack.borrow().len());
 }
 

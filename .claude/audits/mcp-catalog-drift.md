@@ -1,12 +1,15 @@
 ---
 name: mcp-catalog-drift
-description: Check the locked MCP catalog tables (`PrimitiveEntry`, `UtilityEntry`, `StateEntry`, `GuideEntry`) against their underlying truth — the `Element` enum, the framework's utility surface, the `stylesheet!` parser's state whitelist, and the guides directory.
+description: Check the locked MCP catalog tables (`PrimitiveEntry`, `UtilityEntry`, `MacroEntry`, `StateEntry`, `GuideEntry`) against their underlying truth — the `Element` enum, the framework's utility surface, the authoring-macro definitions, the `stylesheet!` parser's state whitelist, and the guides directory.
 targets:
   - crates/mcp/catalog/src/primitives.rs
   - crates/mcp/catalog/src/utilities.rs
+  - crates/mcp/catalog/src/macros.rs
   - crates/mcp/catalog/src/states.rs
   - crates/mcp/catalog/guides
   - crates/runtime/core/src/element.rs
+  - crates/runtime/core/src/lib.rs
+  - crates/runtime/macros/src/lib.rs
   - crates/runtime/macros/src/stylesheet.rs
 severity: medium
 ---
@@ -15,15 +18,17 @@ severity: medium
 
 ## Background
 
-The framework's MCP catalog ships four **locked** slices — only `mcp-catalog` can construct entries (via a private `_seal: ()` field on each entry type). The lock means third parties can't add their own primitives/utilities/states/guides, which is what we want, but it also means the framework itself has to keep the hand-curated tables in sync with their underlying truth.
+The framework's MCP catalog ships five **locked** slices — only `mcp-catalog` can construct entries (via a private `_seal: ()` field on each entry type). The lock means third parties can't add their own primitives/utilities/macros/states/guides, which is what we want, but it also means the framework itself has to keep the hand-curated tables in sync with their underlying truth.
 
-Three drift surfaces matter:
+Four drift surfaces matter:
 
 1. **Primitive tables vs. the `Element` enum.** Adding a variant to `crates/runtime/core/src/element.rs` without a corresponding `inventory::submit!` in `crates/mcp/catalog/src/primitives.rs` means the new primitive is invisible to AI/idea-ui/the doc-site. The `tests/registers_component.rs::primitives_table_includes_core_set` test catches missing core entries but isn't exhaustive over every variant.
 
-2. **State table vs. the `stylesheet!` parser whitelist.** `crates/runtime/macros/src/stylesheet.rs` hard-codes the four valid state names (`hovered`, `pressed`, `focused`, `disabled`). Changing either side without the other is a silent drift — the parser would accept a state the catalog doesn't document, or vice versa.
+2. **Macro table vs. the actual macro definitions.** `crates/mcp/catalog/src/macros.rs` hand-curates one `MacroEntry` per authoring macro. The truth is the `macro_rules!` set in `crates/runtime/core/src/lib.rs` and the proc-macros in `crates/runtime/macros/src/lib.rs`. Adding/renaming/removing a macro without updating the table means the catalog documents a macro that doesn't exist (misleads AI authors) or omits one that does (the gap this slice was created to close — `effect!` was invisible, so authors fell back to a bare `Effect::new`). The `expansion` field must also still match what the macro lowers to.
 
-3. **Guide cross-references.** Each `guides/*.md` may reference catalog entries via `[[name]]`. If a primitive is renamed or removed, every dangling `[[name]]` becomes a broken link. Same for `[[memory]]` references that ship as part of in-repo memory-style cross-links.
+3. **State table vs. the `stylesheet!` parser whitelist.** `crates/runtime/macros/src/stylesheet.rs` hard-codes the four valid state names (`hovered`, `pressed`, `focused`, `disabled`). Changing either side without the other is a silent drift — the parser would accept a state the catalog doesn't document, or vice versa.
+
+4. **Guide cross-references.** Each `guides/*.md` may reference catalog entries via `[[name]]`. If a primitive is renamed or removed, every dangling `[[name]]` becomes a broken link. Same for `[[memory]]` references that ship as part of in-repo memory-style cross-links.
 
 ## Checklist
 
@@ -39,6 +44,13 @@ Three drift surfaces matter:
 - [ ] Flag entries whose `module_path::name` resolves to nothing — those are stale catalog claims that will mislead AI authors.
 - [ ] Flag *new* `pub fn`s in `runtime_core::{color, time, theme, layout}` that match the utility-shape contract (free function, returns a small framework type, not bound to a primitive) and are not yet in the table.
 
+### Macro coverage
+
+- [ ] Inspect `crates/mcp/catalog/src/macros.rs`. For each `MacroEntry`, verify the macro actually exists: a `macro_rules! <name>` in `crates/runtime/core/src/lib.rs` (for `module_path: "runtime_core"`), or a `#[proc_macro]` / `#[proc_macro_attribute]` / `#[proc_macro_derive]` `pub fn <name>` in `crates/runtime/macros/src/lib.rs` (for `module_path: "runtime_macros"`).
+- [ ] Flag entries naming a macro that doesn't resolve — stale claims that mislead AI authors. (`memo` has both a `memo()` fn in `reactive.rs` AND a `memo!` macro in `lib.rs`; the macro entry is correct. A name with only a `fn` and no macro must NOT appear in this table.)
+- [ ] Flag *new* author-facing macros in those two files with no `MacroEntry` — especially reactive/markup/animation macros an author would type directly.
+- [ ] Spot-check the `expansion` field against the macro body: it should name the primitive the macro lowers to (e.g. `effect!` → `let _effect = Effect::new(move || { … });`). A drifted expansion is worse than an empty one.
+
 ### State whitelist parity
 
 - [ ] Read the allowlist in `crates/runtime/macros/src/stylesheet.rs` (search for `let allowed = [`).
@@ -51,6 +63,7 @@ Three drift surfaces matter:
 - [ ] Each reference's `name` should resolve to one of:
   - a primitive `name` or `pascal_name` (lower-cased) — e.g. `[[View]]`, `[[scroll_view]]`
   - a utility `name` (e.g. `[[platform]]`, `[[parse_color]]`)
+  - a macro `name` (bare, no `!` — e.g. `[[effect]]`, `[[signal]]`, `[[ui]]`, `[[component]]`)
   - a state name (`[[hovered]]`, `[[pressed]]`, `[[focused]]`, `[[disabled]]`)
   - a guide slug (e.g. `[[getting-started]]`) optionally followed by `|display text`
   - a known repo memory entry (e.g. `[[backend_owns_rendering]]`, `[[ios_scrollview_bounds_origin]]`).
@@ -63,7 +76,7 @@ Three drift surfaces matter:
 
 ### Test coverage
 
-- [ ] `cargo test -p mcp-catalog` should still pass. In particular: `catalog_json_v2_includes_every_new_slice`, `primitives_table_includes_core_set`, `states_table_has_exactly_the_four_interaction_states`, `utilities_table_includes_platform_accessor`, `guides_table_includes_getting_started`.
+- [ ] `cargo test -p mcp-catalog` should still pass. In particular: `catalog_json_v2_includes_every_new_slice`, `catalog_json_round_trips_through_build_from_json`, `primitives_table_includes_core_set`, `states_table_has_exactly_the_four_interaction_states`, `utilities_table_includes_platform_accessor`, `macros_table_documents_effect_and_signal`, `guides_table_includes_getting_started`.
 
 ## Output format
 

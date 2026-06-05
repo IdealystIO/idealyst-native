@@ -91,6 +91,9 @@ fn translate_options(opts: &DrawerScreenOptions) -> IosScreenOptions {
         header_tint: opts.header_tint.clone(),
         title_color: opts.title_color.clone(),
         mount_policy: opts.mount_policy.map(mount_policy_to_helpers),
+        // The drawer has no native swipe-back affordance to lock, so
+        // back-lock is a stack-only knob; leave it unset here.
+        back_enabled: None,
     }
 }
 

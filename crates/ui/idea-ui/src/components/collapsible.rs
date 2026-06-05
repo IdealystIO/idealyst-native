@@ -336,7 +336,7 @@ fn measured_body(value: Signal<bool>, duration_ms: u32, kids: Vec<Element>) -> E
     // subscribes to both — value changes trigger an open/close
     // animation; height changes mid-open (content grew/shrunk)
     // re-tween to the new target.
-    let _toggle = runtime_core::Effect::new(move || {
+    runtime_core::effect!({
         let open = value.get();
         // Add chrome offset to the measured content height — the
         // outer's `box-sizing: border-box` (framework universal)
@@ -505,7 +505,7 @@ pub fn Accordion(props: AccordionProps) -> Element {
         // Scope-adopted: the Accordion's reactive scope owns this sync
         // effect and frees it on teardown (the handle drop is a no-op).
         // No `mem::forget` (a leak outside framework core).
-        let _e_sync = runtime_core::Effect::new(move || {
+        runtime_core::effect!({
             let now = open_state.get().get(idx).copied().unwrap_or(false);
             if item_open.get() != now {
                 item_open.set(now);

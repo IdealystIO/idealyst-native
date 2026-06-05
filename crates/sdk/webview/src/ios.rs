@@ -52,7 +52,6 @@ use objc2_foundation::{
     CGRect, MainThreadMarker, NSObject, NSString, NSURL, NSURLRequest,
 };
 use objc2_ui_kit::UIView;
-use runtime_core::Effect;
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -323,7 +322,7 @@ fn build_web_view(props: &Rc<WebViewProps>, b: &mut IosBackend) -> IosNode {
     // Reactive URL.
     let webview_for_url = webview_uiview.clone();
     let props_clone = props.clone();
-    let _effect = Effect::new(move || {
+    runtime_core::effect!({
         let url = (props_clone.url)();
         load_url(&webview_for_url, &url);
     });

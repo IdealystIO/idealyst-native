@@ -68,9 +68,26 @@ impl NavigatorHandler<AndroidBackend> for AndroidStackHandler {
         // `state` for the stack-on-Android path — the helpers crate
         // doesn't currently thread per-screen state through the
         // fragment transaction.
+        //
+        // We also repack the SDK-side `StackScreenOptions` into the
+        // helper-side `AndroidScreenOptions` here (mirroring the iOS
+        // handler), so the helper's command dispatcher — which only
+        // knows the helper type — can read `back_enabled` off the
+        // mounted screen without depending on this SDK crate.
         let mount_2arg: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<GlobalRef>> = {
             let m = mount_screen;
-            Rc::new(move |name, params| m(name, params, None))
+            Rc::new(move |name, params| {
+                let result = m(name, params, None);
+                let options: Box<dyn Any> =
+                    if let Some(opts) = result.options.downcast_ref::<StackScreenOptions>() {
+                        Box::new(translate_stack_options(opts))
+                    } else if result.options.downcast_ref::<AndroidScreenOptions>().is_some() {
+                        result.options
+                    } else {
+                        Box::new(AndroidScreenOptions::default())
+                    };
+                MountResult { node: result.node, scope_id: result.scope_id, options }
+            })
         };
 
         let callbacks = AndroidNavCallbacks {
@@ -146,7 +163,18 @@ impl NavigatorOps for NoopStackOps {}
 /// when the downcast failed (which happens for screens that didn't
 /// set any stack options via `.title(...)` / `.header_*(...)`).
 fn stack_options_to_android(opts: Option<Box<StackScreenOptions>>) -> AndroidScreenOptions {
-    let Some(opts) = opts else { return AndroidScreenOptions::default() };
+    match opts {
+        Some(opts) => translate_stack_options(&opts),
+        None => AndroidScreenOptions::default(),
+    }
+}
+
+/// Translate the SDK's `StackScreenOptions` to the helper-side
+/// `AndroidScreenOptions`. Shared by [`stack_options_to_android`] (the
+/// `attach_initial` path) and the `mount_2arg` repack (the push /
+/// replace / reset path), so `back_enabled` reaches the helper
+/// dispatcher uniformly regardless of how the screen was mounted.
+fn translate_stack_options(opts: &StackScreenOptions) -> AndroidScreenOptions {
     AndroidScreenOptions {
         title: opts.title.clone(),
         header_shown: opts.header_shown,
@@ -161,6 +189,7 @@ fn stack_options_to_android(opts: Option<Box<StackScreenOptions>>) -> AndroidScr
         header_background: opts.header_background.clone(),
         header_tint: opts.header_tint.clone(),
         title_color: opts.title_color.clone(),
+        back_enabled: opts.back_enabled,
         // `unmount_on_blur` is a stack-only knob; AndroidScreenOptions
         // shares its `mount_policy` slot with drawer/tab. The Android
         // stack helper today doesn't honor unmount-on-push semantics —

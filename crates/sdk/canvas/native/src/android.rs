@@ -42,6 +42,7 @@ use jni::JNIEnv;
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Register the Android canvas renderer against an `AndroidBackend`.
 pub fn register(backend: &mut AndroidBackend) {
@@ -225,6 +226,32 @@ fn render_scene_into_view(view: &GlobalRef, scene: &Scene, props: &CanvasProps) 
         // `wants_cpu_frames` so the ~w·h·4 readback only happens while recording.
         if let Some(writer) = props.capture.as_ref() {
             if writer.wants_cpu_frames() {
+                // Announce the slow path ONCE. This canvas-native CPU read-back is
+                // the EMULATOR fallback (real devices run vello, which captures
+                // on-GPU). Warn so a developer recording on the emulator knows why
+                // it's sluggish and validates performance on a physical device.
+                static LOGGED: AtomicBool = AtomicBool::new(false);
+                if !LOGGED.swap(true, Ordering::Relaxed) {
+                    if let Ok(log_class) = env.find_class("android/util/Log") {
+                        if let (Ok(tag), Ok(msg)) = (
+                            env.new_string("canvas"),
+                            env.new_string(
+                                "recording via the android.graphics CPU renderer \
+                                 (emulator fallback — vello can't run here). Expect \
+                                 SEVERE performance loss; record on a physical device \
+                                 for representative performance.",
+                            ),
+                        ) {
+                            let _ = env.call_static_method(
+                                &log_class,
+                                "w",
+                                "(Ljava/lang/String;Ljava/lang/String;)I",
+                                &[JValue::Object(&tag), JValue::Object(&msg)],
+                            );
+                        }
+                    }
+                }
+
                 let n = (w_px as usize) * (h_px as usize) * 4;
                 let mut rgba = vec![0u8; n];
                 // SAFETY: `copyPixelsToBuffer` fills the buffer synchronously;
