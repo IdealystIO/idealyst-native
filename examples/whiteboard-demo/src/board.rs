@@ -2,7 +2,7 @@
 //! surface, and the draggable camera widget. The capture-excluded floating
 //! chrome lives in [`crate::chrome`].
 
-use crate::style::{border_all, radius, reactive_style, static_style, styled};
+use crate::style::{reactive_style, static_style};
 use crate::{parse_rgba, paint_stroke, BoardState, CanvasCapture, RecHandle, Stroke, Strokes};
 use runtime_core::{
     component, safe_area_insets, ui, viewport_size, Element, IntoElement, Length, Overflow,

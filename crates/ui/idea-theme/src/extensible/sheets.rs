@@ -563,10 +563,23 @@ impl TypographySheetBuilder {
         self
     }
     pub fn build(self) -> Rc<StyleSheet> {
-        let mut sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules {
-            // Color transitions for theme swap.
-            color_transition: Some(Transition::new(250, Easing::EaseInOut)),
-            ..Default::default()
+        let mut sheet = StyleSheet::new(|_vs: &VariantSet| {
+            // The theme's default font family lands on the base so every
+            // Typography instance inherits it. Reads `active_theme()` so
+            // a theme swap (which wipes the resolution cache) re-runs
+            // this and re-applies the new font. Critically, this keeps
+            // web text out of the browser's serif fallback — native
+            // backends already default to a system sans.
+            let theme_rc = active_theme();
+            let theme_ref = theme_rc
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("Typography sheet: install_idea_theme(...) first");
+            StyleRules {
+                font_family: Some(theme_ref.font_family()),
+                // Color transitions for theme swap.
+                color_transition: Some(Transition::new(250, Easing::EaseInOut)),
+                ..Default::default()
+            }
         });
 
         // Kind axis — font characteristics.

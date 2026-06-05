@@ -208,6 +208,12 @@ pub struct IosScreenOptions {
     /// while this screen is on top. Honored by the stack engine only
     /// (tab/drawer have no native back affordance to lock).
     pub back_enabled: Option<bool>,
+    /// Whether this screen is full-screen while active. `Some(true)` ⇒
+    /// the stack engine calls `runtime_core::set_fullscreen(true)` when
+    /// this screen is the top one and `false` when a non-full-screen
+    /// screen becomes top (including on pop-back). Applied per active
+    /// screen, alongside the back-gesture re-sync.
+    pub fullscreen: Option<bool>,
 }
 
 /// Drawer-specific commands ridden across the substrate's

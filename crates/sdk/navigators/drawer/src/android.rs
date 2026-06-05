@@ -486,6 +486,8 @@ fn drawer_options_to_android(
         // Back-lock is a stack-only knob (the drawer has no native
         // back-stack to lock); leave it unset here.
         back_enabled: None,
+        // Per-screen full-screen is a stack-navigator concern.
+        fullscreen: None,
     }
 }
 

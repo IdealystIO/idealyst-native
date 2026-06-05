@@ -199,8 +199,10 @@ fn make_pool_item(
 /// rounded-rectangle SDF mask, and opacity. UV flips Y for top-down textures.
 const LAYER_BLIT_WGSL: &str = r#"
 struct Layer {
-    uv: vec4<f32>,   // uv_scale.xy, uv_offset.xy
-    geo: vec4<f32>,  // rect_w_px, rect_h_px, radius_px, opacity
+    uv: vec4<f32>,     // uv_scale.xy, uv_offset.xy
+    geo: vec4<f32>,    // rect_w_px, rect_h_px, radius_px, opacity
+    border: vec4<f32>, // border_width_px, _, _, _
+    bcolor: vec4<f32>, // border r, g, b, a (0..1)
 };
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
@@ -238,7 +240,20 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let aa = 1.0 - smoothstep(-1.0, 1.0, d);
     // Video layers are opaque; ignore source alpha — mask by corner + fit +
     // opacity (straight alpha; the pipeline alpha-blends over the strokes).
-    return vec4<f32>(col, aa * inb * opacity);
+    var rgb = col;
+    var a = aa * inb * opacity;
+    // Border ring, composited WITH the image so the frame stays locked to the
+    // picture. `aa` is the outer rounded-rect coverage; `inner` is the coverage of
+    // the rect shrunk inward by the border width — their difference is the ring
+    // (anti-aliased on both edges).
+    let bw = layer.border.x;
+    if (bw > 0.0) {
+        let inner = 1.0 - smoothstep(-1.0, 1.0, d + bw);
+        let bcov = clamp(aa - inner, 0.0, 1.0);
+        rgb = mix(rgb, layer.bcolor.rgb, bcov);
+        a = mix(a, layer.bcolor.a * opacity, bcov);
+    }
+    return vec4<f32>(rgb, a);
 }
 "#;
 
@@ -297,7 +312,7 @@ impl LayerCompositor {
                         ty: wgpu::BufferBindingType::Uniform,
                         // Per-layer dynamic offset into the shared uniform buffer.
                         has_dynamic_offset: true,
-                        min_binding_size: std::num::NonZeroU64::new(32),
+                        min_binding_size: std::num::NonZeroU64::new(64),
                     },
                     count: None,
                 },
@@ -415,9 +430,17 @@ impl LayerCompositor {
             let dst_aspect = vw / vh;
             let (sx, sy, ox, oy) = uv_transform(layer.fit, cam_aspect, dst_aspect);
             let radius_px = (layer.corner_radius * scale).max(0.0);
-            // [uv_scale.xy, uv_offset.xy, rect_w, rect_h, radius_px, opacity]
-            let u = [sx, sy, ox, oy, vw, vh, radius_px, layer.opacity.clamp(0.0, 1.0)];
-            let mut bytes = [0u8; 32];
+            let border_px = (layer.border_width * scale).max(0.0);
+            let bc = layer.border_color;
+            // [uv_scale.xy, uv_offset.xy] [rect_w, rect_h, radius_px, opacity]
+            // [border_px, _, _, _] [border r, g, b, a]
+            let u = [
+                sx, sy, ox, oy,
+                vw, vh, radius_px, layer.opacity.clamp(0.0, 1.0),
+                border_px, 0.0, 0.0, 0.0,
+                bc.r as f32 / 255.0, bc.g as f32 / 255.0, bc.b as f32 / 255.0, bc.a as f32 / 255.0,
+            ];
+            let mut bytes = [0u8; 64];
             for (j, f) in u.iter().enumerate() {
                 bytes[j * 4..j * 4 + 4].copy_from_slice(&f.to_ne_bytes());
             }
@@ -504,11 +527,11 @@ impl LayerCompositor {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     // One `LAYER_STRIDE` slot; the per-draw dynamic offset selects
-                    // this layer's uniform. `size` is the actual data (32 bytes).
+                    // this layer's uniform. `size` is the actual data (64 bytes).
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: &self.uniforms,
                         offset: 0,
-                        size: std::num::NonZeroU64::new(32),
+                        size: std::num::NonZeroU64::new(64),
                     }),
                 },
             ],

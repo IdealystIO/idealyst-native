@@ -52,6 +52,7 @@ fn translate_options(opts: &StackScreenOptions) -> IosScreenOptions {
         header_tint: opts.header_tint.clone(),
         title_color: opts.title_color.clone(),
         back_enabled: opts.back_enabled,
+        fullscreen: opts.fullscreen,
         // `unmount_on_blur` is currently a no-op on the iOS stack.
         // The field is plumbed through `StackScreenOptions` for API
         // surface symmetry with drawer/tab `MountPolicy`, but

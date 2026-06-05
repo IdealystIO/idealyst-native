@@ -212,6 +212,12 @@ pub struct AndroidScreenOptions {
     /// lock is necessarily all-or-nothing. Honored by the stack
     /// navigator only.
     pub back_enabled: Option<bool>,
+    /// Whether this screen is full-screen (immersive) while active.
+    /// `Some(true)` ⇒ the stack's `RustNavigator` drives
+    /// `RustSystemUi.setFullscreen` (hide bars + full-edge gesture
+    /// exclusion) when this screen is on top, and restores chrome for
+    /// screens that aren't full-screen (including on pop-back).
+    pub fullscreen: Option<bool>,
 }
 
 // =============================================================================
@@ -272,7 +278,8 @@ pub fn attach_initial(
     // `back_enabled == Some(false)` ⇒ lock back on the root screen.
     // Absent / `Some(true)` ⇒ back works normally.
     let back_locked = options.back_enabled.map(|enabled| !enabled).unwrap_or(false);
-    if stack::attach_initial(navigator, &screen, scope_id, back_locked) {
+    let fullscreen = options.fullscreen.unwrap_or(false);
+    if stack::attach_initial(navigator, &screen, scope_id, back_locked, fullscreen) {
         return;
     }
     tab_drawer::attach_initial(navigator, screen, scope_id, options);

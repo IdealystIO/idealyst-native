@@ -94,6 +94,9 @@ fn translate_options(opts: &DrawerScreenOptions) -> IosScreenOptions {
         // The drawer has no native swipe-back affordance to lock, so
         // back-lock is a stack-only knob; leave it unset here.
         back_enabled: None,
+        // Per-screen full-screen is a stack-navigator concern; the drawer
+        // doesn't drive it per screen.
+        fullscreen: None,
     }
 }
 

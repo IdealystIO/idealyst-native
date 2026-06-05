@@ -96,6 +96,45 @@ fn apply_back_lock(env: &mut jni::JNIEnv, controller: &GlobalRef, back_locked: b
     }
 }
 
+/// `true` when the mounted screen requested full-screen
+/// (`AndroidScreenOptions::fullscreen == Some(true)`).
+fn fullscreen_of(options: &dyn std::any::Any) -> bool {
+    options
+        .downcast_ref::<AndroidScreenOptions>()
+        .and_then(|o| o.fullscreen)
+        .unwrap_or(false)
+}
+
+/// Apply the top screen's full-screen preference via the controller's
+/// *additive* `setFullscreenForTop` method, AFTER the mount op. Same
+/// soft-fail posture as [`apply_back_lock`]: only called for screens that
+/// opt into full-screen, and a missing method on an older embedded
+/// runtime is cleared + logged rather than crashing. Windowed screens are
+/// handled by the Kotlin mount methods' own default (`false`) sync, so an
+/// app that never uses full-screen never touches this method.
+fn apply_fullscreen(env: &mut jni::JNIEnv, controller: &GlobalRef, fullscreen: bool) {
+    if !fullscreen {
+        return;
+    }
+    let ok = env
+        .call_method(
+            controller.as_obj(),
+            "setFullscreenForTop",
+            "(Z)V",
+            &[JValue::Bool(true as jni::sys::jboolean)],
+        )
+        .is_ok();
+    if !ok {
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+        log::warn!(
+            "RustNavigator.setFullscreenForTop unavailable — full-screen skipped. \
+             Rebuild the idealyst CLI to pick up the runtime change."
+        );
+    }
+}
+
 // =============================================================================
 // Create / dispatch
 // =============================================================================
@@ -190,6 +229,7 @@ pub(crate) fn create(
             NavCommand::Push { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
                 let back_locked = back_locked_of(&*result.options);
+                let fullscreen = fullscreen_of(&*result.options);
                 let view = result.node;
                 let scope_id = result.scope_id;
                 let new_depth = with_jni_env(|env| {
@@ -203,6 +243,7 @@ pub(crate) fn create(
                         ],
                     );
                     apply_back_lock(env, &controller, back_locked);
+                    apply_fullscreen(env, &controller, fullscreen);
                     env.call_method(controller.as_obj(), "depth", "()I", &[])
                         .and_then(|v| v.i())
                         .unwrap_or(0)
@@ -221,6 +262,7 @@ pub(crate) fn create(
             NavCommand::Replace { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
                 let back_locked = back_locked_of(&*result.options);
+                let fullscreen = fullscreen_of(&*result.options);
                 let view = result.node;
                 let scope_id = result.scope_id;
                 let new_depth = with_jni_env(|env| {
@@ -234,6 +276,7 @@ pub(crate) fn create(
                         ],
                     );
                     apply_back_lock(env, &controller, back_locked);
+                    apply_fullscreen(env, &controller, fullscreen);
                     env.call_method(controller.as_obj(), "depth", "()I", &[])
                         .and_then(|v| v.i())
                         .unwrap_or(0)
@@ -243,6 +286,7 @@ pub(crate) fn create(
             NavCommand::Reset { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
                 let back_locked = back_locked_of(&*result.options);
+                let fullscreen = fullscreen_of(&*result.options);
                 let view = result.node;
                 let scope_id = result.scope_id;
                 let new_depth = with_jni_env(|env| {
@@ -256,6 +300,7 @@ pub(crate) fn create(
                         ],
                     );
                     apply_back_lock(env, &controller, back_locked);
+                    apply_fullscreen(env, &controller, fullscreen);
                     env.call_method(controller.as_obj(), "depth", "()I", &[])
                         .and_then(|v| v.i())
                         .unwrap_or(0)
@@ -308,6 +353,7 @@ pub(crate) fn attach_initial(
     screen: &GlobalRef,
     scope_id: u64,
     back_locked: bool,
+    fullscreen: bool,
 ) -> bool {
     let key = node_key(navigator);
     let controller = NAVIGATOR_INSTANCES.with(|m| {
@@ -331,9 +377,10 @@ pub(crate) fn attach_initial(
             }
             log::error!("RustNavigator.mountRoot JNI call failed: {:?}", e);
         }
-        // Additive, soft-failing back-lock — never on the critical
-        // mountRoot path (see `apply_back_lock`).
+        // Additive, soft-failing back-lock + full-screen — never on the
+        // critical mountRoot path (see `apply_back_lock`).
         apply_back_lock(env, &controller, back_locked);
+        apply_fullscreen(env, &controller, fullscreen);
     });
     log::info!("Navigator attach_initial: mountRoot JNI call returned");
     true

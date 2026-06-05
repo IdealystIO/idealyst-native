@@ -220,6 +220,24 @@ fn draw_layers(
             &lv.el, sx as f64, sy as f64, sw as f64, sh as f64, ox as f64, oy as f64, ow as f64,
             oh as f64,
         );
+        // Border frame, composited WITH the image (stays locked to the moving
+        // picture). Stroked on a rounded rect inset by half the width.
+        let bw = layer.border_width as f64;
+        if bw > 0.0 {
+            let inset = bw * 0.5;
+            let br = (r - inset).max(0.0);
+            ctx.begin_path();
+            let _ = ctx.round_rect_with_f64(
+                ox as f64 + inset,
+                oy as f64 + inset,
+                ow as f64 - bw,
+                oh as f64 - bw,
+                br,
+            );
+            ctx.set_line_width(bw);
+            ctx.set_stroke_style_str(&rgba_css(layer.border_color));
+            ctx.stroke();
+        }
         ctx.restore();
     }
 }

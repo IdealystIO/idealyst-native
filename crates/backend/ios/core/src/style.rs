@@ -530,62 +530,61 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // 999px` (meaning "make it a circle") makes the layer render
     // *nothing at all* on a 200pt-wide view. Clamping here lets the
     // 999 idiom work the way authors expect.
-    let radius = [
-        style.border_top_left_radius.as_ref(),
-        style.border_top_right_radius.as_ref(),
-        style.border_bottom_left_radius.as_ref(),
-        style.border_bottom_right_radius.as_ref(),
-    ]
-    .iter()
-    .filter_map(|r| r.map(|t| length_to_px(&t.resolve())))
-    .fold(0.0_f64, f64::max);
+    let radius = crate::style_diff::requested_corner_radius_px(style);
     if radius > 0.0 {
-        // Only `Px` lengths produce a clamp value at apply-style time.
-        // `Percent` and `Auto` resolve against the parent / layout
-        // pass and have no useful px value here. When neither axis
-        // has a px clamp, defer the clamp to the layout pass via
-        // `sync_corner_radius` — without it, `cornerRadius = 999`
-        // on a percent-sized view sets the value before bounds are
-        // known and UIKit renders nothing once bounds arrive.
-        fn px_half(t: &Tokenized<Length>) -> Option<f64> {
-            match t.resolve() {
-                Length::Px(v) => Some(v as f64 / 2.0),
-                _ => None,
-            }
-        }
-        let half_w = style.width.as_ref().and_then(px_half);
-        let half_h = style.height.as_ref().and_then(px_half);
-        let cap = match (half_w, half_h) {
-            (Some(w), Some(h)) => Some(w.min(h)),
-            (Some(w), None) => Some(w),
-            (None, Some(h)) => Some(h),
-            (None, None) => None,
+        // The clamp source, in precedence order (see
+        // `style_diff::resolve_corner_radius`):
+        //   1. explicit px width/height in the style (stable across
+        //      relayout) → clamp now.
+        //   2. else the view's CURRENT laid-out bounds — clamp now if
+        //      it already has real bounds. This is the fix for the
+        //      "rounded corner goes square after any button press" bug:
+        //      a reactive paint-only re-style produces NO frame change,
+        //      so `apply_frames`' frame-key cache skips this view and
+        //      `sync_corner_radius` never re-fires. Reading live bounds
+        //      here lets the radius survive the re-style without
+        //      depending on a layout pass that won't run.
+        //   3. else (pre-first-layout, bounds 0×0) defer to the layout
+        //      pass via the stashed NSNumber + `sync_corner_radius`.
+        //
+        // We ALWAYS stash the requested value (every branch), so a
+        // later resize — which DOES change the frame and therefore runs
+        // `sync_corner_radius` — re-clamps against the new bounds.
+        // Invariant project_ios_cornerradius_unclamped: an unclamped
+        // `cornerRadius > min(w, h)/2` makes the layer render nothing.
+        let px_cap = crate::style_diff::px_cap_from_style(style);
+        let bounds: CGRect = unsafe { msg_send![view, bounds] };
+        let bounds_min_half = {
+            let m = bounds.size.width.min(bounds.size.height) / 2.0;
+            if m > 0.0 { Some(m) } else { None }
         };
-        match cap {
-            Some(c) => {
-                let effective = radius.min(c);
+
+        // Stash the requested radius on the layer so `sync_corner_radius`
+        // can re-clamp on a later resize, independent of which branch
+        // we take below.
+        let key = objc2_foundation::NSString::from_str(
+            "idealyst_requested_corner_radius",
+        );
+        let cls = objc2::class!(NSNumber);
+        let number: *mut NSObject = unsafe {
+            msg_send![cls, numberWithDouble: radius]
+        };
+        let _: () = unsafe {
+            msg_send![&layer, setValue: number, forKey: &*key]
+        };
+
+        match crate::style_diff::resolve_corner_radius(radius, px_cap, bounds_min_half) {
+            crate::style_diff::CornerRadiusDecision::Apply(effective) => {
                 let _: () = unsafe { msg_send![&layer, setCornerRadius: effective] };
             }
-            None => {
-                // No px dimensions to clamp against. Stash the
-                // requested value as an NSNumber association on the
-                // layer; `sync_corner_radius` (called from the layout
-                // pass) will clamp against the laid-out bounds. Set
-                // an explicit cornerRadius of 0 in the meantime so we
-                // don't render the "999 on tiny view → blank" state
-                // while bounds are still 0×0.
-                let key = objc2_foundation::NSString::from_str(
-                    "idealyst_requested_corner_radius",
-                );
-                let cls = objc2::class!(NSNumber);
-                let number: *mut NSObject = unsafe {
-                    msg_send![cls, numberWithDouble: radius]
-                };
-                let _: () = unsafe {
-                    msg_send![&layer, setValue: number, forKey: &*key]
-                };
+            crate::style_diff::CornerRadiusDecision::Defer(_) => {
+                // Bounds still 0×0 and no px clamp. Set 0 in the
+                // meantime so we don't render the "999 on a 0×0 view →
+                // blank" state; `sync_corner_radius` clamps once Taffy
+                // assigns a real frame.
                 let _: () = unsafe { msg_send![&layer, setCornerRadius: 0.0_f64] };
             }
+            crate::style_diff::CornerRadiusDecision::None => {}
         }
         unsafe { view.setClipsToBounds(true) };
     }

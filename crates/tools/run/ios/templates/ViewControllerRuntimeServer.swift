@@ -30,6 +30,20 @@ private func resolveEndpoint() -> String {
 }
 
 class ViewController: UIViewController {
+    /// See the `--local` `ViewController` — same `applyFullscreen(_:)`
+    /// contract so `set_fullscreen` works under the runtime-server client too.
+    private var fullscreenEnabled = false
+
+    override var prefersStatusBarHidden: Bool { fullscreenEnabled }
+    override var prefersHomeIndicatorAutoHidden: Bool { fullscreenEnabled }
+
+    @objc func applyFullscreen(_ enabled: Bool) {
+        guard fullscreenEnabled != enabled else { return }
+        fullscreenEnabled = enabled
+        setNeedsStatusBarAppearanceUpdate()
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
 

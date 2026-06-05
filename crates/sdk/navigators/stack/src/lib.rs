@@ -203,6 +203,23 @@ pub struct StackScreenOptions {
     ///   a guarantee it can't keep.
     /// - **macOS / terminal** — no system back gesture; inert.
     pub back_enabled: Option<bool>,
+    /// Whether this screen should be shown full-screen / immersive while
+    /// it's the active (top) screen. `None`/`Some(false)` ⇒ normal
+    /// chrome; `Some(true)` ⇒ the navigator drives
+    /// [`runtime_core::set_fullscreen`] to enter full-screen when this
+    /// screen activates and leave it when a non-full-screen screen
+    /// activates (including on pop-back). Applied per active screen, so
+    /// a full-screen drawing board and a windowed Settings screen can
+    /// coexist in one stack.
+    ///
+    /// On Android this is also what makes a `back_enabled(false)` canvas
+    /// fully suppress the system back gesture: immersive is the only
+    /// state in which the OS lifts its 200dp gesture-exclusion cap, so
+    /// the backend can then exclude the whole canvas from the back
+    /// gesture. See [`runtime_core::set_fullscreen`] for the per-backend
+    /// behavior (iOS hides the status bar + home indicator; macOS native
+    /// full-screen; web Fullscreen API; terminal inert).
+    pub fullscreen: Option<bool>,
 }
 
 impl StackScreenOptions {
@@ -240,6 +257,10 @@ pub trait StackScreenExt: Sized {
     /// back button) for this screen. `false` fully locks back —
     /// see [`StackScreenOptions::back_enabled`].
     fn back_enabled(self, enabled: bool) -> Self;
+    /// Show this screen full-screen / immersive while it's active. The
+    /// navigator enters full-screen on activation and leaves it for
+    /// screens that don't set it. See [`StackScreenOptions::fullscreen`].
+    fn fullscreen(self, enabled: bool) -> Self;
 }
 
 impl StackScreenExt for Screen {
@@ -269,6 +290,9 @@ impl StackScreenExt for Screen {
     }
     fn back_enabled(self, enabled: bool) -> Self {
         with_stack_options(self, |o| o.back_enabled = Some(enabled))
+    }
+    fn fullscreen(self, enabled: bool) -> Self {
+        with_stack_options(self, |o| o.fullscreen = Some(enabled))
     }
 }
 
@@ -747,5 +771,36 @@ mod tests {
         let screen = Screen::new(empty_body()).back_enabled(true);
         let opts = screen.options_as::<StackScreenOptions>().unwrap();
         assert_eq!(opts.back_enabled, Some(true));
+    }
+
+    // `.fullscreen(true)` persists into the screen's options so the
+    // per-backend handler can drive `set_fullscreen` when this screen
+    // activates. The actual full-screen behavior is platform-native
+    // (immersive / status-bar hide / window full-screen) and not
+    // unit-testable from host Rust — this is the closest reachable test.
+    #[test]
+    fn fullscreen_persists_into_options() {
+        let screen = Screen::new(empty_body()).fullscreen(true);
+        let opts = screen
+            .options_as::<StackScreenOptions>()
+            .expect("fullscreen() must attach StackScreenOptions");
+        assert_eq!(opts.fullscreen, Some(true));
+    }
+
+    // Opt-in: a screen that never calls `.fullscreen(...)` leaves `None`,
+    // which the navigator treats as "windowed".
+    #[test]
+    fn fullscreen_defaults_to_none() {
+        assert_eq!(StackScreenOptions::default().fullscreen, None);
+    }
+
+    // `fullscreen` and `back_enabled` are independent knobs that compose
+    // (the canonical full-screen drawing surface sets both).
+    #[test]
+    fn fullscreen_and_back_enabled_compose() {
+        let screen = Screen::new(empty_body()).fullscreen(true).back_enabled(false);
+        let opts = screen.options_as::<StackScreenOptions>().unwrap();
+        assert_eq!(opts.fullscreen, Some(true));
+        assert_eq!(opts.back_enabled, Some(false));
     }
 }

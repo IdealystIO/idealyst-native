@@ -190,6 +190,7 @@ fn translate_stack_options(opts: &StackScreenOptions) -> AndroidScreenOptions {
         header_tint: opts.header_tint.clone(),
         title_color: opts.title_color.clone(),
         back_enabled: opts.back_enabled,
+        fullscreen: opts.fullscreen,
         // `unmount_on_blur` is a stack-only knob; AndroidScreenOptions
         // shares its `mount_policy` slot with drawer/tab. The Android
         // stack helper today doesn't honor unmount-on-push semantics —

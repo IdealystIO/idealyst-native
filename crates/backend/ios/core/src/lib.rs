@@ -30,6 +30,12 @@ pub mod phase_record;
 // on the host, where the UIKit-only `style` module compiles to nothing.
 pub mod border;
 
+// Pure style-decision helpers (corner-radius resolution + paint-only
+// vs. layout-affecting deltas). Cross-target so the decision logic is
+// host-testable; the UIKit `style` module + the mobile `apply_style`
+// path call into it.
+pub mod style_diff;
+
 #[cfg(any(target_os = "ios", target_os = "tvos"))]
 pub mod style;
 

@@ -13,7 +13,11 @@
 //!   [`theme::Intents`], [`theme::IntentColors`], [`theme::Spacing`],
 //!   [`theme::Radius`], [`theme::Typography`]. The data shapes define
 //!   *what* a theme provides; the trait is the contract stylesheets
-//!   resolve through.
+//!   resolve through. The trait also carries a default body
+//!   [`theme::IdeaTheme::font_family`] — a system-sans stack
+//!   ([`theme::DEFAULT_FONT_STACK`]) out of the box so web text isn't
+//!   serif; override it (the `font` field on [`theme::IdeaThemeDefaults`])
+//!   to ship a brand [`runtime_core::Typeface`].
 //! - **Reference themes** — [`theme::light_theme`] and [`theme::dark_theme`]
 //!   provide opinionated defaults. Apps install one via
 //!   [`theme::install_idea_theme`] (or compose them into a custom
@@ -51,6 +55,7 @@ pub use theme_runtime::{
 pub use theme::{
     dark_theme, idea_color, idea_header, install_idea_theme, light_theme, set_idea_theme, Colors,
     IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing, Typography,
+    DEFAULT_FONT_STACK,
 };
 
 // The legacy `Intent` trait + 7 built-in marker types for apps that

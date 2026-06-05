@@ -295,6 +295,9 @@ macro_rules! app_theme {
             fn typography(&self) -> &$crate::theme::Typography {
                 <$idea_ty as $crate::theme::IdeaTheme>::typography(&self.idea)
             }
+            fn font_family(&self) -> ::runtime_core::FontFamily {
+                <$idea_ty as $crate::theme::IdeaTheme>::font_family(&self.idea)
+            }
         }
 
         impl $crate::ThemeTokens for $name {

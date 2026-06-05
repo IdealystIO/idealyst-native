@@ -75,6 +75,16 @@ class RustNavigator(
      *  arms [backLockCallback] from `backLockStack.last()`. */
     private val backLockStack = mutableListOf<Boolean>()
 
+    /** Parallel to [tagStack]: whether each screen wants full-screen
+     *  (`StackScreenOptions.fullscreen == Some(true)`). Only the top
+     *  entry matters — [syncFullscreen] drives [RustSystemUi] from
+     *  `fullscreenStack.last()`. */
+    private val fullscreenStack = mutableListOf<Boolean>()
+    /** Last full-screen state actually pushed to the system, so
+     *  [syncFullscreen] only touches the WindowInsetsController on a real
+     *  transition (and a windowed app never touches it at all). */
+    private var lastFullscreen = false
+
     /** Single back-interceptor. When the top screen is back-locked we
      *  add this to the activity's [androidx.activity.OnBackPressedDispatcher]
      *  (which is LIFO) so it sits AHEAD of the FragmentManager's own
@@ -164,6 +174,29 @@ class RustNavigator(
         backLockCallback.isEnabled = lock
     }
 
+    /** Apply the current top screen's full-screen state via [RustSystemUi],
+     *  but only when it differs from what's already applied — so a windowed
+     *  app (every screen `false`) never touches the WindowInsetsController,
+     *  and a transition between two same-state screens is a no-op. Call
+     *  after any change to [fullscreenStack]. */
+    private fun syncFullscreen() {
+        val a = activity ?: return
+        val target = fullscreenStack.lastOrNull() ?: false
+        if (target == lastFullscreen) return
+        lastFullscreen = target
+        RustSystemUi.setFullscreen(a, target)
+    }
+
+    /** Set the current top screen's full-screen preference, then sync.
+     *  Rust calls this immediately after a mount op for a
+     *  `.fullscreen(true)` screen (additive — see Rust `apply_fullscreen`). */
+    fun setFullscreenForTop(fullscreen: Boolean) {
+        if (fullscreenStack.isNotEmpty()) {
+            fullscreenStack[fullscreenStack.size - 1] = fullscreen
+        }
+        syncFullscreen()
+    }
+
     /**
      * Push a new screen. The framework has already built the view
      * (via `NavigatorCallbacks.mount_screen`) and allocated a scope
@@ -182,7 +215,9 @@ class RustNavigator(
         // lock OUT of this method's signature means an older embedded
         // runtime stays call-compatible on this critical mount path.
         backLockStack.add(false)
+        fullscreenStack.add(false)
         syncBackLock()
+        syncFullscreen()
         runOrQueue {
             val fragment = RustHostFragment().apply { installView(nativePtr, scopeId, view) }
             val tx = fm.beginTransaction()
@@ -229,7 +264,9 @@ class RustNavigator(
         }
         val poppedTag = tagStack.removeAt(tagStack.size - 1)
         if (backLockStack.isNotEmpty()) backLockStack.removeAt(backLockStack.size - 1)
+        if (fullscreenStack.isNotEmpty()) fullscreenStack.removeAt(fullscreenStack.size - 1)
         syncBackLock()
+        syncFullscreen()
         runOrQueue {
             // popBackStack reverses the matching `push` transaction —
             // the new top fragment is automatically un-hidden, the
@@ -252,10 +289,13 @@ class RustNavigator(
         }
         val oldTag = tagStack.removeAt(tagStack.size - 1)
         if (backLockStack.isNotEmpty()) backLockStack.removeAt(backLockStack.size - 1)
+        if (fullscreenStack.isNotEmpty()) fullscreenStack.removeAt(fullscreenStack.size - 1)
         val newTag = "rust-nav-${nextTag++}"
         tagStack.add(newTag)
         backLockStack.add(false)
+        fullscreenStack.add(false)
         syncBackLock()
+        syncFullscreen()
         runOrQueue {
             // Pop the old top off the back stack. This un-hides the
             // fragment that was below it (if any), so we re-hide it
@@ -289,10 +329,13 @@ class RustNavigator(
         val firstTag = tagStack.firstOrNull()
         tagStack.clear()
         backLockStack.clear()
+        fullscreenStack.clear()
         val tag = "rust-nav-${nextTag++}"
         tagStack.add(tag)
         backLockStack.add(false)
+        fullscreenStack.add(false)
         syncBackLock()
+        syncFullscreen()
         runOrQueue {
             if (firstTag != null) {
                 // Pop the whole back stack — the framework's
@@ -353,7 +396,9 @@ class RustNavigator(
         val tag = "rust-nav-${nextTag++}"
         tagStack.add(tag)
         backLockStack.add(false)
+        fullscreenStack.add(false)
         syncBackLock()
+        syncFullscreen()
         Log.i("idealyst", "RustNavigator.mountRoot called (attached=$attached, view=$view)")
         runOrQueue {
             try {

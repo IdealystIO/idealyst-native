@@ -67,6 +67,11 @@ pub(crate) struct ScreenEntry {
     /// (see [`sync_back_gesture`]); the back chevron is per-VC and set
     /// once at mount.
     pub(crate) back_enabled: bool,
+    /// Whether THIS screen wants full-screen while active
+    /// (`IosScreenOptions::fullscreen`, defaulting to `false`). The
+    /// app-global full-screen state is re-applied to the *top* entry's
+    /// value after every transition (see [`sync_active_screen`]).
+    pub(crate) fullscreen: bool,
 }
 
 /// Resolve the back-lock flag from a mounted screen's options. Missing
@@ -76,6 +81,15 @@ fn back_enabled_of(options: &dyn Any) -> bool {
         .downcast_ref::<IosScreenOptions>()
         .and_then(|o| o.back_enabled)
         .unwrap_or(true)
+}
+
+/// Resolve the full-screen flag from a mounted screen's options. Missing
+/// or non-`IosScreenOptions` options mean "windowed" (`false`).
+fn fullscreen_of(options: &dyn Any) -> bool {
+    options
+        .downcast_ref::<IosScreenOptions>()
+        .and_then(|o| o.fullscreen)
+        .unwrap_or(false)
 }
 
 /// Hide / show the nav-bar back chevron for one screen. UIKit's
@@ -107,6 +121,18 @@ fn sync_back_gesture(nav: &UINavigationController, stack: &[ScreenEntry]) {
             let _: () = msg_send![&gr, setEnabled: enabled];
         }
     }
+}
+
+/// Re-apply everything that tracks the TOP screen after a transition:
+/// the controller-global swipe-back recognizer AND the app-global
+/// full-screen state. `set_fullscreen` routes to the backend's installed
+/// setter (iOS hides the status bar + home indicator), defaulting to
+/// `false` (windowed) when the stack is empty or the top screen didn't
+/// opt in. Called after every push/pop/replace/reset and on `didShow`.
+fn sync_active_screen(nav: &UINavigationController, stack: &[ScreenEntry]) {
+    sync_back_gesture(nav, stack);
+    let fullscreen = stack.last().map(|e| e.fullscreen).unwrap_or(false);
+    runtime_core::set_fullscreen(fullscreen);
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +192,7 @@ declare_class!(
             // A pop just revealed a (possibly different) top screen — the
             // swipe recognizer is controller-global, so re-point it at the
             // newly-revealed top's back-lock state.
-            sync_back_gesture(nav, &ivars.stack.borrow());
+            sync_active_screen(nav, &ivars.stack.borrow());
             (ivars.depth_changed)(visible_depth);
         }
     }
@@ -266,9 +292,10 @@ pub(crate) fn create(
                     .map(|opts| apply_header_options(&vc, opts, mtm))
                     .unwrap_or_default();
                 let back_enabled = back_enabled_of(&*result.options);
+                let fullscreen = fullscreen_of(&*result.options);
                 set_back_chevron_hidden(&vc, !back_enabled);
-                stack.push(ScreenEntry { vc, scope_id, header_targets, back_enabled });
-                sync_back_gesture(&nav_for_dispatch, &stack);
+                stack.push(ScreenEntry { vc, scope_id, header_targets, back_enabled, fullscreen });
+                sync_active_screen(&nav_for_dispatch, &stack);
                 depth_for_dispatch(stack.len());
                 schedule_layout_pass();
             }
@@ -281,7 +308,7 @@ pub(crate) fn create(
                     release_for_dispatch(popped.scope_id);
                 }
                 // Revealed the screen beneath — re-sync the swipe to it.
-                sync_back_gesture(&nav_for_dispatch, &stack);
+                sync_active_screen(&nav_for_dispatch, &stack);
                 depth_for_dispatch(stack.len());
                 schedule_layout_pass();
             }
@@ -295,12 +322,13 @@ pub(crate) fn create(
                     .map(|opts| apply_header_options(&vc, opts, mtm))
                     .unwrap_or_default();
                 let back_enabled = back_enabled_of(&*result.options);
+                let fullscreen = fullscreen_of(&*result.options);
                 set_back_chevron_hidden(&vc, !back_enabled);
                 if let Some(old) = stack.pop() {
                     release_for_dispatch(old.scope_id);
                 }
-                stack.push(ScreenEntry { vc, scope_id, header_targets, back_enabled });
-                sync_back_gesture(&nav_for_dispatch, &stack);
+                stack.push(ScreenEntry { vc, scope_id, header_targets, back_enabled, fullscreen });
+                sync_active_screen(&nav_for_dispatch, &stack);
                 let vcs: Vec<Retained<UIViewController>> =
                     stack.iter().map(|e| e.vc.clone()).collect();
                 unsafe {
@@ -322,12 +350,13 @@ pub(crate) fn create(
                     .map(|opts| apply_header_options(&vc, opts, mtm))
                     .unwrap_or_default();
                 let back_enabled = back_enabled_of(&*result.options);
+                let fullscreen = fullscreen_of(&*result.options);
                 set_back_chevron_hidden(&vc, !back_enabled);
                 while let Some(prev) = stack.pop() {
                     release_for_dispatch(prev.scope_id);
                 }
-                stack.push(ScreenEntry { vc: vc.clone(), scope_id, header_targets, back_enabled });
-                sync_back_gesture(&nav_for_dispatch, &stack);
+                stack.push(ScreenEntry { vc: vc.clone(), scope_id, header_targets, back_enabled, fullscreen });
+                sync_active_screen(&nav_for_dispatch, &stack);
                 unsafe {
                     nav_for_dispatch.setViewControllers_animated(
                         &objc2_foundation::NSArray::from_vec(vec![vc]),
@@ -385,12 +414,13 @@ pub(crate) fn attach_initial(
     }
     let header_targets = apply_header_options(&root_vc, options, mtm);
     let back_enabled = options.back_enabled.unwrap_or(true);
+    let fullscreen = options.fullscreen.unwrap_or(false);
     set_back_chevron_hidden(&root_vc, !back_enabled);
     entry
         .stack
         .borrow_mut()
-        .push(ScreenEntry { vc: root_vc, scope_id, header_targets, back_enabled });
-    sync_back_gesture(&entry.controller, &entry.stack.borrow());
+        .push(ScreenEntry { vc: root_vc, scope_id, header_targets, back_enabled, fullscreen });
+    sync_active_screen(&entry.controller, &entry.stack.borrow());
 
     // If this was a deep link (resolved route != configured initial), insert
     // the index UNDER the detail once the walker's borrow releases.
@@ -456,13 +486,17 @@ fn reconstruct_back_stack(
             scope_id: index.scope_id,
             header_targets,
             back_enabled: true,
+            // Configured `initial` index carries no per-screen options
+            // here; it's windowed. (The detail re-pushed on top drives the
+            // active full-screen state via `sync_active_screen` below.)
+            fullscreen: false,
         });
         if let Some(detail) = detail {
             stack.push(detail);
         }
     }
     // Detail is back on top after re-seating — re-sync the swipe to it.
-    sync_back_gesture(&entry.controller, &entry.stack.borrow());
+    sync_active_screen(&entry.controller, &entry.stack.borrow());
     (entry.depth_changed)(entry.stack.borrow().len());
 }
 

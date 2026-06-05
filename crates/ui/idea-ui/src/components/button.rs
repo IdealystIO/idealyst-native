@@ -27,8 +27,9 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, icon, text, AlignSelf, Element, FlexDirection, IconData, IdealystSchema, IntoElement,
-    Length, PressableHandle, Reactive, Ref, StyleApplication, StyleRules, Tokenized,
+    component, icon, resolve_style, text, AlignSelf, Color, Element, FlexDirection, IconData,
+    IdealystSchema, IntoElement, Length, PressableHandle, Reactive, Ref, StyleApplication,
+    StyleRules, StyleSheet, Tokenized,
 };
 
 use idea_theme::extensible::{installed_button_sheet, ButtonSizeRef, ShapeRef, ToneRef, VariantRef};
@@ -121,6 +122,24 @@ fn button_icon_sheet() -> Rc<runtime_core::StyleSheet> {
     })
 }
 
+/// Wraps a resolved foreground color in a static, color-only stylesheet
+/// for a leaf text/icon node.
+///
+/// Native `UILabel`/`TextView` (and `UIImageView`/icon shapes) do NOT
+/// inherit text color from a parent — only web's CSS cascade does. So a
+/// label colored solely via its wrapping pressable renders invisible on
+/// the colored fill on iOS/Android. We resolve the fill's foreground and
+/// stamp it directly on the label/icon node so every backend matches web
+/// (the same pattern `Typography` uses — color lives on the text node).
+/// The `Tokenized<Color>` keeps its token reference, so theme swaps still
+/// re-resolve the color in bulk via the cohort.
+fn label_color_style(color: Tokenized<Color>) -> Rc<StyleSheet> {
+    Rc::new(StyleSheet::r#static(StyleRules {
+        color: Some(color),
+        ..Default::default()
+    }))
+}
+
 /// Renders a styled, clickable button whose appearance is driven by
 /// the tone × variant × size × shape axes of the installed Button sheet.
 #[component]
@@ -187,19 +206,36 @@ pub fn Button(props: &ButtonProps) -> Element {
         });
     }
 
+    // Resolve the fill's foreground so the label + icons can carry it on
+    // their own nodes (native doesn't inherit text/icon color — see
+    // `label_color_style`). Resolved against the same appearance variant
+    // the pressable uses, so the label color always matches the fill.
+    let fg = resolve_style(&style).color.clone();
+
     // Fixed-size sheet for inline icons — they need explicit dimensions
     // (an SVG/CAShapeLayer has no intrinsic content size to flex against).
+    // Icons inherit the button's text color on web; stamp it explicitly so
+    // they're correct on native too (an uncolored icon renders in the
+    // widget-default color and vanishes on a colored fill).
     let icon_node = |data: IconData| -> Element {
-        icon(data)
-            .with_style(button_icon_sheet())
-            .into_element()
+        let el = icon(data).with_style(button_icon_sheet());
+        match fg.clone() {
+            // Reactive read: `resolve()` re-runs on theme swap, so the
+            // icon tint tracks the token like the label's color does.
+            Some(c) => el.color(move || c.resolve()).into_element(),
+            None => el.into_element(),
+        }
     };
 
     let mut children: Vec<Element> = Vec::with_capacity(3);
     if let Some(d) = leading_icon {
         children.push(icon_node(d));
     }
-    children.push(text(label).into_element());
+    let label_node = match fg.clone() {
+        Some(c) => text(label).with_style(label_color_style(c)).into_element(),
+        None => text(label).into_element(),
+    };
+    children.push(label_node);
     if let Some(d) = trailing_icon {
         children.push(icon_node(d));
     }
@@ -231,6 +267,80 @@ mod tests {
         fill_rule: FillRule::NonZero,
         filled: false,
     };
+
+    /// Resolves the `color` on a Text node's OWN style. Returns `None`
+    /// when the node carries no style (the buggy state — color relied on
+    /// container inheritance) or its style sets no color.
+    fn text_node_color(el: &Element) -> Option<Color> {
+        match el {
+            Element::Text { style, .. } => {
+                let app = match style.as_ref()? {
+                    StyleSource::Static(a) => a.clone(),
+                    _ => panic!("button label uses a static style"),
+                };
+                resolve_style(&app).color.clone().map(|c| c.resolve())
+            }
+            _ => None,
+        }
+    }
+
+    // Field report 3.1b (HIGH): a filled Primary button's label rendered
+    // INVISIBLE on Android/iOS because the white label color lived only on
+    // the wrapping pressable and native text doesn't inherit parent color.
+    // The label text node must carry the intent foreground itself. A test
+    // that passed against the old (bare, uncolored) text node is not a
+    // valid regression test — so we assert the label node's OWN resolved
+    // color is the intent-primary-solid-text white.
+    #[test]
+    fn regression_filled_button_label_carries_intent_text_color() {
+        theme();
+        let props = ButtonProps {
+            label: Reactive::Static("Save".into()),
+            tone: ToneRef::default(),     // Primary
+            variant: VariantRef::default(), // Filled
+            ..Default::default()
+        };
+        let (children, _) = pressable_parts(Button(&props));
+        let label = &children[0];
+        let color = text_node_color(label)
+            .expect("filled button label must carry its own color, not inherit from the pressable");
+        assert_eq!(
+            color.0.to_ascii_lowercase(),
+            "#ffffff",
+            "filled-Primary label is the intent-primary-solid-text white"
+        );
+    }
+
+    // Same root cause for the leading/trailing icons: native icons don't
+    // inherit the button color, so the wrapper must stamp the resolved
+    // foreground on each icon's own color closure. Assert the icon carries
+    // a color override that resolves to the intent text white.
+    #[test]
+    fn regression_filled_button_icons_carry_intent_text_color() {
+        theme();
+        let props = ButtonProps {
+            label: Reactive::Static("Save".into()),
+            leading_icon: Some(PLUS),
+            trailing_icon: Some(PLUS),
+            ..Default::default()
+        };
+        let (children, _) = pressable_parts(Button(&props));
+        for (i, slot) in [0usize, 2].iter().zip(["leading", "trailing"]) {
+            match &children[*i] {
+                Element::Icon { color, .. } => {
+                    let c = color
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("{slot} icon must carry an explicit color"));
+                    assert_eq!(
+                        c().0.to_ascii_lowercase(),
+                        "#ffffff",
+                        "{slot} icon tint is the intent text white"
+                    );
+                }
+                _ => panic!("expected an icon at slot {i}"),
+            }
+        }
+    }
 
     fn pressable_parts(el: Element) -> (Vec<Element>, StyleApplication) {
         match el {

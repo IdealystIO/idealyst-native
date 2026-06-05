@@ -336,6 +336,57 @@ fn composite_layer(env: &mut JNIEnv, canvas: &JObject, layer: &TextureLayer) {
         );
     }
 
+    // Border frame, composited WITH the image (stays locked to the moving
+    // picture). Stroked on a rounded rect inset by half the width.
+    let bw = layer.border_width;
+    if bw > 0.0 {
+        if let Ok(border_paint) = env.new_object(&paint_class, "()V", &[]) {
+            let _ = env.call_method(&border_paint, "setAntiAlias", "(Z)V", &[JValue::Bool(1)]);
+            if let Ok(style) = env
+                .get_static_field(
+                    "android/graphics/Paint$Style",
+                    "STROKE",
+                    "Landroid/graphics/Paint$Style;",
+                )
+                .and_then(|v| v.l())
+            {
+                let _ = env.call_method(
+                    &border_paint,
+                    "setStyle",
+                    "(Landroid/graphics/Paint$Style;)V",
+                    &[JValue::Object(&style)],
+                );
+            }
+            let _ = env.call_method(
+                &border_paint,
+                "setStrokeWidth",
+                "(F)V",
+                &[JValue::Float(bw as jfloat)],
+            );
+            let c = layer.border_color;
+            let argb = ((c.a as i32) << 24)
+                | ((c.r as i32) << 16)
+                | ((c.g as i32) << 8)
+                | (c.b as i32);
+            let _ = env.call_method(&border_paint, "setColor", "(I)V", &[JValue::Int(argb)]);
+            let inset = bw * 0.5;
+            let br = (r - inset).max(0.0);
+            if let Some(brect) = rect_f(env, ox + inset, oy + inset, ow - bw, oh - bw) {
+                let _ = env.call_method(
+                    canvas,
+                    "drawRoundRect",
+                    "(Landroid/graphics/RectF;FFLandroid/graphics/Paint;)V",
+                    &[
+                        JValue::Object(&brect),
+                        JValue::Float(br as jfloat),
+                        JValue::Float(br as jfloat),
+                        JValue::Object(&border_paint),
+                    ],
+                );
+            }
+        }
+    }
+
     let _ = env.call_method(canvas, "restore", "()V", &[]);
 }
 

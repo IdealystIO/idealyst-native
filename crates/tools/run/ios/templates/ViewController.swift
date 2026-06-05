@@ -5,6 +5,26 @@
 import UIKit
 
 class ViewController: UIViewController {
+    /// Driven from Rust via `applyFullscreen(_:)` (the iOS backend's
+    /// `Backend::fullscreen_setter`, which the stack navigator calls for
+    /// a `.fullscreen(true)` screen). Hides the status bar and dims the
+    /// home indicator for an immersive screen like a drawing canvas.
+    private var fullscreenEnabled = false
+
+    override var prefersStatusBarHidden: Bool { fullscreenEnabled }
+    override var prefersHomeIndicatorAutoHidden: Bool { fullscreenEnabled }
+
+    /// Toggle full-screen. Invoked from Rust via `respondsToSelector:` +
+    /// `applyFullscreen:`, so an older generated `ViewController` without
+    /// this method is soft-failed on the Rust side rather than crashing
+    /// with an unrecognized selector.
+    @objc func applyFullscreen(_ enabled: Bool) {
+        guard fullscreenEnabled != enabled else { return }
+        fullscreenEnabled = enabled
+        setNeedsStatusBarAppearanceUpdate()
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
 

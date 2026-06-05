@@ -130,6 +130,17 @@ pub struct IosBackend {
     /// pass. Cumulative cost grew ~2–3 ms per navigation in
     /// profiling, dwarfing every other phase by round 4.
     pub(crate) applied_frames: HashMap<usize, (f32, f32, f32, f32)>,
+    /// Per-view cached key over only the *layout-affecting* style
+    /// fields (see `style_diff::layout_affecting_key`). `apply_style`
+    /// compares the incoming style's key against this; if it's
+    /// unchanged the delta is paint-only (background / opacity / color
+    /// / shadow / corner radius), so we skip both the Taffy
+    /// `set_style` and the coalesced layout pass. Without this gate a
+    /// reactive paint-only re-style (selecting a chip, dimming a
+    /// pressed button) scheduled a full layout pass on every press —
+    /// the "layout runs on every press" churn. Keyed by the view
+    /// pointer that keys `view_to_layout`; dropped in `release_view`.
+    pub(crate) layout_style_keys: HashMap<usize, String>,
     /// Viewport size at the last layout pass. When this changes
     /// (device rotation, window resize) every persistent root needs
     /// `mark_dirty` before the dirty-skip in `run_layout_pass_global`
@@ -559,6 +570,7 @@ impl IosBackend {
             layout: runtime_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
             applied_frames: HashMap::new(),
+            layout_style_keys: HashMap::new(),
             last_viewport: None,
             animated_states: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
@@ -643,6 +655,12 @@ impl IosBackend {
             Retained::retain(view as *const UIView as *mut UIView).expect("retain UIView")
         };
         self.view_to_layout.insert(key, (retained, node));
+        // Brand-new registration at this pointer. Clear any stale
+        // layout-style-key a freed view left behind at the same address
+        // (the allocator recycles UIView pointers), so this view's
+        // first `apply_style` is correctly treated as layout-affecting
+        // instead of matching the dead view's key and skipping layout.
+        self.layout_style_keys.remove(&key);
         node
     }
 
@@ -1193,19 +1211,48 @@ impl Backend for IosBackend {
     }
 
     fn fullscreen_setter(&self) -> Option<std::rc::Rc<dyn Fn(bool)>> {
-        // Deliberately `None` for now — `set_fullscreen` is a logged
-        // no-op on iOS. Hiding the status bar + home indicator is driven
-        // by `prefersStatusBarHidden` / `prefersHomeIndicatorAutoHidden`
-        // overrides on the *root* view controller, but on iOS that VC is
-        // created by the Swift host template (`AppDelegate.swift`), not
-        // this backend — so honoring it needs a host-side root-VC
-        // subclass with a Rust→Swift toggle, plus on-device verification.
-        // It is also lower-value here than on Android: iOS has no system
-        // back-gesture arrow to suppress (disabling
-        // `interactivePopGestureRecognizer` fully removes the swipe-back
-        // affordance), which is the problem `set_fullscreen` solves on
-        // Android. Tracked as the iOS half of the app-controls surface.
-        None
+        // Drive the host `ViewController`'s `prefersStatusBarHidden` /
+        // `prefersHomeIndicatorAutoHidden` via its `applyFullscreen:`
+        // method (defined in the generated `ViewController.swift`). The
+        // `respondsToSelector:` guard makes this soft-fail on an older
+        // generated template that lacks the method — no
+        // unrecognized-selector crash — mirroring the Android JNI-skew
+        // handling. Runs on the main thread (navigator transitions are
+        // main-thread), as UIKit appearance updates require.
+        //
+        // iOS has no system back-gesture *arrow* to suppress (disabling
+        // `interactivePopGestureRecognizer` already removes the swipe),
+        // so here `set_fullscreen` is the cosmetic immersive parity:
+        // status bar hidden + home indicator dimmed.
+        Some(std::rc::Rc::new(|enabled: bool| unsafe {
+            let app: *mut NSObject =
+                msg_send![objc2::class!(UIApplication), sharedApplication];
+            if app.is_null() {
+                return;
+            }
+            // Window-based app (AppDelegate sets `self.window` +
+            // makeKeyAndVisible), so `keyWindow` is populated; fall back
+            // to the first window defensively.
+            let mut window: *mut NSObject = msg_send![app, keyWindow];
+            if window.is_null() {
+                let windows: *mut NSObject = msg_send![app, windows];
+                if !windows.is_null() {
+                    window = msg_send![windows, firstObject];
+                }
+            }
+            if window.is_null() {
+                return;
+            }
+            let root_vc: *mut NSObject = msg_send![window, rootViewController];
+            if root_vc.is_null() {
+                return;
+            }
+            let responds: bool =
+                msg_send![root_vc, respondsToSelector: objc2::sel!(applyFullscreen:)];
+            if responds {
+                let _: () = msg_send![root_vc, applyFullscreen: enabled];
+            }
+        }))
     }
 
     fn color_scheme(&self) -> runtime_core::ColorScheme {
@@ -2724,15 +2771,42 @@ impl Backend for IosBackend {
         // prevents the double-count that would otherwise inflate
         // the label's outer rect by 2× the padding.
         let layout_node = self.layout_for_view(view);
-        if matches!(node, IosNode::Label(_)) {
-            let mut text_style: StyleRules = (**style).clone();
-            text_style.padding_left = None;
-            text_style.padding_right = None;
-            text_style.padding_top = None;
-            text_style.padding_bottom = None;
-            self.layout.set_style(layout_node, &text_style);
-        } else {
-            self.layout.set_style(layout_node, style);
+
+        // Decide whether this `apply_style` changes anything Taffy
+        // cares about. A reactive re-style frequently flips ONLY paint
+        // properties (background on selection, opacity on press, text
+        // color) — none of which move a box. For those, both the Taffy
+        // `set_style` (which unconditionally marks the node dirty) and
+        // the coalesced `schedule_layout_pass` at the end of this
+        // method are pure churn: the layout pass walks every registered
+        // view and re-runs flex for a result identical to the last
+        // pass. Gating on the layout-affecting key removes the
+        // "layout runs on every press" cost the user reported.
+        //
+        // Conservative: the key includes every field that could affect
+        // size/placement (see `style_diff::layout_affecting_key`), and
+        // a first apply (no cached key) always counts as
+        // layout-affecting. A missing layout pass would be a stale-frame
+        // bug; an extra one is merely wasteful — so the key errs toward
+        // "layout-affecting".
+        let view_key_for_style = view as *const UIView as usize;
+        let next_layout_key = backend_ios_core::style_diff::layout_affecting_key(style);
+        let layout_changed = backend_ios_core::style_diff::is_layout_affecting(
+            self.layout_style_keys.get(&view_key_for_style).map(|s| s.as_str()),
+            &next_layout_key,
+        );
+        if layout_changed {
+            if matches!(node, IosNode::Label(_)) {
+                let mut text_style: StyleRules = (**style).clone();
+                text_style.padding_left = None;
+                text_style.padding_right = None;
+                text_style.padding_top = None;
+                text_style.padding_bottom = None;
+                self.layout.set_style(layout_node, &text_style);
+            } else {
+                self.layout.set_style(layout_node, style);
+            }
+            self.layout_style_keys.insert(view_key_for_style, next_layout_key);
         }
 
         match node {
@@ -2818,7 +2892,19 @@ impl Backend for IosBackend {
         // hit-test rect — stayed stale, so touches missed it intermittently.
         // `schedule_layout_pass` coalesces to one pass per runloop turn, so the
         // many `apply_style` calls during a build collapse into the build's pass.
-        schedule_layout_pass();
+        //
+        // ONLY when the layout-affecting style actually changed. A
+        // paint-only re-style (background / opacity / color / shadow /
+        // corner radius) leaves every box where it was, so a layout
+        // pass would recompute an identical result for the whole tree —
+        // that's the "layout on every press" the user reported. The
+        // corner-radius paint change in particular is now applied
+        // eagerly in `apply_style_to_view` against the view's live
+        // bounds, so it no longer depends on a layout pass to survive
+        // (see `style_diff::resolve_corner_radius`).
+        if layout_changed {
+            schedule_layout_pass();
+        }
     }
 
     fn set_animated_f32(
@@ -3510,6 +3596,12 @@ impl IosBackend {
         // anymore. Cheap iteration over a small map (entries only
         // grow with view count; never more than `view_to_layout`).
         self.applied_frames.retain(|k, _| still_present.contains(k));
+        // Same lifecycle for the layout-affecting style-key cache: a
+        // recycled view-pointer must not inherit a previous view's key
+        // (which would make the first `apply_style` on the new view
+        // wrongly skip layout). `still_present` is the set of currently
+        // registered views, so this drops keys for released views.
+        self.layout_style_keys.retain(|k, _| still_present.contains(k));
         }
         backend_ios_core::ios_log(&format!("[layout] apply_frames done: applied={}", applied));
 

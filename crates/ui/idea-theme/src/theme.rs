@@ -24,8 +24,28 @@
 use std::any::Any;
 use std::rc::Rc;
 
-use runtime_core::{Color, Length, Tokenized};
+use runtime_core::{Color, FontFamily, Length, Tokenized};
 use crate::theme_runtime::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
+
+/// The default body font for every idea-ui text surface.
+///
+/// This is a **system-sans stack**, not a bundled face. Its single
+/// most important job is correctness on the **web** backend: a browser
+/// with no `font-family` set falls back to its serif default (Times),
+/// so a stock idea-ui app would render in serif. Naming a sans stack
+/// here makes a fresh app render in the platform's UI sans on web,
+/// matching native (where `UILabel`/`TextView` already default to a
+/// system sans). The stack walks modern UI fonts on each OS before the
+/// generic `sans-serif`, so it's a safe default everywhere and pulls in
+/// no font binary.
+///
+/// Apps wanting a brand face override [`IdeaTheme::font_family`] (via
+/// the `font` field on [`IdeaThemeDefaults`], the [`app_theme!`] wrapper,
+/// or a hand-rolled `IdeaTheme` impl) with a registered
+/// [`Typeface`](runtime_core::Typeface) or their own family string.
+pub const DEFAULT_FONT_STACK: &str =
+    "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \
+     \"Helvetica Neue\", Arial, sans-serif";
 
 // =============================================================================
 // IntentColors — per-intent palette
@@ -159,6 +179,23 @@ pub trait IdeaTheme: Any + 'static {
     fn spacing(&self) -> &Spacing;
     fn radius(&self) -> &Radius;
     fn typography(&self) -> &Typography;
+
+    /// The theme's default body font family. Applied as the base
+    /// `font_family` on every idea-ui text surface (Typography, and
+    /// any component whose sheet pulls it in), so a fresh app renders
+    /// in a sans face instead of the browser serif fallback on web.
+    ///
+    /// Returns a [`FontFamily`] — either a free-form system stack
+    /// (the default, [`DEFAULT_FONT_STACK`]) or a registered
+    /// [`Typeface`](runtime_core::Typeface). The framework registers a
+    /// `Typeface` with the backend on first observation; a `System`
+    /// stack is passed verbatim to the platform font lookup.
+    ///
+    /// The default returns [`DEFAULT_FONT_STACK`]. Custom themes
+    /// override this to ship a brand face.
+    fn font_family(&self) -> FontFamily {
+        FontFamily::System(DEFAULT_FONT_STACK.to_string())
+    }
 }
 
 // =============================================================================
@@ -198,6 +235,9 @@ impl IdeaTheme for IdeaThemeRef {
     }
     fn typography(&self) -> &Typography {
         self.inner.typography()
+    }
+    fn font_family(&self) -> FontFamily {
+        self.inner.font_family()
     }
 }
 
@@ -293,6 +333,11 @@ pub struct IdeaThemeDefaults {
     pub spacing: Spacing,
     pub radius: Radius,
     pub typography: Typography,
+    /// The default body font family. Defaults to a system-sans stack
+    /// ([`DEFAULT_FONT_STACK`]) so web text isn't serif; swap in a
+    /// `FontFamily::Typeface(...)` (built via `typeface!`) for a brand
+    /// face, or another system stack string.
+    pub font: FontFamily,
 }
 
 impl IdeaTheme for IdeaThemeDefaults {
@@ -310,6 +355,9 @@ impl IdeaTheme for IdeaThemeDefaults {
     }
     fn typography(&self) -> &Typography {
         &self.typography
+    }
+    fn font_family(&self) -> FontFamily {
+        self.font.clone()
     }
 }
 
@@ -445,6 +493,7 @@ pub fn light_theme() -> IdeaThemeDefaults {
         spacing: DEFAULT_SPACING.clone(),
         radius: DEFAULT_RADIUS.clone(),
         typography: DEFAULT_TYPOGRAPHY.clone(),
+        font: FontFamily::System(DEFAULT_FONT_STACK.to_string()),
     }
 }
 
@@ -513,6 +562,7 @@ pub fn dark_theme() -> IdeaThemeDefaults {
         spacing: DEFAULT_SPACING.clone(),
         radius: DEFAULT_RADIUS.clone(),
         typography: DEFAULT_TYPOGRAPHY.clone(),
+        font: FontFamily::System(DEFAULT_FONT_STACK.to_string()),
     }
 }
 
@@ -613,7 +663,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::{Length, TokenValue};
+    use runtime_core::{FontFamily, Length, TokenValue};
     use crate::theme_runtime::ThemeTokens;
 
     /// Two theme impls with different spacing/radius/typography should
@@ -697,6 +747,60 @@ mod tests {
         // Typography.body_size changes shows up in `typography-body-size`.
         assert_eq!(px(find_length(&a_toks, "typography-body-size")), 14.0);
         assert_eq!(px(find_length(&b_toks, "typography-body-size")), 28.0);
+    }
+
+    /// Field report 3.1(b): a fresh idea-ui app must NOT render in the
+    /// browser's serif fallback. The default theme's `font_family()`
+    /// has to be a non-empty *sans* system stack — empty / serif here is
+    /// the exact bug. This guards the default both ways: it's a `System`
+    /// stack (not unset) and it ends in `sans-serif`, not a serif family.
+    #[test]
+    fn default_theme_font_is_non_empty_sans_not_serif() {
+        for theme in [light_theme(), dark_theme()] {
+            match theme.font_family() {
+                FontFamily::System(stack) => {
+                    assert!(
+                        !stack.trim().is_empty(),
+                        "default font stack must be non-empty (empty ⇒ browser serif fallback)"
+                    );
+                    assert!(
+                        stack.contains("sans-serif"),
+                        "default font stack must resolve to a sans family, got: {stack}"
+                    );
+                    assert!(
+                        !stack.contains("serif,") && !stack.ends_with("serif")
+                            || stack.ends_with("sans-serif"),
+                        "default font stack must not fall back to serif, got: {stack}"
+                    );
+                }
+                FontFamily::Typeface(_) => {
+                    // A bundled sans typeface would also satisfy the
+                    // "not serif" intent; the current default is a
+                    // system stack, so flag if that changes silently.
+                    panic!("default theme font is a Typeface; update this test if intentional");
+                }
+            }
+        }
+    }
+
+    /// Field report 3.1(a): a custom theme can carry its own font. The
+    /// `font` field flows through `IdeaTheme::font_family()`, including
+    /// when the theme is wrapped in the framework's `IdeaThemeRef`
+    /// carrier (the type stylesheets actually downcast to).
+    #[test]
+    fn custom_font_flows_through_theme_and_ref() {
+        let mut t = light_theme();
+        t.font = FontFamily::System("Courier New, monospace".to_string());
+        match t.font_family() {
+            FontFamily::System(s) => assert_eq!(s, "Courier New, monospace"),
+            _ => panic!("expected System font"),
+        }
+        // Through the IdeaThemeRef carrier (what install_idea_theme wraps in).
+        let r = IdeaThemeRef::new(t);
+        match r.font_family() {
+            FontFamily::System(s) => assert_eq!(s, "Courier New, monospace"),
+            _ => panic!("expected System font through IdeaThemeRef"),
+        }
     }
 
     /// Regression test for the `intent_colors` `Box::leak` audit finding.
