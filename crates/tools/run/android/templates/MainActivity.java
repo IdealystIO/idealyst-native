@@ -6,6 +6,14 @@
 // requires the androidx.appcompat AAR, which would force us to pull
 // in Maven/Gradle dependency resolution. Stock Activity is good
 // enough for everything `backend-android` exercises.
+//
+// NOTE: navigators (RustNavigator) need a FragmentActivity host. Extending
+// `androidx.fragment.app.FragmentActivity` here crashes at startup with a
+// `NoSuchMethodError` in `androidx.collection.SimpleArrayMap` — the resolved
+// androidx.collection is older than `androidx.activity`'s ComponentActivity
+// requires (the version-coordination gap the plain-Activity choice avoids).
+// Fixing that (coordinated androidx versions) is the prerequisite for navigator
+// support on Android.
 
 package {{PACKAGE}};
 

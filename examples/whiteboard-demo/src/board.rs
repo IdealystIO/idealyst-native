@@ -67,19 +67,14 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
     // The Canvas writes each rendered frame into this writer (macOS/vello only).
     let capture_writer = capture.writer.clone();
 
-    // The capture-excluded chrome (tool rail, palette, record dock, REC pill,
-    // settings FAB) as individually-positioned passthrough `PrivateLayer`
-    // children. Stays a Rust expression — `PrivateLayer(Vec<Element>)` is the
-    // screen-recorder's overlay-window container.
-    let private_layer = screen_recorder::PrivateLayer(crate::chrome::build_chrome(
-        focused,
-        s,
-        strokes.clone(),
-        rec_handle,
-        version,
-        capture,
-    ))
-    .into_element();
+    // The chrome (tool rail, palette, record dock, REC pill, settings FAB) as
+    // individually-positioned absolute overlays over the canvas. No longer wrapped
+    // in `screen_recorder::PrivateLayer`: that existed to exclude the toolbar from
+    // a SCREEN recording, but we now record the canvas/GPU stream directly — the
+    // chrome is never part of the canvas, so it's never in the recording anyway.
+    // As normal in-tree siblings the navigator also hides them automatically when
+    // a screen is pushed (they belong to the board screen).
+    let chrome = crate::chrome::build_chrome(focused, s, strokes.clone(), rec_handle, version, capture);
 
     let root_style = static_style(StyleRules {
         width: Some(Length::pct(100.0).into()),
@@ -93,7 +88,7 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
         view(style = root_style) {
             DrawingSurface(state = s, strokes = strokes, version = version, capture_writer = Some(capture_writer))
             CameraWidget(state = s)
-            private_layer
+            chrome
         }
     }
 }

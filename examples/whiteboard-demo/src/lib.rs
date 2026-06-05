@@ -90,21 +90,18 @@ pub(crate) use screens::{PreviewScreen, SettingsScreen};
 pub fn register_extensions(backend: &mut backend_web::WebBackend) {
     canvas_native::register(backend);
     video::register(backend);
-    screen_recorder::register(backend);
 }
 
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
     canvas_native::register(backend);
     video::register(backend);
-    screen_recorder::register(backend);
 }
 
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
     canvas_native::register(backend);
     video::register(backend);
-    screen_recorder::register(backend);
 }
 
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
@@ -113,7 +110,6 @@ pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
     // GPU canvas: register vello AFTER native so it wins (last-registration).
     canvas_vello::register(backend);
     video::register(backend);
-    screen_recorder::register(backend);
 }
 
 #[cfg(not(any(

@@ -380,6 +380,21 @@ impl Navigator {
 
     fn into_element(self) -> Element {
         let Navigator { config, presentation, slot_styles, style, ref_fill } = self;
+        // The navigator is the app shell — it must fill its parent box on every
+        // backend. The iOS/Android handlers materialize the navigator
+        // container's Taffy node from this `style` field ALONE; with `style:
+        // None` that container carries no size and collapses to 0 — the whole
+        // screen renders blank on Android even though web/macOS look fine (they
+        // self-fill via CSS / their own container sizing). Default to a fill
+        // style so the container claims its parent's box uniformly. Mirrors
+        // `drawer-navigator`, which already does exactly this.
+        let style = style.or_else(|| {
+            let mut fill = StyleRules::default();
+            fill.flex_grow = Some(1.0f32.into());
+            fill.width = Some(runtime_core::Length::pct(100.0).into());
+            fill.height = Some(runtime_core::Length::pct(100.0).into());
+            Some(Rc::new(StyleSheet::r#static(fill)).into_style_source())
+        });
         Element::Navigator {
             type_id: TypeId::of::<StackPresentation>(),
             type_name: std::any::type_name::<StackPresentation>(),

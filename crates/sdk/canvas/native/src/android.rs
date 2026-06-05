@@ -91,6 +91,7 @@ fn build_canvas(props: &Rc<CanvasProps>, b: &mut AndroidBackend) -> GlobalRef {
     // renderer) and the initial-layout nudges (renderer).
     let cell: Rc<RefCell<Scene>> = Rc::new(RefCell::new(Scene::new()));
 
+    log::warn!("[wb-canvas] build_canvas called");
     let render: Rc<dyn Fn()> = {
         let view = view.clone();
         let cell = cell.clone();
@@ -129,6 +130,7 @@ fn render_scene_into_view(view: &GlobalRef, scene: &Scene) {
     with_jni_env(|env| {
         let w_px = call_int(env, view.as_obj(), "getWidth");
         let h_px = call_int(env, view.as_obj(), "getHeight");
+        log::warn!("[wb-canvas] render: view {w_px}x{h_px}, ops={}", scene.ops().len());
         if w_px <= 0 || h_px <= 0 {
             return;
         }

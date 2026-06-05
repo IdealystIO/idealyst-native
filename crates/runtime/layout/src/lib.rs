@@ -607,10 +607,19 @@ impl LayoutTree {
     /// Backends that render their own scroll machinery (terminal's
     /// cell-grid clip + offset; future hosts) call this at create
     /// time so the Taffy layout matches the rendered scroll-viewport
-    /// behavior. Native backends with platform scroll views
-    /// (UIScrollView, etc.) don't need this — the scroll view's
-    /// native frame is set by its parent and its content has its own
-    /// coordinate space.
+    /// behavior.
+    ///
+    /// Native scroll-view backends that parent the scroll content as a
+    /// Taffy *child* of the scroll node — **iOS** (direct subviews of the
+    /// UIScrollView), **Android** (inner FrameLayout), **macOS**
+    /// (documentView) — MUST call this. Parenting the content under the
+    /// scroll node makes the content's size contribute to the scroll node's
+    /// automatic minimum size (a flex item's auto-min is its min-content),
+    /// so without `overflow:scroll` a `flex_grow` scroll node grows to its
+    /// content height instead of being bounded by its parent — it ends up as
+    /// tall as its content and has nothing to scroll. The native scroll view
+    /// still does its own pixel clipping + content-offset; this call only
+    /// fixes the Taffy *sizing* of the viewport node.
     pub fn set_overflow_scroll(&mut self, node: LayoutNode, horizontal: bool) {
         let _ = self.tree.set_style(node.0, {
             let mut style = self
@@ -1028,6 +1037,99 @@ mod tests {
              (root-wrap reintroduced) or the wrapper didn't fill",
             cf.x,
             cf.y
+        );
+    }
+
+    /// Regression: a native scroll view whose content is parented as a
+    /// Taffy CHILD of the scroll node (the Android ScrollView shape: outer
+    /// node → inner FrameLayout child → content) must mark the scroll node
+    /// `overflow: scroll`, or the scroll node grows to its content height
+    /// and there is nothing to scroll.
+    ///
+    /// The bug ("I can't scroll the sidebar" on Android): the outer scroll
+    /// node is a `flex_grow:1 / flex_basis:0` child of a bounded panel, so
+    /// it *should* fill the panel and let its tall content overflow. But a
+    /// flex item's automatic minimum size is its `min-content` — and the
+    /// content (the inner + its children) is 800px tall — so flexbox cannot
+    /// shrink the outer below 800. The outer grows to 800, ends up exactly
+    /// as tall as its content, and the native ScrollView has zero scrollable
+    /// overflow. Marking the outer `overflow:scroll` suppresses the
+    /// automatic-minimum-size floor (CSS rule), letting the parent bound the
+    /// outer to the panel height while the content overflows — exactly what
+    /// makes a ScrollView scroll. This is why macOS/terminal call
+    /// `set_overflow_scroll`; Android (which also parents content under the
+    /// scroll node) needs it for the same reason.
+    #[test]
+    fn regression_scroll_node_bounded_by_overflow_scroll_not_content() {
+        let panel_h = 300.0_f32;
+        let child_h = 200.0_f32;
+        let n_children = 4; // 4 * 200 = 800 content, well past the 300 panel
+
+        // Build panel(fixed 300, Column) → outer scroll node
+        // (flex_grow:1, flex_basis:0) → inner(Column) → N fixed children.
+        // When `overflow_scroll` is true, mark the outer as a scroll node.
+        // Returns the outer scroll node's computed height.
+        let outer_height = |overflow_scroll: bool| -> f32 {
+            let mut t = LayoutTree::new();
+
+            let panel = t.new_node();
+            let mut panel_rules = StyleRules::default();
+            panel_rules.width = Some(px(260.0));
+            panel_rules.height = Some(px(panel_h)); // bounded viewport
+            panel_rules.flex_direction = Some(FwFlexDirection::Column);
+            t.set_style(panel, &panel_rules);
+
+            let outer = t.new_node();
+            let mut outer_rules = StyleRules::default();
+            outer_rules.flex_grow = Some(Tokenized::Literal(1.0));
+            outer_rules.flex_basis = Some(px(0.0));
+            outer_rules.flex_direction = Some(FwFlexDirection::Column);
+            t.set_style(outer, &outer_rules);
+            if overflow_scroll {
+                t.set_overflow_scroll(outer, false);
+            }
+            t.add_child(panel, outer);
+
+            let inner = t.new_node();
+            let mut inner_rules = StyleRules::default();
+            inner_rules.flex_direction = Some(FwFlexDirection::Column);
+            inner_rules.align_items = Some(FwAlignItems::Stretch);
+            t.set_style(inner, &inner_rules);
+            t.add_child(outer, inner);
+
+            for _ in 0..n_children {
+                let child = t.new_node();
+                let mut child_rules = StyleRules::default();
+                child_rules.height = Some(px(child_h));
+                child_rules.flex_shrink = Some(Tokenized::Literal(0.0));
+                t.set_style(child, &child_rules);
+                t.add_child(inner, child);
+            }
+
+            t.compute(panel, 260.0, panel_h);
+            t.frame_of(outer).height
+        };
+
+        // The fix: overflow:scroll bounds the outer to the panel so its
+        // content overflows and the ScrollView can scroll.
+        let bounded = outer_height(true);
+        assert!(
+            (bounded - panel_h).abs() < 1.0,
+            "outer scroll node with overflow:scroll should stay bounded to \
+             the {panel_h} panel (content overflows → ScrollView scrolls), \
+             got {bounded}"
+        );
+
+        // The bug: without overflow:scroll the outer's auto-min-size = its
+        // 800px content, so it grows to content and there's nothing to
+        // scroll. Documents what the fix prevents.
+        let grown = outer_height(false);
+        let content_h = child_h * n_children as f32; // 800
+        assert!(
+            (grown - content_h).abs() < 1.0,
+            "outer scroll node WITHOUT overflow:scroll grows to its {content_h} \
+             content (the bug: scroll node == content height, no overflow to \
+             scroll), got {grown}"
         );
     }
 }

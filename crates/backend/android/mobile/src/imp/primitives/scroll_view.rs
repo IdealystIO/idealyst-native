@@ -97,6 +97,23 @@ pub(crate) fn create(b: &mut AndroidBackend, horizontal: bool) -> GlobalRef {
     b.layout.add_child(outer_layout, inner_layout);
     b.layout.mark_dirty(outer_layout);
 
+    // Mark the outer as a scroll container on its scroll axis. Because the
+    // inner (scroll content) is a Taffy CHILD of the outer (above), the
+    // content's height contributes to the outer's *automatic minimum size*
+    // (a flex item's auto-min is its min-content). For the sidebar — an
+    // `flex_grow:1 / flex_basis:0` child of a bounded panel — that floor
+    // means flexbox can't shrink the outer below its 800px content: the
+    // outer grows to content, ends up exactly as tall as what it holds, and
+    // the native ScrollView has zero scrollable overflow ("I can't scroll
+    // the sidebar"). `overflow:scroll` suppresses the auto-min floor (CSS
+    // rule), so the parent bounds the outer to the panel height while the
+    // content overflows — which is what makes a ScrollView scroll. iOS
+    // doesn't need this (its scroll content is a separate Taffy root, not a
+    // child), but Android parents content under the scroll node, so it does
+    // — same reason macOS/terminal call it. Regression:
+    // `regression_scroll_node_bounded_by_overflow_scroll_not_content`.
+    b.layout.set_overflow_scroll(outer_layout, horizontal);
+
     // Inner needs an explicit flex_direction. With Taffy's default
     // (`Row`) the inner only takes `max(child.height)` as its
     // intrinsic — children stack horizontally and the inner's

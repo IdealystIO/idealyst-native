@@ -105,7 +105,8 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
             depth_changed,
             active_changed,
             control,
-            build_node,
+            build_node: _,
+            build_node_scoped,
             build_node_into: _,
             build_in_screen: _,
             // `resolve_entry` + `base`: framework/web deep-link plumbing; the
@@ -225,6 +226,12 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
             let control_cap = control.clone();
             let drawer_width = presentation.drawer_width;
             runtime_core::schedule_microtask(move || {
+                // Build the sidebar Element INSIDE the navigator's retained
+                // chrome scope via `build_node_scoped` (NOT `build_node`), so
+                // `#[component]` bodies' standalone effects (idea-ui's animated
+                // `Switch`) are owned by it and stay reactive instead of being
+                // freed when the body returns. See `NavigatorHost::build_node_scoped`.
+                let builder: Box<dyn FnOnce() -> runtime_core::Element> = Box::new(move || {
                 let on_select: Rc<dyn Fn(&'static str)> = {
                     let control = control_cap.clone();
                     Rc::new(move |name| {
@@ -319,7 +326,8 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
                         };
                         sidebar_builder(props)
                     } else {
-                        return;
+                        // Unreachable: guarded by the `is_some()` check above.
+                        unreachable!("sidebar build with neither slot set")
                     };
 
                 // The sidebar is a plain full-height view — NOT a
@@ -363,7 +371,9 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
                             },
                         )))
                         .into_element();
-                let sidebar = build_node(sized_sidebar);
+                sized_sidebar
+                });
+                let sidebar = build_node_scoped(builder);
                 android_navigator_helpers::drawer_attach_sidebar(
                     &container_for_microtask,
                     sidebar,

@@ -116,7 +116,8 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
             depth_changed,
             active_changed,
             control,
-            build_node,
+            build_node: _,
+            build_node_scoped,
             build_node_into: _,
             build_in_screen: _,
             // `resolve_entry` + `base`: framework/web deep-link plumbing; the
@@ -277,6 +278,15 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
             let node_for_attach = node.clone();
             let drawer_width = presentation.drawer_width;
             runtime_core::schedule_microtask(move || {
+                // Construct the sidebar Element INSIDE the navigator's retained
+                // chrome scope via `build_node_scoped`, NOT `build_node`. The
+                // sidebar contains `#[component]` bodies (idea-ui's animated
+                // `Switch`) whose standalone `Effect::new` runs at construction;
+                // building the Element here and only then calling `build_node`
+                // would create those effects with no active scope → freed when
+                // the body returns → run once, never re-fire (frozen Switch
+                // thumb). See `NavigatorHost::build_node_scoped`.
+                let builder: Box<dyn FnOnce() -> runtime_core::Element> = Box::new(move || {
                 let on_select: Rc<dyn Fn(&'static str)> = {
                     let c = control_for_select;
                     Rc::new(move |name| {
@@ -368,7 +378,8 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
                         };
                         sidebar_builder(props)
                     } else {
-                        return;
+                        // Unreachable: guarded by the `is_some()` check above.
+                        unreachable!("sidebar build with neither slot set")
                     };
 
                 // Match the web drawer's architecture:
@@ -457,7 +468,9 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
                             ),
                         ))
                         .into_element();
-                let sidebar_node = build_node(sized_sidebar);
+                sized_sidebar
+                });
+                let sidebar_node = build_node_scoped(builder);
                 let _ = with_backend(|b| {
                     helpers::drawer_attach_sidebar(b.mtm(), &node_for_attach, sidebar_node);
                 });

@@ -3,7 +3,7 @@ name = "whiteboard-demo"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Whiteboard demo — a freehand-drawable canvas (canvas SDK) with a non-recorded overlay toolbar (screen-recorder PrivateLayer), a recordable camera widget (camera → video), screen recording (screen-recorder → MediaStream), and a live recording preview rendered inside the private layer so it doesn't feed back into the capture."
+description = "Whiteboard demo — a freehand-drawable canvas (canvas SDK) that records its OWN output zero-copy (canvas self-capture → media-writer), with a live camera composited into the canvas as a texture layer, a floating overlay toolbar, and an in-app recording preview."
 
 [lib]
 crate-type = ["rlib"]
@@ -18,7 +18,6 @@ canvas-native = { workspace = true }
 camera = { workspace = true }
 media-stream = { workspace = true }
 video = { workspace = true }
-screen-recorder = { workspace = true }
 media-writer = { workspace = true }
 file-export = { workspace = true }
 files = { workspace = true }

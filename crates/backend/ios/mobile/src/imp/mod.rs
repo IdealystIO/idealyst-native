@@ -1651,7 +1651,29 @@ impl Backend for IosBackend {
             self.retain_target(&delegate);
         }
 
-        let _ = self.layout_for_view(&scroll);
+        let scroll_layout = self.layout_for_view(&scroll);
+        // Mark the scroll node `overflow: scroll` on its scroll axis. The
+        // scroll *content* is parented as a Taffy CHILD of this node (children
+        // are added as direct subviews and the contentSize-sync loop walks
+        // `children_of(scroll_layout)`), so the content's height contributes
+        // to this node's *automatic minimum size* (a flex item's auto-min is
+        // its min-content). For the drawer sidebar — a `flex_grow:1 /
+        // flex_basis:0` child of a fixed-height panel — that floor means
+        // flexbox can't shrink the scroll node below its tall content: the
+        // node grows to its content, the UIScrollView's frame ends up as tall
+        // as its contentSize, and there's no overflow to scroll to the bottom
+        // ("the content size doesn't match the content, can't scroll all the
+        // way down"). `overflow:scroll` suppresses the auto-min floor (CSS
+        // rule) so the panel bounds the scroll node to the viewport while the
+        // content overflows — which is what makes a UIScrollView scroll its
+        // full contentSize. Same reason macOS/Android/terminal call it; iOS
+        // parents content under the scroll node just like they do.
+        // `set_overflow_scroll` also seeds `flex_grow:1 / flex_basis:0` (a
+        // viewport fills available space); `apply_style` still lets authors
+        // override with an explicit height. Regression:
+        // `regression_scroll_node_bounded_by_overflow_scroll_not_content`
+        // (runtime-layout).
+        self.layout.set_overflow_scroll(scroll_layout, horizontal);
         let key = &*scroll as *const UIScrollView as *const UIView as usize;
         self.scroll_views.insert(key);
         let node = IosNode::ScrollView(scroll);
