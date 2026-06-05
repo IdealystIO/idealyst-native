@@ -565,6 +565,12 @@ pub struct NavigatorControl {
     link_activator: RefCell<
         Option<Rc<dyn Fn(&'static str, String, Box<dyn Any>) -> NavCommand>>,
     >,
+    /// Backend-provided "schedule a layout pass" hook, registered ONCE by the
+    /// navigator walker (`|| B::schedule_layout_pass()`). `dispatch` calls it
+    /// after every command so a freshly-mounted screen is always laid out — the
+    /// guarantee lives here in the abstraction, not duplicated (and forgettable)
+    /// in each navigator×backend handler. `None` until the walker registers it.
+    request_layout: RefCell<Option<Box<dyn Fn()>>>,
     /// Reactive scope owning this navigator's `nav_state` signals (and any
     /// other framework-owned per-navigator reactive state). The control is
     /// the navigator's true lifetime anchor — it's an `Rc` held by the
@@ -591,6 +597,7 @@ impl NavigatorControl {
             nav_state: RefCell::new(None),
             base: RefCell::new(String::new()),
             link_activator: RefCell::new(None),
+            request_layout: RefCell::new(None),
             owning_scope: RefCell::new(None),
         }
     }
@@ -626,6 +633,14 @@ impl NavigatorControl {
     /// the SDK handler's `init`.
     pub fn install(&self, dispatch: Box<dyn Fn(NavCommand)>) {
         *self.dispatch.borrow_mut() = Some(dispatch);
+    }
+
+    /// Register the backend's "schedule a layout pass" hook. Called once by the
+    /// navigator walker with `|| B::schedule_layout_pass()`. After this, every
+    /// [`dispatch`](Self::dispatch) guarantees a layout pass — so no
+    /// navigator×backend handler has to (and none can forget to).
+    pub fn install_request_layout(&self, f: Box<dyn Fn()>) {
+        *self.request_layout.borrow_mut() = Some(f);
     }
 
     /// Install the SDK's `Link` activation builder. Optional; if not
@@ -695,6 +710,14 @@ impl NavigatorControl {
         }
         if let Some(f) = self.dispatch.borrow().as_ref() {
             f(cmd);
+        }
+        // Centralized layout guarantee: after the SDK handler commits the
+        // command (mounts/swaps the screen), ensure a layout pass is scheduled.
+        // This is the ONE place every navigation triggers a relayout, on every
+        // backend — replacing the per-handler `schedule_layout_pass()` calls
+        // that some backends had and others (Android stack) forgot.
+        if let Some(f) = self.request_layout.borrow().as_ref() {
+            f();
         }
     }
 
@@ -1143,6 +1166,70 @@ mod nav_state_lifetime_tests {
         let nav_state = with_scope(&mut ambient, fresh_nav_state);
         drop(ambient); // frees the signals — the bug
         nav_state.active_route.set("detail"); // hits a freed slot → panic
+    }
+}
+
+#[cfg(test)]
+mod layout_pass_contract_tests {
+    //! The navigator abstraction must schedule a layout pass after EVERY
+    //! command, in ONE place — so no navigator×backend handler has to remember
+    //! to (the recurring "navigated, but the new screen renders at 0×0" bug;
+    //! the Android stack handler forgot it). The walker registers
+    //! `|| B::schedule_layout_pass()` as the request-layout hook; this proves
+    //! `dispatch` invokes it for every command shape, and that a backend which
+    //! opts out (default no-op) is safe.
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn dispatch_requests_a_layout_pass_for_every_command() {
+        let control = NavigatorControl::new();
+        let count = Rc::new(Cell::new(0u32));
+        control.install(Box::new(|_cmd| {})); // SDK handler: no-op
+        let c = count.clone();
+        control.install_request_layout(Box::new(move || c.set(c.get() + 1)));
+
+        control.dispatch(NavCommand::Push {
+            name: "a",
+            url: "/a".into(),
+            params: Box::new(()),
+            state: None,
+        });
+        control.dispatch(NavCommand::Pop);
+        control.dispatch(NavCommand::Replace {
+            name: "b",
+            url: "/b".into(),
+            params: Box::new(()),
+            state: None,
+        });
+        control.dispatch(NavCommand::Reset {
+            name: "c",
+            url: "/c".into(),
+            params: Box::new(()),
+            state: None,
+        });
+        control.dispatch(NavCommand::Select {
+            name: "d",
+            url: "/d".into(),
+            params: Box::new(()),
+            state: None,
+        });
+        control.dispatch(NavCommand::Custom(Rc::new(())));
+
+        assert_eq!(
+            count.get(),
+            6,
+            "every NavCommand must trigger exactly one centralized layout-pass request"
+        );
+    }
+
+    #[test]
+    fn no_hook_registered_is_a_safe_noop() {
+        // A backend that re-layouts automatically (web reflow) never registers
+        // the hook — `dispatch` must not panic when it's absent.
+        let control = NavigatorControl::new();
+        control.install(Box::new(|_cmd| {}));
+        control.dispatch(NavCommand::Pop);
     }
 }
 

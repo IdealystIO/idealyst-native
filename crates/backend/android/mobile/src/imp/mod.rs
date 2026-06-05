@@ -2016,6 +2016,11 @@ impl runtime_core::RegisterExternal for AndroidBackend {
 impl Backend for AndroidBackend {
     type Node = GlobalRef;
 
+    /// Navigator abstraction calls this after every command (see the trait doc).
+    fn schedule_layout_pass() {
+        crate::schedule_layout_pass();
+    }
+
     fn platform(&self) -> runtime_core::Platform {
         runtime_core::Platform::Android
     }

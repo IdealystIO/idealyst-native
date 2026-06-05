@@ -1115,6 +1115,11 @@ pub fn mount_screen_in_vc(mtm: MainThreadMarker, screen: &UIView) -> Retained<UI
 impl Backend for IosBackend {
     type Node = IosNode;
 
+    /// Navigator abstraction calls this after every command (see the trait doc).
+    fn schedule_layout_pass() {
+        crate::imp::schedule_layout_pass();
+    }
+
     fn platform(&self) -> runtime_core::Platform {
         // `target_abi = "sim"` is set for `aarch64-apple-ios-sim` and
         // `x86_64-apple-ios` simulator targets; absent on real devices.

@@ -1366,6 +1366,11 @@ impl runtime_core::RegisterExternal for MacosBackend {
 impl Backend for MacosBackend {
     type Node = MacosNode;
 
+    /// Navigator abstraction calls this after every command (see the trait doc).
+    fn schedule_layout_pass() {
+        crate::imp::schedule_layout_pass();
+    }
+
     fn platform(&self) -> runtime_core::Platform {
         runtime_core::Platform::MacOs
     }

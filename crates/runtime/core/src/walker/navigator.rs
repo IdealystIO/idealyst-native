@@ -339,6 +339,13 @@ pub(super) fn build<B: Backend + 'static>(
             .create_navigator(type_id, type_name, presentation, host, &accessibility)
     });
 
+    // Centralize the post-navigation layout pass in the abstraction: register
+    // the backend's scheduler once, here, so `NavigatorControl::dispatch`
+    // guarantees a relayout after EVERY command — on every backend, for every
+    // navigator kind — without each SDK handler having to remember to call it.
+    // (Backends that auto-relayout, e.g. web reflow, default to a no-op.)
+    control.install_request_layout(Box::new(|| B::schedule_layout_pass()));
+
     if !defer_initial_mount {
         // Native / SSR / headless initial mount with hierarchical deep-link
         // resolution. A launch / server-requested path may have been set

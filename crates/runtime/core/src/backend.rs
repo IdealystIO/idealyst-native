@@ -2318,6 +2318,23 @@ pub trait Backend {
     /// the deferred path together produce the correct result and
     /// this method is never called.
     fn run_layout(&mut self) {}
+
+    /// Schedule a layout pass for the next main-loop turn. **The navigator
+    /// abstraction calls this automatically after EVERY navigation command**
+    /// (via `NavigatorControl`'s request-layout hook, registered by the
+    /// navigator walker) — so a freshly-pushed/selected/swapped screen always
+    /// gets its Taffy/UIKit/AppKit layout recomputed, on every backend, without
+    /// each navigator×backend handler having to remember to call it. That
+    /// per-handler duplication was the root of the recurring "navigated, but the
+    /// new screen renders at 0×0" class of bug.
+    ///
+    /// No `self` (the schedulers are thread-local/global), so the generic walker
+    /// can register `|| B::schedule_layout_pass()` without holding the backend.
+    /// Default no-op: backends that re-layout automatically (web/CSS reflow,
+    /// terminal full re-render) need nothing. Native backends override it to
+    /// call their coalescing scheduler (the Taffy compute pass, UIKit
+    /// `setNeedsLayout`, etc.).
+    fn schedule_layout_pass() {}
 }
 
 // ---------------------------------------------------------------------------
