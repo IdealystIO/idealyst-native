@@ -486,6 +486,7 @@ pub(super) fn apply_one<B: Backend + 'static>(
         let base = resolve_style(app);
         let state_overlays = resolve_state_overlays(app);
         let bp_overlays = resolve_breakpoint_overlays(app);
+        warn_if_orphan_system_font(&base);
         backend
             .borrow_mut()
             .apply_styled_variants(node, &base, &state_overlays, &bp_overlays);
@@ -499,7 +500,22 @@ pub(super) fn apply_one<B: Backend + 'static>(
         let base = resolve_style(app);
         let bp_overlays = resolve_breakpoint_overlays(app);
         let resolved = merge_active_breakpoints(base, &bp_overlays);
+        warn_if_orphan_system_font(&resolved);
         backend.borrow_mut().apply_style(node, &resolved);
+    }
+}
+
+/// Debug-only DX guardrail: if a resolved rule's `font_family` is a
+/// bare `System(name)` that matches no registered `typeface!` and no
+/// known system font, warn once. Runs after the node's own stylesheet
+/// has registered (so a same-sheet typeface is already recorded). The
+/// whole call — including the `font_family` read — compiles out in
+/// release; see `style::maybe_warn_unregistered_system_font`.
+#[inline]
+fn warn_if_orphan_system_font(_rules: &StyleRules) {
+    #[cfg(debug_assertions)]
+    if let Some(crate::style::FontFamily::System(name)) = &_rules.font_family {
+        crate::style::maybe_warn_unregistered_system_font(name);
     }
 }
 
@@ -728,6 +744,7 @@ fn attach_style_reactive<B: Backend + 'static>(
 
             #[cfg(feature = "debug-stats")]
             let _t_apply_start = debug::now_micros();
+            warn_if_orphan_system_font(&base);
             // Web (the only `handles_states_natively` backend) emits
             // breakpoint overlays as `@media` CSS, so this branch does
             // NOT read `current_breakpoint()` — the browser does the
@@ -774,6 +791,7 @@ fn attach_style_reactive<B: Backend + 'static>(
 
             #[cfg(feature = "debug-stats")]
             let _t_apply_start = debug::now_micros();
+            warn_if_orphan_system_font(&resolved);
             backend_for_effect
                 .borrow_mut()
                 .apply_style(&handle.node, &resolved);

@@ -156,6 +156,56 @@ pub(crate) fn scroll_content_bbox<N: Copy>(
     (max_x, max_y)
 }
 
+/// The size an `NSScrollView`'s documentView must take, given its content's
+/// bounding box (`content`, from [`scroll_content_bbox`]) and the scroll view's
+/// own clip size (`clip`).
+///
+/// The documentView fills *at least* the clip so short content still paints
+/// edge-to-edge (a flipped documentView shorter than the clip would otherwise
+/// leave a gap), and grows *past* the clip on either axis to make the overflow
+/// scrollable. This is the pure decision behind `sync_scroll_document_views`'s
+/// `setFrame:` — the AppKit `documentView`/`bounds` plumbing needs the main
+/// thread and a live window, so the sizing math lives here where `cargo test`
+/// can pin it (mirroring how the rest of this module factors the AppKit-bound
+/// decisions out). It's the macOS analogue of the iOS `contentSize` value.
+///
+/// CRUCIAL: the per-axis `max` is what makes a **top-level** scroll view paint.
+/// A scroll view that fills the whole window has its bbox equal to the viewport
+/// when content is short (e.g. `(800, 40)` for a 40pt-tall page in an 800×600
+/// window); without clamping to the clip the documentView would be 40pt tall and
+/// the bottom of the window would be a blank documentView gap. With the clamp the
+/// documentView is `800×600` — full-bleed — and the laid-out children show. The
+/// macOS "top-level scroll page renders blank" bug is a 0×0 documentView, which
+/// this returns ONLY when the clip is also 0×0 (no usable bounds yet); any real
+/// clip yields a real size. See [`scroll_document_view_is_degenerate`] for the
+/// guard that warns if a 0×0 documentView ever slips through with real children.
+pub(crate) fn scroll_document_view_size(content: (f32, f32), clip: (f32, f32)) -> (f32, f32) {
+    (content.0.max(clip.0), content.1.max(clip.1))
+}
+
+/// Whether a scroll view's documentView is about to be sized `0×0` *despite*
+/// having a non-empty content bounding box — i.e. the "renders blank" regression
+/// is live. Returns `true` only when the chosen documentView size is degenerate
+/// on either axis while the content bbox reports real children. A legitimately
+/// empty scroll view (no children → `content == (0, 0)`) is NOT flagged.
+///
+/// `sync_scroll_document_views` calls this and logs a loud warning when it trips,
+/// so the next time the top-level-scroll-blank bug reappears it surfaces in the
+/// console at the exact layout pass that caused it, instead of as an
+/// inexplicably empty window. `clip` is the scroll view's own bounds: if BOTH
+/// the clip and the content are zero the scroll view simply has no usable bounds
+/// yet (pre-first-paint) — that's not the bug, so don't warn.
+pub(crate) fn scroll_document_view_is_degenerate(
+    content: (f32, f32),
+    doc: (f32, f32),
+    clip: (f32, f32),
+) -> bool {
+    let has_real_content = content.0 > 0.0 && content.1 > 0.0;
+    let doc_degenerate = doc.0 <= 0.0 || doc.1 <= 0.0;
+    let clip_has_bounds = clip.0 > 0.0 || clip.1 > 0.0;
+    has_real_content && doc_degenerate && clip_has_bounds
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +281,86 @@ mod tests {
             kids: vec![vec![1], vec![]],
         };
         assert_eq!(t.bbox(&[0]), (744.0, 150.0));
+    }
+
+    // Regression: the macOS "top-level scroll_view makes the whole window
+    // blank" bug. A scroll view that fills the window and wraps short content
+    // must size its documentView to the FULL clip (so it paints edge-to-edge),
+    // never to the smaller content height (which left a blank documentView gap).
+    // And it must NEVER be 0×0 when there are laid-out children — that's the
+    // exact "renders blank" symptom.
+
+    #[test]
+    fn top_level_scroll_short_content_fills_the_clip() {
+        // 800×600 window, a 40pt-tall page laid out by Taffy → content bbox
+        // (800, 40). The documentView must be 800×600 (full-bleed), NOT 800×40,
+        // so the bottom of the window isn't a blank documentView gap and the
+        // page (which IS laid out — see the `LayoutTree` probe) shows.
+        let doc = scroll_document_view_size((800.0, 40.0), (800.0, 600.0));
+        assert_eq!(doc, (800.0, 600.0));
+        // ...and the guard does NOT trip: real children, real (non-zero) doc.
+        assert!(!scroll_document_view_is_degenerate(
+            (800.0, 40.0),
+            doc,
+            (800.0, 600.0),
+        ));
+    }
+
+    #[test]
+    fn top_level_scroll_tall_content_grows_past_the_clip() {
+        // A 1500pt-tall page in the same window → documentView grows to 1500 so
+        // the overflow scrolls; width stays the clip width.
+        let doc = scroll_document_view_size((800.0, 1500.0), (800.0, 600.0));
+        assert_eq!(doc, (800.0, 1500.0));
+        assert!(!scroll_document_view_is_degenerate(
+            (800.0, 1500.0),
+            doc,
+            (800.0, 600.0),
+        ));
+    }
+
+    #[test]
+    fn empty_scroll_view_is_not_flagged_as_blank() {
+        // No children → content (0, 0). The documentView is the clip size and
+        // the guard stays quiet (an empty scroll view is legitimately empty, not
+        // the regression).
+        let doc = scroll_document_view_size((0.0, 0.0), (800.0, 600.0));
+        assert_eq!(doc, (800.0, 600.0));
+        assert!(!scroll_document_view_is_degenerate(
+            (0.0, 0.0),
+            doc,
+            (800.0, 600.0),
+        ));
+    }
+
+    #[test]
+    fn pre_paint_zero_clip_is_not_flagged() {
+        // Before the first paint the scroll view has no bounds yet (clip 0×0);
+        // even with content the guard must stay quiet — that's a not-yet-laid-out
+        // state, not the blank-render bug.
+        assert!(!scroll_document_view_is_degenerate(
+            (800.0, 40.0),
+            (800.0, 40.0),
+            (0.0, 0.0),
+        ));
+    }
+
+    #[test]
+    fn zero_doc_with_real_children_and_clip_is_the_blank_bug() {
+        // The exact regression: real laid-out children (content 800×40) but the
+        // documentView somehow ends up 0×0 while the clip has real bounds. The
+        // guard MUST flag this so it surfaces immediately.
+        assert!(scroll_document_view_is_degenerate(
+            (800.0, 40.0),
+            (0.0, 0.0),
+            (800.0, 600.0),
+        ));
+        // Degenerate on a single axis counts too (e.g. width collapsed).
+        assert!(scroll_document_view_is_degenerate(
+            (800.0, 40.0),
+            (0.0, 40.0),
+            (800.0, 600.0),
+        ));
     }
 
     #[test]

@@ -63,13 +63,14 @@
 mod board;
 mod chrome;
 mod screens;
+mod settings;
 mod style;
+
+pub(crate) use settings::CanvasBg;
 
 use camera::MediaStream;
 use runtime_core::primitives::navigator::use_can_go_back;
-use runtime_core::{
-    component, safe_area_insets, signal, ui, viewport_size, Element, Ref, Route, Screen, Signal,
-};
+use runtime_core::{component, signal, ui, Element, Ref, Route, Screen, Signal};
 use stack_navigator::{Navigator, StackBuilder, StackHandle, StackScreenExt};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -259,8 +260,31 @@ pub(crate) const CAM_H: f32 = 176.0;
 /// Corner radius of the camera, in logical points — used for the composited
 /// layer's rounded mask AND the widget frame's border, so they line up.
 pub(crate) const CAM_RADIUS: f32 = 18.0;
-/// Keep dragged content this far from the safe-area edges.
+/// Keep dragged content this far from the stage edges.
 pub(crate) const DRAG_MARGIN: f32 = 8.0;
+
+/// Clamp a camera position (STAGE-local points) so the `CAM_W × CAM_H` widget
+/// stays fully inside a `sw × sh` stage, with a [`DRAG_MARGIN`] inset.
+pub(crate) fn clamp_cam(cx: f32, cy: f32, sw: f32, sh: f32) -> (f32, f32) {
+    let m = DRAG_MARGIN;
+    let max_x = (sw - CAM_W - m).max(m);
+    let max_y = (sh - CAM_H - m).max(m);
+    (cx.clamp(m, max_x), cy.clamp(m, max_y))
+}
+
+/// The camera widget's clamped top-left for the current aspect/viewport — reads
+/// `aspect`/`cam_x`/`cam_y` (+ viewport/insets via `stage_geom`) reactively, so
+/// every read site (widget box, composited layer rect) agrees and stays in
+/// bounds even across an aspect change. Returns `(x, y)` in STAGE-local points.
+pub(crate) fn clamped_cam(
+    aspect: Signal<(u32, u32)>,
+    cam_x: Signal<f32>,
+    cam_y: Signal<f32>,
+) -> (f32, f32) {
+    let (aw, ah) = aspect.get();
+    let (_x, _y, sw, sh) = settings::stage_geom(aw, ah);
+    clamp_cam(cam_x.get(), cam_y.get(), sw, sh)
+}
 
 /// Tool-rail metrics — a button is square; the rail is the button + padding.
 pub(crate) const TOOL_BTN: f32 = 44.0;
@@ -286,11 +310,20 @@ pub(crate) struct BoardState {
     pub color_css: Signal<&'static str>,
     pub cam_on: Signal<bool>,
     pub cam_stream: Signal<Option<MediaStream>>,
+    /// Camera widget top-left, in STAGE-local points (the canvas's own coordinate
+    /// space), so the composited layer rect and the widget box agree and the
+    /// camera lives inside the aspect-locked board.
     pub cam_x: Signal<f32>,
     pub cam_y: Signal<f32>,
     pub recording: Signal<bool>,
     pub rec_path: Signal<Option<String>>,
     pub palette_open: Signal<bool>,
+    /// Board aspect ratio `(width, height)` — drives the centered canvas "stage".
+    pub aspect: Signal<(u32, u32)>,
+    /// Canvas drawing-surface background (`Auto` follows the app theme).
+    pub canvas_bg: Signal<CanvasBg>,
+    /// App theme: `true` = dark. Drives `set_idea_theme` + the `Auto` canvas bg.
+    pub dark: Signal<bool>,
     /// The bound navigator handle — `push(&SETTINGS, ())` from the FAB,
     /// `push(&PREVIEW, ())` when a recording stops.
     pub nav: Ref<StackHandle>,
@@ -308,6 +341,9 @@ impl Default for BoardState {
             recording: Signal::new(false),
             rec_path: Signal::new(None),
             palette_open: Signal::new(false),
+            aspect: Signal::new(settings::DEFAULT_ASPECT),
+            canvas_bg: Signal::new(CanvasBg::Auto),
+            dark: Signal::new(false),
             nav: Ref::new(),
         }
     }
@@ -337,8 +373,26 @@ pub fn app() -> Element {
         recording: signal!(false),
         rec_path: signal!(None),
         palette_open: signal!(false),
+        aspect: signal!(settings::DEFAULT_ASPECT),
+        canvas_bg: signal!(CanvasBg::Auto),
+        dark: signal!(false),
         nav,
     };
+
+    // Light/dark: `install_idea_theme` (above) installed the component sheets;
+    // this Effect swaps the ACTIVE theme whenever `dark` flips. Every token-based
+    // style (idea-ui components + our own token colors) re-resolves, so the whole
+    // app adapts. Root-scoped so it survives navigation.
+    {
+        let dark = state.dark;
+        runtime_core::effect!({
+            if dark.get() {
+                idea_ui::set_idea_theme(idea_ui::dark_theme());
+            } else {
+                idea_ui::set_idea_theme(idea_ui::light_theme());
+            }
+        });
+    }
 
     // `rec_handle` holds the live media-writer `Recording` (consumed on stop).
     // It's `!Send` + non-`Copy`, so it lives outside `BoardState` and is cloned
@@ -388,20 +442,21 @@ pub fn app() -> Element {
         raf: Rc::new(RefCell::new(None)),
     };
 
-    // Place the camera widget bottom-left the first time we learn the viewport
-    // size (it's 0×0 before the first layout). In the root scope so it runs once
-    // regardless of which screen is mounted; guarded so a later drag isn't
-    // reset.
+    // Drop the camera widget bottom-left INSIDE the stage the first time we know
+    // the stage size. STAGE-LOCAL coords (origin = stage top-left) so the widget
+    // and the canvas-composited camera agree. Initial placement only — read-site
+    // clamping (board.rs) keeps the camera in bounds when the aspect changes.
     {
         let placed = Rc::new(Cell::new(false));
         let cam_x = state.cam_x;
         let cam_y = state.cam_y;
+        let aspect = state.aspect;
         runtime_core::effect!({
-            let vp = viewport_size().get();
-            let ins = safe_area_insets().get();
-            if !placed.get() && vp.width > 1.0 && vp.height > 1.0 {
-                cam_x.set(ins.left + 16.0);
-                cam_y.set((vp.height - ins.bottom - CAM_H - 16.0).max(ins.top + DRAG_MARGIN));
+            let (aw, ah) = aspect.get();
+            let (_sx, _sy, sw, sh) = settings::stage_geom(aw, ah);
+            if !placed.get() && sw > 1.0 && sh > 1.0 {
+                cam_x.set(DRAG_MARGIN);
+                cam_y.set((sh - CAM_H - DRAG_MARGIN).max(DRAG_MARGIN));
                 placed.set(true);
             }
         });
@@ -456,10 +511,17 @@ pub fn app() -> Element {
                 // system back affordance here; the in-content chrome still
                 // drives navigation to Settings/Preview explicitly.
                 .back_enabled(false)
+                // Full-screen while the board is active: on Android this
+                // hides the bars AND lifts the gesture-exclusion cap so the
+                // whole canvas's edge swipes become strokes (no back
+                // chevron); on iOS it hides the status bar + home indicator.
+                // The navigator restores chrome for Settings/Preview, which
+                // don't set it, and re-enters on pop-back.
+                .fullscreen(true)
             }
         })
         .screen(SETTINGS, move |_| {
-            Screen::new(ui! { SettingsScreen(nav = nav) }).header_shown(false)
+            Screen::new(ui! { SettingsScreen(state = state) }).header_shown(false)
         })
         .screen(PREVIEW, move |_| {
             Screen::new(ui! {

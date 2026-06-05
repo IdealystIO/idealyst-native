@@ -1930,6 +1930,32 @@ thread_local! {
     static REGISTERED_TYPEFACES: RefCell<HashSet<TypefaceId>> =
         RefCell::new(HashSet::new());
 
+    /// Debug-only: the `family_name` of every typeface registered this
+    /// session (populated alongside [`REGISTERED_TYPEFACES`] in
+    /// [`ensure_typefaces_registered_with`]). Used by
+    /// [`maybe_warn_unregistered_system_font`] to tell whether a bare
+    /// `FontFamily::System(name)` matched a `typeface!` family the
+    /// author then deleted — the string path carries no compile-time
+    /// link, so that deletion is otherwise silent (text falls back to
+    /// the OS generic, usually serif). Names are `&'static str` because
+    /// `Typeface::family_name` is always a string literal.
+    ///
+    /// **Why debug-only.** This is a dev-time DX guardrail with no
+    /// runtime behavior — it must be stripped from release builds
+    /// (CLAUDE.md §7: dev markers live behind `#[cfg(debug_assertions)]`,
+    /// not a runtime predicate). The whole machinery compiles out when
+    /// `debug_assertions` is off.
+    #[cfg(debug_assertions)]
+    static REGISTERED_FAMILY_NAMES: RefCell<HashSet<&'static str>> =
+        RefCell::new(HashSet::new());
+
+    /// Debug-only dedup for [`maybe_warn_unregistered_system_font`]:
+    /// each suspicious `System(name)` warns exactly once per thread, so
+    /// a stylesheet applied to thousands of nodes doesn't spam the log.
+    #[cfg(debug_assertions)]
+    static WARNED_SYSTEM_FONTS: RefCell<HashSet<String>> =
+        RefCell::new(HashSet::new());
+
     /// Debug-only tripwire: `true` once `install_tokens` (or
     /// `update_tokens`) has been called on this thread. Read in
     /// `Tokenized::<T>::resolve()` for `Tokenized::Token` variants;
@@ -2285,10 +2311,146 @@ pub fn ensure_typefaces_registered_with<RA, RT>(
                         );
                     }
                     register_typeface(tf.id, tf.family_name, tf.faces, tf.fallback);
+                    // Debug-only: remember the registered family name so a
+                    // sibling `FontFamily::System("<family_name>")` resolves
+                    // as "known" rather than tripping the deleted-typeface
+                    // warning. No-op in release.
+                    #[cfg(debug_assertions)]
+                    REGISTERED_FAMILY_NAMES
+                        .with(|n| n.borrow_mut().insert(tf.family_name));
                 }
             }
         }
     });
+}
+
+/// Known generic / system family names that a bare
+/// `FontFamily::System(name)` may legitimately carry without any
+/// `typeface!` registration. CSS generics plus the common platform
+/// system-UI aliases. Compared case-insensitively against the bare
+/// (single-token) name.
+///
+/// **Why these specific names.** The CSS generic families
+/// (`sans-serif`, `serif`, `monospace`, `cursive`, `fantasy`,
+/// `system-ui`, `ui-*`, `math`, `emoji`) plus the de-facto system-font
+/// aliases every platform recognizes (`-apple-system`,
+/// `BlinkMacSystemFont`, `Segoe UI`, `Roboto`, `Helvetica`,
+/// `Helvetica Neue`, `Arial`). A `System(name)` matching one of these
+/// is intentional and resolves to a real OS font — never a deleted
+/// `typeface!`.
+#[cfg(debug_assertions)]
+const KNOWN_SYSTEM_FAMILIES: &[&str] = &[
+    "sans-serif",
+    "serif",
+    "monospace",
+    "cursive",
+    "fantasy",
+    "system-ui",
+    "ui-sans-serif",
+    "ui-serif",
+    "ui-monospace",
+    "ui-rounded",
+    "math",
+    "emoji",
+    "fangsong",
+    "-apple-system",
+    "blinkmacsystemfont",
+    "segoe ui",
+    "roboto",
+    "helvetica",
+    "helvetica neue",
+    "arial",
+];
+
+/// Pure decision for the deleted-`typeface!` DX warning.
+///
+/// Returns `true` iff `name` is a *bare* family name that matches
+/// neither a registered typeface family nor a known system/generic
+/// family — i.e. it looks like an author wrote `font_family: "Inter"`
+/// against a `typeface!` they later removed, and the text will now
+/// fall back to the platform default.
+///
+/// Conservative by construction, to avoid false-positive spam:
+///
+/// - **Comma stacks short-circuit to `false`.** `"Inter, sans-serif"`
+///   is an explicit, intentional multi-family fallback — the author
+///   already provided a generic tail, so there's nothing to warn about
+///   even if `Inter` isn't registered. We only flag a *single bare*
+///   token that reads like it was meant to resolve to one registered
+///   face.
+/// - **Generic / system families are never flagged** (see
+///   [`KNOWN_SYSTEM_FAMILIES`]), matched case-insensitively.
+/// - **Registered families are never flagged**, matched exactly
+///   against the `typeface!`-declared `family_name`.
+/// - Empty / whitespace-only names are ignored (nothing actionable).
+///
+/// This is a free function over its inputs (no thread-locals) so it can
+/// be unit-tested deterministically; the thread-local registry +
+/// one-time dedup live in [`maybe_warn_unregistered_system_font`].
+#[cfg(debug_assertions)]
+pub(crate) fn should_warn_for_system_font(
+    name: &str,
+    registered: &HashSet<&'static str>,
+) -> bool {
+    let trimmed = name.trim();
+    // A comma stack is an intentional fallback list — not a bare face.
+    if trimmed.is_empty() || trimmed.contains(',') {
+        return false;
+    }
+    // Registered typeface family (exact match — that's the key the
+    // backend resolves against).
+    if registered.contains(trimmed) {
+        return false;
+    }
+    // Quoted family names (`"Inter"`) are still bare; strip surrounding
+    // quotes before the generic check so e.g. `"sans-serif"` isn't
+    // mis-flagged. (Authors rarely quote, but the macro `From<&str>`
+    // preserves whatever they wrote.)
+    let unquoted = trimmed.trim_matches(|c| c == '"' || c == '\'');
+    if registered.contains(unquoted) {
+        return false;
+    }
+    let lowered = unquoted.to_ascii_lowercase();
+    if KNOWN_SYSTEM_FAMILIES.contains(&lowered.as_str()) {
+        return false;
+    }
+    true
+}
+
+/// Debug-only: emit a one-time, actionable warning when a
+/// `FontFamily::System(name)` resolves to a bare family that is neither
+/// a registered `typeface!` nor a known system font. See CLAUDE.md §7
+/// (dev-only marker) and [`should_warn_for_system_font`] for the
+/// decision and why it's deliberately conservative.
+///
+/// **Why warn at apply time, not at registration.** Typefaces register
+/// lazily — the first time any stylesheet that references one is
+/// applied. A bare `System(name)` matching a typeface that lives in a
+/// *different* stylesheet is only knowable after that other sheet has
+/// also been applied. Checking here (after the node's own sheet
+/// registered) catches the overwhelmingly common case (the typeface and
+/// the string live in the same theme, registered together) while the
+/// one-time dedup keeps a rare cross-sheet ordering miss to a single
+/// spurious line rather than a flood. The check is free in release
+/// (whole function compiles out).
+#[cfg(debug_assertions)]
+pub(crate) fn maybe_warn_unregistered_system_font(name: &str) {
+    let suspicious = REGISTERED_FAMILY_NAMES
+        .with(|reg| should_warn_for_system_font(name, &reg.borrow()));
+    if !suspicious {
+        return;
+    }
+    // De-dupe: warn once per distinct name per thread.
+    let first_time =
+        WARNED_SYSTEM_FONTS.with(|seen| seen.borrow_mut().insert(name.to_string()));
+    if first_time {
+        eprintln!(
+            "[idealyst] font_family {:?} matches no registered typeface and no \
+             known system font; text will fall back to the platform default. \
+             Did you remove a typeface! registration?",
+            name
+        );
+    }
 }
 
 /// Reset the framework's session-wide registration dedup so the NEXT
@@ -2320,6 +2482,15 @@ pub fn reset_for_ssg_render() {
     RESOLUTION_CACHE.with(|c| c.borrow_mut().clear());
     PENDING_UNREGISTER.with(|p| p.borrow_mut().clear());
     PENDING_TOKEN_UPDATES.with(|p| p.borrow_mut().clear());
+    // Debug-only registries follow the same per-render lifecycle as
+    // REGISTERED_TYPEFACES: a fresh backend must re-observe the
+    // typefaces, so the family-name set (and its one-time warning
+    // dedup) reset too — otherwise the second render would suppress a
+    // genuinely-missing-family warning, or carry a stale dedup.
+    #[cfg(debug_assertions)]
+    REGISTERED_FAMILY_NAMES.with(|s| s.borrow_mut().clear());
+    #[cfg(debug_assertions)]
+    WARNED_SYSTEM_FONTS.with(|s| s.borrow_mut().clear());
 }
 
 /// Pointer-keyed peek at the registration table — `true` iff a live
@@ -3513,6 +3684,61 @@ mod tests {
         let from_string: FontFamily = String::from("Helvetica").into();
         assert_eq!(from_str, FontFamily::System("Helvetica".to_string()));
         assert_eq!(from_string, from_str);
+    }
+
+    // The deleted-`typeface!` DX warning's pure decision. Gated on
+    // `debug_assertions` because `should_warn_for_system_font` itself is
+    // debug-only (the whole guardrail compiles out in release).
+    #[cfg(debug_assertions)]
+    #[test]
+    fn should_warn_for_system_font_decision_table() {
+        use super::should_warn_for_system_font;
+        use std::collections::HashSet;
+
+        let registered: HashSet<&'static str> = ["Inter", "Source Code Pro"]
+            .into_iter()
+            .collect();
+
+        // Bare, unregistered, non-generic → looks like a removed
+        // `typeface!` registration. WARN.
+        assert!(should_warn_for_system_font("Roboto Mono", &registered));
+        assert!(should_warn_for_system_font("MyCustomFace", &registered));
+
+        // Registered typeface family → resolves fine, no warning.
+        assert!(!should_warn_for_system_font("Inter", &registered));
+        assert!(!should_warn_for_system_font("Source Code Pro", &registered));
+
+        // Known generic / system families → intentional, no warning
+        // (case-insensitive).
+        assert!(!should_warn_for_system_font("sans-serif", &registered));
+        assert!(!should_warn_for_system_font("serif", &registered));
+        assert!(!should_warn_for_system_font("monospace", &registered));
+        assert!(!should_warn_for_system_font("system-ui", &registered));
+        assert!(!should_warn_for_system_font("-apple-system", &registered));
+        assert!(!should_warn_for_system_font("BlinkMacSystemFont", &registered));
+        assert!(!should_warn_for_system_font("Segoe UI", &registered));
+        assert!(!should_warn_for_system_font("ARIAL", &registered));
+
+        // Comma stack → explicit fallback list, never a bare face.
+        assert!(!should_warn_for_system_font("Inter, sans-serif", &registered));
+        assert!(!should_warn_for_system_font(
+            "NotRegistered, sans-serif",
+            &registered
+        ));
+
+        // Empty / whitespace → nothing actionable.
+        assert!(!should_warn_for_system_font("", &registered));
+        assert!(!should_warn_for_system_font("   ", &registered));
+
+        // Quoted bare generic is still recognized as generic.
+        assert!(!should_warn_for_system_font("\"sans-serif\"", &registered));
+        // Quoted registered family is still recognized as registered.
+        assert!(!should_warn_for_system_font("\"Inter\"", &registered));
+        // Quoted unregistered non-generic still warns.
+        assert!(should_warn_for_system_font("\"Ghost\"", &registered));
+
+        // Surrounding whitespace is trimmed before matching.
+        assert!(!should_warn_for_system_font("  Inter  ", &registered));
     }
 
     #[test]

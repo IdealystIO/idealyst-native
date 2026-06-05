@@ -8,8 +8,10 @@
 //! macOS / terminal / SSR, so without the in-content header the user couldn't get
 //! back there.
 
-use crate::style::{radius, reactive_style, static_style, styled};
-use crate::{REC_FILE, REC_STORE};
+use crate::settings::{aspect_label, CanvasBg, ASPECTS, ASPECT_MAX, ASPECT_MIN, CANVAS_BGS};
+use crate::style::{border_all_color, radius, reactive_style, static_style, styled};
+use crate::{BoardState, REC_FILE, REC_STORE};
+use idea_ui::{typography_kind, SegmentOption, SegmentedControl, Switch, Typography};
 use icons_lucide::X;
 use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::{
@@ -20,6 +22,13 @@ use runtime_core::{
 use std::time::Duration;
 use stack_navigator::StackHandle;
 use std::rc::Rc;
+
+/// Resolve a theme color NOW (light/dark) — call inside a `reactive_style` so it
+/// re-resolves when the active theme swaps. Leverages idea-ui's token system, so
+/// the surface follows light/dark with no per-color plumbing.
+fn tc(getter: impl Fn(&idea_ui::Colors) -> Tokenized<Color> + 'static) -> Color {
+    idea_ui::idea_color(getter)()
+}
 
 // ============================================================================
 // Per-text color (replaces the old `colored_text`)
@@ -103,9 +112,10 @@ pub fn ScreenScaffold(props: ScreenScaffoldProps) -> Element {
             flex_direction: Some(FlexDirection::Column),
             padding_top: Some(Length::Px(12.0 + ins.top).into()),
             padding_bottom: Some(Length::Px(ins.bottom).into()),
-            background: Some(Tokenized::Literal(Color("#f7f8fb".into()))),
-            // Web-only cascade fallback; native sets color per text node (Label).
-            color: Some(Tokenized::Literal(Color("#111827".into()))),
+            // Theme background — follows light/dark.
+            background: Some(Tokenized::Literal(tc(|c| c.background.clone()))),
+            // Web-only cascade fallback; native text sets its own color.
+            color: Some(Tokenized::Literal(tc(|c| c.text.clone()))),
             ..Default::default()
         }
     });
@@ -135,17 +145,19 @@ pub fn ScreenHeader(props: &ScreenHeaderProps) -> Element {
     let title = props.title;
     let nav = props.nav;
 
-    let close_style = static_style(styled(
-        StyleRules {
-            width: Some(Length::Px(40.0).into()),
-            height: Some(Length::Px(40.0).into()),
-            align_items: Some(AlignItems::Center),
-            justify_content: Some(JustifyContent::Center),
-            background: Some(Tokenized::Literal(Color("rgba(17,24,39,0.05)".into()))),
-            ..Default::default()
-        },
-        [radius(20.0)],
-    ));
+    let close_style = reactive_style(|| {
+        styled(
+            StyleRules {
+                width: Some(Length::Px(40.0).into()),
+                height: Some(Length::Px(40.0).into()),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::Center),
+                background: Some(Tokenized::Literal(tc(|c| c.surface_alt.clone()))),
+                ..Default::default()
+            },
+            [radius(20.0)],
+        )
+    });
     let glyph_style = static_style(StyleRules {
         width: Some(Length::Px(22.0).into()),
         height: Some(Length::Px(22.0).into()),
@@ -153,7 +165,9 @@ pub fn ScreenHeader(props: &ScreenHeaderProps) -> Element {
         justify_content: Some(JustifyContent::Center),
         ..Default::default()
     });
-    let glyph = icon(X).color(|| Color::from("#374151")).into_element();
+    let glyph = icon(X)
+        .color(|| tc(|c| c.text_muted.clone()))
+        .into_element();
     let row_style = static_style(StyleRules {
         flex_direction: Some(FlexDirection::Row),
         align_items: Some(AlignItems::Center),
@@ -167,7 +181,7 @@ pub fn ScreenHeader(props: &ScreenHeaderProps) -> Element {
 
     ui! {
         view(style = row_style) {
-            Label(text = title, hex = "#111827", weight = FontWeight::Bold, size = 22.0)
+            idea_ui::Typography(content = title.into(), kind = idea_ui::typography_kind::H2)
             view(style = close_style) {
                 view(style = glyph_style) { glyph }
             }
@@ -189,142 +203,287 @@ pub fn ScreenHeader(props: &ScreenHeaderProps) -> Element {
 
 /// Props for [`SettingsScreen`].
 pub struct SettingsScreenProps {
-    pub nav: Ref<StackHandle>,
+    pub state: BoardState,
 }
 
 impl Default for SettingsScreenProps {
     fn default() -> Self {
-        Self { nav: Ref::new() }
+        Self { state: BoardState::default() }
     }
 }
 
-/// The Settings screen — placeholder rows + a note, in the shared scaffold.
-#[component]
-pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
-    let nav = props.nav;
-
-    let rows_style = static_style(StyleRules {
-        flex_direction: Some(FlexDirection::Column),
-        gap: Some(Length::Px(2.0).into()),
-        padding_left: Some(Length::Px(20.0).into()),
-        padding_right: Some(Length::Px(20.0).into()),
-        ..Default::default()
-    });
-    let note_box_style = static_style(StyleRules {
-        padding_left: Some(Length::Px(20.0).into()),
-        padding_top: Some(Length::Px(8.0).into()),
-        ..Default::default()
-    });
-
-    ui! {
-        ScreenScaffold(title = "Settings", nav = nav) {
-            view(style = rows_style) {
-                SettingRow(label = "Smooth strokes", on = true)
-                SettingRow(label = "Show grid", on = false)
-                SettingRow(label = "Pressure sensitivity", on = false)
-                SettingRow(label = "High-quality recording", on = true)
-            }
-            view(style = note_box_style) {
-                Label(
-                    text = "Placeholder — these toggle, but aren't wired up yet.",
-                    hex = "#9ca3af",
-                    weight = FontWeight::Normal,
-                    size = 13.0,
-                )
-            }
-        }
-    }
-}
-
-/// Props for [`SettingRow`].
-pub struct SettingRowProps {
-    pub label: &'static str,
-    pub on: bool,
-}
-
-impl Default for SettingRowProps {
-    fn default() -> Self {
-        Self { label: "", on: false }
-    }
-}
-
-/// One settings row: a label + a tappable pill switch. Tapping anywhere in the
-/// row flips the switch. The switch holds its own local toggle state (these are
-/// demo placeholders — they flip visually but aren't wired to app behavior yet).
-#[component]
-pub fn SettingRow(props: &SettingRowProps) -> Element {
-    let label = props.label;
-    // Local, persistent toggle state seeded from the `on` prop. A component body
-    // runs ONCE at mount (only its reactive scopes re-run), so this `Signal` is
-    // created once and survives re-renders.
-    let toggled = Signal::new(props.on);
-
-    // Animated knob slide: the knob is anchored left and its `TranslateX`
-    // tweens 0 → TRAVEL. A transform animates; flipping a layout property
-    // (justify) would just JUMP — the framework's animation primitive
-    // (`AnimatedValue` + `AnimProp::TranslateX`) is what produces the slide.
-    // Same pattern as idea-ui's `Switch`.
-    const TRAVEL: f32 = 16.0;
-    let knob_ref: Ref<ViewHandle> = Ref::new();
-    let av: AnimatedValue<f32> = AnimatedValue::new(if props.on { TRAVEL } else { 0.0 });
-    av.bind(knob_ref, AnimProp::TranslateX);
-    runtime_core::effect!({
-        let target = if toggled.get() { TRAVEL } else { 0.0 };
-        av.animate(TweenTo::new(target, Duration::from_millis(160)).ease_out());
-    });
-
-    let knob_style = static_style(styled(
-        StyleRules {
-            width: Some(Length::Px(18.0).into()),
-            height: Some(Length::Px(18.0).into()),
-            background: Some(Tokenized::Literal(Color("#ffffff".into()))),
-            ..Default::default()
-        },
-        [radius(9.0)],
-    ));
-    // Track recolors reactively (instant); the knob slide is animated above.
-    let track_style = reactive_style(move || {
+/// A surface "card" for a settings section — theme `surface` background, rounded,
+/// padded, column-stacked. Reactive so it follows light/dark.
+fn card_style() -> impl Fn() -> runtime_core::StyleApplication {
+    reactive_style(|| {
         styled(
             StyleRules {
-                width: Some(Length::Px(40.0).into()),
-                height: Some(Length::Px(24.0).into()),
-                padding_left: Some(Length::Px(3.0).into()),
-                padding_right: Some(Length::Px(3.0).into()),
-                flex_direction: Some(FlexDirection::Row),
-                align_items: Some(AlignItems::Center),
-                justify_content: Some(JustifyContent::FlexStart),
-                background: Some(Tokenized::Literal(Color(
-                    if toggled.get() { "#2563eb" } else { "#d1d5db" }.into(),
-                ))),
+                background: Some(Tokenized::Literal(tc(|c| c.surface.clone()))),
+                flex_direction: Some(FlexDirection::Column),
+                gap: Some(Length::Px(12.0).into()),
+                padding_top: Some(Length::Px(14.0).into()),
+                padding_bottom: Some(Length::Px(14.0).into()),
+                padding_left: Some(Length::Px(14.0).into()),
+                padding_right: Some(Length::Px(14.0).into()),
                 ..Default::default()
             },
-            [radius(12.0)],
+            [radius(14.0)],
         )
+    })
+}
+
+/// The Settings screen: real, wired controls — aspect ratio (presets + custom),
+/// canvas color (with `Auto`), and a light/dark switch. All idea-ui
+/// token-driven, so the screen itself flips with the theme.
+#[component]
+pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
+    let state = props.state;
+    let nav = state.nav;
+    let aspect = state.aspect;
+    let canvas_bg = state.canvas_bg;
+    let dark = state.dark;
+
+    // Aspect preset picker. `aspect_sel` mirrors the chosen segment (a preset
+    // label or "Custom"); choosing a preset also commits the real aspect.
+    let (aw0, ah0) = aspect.get();
+    let aspect_sel = Signal::new(aspect_label(aw0, ah0).to_string());
+    let aspect_options: Vec<SegmentOption> = ASPECTS
+        .iter()
+        .map(|(l, _, _)| SegmentOption::new(*l, *l))
+        .chain(std::iter::once(SegmentOption::new("Custom", "Custom")))
+        .collect();
+    let aspect_on_change: Rc<dyn Fn(String)> = Rc::new(move |id: String| {
+        aspect_sel.set(id.clone());
+        if let Some((_, aw, ah)) = ASPECTS.iter().find(|(l, _, _)| *l == id) {
+            aspect.set((*aw, *ah));
+        }
+        // "Custom" keeps the current aspect; the steppers below adjust it.
+    });
+
+    let dark_on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| dark.set(v));
+
+    let list_style = static_style(StyleRules {
+        flex_direction: Some(FlexDirection::Column),
+        gap: Some(Length::Px(14.0).into()),
+        padding_left: Some(Length::Px(16.0).into()),
+        padding_right: Some(Length::Px(16.0).into()),
+        padding_top: Some(Length::Px(6.0).into()),
+        ..Default::default()
     });
     let row_style = static_style(StyleRules {
         flex_direction: Some(FlexDirection::Row),
         align_items: Some(AlignItems::Center),
         justify_content: Some(JustifyContent::SpaceBetween),
-        padding_top: Some(Length::Px(14.0).into()),
-        padding_bottom: Some(Length::Px(14.0).into()),
         ..Default::default()
     });
 
     ui! {
-        view(style = row_style) {
-            Label(text = label, hex = "#111827", weight = FontWeight::Normal, size = 15.0)
-            view(style = track_style) {
-                view(style = knob_style) {}
-                .bind(knob_ref)
+        ScreenScaffold(title = "Settings", nav = nav) {
+            view(style = list_style) {
+                view(style = card_style()) {
+                    Typography(content = "Aspect ratio".into(), kind = typography_kind::Caption, muted = true)
+                    SegmentedControl(value = aspect_sel, on_change = aspect_on_change, options = aspect_options)
+                    if aspect_sel.get() == "Custom" {
+                        AspectSteppers(aspect = aspect)
+                    }
+                }
+                view(style = card_style()) {
+                    Typography(content = "Canvas color".into(), kind = typography_kind::Caption, muted = true)
+                    SwatchRow(canvas_bg = canvas_bg)
+                }
+                view(style = card_style()) {
+                    Typography(content = "Appearance".into(), kind = typography_kind::Caption, muted = true)
+                    view(style = row_style) {
+                        Typography(content = "Dark mode".into(), kind = typography_kind::Body)
+                        Switch(value = dark, on_change = dark_on_change)
+                    }
+                }
             }
+        }
+    }
+}
+
+/// Props for [`SwatchRow`].
+pub struct SwatchRowProps {
+    pub canvas_bg: Signal<CanvasBg>,
+}
+
+impl Default for SwatchRowProps {
+    fn default() -> Self {
+        Self { canvas_bg: Signal::new(CanvasBg::Auto) }
+    }
+}
+
+/// A row of tappable color swatches for the canvas background. The selected one
+/// gets a thick `text`-token ring; the rest a thin `border` ring. Tapping commits
+/// the choice. `Auto` shows a neutral gray (its real color depends on the theme).
+#[component]
+pub fn SwatchRow(props: &SwatchRowProps) -> Element {
+    let canvas_bg = props.canvas_bg;
+    let mut swatches: Vec<Element> = Vec::with_capacity(CANVAS_BGS.len());
+    for (_label, bg) in CANVAS_BGS {
+        let bg = *bg;
+        let style = reactive_style(move || {
+            let selected = canvas_bg.get() == bg;
+            let ring = if selected {
+                tc(|c| c.text.clone())
+            } else {
+                tc(|c| c.border.clone())
+            };
+            styled(
+                StyleRules {
+                    width: Some(Length::Px(38.0).into()),
+                    height: Some(Length::Px(38.0).into()),
+                    background: Some(Tokenized::Literal(Color(bg.swatch_css().into()))),
+                    ..Default::default()
+                },
+                [radius(19.0), border_all_color(if selected { 3.0 } else { 1.0 }, ring)],
+            )
+        });
+        let sw = ui! {
+            view(style = style) {}
+            .on_touch(move |ev| {
+                if ev.phase == TouchPhase::Ended {
+                    canvas_bg.set(bg);
+                }
+                TouchResponse::CONSUMED
+            })
+        };
+        swatches.push(sw);
+    }
+    let row = static_style(StyleRules {
+        flex_direction: Some(FlexDirection::Row),
+        align_items: Some(AlignItems::Center),
+        gap: Some(Length::Px(12.0).into()),
+        ..Default::default()
+    });
+    ui! { view(style = row) { swatches } }
+}
+
+/// Props for [`AspectSteppers`].
+pub struct AspectStepperProps {
+    pub aspect: Signal<(u32, u32)>,
+}
+
+impl Default for AspectStepperProps {
+    fn default() -> Self {
+        Self { aspect: Signal::new(crate::settings::DEFAULT_ASPECT) }
+    }
+}
+
+/// Width/height steppers for a CUSTOM aspect ratio, bounded to
+/// `[ASPECT_MIN, ASPECT_MAX]`. Two rows, each `label  −  value  +`.
+#[component]
+pub fn AspectSteppers(props: &AspectStepperProps) -> Element {
+    let aspect = props.aspect;
+    ui! {
+        view(style = aspect_steppers_col()) {
+            StepperRow(label = "Width", aspect = aspect, is_width = true)
+            StepperRow(label = "Height", aspect = aspect, is_width = false)
+        }
+    }
+}
+
+fn aspect_steppers_col() -> Rc<runtime_core::StyleSheet> {
+    static_style(StyleRules {
+        flex_direction: Some(FlexDirection::Column),
+        gap: Some(Length::Px(8.0).into()),
+        padding_top: Some(Length::Px(4.0).into()),
+        ..Default::default()
+    })
+}
+
+/// Props for [`StepperRow`].
+pub struct StepperRowProps {
+    pub label: &'static str,
+    pub aspect: Signal<(u32, u32)>,
+    pub is_width: bool,
+}
+
+impl Default for StepperRowProps {
+    fn default() -> Self {
+        Self { label: "", aspect: Signal::new(crate::settings::DEFAULT_ASPECT), is_width: true }
+    }
+}
+
+/// One stepper row: `label  [−] value [+]`, clamped to the aspect bounds.
+#[component]
+pub fn StepperRow(props: &StepperRowProps) -> Element {
+    let label = props.label;
+    let aspect = props.aspect;
+    let is_width = props.is_width;
+
+    // `aspect` (Signal) + `is_width` (bool) are Copy, so each closure captures
+    // them independently — no shared non-Copy state to move.
+    let dec = move || {
+        let (w, h) = aspect.get();
+        let cur = if is_width { w } else { h };
+        let v = cur.saturating_sub(1).max(ASPECT_MIN);
+        aspect.set(if is_width { (v, h) } else { (w, v) });
+    };
+    let inc = move || {
+        let (w, h) = aspect.get();
+        let cur = if is_width { w } else { h };
+        let v = (cur + 1).min(ASPECT_MAX);
+        aspect.set(if is_width { (v, h) } else { (w, v) });
+    };
+
+    let row_style = static_style(StyleRules {
+        flex_direction: Some(FlexDirection::Row),
+        align_items: Some(AlignItems::Center),
+        justify_content: Some(JustifyContent::SpaceBetween),
+        ..Default::default()
+    });
+    let controls_style = static_style(StyleRules {
+        flex_direction: Some(FlexDirection::Row),
+        align_items: Some(AlignItems::Center),
+        gap: Some(Length::Px(14.0).into()),
+        ..Default::default()
+    });
+    let value_text = move || {
+        let (w, h) = aspect.get();
+        (if is_width { w } else { h }).to_string()
+    };
+
+    ui! {
+        view(style = row_style) {
+            Typography(content = label.into(), kind = typography_kind::Body)
+            view(style = controls_style) {
+                stepper_btn("\u{2212}", dec)
+                Typography(content = value_text.into(), kind = typography_kind::Body)
+                stepper_btn("+", inc)
+            }
+        }
+    }
+}
+
+/// A round `−`/`+` stepper button: `surface_alt` fill, `text` glyph.
+fn stepper_btn(glyph: &'static str, on_press: impl Fn() + 'static) -> Element {
+    let style = reactive_style(|| {
+        styled(
+            StyleRules {
+                width: Some(Length::Px(32.0).into()),
+                height: Some(Length::Px(32.0).into()),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::Center),
+                background: Some(Tokenized::Literal(tc(|c| c.surface_alt.clone()))),
+                ..Default::default()
+            },
+            [radius(16.0)],
+        )
+    });
+    ui! {
+        view(style = style) {
+            Typography(content = glyph.into(), kind = typography_kind::Body)
         }
         .on_touch(move |ev| {
             if ev.phase == TouchPhase::Ended {
-                toggled.set(!toggled.get());
+                on_press();
             }
             TouchResponse::CONSUMED
         })
     }
+    .into_element()
 }
 
 // ============================================================================

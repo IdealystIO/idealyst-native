@@ -721,8 +721,25 @@ pub fn apply_text_style(
 ) {
     // Text color: same precedence as background (explicit > theme
     // transition default > snap).
-    if let Some(color) = &style.color {
-        let color_val = color.resolve();
+    //
+    // For display text (labels, button titles — `is_label`), an ABSENT
+    // color must NOT fall back to UIKit's default `labelColor`: that
+    // color tracks the OS appearance and is *white* in dark mode, so an
+    // app installing a light theme would show invisible white text over
+    // a light surface on a dark-mode device (the ranking-option / mood-
+    // chip bug). Instead we resolve the installed theme's `color-text`
+    // token through the SAME `Tokenized<Color>::resolve()` path an
+    // authored `color:` uses, so the value matches web + macOS exactly
+    // (CLAUDE.md §7). Explicit colors still win — see
+    // `style_diff::effective_text_color`. Editable widgets (TextField /
+    // TextView, `is_label = false`) keep their native default until the
+    // author sets a color.
+    let resolved_color = if is_label {
+        Some(crate::style_diff::effective_text_color(style.color.as_ref()).resolve())
+    } else {
+        style.color.as_ref().map(|color| color.resolve())
+    };
+    if let Some(color_val) = resolved_color {
         let c = color_to_uicolor(&color_val);
         match effective_transition(style.color_transition.as_ref()) {
             Some(trans) => {

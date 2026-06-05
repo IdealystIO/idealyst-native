@@ -177,7 +177,27 @@ pub(crate) fn apply_rules(
     let is_textview = is_text_view;
 
     if is_textview {
-        if let Some(c) = rules.color.as_ref().map(|t| t.resolve()) {
+        // For display text (raw `text()`, button titles) an ABSENT color
+        // must NOT fall back to Android's default TextView color: that
+        // color tracks the OS appearance (light/white in dark mode) and
+        // would render invisible over a light surface even when the app
+        // installed a light theme (the ranking-option / mood-chip bug).
+        // Resolve the theme's `color-text` token through the SAME
+        // `Tokenized<Color>::resolve()` path an authored `color:` uses so
+        // the value matches web + iOS + macOS (CLAUDE.md §7). Explicit
+        // colors still win — see `style_diff::effective_text_color`.
+        // Editable widgets (`EditText`) keep their native default until
+        // the author sets a color.
+        let is_edit = super::is_edit_text(env, &view);
+        let resolved_color = if is_edit {
+            rules.color.as_ref().map(|t| t.resolve())
+        } else {
+            Some(
+                backend_android_core::style_diff::effective_text_color(rules.color.as_ref())
+                    .resolve(),
+            )
+        };
+        if let Some(c) = resolved_color {
             if let Some(packed) = parse_color(&c.0) {
                 let prev = state.last_text_color;
                 let changed = prev != Some(packed);

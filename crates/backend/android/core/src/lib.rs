@@ -12,6 +12,11 @@
 //! target the crate compiles as an empty rlib so workspace-wide
 //! `cargo check` keeps working.
 
+// Pure style-decision helpers (effective text color). Cross-target so
+// the decision logic is host-testable; the JNI `style` path in
+// `backend-android-mobile` calls into it.
+pub mod style_diff;
+
 #[cfg(target_os = "android")]
 pub mod helpers;
 

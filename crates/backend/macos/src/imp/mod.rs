@@ -940,6 +940,42 @@ pub(crate) fn style_color_rgba(color: &Color) -> [f32; 4] {
     [r as f32, g as f32, b as f32, a as f32]
 }
 
+/// Well-known theme token for body text color. The framework theme crate
+/// (`idea-theme`) installs `color-text` in every variant's token table
+/// (`#1a1a1f` light / `#e8eaf0` dark), and idea-ui's `Typography` resolves the
+/// same token for its `color`. Using this name here means an UNSTYLED `text()`
+/// resolves to the *theme's* text color through the identical
+/// `Tokenized<Color>::resolve()` path a styled token goes through — uniform with
+/// web/iOS/Android, NOT the OS system label color.
+pub(crate) const THEME_TEXT_TOKEN: &str = "color-text";
+
+/// Fallback used when the `color-text` token isn't installed yet (theme not
+/// installed, or an external placeholder rendered before mount). It is the
+/// framework light theme's text color — a near-black that's legible on the
+/// default light surface. CRUCIAL that this is a real dark color and NOT a
+/// system-appearance color: the whole point of defaulting raw `text()` to the
+/// theme is that a light-theme app must not render white text just because the
+/// user's macOS is in dark mode.
+const THEME_TEXT_FALLBACK: &str = "#1a1a1f";
+
+/// The installed theme's body-text `Color`, resolved through the SAME token
+/// machinery a styled `color:` token resolves through (`Tokenized<Color>::
+/// resolve()` against the `color-text` token). Returns the framework light
+/// theme's text color when no theme is installed yet.
+///
+/// Used by `create_text` to give a raw `text()` node a default color so it
+/// doesn't inherit `NSColor.labelColor` (the OS system label color — WHITE in
+/// dark mode), which would make a light-theme app's text invisible on a
+/// dark-appearance Mac. An EXPLICIT `style.color` set later in `apply_style`
+/// still wins (that path only writes when `style.color.is_some()`).
+pub(crate) fn theme_text_color() -> Color {
+    runtime_core::Tokenized::Token {
+        name: THEME_TEXT_TOKEN,
+        fallback: Color(THEME_TEXT_FALLBACK.to_string()),
+    }
+    .resolve()
+}
+
 /// Apply the framework's `StyleRules` to an NSView's CALayer-backed
 /// presentation. Minimum viable set: background color, opacity,
 /// corner radius. More properties (gradients, shadows, borders) will
@@ -1144,18 +1180,59 @@ impl MacosBackend {
             );
             // The documentView fills at least the clip view so short content
             // still paints edge-to-edge; it grows past that to enable scroll.
+            // The clamp itself lives in `layout_policy` so it's host-testable —
+            // it's the piece that makes a TOP-LEVEL scroll view paint (a
+            // window-filling scroll view with short content has a bbox smaller
+            // than the viewport; without the clip clamp the documentView would
+            // be content-tall and the rest of the window a blank gap).
             let clip: CGRect = unsafe { msg_send![&*scroll_view, bounds] };
-            let content_w = max_x.max(clip.size.width as f32);
-            let content_h = max_y.max(clip.size.height as f32);
+            let clip_size = (clip.size.width as f32, clip.size.height as f32);
+            let (content_w, content_h) =
+                crate::layout_policy::scroll_document_view_size((max_x, max_y), clip_size);
             let doc_ptr: *mut NSView = unsafe { msg_send![&*scroll_view, documentView] };
             if doc_ptr.is_null() {
                 continue;
+            }
+            // Guard: a documentView that lands 0×0 while the scroll view has
+            // real, laid-out children (and a real clip) IS the "top-level scroll
+            // page renders blank" regression. Warn loudly at the exact pass that
+            // caused it so it never again presents as an inexplicably empty
+            // window. `scroll_document_view_size` only yields a degenerate size
+            // when the clip is also degenerate (pre-first-paint), which the
+            // guard excludes — so this fires only on a genuine regression.
+            if crate::layout_policy::scroll_document_view_is_degenerate(
+                (max_x, max_y),
+                (content_w, content_h),
+                clip_size,
+            ) {
+                backend_apple_core::log::apple_log(
+                    "[macos] WARNING: scroll view documentView sized 0×0 with \
+                     non-empty children — content will render BLANK. This is the \
+                     top-level-scroll-blank regression; check scroll_content_bbox \
+                     and the apply-frames order in compute_and_apply_layout.",
+                );
             }
             let rect = CGRect {
                 origin: objc2_foundation::CGPoint { x: 0.0, y: 0.0 },
                 size: CGSize { width: content_w as f64, height: content_h as f64 },
             };
             let _: () = unsafe { msg_send![doc_ptr, setFrame: rect] };
+            // Commit the programmatic documentView resize to the scroll
+            // machinery. AppKit only recomputes the clip view's relationship to
+            // the documentView (scroller knobs, contentView bounds, the
+            // documentView's visible placement) when the scroll view is told its
+            // content changed — `setFrame:` on the documentView alone doesn't
+            // trigger that. Without this, a documentView resized AFTER the scroll
+            // view's own `tile` (which is exactly our order: apply-frames sets the
+            // scroll view frame, then we resize the documentView) can keep stale
+            // clip geometry until the first user scroll nudges it. `clipView`
+            // (contentView) is the argument AppKit's own scrollers pass.
+            let clip_view_ptr: *mut NSObject =
+                unsafe { msg_send![&*scroll_view, contentView] };
+            if !clip_view_ptr.is_null() {
+                let _: () =
+                    unsafe { msg_send![&*scroll_view, reflectScrolledClipView: clip_view_ptr] };
+            }
         }
     }
 
@@ -1373,6 +1450,43 @@ impl Backend for MacosBackend {
 
     fn platform(&self) -> runtime_core::Platform {
         runtime_core::Platform::MacOs
+    }
+
+    /// Theme the host surface behind the rendered tree — the AppKit window's
+    /// content area. On web the page `<body>` shows through a background-less
+    /// root; an AppKit window instead clears to the system window background
+    /// (dark in dark mode), so a root view with no `background` leaves the
+    /// window dark. The theme SDK routes the theme's `color-background` token
+    /// here (see `idea-theme`'s `apply_host_surface_from_tokens`); we paint the
+    /// host root's CALayer with it so a bg-less root defaults to the theme
+    /// background, matching web. Native backends apply `color.value()` directly
+    /// (no `var(--…)` indirection), and the SDK re-calls this on theme swap so
+    /// the window re-resolves. No-op before the host root is installed — the
+    /// next call (every swap re-invokes) repaints once it exists.
+    fn set_app_background(&mut self, color: &runtime_core::Tokenized<runtime_core::Color>) {
+        let Some(host) = self.host_root.as_ref() else {
+            return;
+        };
+        // `.value()` is the resolved literal/fallback — the form native backends
+        // apply directly (the same `Tokenized` value a styled `background` token
+        // resolves to). Paint it onto the host root's layer, forcing CALayer
+        // backing first (NSView is layer-optional on AppKit — see the
+        // `setWantsLayer` requirement in `apply_style_to_view`).
+        let ns_color = color_to_nscolor(color.value());
+        unsafe {
+            let _: () = msg_send![&**host, setWantsLayer: true];
+            let layer_ptr: *mut NSObject = msg_send![&**host, layer];
+            if layer_ptr.is_null() {
+                return;
+            }
+            // `CGColor` into the `CGColorRef` newtype — same shape as
+            // `transitions::apply_color`'s `ColorProp::Background` so the debug
+            // msg_send encoding check sees `^{CGColor=}`, not `^v`.
+            let cg: CGColorRef = msg_send![&*ns_color, CGColor];
+            if !cg.0.is_null() {
+                let _: () = msg_send![layer_ptr, setBackgroundColor: cg];
+            }
+        }
     }
 
     fn supports_screenshot(&self) -> bool {
@@ -1597,6 +1711,17 @@ impl Backend for MacosBackend {
         let cell: Retained<NSObject> = unsafe { msg_send_id![&label, cell] };
         let _: () = unsafe { msg_send![&cell, setWraps: true] };
         let _: () = unsafe { msg_send![&cell, setUsesSingleLineMode: false] };
+
+        // Default the text color to the INSTALLED THEME's `color-text`, not
+        // AppKit's `NSColor.labelColor`. `+labelWithString:` leaves the label on
+        // the system label color, which tracks the OS appearance — WHITE in dark
+        // mode — so a light-theme app would render invisible white text on a
+        // dark-mode Mac. Resolving the `color-text` token here (the same path a
+        // styled `color:` token resolves through) makes a raw `text()` match
+        // web/iOS/Android. An explicit `style.color` still wins: `apply_style`'s
+        // text path only writes a color when `style.color.is_some()`.
+        let theme_color = color_to_nscolor(&theme_text_color());
+        let _: () = unsafe { msg_send![&label, setTextColor: &*theme_color] };
 
         // Install a measure_fn so Taffy queries `cellSizeForBounds:`
         // at compute time and gives the label the right wrap height.

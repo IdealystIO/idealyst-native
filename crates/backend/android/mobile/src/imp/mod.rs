@@ -456,6 +456,12 @@ thread_local! {
     static TEXTVIEW_CLASS: std::cell::RefCell<Option<GlobalRef>> =
         std::cell::RefCell::new(None);
 
+    /// Cached `android.widget.EditText` class. Used by `is_edit_text` to
+    /// distinguish editable inputs (which keep their native default text
+    /// color) from display text views (which default to the theme color).
+    static EDITTEXT_CLASS: std::cell::RefCell<Option<GlobalRef>> =
+        std::cell::RefCell::new(None);
+
     /// Cached `android.view.View` class. Used as the element type when
     /// building the `View[]` handed to the batch frame applier.
     static VIEW_CLASS: std::cell::RefCell<Option<GlobalRef>> =
@@ -599,6 +605,32 @@ pub(crate) fn is_text_view(env: &mut JNIEnv, view: &JObject) -> bool {
         let mut borrow = slot.borrow_mut();
         if borrow.is_none() {
             if let Ok(class) = env.find_class("android/widget/TextView") {
+                if let Ok(g) = env.new_global_ref(&class) {
+                    *borrow = Some(g);
+                }
+            }
+        }
+        let Some(g) = borrow.as_ref() else {
+            return false;
+        };
+        let class_obj = g.as_obj();
+        let class: &jni::objects::JClass = unsafe {
+            std::mem::transmute::<&JObject, &jni::objects::JClass>(class_obj)
+        };
+        env.is_instance_of(view, class).unwrap_or(false)
+    })
+}
+
+/// `true` when `view` is an `EditText` (or subclass). Used by
+/// `apply_rules` to keep editable inputs on their native default text
+/// color — only non-editable display text (`text()`, button titles) gets
+/// the theme-color default for an unstyled `color`. `EditText` extends
+/// `TextView`, so `is_text_view` alone can't tell them apart.
+pub(crate) fn is_edit_text(env: &mut JNIEnv, view: &JObject) -> bool {
+    EDITTEXT_CLASS.with(|slot| {
+        let mut borrow = slot.borrow_mut();
+        if borrow.is_none() {
+            if let Ok(class) = env.find_class("android/widget/EditText") {
                 if let Ok(g) = env.new_global_ref(&class) {
                     *borrow = Some(g);
                 }

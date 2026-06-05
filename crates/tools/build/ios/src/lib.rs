@@ -176,6 +176,25 @@ pub struct WebMetadata {
     /// preload nothing (the default — keeps existing projects on
     /// today's behavior).
     pub preload_fonts: Vec<String>,
+
+    /// Explicit allowlist of project-root entries (files or folders)
+    /// that should be staged into the served web bundle. Declared as:
+    /// ```toml
+    /// [package.metadata.idealyst.app.web]
+    /// assets = ["assets", "public", "fonts", "robots.txt"]
+    /// ```
+    /// When NON-EMPTY this is the *only* set that ships (plus the
+    /// always-needed `index.html` and the build-emitted `pkg/` + icon
+    /// files) — an explicit-is-safe model that guarantees internal docs
+    /// (`FEEDBACK.md`, `design-files/`, `dev.toml`, …) can never leak
+    /// into production no matter what lands in the project root.
+    ///
+    /// When EMPTY (the default) staging falls back to a tightened
+    /// denylist (see `is_excluded_from_bundle`) that still auto-ships
+    /// real web assets but excludes source, docs, configs, and VCS
+    /// metadata. Leave empty to keep the auto-discover behavior; set it
+    /// to lock the bundle down to a known surface.
+    pub assets: Vec<String>,
 }
 
 impl AppMetadata {
@@ -398,6 +417,8 @@ struct RawAppMetadata {
 struct RawWebMetadata {
     #[serde(default)]
     preload_fonts: Option<Vec<String>>,
+    #[serde(default)]
+    assets: Option<Vec<String>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -486,11 +507,10 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         None => Vec::new(),
     };
 
+    let raw_web = app_raw.web.unwrap_or_default();
     let web = WebMetadata {
-        preload_fonts: app_raw
-            .web
-            .and_then(|w| w.preload_fonts)
-            .unwrap_or_default(),
+        preload_fonts: raw_web.preload_fonts.unwrap_or_default(),
+        assets: raw_web.assets.unwrap_or_default(),
     };
 
     let app = AppMetadata {

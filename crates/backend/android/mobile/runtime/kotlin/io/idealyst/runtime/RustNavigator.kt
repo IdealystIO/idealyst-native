@@ -130,6 +130,42 @@ class RustNavigator(
                 Log.i("idealyst", "RustNavigator container detached from window")
             }
         })
+        // The SYSTEM back gesture/button pops the FragmentManager directly,
+        // bypassing our [pop] (which only the programmatic dispatch path
+        // calls). Without this, `backLockStack`/`fullscreenStack` would go
+        // stale on a system-back pop and the revealed screen's back-lock /
+        // full-screen state wouldn't re-apply. Reconcile on every back-stack
+        // change; it only trims (pops are the lossy case) and is a no-op
+        // when our own push/pop already kept the stacks in sync.
+        fragmentManager?.addOnBackStackChangedListener { reconcileToBackStack() }
+    }
+
+    /** Trim the parallel option stacks down to the FragmentManager's
+     *  actual depth (root is not on the back stack, hence `+ 1`) and
+     *  re-apply the revealed top screen's back-lock + full-screen. Only
+     *  ever shrinks — push/pop/replace/reset keep the stacks correct for
+     *  programmatic navigation, so this no-ops for those and only does
+     *  work after a system-back pop. */
+    private fun reconcileToBackStack() {
+        val fm = fragmentManager ?: return
+        // Count OUR still-live fragments by tag, NOT fm.backStackEntryCount —
+        // that count is global to the activity's FragmentManager and would be
+        // wrong if more than one navigator shares it. A system-back pop removes
+        // the top fragment, so its tag's `findFragmentByTag` goes null; trim our
+        // parallel stacks down to match (stacks only pop the top, so trimming
+        // from the end is correct).
+        val live = tagStack.count { fm.findFragmentByTag(it) != null }
+        var changed = false
+        while (tagStack.size > live && tagStack.isNotEmpty()) {
+            tagStack.removeAt(tagStack.size - 1)
+            if (backLockStack.isNotEmpty()) backLockStack.removeAt(backLockStack.size - 1)
+            if (fullscreenStack.isNotEmpty()) fullscreenStack.removeAt(fullscreenStack.size - 1)
+            changed = true
+        }
+        if (changed) {
+            syncBackLock()
+            syncFullscreen()
+        }
     }
 
     /** Run [op] now if the container is attached, queue it otherwise.
@@ -384,6 +420,12 @@ class RustNavigator(
      */
     fun dispose() {
         backLockCallback.remove()
+        // Restore system chrome if this navigator left the app full-screen,
+        // so a teardown-while-activity-lives doesn't strand the bars hidden.
+        if (lastFullscreen) {
+            activity?.let { RustSystemUi.setFullscreen(it, false) }
+            lastFullscreen = false
+        }
     }
 
     /**

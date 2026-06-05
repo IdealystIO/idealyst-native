@@ -172,8 +172,13 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
 
     let (pkg_dir, bundle_dir) = if let Some(out) = opts.bundle_out_dir.as_ref() {
         let default_index = default_index_html(&manifest.app.name, &manifest.lib_name);
-        let staged = stage_bundle(&project_dir, out, Some(&default_index))
-            .with_context(|| format!("stage static bundle at {}", out.display()))?;
+        let staged = stage_bundle(
+            &project_dir,
+            out,
+            Some(&default_index),
+            &manifest.app.web.assets,
+        )
+        .with_context(|| format!("stage static bundle at {}", out.display()))?;
         let staged_pkg = staged.join("pkg");
         sync_pkg_dir(&wrapper_pkg, &staged_pkg).with_context(|| {
             format!("sync {} → {}", wrapper_pkg.display(), staged_pkg.display())
@@ -214,14 +219,30 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     })
 }
 
-/// Stage a deployable static-site bundle at `out_dir`. Copies
-/// `index.html` and every top-level entry in the project that isn't
-/// Rust source, build metadata, a dotfile, or `pkg/` itself. `pkg/` is
+/// Stage a deployable static-site bundle at `out_dir`. `pkg/` is
 /// populated separately by the caller, straight from the wasm-pack
 /// output dir — that way the project root never has to carry a `pkg/`
 /// for the bundle's sake. `out_dir` is fully cleared first so stale
 /// files from a prior bundle (renamed wasm, removed assets) never
 /// linger.
+///
+/// # What ships
+///
+/// Staging is **safe by default** — internal docs, configs, and source
+/// must never end up served at the public site root:
+///
+/// - **`assets` non-empty (allowlist, explicit-is-safe)**: ONLY the
+///   declared top-level entries are copied, plus `index.html`. `pkg/`
+///   and the icon set are emitted by the build later, so they don't
+///   need to be listed. Anything not named is skipped — a leak is
+///   impossible regardless of what sits in the project root.
+/// - **`assets` empty (tightened denylist fallback)**: top-level entries
+///   auto-ship EXCEPT source trees, build outputs, VCS/IDE metadata,
+///   and — critically — docs (`*.md`, `README*`, `LICENSE*`,
+///   `FEEDBACK*`), configs (`*.toml`, `*.lock`, `*.log`), and the
+///   `design-files/` folder. Real web assets (`assets/`, `public/`,
+///   `fonts/`, `robots.txt`, images, css) still ship. See
+///   [`is_excluded_from_bundle`].
 ///
 /// When the project supplies no `index.html`, `fallback_index` decides
 /// what happens: `Some(html)` writes that HTML into the *staged* bundle
@@ -236,6 +257,7 @@ pub fn stage_bundle(
     project_dir: &Path,
     out_dir: &Path,
     fallback_index: Option<&str>,
+    assets: &[String],
 ) -> Result<PathBuf> {
     let index = project_dir.join("index.html");
     let synth_index = if index.is_file() {
@@ -257,21 +279,63 @@ pub fn stage_bundle(
     fs::create_dir_all(out_dir)
         .with_context(|| format!("create bundle dir {}", out_dir.display()))?;
 
-    for entry in fs::read_dir(project_dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if is_excluded_from_bundle(&name_str) {
-            continue;
+    if assets.is_empty() {
+        // No explicit allowlist: auto-ship the project root through the
+        // tightened denylist. `is_excluded_from_bundle` keeps source,
+        // build outputs, docs, configs, and VCS/IDE metadata out so
+        // nothing internal leaks to the public site root.
+        for entry in fs::read_dir(project_dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if is_excluded_from_bundle(&name_str) {
+                continue;
+            }
+            let from = entry.path();
+            let to = out_dir.join(&name);
+            if from.is_dir() {
+                copy_dir(&from, &to)
+                    .with_context(|| format!("copy dir {} → {}", from.display(), to.display()))?;
+            } else if from.is_file() {
+                fs::copy(&from, &to)
+                    .with_context(|| format!("copy file {} → {}", from.display(), to.display()))?;
+            }
         }
-        let from = entry.path();
-        let to = out_dir.join(&name);
-        if from.is_dir() {
-            copy_dir(&from, &to)
-                .with_context(|| format!("copy dir {} → {}", from.display(), to.display()))?;
-        } else if from.is_file() {
-            fs::copy(&from, &to)
-                .with_context(|| format!("copy file {} → {}", from.display(), to.display()))?;
+    } else {
+        // Explicit allowlist: stage ONLY the declared entries. A
+        // declared entry that doesn't exist is silently skipped (e.g.
+        // `pkg/` may be listed for clarity but is emitted later by the
+        // caller). `index.html` is always staged (handled below /
+        // copied here if it exists), never gated by the allowlist —
+        // the bundle is unservable without it.
+        let mut wanted: Vec<&str> = assets.iter().map(|s| s.as_str()).collect();
+        if !wanted.iter().any(|s| *s == "index.html") {
+            wanted.push("index.html");
+        }
+        for entry in wanted {
+            // Defend against `..`/absolute escapes — only single
+            // top-level names are valid allowlist entries. Anything
+            // with a path separator or parent ref is rejected.
+            if entry.is_empty()
+                || entry.contains("..")
+                || entry.contains('/')
+                || entry.contains('\\')
+            {
+                anyhow::bail!(
+                    "invalid web `assets` entry {:?}: must be a single project-root file or \
+                     folder name (no path separators or `..`)",
+                    entry,
+                );
+            }
+            let from = project_dir.join(entry);
+            let to = out_dir.join(entry);
+            if from.is_dir() {
+                copy_dir(&from, &to)
+                    .with_context(|| format!("copy dir {} → {}", from.display(), to.display()))?;
+            } else if from.is_file() {
+                fs::copy(&from, &to)
+                    .with_context(|| format!("copy file {} → {}", from.display(), to.display()))?;
+            }
         }
     }
 
@@ -392,18 +456,32 @@ fn strip_wasm_pack_metadata(staged_pkg: &Path) {
     }
 }
 
-/// Top-level entries that never belong in a deployable bundle. Source
-/// trees, build outputs, VCS metadata, IDE state, package-manager
-/// caches, dotfiles in general. Anything not on this list ships —
-/// keeps the rule "drop a folder in your project root and it
-/// auto-deploys" working for `fonts/`, `assets/`, `public/`,
-/// `images/`, etc., without an explicit allowlist.
+/// Top-level entries that never belong in a deployable bundle when no
+/// explicit `assets` allowlist is declared. Source trees, build
+/// outputs, VCS/IDE metadata, package-manager caches, dotfiles — AND,
+/// critically, internal docs/configs that would otherwise leak to the
+/// public site root (`FEEDBACK.md`, `dev.toml`, `design-files/`, …).
+///
+/// Anything not excluded ships, so the "drop a folder in your project
+/// root and it auto-deploys" convenience still works for real web
+/// assets — `fonts/`, `assets/`, `public/`, `images/`, `robots.txt`,
+/// css, etc. — without forcing an allowlist. Projects that want a hard
+/// guarantee declare `[package.metadata.idealyst.app.web].assets` and
+/// switch to the allowlist path entirely.
+///
+/// SECURITY: this is the fallback denylist. It must stay tight enough
+/// that no docs/config/source escapes; when in doubt prefer the
+/// `assets` allowlist. The matcher is case-insensitive for the
+/// extension/prefix checks so `README.MD` / `Feedback.txt` don't slip
+/// through on case-sensitive filesystems.
 fn is_excluded_from_bundle(name: &str) -> bool {
     if name.starts_with('.') {
         return true;
     }
-    matches!(
-        name,
+    let lower = name.to_ascii_lowercase();
+    // Exact-name folders/files: source trees, build outputs, caches.
+    if matches!(
+        lower.as_str(),
         "src"
             | "target"
             | "tests"
@@ -412,9 +490,30 @@ fn is_excluded_from_bundle(name: &str) -> bool {
             | "node_modules"
             | "dist"
             | "pkg"
-            | "Cargo.toml"
-            | "Cargo.lock"
-    ) || name.ends_with(".rs")
+            | "cargo.toml"
+            | "cargo.lock"
+            | "design-files"
+    ) {
+        return true;
+    }
+    // Doc / license / internal-report prefixes (any extension).
+    if lower.starts_with("readme")
+        || lower.starts_with("license")
+        || lower.starts_with("licence")
+        || lower.starts_with("feedback")
+        || lower.starts_with("changelog")
+        || lower.starts_with("contributing")
+    {
+        return true;
+    }
+    // Source / doc / config / log extensions. ALL `*.toml` and
+    // `*.lock` (not just the two Cargo names) so a stray `dev.toml`,
+    // `app.toml`, or sibling lockfile never ships.
+    [
+        ".rs", ".md", ".toml", ".lock", ".log", ".markdown", ".mdx",
+    ]
+    .iter()
+    .any(|ext| lower.ends_with(ext))
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
@@ -1585,6 +1684,18 @@ mod bundle_tests {
         fs::write(project.join("pkg/STALE_FROM_OLD_BUILD.wasm"), b"old-bytes").unwrap();
         fs::write(project.join("fonts/Inter.ttf"), b"font-bytes").unwrap();
         fs::write(project.join("assets/images/logo.png"), b"png-bytes").unwrap();
+        // Internal docs / configs that historically leaked into the
+        // served bundle (Field report 3.3). They must NOT ship.
+        fs::create_dir_all(project.join("design-files")).unwrap();
+        fs::write(project.join("design-files/mock.fig"), b"figma").unwrap();
+        fs::write(project.join("FEEDBACK.md"), b"# internal notes").unwrap();
+        fs::write(project.join("README.md"), b"# readme").unwrap();
+        fs::write(project.join("LICENSE"), b"MIT").unwrap();
+        fs::write(project.join("dev.toml"), b"secret = 'value'").unwrap();
+        // A real web asset that MUST still auto-ship.
+        fs::write(project.join("robots.txt"), b"User-agent: *").unwrap();
+        fs::create_dir_all(project.join("public")).unwrap();
+        fs::write(project.join("public/manifest.json"), b"{}").unwrap();
         project
     }
 
@@ -1602,7 +1713,7 @@ mod bundle_tests {
         let project = fake_project(tmp.path());
         let out = tmp.path().join("dist");
 
-        stage_bundle(&project, &out, None).expect("stage");
+        stage_bundle(&project, &out, None, &[]).expect("stage");
 
         assert!(
             out.join("index.html").is_file(),
@@ -1616,12 +1727,44 @@ mod bundle_tests {
             out.join("assets/images/logo.png").is_file(),
             "nested asset paths must auto-ship",
         );
+        assert!(
+            out.join("public/manifest.json").is_file(),
+            "public/ must auto-ship",
+        );
+        assert!(
+            out.join("robots.txt").is_file(),
+            "robots.txt must auto-ship",
+        );
         assert!(!out.join("src").exists(), "src/ must be skipped");
         assert!(!out.join("target").exists(), "target/ must be skipped");
         assert!(!out.join(".git").exists(), "dotdirs must be skipped");
         assert!(
             !out.join("Cargo.toml").exists(),
             "Cargo.toml must be skipped"
+        );
+        // Field report 3.3 (SECURITY): internal docs/configs and the
+        // design-files/ folder must NEVER be staged into the served
+        // bundle — they previously leaked to the public site root.
+        assert!(
+            !out.join("FEEDBACK.md").exists(),
+            "FEEDBACK.md (internal doc) must NOT ship",
+        );
+        assert!(
+            !out.join("README.md").exists(),
+            "README.md must NOT ship",
+        );
+        assert!(!out.join("LICENSE").exists(), "LICENSE must NOT ship");
+        assert!(
+            !out.join("dev.toml").exists(),
+            "dev.toml (arbitrary config) must NOT ship — all *.toml is excluded",
+        );
+        assert!(
+            !out.join("design-files").exists(),
+            "design-files/ folder must NOT ship",
+        );
+        assert!(
+            !out.join("Cargo.lock").exists(),
+            "Cargo.lock (and all *.lock) must NOT ship",
         );
         // Bundling owns pkg/ — it gets populated from wasm-pack output
         // by the caller, NOT scraped out of the project root. A stale
@@ -1634,11 +1777,66 @@ mod bundle_tests {
     }
 
     #[test]
+    fn stage_bundle_allowlist_ships_only_declared_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = fake_project(tmp.path());
+        let out = tmp.path().join("dist");
+
+        // Declare an explicit allowlist: only these top-level entries
+        // (plus the always-needed index.html) may ship.
+        let assets = vec!["assets".to_string(), "robots.txt".to_string()];
+        stage_bundle(&project, &out, None, &assets).expect("stage");
+
+        // index.html is always staged, even when not listed.
+        assert!(out.join("index.html").is_file(), "index.html always ships");
+        // Declared entries ship.
+        assert!(
+            out.join("assets/images/logo.png").is_file(),
+            "declared `assets` dir must ship (recursively)",
+        );
+        assert!(
+            out.join("robots.txt").is_file(),
+            "declared robots.txt must ship",
+        );
+        // Everything NOT declared is skipped — including otherwise-safe
+        // assets like fonts/ and public/. Explicit means explicit.
+        assert!(
+            !out.join("fonts").exists(),
+            "fonts/ was not in the allowlist, so it must NOT ship",
+        );
+        assert!(
+            !out.join("public").exists(),
+            "public/ was not in the allowlist, so it must NOT ship",
+        );
+        // And of course no internal docs/config can leak.
+        assert!(!out.join("FEEDBACK.md").exists(), "FEEDBACK.md must NOT ship");
+        assert!(!out.join("dev.toml").exists(), "dev.toml must NOT ship");
+        assert!(
+            !out.join("design-files").exists(),
+            "design-files/ must NOT ship",
+        );
+    }
+
+    #[test]
+    fn stage_bundle_allowlist_rejects_path_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = fake_project(tmp.path());
+        let out = tmp.path().join("dist");
+
+        let assets = vec!["../secret".to_string()];
+        let err = stage_bundle(&project, &out, None, &assets).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid web `assets` entry"),
+            "allowlist must reject path-escaping entries, got: {err}",
+        );
+    }
+
+    #[test]
     fn stage_bundle_errors_without_index_html_when_no_fallback() {
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("proj");
         fs::create_dir_all(&project).unwrap();
-        let err = stage_bundle(&project, &tmp.path().join("dist"), None).unwrap_err();
+        let err = stage_bundle(&project, &tmp.path().join("dist"), None, &[]).unwrap_err();
         assert!(
             err.to_string().contains("index.html"),
             "missing-index error should mention index.html, got: {err}",
@@ -1655,7 +1853,7 @@ mod bundle_tests {
         let out = tmp.path().join("dist");
 
         let html = default_index_html("My App", "my_app");
-        stage_bundle(&project, &out, Some(&html)).expect("stage with fallback");
+        stage_bundle(&project, &out, Some(&html), &[]).expect("stage with fallback");
 
         // The default index is written into the STAGED dir...
         let staged_index = out.join("index.html");
@@ -1681,7 +1879,7 @@ mod bundle_tests {
         let out = tmp.path().join("dist");
 
         let fallback = default_index_html("Fallback", "fallback_lib");
-        stage_bundle(&project, &out, Some(&fallback)).expect("stage");
+        stage_bundle(&project, &out, Some(&fallback), &[]).expect("stage");
 
         let contents = fs::read_to_string(out.join("index.html")).unwrap();
         assert!(
@@ -1700,7 +1898,7 @@ mod bundle_tests {
         fs::create_dir_all(&out).unwrap();
         fs::write(out.join("ghost.wasm"), b"old").unwrap();
 
-        stage_bundle(&project, &out, None).expect("stage");
+        stage_bundle(&project, &out, None, &[]).expect("stage");
         assert!(
             !out.join("ghost.wasm").exists(),
             "stale files from a prior bundle must be cleared so renamed/removed assets don't leak",
@@ -1743,7 +1941,7 @@ mod bundle_tests {
         let tmp = tempfile::tempdir().unwrap();
         let project = fake_project(tmp.path());
         let out = tmp.path().join("dist");
-        stage_bundle(&project, &out, None).expect("stage");
+        stage_bundle(&project, &out, None, &[]).expect("stage");
 
         // Drop in a synthetic pkg/ the way `build()` would after
         // copying from `wrapper_pkg`. Wasm body is intentionally
@@ -1793,7 +1991,7 @@ mod bundle_tests {
         let tmp = tempfile::tempdir().unwrap();
         let project = fake_project(tmp.path());
         let out = tmp.path().join("dist");
-        stage_bundle(&project, &out, None).unwrap();
+        stage_bundle(&project, &out, None, &[]).unwrap();
         let html_before = fs::read_to_string(out.join("index.html")).unwrap();
 
         // `fake_project`'s Cargo.toml has no icon block, so the
@@ -1837,7 +2035,7 @@ mod bundle_tests {
         .unwrap();
 
         let out = tmp.path().join("dist");
-        stage_bundle(&project, &out, None).unwrap();
+        stage_bundle(&project, &out, None, &[]).unwrap();
         sync_and_inject_web_icons(&project, &out).unwrap();
 
         for name in [

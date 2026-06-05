@@ -5,13 +5,13 @@
 use crate::style::{reactive_style, static_style};
 use crate::{parse_rgba, paint_stroke, BoardState, CanvasCapture, RecHandle, Stroke, Strokes};
 use runtime_core::{
-    component, safe_area_insets, ui, viewport_size, Element, IntoElement, Length, Overflow,
-    Position, Signal, StyleRules, TouchPhase, TouchResponse,
+    component, ui, Element, IntoElement, Length, Overflow, Position, Signal, StyleRules,
+    TouchPhase, TouchResponse,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::{CAM_H, CAM_RADIUS, CAM_W, DRAG_MARGIN};
+use crate::{CAM_H, CAM_RADIUS, CAM_W};
 
 // ============================================================================
 // Board screen root
@@ -84,10 +84,32 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
         ..Default::default()
     });
 
+    // The canvas "stage": an aspect-locked box, centered, as large as fits inside
+    // the safe area. Reactive — follows the aspect setting, rotation, and insets.
+    // The letterbox area around it shows the app's themed background.
+    let aspect = s.aspect;
+    let stage_style = reactive_style(move || {
+        let (aw, ah) = aspect.get();
+        let (x, y, w, h) = crate::settings::stage_geom(aw, ah);
+        StyleRules {
+            position: Some(Position::Absolute),
+            left: Some(Length::Px(x).into()),
+            top: Some(Length::Px(y).into()),
+            width: Some(Length::Px(w).into()),
+            height: Some(Length::Px(h).into()),
+            // Clip strokes + the camera to the board; round the corners for a
+            // card-like surface that reads as distinct from the backdrop.
+            overflow: Some(Overflow::Hidden),
+            ..Default::default()
+        }
+    });
+
     ui! {
         view(style = root_style) {
-            DrawingSurface(state = s, strokes = strokes, version = version, capture_writer = Some(capture_writer))
-            CameraWidget(state = s)
+            view(style = stage_style) {
+                DrawingSurface(state = s, strokes = strokes, version = version, capture_writer = Some(capture_writer))
+                CameraWidget(state = s)
+            }
             chrome
         }
     }
@@ -139,9 +161,15 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
     let cam_stream = props.state.cam_stream;
     let cam_x = props.state.cam_x;
     let cam_y = props.state.cam_y;
+    let aspect = props.state.aspect;
     let camera_layer = canvas::TextureLayer::new(
         Rc::new(move || cam_stream.get()),
-        Rc::new(move || (cam_x.get(), cam_y.get(), CAM_W, CAM_H)),
+        // Clamped to the stage so the camera can't leave the board — and the same
+        // clamp the widget box uses, so frame and image agree.
+        Rc::new(move || {
+            let (cx, cy) = crate::clamped_cam(aspect, cam_x, cam_y);
+            (cx, cy, CAM_W, CAM_H)
+        }),
     )
     .fit(canvas::Fit::Cover)
     .corner_radius(CAM_RADIUS)
@@ -150,7 +178,9 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
     // moving image — they update on different clocks).
     .border(2.0, canvas::Color::new(255, 255, 255, 230));
 
-    let canvas_el = build_canvas(strokes.clone(), version, capture_writer, vec![camera_layer]);
+    let canvas_bg = props.state.canvas_bg;
+    let dark = props.state.dark;
+    let canvas_el = build_canvas(strokes.clone(), version, canvas_bg, dark, capture_writer, vec![camera_layer]);
 
     let surface_style = static_style(StyleRules {
         width: Some(Length::pct(100.0).into()),
@@ -217,6 +247,8 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
 fn build_canvas(
     strokes: Strokes,
     version: Signal<u64>,
+    canvas_bg: Signal<crate::CanvasBg>,
+    dark: Signal<bool>,
     capture_writer: Option<media_stream::FrameWriter>,
     layers: Vec<canvas::TextureLayer>,
 ) -> Element {
@@ -231,9 +263,13 @@ fn build_canvas(
     canvas::Canvas(CanvasProps {
         draw: canvas::draw(move |s: &mut Scene| {
             let _ = version.get(); // reactive repaint dependency
+            // The drawing-surface background — the chosen `CanvasBg` (Auto follows
+            // the app theme). Reading both signals here makes a color/theme change
+            // repaint the canvas.
+            let (r, g, b) = canvas_bg.get().rgb(dark.get());
 
             s.path().add_path(Path::rect(0.0, 0.0, 100_000.0, 100_000.0));
-            s.fill(Color::new(255, 255, 255, 255));
+            s.fill(Color::new(r, g, b, 255));
 
             for stroke in strokes.borrow().iter() {
                 paint_stroke(s, stroke);
@@ -278,6 +314,7 @@ pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
     let cam_on = props.state.cam_on;
     let cam_x = props.state.cam_x;
     let cam_y = props.state.cam_y;
+    let aspect = props.state.aspect;
 
     // Drag state: (start_touch_x, start_touch_y, start_cam_x, start_cam_y).
     let drag: Rc<RefCell<Option<(f32, f32, f32, f32)>>> = Rc::new(RefCell::new(None));
@@ -308,10 +345,14 @@ pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
         // pixel-locked while dragging. This box just provides the hit-test rect —
         // its position can lag a frame without any visible effect (nothing is
         // drawn here).
+        // Position clamped to the stage — same clamp the composited layer rect
+        // uses, so the (invisible) hit-test box always sits over the visible
+        // camera even right after an aspect change.
+        let (bx, by) = crate::clamped_cam(aspect, cam_x, cam_y);
         StyleRules {
             position: Some(Position::Absolute),
-            left: Some(Length::Px(cam_x.get().max(0.0)).into()),
-            top: Some(Length::Px(cam_y.get().max(0.0)).into()),
+            left: Some(Length::Px(bx).into()),
+            top: Some(Length::Px(by).into()),
             width: Some(Length::Px(CAM_W).into()),
             height: Some(Length::Px(CAM_H).into()),
             ..Default::default()
@@ -323,25 +364,28 @@ pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
             view(style = overlay_style) {}
             .on_touch(move |ev| match ev.phase {
                 TouchPhase::Began => {
-                    *drag.borrow_mut() = Some((
-                        ev.window_position.x,
-                        ev.window_position.y,
-                        cam_x.get(),
-                        cam_y.get(),
-                    ));
+                    // Start from the CLAMPED position (= what's visible), so a drag
+                    // begun after an aspect change doesn't jump.
+                    let (cx, cy) = crate::clamped_cam(aspect, cam_x, cam_y);
+                    *drag.borrow_mut() = Some((ev.window_position.x, ev.window_position.y, cx, cy));
                     TouchResponse::CLAIMED
                 }
                 TouchPhase::Moved => {
                     let start = *drag.borrow();
                     if let Some((sx, sy, cx, cy)) = start {
-                        let vp = viewport_size().get();
-                        let ins = safe_area_insets().get();
-                        let min_x = ins.left + DRAG_MARGIN;
-                        let min_y = ins.top + DRAG_MARGIN;
-                        let max_x = (vp.width - ins.right - CAM_W - DRAG_MARGIN).max(min_x);
-                        let max_y = (vp.height - ins.bottom - CAM_H - DRAG_MARGIN).max(min_y);
-                        cam_x.set((cx + (ev.window_position.x - sx)).clamp(min_x, max_x));
-                        cam_y.set((cy + (ev.window_position.y - sy)).clamp(min_y, max_y));
+                        // Clamp to the STAGE (the camera lives in the board). The
+                        // touch delta is viewport-space; the stage is unscaled, so
+                        // the delta applies 1:1 to stage-local coords.
+                        let (aw, ah) = aspect.get();
+                        let (_x, _y, sw, sh) = crate::settings::stage_geom(aw, ah);
+                        let (nx, ny) = crate::clamp_cam(
+                            cx + (ev.window_position.x - sx),
+                            cy + (ev.window_position.y - sy),
+                            sw,
+                            sh,
+                        );
+                        cam_x.set(nx);
+                        cam_y.set(ny);
                     }
                     TouchResponse::CONSUMED
                 }

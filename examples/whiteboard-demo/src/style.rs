@@ -72,6 +72,23 @@ pub fn border_all(px: f32, color: &str) -> StyleRules {
     }
 }
 
+/// Equal border on all sides, from an already-resolved [`Color`] (e.g. a theme
+/// token via `idea_color`) rather than a CSS string.
+pub fn border_all_color(px: f32, color: Color) -> StyleRules {
+    let c = Tokenized::Literal(color);
+    StyleRules {
+        border_top_width: Some(px.into()),
+        border_bottom_width: Some(px.into()),
+        border_left_width: Some(px.into()),
+        border_right_width: Some(px.into()),
+        border_top_color: Some(c.clone()),
+        border_bottom_color: Some(c.clone()),
+        border_left_color: Some(c.clone()),
+        border_right_color: Some(c),
+        ..Default::default()
+    }
+}
+
 /// Overlay `extra`'s set fields onto `base`. Lets the radius/border shorthands
 /// compose with a base `StyleRules` literal.
 pub fn merge(base: &mut StyleRules, extra: StyleRules) {

@@ -25,7 +25,58 @@
 //!      is the "layout runs on every press" churn. See
 //!      `regression_ios_paint_only_skips_layout`.
 
-use runtime_core::{Length, StyleRules, Tokenized};
+use runtime_core::{Color, Length, StyleRules, Tokenized};
+
+/// The installed theme's text-color token name. This is the same token
+/// idea-ui / idea-theme bind their default text color to (`tok("color-text",
+/// …)` in `idea-theme/src/theme.rs`, and every `Tokenized::token("color-text",
+/// …)` in `idea-ui/src/stylesheets.rs`). Resolving an unstyled `text()`
+/// node's color through THIS token name (via the exact same
+/// `Tokenized<Color>::resolve()` machinery a styled `color:` token uses)
+/// is what makes the native backends converge on the theme's value
+/// instead of the OS system label color. See [`effective_text_color`].
+///
+/// The macOS / iOS / Android backends MUST all use this same name +
+/// fallback so the resolved value is byte-identical across platforms
+/// (CLAUDE.md §7).
+pub const THEME_TEXT_COLOR_TOKEN: &str = "color-text";
+
+/// Fallback used when no theme has installed `color-text` yet. Matches
+/// idea-theme's light-mode `color-text` default (`#1a1a1f`) so that a
+/// no-theme render still produces visible dark text on a light surface —
+/// the same value web's browser default approximates — rather than the
+/// OS system label color (white in dark mode → invisible on a light
+/// pill). Explicit author colors never reach this; see
+/// [`effective_text_color`].
+pub const THEME_TEXT_COLOR_FALLBACK: &str = "#1a1a1f";
+
+/// The effective text color for a text node, as a `Tokenized<Color>` that
+/// still flows through the *same* `resolve()` path a styled `color:` uses.
+///
+/// Decision (pure, host-testable — the bug this guards is that an
+/// unstyled `text()` rendered in the OS system label color, which is
+/// white in dark mode and therefore invisible over a light surface even
+/// when the app installed a light theme):
+///
+///   * explicit color present → pass it through unchanged (author wins);
+///   * no explicit color → resolve the installed theme's text color via
+///     the `color-text` token, NOT the OS/UIKit/Android default label
+///     color.
+///
+/// Returning a `Tokenized::Token` (rather than a pre-resolved `Color`)
+/// keeps the caller on the one true resolution path: the backend calls
+/// `.resolve()` on the result inside its `apply_style` effect, so a theme
+/// swap re-fires exactly as it does for an authored `color:` token, and
+/// the resolved bytes match web + macOS.
+pub fn effective_text_color(explicit: Option<&Tokenized<Color>>) -> Tokenized<Color> {
+    match explicit {
+        Some(c) => c.clone(),
+        None => Tokenized::token(
+            THEME_TEXT_COLOR_TOKEN,
+            Color(THEME_TEXT_COLOR_FALLBACK.to_string()),
+        ),
+    }
+}
 
 /// What to do with a requested corner radius at `apply_style` time.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -413,5 +464,52 @@ mod tests {
     fn first_apply_is_layout_affecting() {
         let key = layout_affecting_key(&StyleRules::default());
         assert!(is_layout_affecting(None, &key));
+    }
+
+    // === Effective text color (the invisible-dark-mode-text bug) =======
+    //
+    // A full UIKit test isn't reachable on the host (UILabel.textColor is
+    // an objc property on a class that only links on-device), so we test
+    // the pure decision that feeds the `setTextColor:` call. The bug:
+    // when `style.color` is absent, `apply_text_style` used to leave the
+    // label at UIKit's `labelColor` — white in dark mode → invisible over
+    // a light surface. The fix routes the absent case to the theme's
+    // `color-text` token instead.
+
+    // Explicit author color passes straight through — author always wins.
+    #[test]
+    fn explicit_text_color_wins() {
+        let explicit = Tokenized::Literal(Color("#ff0000".into()));
+        assert_eq!(effective_text_color(Some(&explicit)), explicit);
+
+        // A token color the author named also passes through unchanged.
+        let tok: Tokenized<Color> = Tokenized::token("color-accent", Color("#0af".into()));
+        assert_eq!(effective_text_color(Some(&tok)), tok);
+    }
+
+    // The regression: no explicit color must yield the THEME's text color
+    // token — never an OS/system label color. We assert the result is the
+    // `color-text` token (so `.resolve()` reads the installed theme), and
+    // that its no-theme fallback is a visible dark color, not anything
+    // system-appearance-derived.
+    #[test]
+    fn regression_absent_text_color_uses_theme_token_not_os_default() {
+        let effective = effective_text_color(None);
+        match &effective {
+            Tokenized::Token { name, fallback } => {
+                assert_eq!(
+                    *name, THEME_TEXT_COLOR_TOKEN,
+                    "absent text color must resolve through the theme's color-text token",
+                );
+                assert_eq!(*name, "color-text");
+                assert_eq!(fallback.0, THEME_TEXT_COLOR_FALLBACK);
+                // The fallback is a concrete dark color (visible on a
+                // light surface), NOT the OS system label color.
+                assert_eq!(fallback.0, "#1a1a1f");
+            }
+            Tokenized::Literal(_) => {
+                panic!("absent text color must be a token, so a theme swap re-fires it");
+            }
+        }
     }
 }
