@@ -133,11 +133,12 @@ pub(crate) async fn open(
     let mut env = vm.attach_current_thread().map_err(jni_err)?;
     let activity = android_context();
 
-    // Permission gate — the shim's openCamera would throw SecurityException
-    // without CAMERA. Fail fast and clearly.
-    if !check_self_permission(&mut env, &activity)? {
-        return Err(CameraError::PermissionDenied);
-    }
+    // Ensure the CAMERA runtime permission. On first use this fires the system
+    // dialog and returns `PermissionDenied` (the dialog's result has no SDK
+    // callback, so the user re-invokes `open` once granted). WITHOUT this, a
+    // not-yet-granted permission just fails silently and the camera never opens
+    // — and no dialog is ever shown ("nothing happens" on Android).
+    request_permission().await?;
 
     let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
     writers().lock().unwrap().insert(token, writer);

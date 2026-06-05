@@ -256,6 +256,11 @@ pub struct FrameWriter {
     /// [`SurfaceSource`].
     #[cfg(target_os = "macos")]
     surface: Option<apple_surface::SurfaceWriter>,
+    /// Web self-capture: the shared `native` slot of the paired stream, so the
+    /// canvas renderer can publish its `captureStream()` as the native source.
+    /// Present only when built via [`MediaStream::with_surface_capture`].
+    #[cfg(target_arch = "wasm32")]
+    native_slot: Option<Rc<RefCell<Option<Rc<dyn Any>>>>>,
 }
 
 impl FrameWriter {
@@ -264,6 +269,19 @@ impl FrameWriter {
             channel,
             #[cfg(target_os = "macos")]
             surface: None,
+            #[cfg(target_arch = "wasm32")]
+            native_slot: None,
+        }
+    }
+
+    /// Publish a platform native source (e.g. the web canvas's `captureStream()`
+    /// `web_sys::MediaStream`) as the paired stream's
+    /// [`native_source`](MediaStream::native_source). No-op unless the pair was
+    /// built via [`MediaStream::with_surface_capture`]. Web self-capture seam.
+    #[cfg(target_arch = "wasm32")]
+    pub fn publish_native_source(&self, src: Rc<dyn Any>) {
+        if let Some(slot) = &self.native_slot {
+            *slot.borrow_mut() = Some(src);
         }
     }
 
@@ -369,8 +387,10 @@ struct StreamInner {
     channel: Arc<FrameChannel>,
     /// The platform's zero-copy frame source (web `MediaStream`, etc.),
     /// type-erased. Set by the producer, downcast by a same-platform
-    /// display / GPU consumer.
-    native: RefCell<Option<Rc<dyn Any>>>,
+    /// display / GPU consumer. An `Rc` so a `with_surface_capture` producer
+    /// half (the `FrameWriter`) can share + set it AFTER construction — e.g. the
+    /// web canvas publishes its `captureStream()` once the `<canvas>` exists.
+    native: Rc<RefCell<Option<Rc<dyn Any>>>>,
     /// Runs when the last clone drops — tears capture down.
     stopper: RefCell<Option<Box<dyn FnOnce()>>>,
 }
@@ -405,7 +425,7 @@ impl MediaStream {
         let stream = MediaStream {
             inner: Rc::new(StreamInner {
                 channel: channel.clone(),
-                native: RefCell::new(None),
+                native: Rc::new(RefCell::new(None)),
                 stopper: RefCell::new(None),
             }),
         };
@@ -426,7 +446,7 @@ impl MediaStream {
         let stream = MediaStream {
             inner: Rc::new(StreamInner {
                 channel: channel.clone(),
-                native: RefCell::new(Some(Rc::new(surf_source) as Rc<dyn Any>)),
+                native: Rc::new(RefCell::new(Some(Rc::new(surf_source) as Rc<dyn Any>))),
                 stopper: RefCell::new(None),
             }),
         };
@@ -435,9 +455,31 @@ impl MediaStream {
         (stream, writer)
     }
 
-    /// Non-macOS: no IOSurface path, so identical to [`new`](Self::new). Keeps
-    /// cross-platform callers (the canvas capture) compiling everywhere.
-    #[cfg(not(target_os = "macos"))]
+    /// Web: shares the `native` slot with the `FrameWriter` so the canvas
+    /// renderer can publish its `captureStream()` web `MediaStream` as the
+    /// stream's native source AFTER the `<canvas>` is created
+    /// ([`FrameWriter::publish_native_source`]). The recorder then records that
+    /// stream directly.
+    #[cfg(target_arch = "wasm32")]
+    pub fn with_surface_capture() -> (MediaStream, FrameWriter) {
+        let channel = Arc::new(FrameChannel::default());
+        let native: Rc<RefCell<Option<Rc<dyn Any>>>> = Rc::new(RefCell::new(None));
+        let stream = MediaStream {
+            inner: Rc::new(StreamInner {
+                channel: channel.clone(),
+                native: native.clone(),
+                stopper: RefCell::new(None),
+            }),
+        };
+        let mut writer = FrameWriter::from_channel(channel);
+        writer.native_slot = Some(native);
+        (stream, writer)
+    }
+
+    /// Other native targets (Linux/Windows desktop): no zero-copy self-capture
+    /// path, so identical to [`new`](Self::new). Keeps cross-platform callers
+    /// (the canvas capture) compiling everywhere.
+    #[cfg(all(not(target_os = "macos"), not(target_arch = "wasm32")))]
     pub fn with_surface_capture() -> (MediaStream, FrameWriter) {
         Self::new()
     }

@@ -39,6 +39,13 @@ web-sys = { version = "0.3", features = [
     "CanvasGradient",
     "CanvasWindingRule",
     "ResizeObserver",
+    # Self-capture: `HtmlCanvasElement::capture_stream_with_frame_request_rate`
+    # → `MediaStream`, published as the canvas stream's native source.
+    "MediaStream",
+    # Texture layers (camera): a hidden <video> per layer is drawImage'd into the
+    # canvas so captureStream records it (web parity for camera-in-canvas).
+    "HtmlVideoElement",
+    "HtmlMediaElement",
 ] }
 
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]

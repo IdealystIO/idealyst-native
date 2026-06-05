@@ -18,6 +18,7 @@ pub(crate) mod image;
 pub(crate) mod node;
 pub(crate) mod screenshot;
 pub(crate) mod text_style;
+pub(crate) mod transitions;
 pub(crate) mod view;
 pub(crate) mod virtualizer;
 
@@ -932,6 +933,13 @@ pub(crate) fn color_to_nscolor(color: &Color) -> Retained<NSColor> {
     unsafe { NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, a) }
 }
 
+/// Resolve a `Color` to sRGB `[r, g, b, a]` floats in 0..=1 — the form the
+/// transition tween interpolates. Same parse path as `color_to_nscolor`.
+pub(crate) fn style_color_rgba(color: &Color) -> [f32; 4] {
+    let (r, g, b, a) = parse_color(&color.0);
+    [r as f32, g as f32, b as f32, a as f32]
+}
+
 /// Apply the framework's `StyleRules` to an NSView's CALayer-backed
 /// presentation. Minimum viable set: background color, opacity,
 /// corner radius. More properties (gradients, shadows, borders) will
@@ -944,13 +952,20 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     let _: () = unsafe { msg_send![view, setWantsLayer: true] };
     let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
 
-    // Background color → layer's `backgroundColor` (CGColorRef).
+    // Background color → layer's `backgroundColor`, via the transition system
+    // (animates over `background_transition` if set, else snaps). Scroll views
+    // paint their background through AppKit `drawsBackground`, NOT the layer, so
+    // they're handled in `apply_style`'s scroll branch instead — skip here.
     if let Some(bg) = &style.background {
-        let bg_val = bg.resolve();
-        let ns = color_to_nscolor(&bg_val);
-        let cg: CGColorRef = unsafe { msg_send![&ns, CGColor] };
-        if !cg.0.is_null() {
-            let _: () = unsafe { msg_send![&layer, setBackgroundColor: cg] };
+        if !is_scroll_view(view) {
+            let rgba = style_color_rgba(&bg.resolve());
+            transitions::apply_color(
+                view,
+                transitions::ColorProp::Background,
+                false,
+                rgba,
+                style.background_transition.as_ref(),
+            );
         }
     }
 
@@ -2440,6 +2455,9 @@ impl Backend for MacosBackend {
                 self.layout.remove_child(p_layout, c_layout);
                 self.layout.mark_dirty(p_layout);
             }
+            // Drop any pending color transition keyed on this view pointer so a
+            // recycled NSView can't inherit a stale `from` color.
+            transitions::forget_view(sub_ref);
             let _: () = unsafe { msg_send![sub_ptr, removeFromSuperview] };
         }
     }
@@ -2521,14 +2539,17 @@ impl Backend for MacosBackend {
                 if is_scroll_view(view) {
                     if let Some(bg) = &style.background {
                         let bg_val = bg.resolve();
-                        let ns = color_to_nscolor(&bg_val);
-                        let _: () = unsafe { msg_send![view, setDrawsBackground: true] };
-                        let _: () = unsafe { msg_send![view, setBackgroundColor: &*ns] };
-                        let clip: *mut NSObject = unsafe { msg_send![view, contentView] };
-                        if !clip.is_null() {
-                            let _: () = unsafe { msg_send![clip, setDrawsBackground: true] };
-                            let _: () = unsafe { msg_send![clip, setBackgroundColor: &*ns] };
-                        }
+                        // Animate the scroll + clip AppKit background over
+                        // `background_transition` (the visible theme body/sidebar
+                        // fade), or snap. `apply_color` re-enables drawsBackground
+                        // on both (create_scroll_view left them transparent).
+                        transitions::apply_color(
+                            view,
+                            transitions::ColorProp::Background,
+                            true,
+                            style_color_rgba(&bg_val),
+                            style.background_transition.as_ref(),
+                        );
                         // Match the scroll view's appearance to its background
                         // luminance so the OVERLAY SCROLLER's knob contrasts — a
                         // dark knob on a light surface, light on dark —

@@ -360,7 +360,13 @@ pub fn CameraToggle(props: &CameraToggleProps) -> Element {
                 };
                 match Camera::new().open(config).await {
                     Ok(stream) => cam_stream.set(Some(stream)),
-                    Err(_) => cam_on.set(false),
+                    Err(e) => {
+                        // Don't swallow it — e.g. on Android first tap this is
+                        // `PermissionDenied` while the system dialog shows; the
+                        // user grants, then taps again to open.
+                        eprintln!("[whiteboard] camera open failed: {e:?}");
+                        cam_on.set(false);
+                    }
                 }
             });
         }

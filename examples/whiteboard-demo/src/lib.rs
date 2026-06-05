@@ -250,6 +250,9 @@ pub(crate) const WIDTH_THICK: f32 = 14.0;
 /// Camera widget box (draggable, recordable content).
 pub(crate) const CAM_W: f32 = 132.0;
 pub(crate) const CAM_H: f32 = 176.0;
+/// Corner radius of the camera, in logical points — used for the composited
+/// layer's rounded mask AND the widget frame's border, so they line up.
+pub(crate) const CAM_RADIUS: f32 = 18.0;
 /// Keep dragged content this far from the safe-area edges.
 pub(crate) const DRAG_MARGIN: f32 = 8.0;
 

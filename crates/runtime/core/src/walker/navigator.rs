@@ -254,6 +254,28 @@ pub(super) fn build<B: Backend + 'static>(
         })
     };
 
+    // Builder-taking variant: runs the `Element` construction INSIDE the chrome
+    // scope so component bodies' standalone effects are owned by it (see
+    // `NavigatorHost::build_node_scoped`). Identical to `build_node` except the
+    // builder is invoked within `with_scope` rather than receiving a
+    // pre-constructed `Element`.
+    let build_node_scoped: Rc<dyn Fn(Box<dyn FnOnce() -> Element>) -> B::Node> = {
+        let backend = backend.clone();
+        let scopes_slot = nav_chrome_scopes.clone();
+        let chrome_identity = crate::Identity::node(nav_identity, 2, None, None);
+        Rc::new(move |builder| {
+            let mut scope = Box::new(reactive::Scope::new());
+            let node = reactive::with_scope(&mut scope, || {
+                crate::with_current_identity(chrome_identity, || {
+                    let prim = builder();
+                    super::build(&backend, 0, prim)
+                })
+            });
+            scopes_slot.borrow_mut().push(scope);
+            node
+        })
+    };
+
     // `build_node` + insert-into-parent, deferred-safe. A handler can
     // hand this to a microtask (which has no backend reference) so it
     // can attach chrome built post-borrow into an existing slot —
@@ -306,6 +328,7 @@ pub(super) fn build<B: Backend + 'static>(
         active_changed,
         control: control.clone(),
         build_node,
+        build_node_scoped,
         build_node_into,
         build_in_screen,
     };

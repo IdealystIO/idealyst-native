@@ -11,7 +11,7 @@ use runtime_core::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::{CAM_H, CAM_W, DRAG_MARGIN};
+use crate::{CAM_H, CAM_RADIUS, CAM_W, DRAG_MARGIN};
 
 // ============================================================================
 // Board screen root
@@ -137,18 +137,21 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
     let capture_writer = props.capture_writer.clone();
 
     // Camera-as-texture: hand the canvas a reactive view of the camera stream +
-    // its drag rect, so the renderer composites the live camera INTO the canvas
-    // (on-screen AND in the recording). macOS/vello only; elsewhere the canvas
-    // ignores it and the `CameraWidget` shows the video itself.
+    // its drag rect as a `TextureLayer`, so the renderer composites the live
+    // camera INTO the canvas (on-screen AND in the recording) — cover-fit, with
+    // rounded corners to match the widget frame. macOS/vello only; elsewhere the
+    // canvas ignores it and the `CameraWidget` shows the video itself.
     let cam_stream = props.state.cam_stream;
     let cam_x = props.state.cam_x;
     let cam_y = props.state.cam_y;
-    let camera = canvas::CameraLayer {
-        source: Rc::new(move || cam_stream.get()),
-        rect: Rc::new(move || (cam_x.get(), cam_y.get(), CAM_W, CAM_H)),
-    };
+    let camera_layer = canvas::TextureLayer::new(
+        Rc::new(move || cam_stream.get()),
+        Rc::new(move || (cam_x.get(), cam_y.get(), CAM_W, CAM_H)),
+    )
+    .fit(canvas::Fit::Cover)
+    .corner_radius(CAM_RADIUS);
 
-    let canvas_el = build_canvas(strokes.clone(), version, capture_writer, Some(camera));
+    let canvas_el = build_canvas(strokes.clone(), version, capture_writer, vec![camera_layer]);
 
     let surface_style = static_style(StyleRules {
         width: Some(Length::pct(100.0).into()),
@@ -216,7 +219,7 @@ fn build_canvas(
     strokes: Strokes,
     version: Signal<u64>,
     capture_writer: Option<media_stream::FrameWriter>,
-    camera: Option<canvas::CameraLayer>,
+    layers: Vec<canvas::TextureLayer>,
 ) -> Element {
     use canvas::prelude::*;
 
@@ -240,8 +243,8 @@ fn build_canvas(
         // Self-capture sink: the vello renderer reads back each frame here while
         // a recorder is subscribed (macOS only; canvas-native ignores it).
         capture: capture_writer,
-        // Live camera composited into the canvas (macOS/vello).
-        camera,
+        // Live texture layers (the camera) composited into the canvas (macOS).
+        layers,
         ..Default::default()
     })
     .with_style(fill)
@@ -275,11 +278,12 @@ pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
     let cam_x = props.state.cam_x;
     let cam_y = props.state.cam_y;
 
-    // On macOS the canvas composites the camera as a GPU texture (so it lands in
-    // the recording), and this widget is just a transparent draggable frame over
-    // it. Elsewhere the canvas can't composite, so the widget shows the live
-    // `video` itself (display-only; not in the recording — that's a follow-up).
-    let composited = cfg!(target_os = "macos");
+    // macOS (GPU LayerCompositor) AND web (canvas-native drawImage) composite the
+    // camera INTO the canvas, so it lands in the recording and this widget is
+    // just a transparent draggable frame over it. Other targets (iOS/Android)
+    // can't composite yet, so the widget shows the live `video` itself
+    // (display-only; not in the recording — a follow-up).
+    let composited = cfg!(target_os = "macos") || cfg!(target_arch = "wasm32");
     let video_fill = static_style(StyleRules {
         width: Some(Length::pct(100.0).into()),
         height: Some(Length::pct(100.0).into()),

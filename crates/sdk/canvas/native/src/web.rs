@@ -17,7 +17,7 @@
 use backend_web::WebBackend;
 use canvas_core::{
     paint_scene, CanvasProps, Color, DrawOp, FillRule, LineCap, LineJoin, LinearGradient, Paint,
-    PaintKind, Path, PathSeg, RadialGradient, Scene,
+    PaintKind, Path, PathSeg, RadialGradient, Scene, TextureLayer,
 };
 use runtime_core::Effect;
 use std::cell::RefCell;
@@ -25,7 +25,8 @@ use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{
-    CanvasGradient, CanvasRenderingContext2d, CanvasWindingRule, HtmlCanvasElement, ResizeObserver,
+    CanvasGradient, CanvasRenderingContext2d, CanvasWindingRule, Document, HtmlCanvasElement,
+    HtmlVideoElement, MediaStream, ResizeObserver,
 };
 
 /// Register the native canvas renderer against a `WebBackend`. One line
@@ -79,12 +80,26 @@ fn build_canvas(props: &Rc<CanvasProps>) -> web_sys::Element {
     // the effect's own render and the resize observer.
     let cell: Rc<RefCell<Scene>> = Rc::new(RefCell::new(Scene::new()));
 
+    // Texture layers (camera): a hidden <video> per layer, drawImage'd over the
+    // scene so `captureStream` records it too (web parity for camera-in-canvas).
+    // Persists across renders.
+    let layers = props.layers.clone();
+    let layer_videos: Rc<RefCell<Vec<LayerVideo>>> = Rc::new(RefCell::new(Vec::new()));
+
     // Size the backing store to the CSS box × dpr, then replay the cell.
     let render: Rc<dyn Fn()> = {
         let canvas = canvas.clone();
         let ctx = ctx.clone();
         let cell = cell.clone();
-        Rc::new(move || render_scene(&canvas, &ctx, &cell.borrow()))
+        let layers = layers.clone();
+        let layer_videos = layer_videos.clone();
+        let document = document.clone();
+        Rc::new(move || {
+            render_scene(&canvas, &ctx, &cell.borrow());
+            if !layers.is_empty() {
+                draw_layers(&document, &ctx, &layers, &layer_videos);
+            }
+        })
     };
 
     let cb = Closure::<dyn FnMut()>::new({
@@ -94,6 +109,17 @@ fn build_canvas(props: &Rc<CanvasProps>) -> web_sys::Element {
     let observer = ResizeObserver::new(cb.as_ref().unchecked_ref()).expect("ResizeObserver::new");
     observer.observe(&el);
     let guard = ObserverGuard { observer, _cb: cb };
+
+    // Self-capture (web): when the canvas has a `capture` sink, hand the browser
+    // the `<canvas>` via `captureStream()` and publish that `MediaStream` as the
+    // stream's native source. The recorder records it directly — no readback.
+    // (The app must keep the canvas re-rendering, e.g. a `version` raf, while
+    // recording, or the captured stream is a frozen frame.)
+    if let Some(capture) = &props.capture {
+        if let Ok(stream) = canvas.capture_stream_with_frame_request_rate(CAPTURE_FPS) {
+            capture.publish_native_source(Rc::new(stream));
+        }
+    }
 
     // Reactive repaint. The walker runs us inside the mount scope, so this
     // Effect (and the `guard` + `render` it owns) live until unmount.
@@ -107,6 +133,94 @@ fn build_canvas(props: &Rc<CanvasProps>) -> web_sys::Element {
     });
 
     el
+}
+
+/// Frame rate for the web self-capture `captureStream()`.
+const CAPTURE_FPS: f64 = 30.0;
+
+/// A hidden `<video>` element playing one layer's stream, reused across frames
+/// (creating + attaching a stream per frame would stutter).
+struct LayerVideo {
+    el: HtmlVideoElement,
+    /// The web `MediaStream.id` currently attached — only re-`set_src_object`
+    /// when it changes (camera opened / swapped).
+    stream_id: Option<String>,
+}
+
+impl LayerVideo {
+    fn new(document: &Document) -> Self {
+        let el: HtmlVideoElement = document
+            .create_element("video")
+            .expect("create_element(video)")
+            .dyn_into()
+            .expect("video element cast");
+        // Muted + autoplay so a detached element plays without user gesture;
+        // playsinline avoids iOS Safari fullscreen takeover.
+        el.set_muted(true);
+        el.set_autoplay(true);
+        let _ = el.set_attribute("playsinline", "");
+        Self { el, stream_id: None }
+    }
+
+    fn ensure(&mut self, ms: &MediaStream) {
+        let id = ms.id();
+        if self.stream_id.as_deref() != Some(id.as_str()) {
+            self.el.set_src_object(Some(ms));
+            let _ = self.el.play(); // Promise; ignore
+            self.stream_id = Some(id);
+        }
+    }
+}
+
+/// Draw each layer's stream over the scene. The ctx already carries the dpr base
+/// transform (set in `render_scene`), so we work in LOGICAL coordinates — same
+/// space as the rect. Cover-fit (centered crop) + rounded-rect clip + opacity,
+/// matching the macOS GPU `LayerCompositor`.
+fn draw_layers(
+    document: &Document,
+    ctx: &CanvasRenderingContext2d,
+    layers: &[TextureLayer],
+    videos: &Rc<RefCell<Vec<LayerVideo>>>,
+) {
+    let mut vids = videos.borrow_mut();
+    for (i, layer) in layers.iter().enumerate() {
+        let Some(stream) = (layer.source)() else { continue };
+        let Some(ms) = stream
+            .native_source()
+            .and_then(|rc| rc.downcast::<MediaStream>().ok())
+        else {
+            continue;
+        };
+        while vids.len() <= i {
+            vids.push(LayerVideo::new(document));
+        }
+        let lv = &mut vids[i];
+        lv.ensure(&ms);
+        let (vw, vh) = (lv.el.video_width() as f64, lv.el.video_height() as f64);
+        if vw < 1.0 || vh < 1.0 {
+            continue; // first frames not decoded yet
+        }
+        let (dx, dy, dw, dh) = (layer.rect)();
+        let (dx, dy, dw, dh) = (dx as f64, dy as f64, dw as f64, dh as f64);
+        if dw < 1.0 || dh < 1.0 {
+            continue;
+        }
+        // Cover fit: sample a centered crop of the source matching the rect.
+        let s = (dw / vw).max(dh / vh);
+        let (sw, sh) = (dw / s, dh / s);
+        let (sx, sy) = ((vw - sw) * 0.5, (vh - sh) * 0.5);
+        let r = (layer.corner_radius as f64).clamp(0.0, dw.min(dh) * 0.5);
+
+        ctx.save();
+        ctx.set_global_alpha(layer.opacity.clamp(0.0, 1.0) as f64);
+        ctx.begin_path();
+        let _ = ctx.round_rect_with_f64(dx, dy, dw, dh, r);
+        ctx.clip();
+        let _ = ctx.draw_image_with_html_video_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+            &lv.el, sx, sy, sw, sh, dx, dy, dw, dh,
+        );
+        ctx.restore();
+    }
 }
 
 /// Resize the backing store and replay `scene` into `ctx`.

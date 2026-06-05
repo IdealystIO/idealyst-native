@@ -30,24 +30,24 @@ impl NativeCapture {
     pub(crate) fn publish(&self, _idx: usize) {}
 }
 
-/// Non-macOS stub: no GPU camera composite (those targets show the camera via
+/// Non-macOS stub: no GPU layer compositor (those targets show the camera via
 /// an overlay `video` widget instead).
-pub(crate) struct CameraComposite;
+pub(crate) struct LayerCompositor;
 
-impl CameraComposite {
+impl LayerCompositor {
     pub(crate) fn new(_device: &wgpu::Device) -> Self {
-        CameraComposite
+        LayerCompositor
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn composite(
+    pub(crate) fn composite_layers(
         &mut self,
         _device: &wgpu::Device,
         _queue: &wgpu::Queue,
         _encoder: &mut wgpu::CommandEncoder,
-        _stream: &media_stream::MediaStream,
+        _layers: &[canvas_core::TextureLayer],
         _target_view: &wgpu::TextureView,
-        _rect_phys: (f32, f32, f32, f32),
+        _scale: f32,
         _target_w: u32,
         _target_h: u32,
     ) {

@@ -190,82 +190,94 @@ impl NavigatorHandler<MacosBackend> for MacosDrawerHandler {
         let leading_slot = presentation.leading_slot.borrow_mut().take();
         let legacy_sidebar = presentation.sidebar.borrow().clone();
         if leading_slot.is_some() || legacy_sidebar.is_some() {
-            let build_node = host.build_node.clone();
+            // Use `build_node_scoped`, NOT `build_node`: the sidebar Element is
+            // produced by `#[component]` bodies (idea-ui's animated `Switch`)
+            // whose standalone `Effect::new` runs at CONSTRUCTION time. Building
+            // the Element here and only then calling `build_node` would create
+            // those effects with no active scope — their handle owns them and
+            // frees them when the body returns, so they run once and never
+            // re-fire (the Switch thumb froze). `build_node_scoped` runs the
+            // builder INSIDE the retained chrome scope, so the effects are owned
+            // by it and stay reactive. See `NavigatorHost::build_node_scoped`.
+            let build_node_scoped = host.build_node_scoped.clone();
             let control_for_sidebar = control.clone();
             let nav_state_for_sidebar = nav_state.clone();
             let sidebar_node = sidebar.clone();
             runtime_core::schedule_microtask(move || {
-                let on_select: Rc<dyn Fn(&'static str)> = {
-                    let control = control_for_sidebar.clone();
-                    Rc::new(move |name| {
-                        control.dispatch(NavCommand::Select {
-                            name,
-                            url: String::new(),
-                            params: Box::new(()),
-                            state: None,
-                        });
-                    })
-                };
-                // Push the navigator onto the ambient stack so `Link`
-                // primitives inside the sidebar capture this navigator as their
-                // dispatch target — without it, `ambient_navigator()` returns
-                // `None` and every sidebar link's on_activate silently no-ops.
-                // See `[[project_drawer_sidebar_ambient_nav]]`.
-                let _guard = AmbientNavGuard::push(control_for_sidebar.clone());
-                let prim = if let Some(builder) = leading_slot {
-                    let open_drawer: Rc<dyn Fn()> = {
-                        let c = control_for_sidebar.clone();
-                        Rc::new(move || {
-                            c.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Open)));
-                        })
-                    };
-                    let close_drawer: Rc<dyn Fn()> = {
-                        let c = control_for_sidebar.clone();
-                        Rc::new(move || {
-                            c.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Close)));
-                        })
-                    };
-                    // The drawer has no stack, so `pop` is a no-op (matches the
-                    // semantics the SlotProps contract documents for navigators
-                    // without a stack).
-                    let pop: Rc<dyn Fn()> = Rc::new(|| {});
-                    let props = SlotProps {
-                        active_route: nav_state_for_sidebar.active_route,
-                        active_path: nav_state_for_sidebar.active_path.clone(),
-                        depth: nav_state_for_sidebar.depth,
-                        can_go_back: nav_state_for_sidebar.can_go_back,
-                        is_open,
-                        leading_intent: runtime_core::signal!(LeadingIntent::OpenDrawer),
-                        trailing_intent: runtime_core::signal!(TrailingIntent::None),
-                        screen_title: runtime_core::signal!(String::new()),
-                        on_select,
-                        open_drawer,
-                        close_drawer,
-                        pop,
-                        scroll: None,
-                    };
-                    builder(props)
-                } else if let Some(sidebar_builder) = legacy_sidebar {
-                    let on_close: Rc<dyn Fn()> = {
-                        let control = control_for_sidebar.clone();
-                        Rc::new(move || {
-                            control.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Close)));
-                        })
-                    };
-                    let props = DrawerSlotProps {
-                        active_route: nav_state_for_sidebar.active_route,
-                        active_path: nav_state_for_sidebar.active_path.clone(),
-                        depth: nav_state_for_sidebar.depth,
-                        can_go_back: nav_state_for_sidebar.can_go_back,
-                        is_open,
-                        on_select,
-                        on_close,
-                    };
-                    sidebar_builder(props)
-                } else {
-                    return;
-                };
-                let sidebar_node_materialised = build_node(prim);
+                let builder_closure: Box<dyn FnOnce() -> runtime_core::Element> =
+                    Box::new(move || {
+                        let on_select: Rc<dyn Fn(&'static str)> = {
+                            let control = control_for_sidebar.clone();
+                            Rc::new(move |name| {
+                                control.dispatch(NavCommand::Select {
+                                    name,
+                                    url: String::new(),
+                                    params: Box::new(()),
+                                    state: None,
+                                });
+                            })
+                        };
+                        // Push the navigator onto the ambient stack so `Link`
+                        // primitives inside the sidebar capture this navigator as
+                        // their dispatch target — without it,
+                        // `ambient_navigator()` returns `None` and every sidebar
+                        // link's on_activate silently no-ops. See
+                        // `[[project_drawer_sidebar_ambient_nav]]`.
+                        let _guard = AmbientNavGuard::push(control_for_sidebar.clone());
+                        if let Some(builder) = leading_slot {
+                            let open_drawer: Rc<dyn Fn()> = {
+                                let c = control_for_sidebar.clone();
+                                Rc::new(move || {
+                                    c.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Open)));
+                                })
+                            };
+                            let close_drawer: Rc<dyn Fn()> = {
+                                let c = control_for_sidebar.clone();
+                                Rc::new(move || {
+                                    c.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Close)));
+                                })
+                            };
+                            // The drawer has no stack, so `pop` is a no-op.
+                            let pop: Rc<dyn Fn()> = Rc::new(|| {});
+                            let props = SlotProps {
+                                active_route: nav_state_for_sidebar.active_route,
+                                active_path: nav_state_for_sidebar.active_path.clone(),
+                                depth: nav_state_for_sidebar.depth,
+                                can_go_back: nav_state_for_sidebar.can_go_back,
+                                is_open,
+                                leading_intent: runtime_core::signal!(LeadingIntent::OpenDrawer),
+                                trailing_intent: runtime_core::signal!(TrailingIntent::None),
+                                screen_title: runtime_core::signal!(String::new()),
+                                on_select,
+                                open_drawer,
+                                close_drawer,
+                                pop,
+                                scroll: None,
+                            };
+                            builder(props)
+                        } else if let Some(sidebar_builder) = legacy_sidebar {
+                            let on_close: Rc<dyn Fn()> = {
+                                let control = control_for_sidebar.clone();
+                                Rc::new(move || {
+                                    control.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Close)));
+                                })
+                            };
+                            let props = DrawerSlotProps {
+                                active_route: nav_state_for_sidebar.active_route,
+                                active_path: nav_state_for_sidebar.active_path.clone(),
+                                depth: nav_state_for_sidebar.depth,
+                                can_go_back: nav_state_for_sidebar.can_go_back,
+                                is_open,
+                                on_select,
+                                on_close,
+                            };
+                            sidebar_builder(props)
+                        } else {
+                            // Unreachable: guarded by the `is_some()` check above.
+                            unreachable!("sidebar build with neither slot set")
+                        }
+                    });
+                let sidebar_node_materialised = build_node_scoped(builder_closure);
                 with_global_backend(|b| {
                     let mut sb = sidebar_node.clone();
                     b.insert(&mut sb, sidebar_node_materialised);

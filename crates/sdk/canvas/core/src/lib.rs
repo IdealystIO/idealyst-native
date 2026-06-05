@@ -170,7 +170,7 @@ impl Default for CanvasProps {
     fn default() -> Self {
         // A no-op painter renders an empty canvas rather than panicking
         // on an unset field.
-        Self { draw: Box::new(|_| {}), capture: None, camera: None }
+        Self { draw: Box::new(|_| {}), capture: None, layers: Vec::new() }
     }
 }
 
@@ -245,7 +245,7 @@ pub fn ensure_wire_serde() {
             let draw: DrawFn = Box::new(move |s: &mut Scene| *s = (*scene).clone());
             // `capture` is a runtime-only sink (a live `FrameWriter`); it never
             // crosses the wire, so a wire-adopted canvas has no self-capture.
-            Some(Rc::new(CanvasProps { draw, capture: None, camera: None }) as Rc<dyn Any>)
+            Some(Rc::new(CanvasProps { draw, capture: None, layers: Vec::new() }) as Rc<dyn Any>)
         },
     );
 }
@@ -255,7 +255,7 @@ pub fn ensure_wire_serde() {
 /// scene-model types ([`Scene`], [`Path`], [`Paint`], [`Stroke`],
 /// [`Color`], …).
 pub mod prelude {
-    pub use super::{draw, Canvas, CameraLayer, CanvasProps};
+    pub use super::{draw, Canvas, CanvasProps, Fit, TextureLayer};
     pub use crate::scene::{
         color, Color, FillRule, GradientStop, LineCap, LineJoin, LinearGradient, Paint, PaintKind,
         Path, PathSeg, RadialGradient, Scene, Stroke, Transform,

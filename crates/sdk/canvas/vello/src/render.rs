@@ -17,8 +17,8 @@ use canvas_core::{
     paint_scene, CanvasProps, Color as CanvasColor, DrawOp, FillRule, GradientStop, LineCap,
     LineJoin, Paint, PaintKind, Path, PathSeg, Scene as CanvasScene, Stroke as CanvasStroke,
 };
-use crate::native_capture::{CameraComposite, NativeCapture};
-use canvas_core::CameraLayer;
+use crate::native_capture::{LayerCompositor, NativeCapture};
+use canvas_core::TextureLayer;
 use media_stream::FrameWriter;
 use runtime_core::accessibility::AccessibilityProps;
 use runtime_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
@@ -71,11 +71,11 @@ fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node
         // Self-capture sink (app's MediaStream producer half), if the canvas
         // was built with `capture: Some(writer)`. `FrameWriter` is Clone.
         let capture = props.capture.clone();
-        // Camera layer composited into the canvas (Clone: MediaStream + Rc).
-        let camera = props.camera.clone();
+        // Texture layers composited into the canvas (Clone: MediaStream + Rc).
+        let layers = props.layers.clone();
         move |ev: OnReadyEvent| {
             if let Some(mut state) =
-                RenderState::new(ev.surface, ev.size, ev.scale, capture.clone(), camera.clone())
+                RenderState::new(ev.surface, ev.size, ev.scale, capture.clone(), layers.clone())
             {
                 let presented = state.render(&scene_cell.borrow());
                 *state_cell.borrow_mut() = Some(state);
@@ -153,11 +153,11 @@ struct RenderState {
     /// CPU read-back, no swizzle. `None` only when the canvas has no `capture`
     /// sink. The CPU `capture_frame` path is the fallback when this is idle.
     native_capture: Option<NativeCapture>,
-    /// A live camera (or any `MediaStream`) composited into the target each
-    /// frame (macOS), so the strokes + camera are one image — on-screen and in
-    /// the recording. `None` when the canvas has no `camera` layer.
-    camera_layer: Option<CameraLayer>,
-    camera_composite: Option<CameraComposite>,
+    /// Texture layers (camera, screen share, …) composited over the scene each
+    /// frame (macOS), so the strokes + layers are one image — on-screen and in
+    /// the recording. Empty when the canvas has no `layers`.
+    layers: Vec<TextureLayer>,
+    layer_compositor: Option<LayerCompositor>,
 }
 
 fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
@@ -187,7 +187,7 @@ impl RenderState {
         size: (u32, u32),
         scale: f32,
         capture: Option<FrameWriter>,
-        camera: Option<CameraLayer>,
+        layers: Vec<TextureLayer>,
     ) -> Option<Self> {
         let (w, h) = (size.0.max(1), size.1.max(1));
 
@@ -263,9 +263,10 @@ impl RenderState {
 
         let (target, target_view) = make_target(&device, w, h);
         let blitter = wgpu::util::TextureBlitter::new(&device, format);
-        // Built once if the canvas has a camera layer (needs `device` before it's
-        // moved into the struct).
-        let camera_composite = camera.as_ref().map(|_| CameraComposite::new(&device));
+        // Built once if the canvas has any texture layers (needs `device` before
+        // it's moved into the struct).
+        let layer_compositor =
+            (!layers.is_empty()).then(|| LayerCompositor::new(&device));
 
         Some(Self {
             device,
@@ -282,8 +283,8 @@ impl RenderState {
             // backingScaleFactor) makes the logical scene fill the surface.
             scale: if scale > 0.0 { scale as f64 } else { 1.0 },
             native_capture: capture.clone().map(NativeCapture::new),
-            camera_composite,
-            camera_layer: camera,
+            layer_compositor,
+            layers,
             capture,
             readback: None,
         })
@@ -340,30 +341,18 @@ impl RenderState {
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("canvas-vello-blit"),
             });
-        // Camera-as-texture (macOS): composite the live camera into the target
-        // BEFORE the blits, so the strokes + camera are one image that both the
-        // on-screen surface AND the recording IOSurface receive. Disjoint field
-        // borrows — bind the shared ones first.
+        // Texture layers (macOS): composite the camera/screen-share/… into the
+        // target BEFORE the blits, so the strokes + layers are one image that
+        // both the on-screen surface AND the recording IOSurface receive.
+        // Disjoint field borrows — bind the shared ones first.
         {
             let device = &self.device;
             let queue = &self.queue;
             let target_view = &self.target_view;
             let (cw, ch) = (self.config.width, self.config.height);
             let s = self.scale as f32;
-            if let (Some(cam), Some(cc)) = (&self.camera_layer, self.camera_composite.as_mut()) {
-                if let Some(stream) = (cam.source)() {
-                    let (lx, ly, lw, lh) = (cam.rect)();
-                    cc.composite(
-                        device,
-                        queue,
-                        &mut encoder,
-                        &stream,
-                        target_view,
-                        (lx * s, ly * s, lw * s, lh * s),
-                        cw,
-                        ch,
-                    );
-                }
+            if let Some(lc) = self.layer_compositor.as_mut() {
+                lc.composite_layers(device, queue, &mut encoder, &self.layers, target_view, s, cw, ch);
             }
         }
 

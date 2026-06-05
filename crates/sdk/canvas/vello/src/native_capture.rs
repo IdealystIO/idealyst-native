@@ -16,6 +16,7 @@
 //! microseconds after submit — long before the surface is reused `POOL` frames
 //! later — so no explicit fence is needed (the cadence is the sync).
 
+use canvas_core::{Fit, TextureLayer};
 use media_stream::FrameWriter;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -186,21 +187,24 @@ fn make_pool_item(
 }
 
 // ============================================================================
-// Camera-as-texture: composite a live `MediaStream` (the camera's IOSurface)
-// into the canvas target at a rect, so both the on-screen canvas AND the
-// recording show it. Zero-copy: the camera publishes a BGRA IOSurface, we
-// import it as a sampled Metal texture and draw it as a positioned quad over
-// the strokes — no CPU frame.
+// Layer compositor: draw a stack of `TextureLayer`s (live MediaStreams) over
+// the painted scene — each a positioned, fit-cropped, rounded, opacity-blended
+// quad. Zero-copy: a layer's BGRA IOSurface is imported as a sampled Metal
+// texture (cached by pointer, reused across frames) and blitted into the canvas
+// target, so both the on-screen canvas AND the recording show it. No CPU frame.
 // ============================================================================
 
-/// WGSL for the positioned camera blit: a fullscreen triangle clipped to the
-/// render pass viewport (set to the camera rect), sampling the camera texture
-/// across that rect. UV flips Y to match top-down texture data, then applies a
-/// `cover` crop (`uv_scale`/`uv_offset`) so the camera fills the rect without
-/// distortion (the overflow is cropped, centered).
-const CAMERA_BLIT_WGSL: &str = r#"
-struct Crop { uv_scale: vec2<f32>, uv_offset: vec2<f32> };
-@group(0) @binding(2) var<uniform> crop: Crop;
+/// WGSL for a layer blit: a fullscreen triangle clipped to the render-pass
+/// viewport (the layer rect). The fragment applies the fit crop (`uv`), a
+/// rounded-rectangle SDF mask, and opacity. UV flips Y for top-down textures.
+const LAYER_BLIT_WGSL: &str = r#"
+struct Layer {
+    uv: vec4<f32>,   // uv_scale.xy, uv_offset.xy
+    geo: vec4<f32>,  // rect_w_px, rect_h_px, radius_px, opacity
+};
+@group(0) @binding(0) var tex: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+@group(0) @binding(2) var<uniform> layer: Layer;
 
 struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 @vertex
@@ -212,37 +216,63 @@ fn vs(@builtin(vertex_index) i: u32) -> VsOut {
     out.uv = vec2<f32>((xy.x + 1.0) * 0.5, (1.0 - xy.y) * 0.5);
     return out;
 }
-@group(0) @binding(0) var tex: texture_2d<f32>;
-@group(0) @binding(1) var samp: sampler;
+
+fn sd_round_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
+    let q = abs(p) - b + vec2<f32>(r);
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - r;
+}
+
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
-    let uv = in.uv * crop.uv_scale + crop.uv_offset;
-    return textureSample(tex, samp, uv);
+    let suv = in.uv * layer.uv.xy + layer.uv.zw;
+    // Contain letterbox: sample outside [0,1] → transparent bars.
+    let inside = all(suv >= vec2<f32>(0.0)) && all(suv <= vec2<f32>(1.0));
+    let inb = select(0.0, 1.0, inside);
+    let col = textureSample(tex, samp, clamp(suv, vec2<f32>(0.0), vec2<f32>(1.0))).rgb;
+    // Rounded-rect mask in pixel space across the rect (anti-aliased ~1px edge).
+    let size = layer.geo.xy;
+    let radius = layer.geo.z;
+    let opacity = layer.geo.w;
+    let pp = (in.uv - vec2<f32>(0.5)) * size;
+    let d = sd_round_box(pp, size * 0.5, radius);
+    let aa = 1.0 - smoothstep(-1.0, 1.0, d);
+    // Video layers are opaque; ignore source alpha — mask by corner + fit +
+    // opacity (straight alpha; the pipeline alpha-blends over the strokes).
+    return vec4<f32>(col, aa * inb * opacity);
 }
 "#;
 
-pub(crate) struct CameraComposite {
+/// Per-layer uniform stride — ≥ the 256-byte uniform offset alignment, so each
+/// layer's uniform sits in its own dynamic-offset slot (N layers in one encoder
+/// must not clobber a shared slot — queue writes all land before the draws run).
+const LAYER_STRIDE: u64 = 256;
+/// Max layers per canvas (sizes the uniform buffer); excess layers are skipped.
+const MAX_LAYERS: usize = 16;
+/// Soft cap on cached textures; cleared (and rebuilt) if a source churns
+/// pointers without bound. Real pools (camera, screen share) are far smaller.
+const MAX_CACHE: usize = 32;
+
+pub(crate) struct LayerCompositor {
     pipeline: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
     bind_layout: wgpu::BindGroupLayout,
-    /// `Crop` uniform (uv_scale.xy, uv_offset.xy) — updated per frame for the
-    /// current camera-vs-rect aspect (cover fit). Persistent; the per-texture
-    /// bind groups reference it.
-    crop_buffer: wgpu::Buffer,
-    /// Cache keyed by the camera's current IOSurface pointer: re-imported only
-    /// when the camera publishes a different surface. `(ptr, bind_group, tex,
-    /// (camera_w, camera_h))`.
-    cached: Option<(*const c_void, wgpu::BindGroup, wgpu::Texture, (u32, u32))>,
+    /// Per-layer uniforms, one `LAYER_STRIDE` slot each; bound with a dynamic
+    /// offset so the layers in one encoder don't clobber each other.
+    uniforms: wgpu::Buffer,
+    /// Imported textures keyed by IOSurface pointer — imported once per surface
+    /// and reused across frames (the camera's pooled surfaces, a screen-share's,
+    /// …), so there's no per-frame re-import. `(bind_group, texture, (w, h))`.
+    cache: std::collections::HashMap<*const c_void, (wgpu::BindGroup, wgpu::Texture, (u32, u32))>,
 }
 
-impl CameraComposite {
+impl LayerCompositor {
     pub(crate) fn new(device: &wgpu::Device) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("camera-blit-shader"),
-            source: wgpu::ShaderSource::Wgsl(CAMERA_BLIT_WGSL.into()),
+            label: Some("layer-blit-shader"),
+            source: wgpu::ShaderSource::Wgsl(LAYER_BLIT_WGSL.into()),
         });
         let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("camera-blit-bgl"),
+            label: Some("layer-blit-bgl"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -265,20 +295,21 @@ impl CameraComposite {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                        // Per-layer dynamic offset into the shared uniform buffer.
+                        has_dynamic_offset: true,
+                        min_binding_size: std::num::NonZeroU64::new(32),
                     },
                     count: None,
                 },
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("camera-blit-pl"),
+            label: Some("layer-blit-pl"),
             bind_group_layouts: &[Some(&bind_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("camera-blit-pipeline"),
+            label: Some("layer-blit-pipeline"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -289,11 +320,12 @@ impl CameraComposite {
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs"),
-                // The vello target is Rgba8Unorm — match it (the composite draws
-                // INTO the same target the strokes are in).
+                // The vello target is Rgba8Unorm — match it (we draw INTO the same
+                // target the strokes are in). Alpha-blend so rounded corners +
+                // letterbox + opacity reveal the strokes behind.
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba8Unorm,
-                    blend: None,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -305,117 +337,116 @@ impl CameraComposite {
             cache: None,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("camera-blit-sampler"),
+            label: Some("layer-blit-sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        // 4 f32: uv_scale.xy, uv_offset.xy. Initialised to identity (full frame).
-        let crop_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("camera-blit-crop"),
-            size: 16,
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("layer-blit-uniforms"),
+            size: LAYER_STRIDE * MAX_LAYERS as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        Self { pipeline, sampler, bind_layout, crop_buffer, cached: None }
+        Self { pipeline, sampler, bind_layout, uniforms, cache: std::collections::HashMap::new() }
     }
 
-    /// Composite the camera's latest frame into `target_view` at `rect_phys`
-    /// (x, y, w, h in physical pixels). No-op if the stream has no native
-    /// surface yet or the rect is degenerate. Records into `encoder`.
+    /// Composite `layers` (in order) over the target. Each layer's source is
+    /// resolved + imported (cached), positioned at its rect (logical → physical
+    /// via `scale`), fit-cropped, rounded, and opacity-blended. No-op per layer
+    /// whose source has no native surface yet.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn composite(
+    pub(crate) fn composite_layers(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        stream: &media_stream::MediaStream,
+        layers: &[TextureLayer],
         target_view: &wgpu::TextureView,
-        rect_phys: (f32, f32, f32, f32),
+        scale: f32,
         target_w: u32,
         target_h: u32,
     ) {
-        let (rx, ry, rw, rh) = rect_phys;
-        if rw < 1.0 || rh < 1.0 {
-            return;
-        }
-        // The camera's zero-copy surface (its published IOSurface).
-        let Some(src) = stream
-            .native_source()
-            .and_then(|ns| ns.downcast::<media_stream::SurfaceSource>().ok())
-        else {
-            return;
-        };
-        let ptr = src.acquire();
-        if ptr.is_null() {
-            return;
-        }
-        let fresh = self.cached.as_ref().map(|c| c.0) != Some(ptr);
-        if fresh {
-            if let Some((bind_group, texture, dims)) = self.import(device, ptr) {
-                self.cached = Some((ptr, bind_group, texture, dims));
+        for (i, layer) in layers.iter().enumerate().take(MAX_LAYERS) {
+            let Some(stream) = (layer.source)() else { continue };
+            let Some(src) = stream
+                .native_source()
+                .and_then(|ns| ns.downcast::<media_stream::SurfaceSource>().ok())
+            else {
+                continue;
+            };
+            let ptr = src.acquire();
+            if ptr.is_null() {
+                continue;
             }
+            if !self.cache.contains_key(&ptr) {
+                if let Some(entry) = self.import(device, ptr) {
+                    if self.cache.len() >= MAX_CACHE {
+                        self.cache.clear();
+                    }
+                    self.cache.insert(ptr, entry);
+                }
+            }
+            // The MTLTexture retains the IOSurface, so the cache keeps it alive;
+            // release our acquire retain.
+            unsafe { src.release(ptr) };
+
+            let Some((bind_group, _, (cam_w, cam_h))) = self.cache.get(&ptr) else {
+                continue;
+            };
+            let (cam_w, cam_h) = (*cam_w, *cam_h);
+
+            let (lx, ly, lw, lh) = (layer.rect)();
+            let (rx, ry, rw, rh) = (lx * scale, ly * scale, lw * scale, lh * scale);
+            if rw < 1.0 || rh < 1.0 {
+                continue;
+            }
+            // Clamp to the target so a partially-offscreen rect doesn't trip
+            // wgpu's "viewport out of bounds" validation.
+            let vx = rx.clamp(0.0, target_w as f32);
+            let vy = ry.clamp(0.0, target_h as f32);
+            let vw = (rx + rw).clamp(0.0, target_w as f32) - vx;
+            let vh = (ry + rh).clamp(0.0, target_h as f32) - vy;
+            if vw < 1.0 || vh < 1.0 {
+                continue;
+            }
+
+            let cam_aspect = cam_w as f32 / (cam_h as f32).max(1.0);
+            let dst_aspect = vw / vh;
+            let (sx, sy, ox, oy) = uv_transform(layer.fit, cam_aspect, dst_aspect);
+            let radius_px = (layer.corner_radius * scale).max(0.0);
+            // [uv_scale.xy, uv_offset.xy, rect_w, rect_h, radius_px, opacity]
+            let u = [sx, sy, ox, oy, vw, vh, radius_px, layer.opacity.clamp(0.0, 1.0)];
+            let mut bytes = [0u8; 32];
+            for (j, f) in u.iter().enumerate() {
+                bytes[j * 4..j * 4 + 4].copy_from_slice(&f.to_ne_bytes());
+            }
+            let offset = i as u64 * LAYER_STRIDE;
+            queue.write_buffer(&self.uniforms, offset, &bytes);
+
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("layer-composite"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    // Preserve the strokes (and earlier layers) in the target.
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, bind_group, &[offset as u32]);
+            pass.set_viewport(vx, vy, vw, vh, 0.0, 1.0);
+            pass.draw(0..3, 0..1);
         }
-        // The MTLTexture retains the IOSurface, so the cache keeps it alive;
-        // release our acquire retain.
-        unsafe { src.release(ptr) };
-
-        let Some((_, bind_group, _, (cam_w, cam_h))) = &self.cached else {
-            return;
-        };
-
-        // Clamp the viewport to the target so a partially-offscreen camera rect
-        // doesn't trip wgpu's "viewport out of bounds" validation.
-        let vx = rx.clamp(0.0, target_w as f32);
-        let vy = ry.clamp(0.0, target_h as f32);
-        let vw = (rx + rw).clamp(0.0, target_w as f32) - vx;
-        let vh = (ry + rh).clamp(0.0, target_h as f32) - vy;
-        if vw < 1.0 || vh < 1.0 {
-            return;
-        }
-
-        // Cover fit: scale the camera to fill the rect preserving aspect, crop
-        // the overflow (centered). Shrink the sampled UV range along whichever
-        // axis the camera over-extends.
-        let cam_aspect = *cam_w as f32 / (*cam_h as f32).max(1.0);
-        let dst_aspect = vw / vh;
-        let (sx, sy) = if cam_aspect > dst_aspect {
-            (dst_aspect / cam_aspect, 1.0) // camera wider → crop sides
-        } else {
-            (1.0, cam_aspect / dst_aspect) // camera taller → crop top/bottom
-        };
-        let crop = [sx, sy, (1.0 - sx) * 0.5, (1.0 - sy) * 0.5];
-        let mut crop_bytes = [0u8; 16];
-        for (i, f) in crop.iter().enumerate() {
-            crop_bytes[i * 4..i * 4 + 4].copy_from_slice(&f.to_ne_bytes());
-        }
-        queue.write_buffer(&self.crop_buffer, 0, &crop_bytes);
-
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("camera-composite"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    // Preserve the strokes already in the target.
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, bind_group, &[]);
-        pass.set_viewport(vx, vy, vw, vh, 0.0, 1.0);
-        pass.draw(0..3, 0..1);
     }
 
-    /// Import the camera's IOSurface (`ptr`) as a sampled `Bgra8Unorm` texture +
-    /// its bind group. Returns the texture's `(w, h)` for cover-fit math.
+    /// Import a layer source's IOSurface (`ptr`) as a sampled `Bgra8Unorm`
+    /// texture + its bind group. Returns the texture's `(w, h)` for fit math.
     fn import(
         &self,
         device: &wgpu::Device,
@@ -465,18 +496,54 @@ impl CameraComposite {
         };
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("camera-bind-group"),
+            label: Some("layer-bind-group"),
             layout: &self.bind_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.crop_buffer.as_entire_binding(),
+                    // One `LAYER_STRIDE` slot; the per-draw dynamic offset selects
+                    // this layer's uniform. `size` is the actual data (32 bytes).
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.uniforms,
+                        offset: 0,
+                        size: std::num::NonZeroU64::new(32),
+                    }),
                 },
             ],
         });
         Some((bind_group, texture, (w, h)))
+    }
+}
+
+/// UV scale + offset mapping the source into the destination rect for a [`Fit`].
+/// `suv = quad_uv * (sx, sy) + (ox, oy)`. Cover samples a centered sub-rect
+/// (crop); Contain maps into a centered band (the rest letterboxes via the
+/// shader's out-of-`[0,1]` clip); Fill stretches.
+fn uv_transform(fit: Fit, cam_aspect: f32, dst_aspect: f32) -> (f32, f32, f32, f32) {
+    match fit {
+        Fit::Fill => (1.0, 1.0, 0.0, 0.0),
+        Fit::Cover => {
+            if cam_aspect > dst_aspect {
+                let sx = dst_aspect / cam_aspect; // camera wider → crop sides
+                (sx, 1.0, (1.0 - sx) * 0.5, 0.0)
+            } else {
+                let sy = cam_aspect / dst_aspect; // camera taller → crop top/bottom
+                (1.0, sy, 0.0, (1.0 - sy) * 0.5)
+            }
+        }
+        Fit::Contain => {
+            if cam_aspect > dst_aspect {
+                // Fit width, letterbox vertically: texture occupies fraction f of
+                // the rect height; uv runs outside [0,1] in the bars.
+                let f = dst_aspect / cam_aspect;
+                (1.0, 1.0 / f, 0.0, (f - 1.0) / (2.0 * f))
+            } else {
+                let f = cam_aspect / dst_aspect;
+                (1.0 / f, 1.0, (f - 1.0) / (2.0 * f), 0.0)
+            }
+        }
     }
 }
 

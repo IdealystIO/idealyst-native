@@ -124,6 +124,23 @@ pub struct NavigatorHost<N: Clone + 'static> {
     /// equivalent.
     pub build_node: Rc<dyn Fn(crate::Element) -> N>,
 
+    /// Like [`build_node`](Self::build_node) but takes the **builder closure**
+    /// instead of an already-constructed `Element`, and runs that closure
+    /// INSIDE the retained chrome scope.
+    ///
+    /// This matters for chrome whose `Element` is produced by a `#[component]`
+    /// body containing a standalone `Effect`/`AnimatedValue` (e.g. idea-ui's
+    /// animated `Switch`). A component body runs its `Effect::new` the moment
+    /// the `Element` is *constructed* — so if a handler builds the `Element`
+    /// (`sidebar_builder(props)`) and only then calls `build_node`, those
+    /// effects were created with NO active scope: their handle owns them and
+    /// frees them when the body returns, so they run once and never re-fire
+    /// (the macOS drawer's Switch thumb froze for exactly this reason). Passing
+    /// the builder here defers construction into the scope so the effects are
+    /// owned by it and stay reactive. Same must-run-outside-the-outer-borrow
+    /// rule as `build_node`.
+    pub build_node_scoped: Rc<dyn Fn(Box<dyn FnOnce() -> crate::Element>) -> N>,
+
     /// [`build_node`](Self::build_node) plus insert-into-parent, so a
     /// closure with no backend reference can attach chrome into an
     /// existing slot. Lets a handler defer building an author `Element`

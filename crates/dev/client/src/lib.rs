@@ -1719,6 +1719,25 @@ where
             })
         };
 
+        // Builder-taking variant (see `NavigatorHost::build_node_scoped`). The
+        // wire client builds detached chrome; run the builder, then build +
+        // adopt as usual. The scope retention is via `chrome_scopes`.
+        let build_node_scoped: Rc<dyn Fn(Box<dyn FnOnce() -> runtime_core::Element>) -> B::Node> = {
+            let backend = self.backend.clone();
+            let holder = holder.clone();
+            let scopes = chrome_scopes.clone();
+            Rc::new(move |builder| {
+                let adopt = Some((
+                    std::any::TypeId::of::<wire::WireSidebarAdopt>(),
+                    holder.clone(),
+                ));
+                let element = builder();
+                let (node, scope) = runtime_core::build_detached(&backend, element, adopt);
+                scopes.borrow_mut().push(scope);
+                node
+            })
+        };
+
         let host = NavigatorHost {
             initial_route: "",
             initial_path: "",
@@ -1757,6 +1776,7 @@ where
             active_changed: Rc::new(|_, _| {}),
             control: control.clone(),
             build_node,
+            build_node_scoped,
             build_node_into: Rc::new(|_, _| {}),
             build_in_screen: Rc::new(move |_scope, _el| {
                 backend_for_screen

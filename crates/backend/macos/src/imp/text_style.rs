@@ -9,8 +9,6 @@ use objc2::{msg_send, msg_send_id};
 use objc2_app_kit::NSView;
 use objc2_foundation::{CGFloat, NSObject, NSString};
 
-use crate::imp::color_to_nscolor;
-
 /// AppKit's NSTextAlignment enum values. The `objc2-app-kit`
 /// generated bindings define them; we mirror raw values here so
 /// `msg_send!` can hand the right integer without pulling in a
@@ -32,11 +30,17 @@ pub(crate) fn apply_text_style(
     is_label: bool,
     font_registry: &FontRegistry,
 ) {
-    // Text color
+    // Text color — via the transition system so `color: …` animates over
+    // `color_transition` (e.g. the theme toggle's text fade) instead of snapping.
     if let Some(color) = &style.color {
-        let color_val = color.resolve();
-        let c = color_to_nscolor(&color_val);
-        let _: () = unsafe { msg_send![view, setTextColor: &*c] };
+        let rgba = crate::imp::style_color_rgba(&color.resolve());
+        crate::imp::transitions::apply_color(
+            view,
+            crate::imp::transitions::ColorProp::TextColor,
+            false,
+            rgba,
+            style.color_transition.as_ref(),
+        );
     }
 
     // Font: route through the registry first (custom typefaces),
