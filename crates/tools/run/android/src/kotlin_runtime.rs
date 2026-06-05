@@ -266,13 +266,47 @@ const REQUIRED_ANDROIDX: &[(&str, &str)] = &[
     ("androidx.lifecycle", "lifecycle-runtime"),
     ("androidx.lifecycle", "lifecycle-viewmodel"),
     ("androidx.lifecycle", "lifecycle-viewmodel-savedstate"),
+    // Fragment holds its view-lifecycle owner in a `MutableLiveData`, so the
+    // LiveData classes (`MutableLiveData`/`LiveData`/`MediatorLiveData`) must
+    // be dexed too, else `ClassNotFoundException: androidx.lifecycle.MutableLiveData`
+    // when a Fragment attaches. `-core` has the base classes; the full
+    // `lifecycle-livedata` adds `MediatorLiveData` (used by ViewModel-savedstate).
+    ("androidx.lifecycle", "lifecycle-livedata-core"),
+    ("androidx.lifecycle", "lifecycle-livedata"),
     ("androidx.savedstate", "savedstate"),
-    ("androidx.collection", "collection"),
-    ("androidx.annotation", "annotation"),
+    // Lifecycle's internal observer map. `LifecycleRegistry` (used by every
+    // ComponentActivity/Fragment) instantiates `FastSafeIterableMap` from
+    // `androidx.arch.core:core-runtime`; its base `SafeIterableMap` +
+    // annotations live in `core-common`. Neither is reachable transitively
+    // through our flat list, so without them a FragmentActivity host crashes
+    // with `ClassNotFoundException: androidx.arch.core.internal.FastSafeIterableMap`.
+    ("androidx.arch.core", "core-runtime"),
+    ("androidx.arch.core", "core-common"),
+    // `collection` 1.4+ and `annotation` 1.8+ are Kotlin-multiplatform
+    // RELOCATIONS: the base artifact is POM-only and the real classes live in
+    // the `-jvm` variant. Our resolver picks the highest version WITH a binary,
+    // so the base artifact falls back to an OLD jar (collection 1.1.0) whose
+    // `SimpleArrayMap` lacks the synthetic `(int,int,DefaultConstructorMarker)`
+    // ctor `androidx.activity`/ComponentActivity calls → `NoSuchMethodError`
+    // crash when a FragmentActivity navigator host inits. Target the `-jvm`
+    // artifacts so the current classes get dexed.
+    ("androidx.collection", "collection-jvm"),
+    ("androidx.annotation", "annotation-jvm"),
     ("androidx.versionedparcelable", "versionedparcelable"),
     ("androidx.interpolator", "interpolator"),
     ("androidx.loader", "loader"),
     ("androidx.viewpager", "viewpager"),
+    // Modern lifecycle (2.6+) exposes its state as a `StateFlow` and drives
+    // `lifecycleScope` on `Dispatchers.Main.immediate`, so it pulls in
+    // kotlinx-coroutines. `kotlinx-coroutines-core` is a KMP relocation
+    // (base POM-only → `-jvm`; the resolver's `-jvm` fallback handles it),
+    // and `kotlinx-coroutines-android` registers the `Main` dispatcher via
+    // a `MainDispatcherFactory` ServiceLoader entry — without it the first
+    // `lifecycleScope` access throws "Module with the Main dispatcher is
+    // missing". Missing the core jar surfaces first as
+    // `ClassNotFoundException: kotlinx.coroutines.flow.StateFlowKt`.
+    ("org.jetbrains.kotlinx", "kotlinx-coroutines-core"),
+    ("org.jetbrains.kotlinx", "kotlinx-coroutines-android"),
 ];
 
 /// Inputs the rest of the build pipeline consumes once kotlin/AAR
@@ -1074,4 +1108,76 @@ fn extract_classes(
     }
     fs::rename(&inner, &final_path)?;
     Ok(final_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::REQUIRED_ANDROIDX;
+
+    fn lists(group: &str, artifact: &str) -> bool {
+        REQUIRED_ANDROIDX.iter().any(|(g, a)| *g == group && *a == artifact)
+    }
+
+    /// Regression guard for the navigator-host transitive closure.
+    ///
+    /// The whiteboard (and any navigator app) hosts each screen as a Fragment
+    /// under a `FragmentActivity`. Standing that up pulls a chain of androidx
+    /// modules that are NOT imported by the runtime `.kt` files and so are
+    /// invisible to a casual reading of the list — each one surfaced, in turn,
+    /// as a `ClassNotFoundException` at app launch on a real device:
+    ///   - `androidx.arch.core:core-runtime` → `FastSafeIterableMap`
+    ///     (LifecycleRegistry's observer map)
+    ///   - `androidx.lifecycle:lifecycle-livedata-core` → `MutableLiveData`
+    ///     (Fragment's view-lifecycle owner)
+    ///   - `org.jetbrains.kotlinx:kotlinx-coroutines-core` → `StateFlowKt`
+    ///     (modern lifecycle exposes state as a StateFlow)
+    /// If any is dropped, navigator apps crash on launch. This test fails
+    /// before such a deletion ships, pointing at the class it would break.
+    #[test]
+    fn fragment_activity_transitive_closure_is_dexed() {
+        for (group, artifact) in [
+            ("androidx.arch.core", "core-runtime"),
+            ("androidx.arch.core", "core-common"),
+            ("androidx.lifecycle", "lifecycle-livedata-core"),
+            ("org.jetbrains.kotlinx", "kotlinx-coroutines-core"),
+            ("org.jetbrains.kotlinx", "kotlinx-coroutines-android"),
+        ] {
+            assert!(
+                lists(group, artifact),
+                "REQUIRED_ANDROIDX must include {group}:{artifact} — without it a \
+                 FragmentActivity navigator host crashes at launch with a \
+                 ClassNotFoundException for one of its classes",
+            );
+        }
+    }
+
+    /// `androidx.collection` (1.4+) and `androidx.annotation` (1.8+) are
+    /// Kotlin-multiplatform RELOCATIONS: the base coordinate is POM-only at
+    /// recent versions, but OLD binary jars (e.g. collection 1.1.0) linger in
+    /// the gradle cache. `find_artifact` picks the highest version WITH a
+    /// binary, so listing the bare coordinate silently dexes the stale jar —
+    /// whose `SimpleArrayMap` lacks the synthetic
+    /// `(int,int,DefaultConstructorMarker)` ctor that ComponentActivity calls,
+    /// crashing FragmentActivity init with `NoSuchMethodError`. The list MUST
+    /// pin the `-jvm` variant for these two. (kotlinx-coroutines-core is also
+    /// relocated, but its base is POM-only at EVERY cached version, so the
+    /// resolver's `-jvm` fallback handles it without an explicit pin.)
+    #[test]
+    fn kmp_relocated_modules_pin_jvm_variant() {
+        for (group, base) in [
+            ("androidx.collection", "collection"),
+            ("androidx.annotation", "annotation"),
+        ] {
+            assert!(
+                !lists(group, base),
+                "REQUIRED_ANDROIDX must NOT list the bare {group}:{base} — it's a KMP \
+                 relocation whose base coordinate resolves to a stale cached jar \
+                 (NoSuchMethodError on ComponentActivity init). Pin {base}-jvm instead",
+            );
+            assert!(
+                lists(group, &format!("{base}-jvm")),
+                "REQUIRED_ANDROIDX must pin {group}:{base}-jvm (the KMP relocation target)",
+            );
+        }
+    }
 }

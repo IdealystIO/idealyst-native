@@ -1311,7 +1311,6 @@ dependencies = [
  "inventory",
  "jni 0.21.1",
  "js-sys",
- "log",
  "objc2 0.5.2",
  "objc2-app-kit",
  "objc2-foundation 0.2.2",
@@ -1326,6 +1325,7 @@ name = "canvas-vello"
 version = "0.0.1"
 dependencies = [
  "canvas-core",
+ "log",
  "media-stream",
  "objc2 0.6.4",
  "objc2-core-foundation",
@@ -2128,6 +2128,7 @@ dependencies = [
  "backend-web",
  "css",
  "dev-server",
+ "host-terminal",
  "inventory",
  "ios-navigator-helpers",
  "jni 0.21.1",

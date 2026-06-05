@@ -128,6 +128,65 @@ impl std::fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
+/// Mount `app` and render it once, headless — no TTY, no raw mode, no
+/// alternate screen. Drives `frames` scheduler ticks between renders so
+/// deferred microtasks (e.g. the drawer SDK's sidebar build, which is
+/// queued via `schedule_microtask` during navigator mount) actually run
+/// before the snapshot. Returns the final grid as one trimmed `String`
+/// per row.
+///
+/// This is the no-TTY counterpart to [`run`] for diagnostics and
+/// snapshot-style tests: the live `run` loop needs a controlling terminal
+/// (raw mode + crossterm input), which isn't available in CI or a piped
+/// shell. Use ≥2 frames to capture content that only appears after the
+/// first post-mount microtask drain.
+pub fn render_headless<F, R>(
+    app: F,
+    register_extensions: R,
+    cols: u16,
+    rows: u16,
+    cell_size: Option<(f32, f32)>,
+    frames: usize,
+) -> Vec<String>
+where
+    F: Fn() -> Element + 'static,
+    R: FnOnce(&mut TerminalBackend),
+{
+    scheduler::install();
+    let backend = Rc::new(RefCell::new(TerminalBackend::new()));
+    backend_terminal::install_global_self(Rc::downgrade(&backend));
+    register_extensions(&mut backend.borrow_mut());
+    if let Some((w, h)) = cell_size {
+        backend.borrow_mut().set_cell_size(w, h);
+    }
+    backend.borrow_mut().set_viewport(cols, rows);
+
+    let _owner = runtime_core::mount(backend.clone(), app);
+
+    let mut out = Vec::new();
+    for _ in 0..frames.max(1) {
+        scheduler::tick();
+        let grid = backend.borrow_mut().render_to_grid();
+        out = grid_to_rows(&grid);
+    }
+    out
+}
+
+/// Flatten a [`Grid`] into one trimmed `String` per row (control / null
+/// glyphs rendered as spaces). Diagnostic helper for [`render_headless`].
+fn grid_to_rows(grid: &Grid) -> Vec<String> {
+    (0..grid.rows)
+        .map(|r| {
+            let mut line = String::with_capacity(grid.cols as usize);
+            for c in 0..grid.cols {
+                let g = grid.cell(c, r).map(|cell| cell.glyph).unwrap_or(' ');
+                line.push(if g.is_control() || g == '\0' { ' ' } else { g });
+            }
+            line.trim_end().to_string()
+        })
+        .collect()
+}
+
 /// Boot crossterm, mount `app`, and drive the render loop until the
 /// user quits. Restores the terminal state on return.
 ///

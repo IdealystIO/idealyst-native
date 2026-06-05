@@ -1367,28 +1367,26 @@ pub use ios::register;
 // `project_macos_navigator_design`). No scrim, no slide-in
 // animation — sidebar is always visible and the outlet swaps
 // its child on `Select`.
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+// macOS native — but NOT when the `terminal` feature is on. The terminal
+// target builds for the macOS host triple, so without `not(feature =
+// "terminal")` both this and the terminal handler below would compile on a
+// macOS host (one via `target_os`, one via the feature) and the two
+// `inventory::submit!`-ed handlers would both register.
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32"), not(feature = "terminal")))]
 mod macos;
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32"), not(feature = "terminal")))]
 pub use macos::register;
 
-// Non-mobile, non-wasm, non-macOS hosts target the terminal backend.
-// Drawer renders as a persistent sidebar column beside the screen
-// outlet — no animation, no scrim, always visible.
-// See [[feedback_terminal_minimalism]] and `terminal::TerminalDrawerHandler`.
-#[cfg(not(any(
-    target_arch = "wasm32",
-    target_os = "android",
-    target_os = "ios",
-    target_os = "macos"
-)))]
+// Terminal backend handler. Selected by the `terminal` feature (the app's
+// `terminal` feature forwards to it; the CLI's terminal wrapper enables the
+// app feature) rather than a `target_os` cfg, because the terminal target
+// builds for the host triple and would otherwise be shadowed by the host's
+// native backend (macOS). Drawer renders as a persistent sidebar column
+// beside the screen outlet — no animation, no scrim, always visible. See
+// [[feedback_terminal_minimalism]] and `terminal::TerminalDrawerHandler`.
+#[cfg(feature = "terminal")]
 mod terminal;
-#[cfg(not(any(
-    target_arch = "wasm32",
-    target_os = "android",
-    target_os = "ios",
-    target_os = "macos"
-)))]
+#[cfg(feature = "terminal")]
 pub use terminal::register;
 
 // =============================================================================

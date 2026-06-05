@@ -769,6 +769,27 @@ impl Backend for TerminalBackend {
         node
     }
 
+    fn create_external(
+        &mut self,
+        _type_id: std::any::TypeId,
+        type_name: &'static str,
+        _payload: &std::rc::Rc<dyn std::any::Any>,
+        a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        // The terminal backend has no external-primitive registry, so every
+        // `Element::External` (codeblock, maps, webview, …) lands here. The
+        // default `Backend::create_external` is `unimplemented!()`, which
+        // PANICS — a terminal app that mounts any external aborts at render
+        // (the tutorial mounts `codeblock`, so local `--terminal` crashed
+        // here). Render the framework's standard "not supported" text
+        // placeholder instead, mirroring the macOS/iOS backends. When a
+        // terminal external handler is genuinely needed, add a registry +
+        // inventory registrar here (see `MacosBackend::external_handlers`);
+        // until then graceful degradation beats a crash.
+        let text = format!("[external \"{type_name}\" not supported in terminal]");
+        self.create_text(&text, a11y)
+    }
+
     fn create_button(
         &mut self,
         label: &str,
@@ -1396,6 +1417,32 @@ mod regression_tests {
             data.animated_opacity,
             Some(1.0),
             "animated slot must survive apply_style replay"
+        );
+    }
+
+    /// Regression: an unregistered `Element::External` must render a
+    /// placeholder, NOT panic. The default `Backend::create_external` is
+    /// `unimplemented!()`; the terminal backend has no external registry, so
+    /// before the override every external aborted the app at render time —
+    /// the tutorial mounts `codeblock`, so local `--terminal` crashed with
+    /// "create_external not implemented for this backend". The placeholder
+    /// is the documented graceful-degradation path (mirrors macOS/iOS).
+    #[test]
+    fn create_external_renders_placeholder_instead_of_panicking() {
+        let mut be = TerminalBackend::new();
+        let node = be.create_external(
+            std::any::TypeId::of::<()>(),
+            "codeblock::CodeBlockProps",
+            &(Rc::new(()) as Rc<dyn std::any::Any>),
+            &AccessibilityProps::default(),
+        );
+        let data = be.nodes.get(&node.id).expect("placeholder node present");
+        assert_eq!(data.kind, NodeKind::Text, "placeholder is a text node");
+        assert!(
+            data.content.contains("codeblock::CodeBlockProps")
+                && data.content.contains("not supported"),
+            "placeholder should name the unsupported external; got {:?}",
+            data.content
         );
     }
 }

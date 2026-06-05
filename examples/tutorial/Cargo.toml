@@ -15,6 +15,17 @@ crate-type = ["cdylib", "rlib"]
 # recording handler on the runtime-server recorder backend.
 sidecar = ["dep:dev-server", "drawer-navigator/runtime-server"]
 
+# `terminal`: forces the terminal backend. The terminal target builds for
+# the HOST triple (it runs in-process in the TTY), so on a macOS host
+# `cfg(target_os = "macos")` would otherwise select `backend-macos` —
+# there's no target cfg that distinguishes "build the macOS app" from
+# "build the terminal app" because they share the same triple. (web /
+# ios / android each cross-compile to a distinct triple, so cfg picks
+# them unambiguously; terminal is the only one that collides with the
+# host.) The CLI's terminal wrapper enables this feature to break the
+# tie. Without it, `idealyst dev --terminal` on macOS fails to compile.
+terminal = ["dep:backend-terminal", "drawer-navigator/terminal"]
+
 [dependencies]
 runtime-core = { workspace = true }
 idea-ui = { workspace = true }
@@ -39,8 +50,14 @@ backend-android-mobile = { workspace = true }
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 backend-macos = { workspace = true }
 
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
-backend-terminal = { workspace = true }
+# Terminal backend — pulled in ONLY by the `terminal` feature (which the
+# CLI's terminal wrapper enables). It can't be a `target_os` dependency
+# like the others: the terminal target builds for the host triple, so on
+# a macOS host it shares macOS's triple and would collide with
+# `backend-macos`. The feature is the disambiguator. See `[features]`.
+[dependencies.backend-terminal]
+workspace = true
+optional = true
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false

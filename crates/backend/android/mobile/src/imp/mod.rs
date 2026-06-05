@@ -1992,6 +1992,22 @@ pub fn set_animated_color(
 }
 
 // ---------------------------------------------------------------------------
+/// Generic external-registration entry (mirrors `impl RegisterExternal for
+/// MacosBackend`): lets `register<B: RegisterExternal>(b)` — e.g.
+/// `canvas_vello::register` — target Android without naming the concrete
+/// backend. Forwards to the same `external_handlers` registry as the inherent
+/// [`AndroidBackend::register_external`], so an explicit call overrides an
+/// inventory-registered handler for the same payload (last-registration-wins).
+impl runtime_core::RegisterExternal for AndroidBackend {
+    fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&std::rc::Rc<T>, &mut AndroidBackend) -> GlobalRef + 'static,
+    {
+        self.external_handlers.register::<T, _>(handler);
+    }
+}
+
 // Backend trait impl. Each method delegates to the matching primitive
 // module (or to one of the style/helpers helpers). Keep this thin —
 // anything substantial belongs in the primitive's file.

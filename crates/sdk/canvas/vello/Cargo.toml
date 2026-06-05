@@ -24,6 +24,7 @@ canvas-core = { workspace = true }
 # Self-capture: read rendered frames back into the app's `MediaStream` via the
 # `CanvasProps.capture` `FrameWriter`. Thin, GPU-free currency crate.
 media-stream = { workspace = true }
+log = "0.4"
 
 # vello/wgpu's Metal backend pulls `objc2-foundation 0.3` (the objc2 0.6-gen),
 # the framework's Apple backends use `objc2-foundation 0.2` (0.5-gen). These

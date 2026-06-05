@@ -2,22 +2,19 @@
 // Context + parent ViewGroup to the Rust JNI bridge so the framework
 // can mount the shared `app()` tree underneath it.
 //
-// We use `android.app.Activity` (not AppCompat) because AppCompat
-// requires the androidx.appcompat AAR, which would force us to pull
-// in Maven/Gradle dependency resolution. Stock Activity is good
-// enough for everything `backend-android` exercises.
-//
-// NOTE: navigators (RustNavigator) need a FragmentActivity host. Extending
-// `androidx.fragment.app.FragmentActivity` here crashes at startup with a
-// `NoSuchMethodError` in `androidx.collection.SimpleArrayMap` — the resolved
-// androidx.collection is older than `androidx.activity`'s ComponentActivity
-// requires (the version-coordination gap the plain-Activity choice avoids).
-// Fixing that (coordinated androidx versions) is the prerequisite for navigator
-// support on Android.
+// Extends `androidx.fragment.app.FragmentActivity` (NOT AppCompat — that's a
+// separate AAR we don't pull). The navigator runtime hosts each screen as a
+// Fragment via `(context as FragmentActivity).supportFragmentManager`, so a
+// plain `android.app.Activity` makes navigator apps render only their initial
+// screen (and its content never lays out → blank). `androidx.fragment` (+ its
+// activity/lifecycle/collection/annotation closure) is already an unconditional
+// runtime dependency; the `-jvm` relocation fix in `kotlin_runtime.rs`
+// (REQUIRED_ANDROIDX) makes the dexed classes recent enough that ComponentActivity
+// inits without a NoSuchMethodError.
 
 package {{PACKAGE}};
 
-import android.app.Activity;
+import androidx.fragment.app.FragmentActivity;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
@@ -29,7 +26,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
-public class MainActivity extends Activity {
+public class MainActivity extends FragmentActivity {
     static {
         // Loading the cdylib fires its JNI_OnLoad, which caches the
         // JavaVM so the backend can attach threads on demand.

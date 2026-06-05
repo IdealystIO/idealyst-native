@@ -101,6 +101,10 @@ pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
     canvas_native::register(backend);
+    // GPU canvas: vello self-gates on f16 support — it wins on a real device
+    // (Adreno/Mali have f16) and steps aside on the emulator's Vulkan (no f16),
+    // leaving canvas-native. Same uniform registration as macOS.
+    canvas_vello::register(backend);
     video::register(backend);
 }
 
@@ -150,11 +154,11 @@ pub(crate) type RecHandle = Rc<RefCell<Option<media_writer::Recording>>>;
 /// while recording, so the renderer re-renders (and reads back a frame) every
 /// frame instead of only on a stroke mutation.
 ///
-/// NOTE: this is **macOS (vello) self-capture** only. On web/iOS the canvas uses
-/// canvas-native, which ignores `CanvasProps::capture`, so recording produces no
-/// frames there — a known follow-up (web = `canvas.captureStream()`, iOS = vello
-/// later). We do NOT branch per-platform here; the unsupported backends simply
-/// record an empty stream.
+/// Self-capture is wired on macOS (vello, zero-copy IOSurface), web
+/// (`canvas.captureStream()`), AND Android (canvas-native reads the composited
+/// bitmap back into `writer` while recording → MediaCodec). iOS canvas-native
+/// does not yet read back (a follow-up). We do NOT branch per-platform here; an
+/// unsupported backend simply records an empty stream.
 ///
 /// `MediaStream` is `!Send`/`!Copy` but `Clone`; `FrameWriter` is `Clone`. Like
 /// `strokes`/`rec_handle`, it lives outside `BoardState` and is `.clone()`d into
@@ -363,14 +367,14 @@ pub fn app() -> Element {
 
     // Canvas self-capture: the Canvas writes each rendered frame into `writer`;
     // the record button records `stream`. Root-scoped (app-owned) so it survives
-    // navigation and isn't dropped between recordings. See `CanvasCapture` for
-    // the macOS-only (vello) caveat.
+    // navigation and isn't dropped between recordings.
     //
     // `with_surface_capture` wires the zero-copy GPU path on macOS: the vello
     // canvas renders into an IOSurface and publishes it as the stream's native
     // source; media-writer wraps that IOSurface in a CVPixelBuffer and encodes
-    // it directly — no CPU read-back, no swizzle. On other platforms it's plain
-    // `MediaStream::new()` (the CPU read-back path).
+    // it directly — no CPU read-back, no swizzle. On Android/web it's plain
+    // `MediaStream::new()` and the canvas-native renderer pushes each composited
+    // frame through the CPU read-back path.
     let (capture_stream, capture_writer) = media_stream::MediaStream::with_surface_capture();
     let capture = CanvasCapture {
         stream: capture_stream,

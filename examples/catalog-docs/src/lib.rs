@@ -96,15 +96,18 @@ pub fn register_extensions(_backend: &mut backend_android::AndroidBackend) {}
 // calls in any of these arms. catalog-docs ships web/ios/android (see
 // `[package.metadata.idealyst.app].targets`); the macOS/terminal arms
 // exist only for the CLI-generated wrappers.
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+// macOS native — but NOT when the `terminal` feature is on. The terminal
+// target builds for the macOS host triple, so without `not(feature =
+// "terminal")` this and the terminal arm below would both compile on a
+// macOS host and collide as duplicate definitions.
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32"), not(feature = "terminal")))]
 pub fn register_extensions(_backend: &mut backend_macos::MacosBackend) {}
 
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    not(target_os = "ios"),
-    not(target_os = "android"),
-    not(target_os = "macos"),
-))]
+// Terminal — selected by the `terminal` feature (the CLI's terminal
+// wrapper enables it), not a `target_os` cfg, because the terminal target
+// builds for the host triple and would otherwise be shadowed by the host's
+// native backend (macOS).
+#[cfg(feature = "terminal")]
 pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
 
 // Recorder-side registration for the runtime-server sidecar.

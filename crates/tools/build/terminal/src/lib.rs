@@ -91,6 +91,40 @@ fn binary_name(project_name: &str, mode: BuildMode) -> String {
     }
 }
 
+/// Does the user crate's `Cargo.toml` declare a `terminal` feature?
+///
+/// We scan rather than pull in a TOML parser (this crate's only dep is
+/// `anyhow`). The scan finds the `[features]` table and looks for a
+/// `terminal = [...]` key before the next table header. A missing
+/// `Cargo.toml` or `[features]` table simply returns `false` — the
+/// wrapper then omits the feature and the build behaves as it did before
+/// the feature existed.
+fn crate_declares_terminal_feature(project_dir: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(project_dir.join("Cargo.toml")) else {
+        return false;
+    };
+    let mut in_features = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            // A new table header. `[features]` opens the section we care
+            // about; any other header (including `[features.x]` subtables,
+            // which don't list plain feature keys) closes it.
+            in_features = trimmed == "[features]";
+            continue;
+        }
+        if in_features {
+            // Match a bare `terminal` key: `terminal = [...]`. Strip any
+            // inline comment and compare the key before `=`.
+            let key = trimmed.split('=').next().unwrap_or("").trim();
+            if key == "terminal" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn generate_wrapper(
     wrapper_dir: &Path,
     cargo_target_dir: &Path,
@@ -134,7 +168,19 @@ fn generate_wrapper(
 
     let (deps_block, features_block, main_rs) = match opts.mode {
         BuildMode::Local => {
-            let user_dep = format!("{{ path = \"{}\" }}", project_dir.display());
+            // Enable the user crate's `terminal` feature when it declares
+            // one. The terminal target builds for the host triple, so on a
+            // macOS host `cfg(target_os = "macos")` selects the user crate's
+            // macOS backend unless a feature overrides it — this feature is
+            // that override (see the tutorial's `[features] terminal`).
+            // Crates that don't declare the feature keep the old behavior
+            // (terminal auto-selected via `target_os` cfg on non-Apple
+            // desktop hosts), so this is backward-compatible.
+            let user_dep = if crate_declares_terminal_feature(project_dir) {
+                format!("{{ path = \"{}\", features = [\"terminal\"] }}", project_dir.display())
+            } else {
+                format!("{{ path = \"{}\" }}", project_dir.display())
+            };
             let deps = format!(
                 "host-terminal = {host_dep}\n\
                  runtime-core = {fcore_dep}\n\
@@ -410,5 +456,98 @@ mod regression_tests {
             !main_rs.contains("opts.cell_size = Some"),
             "no-target project should leave cell_size at default; got:\n{main_rs}",
         );
+    }
+
+    fn tmp_with_cargo(toml: &str) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(tmp.path().join("Cargo.toml"), toml).expect("write Cargo.toml");
+        tmp
+    }
+
+    /// A crate declaring a `[features] terminal = [...]` is detected, so the
+    /// wrapper can enable it to force the terminal backend on a host (e.g.
+    /// macOS) where `cfg(target_os)` would otherwise pick the native backend.
+    #[test]
+    fn detects_declared_terminal_feature() {
+        let tmp = tmp_with_cargo(
+            "[package]\nname = \"x\"\n\n[features]\n\
+             sidecar = [\"dep:dev-server\"]\n\
+             terminal = [\"dep:backend-terminal\"]\n",
+        );
+        assert!(crate_declares_terminal_feature(tmp.path()));
+    }
+
+    /// Discriminating case: a *dependency* named `terminal` (in
+    /// `[dependencies]`, NOT `[features]`) must not be mistaken for a
+    /// terminal feature — otherwise the wrapper would inject
+    /// `features = ["terminal"]` on a crate that has no such feature and
+    /// the build would fail with "package does not contain this feature".
+    #[test]
+    fn dependency_named_terminal_is_not_a_feature() {
+        let tmp = tmp_with_cargo(
+            "[package]\nname = \"x\"\n\n[features]\n\
+             sidecar = [\"dep:dev-server\"]\n\n\
+             [dependencies]\nterminal = \"1.0\"\n",
+        );
+        assert!(!crate_declares_terminal_feature(tmp.path()));
+    }
+
+    /// No `[features]` table at all → not detected, and a missing
+    /// `Cargo.toml` returns false rather than erroring (the wrapper then
+    /// behaves exactly as it did before the feature existed).
+    #[test]
+    fn absent_features_table_and_missing_manifest_return_false() {
+        let no_features = tmp_with_cargo("[package]\nname = \"x\"\n\n[dependencies]\n");
+        assert!(!crate_declares_terminal_feature(no_features.path()));
+
+        let empty = tempfile::tempdir().expect("tempdir");
+        assert!(!crate_declares_terminal_feature(empty.path()));
+    }
+
+    /// End-to-end plumbing: when the project declares a `terminal` feature,
+    /// the generated wrapper's `Cargo.toml` enables it on the user-crate
+    /// dependency (`features = ["terminal"]`). This is what lets
+    /// `idealyst dev --terminal` build on a macOS host — without it the
+    /// user crate selects `backend-macos` and the wrapper fails to compile
+    /// (mismatched `register_extensions` signature).
+    #[test]
+    fn local_wrapper_enables_terminal_feature_when_declared() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let wrapper_dir = tmp.path().join("wrapper");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n\n[features]\nterminal = [\"dep:backend-terminal\"]\n",
+        )
+        .unwrap();
+        let opts = BuildOptions {
+            release: false,
+            mode: BuildMode::Local,
+            user_features: Vec::new(),
+            source: FrameworkSource::Workspace { root: tmp.path().join("workspace") },
+        };
+        std::fs::create_dir_all(opts_source_root(&opts)).unwrap();
+        generate_wrapper(
+            &wrapper_dir,
+            &tmp.path().join("target"),
+            &project_dir,
+            &manifest_with_targets(vec![Target::Terminal]),
+            &opts,
+        )
+        .expect("generate wrapper");
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml"))
+            .expect("read generated Cargo.toml");
+        assert!(
+            cargo.contains("features = [\"terminal\"]"),
+            "wrapper should enable the user crate's terminal feature; got:\n{cargo}",
+        );
+    }
+
+    fn opts_source_root(opts: &BuildOptions) -> std::path::PathBuf {
+        match &opts.source {
+            FrameworkSource::Workspace { root } => root.clone(),
+            _ => std::path::PathBuf::from("."),
+        }
     }
 }

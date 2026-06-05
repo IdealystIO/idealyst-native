@@ -11,11 +11,13 @@
 use crate::style::{radius, reactive_style, static_style, styled};
 use crate::{REC_FILE, REC_STORE};
 use icons_lucide::X;
+use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::{
-    component, icon, safe_area_insets, ui, view, AlignItems, ChildList, Color, Element,
-    FlexDirection, FontWeight, IntoElement, JustifyContent, Length, Overflow, Ref, Signal,
-    StyleRules, Tokenized, TouchPhase, TouchResponse,
+    component, icon, safe_area_insets, ui, view, viewport_size, AlignItems, ChildList, Color,
+    Effect, Element, FlexDirection, FontWeight, IntoElement, JustifyContent, Length, Overflow, Ref,
+    Signal, StyleRules, Tokenized, TouchPhase, TouchResponse, ViewHandle,
 };
+use std::time::Duration;
 use stack_navigator::StackHandle;
 use std::rc::Rc;
 
@@ -224,7 +226,7 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
             }
             view(style = note_box_style) {
                 Label(
-                    text = "Placeholder — these don't do anything yet.",
+                    text = "Placeholder — these toggle, but aren't wired up yet.",
                     hex = "#9ca3af",
                     weight = FontWeight::Normal,
                     size = 13.0,
@@ -246,13 +248,30 @@ impl Default for SettingRowProps {
     }
 }
 
-/// One placeholder settings row: a label + a static pill "switch".
+/// One settings row: a label + a tappable pill switch. Tapping anywhere in the
+/// row flips the switch. The switch holds its own local toggle state (these are
+/// demo placeholders — they flip visually but aren't wired to app behavior yet).
 #[component]
 pub fn SettingRow(props: &SettingRowProps) -> Element {
     let label = props.label;
-    let on = props.on;
-    let knob_x = if on { JustifyContent::FlexEnd } else { JustifyContent::FlexStart };
-    let track_bg = if on { "#2563eb" } else { "#d1d5db" };
+    // Local, persistent toggle state seeded from the `on` prop. A component body
+    // runs ONCE at mount (only its reactive scopes re-run), so this `Signal` is
+    // created once and survives re-renders.
+    let toggled = Signal::new(props.on);
+
+    // Animated knob slide: the knob is anchored left and its `TranslateX`
+    // tweens 0 → TRAVEL. A transform animates; flipping a layout property
+    // (justify) would just JUMP — the framework's animation primitive
+    // (`AnimatedValue` + `AnimProp::TranslateX`) is what produces the slide.
+    // Same pattern as idea-ui's `Switch`.
+    const TRAVEL: f32 = 16.0;
+    let knob_ref: Ref<ViewHandle> = Ref::new();
+    let av: AnimatedValue<f32> = AnimatedValue::new(if props.on { TRAVEL } else { 0.0 });
+    av.bind(knob_ref, AnimProp::TranslateX);
+    let _slide = Effect::new(move || {
+        let target = if toggled.get() { TRAVEL } else { 0.0 };
+        av.animate(TweenTo::new(target, Duration::from_millis(160)).ease_out());
+    });
 
     let knob_style = static_style(styled(
         StyleRules {
@@ -263,20 +282,25 @@ pub fn SettingRow(props: &SettingRowProps) -> Element {
         },
         [radius(9.0)],
     ));
-    let track_style = static_style(styled(
-        StyleRules {
-            width: Some(Length::Px(40.0).into()),
-            height: Some(Length::Px(24.0).into()),
-            padding_left: Some(Length::Px(3.0).into()),
-            padding_right: Some(Length::Px(3.0).into()),
-            flex_direction: Some(FlexDirection::Row),
-            align_items: Some(AlignItems::Center),
-            justify_content: Some(knob_x),
-            background: Some(Tokenized::Literal(Color(track_bg.into()))),
-            ..Default::default()
-        },
-        [radius(12.0)],
-    ));
+    // Track recolors reactively (instant); the knob slide is animated above.
+    let track_style = reactive_style(move || {
+        styled(
+            StyleRules {
+                width: Some(Length::Px(40.0).into()),
+                height: Some(Length::Px(24.0).into()),
+                padding_left: Some(Length::Px(3.0).into()),
+                padding_right: Some(Length::Px(3.0).into()),
+                flex_direction: Some(FlexDirection::Row),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::FlexStart),
+                background: Some(Tokenized::Literal(Color(
+                    if toggled.get() { "#2563eb" } else { "#d1d5db" }.into(),
+                ))),
+                ..Default::default()
+            },
+            [radius(12.0)],
+        )
+    });
     let row_style = static_style(StyleRules {
         flex_direction: Some(FlexDirection::Row),
         align_items: Some(AlignItems::Center),
@@ -291,8 +315,15 @@ pub fn SettingRow(props: &SettingRowProps) -> Element {
             Label(text = label, hex = "#111827", weight = FontWeight::Normal, size = 15.0)
             view(style = track_style) {
                 view(style = knob_style) {}
+                .bind(knob_ref)
             }
         }
+        .on_touch(move |ev| {
+            if ev.phase == TouchPhase::Ended {
+                toggled.set(!toggled.get());
+            }
+            TouchResponse::CONSUMED
+        })
     }
 }
 
@@ -349,24 +380,50 @@ pub fn PreviewScreen(props: &PreviewScreenProps) -> Element {
         autoplay: true,
         controls: true,
         loop_playback: true,
-        object_fit: video::ObjectFit::Contain,
+        // Cover, not Contain: the stage box is already sized to the recording's
+        // aspect, so Cover fills it edge-to-edge (no stage-bg letterbox sliver —
+        // the viewport-derived aspect can be ~1px off, which Contain would show
+        // as a hairline bar). The crop is sub-pixel given the matched aspect.
+        object_fit: video::ObjectFit::Cover,
     })
     .with_style(video_fill)
     .into_element();
 
-    let stage_box_style = static_style(styled(
-        StyleRules {
-            flex_grow: Some(Tokenized::Literal(1.0)),
-            margin_left: Some(Length::Px(20.0).into()),
-            margin_right: Some(Length::Px(20.0).into()),
-            background: Some(Tokenized::Literal(Color("#0b1220".into()))),
-            overflow: Some(Overflow::Hidden),
-            align_items: Some(AlignItems::Center),
-            justify_content: Some(JustifyContent::Center),
-            ..Default::default()
-        },
-        [radius(16.0)],
-    ));
+    // Outer: fills the space between the header and the actions, and CENTERS the
+    // stage box within it (both axes).
+    let stage_wrapper_style = static_style(StyleRules {
+        flex_grow: Some(Tokenized::Literal(1.0)),
+        margin_left: Some(Length::Px(20.0).into()),
+        margin_right: Some(Length::Px(20.0).into()),
+        flex_direction: Some(FlexDirection::Column),
+        align_items: Some(AlignItems::Center),
+        justify_content: Some(JustifyContent::Center),
+        ..Default::default()
+    });
+    // Inner stage: takes the RECORDED clip's aspect ratio so the video fills it
+    // edge-to-edge with NO letterbox. The recording is the full-screen canvas
+    // MINUS the system bars (status + nav) — which the safe-area insets cover —
+    // so `width / (height - insets)` matches the recorded frame's aspect closely.
+    // Height-bound to the wrapper; `max_width: 100%` clamps the rare wide clip.
+    let stage_box_style = reactive_style(move || {
+        let vp = viewport_size().get();
+        let ins = safe_area_insets().get();
+        let content_h = (vp.height - ins.top - ins.bottom).max(1.0);
+        let aspect = (vp.width / content_h).max(0.05);
+        styled(
+            StyleRules {
+                height: Some(Length::pct(100.0).into()),
+                aspect_ratio: Some(aspect),
+                max_width: Some(Length::pct(100.0).into()),
+                background: Some(Tokenized::Literal(Color("#0b1220".into()))),
+                overflow: Some(Overflow::Hidden),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::Center),
+                ..Default::default()
+            },
+            [radius(16.0)],
+        )
+    });
     let actions_style = static_style(StyleRules {
         flex_direction: Some(FlexDirection::Row),
         gap: Some(Length::Px(12.0).into()),
@@ -408,8 +465,10 @@ pub fn PreviewScreen(props: &PreviewScreenProps) -> Element {
 
     ui! {
         ScreenScaffold(title = "Recording", nav = nav) {
-            view(style = stage_box_style) {
-                stage_video
+            view(style = stage_wrapper_style) {
+                view(style = stage_box_style) {
+                    stage_video
+                }
             }
             view(style = actions_style) {
                 ActionButton(label = "Discard", primary = false, on_press = on_discard)

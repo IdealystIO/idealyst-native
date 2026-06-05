@@ -37,6 +37,9 @@ backend-ios-mobile = { workspace = true }
 
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 backend-android-mobile = { workspace = true }
+# GPU canvas on Android (vello/Vulkan). Self-gates: wins on a real device with
+# f16, steps aside to canvas-native on the emulator (no f16).
+canvas-vello = { workspace = true }
 
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 backend-macos = { workspace = true }

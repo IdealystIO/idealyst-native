@@ -196,28 +196,29 @@ fn draw_layers(
         }
         let lv = &mut vids[i];
         lv.ensure(&ms);
-        let (vw, vh) = (lv.el.video_width() as f64, lv.el.video_height() as f64);
+        let (vw, vh) = (lv.el.video_width() as f32, lv.el.video_height() as f32);
         if vw < 1.0 || vh < 1.0 {
             continue; // first frames not decoded yet
         }
         let (dx, dy, dw, dh) = (layer.rect)();
-        let (dx, dy, dw, dh) = (dx as f64, dy as f64, dw as f64, dh as f64);
         if dw < 1.0 || dh < 1.0 {
             continue;
         }
-        // Cover fit: sample a centered crop of the source matching the rect.
-        let s = (dw / vw).max(dh / vh);
-        let (sw, sh) = (dw / s, dh / s);
-        let (sx, sy) = ((vw - sw) * 0.5, (vh - sh) * 0.5);
-        let r = (layer.corner_radius as f64).clamp(0.0, dw.min(dh) * 0.5);
+        // Shared crop/letterbox math (same on every backend).
+        let ((sx, sy, sw, sh), (ox, oy, ow, oh)) =
+            layer.fit.map_rects(vw, vh, dx, dy, dw, dh);
+        // Clip to the DRAWN rect (letterboxed for Contain) so corners round the
+        // image, not the empty bars.
+        let r = (layer.corner_radius as f64).clamp(0.0, (ow.min(oh) as f64) * 0.5);
 
         ctx.save();
         ctx.set_global_alpha(layer.opacity.clamp(0.0, 1.0) as f64);
         ctx.begin_path();
-        let _ = ctx.round_rect_with_f64(dx, dy, dw, dh, r);
+        let _ = ctx.round_rect_with_f64(ox as f64, oy as f64, ow as f64, oh as f64, r);
         ctx.clip();
         let _ = ctx.draw_image_with_html_video_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
-            &lv.el, sx, sy, sw, sh, dx, dy, dw, dh,
+            &lv.el, sx as f64, sy as f64, sw as f64, sh as f64, ox as f64, oy as f64, ow as f64,
+            oh as f64,
         );
         ctx.restore();
     }

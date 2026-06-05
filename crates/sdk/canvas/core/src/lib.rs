@@ -91,10 +91,12 @@ pub struct CanvasProps {
     /// live `MediaStream` (a camera, screen share, …) drawn as a positioned,
     /// rounded, opacity-blended rectangle. They become part of the rendered
     /// output, so both the on-screen canvas AND the self-capture recording show
-    /// them (WYSIWYG). A GPU renderer imports each stream's native surface (an
-    /// IOSurface on macOS) and composites it every frame — zero CPU copy. Empty
-    /// by default. GPU-only (canvas-vello); the CPU renderers ignore it (an app
-    /// overlays a `video` widget there instead).
+    /// them (WYSIWYG). Every renderer composites them — the GPU vello renderer
+    /// imports each stream's native surface (an IOSurface on macOS) for a
+    /// zero-copy texture; the CPU renderers (web/iOS/Android) pull the stream's
+    /// latest RGBA frame ([`MediaStream::latest`](media_stream::MediaStream::latest))
+    /// and draw it with their native 2D engine. All share [`Fit::map_rects`] so
+    /// the crop/letterbox is identical across backends. Empty by default.
     #[schema(constraint = "texture layers (e.g. a camera) composited over the scene")]
     pub layers: Vec<TextureLayer>,
 }
@@ -109,6 +111,61 @@ pub enum Fit {
     Cover,
     /// Scale to fit inside the rect preserving aspect; letterbox the remainder.
     Contain,
+}
+
+impl Fit {
+    /// Map a source image of size `vw × vh` into the destination rect
+    /// `(dx, dy, dw, dh)`, returning `(src, dst)` where `src = (sx, sy, sw, sh)`
+    /// is the sub-rectangle of the SOURCE to sample and `dst = (x, y, w, h)` is
+    /// the sub-rectangle of the destination to draw into. This is the single
+    /// source of truth every CPU renderer (web `drawImage`, Android
+    /// `Canvas.drawBitmap`, iOS `CGContextDrawImage`) shares so a camera layer
+    /// crops/letterboxes identically on every backend (the GPU vello compositor
+    /// does the equivalent in UV space).
+    ///
+    /// - [`Fill`](Self::Fill): whole source → whole dest (may distort).
+    /// - [`Cover`](Self::Cover): crop a centered slice of the source so the
+    ///   whole dest is covered, aspect preserved.
+    /// - [`Contain`](Self::Contain): whole source into a centered, aspect-fit
+    ///   sub-rect of the dest (letterboxed remainder).
+    ///
+    /// Degenerate inputs (any dimension `<= 0`) return the full source → full
+    /// dest, so a renderer never divides by zero.
+    // The `(src, dst)` pair of `(x,y,w,h)` rect tuples is the natural shape here
+    // — the same tuple `TextureLayer::rect` already uses; a named struct would
+    // be heavier than the call sites warrant.
+    #[allow(clippy::type_complexity)]
+    pub fn map_rects(
+        self,
+        vw: f32,
+        vh: f32,
+        dx: f32,
+        dy: f32,
+        dw: f32,
+        dh: f32,
+    ) -> ((f32, f32, f32, f32), (f32, f32, f32, f32)) {
+        let full = ((0.0, 0.0, vw, vh), (dx, dy, dw, dh));
+        if vw <= 0.0 || vh <= 0.0 || dw <= 0.0 || dh <= 0.0 {
+            return full;
+        }
+        match self {
+            Fit::Fill => full,
+            Fit::Cover => {
+                // Crop a centered slice of the source matching the dest aspect.
+                let s = (dw / vw).max(dh / vh);
+                let (sw, sh) = (dw / s, dh / s);
+                let (sx, sy) = ((vw - sw) * 0.5, (vh - sh) * 0.5);
+                ((sx, sy, sw, sh), (dx, dy, dw, dh))
+            }
+            Fit::Contain => {
+                // Whole source into a centered, aspect-fit sub-rect of the dest.
+                let s = (dw / vw).min(dh / vh);
+                let (ow, oh) = (vw * s, vh * s);
+                let (ox, oy) = (dx + (dw - ow) * 0.5, dy + (dh - oh) * 0.5);
+                ((0.0, 0.0, vw, vh), (ox, oy, ow, oh))
+            }
+        }
+    }
 }
 
 /// A `MediaStream` composited into the canvas at a reactive rectangle, with a
@@ -159,6 +216,33 @@ impl TextureLayer {
     pub fn opacity(mut self, o: f32) -> Self {
         self.opacity = o;
         self
+    }
+}
+
+#[doc(no_inline)]
+pub use media_stream::Subscription;
+
+/// Keep one no-op CPU-frame subscription alive per layer whose source is
+/// currently present, resizing `slots` to match `layers`.
+///
+/// A camera producer only does its per-frame CPU readback while
+/// [`wants_cpu_frames`](media_stream::FrameWriter::wants_cpu_frames) is true —
+/// i.e. while at least one consumer has an active
+/// [`subscribe`](media_stream::MediaStream::subscribe). The CPU canvas renderers
+/// (iOS/Android) read frames via [`latest`](media_stream::MediaStream::latest),
+/// which does NOT bump that count, so without this they'd pull `None` forever.
+/// This holds a throwaway subscription (the frames are consumed via `latest`,
+/// not the callback) for exactly as long as each layer has a stream; dropping a
+/// slot on stream-removal lets the producer stop the readback again. GPU
+/// renderers that read the zero-copy native source never call this.
+pub fn sync_layer_subscriptions(layers: &[TextureLayer], slots: &mut Vec<Option<Subscription>>) {
+    slots.resize_with(layers.len(), || None);
+    for (slot, layer) in slots.iter_mut().zip(layers.iter()) {
+        match ((layer.source)(), slot.is_some()) {
+            (Some(stream), false) => *slot = Some(stream.subscribe(|_| {})),
+            (None, true) => *slot = None,
+            _ => {}
+        }
     }
 }
 
@@ -282,6 +366,36 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(paint_scene(&props).ops().len(), 1);
+    }
+
+    /// `Fit::map_rects` is the shared crop/letterbox math every CPU renderer
+    /// (web/iOS/Android) uses, so a camera layer composites identically across
+    /// backends. A bug here would silently diverge one platform's framing.
+    #[test]
+    fn fit_map_rects_matches_per_mode_geometry() {
+        // Source 200×100 (2:1), dest 100×100 (square) at origin (10, 20).
+        let (vw, vh) = (200.0, 100.0);
+        let (dx, dy, dw, dh) = (10.0, 20.0, 100.0, 100.0);
+
+        // Fill: whole source → whole dest (distorts).
+        let (src, dst) = Fit::Fill.map_rects(vw, vh, dx, dy, dw, dh);
+        assert_eq!(src, (0.0, 0.0, 200.0, 100.0));
+        assert_eq!(dst, (10.0, 20.0, 100.0, 100.0));
+
+        // Cover: crop a centered square (100×100) of the source; full dest.
+        let (src, dst) = Fit::Cover.map_rects(vw, vh, dx, dy, dw, dh);
+        assert_eq!(src, (50.0, 0.0, 100.0, 100.0));
+        assert_eq!(dst, (10.0, 20.0, 100.0, 100.0));
+
+        // Contain: whole source into a centered 100×50 letterboxed sub-rect.
+        let (src, dst) = Fit::Contain.map_rects(vw, vh, dx, dy, dw, dh);
+        assert_eq!(src, (0.0, 0.0, 200.0, 100.0));
+        assert_eq!(dst, (10.0, 45.0, 100.0, 50.0));
+
+        // Degenerate source (no frame yet) → full→full, never divides by zero.
+        let (src, dst) = Fit::Cover.map_rects(0.0, 0.0, dx, dy, dw, dh);
+        assert_eq!(src, (0.0, 0.0, 0.0, 0.0));
+        assert_eq!(dst, (10.0, 20.0, 100.0, 100.0));
     }
 
     #[test]

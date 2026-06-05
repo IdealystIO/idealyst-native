@@ -238,10 +238,19 @@ pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 pub fn register_extensions(_backend: &mut backend_android::AndroidBackend) {}
 
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+// macOS native — but NOT when the `terminal` feature is on. The terminal
+// target builds for the macOS host triple, so without `not(feature =
+// "terminal")` this and the terminal arm below would both compile on a
+// macOS host and collide as duplicate definitions.
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32"), not(feature = "terminal")))]
 pub fn register_extensions(_backend: &mut backend_macos::MacosBackend) {}
 
-#[cfg(all(not(feature = "ssr"), not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos"))))]
+// Terminal — selected by the `terminal` feature (the CLI's terminal
+// wrapper enables it), not a `target_os` cfg, because the terminal target
+// builds for the host triple and would otherwise be shadowed by the host's
+// native backend (macOS). Still excluded under `ssr` (SSR uses the separate
+// `register_ssr_extensions` symbol below).
+#[cfg(all(not(feature = "ssr"), feature = "terminal"))]
 pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
 
 // Recorder-side registration for the runtime-server sidecar. Distinct fn

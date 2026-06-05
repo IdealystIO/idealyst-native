@@ -115,6 +115,40 @@ pub(super) fn theme_cohort_unregister(id: CohortId) {
     });
 }
 
+/// Clear all cohort thread-local state. Runs from `DriverGuard::drop`,
+/// i.e. when the root scope's driver Effect drops — which on a local-mount
+/// host happens during the reactive `Arena` thread-local's own destruction
+/// at process exit.
+///
+/// Every access is `try_with` + `try_borrow_mut`, NEVER a plain `with` /
+/// `borrow_mut`, because this runs inside a `Drop` during TLS teardown.
+/// Thread-local destruction order within a thread is unspecified, so by the
+/// time this guard drops, one of these cohort thread-locals may ALREADY be
+/// destroyed — a plain `with` then hits `AccessError` and panics *inside a
+/// destructor*, which std escalates to a hard process abort ("thread local
+/// panicked on drop, aborting"). That was the local-mount terminal crash on
+/// exit; the runtime-server client never hit it because it holds no
+/// reactive arena (it only renders streamed wire commands). If a TLS is
+/// already gone — or transiently borrowed — there's nothing left to clear,
+/// so each step is best-effort and the function is guaranteed panic-free.
+/// Regression: `reset_theme_cohort_state_is_panic_safe_when_borrowed`.
+pub(super) fn reset_theme_cohort_state() {
+    let _ = THEME_COHORT_DRIVER_INSTALLED.try_with(|c| c.set(false));
+    let _ = THEME_COHORT.try_with(|m| {
+        if let Ok(mut slab) = m.try_borrow_mut() {
+            slab.clear();
+        }
+    });
+    let _ = THEME_COHORT_FREE.try_with(|f| {
+        if let Ok(mut free) = f.try_borrow_mut() {
+            free.clear();
+        }
+    });
+    // Reset the cascade flag so a follow-up `render(...)` with a different
+    // backend doesn't inherit stale state.
+    let _ = BACKEND_CASCADE_TOKENS.try_with(|c| c.set(false));
+}
+
 /// Install (idempotently) the cohort driver effect: subscribes to
 /// the active theme signal and re-applies every cohort entry when
 /// the theme changes. Created lazily on the first
@@ -140,12 +174,7 @@ pub(super) fn install_theme_cohort_driver<B: Backend + 'static>(backend: &Rc<Ref
     struct DriverGuard;
     impl Drop for DriverGuard {
         fn drop(&mut self) {
-            THEME_COHORT_DRIVER_INSTALLED.with(|c| c.set(false));
-            THEME_COHORT.with(|m| m.borrow_mut().clear());
-            THEME_COHORT_FREE.with(|f| f.borrow_mut().clear());
-            // Reset the cascade flag so a follow-up `render(...)`
-            // with a different backend doesn't inherit stale state.
-            BACKEND_CASCADE_TOKENS.with(|c| c.set(false));
+            reset_theme_cohort_state();
         }
     }
     let _guard = DriverGuard;
@@ -235,4 +264,46 @@ pub(super) fn install_theme_cohort_driver<B: Backend + 'static>(backend: &Rc<Ref
         });
     });
     let _ = _e;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: `reset_theme_cohort_state` (the body of
+    /// `DriverGuard::drop`) must never panic when a cohort thread-local
+    /// can't be freely `borrow_mut`-ed.
+    ///
+    /// The production crash was a local-mount terminal app aborting on exit
+    /// with "thread local panicked on drop": the driver guard's `drop` runs
+    /// during the reactive `Arena` thread-local's teardown and touched the
+    /// cohort thread-locals with a plain `with`/`borrow_mut`, hitting
+    /// `AccessError` (TLS already destroyed) — a panic inside a destructor,
+    /// which std escalates to a hard abort. The destroyed-TLS ordering is
+    /// only reachable at real thread exit, so this test exercises the
+    /// deterministic same-thread proxy: a live borrow on a cohort TLS. The
+    /// `try_borrow_mut` guard makes that a no-op; the pre-fix `borrow_mut`
+    /// double-borrow-panicked on this exact line, mirroring the abort.
+    #[test]
+    fn reset_theme_cohort_state_is_panic_safe_when_borrowed() {
+        // (1) A live shared borrow on THEME_COHORT must not make the reset
+        //     panic — it should skip that one and clear the rest.
+        THEME_COHORT.with(|m| {
+            let _held = m.borrow();
+            reset_theme_cohort_state(); // must not panic
+        });
+
+        // (2) Uncontended, it still resets every piece of state.
+        THEME_COHORT_DRIVER_INSTALLED.with(|c| c.set(true));
+        THEME_COHORT.with(|m| m.borrow_mut().push(None));
+        THEME_COHORT_FREE.with(|f| f.borrow_mut().push(3));
+        BACKEND_CASCADE_TOKENS.with(|c| c.set(true));
+
+        reset_theme_cohort_state();
+
+        assert!(!THEME_COHORT_DRIVER_INSTALLED.with(|c| c.get()));
+        assert!(THEME_COHORT.with(|m| m.borrow().is_empty()));
+        assert!(THEME_COHORT_FREE.with(|f| f.borrow().is_empty()));
+        assert!(!BACKEND_CASCADE_TOKENS.with(|c| c.get()));
+    }
 }

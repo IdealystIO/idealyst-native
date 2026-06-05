@@ -39,9 +39,57 @@ const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// Register the vello canvas renderer. Generic over any backend that
 /// supports externals + graphics surfaces — the surface is obtained from
 /// `Backend::create_graphics`, so there's no per-platform code.
+///
+/// **Self-gating:** only takes over (from canvas-native, registered first) if
+/// this GPU can actually run vello's shaders. The one known-incompatible case
+/// is Vulkan WITHOUT the f16 capability — vello's `flatten` shader requires
+/// `SHADER_FLOAT16_IN_FLOAT32`, which naga enforces on Vulkan (the Android
+/// EMULATOR's Vulkan lacks it) but not on Metal. So an app can register both
+/// canvas-native and canvas-vello uniformly on every platform: vello wins on a
+/// real GPU (Metal, or Vulkan with f16) and steps aside on the emulator,
+/// leaving canvas-native — no per-environment `cfg` or `is_simulator()` needed.
 pub fn register<B: RegisterExternal>(backend: &mut B) {
     canvas_core::ensure_wire_serde();
-    backend.register_external::<CanvasProps, _>(|props, b| build_canvas(props, b));
+    if gpu_can_run_vello() {
+        backend.register_external::<CanvasProps, _>(|props, b| build_canvas(props, b));
+    }
+}
+
+/// Probe the default adapter for vello compatibility. Returns `false` only when
+/// vello's shaders are known to fail: Vulkan without the f16 capability (e.g.
+/// the Android emulator). A headless adapter request — no surface needed; runs
+/// once at startup. If no GPU adapter exists at all, vello can't run → `false`.
+fn gpu_can_run_vello() -> bool {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::PRIMARY,
+        flags: wgpu::InstanceFlags::default(),
+        memory_budget_thresholds: Default::default(),
+        backend_options: wgpu::BackendOptions::default(),
+        display: None,
+    });
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        force_fallback_adapter: false,
+        compatible_surface: None,
+    })) else {
+        return false;
+    };
+    // Vulkan needs the explicit f16 capability for `vello.flatten`; Metal/DX12
+    // don't enforce it. Block only the known-bad combination.
+    let info = adapter.get_info();
+    let has_f16 = adapter.features().contains(wgpu::Features::SHADER_F16);
+    let ok = !(info.backend == wgpu::Backend::Vulkan && !has_f16);
+    if !ok {
+        // One-line startup diagnostic for the recurring "why isn't the GPU canvas
+        // active?" question — e.g. the Android emulator's Goldfish GFXStream
+        // Vulkan never exposes f16 (no image version does), so vello steps aside
+        // for canvas-native. Real Adreno/Mali GPUs report f16 and vello wins.
+        log::warn!(
+            "canvas-vello: {:?} adapter {:?} lacks f16 — using canvas-native (GPU canvas needs SHADER_F16)",
+            info.backend, info.name
+        );
+    }
+    ok
 }
 
 fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node {
@@ -214,9 +262,16 @@ impl RenderState {
         }))
         .ok()?;
 
+        // vello's `flatten` shader needs the f16 capability on Vulkan (naga
+        // rejects it otherwise: "requires capability SHADER_FLOAT16_IN_FLOAT32").
+        // Metal doesn't require the explicit feature, but Vulkan does — so
+        // request `SHADER_F16` when the adapter offers it. A GPU without f16
+        // (e.g. the Android emulator's Vulkan) can't run vello at all; it stays
+        // on canvas-native there.
+        let f16 = wgpu::Features::SHADER_F16 & adapter.features();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("canvas-vello-device"),
-            required_features: wgpu::Features::empty(),
+            required_features: f16,
             required_limits: wgpu::Limits::default(),
             memory_hints: wgpu::MemoryHints::default(),
             experimental_features: wgpu::ExperimentalFeatures::default(),

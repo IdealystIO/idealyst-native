@@ -157,6 +157,12 @@ pub(crate) fn create(
                         .unwrap_or(0)
                 });
                 depth_for_dispatch(new_depth as usize);
+                // The pushed screen's content needs a Taffy layout pass, or its
+                // sub-views render at default (0) size until some other trigger
+                // forces a relayout — the "Settings screen not laid out" bug.
+                // Coalesced (thread-local flag), so this is cheap. Mirrors the
+                // drawer's `swap_body` ([[project_swap_body_layout_pass]]).
+                backend_android::schedule_layout_pass();
             }
             NavCommand::Pop => {
                 let new_depth = with_jni_env(|env| {
@@ -166,6 +172,8 @@ pub(crate) fn create(
                         .unwrap_or(0)
                 });
                 depth_for_dispatch(new_depth as usize);
+                // Relayout the revealed screen (parity with iOS Pop).
+                backend_android::schedule_layout_pass();
             }
             NavCommand::Replace { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
@@ -186,6 +194,8 @@ pub(crate) fn create(
                         .unwrap_or(0)
                 });
                 depth_for_dispatch(new_depth as usize);
+                // New content → lay it out (see the Push arm).
+                backend_android::schedule_layout_pass();
             }
             NavCommand::Reset { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
@@ -206,6 +216,8 @@ pub(crate) fn create(
                         .unwrap_or(0)
                 });
                 depth_for_dispatch(new_depth as usize);
+                // New content → lay it out (see the Push arm).
+                backend_android::schedule_layout_pass();
             }
             // Stack navigator doesn't accept select-shaped or
             // drawer-shaped commands. Panic to surface the mismatch at

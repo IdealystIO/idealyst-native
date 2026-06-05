@@ -76,6 +76,12 @@ ssr = ["dep:backend-ssr"]
 # handler so `register_extensions_recorder` can register a navigator
 # recording handler on the runtime-server recorder backend.
 sidecar = ["dep:dev-server", "drawer-navigator/runtime-server"]
+# Turn on the terminal build path. Like `ssr` above, this forces a
+# host-triple backend that `cfg(target_os)` can't select: the terminal
+# target builds for the host triple, so on a macOS host it collides with
+# `backend-macos`. The CLI's terminal wrapper enables this feature to break
+# the tie. (See the tutorial's Cargo.toml for the full rationale.)
+terminal = ["dep:backend-terminal", "drawer-navigator/terminal"]
 
 # Web target — wasm + DOM. The marketing site's primary surface.
 #
@@ -128,10 +134,14 @@ backend-android-mobile = { workspace = true }
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 backend-macos = { workspace = true }
 
-# Terminal fallback — all non-mobile, non-wasm, non-macOS hosts build on
-# the terminal backend by default, so the website does too.
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
-backend-terminal = { workspace = true }
+# Terminal backend — pulled in ONLY by the `terminal` feature (the CLI's
+# terminal wrapper enables it). It can't be a `target_os` dependency like
+# the others: the terminal target builds for the host triple, so on a
+# macOS host it shares macOS's triple and would collide with
+# `backend-macos`. The feature is the disambiguator. See `[features]`.
+[dependencies.backend-terminal]
+workspace = true
+optional = true
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false

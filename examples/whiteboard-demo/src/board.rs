@@ -5,8 +5,8 @@
 use crate::style::{border_all, radius, reactive_style, static_style, styled};
 use crate::{parse_rgba, paint_stroke, BoardState, CanvasCapture, RecHandle, Stroke, Strokes};
 use runtime_core::{
-    component, safe_area_insets, ui, viewport_size, Color, Element, IntoElement, Length, Overflow,
-    Position, Signal, StyleRules, Tokenized, TouchPhase, TouchResponse,
+    component, safe_area_insets, ui, viewport_size, Element, IntoElement, Length, Overflow,
+    Position, Signal, StyleRules, TouchPhase, TouchResponse,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -262,46 +262,23 @@ impl Default for CameraWidgetProps {
     }
 }
 
-/// The live camera feed: a cover-fit `video::Video` in a rounded box, draggable
-/// anywhere on the canvas (clamped to the safe area). A transparent overlay
-/// carries the drag handler so the video child can't swallow the press (the
-/// macOS "can't move the camera" bug — the video NSView was the hit target).
+/// The draggable camera frame. Every backend composites the live camera INTO
+/// the canvas (the [`DrawingSurface`]'s `TextureLayer` — GPU on macOS, native
+/// 2D `drawImage`/`drawBitmap`/`CGImage` on web/iOS/Android), so this widget is
+/// purely a transparent frame + drag handle positioned over that composited
+/// region — identical on all platforms (no per-target branching). Dragging it
+/// moves `cam_x`/`cam_y`, which the canvas layer's `rect` closure reads, so the
+/// composited camera follows.
 #[component]
 pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
     let cam_on = props.state.cam_on;
-    let cam_stream = props.state.cam_stream;
     let cam_x = props.state.cam_x;
     let cam_y = props.state.cam_y;
-
-    // macOS (GPU LayerCompositor) AND web (canvas-native drawImage) composite the
-    // camera INTO the canvas, so it lands in the recording and this widget is
-    // just a transparent draggable frame over it. Other targets (iOS/Android)
-    // can't composite yet, so the widget shows the live `video` itself
-    // (display-only; not in the recording — a follow-up).
-    let composited = cfg!(target_os = "macos") || cfg!(target_arch = "wasm32");
-    let video_fill = static_style(StyleRules {
-        width: Some(Length::pct(100.0).into()),
-        height: Some(Length::pct(100.0).into()),
-        ..Default::default()
-    });
-    let video_child: Option<Element> = if composited {
-        None
-    } else {
-        Some(
-            video::Video(video::VideoProps {
-                source: video::stream(move || cam_stream.get()),
-                autoplay: true,
-                object_fit: video::ObjectFit::Cover,
-                ..Default::default()
-            })
-            .with_style(video_fill)
-            .into_element(),
-        )
-    };
 
     // Drag state: (start_touch_x, start_touch_y, start_cam_x, start_cam_y).
     let drag: Rc<RefCell<Option<(f32, f32, f32, f32)>>> = Rc::new(RefCell::new(None));
 
+    // Full-fill transparent child that carries the drag gesture.
     let overlay_style = static_style(StyleRules {
         position: Some(Position::Absolute),
         top: Some(Length::Px(0.0).into()),
@@ -322,6 +299,9 @@ pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
                 ..Default::default()
             };
         }
+        // Transparent — the canvas composites the camera behind the frame, which
+        // shows through. A border + matching corner radius dress the composited
+        // region (the layer rounds the video to the same `CAM_RADIUS`).
         styled(
             StyleRules {
                 position: Some(Position::Absolute),
@@ -329,14 +309,6 @@ pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
                 top: Some(Length::Px(cam_y.get().max(0.0)).into()),
                 width: Some(Length::Px(CAM_W).into()),
                 height: Some(Length::Px(CAM_H).into()),
-                // Transparent when the canvas composites the camera behind us
-                // (macOS) so it shows through the frame; a dark fill otherwise
-                // (the video sits on top).
-                background: if composited {
-                    None
-                } else {
-                    Some(Tokenized::Literal(Color("#0b1220".into())))
-                },
                 overflow: Some(Overflow::Hidden),
                 ..Default::default()
             },
@@ -346,7 +318,6 @@ pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
 
     ui! {
         view(style = box_style) {
-            if let Some(v) = video_child { v }
             view(style = overlay_style) {}
             .on_touch(move |ev| match ev.phase {
                 TouchPhase::Began => {

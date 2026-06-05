@@ -88,6 +88,12 @@ private class Recorder(
     private var videoCodec: MediaCodec? = null
     private var videoTrack = -1
     private var videoConfigured = false
+    // Source frame size vs the (possibly down-scaled, alignment-corrected)
+    // ENCODED size the AVC encoder actually accepts. Fixed at first frame.
+    private var srcW = 0
+    private var srcH = 0
+    private var encW = 0
+    private var encH = 0
 
     private var audioCodec: MediaCodec? = null
     private var audioTrack = -1
@@ -108,13 +114,16 @@ private class Recorder(
 
     fun onVideo(rgba: ByteBuffer, width: Int, height: Int, ptsUs: Long) {
         try {
+            // First frame fixes the encoded size (`encW`/`encH`); later frames
+            // reuse it. Frames are scaled from the source size into that target.
             val codec = videoCodec ?: configureVideo(width, height)
+            if (encW <= 0 || encH <= 0) return
             val index = codec.dequeueInputBuffer(0)
             if (index >= 0) {
                 val image = codec.getInputImage(index)
                 if (image != null) {
-                    fillImageFromRgba(image, rgba, width, height)
-                    codec.queueInputBuffer(index, 0, width * height * 3 / 2, ptsUs, 0)
+                    fillImageFromRgba(image, rgba, encW, encH, srcW, srcH)
+                    codec.queueInputBuffer(index, 0, encW * encH * 3 / 2, ptsUs, 0)
                 } else {
                     codec.queueInputBuffer(index, 0, 0, ptsUs, 0)
                 }
@@ -126,18 +135,39 @@ private class Recorder(
     }
 
     private fun configureVideo(width: Int, height: Int): MediaCodec {
-        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+        val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        // The AVC encoder rejects (IllegalArgumentException / EINVAL) any size
+        // that's odd OR larger than it supports — a full-screen self-capture
+        // (e.g. 1440x2891) blows past the emulator encoder's ~1920px ceiling.
+        // Scale DOWN to fit the encoder's reported max, preserving aspect, then
+        // snap to its required width/height alignment (>= even). `srcW/srcH` keep
+        // the source size so `fillImageFromRgba` can nearest-neighbor sample.
+        val vc = codec.codecInfo
+            .getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            .videoCapabilities
+        val maxW = vc.supportedWidths.upper
+        val maxH = vc.supportedHeights.upper
+        val scale = minOf(1.0, maxW.toDouble() / width, maxH.toDouble() / height)
+        val wAlign = maxOf(2, vc.widthAlignment)
+        val hAlign = maxOf(2, vc.heightAlignment)
+        val w = (((width * scale).toInt()) / wAlign * wAlign).coerceAtLeast(wAlign)
+        val h = (((height * scale).toInt()) / hAlign * hAlign).coerceAtLeast(hAlign)
+        srcW = width
+        srcH = height
+        encW = w
+        encH = h
+
+        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h)
         format.setInteger(
             MediaFormat.KEY_COLOR_FORMAT,
             MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
         )
         format.setInteger(
             MediaFormat.KEY_BIT_RATE,
-            if (videoBitrate > 0) videoBitrate else (width * height * 4),
+            if (videoBitrate > 0) videoBitrate else (w * h * 4),
         )
         format.setInteger(MediaFormat.KEY_FRAME_RATE, if (fps > 0) fps else 30)
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-        val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         codec.start()
         videoCodec = codec
@@ -151,6 +181,8 @@ private class Recorder(
         rgba: ByteBuffer,
         width: Int,
         height: Int,
+        srcWidth: Int,
+        srcHeight: Int,
     ) {
         val yP = image.planes[0]
         val uP = image.planes[1]
@@ -164,13 +196,17 @@ private class Recorder(
         val uPix = uP.pixelStride
         val vPix = vP.pixelStride
 
-        var i = 0
+        // `width`/`height` are the ENCODED size; sample the `srcWidth`×`srcHeight`
+        // RGBA with nearest-neighbor scaling (a no-op when sizes match — the
+        // common case — so unscaled recordings stay pixel-exact).
         for (y in 0 until height) {
+            val sy = if (height == srcHeight) y else y * srcHeight / height
             for (x in 0 until width) {
+                val sx = if (width == srcWidth) x else x * srcWidth / width
+                val i = (sy * srcWidth + sx) * 4
                 val r = rgba.get(i).toInt() and 0xff
                 val g = rgba.get(i + 1).toInt() and 0xff
                 val b = rgba.get(i + 2).toInt() and 0xff
-                i += 4
                 val yy = (0.299 * r + 0.587 * g + 0.114 * b).toInt().coerceIn(0, 255)
                 yBuf.put(y * yRow + x, yy.toByte())
                 if (x and 1 == 0 && y and 1 == 0) {

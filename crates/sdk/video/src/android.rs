@@ -68,6 +68,8 @@ fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> GlobalRef {
 
     // URL path — reactive Effect (efficient; fires only on change).
     let autoplay = props.autoplay;
+    // object-fit: Cover → fill the box (no black letterbox); Contain → aspect-fit.
+    let url_fill = matches!(props.object_fit, crate::ObjectFit::Cover);
     let host_for_url = host.clone();
     let props_for_url = props.clone();
     let first_run = std::cell::Cell::new(true);
@@ -76,7 +78,7 @@ fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> GlobalRef {
             MediaContent::Url(u) => u,
             MediaContent::Stream(_) | MediaContent::None => return,
         };
-        set_video_uri(&host_for_url, &url);
+        set_video_uri(&host_for_url, &url, url_fill);
         if first_run.replace(false) && autoplay {
             start(&host_for_url);
         }
@@ -144,10 +146,11 @@ fn show_frame(host: &GlobalRef, rgba: &[u8], width: u32, height: u32, cover: boo
     });
 }
 
-/// Ensure the host has a VideoView child and point it at `src`.
-fn set_video_uri(host: &GlobalRef, src: &str) {
+/// Ensure the host has a VideoView child and point it at `src`. `fill` selects
+/// object-fit cover (stretch to fill) vs the stock aspect-fit (Contain).
+fn set_video_uri(host: &GlobalRef, src: &str, fill: bool) {
     with_jni_env(|env| {
-        let Some(video_view) = ensure_video_view(env, host) else {
+        let Some(video_view) = ensure_video_view(env, host, fill) else {
             return;
         };
         let Ok(uri_class) = env.find_class("android/net/Uri") else {
@@ -176,12 +179,16 @@ fn set_video_uri(host: &GlobalRef, src: &str) {
 
 /// `RustVideoFrameSink.ensureVideoView(host)` → the (created-if-needed)
 /// VideoView child.
-fn ensure_video_view<'a>(env: &mut jni::JNIEnv<'a>, host: &GlobalRef) -> Option<JObject<'a>> {
+fn ensure_video_view<'a>(
+    env: &mut jni::JNIEnv<'a>,
+    host: &GlobalRef,
+    fill: bool,
+) -> Option<JObject<'a>> {
     env.call_static_method(
         SINK,
         "ensureVideoView",
-        "(Landroid/widget/FrameLayout;)Landroid/widget/VideoView;",
-        &[JValue::Object(host.as_obj())],
+        "(Landroid/widget/FrameLayout;Z)Landroid/widget/VideoView;",
+        &[JValue::Object(host.as_obj()), JValue::Bool(fill as u8)],
     )
     .ok()?
     .l()

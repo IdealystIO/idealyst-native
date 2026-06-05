@@ -16,7 +16,7 @@
 //! `drawRect:` CTM already matches, so no axis flip is needed.
 
 use backend_ios::{IosBackend, IosNode};
-use canvas_core::{CanvasProps, Color};
+use canvas_core::{CanvasProps, Color, TextureLayer};
 use runtime_core::Effect;
 
 use objc2::rc::{Allocated, Retained};
@@ -26,12 +26,72 @@ use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker};
 use objc2_ui_kit::UIView;
 
 use std::cell::RefCell;
+use std::ffi::c_void;
+use std::ptr::{null, null_mut};
 use std::rc::Rc;
 
 use crate::apple::{ApplePainter, CGContextRef};
 
 extern "C" {
     fn UIGraphicsGetCurrentContext() -> CGContextRef;
+}
+
+// ============================================================================
+// CoreGraphics bindings for CPU texture-layer compositing (camera-in-canvas)
+// ============================================================================
+
+/// Opaque `CGImage`. A pointer to it (`CGImageRef`) encodes as `^{CGImage=}`,
+/// which is what `+[UIImage imageWithCGImage:]`'s runtime signature expects —
+/// passing a bare `*mut c_void` (`^v`) would trip objc2's encoding check.
+#[repr(C)]
+struct CGImageOpaque {
+    _private: [u8; 0],
+}
+// `RefEncode` (not `Encode`): it's only ever used behind a pointer, and objc2's
+// blanket impl gives `*mut CGImageOpaque` an `Encode` of `^{CGImage=}` from this.
+unsafe impl objc2::RefEncode for CGImageOpaque {
+    const ENCODING_REF: objc2::Encoding =
+        objc2::Encoding::Pointer(&objc2::Encoding::Struct("CGImage", &[]));
+}
+type CGImageRef = *mut CGImageOpaque;
+
+type CGDataProviderRef = *mut c_void;
+type CGColorSpaceRef = *mut c_void;
+
+/// `kCGImageAlphaPremultipliedLast | kCGBitmapByteOrderDefault` — RGBA byte
+/// order, alpha last. Camera frames are opaque, so premultiplied vs straight is
+/// moot; this is the widely-supported combination for 8-bit RGBA.
+const RGBA_BITMAP_INFO: u32 = 1;
+
+extern "C" {
+    fn CGColorSpaceCreateDeviceRGB() -> CGColorSpaceRef;
+    fn CGColorSpaceRelease(cs: CGColorSpaceRef);
+    fn CGDataProviderCreateWithData(
+        info: *mut c_void,
+        data: *const c_void,
+        size: usize,
+        release: *const c_void,
+    ) -> CGDataProviderRef;
+    fn CGDataProviderRelease(p: CGDataProviderRef);
+    #[allow(clippy::too_many_arguments)]
+    fn CGImageCreate(
+        width: usize,
+        height: usize,
+        bits_per_component: usize,
+        bits_per_pixel: usize,
+        bytes_per_row: usize,
+        space: CGColorSpaceRef,
+        bitmap_info: u32,
+        provider: CGDataProviderRef,
+        decode: *const CGFloat,
+        should_interpolate: bool,
+        intent: u32,
+    ) -> CGImageRef;
+    fn CGImageCreateWithImageInRect(image: CGImageRef, rect: CGRect) -> CGImageRef;
+    fn CGImageRelease(image: CGImageRef);
+    fn CGContextSaveGState(c: CGContextRef);
+    fn CGContextRestoreGState(c: CGContextRef);
+    fn CGContextSetAlpha(c: CGContextRef, alpha: CGFloat);
 }
 
 // ============================================================================
@@ -63,6 +123,14 @@ pub(crate) struct CanvasViewIvars {
     /// The current scene to replay. `RefCell` so the Effect closure can
     /// swap it without `&mut self`.
     scene: RefCell<canvas_core::Scene>,
+    /// Texture layers (camera, …) composited over the scene each `drawRect:`.
+    /// Their `source`/`rect` closures are re-evaluated per paint so a live
+    /// camera and a reactive drag position both follow.
+    layers: RefCell<Vec<TextureLayer>>,
+    /// One throwaway CPU-frame subscription per active layer, so a camera
+    /// producer keeps feeding the frames our `latest()` pull reads (see
+    /// [`canvas_core::sync_layer_subscriptions`]).
+    layer_subs: RefCell<Vec<Option<canvas_core::Subscription>>>,
 }
 
 declare_class!(
@@ -100,7 +168,11 @@ declare_class!(
 impl IdealystCanvasView {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this: Allocated<Self> = mtm.alloc();
-        let this = this.set_ivars(CanvasViewIvars { scene: RefCell::new(canvas_core::Scene::new()) });
+        let this = this.set_ivars(CanvasViewIvars {
+            scene: RefCell::new(canvas_core::Scene::new()),
+            layers: RefCell::new(Vec::new()),
+            layer_subs: RefCell::new(Vec::new()),
+        });
         let this: Retained<Self> = unsafe {
             msg_send_id![
                 super(this),
@@ -117,13 +189,17 @@ impl IdealystCanvasView {
         this
     }
 
-    /// Swap the scene and invalidate so UIKit re-runs `drawRect:`.
-    fn install_scene(&self, scene: canvas_core::Scene) {
+    /// Swap the scene + layers and invalidate so UIKit re-runs `drawRect:`.
+    fn install(&self, scene: canvas_core::Scene, layers: Vec<TextureLayer>) {
+        // Keep CPU-frame subscriptions in step with the live layers so a camera
+        // producer keeps delivering frames to `latest()` (UI-thread only).
+        canvas_core::sync_layer_subscriptions(&layers, &mut self.ivars().layer_subs.borrow_mut());
         *self.ivars().scene.borrow_mut() = scene;
+        *self.ivars().layers.borrow_mut() = layers;
         let _: () = unsafe { msg_send![self, setNeedsDisplay] };
     }
 
-    /// Replay the cached scene into the active `CGContext`.
+    /// Replay the cached scene, then composite the texture layers over it.
     fn paint_now(&self) {
         let ctx = unsafe { UIGraphicsGetCurrentContext() };
         if ctx.is_null() {
@@ -131,6 +207,95 @@ impl IdealystCanvasView {
         }
         let scene = self.ivars().scene.borrow();
         painter().paint_scene(ctx, &scene);
+        for layer in self.ivars().layers.borrow().iter() {
+            composite_layer(ctx, layer);
+        }
+    }
+}
+
+/// Composite one [`TextureLayer`] over the canvas: pull the stream's latest RGBA
+/// frame, wrap it as a `CGImage`, crop to the source rect, and draw it into a
+/// rounded, alpha-blended destination rect using the shared
+/// [`canvas_core::Fit::map_rects`] geometry. Mirrors the web/Android paths.
+/// No-op when the stream has no frame yet.
+fn composite_layer(ctx: CGContextRef, layer: &TextureLayer) {
+    let Some(stream) = (layer.source)() else { return };
+    let mut rgba: Vec<u8> = Vec::new();
+    let Some((vw, vh)) = stream.latest(&mut rgba) else { return };
+    if vw == 0 || vh == 0 || rgba.len() < (vw as usize) * (vh as usize) * 4 {
+        return;
+    }
+    let (dx, dy, dw, dh) = (layer.rect)();
+    if dw < 1.0 || dh < 1.0 {
+        return;
+    }
+    let ((sx, sy, sw, sh), (ox, oy, ow, oh)) =
+        layer.fit.map_rects(vw as f32, vh as f32, dx, dy, dw, dh);
+
+    // SAFETY: `rgba` outlives the whole block; the data provider references it
+    // without copying and every pixel read happens inside `drawInRect:` below,
+    // before `rgba` is dropped. All CG objects created here are released here.
+    unsafe {
+        let cs = CGColorSpaceCreateDeviceRGB();
+        let provider = CGDataProviderCreateWithData(
+            null_mut(),
+            rgba.as_ptr() as *const c_void,
+            rgba.len(),
+            null(),
+        );
+        let img = CGImageCreate(
+            vw as usize,
+            vh as usize,
+            8,
+            32,
+            (vw as usize) * 4,
+            cs,
+            RGBA_BITMAP_INFO,
+            provider,
+            null(),
+            false,
+            0,
+        );
+        CGColorSpaceRelease(cs);
+        CGDataProviderRelease(provider);
+        if img.is_null() {
+            return;
+        }
+        // Crop the source to the fit rect, then release the full image.
+        let src = CGRect::new(
+            CGPoint::new(sx as CGFloat, sy as CGFloat),
+            CGSize::new(sw as CGFloat, sh as CGFloat),
+        );
+        let cropped = CGImageCreateWithImageInRect(img, src);
+        CGImageRelease(img);
+        if cropped.is_null() {
+            return;
+        }
+
+        let dst = CGRect::new(
+            CGPoint::new(ox as CGFloat, oy as CGFloat),
+            CGSize::new(ow as CGFloat, oh as CGFloat),
+        );
+
+        CGContextSaveGState(ctx);
+        CGContextSetAlpha(ctx, layer.opacity.clamp(0.0, 1.0) as CGFloat);
+        // Round the drawn (letterboxed for Contain) rect so corners clip the image.
+        let r = layer.corner_radius.clamp(0.0, ow.min(oh) * 0.5) as CGFloat;
+        if r > 0.0 {
+            if let Some(cls) = AnyClass::get("UIBezierPath") {
+                let path: Retained<NSObject> =
+                    msg_send_id![cls, bezierPathWithRoundedRect: dst, cornerRadius: r];
+                let _: () = msg_send![&path, addClip];
+            }
+        }
+        // CGImage → UIImage → drawInRect: so UIKit handles the top-left
+        // orientation (a raw CGContextDrawImage would render flipped here).
+        if let Some(uiimage_cls) = AnyClass::get("UIImage") {
+            let image: Retained<NSObject> = msg_send_id![uiimage_cls, imageWithCGImage: cropped];
+            let _: () = msg_send![&image, drawInRect: dst];
+        }
+        CGImageRelease(cropped);
+        CGContextRestoreGState(ctx);
     }
 }
 
@@ -162,7 +327,9 @@ fn build_canvas(props: &Rc<CanvasProps>, b: &mut IosBackend) -> IosNode {
     let props_clone = props.clone();
     let _effect = Effect::new(move || {
         let scene = canvas_core::paint_scene(&props_clone);
-        view_for_effect.install_scene(scene);
+        // Clone the layer descriptors (cheap — Rc closures); their sources are
+        // resolved per `drawRect:` so the live camera + drag rect stay current.
+        view_for_effect.install(scene, props_clone.layers.clone());
     });
 
     IosNode::View(view_uiview)

@@ -32,7 +32,7 @@
 use backend_android::{with_jni_env, AndroidBackend};
 use canvas_core::{
     CanvasProps, Color, DrawOp, FillRule, GradientStop, LineCap, LineJoin, Paint, PaintKind, Path,
-    PathSeg, Scene,
+    PathSeg, Scene, TextureLayer,
 };
 use runtime_core::{after_ms_scoped, Effect};
 
@@ -91,11 +91,21 @@ fn build_canvas(props: &Rc<CanvasProps>, b: &mut AndroidBackend) -> GlobalRef {
     // renderer) and the initial-layout nudges (renderer).
     let cell: Rc<RefCell<Scene>> = Rc::new(RefCell::new(Scene::new()));
 
-    log::warn!("[wb-canvas] build_canvas called");
+    // One throwaway CPU-frame subscription per active texture layer, so a camera
+    // producer keeps delivering frames our `latest()` pull reads (see
+    // `canvas_core::sync_layer_subscriptions`). Persists across renders.
+    let layer_subs: Rc<RefCell<Vec<Option<canvas_core::Subscription>>>> =
+        Rc::new(RefCell::new(Vec::new()));
+
     let render: Rc<dyn Fn()> = {
         let view = view.clone();
         let cell = cell.clone();
-        Rc::new(move || render_scene_into_view(&view, &cell.borrow()))
+        let props = props.clone();
+        let layer_subs = layer_subs.clone();
+        Rc::new(move || {
+            canvas_core::sync_layer_subscriptions(&props.layers, &mut layer_subs.borrow_mut());
+            render_scene_into_view(&view, &cell.borrow(), &props);
+        })
     };
 
     // Reactive repaint: re-record the Picture whenever a signal the draw
@@ -124,13 +134,16 @@ fn build_canvas(props: &Rc<CanvasProps>, b: &mut AndroidBackend) -> GlobalRef {
 }
 
 /// Rasterize `scene` into a fresh `Bitmap` sized to the view's pixels
-/// (density-scaled) and install it via `setImageBitmap`. No-op until the
-/// view has been laid out (non-zero size).
-fn render_scene_into_view(view: &GlobalRef, scene: &Scene) {
+/// (density-scaled), composite any texture `layers` (e.g. a camera) over it,
+/// install the result via `setImageBitmap`, and — while a recorder is
+/// subscribed to `props.capture` — read the composited bitmap back and push it
+/// to that stream (self-capture). No-op until the view has been laid out
+/// (non-zero size).
+fn render_scene_into_view(view: &GlobalRef, scene: &Scene, props: &CanvasProps) {
+    let layers = &props.layers;
     with_jni_env(|env| {
         let w_px = call_int(env, view.as_obj(), "getWidth");
         let h_px = call_int(env, view.as_obj(), "getHeight");
-        log::warn!("[wb-canvas] render: view {w_px}x{h_px}, ops={}", scene.ops().len());
         if w_px <= 0 || h_px <= 0 {
             return;
         }
@@ -180,11 +193,22 @@ fn render_scene_into_view(view: &GlobalRef, scene: &Scene) {
             &[JValue::Float(density), JValue::Float(density)],
         );
 
+        // Protect the base (density) CTM from any unbalanced author
+        // save/restore in the scene, so layers composite in a known transform.
+        let _ = env.call_method(&canvas, "save", "()I", &[]);
         if let Some(mut painter) = CanvasPainter::new(env, &canvas) {
             for op in scene.ops() {
                 painter.apply(op);
             }
             drop(painter);
+        }
+        let _ = env.call_method(&canvas, "restore", "()V", &[]);
+
+        // Texture layers (camera, screen share, …) composited OVER the scene,
+        // in the same logical coordinate space (the density scale is still
+        // active). Mirrors the web `draw_layers` path; shares `Fit::map_rects`.
+        for layer in layers {
+            composite_layer(env, &canvas, layer);
         }
 
         let _ = env.call_method(
@@ -193,7 +217,193 @@ fn render_scene_into_view(view: &GlobalRef, scene: &Scene) {
             "(Landroid/graphics/Bitmap;)V",
             &[JValue::Object(&bitmap)],
         );
+
+        // Self-capture: while a recorder has subscribed to the capture stream
+        // (`wants_cpu_frames`), read the just-composited bitmap (scene + camera)
+        // back to RGBA and push it — so the recording is WYSIWYG. The bitmap is
+        // ARGB_8888 (byte order R,G,B,A), matching `write_rgba8`. Gated on
+        // `wants_cpu_frames` so the ~w·h·4 readback only happens while recording.
+        if let Some(writer) = props.capture.as_ref() {
+            if writer.wants_cpu_frames() {
+                let n = (w_px as usize) * (h_px as usize) * 4;
+                let mut rgba = vec![0u8; n];
+                // SAFETY: `copyPixelsToBuffer` fills the buffer synchronously;
+                // Java does not retain it past the call.
+                if let Ok(buf) = unsafe { env.new_direct_byte_buffer(rgba.as_mut_ptr(), n) } {
+                    if env
+                        .call_method(
+                            &bitmap,
+                            "copyPixelsToBuffer",
+                            "(Ljava/nio/Buffer;)V",
+                            &[JValue::Object(&buf)],
+                        )
+                        .is_ok()
+                    {
+                        writer.write_rgba8(w_px as u32, h_px as u32, &rgba);
+                    }
+                }
+            }
+        }
     });
+}
+
+/// Composite one [`TextureLayer`] over the canvas: pull the stream's latest
+/// RGBA frame, build a `Bitmap`, and `drawBitmap(src, dst)` into a rounded,
+/// alpha-blended rect using the shared [`canvas_core::Fit::map_rects`] geometry.
+/// No-op when the stream has no frame yet (camera still warming up).
+fn composite_layer(env: &mut JNIEnv, canvas: &JObject, layer: &TextureLayer) {
+    let Some(stream) = (layer.source)() else { return };
+    let mut rgba: Vec<u8> = Vec::new();
+    let Some((vw, vh)) = stream.latest(&mut rgba) else { return };
+    if vw == 0 || vh == 0 || rgba.len() < (vw as usize) * (vh as usize) * 4 {
+        return;
+    }
+    let (dx, dy, dw, dh) = (layer.rect)();
+    if dw < 1.0 || dh < 1.0 {
+        return;
+    }
+    let ((sx, sy, sw, sh), (ox, oy, ow, oh)) =
+        layer.fit.map_rects(vw as f32, vh as f32, dx, dy, dw, dh);
+
+    let Some(bmp) = rgba_bitmap(env, vw as i32, vh as i32, &mut rgba) else { return };
+
+    // Paint: opacity via alpha, bilinear filtering for the scale-down.
+    let Ok(paint_class) = env.find_class("android/graphics/Paint") else { return };
+    let Ok(paint) = env.new_object(&paint_class, "()V", &[]) else { return };
+    let _ = env.call_method(&paint, "setAntiAlias", "(Z)V", &[JValue::Bool(1)]);
+    let _ = env.call_method(&paint, "setFilterBitmap", "(Z)V", &[JValue::Bool(1)]);
+    let alpha = (layer.opacity.clamp(0.0, 1.0) * 255.0).round() as i32;
+    let _ = env.call_method(&paint, "setAlpha", "(I)V", &[JValue::Int(alpha)]);
+
+    let _ = env.call_method(canvas, "save", "()I", &[]);
+
+    // Round the DRAWN rect (letterboxed for Contain) so corners clip the image.
+    let r = layer.corner_radius.clamp(0.0, ow.min(oh) * 0.5);
+    if r > 0.0 {
+        if let Some(clip) = round_rect_path(env, ox, oy, ow, oh, r) {
+            let local = unsafe { JObject::from_raw(clip.as_obj().as_raw()) };
+            let _ = env.call_method(
+                canvas,
+                "clipPath",
+                "(Landroid/graphics/Path;)Z",
+                &[JValue::Object(&local)],
+            );
+        }
+    }
+
+    // src in bitmap pixels (int Rect), dst in logical points (RectF).
+    if let (Some(src), Some(dst)) = (
+        int_rect(env, sx, sy, sw, sh),
+        rect_f(env, ox, oy, ow, oh),
+    ) {
+        let _ = env.call_method(
+            canvas,
+            "drawBitmap",
+            "(Landroid/graphics/Bitmap;Landroid/graphics/Rect;Landroid/graphics/RectF;Landroid/graphics/Paint;)V",
+            &[
+                JValue::Object(&bmp),
+                JValue::Object(&src),
+                JValue::Object(&dst),
+                JValue::Object(&paint),
+            ],
+        );
+    }
+
+    let _ = env.call_method(canvas, "restore", "()V", &[]);
+}
+
+/// Build a mutable `ARGB_8888` `Bitmap` of `w × h` from tightly-packed RGBA8
+/// bytes. Android's `ARGB_8888` is byte-order R,G,B,A in memory, matching the
+/// `MediaStream` frame layout, so `copyPixelsFromBuffer` is a straight copy. A
+/// direct `ByteBuffer` wraps the Rust slice (no intermediate Java array); the
+/// copy is synchronous, so the slice need only outlive this call.
+fn rgba_bitmap<'env>(
+    env: &mut JNIEnv<'env>,
+    w: i32,
+    h: i32,
+    rgba: &mut [u8],
+) -> Option<JObject<'env>> {
+    let config = argb_8888_config(env)?;
+    let bitmap_class = env.find_class("android/graphics/Bitmap").ok()?;
+    let bitmap = env
+        .call_static_method(
+            &bitmap_class,
+            "createBitmap",
+            "(IILandroid/graphics/Bitmap$Config;)Landroid/graphics/Bitmap;",
+            &[JValue::Int(w), JValue::Int(h), JValue::Object(&config)],
+        )
+        .ok()?
+        .l()
+        .ok()?;
+    // SAFETY: the buffer is consumed synchronously by copyPixelsFromBuffer
+    // below; Java does not retain it past this call.
+    let buf = unsafe { env.new_direct_byte_buffer(rgba.as_mut_ptr(), rgba.len()).ok()? };
+    env.call_method(
+        &bitmap,
+        "copyPixelsFromBuffer",
+        "(Ljava/nio/Buffer;)V",
+        &[JValue::Object(&buf)],
+    )
+    .ok()?;
+    Some(bitmap)
+}
+
+/// `new Rect(round(x), round(y), round(x+w), round(y+h))` — integer source crop.
+fn int_rect<'env>(env: &mut JNIEnv<'env>, x: f32, y: f32, w: f32, h: f32) -> Option<JObject<'env>> {
+    let class = env.find_class("android/graphics/Rect").ok()?;
+    env.new_object(
+        &class,
+        "(IIII)V",
+        &[
+            JValue::Int(x.round() as i32),
+            JValue::Int(y.round() as i32),
+            JValue::Int((x + w).round() as i32),
+            JValue::Int((y + h).round() as i32),
+        ],
+    )
+    .ok()
+}
+
+/// `new RectF(x, y, x+w, y+h)` — float destination rect.
+fn rect_f<'env>(env: &mut JNIEnv<'env>, x: f32, y: f32, w: f32, h: f32) -> Option<JObject<'env>> {
+    let class = env.find_class("android/graphics/RectF").ok()?;
+    env.new_object(
+        &class,
+        "(FFFF)V",
+        &[
+            JValue::Float(x),
+            JValue::Float(y),
+            JValue::Float(x + w),
+            JValue::Float(y + h),
+        ],
+    )
+    .ok()
+}
+
+/// A `Path` with a single rounded rect — used as the layer clip.
+fn round_rect_path(env: &mut JNIEnv, x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<GlobalRef> {
+    let rect = rect_f(env, x, y, w, h)?;
+    let path_class = env.find_class("android/graphics/Path").ok()?;
+    let path = env.new_object(&path_class, "()V", &[]).ok()?;
+    let dir_class = env.find_class("android/graphics/Path$Direction").ok()?;
+    let cw = env
+        .get_static_field(&dir_class, "CW", "Landroid/graphics/Path$Direction;")
+        .ok()?
+        .l()
+        .ok()?;
+    env.call_method(
+        &path,
+        "addRoundRect",
+        "(Landroid/graphics/RectF;FFLandroid/graphics/Path$Direction;)V",
+        &[
+            JValue::Object(&rect),
+            JValue::Float(r),
+            JValue::Float(r),
+            JValue::Object(&cw),
+        ],
+    )
+    .ok()?;
+    env.new_global_ref(&path).ok()
 }
 
 /// `Bitmap.Config.ARGB_8888` static field.

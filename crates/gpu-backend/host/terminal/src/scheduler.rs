@@ -147,8 +147,26 @@ impl ScheduleHandle for TerminalHandle {
         // Cheap: tag the id as cancelled, skip on drain. We don't
         // try to remove from the heap — heap removal would be O(n)
         // and tombstoning is fine since drains happen every frame.
-        TICK_STATE.with(|s| {
-            s.borrow_mut().cancelled.insert(self.id);
+        //
+        // `try_with` + `try_borrow_mut`, NOT a plain `TICK_STATE.with` /
+        // `borrow_mut`, because `cancel()` runs from `Drop`. These handles
+        // are owned by the reactive runtime's scopes; at process teardown
+        // those scopes drop and cancel their handles — sometimes AFTER this
+        // thread-local has already been destroyed. A plain `with` then
+        // panics inside a destructor ("cannot access a TLS value during or
+        // after destruction"), which std escalates to a hard process abort
+        // ("thread local panicked on drop, aborting"). Local-mount terminal
+        // apps hit this on exit because they own the reactive graph
+        // in-process; the runtime-server client never did (it only renders
+        // streamed wire commands, so it holds no schedule handles) — which
+        // is why `--runtime-server` worked while local crashed. If the TLS
+        // is gone (or transiently borrowed), there's nothing left to cancel,
+        // so drop the request silently. Regression:
+        // `cancel_is_reentrancy_safe_when_tick_state_unavailable`.
+        let _ = TICK_STATE.try_with(|s| {
+            if let Ok(mut state) = s.try_borrow_mut() {
+                state.cancelled.insert(self.id);
+            }
         });
     }
 }
@@ -270,4 +288,40 @@ pub(crate) fn has_pending() -> bool {
 /// first call wins (per the framework's `OnceLock` contract).
 pub fn install() {
     runtime_core::scheduling::install_scheduler(Box::new(TerminalScheduler));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: dropping/cancelling a `TerminalHandle` must NOT panic
+    /// when `TICK_STATE` can't be freely accessed.
+    ///
+    /// The production crash was a local-mount terminal app aborting on exit
+    /// with "thread local panicked on drop": the reactive runtime's scopes
+    /// drop their schedule handles at teardown, and `TerminalHandle::Drop ->
+    /// cancel()` re-entered `TICK_STATE` after that thread-local had already
+    /// been destroyed — a panic inside a destructor, which std escalates to
+    /// a hard abort. The true teardown ordering (TLS destroyed) is only
+    /// reachable at thread exit, not in a unit test, so we exercise the
+    /// closest reachable form of the same hazard: cancelling while
+    /// `TICK_STATE` is already borrowed. The `try_borrow_mut` guard makes
+    /// that a silent no-op; before the fix the unconditional `borrow_mut`
+    /// double-borrow-panicked here exactly as it aborted at teardown.
+    #[test]
+    fn cancel_is_reentrancy_safe_when_tick_state_unavailable() {
+        TICK_STATE.with(|s| {
+            // Hold a shared borrow, then drop a handle: its `cancel()` wants
+            // `borrow_mut()` and must back off instead of panicking.
+            let _guard = s.borrow();
+            let handle = TerminalHandle { id: 42 };
+            drop(handle); // must not panic
+        });
+
+        // And the normal (uncontended) path still records the cancellation.
+        let mut handle = TerminalHandle { id: 7 };
+        handle.cancel();
+        let recorded = TICK_STATE.with(|s| s.borrow().cancelled.contains(&7));
+        assert!(recorded, "uncontended cancel should still tag the id");
+    }
 }

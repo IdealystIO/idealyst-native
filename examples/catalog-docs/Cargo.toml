@@ -17,6 +17,12 @@ crate-type = ["cdylib", "rlib"]
 runtime-server = []
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper.
 sidecar = ["dep:dev-server", "drawer-navigator/runtime-server"]
+# `terminal`: forces the terminal backend on the host. The terminal target
+# builds for the host triple, so on a macOS host it collides with
+# `backend-macos` and `cfg(target_os)` can't disambiguate — the CLI's
+# terminal wrapper enables this feature to break the tie. (See the
+# tutorial's Cargo.toml for the full rationale.)
+terminal = ["dep:backend-terminal", "drawer-navigator/terminal"]
 
 [dependencies]
 # `catalog` flips on the emission gate in `runtime-macros` AND pulls
@@ -88,8 +94,14 @@ backend-android-mobile = { workspace = true }
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 backend-macos = { workspace = true }
 
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
-backend-terminal = { workspace = true }
+# Terminal backend — pulled in ONLY by the `terminal` feature (the CLI's
+# terminal wrapper enables it). It can't be a `target_os` dependency like
+# the others: the terminal target builds for the host triple, so on a
+# macOS host it shares macOS's triple and would collide with
+# `backend-macos`. The feature is the disambiguator. See `[features]`.
+[dependencies.backend-terminal]
+workspace = true
+optional = true
 
 # wasm-opt's bundled binaryen rejects bulk-memory ops emitted by recent
 # rustc; the wasm is still LTO'd at link time without the post-pass.

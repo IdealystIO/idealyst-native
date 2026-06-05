@@ -22,6 +22,16 @@ license.workspace = true
 # pull the host-side dev-server dep.
 runtime-server = ["dep:dev-server"]
 
+# `terminal`: selects the terminal backend handler. The terminal target
+# builds for the host triple, so on a macOS host `cfg(target_os = "macos")`
+# would otherwise compile the macOS handler (typed for `MacosBackend`) and
+# the terminal handler — which self-registers via `inventory::submit!` —
+# would never compile, leaving a terminal app with no drawer handler. The
+# app's own `terminal` feature forwards to this one (the CLI's terminal
+# wrapper enables the app feature), breaking the host-triple tie. See the
+# tutorial's Cargo.toml for the full rationale.
+terminal = ["dep:backend-terminal"]
+
 [dependencies]
 runtime-core = { workspace = true }
 # Self-registration of the per-backend navigator handler at construction.
@@ -49,6 +59,9 @@ dev-server = { workspace = true, optional = true }
 # backend-neutral, so the library has no backend-ssr dep and no cfg.
 [dev-dependencies]
 backend-ssr = { workspace = true }
+# Headless terminal render harness for the `tests/terminal.rs` regression
+# (gated on the `terminal` feature). Dev-only — never in the shipped lib.
+host-terminal = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
@@ -74,9 +87,12 @@ ios-navigator-helpers = { workspace = true }
 [target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
 backend-macos = { workspace = true }
 
-# Non-mobile, non-wasm, non-macOS hosts use the terminal backend's
-# navigator registry. The drawer renders as a persistent sidebar
-# column beside the screen outlet (no animation, no scrim,
-# no open/close — see [[feedback_terminal_minimalism]]).
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios", target_os = "macos")))'.dependencies]
-backend-terminal = { workspace = true }
+# Terminal backend — pulled in ONLY by the `terminal` feature (the app's
+# `terminal` feature forwards to it; the CLI's terminal wrapper enables the
+# app feature). It can't be a `target_os` dependency like the others: the
+# terminal target builds for the host triple, so on a macOS host it shares
+# macOS's triple and would collide with `backend-macos`. The feature is the
+# disambiguator. See `[features]`.
+[dependencies.backend-terminal]
+workspace = true
+optional = true

@@ -6,7 +6,9 @@
 
 package {{PACKAGE}};
 
-import android.app.Activity;
+// FragmentActivity (not AppCompat) — required by the navigator runtime; see the
+// local-mode template + the `-jvm` androidx relocation fix in kotlin_runtime.rs.
+import androidx.fragment.app.FragmentActivity;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
@@ -20,7 +22,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
-public class MainActivity extends Activity {
+public class MainActivity extends FragmentActivity {
     static {
         // Loading the cdylib fires JNI_OnLoad, which caches the
         // JavaVM so the runtime-server worker thread can attach on demand.
