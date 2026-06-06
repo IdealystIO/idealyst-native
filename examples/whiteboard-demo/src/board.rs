@@ -5,14 +5,12 @@
 use crate::style::{reactive_style, static_style, token};
 use crate::{parse_rgba, paint_stroke, BoardState, CanvasCapture, RecHandle, Stroke, Strokes};
 use runtime_core::{
-    component, safe_area_insets, ui, viewport_size, AlignItems, Element, FlexDirection,
-    IntoElement, JustifyContent, Length, Overflow, Position, Signal, StyleRules, Tokenized,
+    component, ui, Element, IntoElement, Length, Overflow, Position, Signal, StyleRules, Tokenized,
     TouchPhase, TouchResponse,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::{CAM_H, CAM_RADIUS, CAM_W};
 
 // ============================================================================
 // Board screen root
@@ -85,75 +83,41 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
         ..Default::default()
     });
 
-    // The stage is centered inside this safe-area-inset container. Chrome stays a
-    // direct child of the root (so its own absolute insets aren't double-counted).
-    let center_style = reactive_style(move || {
-        let ins = safe_area_insets().get();
-        StyleRules {
-            position: Some(Position::Absolute),
-            top: Some(Length::Px(0.0).into()),
-            left: Some(Length::Px(0.0).into()),
-            width: Some(Length::pct(100.0).into()),
-            height: Some(Length::pct(100.0).into()),
-            flex_direction: Some(FlexDirection::Column),
-            align_items: Some(AlignItems::Center),
-            justify_content: Some(JustifyContent::Center),
-            padding_top: Some(Length::Px(ins.top + crate::settings::STAGE_MARGIN).into()),
-            padding_bottom: Some(Length::Px(ins.bottom + crate::settings::STAGE_MARGIN).into()),
-            padding_left: Some(Length::Px(ins.left + crate::settings::STAGE_MARGIN).into()),
-            padding_right: Some(Length::Px(ins.right + crate::settings::STAGE_MARGIN).into()),
-            ..Default::default()
-        }
-    });
-
-    // The canvas "stage": an aspect-locked box, as large as fits in the centered
-    // container. Sized via Taffy `aspect_ratio` + a PERCENTAGE binding dimension
-    // (NOT reactive px): the canvas then resizes through the layout pass, which is
-    // the path that resizes the vello Metal surface on macOS. A reactive px size
-    // strands that surface at its degenerate first-paint size (`vp=0`), so px
-    // sizing renders nothing on macOS. See [[project_macos_appkit_uikit_diffs]].
+    // The canvas "stage": an aspect-locked box, centered, as large as fits inside
+    // the safe area — sized with explicit px from `stage_geom`. This makes
+    // `stage_geom` (which the camera clamp + placement also call) the EXACT stage
+    // size, so the camera bound matches the canvas across every aspect — unlike a
+    // Taffy `aspect_ratio` box, whose laid-out size can drift from the formula.
+    // The vello Metal surface resizes correctly when this px size changes because
+    // `MetalView` now fires `on_resize` on `setFrameSize:` (the macOS backend fix).
     let aspect = s.aspect;
     let stage_style = reactive_style(move || {
         let (aw, ah) = aspect.get();
-        let ar = aw as f32 / ah as f32;
-        let ins = safe_area_insets().get();
-        let vp = viewport_size().get();
-        let avail_w = (vp.width - ins.left - ins.right - 2.0 * crate::settings::STAGE_MARGIN).max(1.0);
-        let avail_h = (vp.height - ins.top - ins.bottom - 2.0 * crate::settings::STAGE_MARGIN).max(1.0);
-        let mut st = StyleRules {
-            aspect_ratio: Some(ar),
-            // Positioned containing block: the absolute DrawingSurface + camera box
-            // children resolve their `top/left` against THIS stage (not the outer
-            // center container), so the camera's stage-local clamp lines up with the
-            // canvas. `Relative` keeps it a normal flex item (no offset) and — unlike
-            // `overflow`/`background` — doesn't force layer-backing on macOS.
-            position: Some(Position::Relative),
+        let (x, y, w, h) = crate::settings::stage_geom(aw, ah);
+        StyleRules {
+            position: Some(Position::Absolute),
+            left: Some(Length::Px(x).into()),
+            top: Some(Length::Px(y).into()),
+            width: Some(Length::Px(w).into()),
+            height: Some(Length::Px(h).into()),
             // Cosmetic clip (rounded card). NOT on macOS: `overflow: Hidden` forces
-            // this view layer-backed, detaching the canvas child's `CAMetalLayer`.
+            // this view layer-backed, detaching the canvas child's `CAMetalLayer`
+            // (the GPU surface then renders nothing). The clip is only cosmetic here
+            // (the canvas surface bounds strokes; `clamped_cam` bounds the camera).
             overflow: if cfg!(target_os = "macos") {
                 None
             } else {
                 Some(Overflow::Hidden)
             },
             ..Default::default()
-        };
-        // Largest fitting box: if the available area is wider than the target
-        // ratio, height binds (full height, width derived); else width binds.
-        if avail_w / avail_h > ar {
-            st.height = Some(Length::pct(100.0).into());
-        } else {
-            st.width = Some(Length::pct(100.0).into());
         }
-        st
     });
 
     ui! {
         view(style = root_style) {
-            view(style = center_style) {
-                view(style = stage_style) {
-                    DrawingSurface(state = s, strokes = strokes, version = version, capture_writer = Some(capture_writer))
-                    CameraWidget(state = s)
-                }
+            view(style = stage_style) {
+                DrawingSurface(state = s, strokes = strokes, version = version, capture_writer = Some(capture_writer))
+                CameraWidget(state = s)
             }
             chrome
         }
@@ -207,17 +171,23 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
     let cam_x = props.state.cam_x;
     let cam_y = props.state.cam_y;
     let aspect = props.state.aspect;
+    let cam_shape = props.state.camera_shape;
+    let cam_size = props.state.camera_size;
     let camera_layer = canvas::TextureLayer::new(
         Rc::new(move || cam_stream.get()),
         // Clamped to the stage so the camera can't leave the board — and the same
-        // clamp the widget box uses, so frame and image agree.
+        // clamp the widget box uses, so frame and image agree. Size follows the
+        // chosen `CameraSize`.
         Rc::new(move || {
-            let (cx, cy) = crate::clamped_cam(aspect, cam_x, cam_y);
-            (cx, cy, CAM_W, CAM_H)
+            let (cx, cy) = crate::clamped_cam(aspect, cam_x, cam_y, cam_shape, cam_size);
+            let (cw, ch, _r) = crate::settings::camera_dims(cam_shape.get(), cam_size.get());
+            (cx, cy, cw, ch)
         }),
     )
     .fit(canvas::Fit::Cover)
-    .corner_radius(CAM_RADIUS)
+    // Reactive radius: rounded-rect vs full-circle (and the circle's radius scales
+    // with size), updated live without rebuilding the layer.
+    .corner_radius_fn(move || crate::settings::camera_dims(cam_shape.get(), cam_size.get()).2)
     // The frame is drawn by the canvas WITH the camera image, so it stays locked
     // to the picture while dragging (a separate framework-view border lagged the
     // moving image — they update on different clocks).
@@ -369,6 +339,8 @@ pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
     let cam_x = props.state.cam_x;
     let cam_y = props.state.cam_y;
     let aspect = props.state.aspect;
+    let cam_shape = props.state.camera_shape;
+    let cam_size = props.state.camera_size;
 
     // Drag state: (start_touch_x, start_touch_y, start_cam_x, start_cam_y).
     let drag: Rc<RefCell<Option<(f32, f32, f32, f32)>>> = Rc::new(RefCell::new(None));
@@ -402,13 +374,14 @@ pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
         // Position clamped to the stage — same clamp the composited layer rect
         // uses, so the (invisible) hit-test box always sits over the visible
         // camera even right after an aspect change.
-        let (bx, by) = crate::clamped_cam(aspect, cam_x, cam_y);
+        let (bx, by) = crate::clamped_cam(aspect, cam_x, cam_y, cam_shape, cam_size);
+        let (cw, ch, _r) = crate::settings::camera_dims(cam_shape.get(), cam_size.get());
         StyleRules {
             position: Some(Position::Absolute),
             left: Some(Length::Px(bx).into()),
             top: Some(Length::Px(by).into()),
-            width: Some(Length::Px(CAM_W).into()),
-            height: Some(Length::Px(CAM_H).into()),
+            width: Some(Length::Px(cw).into()),
+            height: Some(Length::Px(ch).into()),
             ..Default::default()
         }
     });
@@ -420,7 +393,7 @@ pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
                 TouchPhase::Began => {
                     // Start from the CLAMPED position (= what's visible), so a drag
                     // begun after an aspect change doesn't jump.
-                    let (cx, cy) = crate::clamped_cam(aspect, cam_x, cam_y);
+                    let (cx, cy) = crate::clamped_cam(aspect, cam_x, cam_y, cam_shape, cam_size);
                     *drag.borrow_mut() = Some((ev.window_position.x, ev.window_position.y, cx, cy));
                     TouchResponse::CLAIMED
                 }
@@ -432,11 +405,14 @@ pub fn CameraWidget(props: &CameraWidgetProps) -> Element {
                         // the delta applies 1:1 to stage-local coords.
                         let (aw, ah) = aspect.get();
                         let (_x, _y, sw, sh) = crate::settings::stage_geom(aw, ah);
+                        let (cw, ch, _r) = crate::settings::camera_dims(cam_shape.get(), cam_size.get());
                         let (nx, ny) = crate::clamp_cam(
                             cx + (ev.window_position.x - sx),
                             cy + (ev.window_position.y - sy),
                             sw,
                             sh,
+                            cw,
+                            ch,
                         );
                         cam_x.set(nx);
                         cam_y.set(ny);

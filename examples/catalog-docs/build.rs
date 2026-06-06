@@ -27,6 +27,9 @@ extern crate idea_ui as _;
 extern crate drawer_navigator as _;
 extern crate table as _;
 extern crate codeblock as _;
+// icons-lucide (catalog feature) self-registers its `IconSetEntry`; link
+// it so the pack appears in catalog.json's `icon_sets` slice.
+extern crate icons_lucide as _;
 
 fn main() {
     let cat = mcp_catalog::catalog_json();

@@ -52,6 +52,7 @@ fn kind_from_segment(seg: &str) -> Option<Kind> {
         "primitives" => Some(Kind::Primitive),
         "utilities" => Some(Kind::Utility),
         "types" => Some(Kind::Type),
+        "icons" => Some(Kind::IconSet),
         "guides" => Some(Kind::Guide),
         _ => None,
     }

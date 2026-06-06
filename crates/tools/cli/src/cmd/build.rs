@@ -412,6 +412,9 @@ fn build_macos_target(dir: &std::path::Path, args: &Args) -> Result<()> {
             mode: build_macos::BuildMode::Local,
             source,
             user_features: Vec::new(),
+            // `build --macos` is a host-arch dev artifact; the universal
+            // (Intel + Apple Silicon) build is `publish macos`'s job.
+            universal: false,
         },
     )?;
     eprintln!("[build macos] success → {}", artifact.binary.display(),);

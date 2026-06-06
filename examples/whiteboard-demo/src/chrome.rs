@@ -628,22 +628,35 @@ pub fn RecordDock(props: &RecordDockProps) -> Element {
 
     let dock_style = reactive_style(move || {
         let ins = safe_area_insets().get();
+        let rec = recording.get();
         // Content-sized wrapper (not full-width) so the bottom band around the
         // button passes touches through to the canvas — see `dock_right`. Idle:
         // horizontally centered via a `-50%` self-translate. Recording: anchored
         // bottom-right (the button slides out of the way of the stage).
-        let mut s = StyleRules {
+        //
+        // Set `left`/`right`/`transform` on BOTH states (toggle the VALUE, not the
+        // presence): the backend doesn't reset a property a reactive restyle omits,
+        // so leaving the idle `left:50%`+translate unset while recording would keep
+        // it pinned near center instead of moving fully right.
+        StyleRules {
             position: Some(Position::Absolute),
             bottom: Some(Length::Px(RECORD_BOTTOM + ins.bottom).into()),
+            left: Some(if rec { Length::Auto } else { Length::pct(50.0) }.into()),
+            right: Some(
+                if rec {
+                    Length::Px(RECORD_RIGHT + ins.right)
+                } else {
+                    Length::Auto
+                }
+                .into(),
+            ),
+            transform: Some(if rec {
+                vec![]
+            } else {
+                vec![Transform::TranslateX(Length::pct(-50.0))]
+            }),
             ..Default::default()
-        };
-        if recording.get() {
-            s.right = Some(Length::Px(RECORD_RIGHT + ins.right).into());
-        } else {
-            s.left = Some(Length::pct(50.0).into());
-            s.transform = Some(vec![Transform::TranslateX(Length::pct(-50.0))]);
         }
-        s
     });
     ui! {
         view(style = dock_style) {

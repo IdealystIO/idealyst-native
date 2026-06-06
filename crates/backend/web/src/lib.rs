@@ -683,8 +683,8 @@ pub(crate) struct DynamicRule {
     pub(crate) shared: std::rc::Rc<DynamicPtrEntry>,
     /// CSS rule index for the base rule. Always set.
     pub(crate) rule_index: u32,
-    /// Additional rule indices for per-state pseudo-class overlays
-    /// (`.cls:hover`, `:active`, `:focus`, `:disabled`). Empty for
+    /// Additional rule indices for per-state overlays
+    /// (`.cls:hover`, `:active`, `:focus`, `[disabled]`). Empty for
     /// nodes without `state` blocks.
     pub(crate) state_rule_indices: Vec<u32>,
 }
@@ -2877,11 +2877,14 @@ impl Backend for WebBackend {
         self.execute_batch_inner(batch, Some((parent, attach_locals)))
     }
 
-    /// Web handles interaction states via CSS pseudo-classes
-    /// (`:hover`, `:active`, `:focus`, `:disabled`) — the browser
-    /// tracks transitions natively and no Rust-side state signal is
-    /// needed. The framework calls `apply_styled_states` instead of
-    /// `apply_style` when this returns true.
+    /// Web handles interaction states via native CSS selectors —
+    /// pseudo-classes (`:hover`, `:active`, `:focus`) for the live
+    /// states the browser tracks itself, and the `[disabled]` attribute
+    /// selector for the disabled state (`set_disabled` sets the
+    /// attribute; a `<div>` pressable never matches the `:disabled`
+    /// pseudo). No Rust-side state signal is needed. The framework calls
+    /// `apply_styled_states` instead of `apply_style` when this returns
+    /// true.
     fn handles_states_natively(&self) -> bool {
         true
     }
@@ -2919,10 +2922,12 @@ impl Backend for WebBackend {
     }
 
     fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
-        // Most disable-able elements (button, input, select) accept
-        // the `disabled` attribute. We set/remove it as appropriate.
-        // For non-form elements, this is a no-op visually but doesn't
-        // hurt.
+        // Mark the node with the HTML `disabled` *attribute*. Form
+        // controls (button, input, select) treat it as inert natively;
+        // for a `<div>` pressable it's the hook the disabled-state CSS
+        // matches on — the overlay is emitted under the `[disabled]`
+        // attribute selector (see `style.rs`), NOT the `:disabled`
+        // pseudo-class, precisely so a `<div disabled>` styles correctly.
         let Ok(element) = node.clone().dyn_into::<web_sys::Element>() else {
             return;
         };
@@ -2933,10 +2938,11 @@ impl Backend for WebBackend {
         }
     }
 
-    /// Web state styling uses native CSS pseudo-classes (`:hover`,
-    /// `:active`, `:focus`, `:disabled`) rather than reactive JS
-    /// listeners. That happens at CSS-emit time in `apply_style` (see
-    /// `rules_to_css` / pseudo-class rule generation), not here. We
+    /// Web state styling uses native CSS selectors (`:hover`,
+    /// `:active`, `:focus`, and the `[disabled]` attribute selector)
+    /// rather than reactive JS listeners. That happens at CSS-emit time
+    /// in `apply_style` (see `rules_to_css` / state rule generation),
+    /// not here. We
     /// override `attach_states` to a no-op so the framework's
     /// signal-driven state machinery doesn't fire on web.
     ///

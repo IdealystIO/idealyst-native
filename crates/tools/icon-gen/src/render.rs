@@ -12,7 +12,8 @@
 
 use anyhow::{anyhow, Context, Result};
 use resvg::tiny_skia::{
-    Color, GradientStop, LinearGradient, Paint, Pixmap, Point, Rect, SpreadMode, Transform,
+    Color, FillRule, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, Point, Rect,
+    SpreadMode, Transform,
 };
 use std::path::Path;
 
@@ -219,6 +220,33 @@ pub(crate) fn render_foreground_only_png(
         None,
     );
     canvas.encode_png().context("encode adaptive foreground PNG")
+}
+
+/// Default placeholder app icon, drawn when a project declares no
+/// `[package.metadata.idealyst.app.icon]` block: a solid indigo field with
+/// a centred white disc. No glyph/text (font-free), so it has no asset
+/// dependencies — just a recognizable "icon not set yet" mark that is still
+/// a *valid* App Store icon (Apple rejects a bundle with no icon at all).
+/// The author swaps in real art by declaring an icon block.
+pub(crate) fn render_placeholder_png(size: u32) -> Result<Vec<u8>> {
+    let mut canvas =
+        Pixmap::new(size, size).ok_or_else(|| anyhow!("allocate {size}x{size} pixmap"))?;
+    // Indigo backdrop (#4F46E5) — matches the framework's accent.
+    canvas.fill(Color::from_rgba8(0x4F, 0x46, 0xE5, 0xFF));
+
+    let center = size as f32 / 2.0;
+    let radius = size as f32 * 0.275; // ~55% diameter
+    let mut pb = PathBuilder::new();
+    pb.push_circle(center, center, radius);
+    let path = pb
+        .finish()
+        .ok_or_else(|| anyhow!("build placeholder disc path"))?;
+    let mut paint = Paint::default();
+    paint.anti_alias = true;
+    paint.set_color(Color::WHITE);
+    canvas.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+
+    canvas.encode_png().context("encode placeholder icon PNG")
 }
 
 fn render_composite_png(c: &CompositeSource, size: u32) -> Result<Vec<u8>> {

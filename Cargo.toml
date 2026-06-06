@@ -188,6 +188,7 @@ members = [
     "examples/toolbar-demo",
     "examples/menu-demo",
     "examples/reactive-loops",
+    "examples/icon-gallery",
     "examples/i18n-demo",
     "examples/whiteboard-demo",
     "benchmark",

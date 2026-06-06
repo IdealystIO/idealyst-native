@@ -209,7 +209,7 @@ fn draw_layers(
             layer.fit.map_rects(vw, vh, dx, dy, dw, dh);
         // Clip to the DRAWN rect (letterboxed for Contain) so corners round the
         // image, not the empty bars.
-        let r = (layer.corner_radius as f64).clamp(0.0, (ow.min(oh) as f64) * 0.5);
+        let r = ((layer.corner_radius)() as f64).clamp(0.0, (ow.min(oh) as f64) * 0.5);
 
         ctx.save();
         ctx.set_global_alpha(layer.opacity.clamp(0.0, 1.0) as f64);

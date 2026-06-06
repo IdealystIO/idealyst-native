@@ -66,7 +66,7 @@ mod screens;
 mod settings;
 mod style;
 
-pub(crate) use settings::CanvasBg;
+pub(crate) use settings::{CameraShape, CameraSize, CanvasBg};
 
 use camera::MediaStream;
 use runtime_core::primitives::navigator::use_can_go_back;
@@ -302,36 +302,40 @@ pub(crate) const WIDTH_THIN: f32 = 2.0;
 pub(crate) const WIDTH_MEDIUM: f32 = 6.0;
 pub(crate) const WIDTH_THICK: f32 = 14.0;
 
-/// Camera widget box (draggable, recordable content).
-pub(crate) const CAM_W: f32 = 132.0;
-pub(crate) const CAM_H: f32 = 176.0;
-/// Corner radius of the camera, in logical points — used for the composited
-/// layer's rounded mask AND the widget frame's border, so they line up.
-pub(crate) const CAM_RADIUS: f32 = 18.0;
 /// Keep dragged content this far from the stage edges.
 pub(crate) const DRAG_MARGIN: f32 = 8.0;
 
-/// Clamp a camera position (STAGE-local points) so the `CAM_W × CAM_H` widget
-/// stays fully inside a `sw × sh` stage, with a [`DRAG_MARGIN`] inset.
-pub(crate) fn clamp_cam(cx: f32, cy: f32, sw: f32, sh: f32) -> (f32, f32) {
+/// Clamp a camera position (STAGE-local points) so a `cam_w × cam_h` widget stays
+/// fully inside a `sw × sh` stage, with a [`DRAG_MARGIN`] inset.
+pub(crate) fn clamp_cam(
+    cx: f32,
+    cy: f32,
+    sw: f32,
+    sh: f32,
+    cam_w: f32,
+    cam_h: f32,
+) -> (f32, f32) {
     let m = DRAG_MARGIN;
-    let max_x = (sw - CAM_W - m).max(m);
-    let max_y = (sh - CAM_H - m).max(m);
+    let max_x = (sw - cam_w - m).max(m);
+    let max_y = (sh - cam_h - m).max(m);
     (cx.clamp(m, max_x), cy.clamp(m, max_y))
 }
 
-/// The camera widget's clamped top-left for the current aspect/viewport — reads
-/// `aspect`/`cam_x`/`cam_y` (+ viewport/insets via `stage_geom`) reactively, so
-/// every read site (widget box, composited layer rect) agrees and stays in
-/// bounds even across an aspect change. Returns `(x, y)` in STAGE-local points.
+/// The camera widget's clamped top-left for the current aspect/viewport + camera
+/// shape/size — reads all five signals (+ viewport/insets via `stage_geom`)
+/// reactively, so every read site (widget box, composited layer rect) agrees and
+/// stays in bounds even across an aspect or size change. `(x, y)` in stage points.
 pub(crate) fn clamped_cam(
     aspect: Signal<(u32, u32)>,
     cam_x: Signal<f32>,
     cam_y: Signal<f32>,
+    cam_shape: Signal<settings::CameraShape>,
+    cam_size: Signal<settings::CameraSize>,
 ) -> (f32, f32) {
     let (aw, ah) = aspect.get();
     let (_x, _y, sw, sh) = settings::stage_geom(aw, ah);
-    clamp_cam(cam_x.get(), cam_y.get(), sw, sh)
+    let (cw, ch, _r) = settings::camera_dims(cam_shape.get(), cam_size.get());
+    clamp_cam(cam_x.get(), cam_y.get(), sw, sh, cw, ch)
 }
 
 /// Tool-rail metrics — a button is square; the rail is the button + padding.
@@ -372,6 +376,10 @@ pub(crate) struct BoardState {
     pub canvas_bg: Signal<CanvasBg>,
     /// App theme: `true` = dark. Drives `set_idea_theme` + the `Auto` canvas bg.
     pub dark: Signal<bool>,
+    /// Camera widget shape (rounded rect / circle).
+    pub camera_shape: Signal<CameraShape>,
+    /// Camera widget size (S / M / L).
+    pub camera_size: Signal<CameraSize>,
     /// The bound navigator handle — `push(&SETTINGS, ())` from the FAB,
     /// `push(&PREVIEW, ())` when a recording stops.
     pub nav: Ref<StackHandle>,
@@ -392,6 +400,8 @@ impl Default for BoardState {
             aspect: Signal::new(settings::DEFAULT_ASPECT),
             canvas_bg: Signal::new(CanvasBg::Auto),
             dark: Signal::new(false),
+            camera_shape: Signal::new(CameraShape::RoundedRect),
+            camera_size: Signal::new(CameraSize::Medium),
             nav: Ref::new(),
         }
     }
@@ -422,15 +432,9 @@ pub fn app() -> Element {
     // background instead of the decor view's default black — independent of
     // safe-area insets. `token(...)` subscribes to the theme, so this effect
     // re-fires on a light/dark swap and keeps the window in sync. No-op on
-    // backends without a controllable host surface.
-    // Skipped on macOS: the board root already paints the themed background over
-    // the whole window there, so this is redundant — AND its macOS impl forces
-    // `setWantsLayer:true` on the host root, the same layer-backing that detaches
-    // the GPU canvas's `CAMetalLayer` (see the stage's `overflow` note in
-    // `board.rs`). iOS/Android still need it for `.fullscreen(true)` status/nav
-    // strips. If macOS ever needs a window-level fill, give `set_app_background` a
-    // non-destructive macOS impl (`NSWindow.backgroundColor`) and drop this gate.
-    #[cfg(not(target_os = "macos"))]
+    // backends without a controllable host surface. On macOS this now paints the
+    // `NSWindow.backgroundColor` (not the host-root layer), so it no longer
+    // detaches the GPU canvas's `CAMetalLayer` — safe on every backend.
     runtime_core::effect!({
         runtime_core::set_app_background(runtime_core::Tokenized::Literal(
             crate::style::token(|c| c.background.clone()),
@@ -454,6 +458,8 @@ pub fn app() -> Element {
         aspect: signal!(settings::DEFAULT_ASPECT),
         canvas_bg: signal!(CanvasBg::Auto),
         dark: signal!(start_dark),
+        camera_shape: signal!(CameraShape::RoundedRect),
+        camera_size: signal!(CameraSize::Medium),
         nav,
     };
 
@@ -529,12 +535,15 @@ pub fn app() -> Element {
         let cam_x = state.cam_x;
         let cam_y = state.cam_y;
         let aspect = state.aspect;
+        let camera_shape = state.camera_shape;
+        let camera_size = state.camera_size;
         runtime_core::effect!({
             let (aw, ah) = aspect.get();
             let (_sx, _sy, sw, sh) = settings::stage_geom(aw, ah);
+            let (_cw, ch, _r) = settings::camera_dims(camera_shape.get(), camera_size.get());
             if !placed.get() && sw > 1.0 && sh > 1.0 {
                 cam_x.set(DRAG_MARGIN);
-                cam_y.set((sh - CAM_H - DRAG_MARGIN).max(DRAG_MARGIN));
+                cam_y.set((sh - ch - DRAG_MARGIN).max(DRAG_MARGIN));
                 placed.set(true);
             }
         });
@@ -603,7 +612,7 @@ pub fn app() -> Element {
         })
         .screen(PREVIEW, move |_| {
             Screen::new(ui! {
-                PreviewScreen(rec_path = state.rec_path, playback_url = preview_url, nav = nav)
+                PreviewScreen(rec_path = state.rec_path, playback_url = preview_url, aspect = state.aspect, nav = nav)
             })
             .header_shown(false)
         });
@@ -613,10 +622,17 @@ pub fn app() -> Element {
 
 #[cfg(test)]
 mod tests {
+    use super::settings::{camera_dims, CameraShape, CameraSize};
     use super::{
-        clamp_cam, parse_rgba, resolve_color, stroke_color, CanvasBg, Stroke, CAM_H, CAM_W,
-        DRAG_MARGIN, INK, INK_ON_DARK, INK_ON_LIGHT,
+        clamp_cam, parse_rgba, resolve_color, stroke_color, CanvasBg, Stroke, DRAG_MARGIN, INK,
+        INK_ON_DARK, INK_ON_LIGHT,
     };
+
+    // Medium rounded-rect camera dims, for the bounds tests.
+    fn cam_wh() -> (f32, f32) {
+        let (w, h, _r) = camera_dims(CameraShape::RoundedRect, CameraSize::Medium);
+        (w, h)
+    }
 
     // Regression for "the first palette color should contrast the backdrop": the
     // `INK` slot resolves to a light ink on a dark canvas and a dark ink on a light
@@ -675,24 +691,27 @@ mod tests {
 
     #[test]
     fn camera_inside_bounds_is_unchanged() {
-        let (x, y) = clamp_cam(120.0, 300.0, STAGE_W, STAGE_H);
+        let (cw, ch) = cam_wh();
+        let (x, y) = clamp_cam(120.0, 300.0, STAGE_W, STAGE_H, cw, ch);
         assert_eq!((x, y), (120.0, 300.0));
     }
 
     #[test]
     fn camera_past_right_and_bottom_clamps_inside() {
         // Way past the far corner → pinned to the max inset, fully inside.
-        let (x, y) = clamp_cam(9_999.0, 9_999.0, STAGE_W, STAGE_H);
-        assert_eq!(x, STAGE_W - CAM_W - DRAG_MARGIN);
-        assert_eq!(y, STAGE_H - CAM_H - DRAG_MARGIN);
+        let (cw, ch) = cam_wh();
+        let (x, y) = clamp_cam(9_999.0, 9_999.0, STAGE_W, STAGE_H, cw, ch);
+        assert_eq!(x, STAGE_W - cw - DRAG_MARGIN);
+        assert_eq!(y, STAGE_H - ch - DRAG_MARGIN);
         // The whole widget rect sits within the stage.
-        assert!(x + CAM_W + DRAG_MARGIN <= STAGE_W);
-        assert!(y + CAM_H + DRAG_MARGIN <= STAGE_H);
+        assert!(x + cw + DRAG_MARGIN <= STAGE_W);
+        assert!(y + ch + DRAG_MARGIN <= STAGE_H);
     }
 
     #[test]
     fn camera_past_top_left_clamps_to_margin() {
-        let (x, y) = clamp_cam(-50.0, -50.0, STAGE_W, STAGE_H);
+        let (cw, ch) = cam_wh();
+        let (x, y) = clamp_cam(-50.0, -50.0, STAGE_W, STAGE_H, cw, ch);
         assert_eq!((x, y), (DRAG_MARGIN, DRAG_MARGIN));
     }
 
@@ -701,7 +720,20 @@ mod tests {
         // An aspect change can shrink the stage below the widget size; the
         // `.max(m)` floor keeps the position valid (top-left margin) instead of
         // producing a negative clamp range that would invert.
-        let (x, y) = clamp_cam(200.0, 200.0, CAM_W - 10.0, CAM_H - 10.0);
+        let (cw, ch) = cam_wh();
+        let (x, y) = clamp_cam(200.0, 200.0, cw - 10.0, ch - 10.0, cw, ch);
         assert_eq!((x, y), (DRAG_MARGIN, DRAG_MARGIN));
+    }
+
+    // The camera scales with size and is square (full-radius) when circular.
+    #[test]
+    fn camera_dims_scale_and_shape() {
+        let (mw, mh, _mr) = camera_dims(CameraShape::RoundedRect, CameraSize::Medium);
+        let (sw, sh, _sr) = camera_dims(CameraShape::RoundedRect, CameraSize::Small);
+        let (lw, lh, _lr) = camera_dims(CameraShape::RoundedRect, CameraSize::Large);
+        assert!(sw < mw && mw < lw && sh < mh && mh < lh);
+        let (cw, ch, cr) = camera_dims(CameraShape::Circle, CameraSize::Medium);
+        assert_eq!(cw, ch); // square
+        assert_eq!(cr, cw * 0.5); // full radius → circle
     }
 }

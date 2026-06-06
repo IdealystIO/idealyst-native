@@ -38,11 +38,29 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, pressable, recipe, text, ui, Element, IdealystSchema, Reactive, Signal,
-    StyleApplication,
+    component, pressable, recipe, resolve_style, text, ui, Element, IdealystSchema, Reactive,
+    Signal, StyleApplication, StyleRules, StyleSheet,
 };
 
 use crate::stylesheets::{TabBar, TabButton};
+
+thread_local! {
+    static SEG_LABEL_BASE_SHEET: std::cell::RefCell<Option<Rc<StyleSheet>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A single shared, empty base sheet for segment labels. The per-state color
+/// rides a `with_computed` layer keyed on the selected state, so the resolution
+/// cache key (sheet Rc pointer + computed key) stays stable across renders —
+/// mirrors `Tabs::tab_label_base_sheet`.
+fn seg_label_base_sheet() -> Rc<StyleSheet> {
+    SEG_LABEL_BASE_SHEET.with(|s| {
+        if s.borrow().is_none() {
+            *s.borrow_mut() = Some(Rc::new(StyleSheet::r#static(StyleRules::default())));
+        }
+        s.borrow().as_ref().cloned().unwrap()
+    })
+}
 
 /// One segment in a [`SegmentedControl`]. `id` is the value committed to
 /// the bound signal when this segment is chosen; `label` is what the user
@@ -126,7 +144,28 @@ pub fn SegmentedControl(props: SegmentedControlProps) -> Element {
             StyleApplication::new(TabButton::sheet()).with("active", active.to_string())
         };
 
-        let label_el: Element = text(label).into();
+        // The TabButton sheet's on/off foreground (the selected segment's accent
+        // vs muted label, and the live theme color) lives on the pressable, but
+        // native TextView/UILabel/NSTextField don't inherit text color from their
+        // parent — only web's CSS cascade does. So resolve that color and stamp it
+        // on the label NODE itself, reactively (re-runs on `value` + theme). Without
+        // this the segment label renders in the widget-default color on native: it
+        // never flips on selection AND never follows a light/dark swap. Mirrors
+        // `Tabs`.
+        let id_for_label = id.clone();
+        let label_style = move || {
+            let on = value.get() == id_for_label;
+            let variant = if on { "on" } else { "off" };
+            let app = StyleApplication::new(TabButton::sheet()).with("active", variant.to_string());
+            let color = resolve_style(&app).color.clone();
+            let key = if on { "seg_label_on" } else { "seg_label_off" };
+            StyleApplication::new(seg_label_base_sheet()).with_computed(key, move || StyleRules {
+                color: color.clone(),
+                ..Default::default()
+            })
+        };
+
+        let label_el: Element = text(label).with_style(label_style).into();
         let seg: Element = pressable(vec![label_el], press).with_style(seg_style).into();
         segments.push(seg);
     }
@@ -163,6 +202,58 @@ recipe!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use idea_theme::theme::{install_idea_theme, light_theme};
+    use runtime_core::{resolve_style, StyleSource};
+
+    /// Resolved color on a segment's label text node (NOT the pressable's).
+    fn seg_label_color(seg: &Element) -> Option<runtime_core::Color> {
+        let label = match seg {
+            Element::Pressable { children, .. } => &children[0],
+            _ => panic!("a segment is a Pressable"),
+        };
+        match label {
+            Element::Text { style, .. } => match style.as_ref()? {
+                StyleSource::Reactive(f) => resolve_style(&f()).color.clone().map(|c| c.resolve()),
+                StyleSource::Static(a) => resolve_style(a).color.clone().map(|c| c.resolve()),
+                _ => None,
+            },
+            _ => panic!("a segment label is a Text node"),
+        }
+    }
+
+    /// The color the TabButton sheet resolves for a given active state.
+    fn tabbutton_color(active: &str) -> runtime_core::Color {
+        let app = StyleApplication::new(TabButton::sheet()).with("active", active.to_string());
+        resolve_style(&app)
+            .color
+            .clone()
+            .expect("TabButton resolves a foreground")
+            .resolve()
+    }
+
+    // Regression: the segment label was a bare text node whose color lived only on
+    // the wrapping pressable, so on native (no CSS cascade) it rendered in the
+    // widget default — the selected segment never took the accent color and the
+    // labels never followed a theme swap. Each label must carry its OWN color
+    // matching its selected state, like `Tabs`.
+    #[test]
+    fn regression_segment_labels_carry_their_own_active_color() {
+        install_idea_theme(light_theme());
+        let el = SegmentedControl(SegmentedControlProps {
+            options: vec![SegmentOption::new("a", "A"), SegmentOption::new("b", "B")],
+            value: Signal::new("a".to_string()),
+            ..Default::default()
+        });
+        let children = match &el {
+            Element::View { children, .. } => children,
+            _ => panic!("SegmentedControl renders a row View"),
+        };
+        let on = seg_label_color(&children[0]).expect("selected label carries a color");
+        let off = seg_label_color(&children[1]).expect("unselected label carries a color");
+        assert_eq!(on, tabbutton_color("on"), "selected segment label = TabButton `on`");
+        assert_eq!(off, tabbutton_color("off"), "unselected segment label = TabButton `off`");
+        assert_ne!(on, off, "selection must change the label color");
+    }
 
     #[test]
     fn defaults_are_empty_and_inert() {

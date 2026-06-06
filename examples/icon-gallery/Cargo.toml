@@ -1,0 +1,32 @@
+[package]
+name = "icon-gallery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Browse the full Lucide icon set — a searchable, virtualized grid of every icon. Showcases the icons-lucide `registry` feature and flat_list virtualization."
+
+# Pure `rlib` — the CLI generates the per-platform wrapper crates with the
+# cdylib/staticlib crate-type + entry points; this crate is platform-agnostic.
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `sidecar`: enabled ONLY by the CLI-generated runtime-server wrapper.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+# `registry` exposes `icons_lucide::ALL` — the whole set at runtime, which is
+# exactly what a gallery wants (and why the feature is off by default for
+# normal tree-shaking consumers).
+icons-lucide = { workspace = true, features = ["registry"] }
+# Recorder backend for the runtime-server sidecar wrapper. Pulled in only by
+# the `sidecar` feature; never compiled for device/web targets.
+dev-server = { workspace = true, optional = true }
+
+[package.metadata.idealyst.app]
+name      = "Icon Gallery"
+bundle_id = "ai.truday.idealyst.icongallery"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]

@@ -100,11 +100,10 @@ fn sync_icons(project_dir: &std::path::Path) -> Result<()> {
 
     let macos_block = config.resolved_for(Target::Macos);
     let macos_out = icons_root.join("macos");
-    if icon_gen::sync_macos_icns(Some(&macos_block), &macos_out)?.is_some() {
-        println!(
-            "[sync icons] macos   → {} (AppIcon.icns)",
-            macos_out.display(),
-        );
-    }
+    icon_gen::sync_macos_icns(Some(&macos_block), &macos_out)?;
+    println!(
+        "[sync icons] macos   → {} (AppIcon.icns)",
+        macos_out.display(),
+    );
     Ok(())
 }

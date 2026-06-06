@@ -414,6 +414,109 @@ fn apply_styled_variants_emits_media_rule_for_breakpoint_overlay() {
     );
 }
 
+/// REGRESSION TEST.
+///
+/// A pressable (idea-ui `Button`/`Chip`/`IconButton`/...) renders as a
+/// `<div>` on web, and `set_disabled` marks the disabled node with the
+/// HTML `disabled` *attribute*. The disabled state overlay used to be
+/// emitted under the `:disabled` *pseudo-class* (`.cls:disabled`), which
+/// only matches real form controls (button/input/select/...). So
+/// `.cls:disabled` never matched a `<div disabled>` and the disabled
+/// styling (`state disabled { opacity: 0.45 }`, etc.) was silently
+/// dropped on web — a disabled button looked identical to an enabled one
+/// (click was still blocked elsewhere; it was purely the visual that
+/// vanished). The fix emits the overlay under the `[disabled]` attribute
+/// selector, which matches any element carrying the attribute — div
+/// pressables AND form controls alike.
+///
+/// This test pins the selector down: it asserts the emitted rule uses
+/// `[disabled]` (never `:disabled`) and then proves the rule actually
+/// matches a `<div disabled>` via `Element.matches` — the DOM-level
+/// behavior the bug got wrong. It fails against the old `:disabled`
+/// mapping and passes after the fix.
+#[wasm_bindgen_test]
+fn regression_web_disabled_state_styles_div_pressable() {
+    use runtime_core::{Backend, Length, StateBits, StyleRules, Tokenized};
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+
+    let doc = web_sys::window().unwrap().document().unwrap();
+    // A pressable is a `<div>`, NOT a form control — this is the whole
+    // point of the bug.
+    let element = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&element).unwrap();
+    let node: web_sys::Node = element.clone().unchecked_into();
+
+    let base = Rc::new(StyleRules {
+        opacity: Some(Tokenized::Literal(1.0)),
+        ..Default::default()
+    });
+    // The disabled overlay the walker resolves for `state disabled { ... }`.
+    let disabled_overlay = Rc::new(StyleRules {
+        opacity: Some(Tokenized::Literal(0.45)),
+        // A second property so we can tell the overlay rule apart from
+        // the base rule by content if needed.
+        width: Some(Tokenized::Literal(Length::Px(42.0))),
+        ..Default::default()
+    });
+    let overlays = vec![(StateBits::DISABLED, disabled_overlay)];
+
+    backend.apply_styled_states(&node, &base, &overlays);
+
+    // Pull every CssStyleRule the backend inserted and locate the one
+    // carrying the disabled overlay's selector.
+    let sheet = backend.sheet();
+    let rules = sheet.css_rules().expect("css_rules");
+    let mut disabled_selector: Option<String> = None;
+    let mut all = String::new();
+    for i in 0..rules.length() {
+        let Some(rule) = rules.get(i) else { continue };
+        let text = rule.css_text();
+        all.push_str(&text);
+        all.push('\n');
+        if let Ok(style_rule) = rule.dyn_into::<web_sys::CssStyleRule>() {
+            let selector = style_rule.selector_text();
+            if selector.contains("[disabled]") || selector.contains(":disabled") {
+                disabled_selector = Some(selector);
+            }
+        }
+    }
+
+    let selector = disabled_selector.unwrap_or_else(|| {
+        panic!("no disabled-state rule was emitted; stylesheet was:\n{all}")
+    });
+
+    assert!(
+        selector.contains("[disabled]"),
+        "disabled state must be emitted as the `[disabled]` attribute selector so it \
+         matches a `<div disabled>` pressable; got selector `{selector}`",
+    );
+    assert!(
+        !selector.contains(":disabled"),
+        "disabled state must NOT use the `:disabled` pseudo-class — it only matches real \
+         form controls, never a `<div disabled>`; got selector `{selector}`",
+    );
+
+    // DOM-level proof: a div carrying the class + the `disabled`
+    // attribute (exactly what `set_disabled` sets) matches the rule,
+    // and the same div WITHOUT the attribute does not. This is the
+    // behavior `:disabled` got wrong.
+    let class_name = selector.trim_start_matches('.').trim_end_matches("[disabled]");
+    element.set_class_name(class_name);
+    assert!(
+        !element.matches(&selector).unwrap(),
+        "before the disabled attribute is set, the div must not match the overlay rule",
+    );
+    element.set_attribute("disabled", "").unwrap();
+    assert!(
+        element.matches(&selector).unwrap(),
+        "a `<div class=\"{class_name}\" disabled>` must match the emitted overlay rule \
+         `{selector}`; this is the styling the `:disabled` pseudo silently dropped",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Font linking — regression for fonts shipping inside the wasm
 // ---------------------------------------------------------------------------

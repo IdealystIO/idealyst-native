@@ -142,6 +142,11 @@ pub struct AppMetadata {
     /// the user didn't declare a `[package.metadata.idealyst.app.web]`
     /// block.
     pub web: WebMetadata,
+    /// macOS-target-specific knobs. Always present — defaults if the
+    /// user didn't declare a `[package.metadata.idealyst.app.macos]`
+    /// block. Drives `idealyst publish macos` (App Store category,
+    /// minimum-OS, copyright).
+    pub macos: MacosMetadata,
     /// User-facing reason strings for capabilities, keyed by capability
     /// name, from `[package.metadata.idealyst.app.permissions]`:
     /// ```toml
@@ -154,6 +159,39 @@ pub struct AppMetadata {
     /// generic default and a build-time warning. See
     /// [`capabilities`](crate::capabilities).
     pub permissions: std::collections::BTreeMap<String, String>,
+}
+
+/// macOS-target-specific config from `[package.metadata.idealyst.app.macos]`.
+///
+/// Used by `idealyst publish macos`. Distribution to the Mac App Store
+/// requires a `category`; the other fields refine the bundle's Info.plist.
+/// ```toml
+/// [package.metadata.idealyst.app.macos]
+/// category = "public.app-category.productivity"  # LSApplicationCategoryType
+/// min_version = "12.0"                            # LSMinimumSystemVersion
+/// copyright = "© 2026 Acme, Inc."                # NSHumanReadableCopyright
+/// ```
+#[derive(Debug, Clone)]
+pub struct MacosMetadata {
+    /// `LSApplicationCategoryType` (an `public.app-category.*` UTI). The
+    /// Mac App Store **requires** it — `publish macos --app-store` errors
+    /// when it's unset. Optional otherwise (dev/Developer-ID builds).
+    pub category: Option<String>,
+    /// `LSMinimumSystemVersion`. Defaults to `"11.0"` (Big Sur) — the
+    /// floor `backend-macos` targets.
+    pub min_version: String,
+    /// `NSHumanReadableCopyright`, shown in the About panel. Optional.
+    pub copyright: Option<String>,
+}
+
+impl Default for MacosMetadata {
+    fn default() -> Self {
+        Self {
+            category: None,
+            min_version: "11.0".to_string(),
+            copyright: None,
+        }
+    }
 }
 
 /// Web-target-specific config from `[package.metadata.idealyst.app.web]`.
@@ -420,7 +458,19 @@ struct RawAppMetadata {
     #[serde(default)]
     web: Option<RawWebMetadata>,
     #[serde(default)]
+    macos: Option<RawMacosMetadata>,
+    #[serde(default)]
     permissions: Option<std::collections::BTreeMap<String, String>>,
+}
+
+#[derive(Default, Deserialize)]
+struct RawMacosMetadata {
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    min_version: Option<String>,
+    #[serde(default)]
+    copyright: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -523,6 +573,15 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         assets: raw_web.assets.unwrap_or_default(),
     };
 
+    let raw_macos = app_raw.macos.unwrap_or_default();
+    let macos = MacosMetadata {
+        category: raw_macos.category,
+        min_version: raw_macos
+            .min_version
+            .unwrap_or_else(|| MacosMetadata::default().min_version),
+        copyright: raw_macos.copyright,
+    };
+
     let app = AppMetadata {
         name: app_name,
         bundle_id,
@@ -532,6 +591,7 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         targets,
         server_bin: app_raw.server_bin,
         web,
+        macos,
         permissions: app_raw.permissions.unwrap_or_default(),
     };
 
@@ -824,6 +884,7 @@ mod regression_tests {
                 targets: Vec::new(),
                 server_bin: None,
                 web: WebMetadata::default(),
+                macos: Default::default(),
                 permissions: Default::default(),
             },
         }
@@ -903,5 +964,39 @@ mod regression_tests {
             "42",
             "build_number should round-trip from the manifest",
         );
+    }
+
+    /// `[package.metadata.idealyst.app.macos]` parses into `MacosMetadata`
+    /// (drives `idealyst publish macos`), with `min_version` defaulting to
+    /// `"11.0"` and `category`/`copyright` optional.
+    #[test]
+    fn macos_metadata_parses_and_defaults() {
+        fn parse_with(extra: &str) -> Manifest {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let cargo = format!(
+                "[package]\nname = \"demo\"\nversion = \"0.0.1\"\n\
+                 [package.metadata.idealyst.app]\nbundle_id = \"ai.example.demo\"\n{extra}",
+            );
+            std::fs::write(tmp.path().join("Cargo.toml"), cargo).unwrap();
+            parse_manifest(tmp.path()).expect("parse manifest")
+        }
+
+        let bare = parse_with("");
+        assert_eq!(bare.app.macos.min_version, "11.0", "min_version defaults to 11.0");
+        assert!(bare.app.macos.category.is_none());
+        assert!(bare.app.macos.copyright.is_none());
+
+        let full = parse_with(
+            "[package.metadata.idealyst.app.macos]\n\
+             category = \"public.app-category.productivity\"\n\
+             min_version = \"13.0\"\n\
+             copyright = \"© 2026 Acme\"\n",
+        );
+        assert_eq!(
+            full.app.macos.category.as_deref(),
+            Some("public.app-category.productivity"),
+        );
+        assert_eq!(full.app.macos.min_version, "13.0");
+        assert_eq!(full.app.macos.copyright.as_deref(), Some("© 2026 Acme"));
     }
 }

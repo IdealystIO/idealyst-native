@@ -291,8 +291,11 @@ docs! {
         "##),
         p("The actual ", code("icons-lucide"),
           " build script handles edge cases (multiple paths per icon, fill rules, \
-           viewBox variations) — read its source as a working reference. But the \
-           shape is exactly the above."),
+           viewBox variations, and normalizing every SVG shape element — ",
+          code("circle"), ", ", code("rect"), ", ", code("line"), ", ",
+          code("polyline"), ", ", code("polygon"), ", ", code("ellipse"),
+          " — into path data so a raw Lucide SVG drops straight in) — read its \
+           source as a working reference. But the shape is exactly the above."),
         p("A new icon is then \"drop the SVG in ", code("assets/"),
           ", rebuild.\" The generated constant uses the file's ",
           code("SCREAMING_SNAKE_CASE"), " name, so ", code("assets/arrow-right.svg"),

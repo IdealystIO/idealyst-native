@@ -55,6 +55,12 @@ pub struct BuildOptions {
     /// Framework-source resolution: workspace path-deps for in-tree
     /// projects, git deps for external installs. Same shape sim uses.
     pub source: FrameworkSource,
+    /// Build a **universal** binary (arm64 + x86_64 lipo'd together) so the
+    /// `.app` runs on both Apple Silicon and Intel Macs. Used by `idealyst
+    /// publish macos` — the App Store rejects an arm64-only build unless the
+    /// deployment target is ≥ 12.0 (error 409). The dev/run path leaves this
+    /// `false` and builds the host arch only (one fast compile).
+    pub universal: bool,
 }
 
 #[derive(Debug)]
@@ -89,11 +95,31 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     } else {
         &[]
     };
-    cargo_build(&wrapper_dir, opts.release, &opts.user_features, extra_features)?;
-
     let profile = if opts.release { "release" } else { "debug" };
     let bin_name = binary_name(&manifest.name, opts.mode);
-    let binary = cargo_target_dir.join(profile).join(&bin_name);
+
+    let binary = if opts.universal {
+        build_universal(
+            &wrapper_dir,
+            &cargo_target_dir,
+            opts.release,
+            &opts.user_features,
+            extra_features,
+            &bin_name,
+            profile,
+            &manifest.app.macos.min_version,
+        )?
+    } else {
+        cargo_build(
+            &wrapper_dir,
+            opts.release,
+            &opts.user_features,
+            extra_features,
+            None,
+            None,
+        )?;
+        cargo_target_dir.join(profile).join(&bin_name)
+    };
     if !binary.is_file() {
         anyhow::bail!(
             "cargo build reported success but macOS binary not at {}",
@@ -346,11 +372,22 @@ fn cargo_build(
     release: bool,
     user_features: &[String],
     extra_features: &[&str],
+    target: Option<&str>,
+    deployment_target: Option<&str>,
 ) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.args(["build"]).current_dir(wrapper_dir);
     if release {
         cmd.arg("--release");
+    }
+    if let Some(t) = target {
+        cmd.args(["--target", t]);
+    }
+    // Pin the deployment target so BOTH arches report the same minOS as the
+    // bundle's `LSMinimumSystemVersion` (x86_64 otherwise defaults to a much
+    // older floor than aarch64's 11.0).
+    if let Some(dt) = deployment_target {
+        cmd.env("MACOSX_DEPLOYMENT_TARGET", dt);
     }
     let mut combined: Vec<String> = user_features.to_vec();
     combined.extend(extra_features.iter().map(|s| (*s).to_string()));
@@ -358,8 +395,9 @@ fn cargo_build(
         cmd.arg("--features").arg(combined.join(","));
     }
     eprintln!(
-        "[build-macos] cargo build{}{} (in {})",
+        "[build-macos] cargo build{}{}{} (in {})",
         if release { " --release" } else { "" },
+        target.map(|t| format!(" --target {t}")).unwrap_or_default(),
         if combined.is_empty() {
             String::new()
         } else {
@@ -372,6 +410,82 @@ fn cargo_build(
         .with_context(|| "spawn `cargo` — is it on your PATH?")?;
     if !status.success() {
         anyhow::bail!("[build-macos] cargo build exited with {status}");
+    }
+    Ok(())
+}
+
+/// The two macOS arches a universal binary spans.
+const UNIVERSAL_TARGETS: [&str; 2] = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
+
+/// Build each arch in [`UNIVERSAL_TARGETS`] and `lipo` them into one fat
+/// binary, returned. Each arch lands in `target/<triple>/<profile>/`; the
+/// merged binary is written to `target/<profile>/<bin>` (the same path a
+/// non-universal build would produce, so downstream bundle assembly is
+/// unchanged).
+#[allow(clippy::too_many_arguments)]
+fn build_universal(
+    wrapper_dir: &Path,
+    cargo_target_dir: &Path,
+    release: bool,
+    user_features: &[String],
+    extra_features: &[&str],
+    bin_name: &str,
+    profile: &str,
+    deployment_target: &str,
+) -> Result<PathBuf> {
+    let mut arch_binaries = Vec::with_capacity(UNIVERSAL_TARGETS.len());
+    for target in UNIVERSAL_TARGETS {
+        ensure_rust_target(target);
+        cargo_build(
+            wrapper_dir,
+            release,
+            user_features,
+            extra_features,
+            Some(target),
+            Some(deployment_target),
+        )?;
+        let bin = cargo_target_dir.join(target).join(profile).join(bin_name);
+        if !bin.is_file() {
+            anyhow::bail!(
+                "universal build: {target} slice not found at {}",
+                bin.display(),
+            );
+        }
+        arch_binaries.push(bin);
+    }
+
+    let universal = cargo_target_dir.join(profile).join(bin_name);
+    lipo_create(&arch_binaries, &universal)?;
+    Ok(universal)
+}
+
+/// Best-effort `rustup target add <target>` so the x86_64 slice can build on
+/// an Apple-Silicon host (no-op if already installed, or if `rustup` isn't
+/// the toolchain manager — the subsequent `cargo build --target` then
+/// surfaces a clear "can't find crate for `std`" if the target is missing).
+fn ensure_rust_target(target: &str) {
+    let _ = Command::new("rustup")
+        .args(["target", "add", target])
+        .status();
+}
+
+/// `lipo -create <slices…> -output <universal>`.
+fn lipo_create(slices: &[PathBuf], output: &Path) -> Result<()> {
+    eprintln!(
+        "[build-macos] lipo -create → {} (universal arm64 + x86_64)",
+        output.display(),
+    );
+    let mut cmd = Command::new("lipo");
+    cmd.arg("-create");
+    for s in slices {
+        cmd.arg(s);
+    }
+    cmd.arg("-output").arg(output);
+    let status = cmd
+        .status()
+        .with_context(|| "spawn `lipo` — part of the Xcode command-line tools")?;
+    if !status.success() {
+        anyhow::bail!("[build-macos] lipo failed (exit {status})");
     }
     Ok(())
 }
@@ -415,6 +529,7 @@ mod regression_tests {
                 targets: Vec::new(),
                 server_bin: None,
                 web: Default::default(),
+                macos: Default::default(),
                 permissions: Default::default(),
             },
         }
@@ -434,6 +549,7 @@ mod regression_tests {
             mode,
             source: FrameworkSource::Workspace { root: workspace_root },
             user_features: Vec::new(),
+            universal: false,
         };
         generate_wrapper(&wrapper_dir, &cargo_target, &project_dir, &manifest, &opts)
             .expect("generate wrapper");

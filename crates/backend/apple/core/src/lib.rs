@@ -59,3 +59,8 @@ pub use log::apple_log;
 /// only, so it builds AND unit-tests on the host while iOS + macOS share one
 /// source of truth for "what background/color does an editable control get".
 pub mod text_control_style;
+
+/// The uniform-vs-per-side border routing decision shared by the iOS and
+/// macOS backends. NOT OS-gated — pure `runtime_core` logic, host-testable,
+/// so both backends collapse the four CSS sides identically (Rule #7).
+pub mod border;

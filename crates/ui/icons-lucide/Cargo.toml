@@ -5,8 +5,27 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+# Exposes `ALL: &[IconEntry]` — the full icon registry for galleries,
+# pickers, and catalog tooling. OFF by default because referencing `ALL`
+# pulls in every icon, defeating the per-`const` tree-shaking that normal
+# `use icons_lucide::SEARCH` usage relies on. Enable it only in apps that
+# genuinely want the whole set at runtime (e.g. the `icon-gallery` demo).
+registry = []
+# Self-registers this pack into the MCP catalog as an `IconSetEntry`
+# (name + every icon's (name, ident) pair) so it's discoverable via the
+# MCP `list_icon_sets` / `search_icons` tools and renders in the docs
+# site's icon gallery. OFF by default: the name table pulls the whole
+# pack into the binary, defeating the per-`const` tree-shaking normal
+# `use icons_lucide::SEARCH` usage relies on. The catalog `catalog` bin
+# and the docs build script opt in; nothing else needs to.
+catalog = ["dep:mcp-catalog"]
+
 [dependencies]
 runtime-core = { workspace = true }
+# Only linked when the `catalog` feature is on (the `IconSetEntry` type +
+# the `inventory` re-export the self-registration submits through).
+mcp-catalog = { workspace = true, optional = true }
 
 [build-dependencies]
 # Lightweight XML / SVG path extraction at build time.

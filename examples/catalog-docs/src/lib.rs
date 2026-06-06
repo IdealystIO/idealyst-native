@@ -44,6 +44,7 @@ use runtime_core::primitives::navigator::Screen;
 use runtime_core::{component, ui, Element, Ref};
 
 mod catalog;
+mod icons;
 mod routes;
 mod shell;
 mod styles;

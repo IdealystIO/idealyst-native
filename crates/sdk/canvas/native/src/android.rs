@@ -305,7 +305,7 @@ fn composite_layer(env: &mut JNIEnv, canvas: &JObject, layer: &TextureLayer) {
     let _ = env.call_method(canvas, "save", "()I", &[]);
 
     // Round the DRAWN rect (letterboxed for Contain) so corners clip the image.
-    let r = layer.corner_radius.clamp(0.0, ow.min(oh) * 0.5);
+    let r = (layer.corner_radius)().clamp(0.0, ow.min(oh) * 0.5);
     if r > 0.0 {
         if let Some(clip) = round_rect_path(env, ox, oy, ow, oh, r) {
             let local = unsafe { JObject::from_raw(clip.as_obj().as_raw()) };

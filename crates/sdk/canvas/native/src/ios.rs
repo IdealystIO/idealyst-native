@@ -431,7 +431,7 @@ fn composite_layer(ctx: CGContextRef, layer: &TextureLayer) {
         CGContextSaveGState(ctx);
         CGContextSetAlpha(ctx, layer.opacity.clamp(0.0, 1.0) as CGFloat);
         // Round the drawn (letterboxed for Contain) rect so corners clip the image.
-        let r = layer.corner_radius.clamp(0.0, ow.min(oh) * 0.5) as CGFloat;
+        let r = (layer.corner_radius)().clamp(0.0, ow.min(oh) * 0.5) as CGFloat;
         if r > 0.0 {
             if let Some(cls) = AnyClass::get("UIBezierPath") {
                 let path: Retained<NSObject> =

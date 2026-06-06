@@ -16,8 +16,8 @@ use idea_ui::{
 };
 use markdown::{Markdown, MdTheme};
 use runtime_core::{
-    component, rx, signal, switch, ui, Color, Element, IntoElement, SafeAreaSides, StyleApplication,
-    Tokenized,
+    component, effect, fixed_size, flat_list, rx, signal, switch, ui, Color, Element, IntoElement,
+    SafeAreaSides, StyleApplication, Tokenized,
 };
 
 use crate::catalog::{CatalogModel, Entry, Kind};
@@ -663,6 +663,7 @@ fn kind_blurb(kind: Kind) -> &'static str {
         Kind::Primitive => "Framework leaf nodes of the `ui!` grammar — view, text, button, scroll_view, and friends.",
         Kind::Utility => "Free functions authors call from regular Rust (platform, color, time, theme, layout, math).",
         Kind::Type => "Structs and enums registered via `#[derive(IdealystSchema)]`.",
+        Kind::IconSet => "Icon packs — every glyph in each set, searchable, with its `icon(...)` import.",
         Kind::Guide => "Bundled framework authoring guides, rendered from their shipped markdown.",
     }
 }
@@ -693,6 +694,13 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
                 render_markdown(&entry.docs)
             }
         });
+    }
+
+    // Icon packs get the searchable, virtualized glyph gallery — a
+    // viewport-filling page (not the shared scroll column) so the
+    // `flat_list` can bound and virtualize ~1600 icons.
+    if entry.kind == Kind::IconSet {
+        return icon_set_page(entry);
     }
 
     // Scopes list the entities assigned to them by module proximity,
@@ -794,12 +802,162 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
     })
 }
 
+/// The icon-pack gallery page: a viewport-filling column (header +
+/// virtualized `flat_list` grid) with a live name filter. Bypasses the
+/// shared `layout()` scroll column because the grid must be height-bounded
+/// to virtualize (see `crate::icons::list_style`). When the pack's crate
+/// isn't linked into this app, only its metadata is shown.
+///
+/// The gallery body is a `#[component]` ([`IconGallery`]), not inline code,
+/// for a load-bearing reason: the `flat_list` virtualizer installs its
+/// reactive re-diff as an `Effect` that only survives if an *owning
+/// reactive scope* is active when it's built (see
+/// `runtime_core::walker::virtualizer`). A plain page fn provides no such
+/// scope, so the grid would never re-filter on search; a component body
+/// does — the same reason `examples/icon-gallery` is a `#[component]`.
+fn icon_set_page(entry: &Entry) -> Element {
+    use crate::icons;
+    use crate::styles::{PageColumn, PagePad};
+
+    let meta = entry.icon_set.clone().unwrap_or_default();
+    let title = entry.name.clone();
+    let docs = entry.docs.clone();
+    let count = meta.count;
+
+    // Pack registered in the catalog but its crate isn't linked here — show
+    // metadata, no grid. (Renders inside the normal scroll column.)
+    if icons::registry(&meta.crate_name).is_none() {
+        let pad = PagePad();
+        return layout(ui! {
+            view(style = pad) {
+                Stack(gap = StackGap::Xs) {
+                    Typography(content = title, kind = typography_kind::H1)
+                    Typography(content = format!("icon set · {} icons", count), muted = true)
+                }
+                if !docs.is_empty() {
+                    render_markdown(&docs)
+                }
+                Callout(label = "Preview unavailable".to_string()) {
+                    Typography(
+                        content = "This pack's crate isn't linked into the docs app, so the \
+                                   glyph grid can't render here. Its metadata is shown above.".to_string(),
+                    )
+                }
+            }
+        });
+    }
+
+    ui! {
+        view(style = PageColumn()) {
+            menu_button()
+            IconGallery(
+                crate_name = meta.crate_name,
+                title = title,
+                import_path = meta.import_path,
+                license = meta.license,
+                homepage = meta.homepage,
+                count = count,
+            )
+        }
+        .safe_area(SafeAreaSides::VERTICAL)
+    }
+}
+
+/// Searchable, virtualized glyph grid for one icon pack. A `#[component]`
+/// so its body runs in an owning reactive scope — required for the
+/// `flat_list` virtualizer's data-effect to survive (see [`icon_set_page`]).
+#[derive(Default)]
+pub struct IconGalleryProps {
+    /// Bridge key into `crate::icons::registry` for the glyph geometry.
+    pub crate_name: String,
+    /// Pack display title.
+    pub title: String,
+    /// `use` path root (`icons_lucide`), for the usage hint.
+    pub import_path: String,
+    pub license: String,
+    pub homepage: String,
+    /// Total icon count (for the live "N of M" tally).
+    pub count: usize,
+}
+
+#[component]
+pub fn IconGallery(props: IconGalleryProps) -> Element {
+    use crate::icons;
+    use crate::styles::PagePad;
+
+    // Guaranteed Some — `icon_set_page` only renders this when linked.
+    let set = icons::registry(&props.crate_name).unwrap_or(&[]);
+    let count = props.count;
+
+    let query: runtime_core::Signal<String> = signal!(String::new());
+    let rows: runtime_core::Signal<Vec<icons::RowData>> = signal!(icons::build_rows(set, ""));
+    // Anchored in this component's scope, so it re-runs on every edit —
+    // which is also what keeps the virtualizer's own data-effect alive.
+    effect!({
+        let q = query.get();
+        rows.set(icons::build_rows(set, &q));
+    });
+    let on_query: Rc<dyn Fn(String)> = Rc::new(move |s| query.set(s));
+
+    // The import rule, spelled out so an author (or an LLM reading the page)
+    // knows exactly how to use any glyph below.
+    let usage = format!(
+        "Import an icon by its SCREAMING_SNAKE_CASE constant — e.g. \
+         `arrow-right` → `{ip}::ARROW_RIGHT`, then `icon({ip}::ARROW_RIGHT)`.",
+        ip = props.import_path,
+    );
+    let attribution = if props.homepage.is_empty() {
+        format!("Licensed under {}.", props.license)
+    } else {
+        format!("Licensed under {} · {}", props.license, props.homepage)
+    };
+    let title = props.title;
+
+    let list = flat_list::<icons::RowData, _, (), _>(
+        rows,
+        |_idx, r: &icons::RowData| r.key,
+        fixed_size(icons::ROW_H),
+        |_idx, r: &icons::RowData| icons::render_row(r),
+    )
+    .into_element()
+    .with_style(icons::list_style());
+
+    let header_pad = PagePad();
+    ui! {
+        view(style = icons::gallery_col()) {
+            view(style = header_pad) {
+                Stack(gap = StackGap::Xs) {
+                    Typography(content = title, kind = typography_kind::H1)
+                    Typography(
+                        content = rx!(format!(
+                            "{} of {} icons",
+                            icons::match_count(set, &query.get()),
+                            count
+                        )),
+                        muted = true,
+                    )
+                }
+                Callout(label = "Usage".to_string()) {
+                    Typography(content = usage)
+                    Typography(content = attribution, muted = true)
+                }
+                Field(
+                    value = query,
+                    on_change = on_query,
+                    placeholder = Some("Search icons by name…".to_string()),
+                )
+            }
+            list
+        }
+    }
+}
+
 fn fields_section(entry: &Entry) -> Element {
     let label = match entry.kind {
         Kind::Component | Kind::Primitive => "Props",
         Kind::Utility => "Parameters",
         Kind::Type => "Fields",
-        Kind::Guide | Kind::Scope => "Fields",
+        Kind::Guide | Kind::Scope | Kind::IconSet => "Fields",
     }
     .to_string();
     if entry.fields.is_empty() {

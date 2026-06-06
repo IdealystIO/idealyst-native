@@ -10,6 +10,13 @@ use std::process::{Child, Command, Stdio};
 use anyhow::{Context, Result};
 use build_ios::{capabilities, parse_manifest, FrameworkSource};
 
+/// App Store + Developer-ID distribution for `idealyst publish macos`:
+/// distribution-signed `.app` → `.pkg` upload (Mac App Store) or notarized,
+/// stapled `.dmg` (direct). Reuses this crate's `.app` assembly + signing
+/// helpers; only the distribution layer (entitlements, productbuild,
+/// notarytool, altool) is new.
+pub mod publish;
+
 /// Which build path to spawn. `Local` mounts the user's `app()`
 /// in-process via `host_appkit::run`; `Aas` connects to a dev-server
 /// via `host_appkit::run_aas` and streams the sidecar's commands.
@@ -83,6 +90,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             mode: build_mode,
             source: opts.source,
             user_features: opts.user_features.clone(),
+            universal: false, // dev/run: fast host-arch build
         },
     )?;
 
@@ -191,13 +199,24 @@ fn app_bundle_for(binary: &Path) -> Option<PathBuf> {
         .map(|p| p.to_path_buf())
 }
 
-/// Resolve a stable codesigning identity (SHA-1 hash) from the login keychain.
-/// Honors `IDEALYST_DEVELOPMENT_TEAM` / `DEVELOPMENT_TEAM` (the 10-char team OU,
-/// e.g. `SNN2643WAZ`) to pick a specific Apple Development cert; otherwise the
-/// first one found. Returns `None` when there's no Apple Development identity.
+/// Resolve a stable codesigning identity (SHA-1 hash) for the local dev
+/// signature — the first "Apple Development" cert, team-filtered.
 fn resolve_macos_signing_identity() -> Option<String> {
+    resolve_signing_identity("codesigning", &["Apple Development"])
+}
+
+/// Resolve a signing-identity SHA-1 from the login keychain whose cert name
+/// contains one of `kinds` (tried in listed priority), honoring
+/// `IDEALYST_DEVELOPMENT_TEAM` / `DEVELOPMENT_TEAM` to disambiguate when
+/// multiple teams' certs are installed. `policy` is the `security
+/// find-identity -p <policy>` value: `"codesigning"` for app-signing certs
+/// (Apple Development / Apple Distribution / Developer ID Application),
+/// `"basic"` for installer certs (3rd Party Mac Developer Installer), which
+/// are NOT codesigning identities and won't appear under `codesigning`.
+/// Returns `None` when no matching identity is installed.
+pub(crate) fn resolve_signing_identity(policy: &str, kinds: &[&str]) -> Option<String> {
     let out = Command::new("security")
-        .args(["find-identity", "-v", "-p", "codesigning"])
+        .args(["find-identity", "-v", "-p", policy])
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
@@ -205,9 +224,21 @@ fn resolve_macos_signing_identity() -> Option<String> {
         .or_else(|_| std::env::var("DEVELOPMENT_TEAM"))
         .ok()
         .filter(|t| !t.is_empty());
+    select_identity_from_listing(&text, team.as_deref(), kinds)
+}
 
-    // Each line: `  1) <40-hex-sha1> "Apple Development: Name (TEAMID)"`.
-    let mut first_dev: Option<String> = None;
+/// Pure core of [`resolve_signing_identity`] — pick a matching identity hash
+/// from `security find-identity` output. A line looks like
+/// `  1) <40-hex-sha1> "Apple Distribution: Name (TEAMID)"`. When `team` is
+/// set, an identity carrying `(TEAMID)` wins; otherwise the first cert whose
+/// name contains one of `kinds`. Split out so it's unit-testable without the
+/// keychain.
+pub(crate) fn select_identity_from_listing(
+    text: &str,
+    team: Option<&str>,
+    kinds: &[&str],
+) -> Option<String> {
+    let mut first: Option<String> = None;
     for line in text.lines() {
         let Some(paren) = line.find(") ") else { continue };
         let rest = line[paren + 2..].trim();
@@ -217,19 +248,19 @@ fn resolve_macos_signing_identity() -> Option<String> {
         if hash.len() != 40 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
             continue;
         }
-        if !name.contains("Apple Development") {
+        if !kinds.iter().any(|k| name.contains(k)) {
             continue;
         }
-        if let Some(team) = &team {
+        if let Some(team) = team {
             if name.contains(&format!("({team})")) {
                 return Some(hash.to_string());
             }
         }
-        if first_dev.is_none() {
-            first_dev = Some(hash.to_string());
+        if first.is_none() {
+            first = Some(hash.to_string());
         }
     }
-    first_dev
+    first
 }
 
 /// `codesign --force --deep --sign <identity> <app>`. Deep-signs the bundle and
@@ -275,6 +306,32 @@ fn maybe_wrap_in_app_bundle(
     if config.is_none() && permissions.is_empty() {
         return Ok(None);
     }
+    Ok(Some(
+        assemble_app_bundle(project_dir, binary, permissions)?.inner_binary,
+    ))
+}
+
+/// A laid-out `.app` bundle.
+pub(crate) struct AssembledApp {
+    /// The `<App>.app` directory (what gets signed / packaged).
+    pub app_dir: PathBuf,
+    /// The executable inside `Contents/MacOS/` (what gets launched).
+    pub inner_binary: PathBuf,
+}
+
+/// Assemble `<App>.app/Contents/{MacOS,Resources}` around `binary` with an
+/// Info.plist + (when declared) AppIcon.icns. ALWAYS wraps — used by the
+/// publish path, which needs a guaranteed bundle. The dev/run path goes
+/// through [`maybe_wrap_in_app_bundle`], which skips wrapping when there's
+/// neither an icon nor a permission to carry. Errors out on a broken icon
+/// config (missing source, invalid gradient) rather than shipping a
+/// silently iconless app.
+pub(crate) fn assemble_app_bundle(
+    project_dir: &Path,
+    binary: &Path,
+    permissions: &[(String, String)],
+) -> Result<AssembledApp> {
+    let config = icon_gen::load_config_from_manifest(project_dir)?;
     let manifest = parse_manifest(project_dir)?;
 
     // Bundle sits next to the cargo-emitted binary so a `cargo
@@ -295,23 +352,21 @@ fn maybe_wrap_in_app_bundle(
     fs::create_dir_all(&macos_dir).with_context(|| format!("create {}", macos_dir.display()))?;
     fs::create_dir_all(&resources).with_context(|| format!("create {}", resources.display()))?;
 
-    // Generate `.icns` straight into Resources/ when the project has an
-    // icon block. icon-gen's cache skips work when the source hasn't
-    // changed, so this is near-free on subsequent runs. Skipped entirely
-    // for a permissions-only bundle (no icon declared).
-    let icon_file_stem = match &config {
-        Some(config) => {
-            let block = config.resolved_for(icon_gen::Target::Macos);
-            let icns_outs = icon_gen::sync_macos_icns(Some(&block), &resources)?;
-            icns_outs.and_then(|outs| {
-                outs.icns
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(str::to_string)
-            })
-        }
-        None => None,
-    };
+    // Generate `AppIcon.icns` straight into Resources/ — ALWAYS, so the
+    // bundle has a valid icon (the Mac App Store rejects an iconless app, and
+    // requires the 512pt@2x slot — error 409). Uses the project's declared
+    // icon when present, else a generated placeholder (icon-gen owns the
+    // fallback). icon-gen's cache skips work when a declared source hasn't
+    // changed. `CFBundleIconFile` references the stem ("AppIcon").
+    let block = config
+        .as_ref()
+        .map(|c| c.resolved_for(icon_gen::Target::Macos));
+    let icns_outs = icon_gen::sync_macos_icns(block.as_ref(), &resources)?;
+    let icon_file_stem = icns_outs
+        .icns
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(str::to_string);
 
     // Copy the binary INTO MacOS/. Using `fs::copy` (not a hard
     // link / symlink) so the .app is self-contained and survives
@@ -340,7 +395,10 @@ fn maybe_wrap_in_app_bundle(
     // (xattr-based icon caches, older LaunchServices).
     fs::write(contents.join("PkgInfo"), b"APPL????")?;
 
-    Ok(Some(dest_binary))
+    Ok(AssembledApp {
+        app_dir,
+        inner_binary: dest_binary,
+    })
 }
 
 /// Escape text for inclusion in a plist XML `<string>`. Reason strings
@@ -412,6 +470,24 @@ fn render_info_plist(
             )
         })
         .collect::<String>();
+    // macOS distribution keys. `LSApplicationCategoryType` is required by
+    // the Mac App Store (publish errors earlier if it's unset for that
+    // path); `LSMinimumSystemVersion` + `NSHumanReadableCopyright` refine
+    // the bundle. All read from `[..app.macos]`.
+    let category_entry = match &app.macos.category {
+        Some(c) => format!(
+            "    <key>LSApplicationCategoryType</key>\n    <string>{}</string>\n",
+            xml_escape(c),
+        ),
+        None => String::new(),
+    };
+    let copyright_entry = match &app.macos.copyright {
+        Some(c) => format!(
+            "    <key>NSHumanReadableCopyright</key>\n    <string>{}</string>\n",
+            xml_escape(c),
+        ),
+        None => String::new(),
+    };
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
@@ -419,16 +495,21 @@ fn render_info_plist(
          <plist version=\"1.0\">\n<dict>\n\
          {icon_entry}\
          {permission_entries}\
+         {category_entry}\
+         {copyright_entry}\
              <key>CFBundleExecutable</key>\n    <string>{executable}</string>\n\
              <key>CFBundleIdentifier</key>\n    <string>{bundle_id}</string>\n\
              <key>CFBundleName</key>\n    <string>{display_name}</string>\n\
              <key>CFBundleDisplayName</key>\n    <string>{display_name}</string>\n\
              <key>CFBundleShortVersionString</key>\n    <string>{version}</string>\n\
-             <key>CFBundleVersion</key>\n    <string>1</string>\n\
+             <key>CFBundleVersion</key>\n    <string>{build_number}</string>\n\
              <key>CFBundlePackageType</key>\n    <string>APPL</string>\n\
+             <key>LSMinimumSystemVersion</key>\n    <string>{min_version}</string>\n\
              <key>NSHighResolutionCapable</key>\n    <true/>\n\
          </dict>\n</plist>\n",
         version = app.version,
+        build_number = xml_escape(&app.build_number),
+        min_version = xml_escape(&app.macos.min_version),
     )
 }
 
@@ -447,4 +528,63 @@ fn set_executable(_path: &Path) -> Result<()> {
     // No-op on non-Unix hosts; .app bundles only matter on macOS,
     // and cross-compiling to macOS from elsewhere isn't in scope.
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use build_ios::{AppMetadata, MacosMetadata, SplashConfig};
+
+    fn app_metadata(macos: MacosMetadata) -> AppMetadata {
+        AppMetadata {
+            name: "Demo".to_string(),
+            bundle_id: Some("ai.example.demo".to_string()),
+            version: "1.2.3".to_string(),
+            build_number: "7".to_string(),
+            splash: SplashConfig {
+                background: "#000000".to_string(),
+                title: "Demo".to_string(),
+                title_color: "#ffffff".to_string(),
+                duration_ms: 0,
+            },
+            targets: Vec::new(),
+            server_bin: None,
+            web: Default::default(),
+            macos,
+            permissions: Default::default(),
+        }
+    }
+
+    /// The Info.plist must carry the macOS distribution keys from
+    /// `[..app.macos]` plus `CFBundleVersion` from `build_number` (it used to
+    /// be hardcoded `1`) — these gate Mac App Store acceptance.
+    #[test]
+    fn info_plist_emits_macos_distribution_keys() {
+        let app = app_metadata(MacosMetadata {
+            category: Some("public.app-category.productivity".to_string()),
+            min_version: "13.0".to_string(),
+            copyright: Some("© 2026 Acme".to_string()),
+        });
+        let plist = render_info_plist("Demo", &app, "demo-macos", None, &[]);
+        assert!(plist.contains(
+            "<key>LSApplicationCategoryType</key>\n    <string>public.app-category.productivity</string>"
+        ));
+        assert!(plist.contains("<key>LSMinimumSystemVersion</key>\n    <string>13.0</string>"));
+        assert!(plist.contains(
+            "<key>NSHumanReadableCopyright</key>\n    <string>© 2026 Acme</string>"
+        ));
+        assert!(plist.contains("<key>CFBundleVersion</key>\n    <string>7</string>"));
+    }
+
+    /// Category/copyright are optional — omit the keys when unset rather than
+    /// emitting empty strings.
+    #[test]
+    fn info_plist_omits_unset_optional_macos_keys() {
+        let app = app_metadata(MacosMetadata::default());
+        let plist = render_info_plist("Demo", &app, "demo-macos", None, &[]);
+        assert!(!plist.contains("LSApplicationCategoryType"));
+        assert!(!plist.contains("NSHumanReadableCopyright"));
+        // min_version always present (defaults to 11.0).
+        assert!(plist.contains("<key>LSMinimumSystemVersion</key>\n    <string>11.0</string>"));
+    }
 }

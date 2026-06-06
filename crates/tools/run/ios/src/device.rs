@@ -53,11 +53,19 @@ use build_ios::{BuildOptions, FrameworkSource, Manifest};
 
 use crate::frameworks::{collect_ios_frameworks, pbx_ids, Framework};
 use crate::{
-    render_view_controller, sync_ios_icons_into_bundle, title_case_for_executable, xml_escape,
+    render_view_controller, title_case_for_executable, xml_escape,
     RunMode, APP_DELEGATE_SWIFT, BRIDGING_HEADER_LOCAL_H, INFO_PLIST_TMPL,
 };
 
 const PBXPROJ_TMPL: &str = include_str!("../templates/project.pbxproj.tmpl");
+
+/// `CFBundleIconName` plist entry spliced into the device/archive Info.plist.
+/// Points at the `AppIcon` asset catalog the pbxproj references (and `actool`
+/// compiles). Apps built with the iOS 11+ SDK MUST carry this key alongside
+/// an asset-catalog icon, or App Store ingestion rejects the build (error
+/// 90713). Set on the xcodebuild paths only — the simulator bundle has no
+/// compiled catalog, so it keeps loose-PNG `CFBundleIcons` instead.
+const CFBUNDLE_ICON_NAME_ENTRY: &str = "<key>CFBundleIconName</key>\n    <string>AppIcon</string>";
 
 #[derive(Clone, Debug)]
 pub struct DeviceOptions {
@@ -245,15 +253,22 @@ pub(crate) fn prepare_xcode_project(
     )?;
     std::fs::write(swift_dir.join("BridgingHeader.h"), BRIDGING_HEADER_LOCAL_H)?;
 
-    // App-icon PNGs + Info.plist. Icons land next to the Info.plist;
-    // xcodebuild copies them into the bundle.
-    let icon_plist_entries = sync_ios_icons_into_bundle(project_dir, &project_root)?;
+    // App-icon ASSET CATALOG + Info.plist. The xcodebuild paths (device
+    // install + App Store archive) use a real `Assets.xcassets/AppIcon`
+    // catalog — `actool` compiles it and injects the icons, which is what
+    // App Store ingestion requires (loose PNGs fail validation, error
+    // 90713). The catalog is ALWAYS produced (placeholder when the project
+    // declares no icon), so the pbxproj can unconditionally reference it and
+    // every build carries a valid `CFBundleIconName = AppIcon`. (The
+    // simulator path keeps loose PNGs — it hand-assembles the bundle with no
+    // `actool`. See [`crate::sync_ios_icons_into_bundle`].)
+    crate::sync_ios_asset_catalog_into_project(project_dir, &project_root)?;
     std::fs::write(
         project_root.join("Info.plist"),
         render_device_info_plist(
             manifest,
             &executable_name,
-            &icon_plist_entries,
+            CFBUNDLE_ICON_NAME_ENTRY,
             &permission_plist,
         )?,
     )?;
@@ -978,6 +993,53 @@ iPhone 15 (17.0) (ABCDEF01-2345-6789-ABCD-EF0123456789)
         let plist = render_device_info_plist(&m, "Demo", "", "").expect("render");
         assert!(!plist.contains("NSAllowsLocalNetworking"));
         assert!(plist.contains("<key>CFBundleIdentifier</key>"));
+    }
+
+    /// The xcodebuild-path plist must carry `CFBundleIconName` (the App Store
+    /// requires it alongside the asset catalog, error 90713) and the full
+    /// iPad-multitasking orientation set (error 90474 otherwise).
+    #[test]
+    fn device_plist_has_icon_name_and_all_orientations() {
+        let m = crate::tests_support::fake_manifest();
+        let plist = render_device_info_plist(&m, "Demo", CFBUNDLE_ICON_NAME_ENTRY, "").expect("render");
+        assert!(
+            plist.contains("<key>CFBundleIconName</key>\n    <string>AppIcon</string>"),
+            "missing CFBundleIconName=AppIcon:\n{plist}",
+        );
+        for o in [
+            "UIInterfaceOrientationPortrait",
+            "UIInterfaceOrientationPortraitUpsideDown",
+            "UIInterfaceOrientationLandscapeLeft",
+            "UIInterfaceOrientationLandscapeRight",
+        ] {
+            assert!(plist.contains(o), "missing orientation {o}");
+        }
+    }
+
+    /// The pbxproj must reference the `Assets.xcassets` catalog from a
+    /// Resources build phase so `actool` compiles the AppIcon (without this,
+    /// `CFBundleIconName` points at a catalog the build never produces).
+    #[test]
+    fn pbxproj_references_asset_catalog_in_resources_phase() {
+        let frameworks = camera_frameworks();
+        let rendered = render_pbxproj(&PbxParams {
+            app_name: "App",
+            bundle_id: "ai.example.app",
+            team: "TEAM123456",
+            library_search_path: Path::new("/lib"),
+            lib_name: "app_ios_wrapper",
+            frameworks: &frameworks,
+        });
+        assert!(rendered.contains("PBXResourcesBuildPhase"), "no Resources build phase");
+        assert!(
+            rendered.contains("Assets.xcassets in Resources"),
+            "Assets.xcassets not wired into the Resources phase",
+        );
+        assert!(
+            rendered.contains("lastKnownFileType = folder.assetcatalog"),
+            "Assets.xcassets file reference missing",
+        );
+        assert!(rendered.contains("ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon"));
     }
 
     /// `CFBundleVersion` reflects the manifest's `build_number` (it used to

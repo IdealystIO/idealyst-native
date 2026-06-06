@@ -3596,6 +3596,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "icon-gallery"
+version = "0.0.1"
+dependencies = [
+ "dev-server",
+ "icons-lucide",
+ "idea-ui",
+ "runtime-core",
+]
+
+[[package]]
 name = "icon-gen"
 version = "0.0.1"
 dependencies = [
@@ -3615,6 +3625,7 @@ dependencies = [
 name = "icons-lucide"
 version = "0.0.1"
 dependencies = [
+ "mcp-catalog",
  "runtime-core",
 ]
 

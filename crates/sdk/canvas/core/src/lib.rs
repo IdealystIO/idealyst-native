@@ -193,8 +193,11 @@ pub struct TextureLayer {
     pub rect: Rc<dyn Fn() -> (f32, f32, f32, f32)>,
     /// How the source maps into [`rect`](Self::rect).
     pub fit: Fit,
-    /// Corner radius in LOGICAL points (0 = square). Scaled to physical pixels.
-    pub corner_radius: f32,
+    /// Corner radius in LOGICAL points (0 = square). Reactive — read each composite
+    /// like [`rect`](Self::rect) — so a shape/size change (e.g. a camera widget
+    /// toggling rounded-rect ↔ circle) updates the mask live without rebuilding the
+    /// layer. Scaled to physical pixels by each backend.
+    pub corner_radius: Rc<dyn Fn() -> f32>,
     /// Layer opacity `0.0..=1.0` (1 = opaque).
     pub opacity: f32,
     /// Border (frame) stroke width in LOGICAL points (0 = no border). Drawn by
@@ -218,16 +221,23 @@ impl TextureLayer {
             source,
             rect,
             fit: Fit::Cover,
-            corner_radius: 0.0,
+            corner_radius: Rc::new(|| 0.0),
             opacity: 1.0,
             border_width: 0.0,
             border_color: Color::new(0, 0, 0, 0),
         }
     }
 
-    /// Set the corner radius (logical points).
+    /// Set a fixed corner radius (logical points).
     pub fn corner_radius(mut self, r: f32) -> Self {
-        self.corner_radius = r;
+        self.corner_radius = Rc::new(move || r);
+        self
+    }
+
+    /// Set a REACTIVE corner radius (logical points) — re-read each composite, so
+    /// the mask follows a changing shape/size without rebuilding the layer.
+    pub fn corner_radius_fn(mut self, f: impl Fn() -> f32 + 'static) -> Self {
+        self.corner_radius = Rc::new(f);
         self
     }
 

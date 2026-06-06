@@ -20,7 +20,8 @@ use crate::Platform;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// Target platform. Only `ios` is supported today.
+    /// Target platform: `ios` (App Store Connect) or `macos` (Mac App Store
+    /// or Developer ID notarization).
     #[arg(value_enum)]
     pub platform: Platform,
 
@@ -28,17 +29,30 @@ pub struct Args {
     #[arg(default_value = ".")]
     pub dir: PathBuf,
 
-    /// Also upload the archive to App Store Connect. Without this flag the
-    /// command stops after writing a distribution-signed `.ipa`.
+    /// Also upload to App Store Connect. iOS: exports + uploads the `.ipa`.
+    /// macOS (with `--app-store`): uploads the `.pkg`. Without this the
+    /// command stops after producing the signed artifact.
     #[arg(long)]
     pub upload: bool,
 
-    /// After building, open the `.xcarchive` in Xcode's Organizer so you can
-    /// click **Distribute App** and upload interactively — no API key needed,
-    /// just an Apple ID signed into Xcode. Mutually exclusive with `--upload`
-    /// (that's the headless path); this is the GUI path.
-    #[arg(long, conflicts_with = "upload")]
-    pub organizer: bool,
+    /// Finish the upload in the platform's GUI uploader instead of via an API
+    /// key — no key needed, just an Apple ID. iOS → opens the `.xcarchive` in
+    /// Xcode's Organizer; macOS → builds the App Store `.pkg` and opens
+    /// Transporter. (On macOS this implies the Mac App Store path.)
+    #[arg(long, conflicts_with_all = ["upload", "notarize"])]
+    pub interactive: bool,
+
+    /// macOS only. Mac App Store path: sandboxed, Apple-Distribution-signed
+    /// `.app` → signed `.pkg`. Add `--upload` (API key) or `--interactive`
+    /// (Transporter) to submit it.
+    #[arg(long, conflicts_with_all = ["notarize"])]
+    pub app_store: bool,
+
+    /// macOS only. Developer ID path: hardened-runtime `.app` → notarize →
+    /// staple → `.dmg` you distribute yourself (not the App Store). Requires
+    /// an App Store Connect API key for notarization.
+    #[arg(long, conflicts_with_all = ["interactive", "app_store", "upload"])]
+    pub notarize: bool,
 
     /// Override `CFBundleVersion` (the build number) for this archive.
     /// App Store Connect rejects a re-used build number for the same app
@@ -71,21 +85,42 @@ pub struct Args {
     #[arg(long)]
     pub api_key_path: Option<PathBuf>,
 
-    /// Where the `.ipa` (and `.xcarchive`) land. Defaults to
-    /// `<project>/dist/ios`.
+    /// Where the build artifacts land. Defaults to `<project>/dist/<platform>`
+    /// (`.ipa`/`.xcarchive` for iOS; `.pkg`/`.dmg` for macOS).
     #[arg(long)]
     pub out: Option<PathBuf>,
 }
 
 pub fn run(args: Args) -> Result<()> {
-    if args.platform != Platform::Ios {
-        anyhow::bail!(
-            "`idealyst publish` currently supports only `ios` (App Store \
-             Connect); `{}` is not wired yet.",
-            args.platform,
-        );
+    match args.platform {
+        Platform::Ios => {
+            if args.app_store || args.notarize {
+                anyhow::bail!(
+                    "`--app-store` / `--notarize` are macOS-only. For iOS use \
+                     `--upload` (App Store Connect) or `--interactive` (Xcode \
+                     Organizer GUI).",
+                );
+            }
+            run_ios(args)
+        }
+        Platform::Macos => {
+            if !args.app_store && !args.notarize && !args.interactive {
+                anyhow::bail!(
+                    "choose a macOS distribution path: `--app-store` (Mac App \
+                     Store; add `--upload` for API-key submit or `--interactive` \
+                     for Transporter) or `--notarize` (Developer ID, direct .dmg).",
+                );
+            }
+            run_macos(args)
+        }
+        other => anyhow::bail!(
+            "`idealyst publish` supports `ios` and `macos`; `{other}` is not a \
+             distributable target.",
+        ),
     }
+}
 
+fn run_ios(args: Args) -> Result<()> {
     // Canonicalize the project dir BEFORE resolving the framework source.
     // `FrameworkSource::detect` walks `project_dir.ancestors()` to find the
     // workspace root; a relative `.` has no real ancestors, so it would fall
@@ -105,11 +140,11 @@ pub fn run(args: Args) -> Result<()> {
         .clone()
         .unwrap_or_else(|| dir.join("dist").join("ios"));
 
-    // `--organizer` archives only and hands off to Xcode (no CLI export —
-    // Organizer does the distribution re-sign); `--upload` exports+uploads;
-    // the bare command exports a signed `.ipa`. `--organizer`/`--upload` are
-    // mutually exclusive at the clap layer.
-    let distribution = if args.organizer {
+    // `--interactive` archives only and hands off to Xcode Organizer (no CLI
+    // export — Organizer does the distribution re-sign); `--upload`
+    // exports+uploads; the bare command exports a signed `.ipa`.
+    // `--interactive`/`--upload` are mutually exclusive at the clap layer.
+    let distribution = if args.interactive {
         Distribution::ArchiveOnly
     } else if args.upload {
         Distribution::Upload
@@ -138,14 +173,104 @@ pub fn run(args: Args) -> Result<()> {
             "[publish ios] uploaded to App Store Connect — the build will appear \
              under TestFlight / App Store once Apple finishes processing.",
         );
-    } else if args.organizer {
+    } else if args.interactive {
         open_in_organizer(&artifact.archive)?;
     } else {
         eprintln!(
             "[publish ios] done. Upload with `--upload` (App Store Connect API \
-             key), `--organizer` (Xcode GUI), or drag the .ipa into Transporter.",
+             key), `--interactive` (Xcode Organizer), or drag the .ipa into \
+             Transporter.",
         );
     }
+    Ok(())
+}
+
+fn run_macos(args: Args) -> Result<()> {
+    use run_macos::publish::MacPublishOptions;
+
+    let dir = std::fs::canonicalize(&args.dir)
+        .with_context(|| format!("cannot resolve project dir {}", args.dir.display()))?;
+
+    let team = run_ios::device::resolve_team(args.team.as_deref())?;
+    eprintln!("[publish macos] signing team {team}");
+
+    let api_key = resolve_asc_api_key(&args)?;
+    let source = crate::framework_source::resolve(&dir)?;
+    let output_dir = args
+        .out
+        .clone()
+        .unwrap_or_else(|| dir.join("dist").join("macos"));
+
+    let distribution = mac_distribution(args.notarize, args.upload);
+
+    let artifact = run_macos::publish::publish(
+        &dir,
+        MacPublishOptions {
+            team,
+            source,
+            user_features: Vec::new(),
+            build_number: args.build_number.clone(),
+            distribution,
+            api_key,
+            output_dir,
+        },
+    )?;
+
+    if let Some(pkg) = &artifact.pkg {
+        eprintln!("[publish macos] built {}", pkg.display());
+    }
+    if let Some(dmg) = &artifact.dmg {
+        eprintln!("[publish macos] built {}", dmg.display());
+    }
+    if artifact.uploaded {
+        eprintln!(
+            "[publish macos] uploaded to App Store Connect — the build appears \
+             under TestFlight / the Mac App Store once Apple finishes processing.",
+        );
+    } else if artifact.notarized {
+        eprintln!(
+            "[publish macos] notarized + stapled. Ship the .dmg directly — it \
+             passes Gatekeeper on any Mac.",
+        );
+    } else if args.interactive {
+        if let Some(pkg) = &artifact.pkg {
+            open_in_transporter(pkg)?;
+        }
+    } else {
+        eprintln!(
+            "[publish macos] signed .pkg ready. Add `--upload` (API key) or \
+             `--interactive` (Transporter) to submit it to App Store Connect.",
+        );
+    }
+    Ok(())
+}
+
+/// Launch Transporter and reveal the `.pkg` in Finder so the user can drag it
+/// in and click **Deliver** — the macOS Apple-ID-only upload path (no API
+/// key), analogous to iOS's [`open_in_organizer`]. Unlike `.xcarchive`
+/// (which Xcode registers as a handler), macOS routes `.pkg` to Installer, so
+/// we can't `open` the file straight into Transporter — we launch the app and
+/// surface the file for the one manual drag.
+fn open_in_transporter(pkg: &std::path::Path) -> Result<()> {
+    eprintln!("[publish macos] opening Transporter…");
+    let launched = std::process::Command::new("open")
+        .args(["-a", "Transporter"])
+        .status();
+    let ok = matches!(launched, Ok(s) if s.success());
+    if !ok {
+        anyhow::bail!(
+            "couldn't launch Transporter. Install it free from the Mac App \
+             Store, then drag {} in and click Deliver.",
+            pkg.display(),
+        );
+    }
+    // Reveal the .pkg in Finder for the drag-and-drop (best-effort).
+    let _ = std::process::Command::new("open").arg("-R").arg(pkg).status();
+    eprintln!(
+        "[publish macos] drag {} into Transporter and click Deliver to upload \
+         with your Apple ID.",
+        pkg.display(),
+    );
     Ok(())
 }
 
@@ -187,6 +312,25 @@ fn open_in_organizer(archive: &std::path::Path) -> Result<()> {
 /// found) is a hard error — silently downgrading to the Xcode account would be
 /// a confusing surprise.
 fn resolve_auth(args: &Args) -> Result<Option<UploadAuth>> {
+    match resolve_api_key_parts(args)? {
+        Some((key_id, issuer_id, key_path)) => Ok(Some(UploadAuth::ApiKey {
+            key_id,
+            issuer_id,
+            key_path,
+        })),
+        // No key at all. If we're uploading we still need *some* auth — lean
+        // on the Xcode account; otherwise leave it unset.
+        None => Ok(args.upload.then_some(UploadAuth::XcodeAccount)),
+    }
+}
+
+/// Shared App Store Connect API-key resolution (used by both the iOS and
+/// macOS paths). Resolves `(key_id, issuer_id, key_path)` from flags →
+/// `ASC_*` env (which an auto-loaded `.env` can supply), with the `.p8`
+/// auto-located by id in Apple's standard `private_keys` dirs when no
+/// explicit path is given. Returns `None` when no key is in play; a
+/// partially-specified key is a hard error.
+fn resolve_api_key_parts(args: &Args) -> Result<Option<(String, String, PathBuf)>> {
     let key_id = args
         .api_key_id
         .clone()
@@ -229,24 +373,44 @@ fn resolve_auth(args: &Args) -> Result<Option<UploadAuth>> {
                     )
                 })?,
             };
-            Ok(Some(UploadAuth::ApiKey {
-                key_id,
-                issuer_id,
-                key_path,
-            }))
+            Ok(Some((key_id, issuer_id, key_path)))
         }
-        (None, None) if explicit_path.is_none() => {
-            // No key at all. If we're uploading we still need *some* auth —
-            // lean on the Xcode account; otherwise leave it unset.
-            Ok(args.upload.then_some(UploadAuth::XcodeAccount))
-        }
+        (None, None) if explicit_path.is_none() => Ok(None),
         _ => anyhow::bail!(
             "incomplete App Store Connect API key: provide both --api-key-id and \
              --issuer-id (or $ASC_KEY_ID / $ASC_ISSUER_ID). The .p8 is then \
              auto-located in ~/.appstoreconnect/private_keys/ (or pass \
-             --api-key-path). Omit all three to use the Xcode-stored account.",
+             --api-key-path).",
         ),
     }
+}
+
+/// Map the macOS path flags to a distribution mode. `--notarize` →
+/// Developer ID; `--app-store --upload` → upload; `--app-store` alone → just
+/// the signed `.pkg`. (clap guarantees `--notarize` and `--app-store` are
+/// mutually exclusive, so `notarize` wins cleanly here.)
+fn mac_distribution(notarize: bool, upload: bool) -> run_macos::publish::MacDistribution {
+    use run_macos::publish::MacDistribution;
+    if notarize {
+        MacDistribution::DeveloperId
+    } else if upload {
+        MacDistribution::AppStoreUpload
+    } else {
+        MacDistribution::AppStorePkg
+    }
+}
+
+/// macOS API-key resolution → [`run_macos::publish::AscApiKey`]. Same
+/// resolution as the iOS auth, but with no Xcode-account fallback (macOS
+/// upload/notarization always go through the API key).
+fn resolve_asc_api_key(args: &Args) -> Result<Option<run_macos::publish::AscApiKey>> {
+    Ok(resolve_api_key_parts(args)?.map(|(key_id, issuer_id, key_path)| {
+        run_macos::publish::AscApiKey {
+            key_id,
+            issuer_id,
+            key_path,
+        }
+    }))
 }
 
 /// The directories Apple's tools (altool / notarytool / Transporter) search
@@ -319,7 +483,9 @@ mod tests {
             platform: Platform::Ios,
             dir: PathBuf::from("."),
             upload,
-            organizer: false,
+            interactive: false,
+            app_store: false,
+            notarize: false,
             build_number: None,
             team: None,
             api_key_id: api_key_id.map(str::to_string),
@@ -393,5 +559,42 @@ mod tests {
             expand_tilde_with(PathBuf::from("/abs/k.p8"), Some(home)),
             PathBuf::from("/abs/k.p8"),
         );
+    }
+
+    #[test]
+    fn mac_distribution_flag_mapping() {
+        use run_macos::publish::MacDistribution;
+        assert_eq!(mac_distribution(true, false), MacDistribution::DeveloperId);
+        assert_eq!(mac_distribution(true, true), MacDistribution::DeveloperId); // notarize wins
+        assert_eq!(mac_distribution(false, true), MacDistribution::AppStoreUpload);
+        assert_eq!(mac_distribution(false, false), MacDistribution::AppStorePkg);
+    }
+
+    /// clap must reject contradictory path flags so a caller can't ask for two
+    /// distribution mechanisms at once.
+    #[test]
+    fn conflicting_path_flags_are_rejected() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            args: Args,
+        }
+        let bad = [
+            ["x", "macos", "--app-store", "--notarize"].as_slice(),
+            ["x", "ios", "--interactive", "--upload"].as_slice(),
+            ["x", "macos", "--notarize", "--upload"].as_slice(),
+            ["x", "macos", "--interactive", "--notarize"].as_slice(),
+        ];
+        for argv in bad {
+            assert!(
+                Wrap::try_parse_from(argv).is_err(),
+                "expected clap to reject {argv:?}",
+            );
+        }
+        // Valid combos parse: API-key submit, and Transporter (interactive).
+        assert!(Wrap::try_parse_from(["x", "macos", "--app-store", "--upload"]).is_ok());
+        assert!(Wrap::try_parse_from(["x", "macos", "--interactive"]).is_ok());
+        assert!(Wrap::try_parse_from(["x", "ios", "--interactive"]).is_ok());
     }
 }

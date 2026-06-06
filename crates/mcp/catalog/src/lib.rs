@@ -139,6 +139,7 @@ inventory::collect!(TypeEntry);
 inventory::collect!(RecipeEntry);
 inventory::collect!(ScopeEntry);
 inventory::collect!(SdkEntry);
+inventory::collect!(IconSetEntry);
 
 /// A built-in framework primitive — the leaf nodes of the `ui!` /
 /// `jsx!` grammar (`View`, `Text`, `Button`, `ScrollView`, ...).
@@ -601,6 +602,61 @@ impl SdkKind {
     }
 }
 
+/// One icon within an [`IconSetEntry`] — the pair an author needs to go
+/// from "I want the arrow-right icon" to a compiling `use`.
+///
+/// `name` is the icon's catalog/display name (the upstream kebab-case
+/// name, e.g. `"arrow-right"`) — what you search for. `ident` is the
+/// Rust constant it's exposed as (`"ARROW_RIGHT"`), so the paste-ready
+/// import is `use {import_path}::{ident};`. The two are carried
+/// separately rather than reconstructed from a rule because the
+/// kebab→SCREAMING transform has edge cases (leading digits get an `_`
+/// prefix; `a-arrow-down` → `A_ARROW_DOWN`) — the icon pack's build
+/// script already knows the real ident, so it ships it verbatim.
+#[derive(Debug)]
+pub struct IconRef {
+    pub name: &'static str,
+    pub ident: &'static str,
+}
+
+/// An icon pack — a crate (`icons-lucide`, …) that exposes a set of
+/// named icon `const`s an author drops into the `icon(...)` primitive.
+///
+/// Icon packs are invisible to the component / primitive slices: they
+/// ship plain `IconData` constants, not `#[component]`s or `Element`s
+/// the inventory walker sees. This slice is the discovery surface — an
+/// agent learns "which packs exist, and what's the import for the X
+/// icon" — and the data backing the docs site's icon gallery.
+///
+/// **Open** — a pack self-registers from its own `build.rs`-generated
+/// table (the `icons` field is a `&'static` slice the pack emits), the
+/// same way `#[component]` self-registers. A third-party icon crate
+/// becomes discoverable by submitting one of these; nothing here is
+/// hand-curated in `mcp-catalog`. The registration is feature-gated in
+/// the pack (off by default) so normal apps that import three icons
+/// don't pay for the whole name table.
+#[derive(Debug)]
+pub struct IconSetEntry {
+    /// Crate name as written in `Cargo.toml` (`"icons-lucide"`).
+    /// Doubles as the `describe_icon_set` lookup key.
+    pub name: &'static str,
+    /// Human-facing pack title — `"Lucide"`.
+    pub title: &'static str,
+    /// One-paragraph description of the pack.
+    pub docs: &'static str,
+    /// The `use` path root the `ident`s live under — `"icons_lucide"`.
+    /// `use {import_path}::{icon.ident};` is the import for any icon.
+    pub import_path: &'static str,
+    /// SPDX-ish license id for the icon artwork — `"ISC"` for Lucide.
+    pub license: &'static str,
+    /// Upstream project homepage, for attribution / browsing.
+    pub homepage: &'static str,
+    /// Every icon in the pack as a `(name, ident)` pair, sorted by
+    /// `name`. The pack's `build.rs` generates this slice. `len()` is
+    /// the pack's icon count.
+    pub icons: &'static [IconRef],
+}
+
 /// Generalized type-catalog entry. Subsumes [`PropsSchemaEntry`]:
 /// every props struct also produces a `TypeEntry` (shape `Struct`).
 /// Enums get a `TypeEntry` with shape `Enum` listing their variants
@@ -743,6 +799,16 @@ pub fn lookup_sdk(name: &str) -> Option<&'static SdkEntry> {
     sdks().find(|s| s.name == name)
 }
 
+/// Iterate every [`IconSetEntry`] an icon pack self-registered.
+pub fn icon_sets() -> impl Iterator<Item = &'static IconSetEntry> {
+    inventory::iter::<IconSetEntry>()
+}
+
+/// Look up an icon pack by its crate `name` (`"icons-lucide"`).
+pub fn lookup_icon_set(name: &str) -> Option<&'static IconSetEntry> {
+    icon_sets().find(|s| s.name == name)
+}
+
 /// Look up a primitive by its `name` (snake_case) or `pascal_name`.
 pub fn lookup_primitive(needle: &str) -> Option<&'static PrimitiveEntry> {
     primitives().find(|p| p.name == needle || p.pascal_name == needle)
@@ -804,6 +870,7 @@ pub fn catalog_json() -> serde_json::Value {
         "recipes": slice_array::<RecipeEntry>(),
         "scopes": slice_array::<ScopeEntry>(),
         "sdks": slice_array::<SdkEntry>(),
+        "icon_sets": slice_array::<IconSetEntry>(),
     })
 }
 

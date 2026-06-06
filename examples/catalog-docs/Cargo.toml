@@ -52,8 +52,11 @@ markdown = { workspace = true }
 # Real HTML <table> on web via Element::External; flex fallback on
 # native. Powers the auto-generated props/fields tables.
 table = { workspace = true }
-# Lucide icon pack — the `MENU` glyph for the mobile hamburger.
-icons-lucide = { workspace = true }
+# Lucide icon pack — the `MENU` glyph for the mobile hamburger AND the
+# whole-pack `ALL` registry (the `registry` feature) the Icons gallery
+# page renders the live glyph grid from. Geometry comes from here; the
+# pack's catalog metadata (names/count/license) comes from catalog.json.
+icons-lucide = { workspace = true, features = ["registry"] }
 # Recorder backend for the runtime-server sidecar wrapper. Optional.
 dev-server = { workspace = true, optional = true }
 
@@ -70,6 +73,11 @@ idea-ui = { workspace = true, features = ["docs"] }
 drawer-navigator = { workspace = true }
 table = { workspace = true }
 codeblock = { workspace = true }
+# `catalog` makes icons-lucide self-register its `IconSetEntry` into the
+# inventory the build script's `catalog_json()` reads — so the Icons pack
+# lands in catalog.json. (Resolver v2 keeps this build-dep feature off the
+# wasm runtime dep above, which only needs `registry`.)
+icons-lucide = { workspace = true, features = ["catalog"] }
 serde_json = "1"
 
 [dev-dependencies]

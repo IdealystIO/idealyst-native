@@ -353,6 +353,36 @@ pub struct SlugRequest {
     pub slug: String,
 }
 
+/// Args for `describe_icon_set` — a pack name plus a pagination window
+/// over its (name-sorted) icon list. An icon pack has ~1600 icons, so the
+/// full list is never dumped at once; the caller pages or, better, uses
+/// `search_icons`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DescribeIconSetRequest {
+    /// Icon pack crate name (e.g. `icons-lucide`).
+    pub name: String,
+    /// Pagination offset into the icon list. Default 0.
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// Page size. Default 100, capped at 500.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// Args for `search_icons` — a name keyword, an optional pack restriction,
+/// and a result cap.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct IconSearchRequest {
+    /// Case-insensitive substring matched against icon names.
+    pub query: String,
+    /// Optional pack name to restrict the search to one icon set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set: Option<String>,
+    /// Max results. Default 50, capped at 200.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 #[tool_router]
 impl CatalogService {
     /// Default constructor: Robot discovery on (scans
@@ -1491,7 +1521,121 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Fulltext search over EVERY catalog slice — components, primitives, utilities, macros, guides, types, methods, recipes, scopes, tools, states, animations. Multi-word queries are tokenized on whitespace and OR'd: an entry matches if ANY term appears in its name or docs, and results are ranked by how many distinct query terms each entry hit (best first). So `search('http fetch network request')` surfaces the networking guide/utility even though no single field contains the whole phrase. Returns a JSON array of { kind, name, fqn, score, matched_terms, docs_excerpt } tagged with the slice the match came from.")]
+    #[tool(description = "List the icon packs available — crates like `icons-lucide` that expose named icon `const`s for the `icon(...)` primitive. Lightweight { name, title, icon_count, import_path, license, homepage }; the per-icon names are deliberately NOT included (a pack has ~1600). To find an icon, use `search_icons`; to browse one pack, page through `describe_icon_set`. Pass `filter` (case-insensitive, glob `*`, matches name/title) to narrow.")]
+    async fn list_icon_sets(
+        &self,
+        Parameters(req): Parameters<FilterRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let json: Vec<serde_json::Value> = cat
+            .icon_sets()
+            .iter()
+            .filter(|s| matches_filter(&req.filter, &[s.name, s.title]))
+            .map(|s| {
+                serde_json::json!({
+                    "name": s.name,
+                    "title": s.title,
+                    "icon_count": s.icons.len(),
+                    "import_path": s.import_path,
+                    "license": s.license,
+                    "homepage": s.homepage,
+                })
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Page through the icons in one pack. Returns { name, title, docs, import_path, license, icon_count, offset, limit, icons: [{ name, ident, import }] } where `import` is the paste-ready `use` path (`icons_lucide::ARROW_RIGHT`). Icons are name-sorted; page with `offset`/`limit` (limit default 100, max 500). To find a specific icon by keyword instead of paging, prefer `search_icons`.")]
+    async fn describe_icon_set(
+        &self,
+        Parameters(req): Parameters<DescribeIconSetRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let set = cat
+            .icon_sets()
+            .iter()
+            .find(|s| s.name == req.name)
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!(
+                        "icon set {:?} not found — use list_icon_sets to see what's available",
+                        req.name
+                    ),
+                    None,
+                )
+            })?;
+        let offset = req.offset.unwrap_or(0);
+        let limit = req.limit.unwrap_or(100).min(500);
+        let icons: Vec<serde_json::Value> = set
+            .icons
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .map(|i| {
+                serde_json::json!({
+                    "name": i.name,
+                    "ident": i.ident,
+                    "import": format!("{}::{}", set.import_path, i.ident),
+                })
+            })
+            .collect();
+        let json = serde_json::json!({
+            "name": set.name,
+            "title": set.title,
+            "docs": set.docs,
+            "import_path": set.import_path,
+            "license": set.license,
+            "homepage": set.homepage,
+            "icon_count": set.icons.len(),
+            "offset": offset,
+            "limit": limit,
+            "icons": icons,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Search icons across every pack by name keyword (case-insensitive substring) — THE way to find an icon without dumping ~1600 names. Returns up to `limit` (default 50, max 200) matches as { set, name, ident, import }, where `import` is the paste-ready `use icons_lucide::ARROW_RIGHT;` path you drop into the `icon(...)` primitive. Pass `set` to restrict to one pack.")]
+    async fn search_icons(
+        &self,
+        Parameters(req): Parameters<IconSearchRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let q = req.query.trim().to_lowercase();
+        if q.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text("[]".to_string())]));
+        }
+        let limit = req.limit.unwrap_or(50).min(200);
+        let cat = self.catalog.read().await;
+        let mut out: Vec<serde_json::Value> = Vec::new();
+        'sets: for set in cat.icon_sets() {
+            if let Some(want) = &req.set {
+                if set.name != *want {
+                    continue;
+                }
+            }
+            for i in set.icons {
+                if i.name.to_lowercase().contains(&q) {
+                    out.push(serde_json::json!({
+                        "set": set.name,
+                        "name": i.name,
+                        "ident": i.ident,
+                        "import": format!("{}::{}", set.import_path, i.ident),
+                    }));
+                    if out.len() >= limit {
+                        break 'sets;
+                    }
+                }
+            }
+        }
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&out).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Fulltext search over EVERY catalog slice — components, primitives, utilities, macros, guides, types, methods, recipes, scopes, tools, states, animations, icon packs. Multi-word queries are tokenized on whitespace and OR'd: an entry matches if ANY term appears in its name or docs, and results are ranked by how many distinct query terms each entry hit (best first). So `search('http fetch network request')` surfaces the networking guide/utility even though no single field contains the whole phrase. Returns a JSON array of { kind, name, fqn, score, matched_terms, docs_excerpt } tagged with the slice the match came from. (For individual ICONS, use `search_icons` — this searches pack-level metadata only.)")]
     async fn search(
         &self,
         Parameters(req): Parameters<SearchRequest>,
@@ -1605,6 +1749,19 @@ impl CatalogService {
         }
         for s in cat.sdks() {
             consider("sdk", s.name.to_string(), s.name.to_string(), &[s.name], s.summary, &mut hits);
+        }
+        // Icon packs surface at pack level only — searching individual icon
+        // names here would swamp results with ~1600 leaves per pack; that's
+        // what `search_icons` is for.
+        for s in cat.icon_sets() {
+            consider(
+                "icon_set",
+                s.name.to_string(),
+                s.name.to_string(),
+                &[s.name, s.title, s.import_path],
+                s.docs,
+                &mut hits,
+            );
         }
 
         // Rank: most distinct query terms first, then a stable
@@ -2517,6 +2674,87 @@ mod tests {
         assert!(
             fv.as_array().unwrap().iter().all(|s| s["category"] == "data"),
             "data filter yields only data-category SDKs; {fv}",
+        );
+    }
+
+    /// Icon packs are discoverable and paginated/searchable through the
+    /// server tools. Built from a synthetic catalog (icon packs
+    /// self-register from `icons-lucide`, which the standalone server
+    /// doesn't link) injected via `replace_catalog`.
+    #[tokio::test]
+    async fn icon_set_tools_list_paginate_and_search() {
+        let doc = serde_json::json!({
+            "components": [],
+            "icon_sets": [{
+                "name": "icons-lucide",
+                "title": "Lucide",
+                "docs": "Outlined icon pack.",
+                "import_path": "icons_lucide",
+                "license": "ISC",
+                "homepage": "https://lucide.dev",
+                "icon_count": 3,
+                "icons": [
+                    { "name": "arrow-left", "ident": "ARROW_LEFT" },
+                    { "name": "arrow-right", "ident": "ARROW_RIGHT" },
+                    { "name": "search", "ident": "SEARCH" },
+                ],
+            }],
+        });
+        let cat = ResolvedCatalog::build_from_json(&doc.to_string()).unwrap();
+        let svc = CatalogService::new();
+        svc.replace_catalog(cat).await;
+
+        // list_icon_sets surfaces the pack WITHOUT the per-icon names.
+        let listed = svc
+            .list_icon_sets(Parameters(FilterRequest::default()))
+            .await
+            .unwrap();
+        let lv = parse_array(&listed);
+        let set = &lv.as_array().unwrap()[0];
+        assert_eq!(set["name"], "icons-lucide");
+        assert_eq!(set["icon_count"], 3);
+        assert!(set.get("icons").is_none(), "list must not dump icon names: {set}");
+
+        // search_icons finds by keyword and returns a paste-ready import.
+        let found = svc
+            .search_icons(Parameters(IconSearchRequest {
+                query: "arrow".into(),
+                set: None,
+                limit: None,
+            }))
+            .await
+            .unwrap();
+        let fv = parse_array(&found);
+        let arr = fv.as_array().unwrap();
+        assert_eq!(arr.len(), 2, "two arrow icons; got {fv}");
+        assert_eq!(arr[0]["import"], "icons_lucide::ARROW_LEFT");
+
+        // describe_icon_set pages: offset 1, limit 1 → just the middle icon.
+        let page = svc
+            .describe_icon_set(Parameters(DescribeIconSetRequest {
+                name: "icons-lucide".into(),
+                offset: Some(1),
+                limit: Some(1),
+            }))
+            .await
+            .unwrap();
+        let pv = parse_array(&page);
+        assert_eq!(pv["icon_count"], 3);
+        let icons = pv["icons"].as_array().unwrap();
+        assert_eq!(icons.len(), 1, "limit honored");
+        assert_eq!(icons[0]["name"], "arrow-right");
+        assert_eq!(icons[0]["import"], "icons_lucide::ARROW_RIGHT");
+
+        // Unknown pack errors actionably.
+        assert!(
+            svc.describe_icon_set(Parameters(DescribeIconSetRequest {
+                name: "nope".into(),
+                offset: None,
+                limit: None,
+            }))
+            .await
+            .is_err(),
+            "describe_icon_set on an unknown pack errors",
         );
     }
 

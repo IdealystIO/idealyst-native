@@ -99,7 +99,7 @@ pub enum Distribution {
     Upload,
     /// Stop after the `.xcarchive` — do NOT export. The caller hands the
     /// archive to Xcode's Organizer, which performs the distribution re-sign
-    /// + upload interactively (the `--organizer` path). Crucially this needs
+    /// + upload interactively (the `--interactive` path). Crucially this needs
     /// no distribution certificate at CLI time — Organizer handles it — so
     /// running the export here would fail for exactly the users who chose it.
     ArchiveOnly,

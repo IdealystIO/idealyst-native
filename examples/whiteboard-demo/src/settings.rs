@@ -26,6 +26,54 @@ pub(crate) const ASPECT_MAX: u32 = 21;
 /// Gap between the stage and the safe-area edges.
 pub(crate) const STAGE_MARGIN: f32 = 10.0;
 
+/// Shape of the draggable camera widget.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CameraShape {
+    RoundedRect,
+    Circle,
+}
+
+/// Size of the camera widget (scales the base dimensions).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CameraSize {
+    Small,
+    Medium,
+    Large,
+}
+
+/// Selectable camera shapes, `(label, value)`.
+pub(crate) const CAMERA_SHAPES: &[(&str, CameraShape)] =
+    &[("Rounded", CameraShape::RoundedRect), ("Circle", CameraShape::Circle)];
+
+/// Selectable camera sizes, `(label, value)`.
+pub(crate) const CAMERA_SIZES: &[(&str, CameraSize)] =
+    &[("S", CameraSize::Small), ("M", CameraSize::Medium), ("L", CameraSize::Large)];
+
+impl CameraSize {
+    fn scale(self) -> f32 {
+        match self {
+            CameraSize::Small => 0.72,
+            CameraSize::Medium => 1.0,
+            CameraSize::Large => 1.32,
+        }
+    }
+}
+
+/// The camera widget's `(width, height, corner_radius)` in points for the chosen
+/// shape + size. Rounded rect keeps the 3:4 portrait base; circle is a square with
+/// a full (`side/2`) radius. Read this at every camera read-site (placement, clamp,
+/// composited-layer rect, drag box) so they all agree.
+pub(crate) fn camera_dims(shape: CameraShape, size: CameraSize) -> (f32, f32, f32) {
+    let s = size.scale();
+    match shape {
+        CameraShape::RoundedRect => (132.0 * s, 176.0 * s, 18.0 * s),
+        CameraShape::Circle => {
+            let d = 150.0 * s;
+            (d, d, d * 0.5)
+        }
+    }
+}
+
 /// The chosen aspect's label if it matches a preset, else `"Custom"`.
 pub(crate) fn aspect_label(w: u32, h: u32) -> &'static str {
     ASPECTS

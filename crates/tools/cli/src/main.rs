@@ -48,8 +48,9 @@ enum Command {
     Build(cmd::build::Args),
     /// Build and launch on a simulator or device.
     Run(cmd::run::Args),
-    /// Build a distribution-signed app and (optionally) upload it to the
-    /// store. iOS → App Store Connect (`.ipa` archive/export/upload).
+    /// Build a distribution-signed app and (optionally) ship it. iOS → App
+    /// Store Connect (`.ipa`). macOS → Mac App Store (`.pkg`) or Developer ID
+    /// notarized `.dmg`.
     Publish(cmd::publish::Args),
     /// Type-check across configured platforms.
     Check(cmd::check::Args),

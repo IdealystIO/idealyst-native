@@ -1510,6 +1510,7 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, runti
             mode: build_mode,
             source: source.clone(),
             user_features: dev_user_features_macos(),
+            universal: false, // dev: fast host-arch build
         },
     )
     .context("macOS dev build failed")?;

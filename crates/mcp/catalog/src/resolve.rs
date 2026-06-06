@@ -29,10 +29,10 @@ use std::collections::HashMap;
 
 use crate::slice::LeakFromJson;
 use crate::{
-    AnimationEntry, ComponentEntry, EdgeRef, GuideEntry, MacroEntry, MacroKind, MethodEntry,
-    ParamSpec, PrimitiveCategory, PrimitiveEntry, PropFieldSpec, RecipeEntry, ScopeEntry,
-    SdkCategory, SdkEntry, SdkKind, StateEntry, ToolEntry, TypeEntry, TypeShape, UtilityCategory,
-    UtilityEntry, VariantSpec,
+    AnimationEntry, ComponentEntry, EdgeRef, GuideEntry, IconRef, IconSetEntry, MacroEntry,
+    MacroKind, MethodEntry, ParamSpec, PrimitiveCategory, PrimitiveEntry, PropFieldSpec,
+    RecipeEntry, ScopeEntry, SdkCategory, SdkEntry, SdkKind, StateEntry, ToolEntry, TypeEntry,
+    TypeShape, UtilityCategory, UtilityEntry, VariantSpec,
 };
 
 /// A `(module_path, name)` pair, the canonical identity for a
@@ -128,6 +128,7 @@ pub struct ResolvedCatalog {
     recipes: Vec<&'static crate::RecipeEntry>,
     scopes: Vec<&'static crate::ScopeEntry>,
     sdks: Vec<&'static crate::SdkEntry>,
+    icon_sets: Vec<&'static crate::IconSetEntry>,
 }
 
 impl ResolvedCatalog {
@@ -147,6 +148,7 @@ impl ResolvedCatalog {
         cat.recipes = crate::recipes().collect();
         cat.scopes = crate::scopes().collect();
         cat.sdks = crate::sdks().collect();
+        cat.icon_sets = crate::icon_sets().collect();
         cat
     }
 
@@ -191,6 +193,7 @@ impl ResolvedCatalog {
         cat.recipes = slice_vec::<RecipeEntry>(&value);
         cat.scopes = slice_vec::<ScopeEntry>(&value);
         cat.sdks = slice_vec::<SdkEntry>(&value);
+        cat.icon_sets = slice_vec::<IconSetEntry>(&value);
         Ok(cat)
     }
 
@@ -229,6 +232,9 @@ impl ResolvedCatalog {
     }
     pub fn sdks(&self) -> &[&'static crate::SdkEntry] {
         &self.sdks
+    }
+    pub fn icon_sets(&self) -> &[&'static crate::IconSetEntry] {
+        &self.icon_sets
     }
 
     /// Recipes that demonstrate `name` — either as their primary
@@ -881,6 +887,36 @@ fn leak_sdk_from_json(v: &serde_json::Value) -> Option<&'static SdkEntry> {
     })))
 }
 
+fn leak_icon_set_from_json(v: &serde_json::Value) -> Option<&'static IconSetEntry> {
+    let name = v["name"].as_str()?.to_string();
+    let title = v["title"].as_str().unwrap_or(&name).to_string();
+    let docs = v["docs"].as_str().unwrap_or("").to_string();
+    let import_path = v["import_path"].as_str().unwrap_or("").to_string();
+    let license = v["license"].as_str().unwrap_or("").to_string();
+    let homepage = v["homepage"].as_str().unwrap_or("").to_string();
+    let icons: Vec<IconRef> = v["icons"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|i| {
+                    let name = i["name"].as_str()?.to_string();
+                    let ident = i["ident"].as_str().unwrap_or("").to_string();
+                    Some(IconRef { name: leak_str(name), ident: leak_str(ident) })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(Box::leak(Box::new(IconSetEntry {
+        name: leak_str(name),
+        title: leak_str(title),
+        docs: leak_str(docs),
+        import_path: leak_str(import_path),
+        license: leak_str(license),
+        homepage: leak_str(homepage),
+        icons: Box::leak(icons.into_boxed_slice()),
+    })))
+}
+
 /// `value[S::KEY]` as a Vec of leaked entries, or empty when the key is
 /// absent / not an array. The generic reader half of `build_from_json`.
 fn slice_vec<S: LeakFromJson>(value: &serde_json::Value) -> Vec<&'static S> {
@@ -955,6 +991,11 @@ impl LeakFromJson for SdkEntry {
         leak_sdk_from_json(v)
     }
 }
+impl LeakFromJson for IconSetEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_icon_set_from_json(v)
+    }
+}
 
 fn is_ancestor_module(maybe_ancestor: &str, descendant: &str) -> bool {
     if maybe_ancestor == descendant {
@@ -993,6 +1034,62 @@ mod tests {
 
     fn leak_edges(edges: Vec<EdgeRef>) -> &'static [EdgeRef] {
         Box::leak(edges.into_boxed_slice())
+    }
+
+    #[test]
+    fn icon_set_round_trips_through_json() {
+        use crate::slice::{CatalogSlice, LeakFromJson};
+        // IconSetEntry is an open slice (no `_seal`), so we can build one
+        // here without going through inventory — exactly how an icon
+        // pack's build.rs constructs it, names only, no geometry.
+        let entry = IconSetEntry {
+            name: "icons-lucide",
+            title: "Lucide",
+            docs: "Outlined icon pack.",
+            import_path: "icons_lucide",
+            license: "ISC",
+            homepage: "https://lucide.dev",
+            icons: &[
+                IconRef { name: "arrow-right", ident: "ARROW_RIGHT" },
+                // The edge case the `(name, ident)` pair exists to carry:
+                // a leading-digit-adjacent name whose ident isn't a pure
+                // upcase of the kebab name.
+                IconRef { name: "trash-2", ident: "TRASH_2" },
+            ],
+        };
+        let json = entry.to_json();
+        assert_eq!(json["icon_count"], 2);
+        assert_eq!(json["import_path"], "icons_lucide");
+        let back = IconSetEntry::from_json(&json).expect("round-trips");
+        assert_eq!(back.name, "icons-lucide");
+        assert_eq!(back.license, "ISC");
+        assert_eq!(back.icons.len(), 2);
+        assert_eq!(back.icons[1].name, "trash-2");
+        assert_eq!(back.icons[1].ident, "TRASH_2");
+    }
+
+    #[test]
+    fn icon_sets_survive_build_from_json() {
+        // The whole catalog document carries the icon_sets key, and
+        // `build_from_json` rebuilds it (the docs site's path).
+        let doc = serde_json::json!({
+            "components": [],
+            "icon_sets": [{
+                "name": "icons-lucide",
+                "title": "Lucide",
+                "docs": "",
+                "import_path": "icons_lucide",
+                "license": "ISC",
+                "homepage": "https://lucide.dev",
+                "icon_count": 1,
+                "icons": [{ "name": "search", "ident": "SEARCH" }],
+            }],
+        });
+        let cat = ResolvedCatalog::build_from_json(&doc.to_string()).expect("builds");
+        assert_eq!(cat.icon_sets().len(), 1);
+        let set = cat.icon_sets()[0];
+        assert_eq!(set.name, "icons-lucide");
+        assert_eq!(set.icons[0].ident, "SEARCH");
     }
 
     #[test]

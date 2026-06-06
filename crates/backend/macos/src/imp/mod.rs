@@ -9,6 +9,7 @@
 
 pub(crate) mod a11y;
 pub(crate) mod animated;
+pub(crate) mod border;
 pub(crate) mod callbacks;
 pub(crate) mod gradient;
 pub(crate) mod graphics;
@@ -1126,6 +1127,16 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
         // matching the UIView `clipsToBounds` behavior.
         let _: () = unsafe { msg_send![&layer, setMasksToBounds: true] };
     }
+
+    // Border. Routes uniform→CALayer stroke (follows cornerRadius) /
+    // asymmetric→per-side NSView bars (e.g. a `border-bottom`-only
+    // underline) / none→clear — the SAME shape as iOS, via the shared
+    // `backend_apple_core::border::uniform_border` decision so the two
+    // backends converge (Rule #7). The macOS backend previously applied NO
+    // border at all, so every bordered component (Card outlines, the
+    // SegmentedControl/Tabs active underline, Field borders, the whiteboard
+    // swatch ring) rendered borderless on macOS while iOS/web showed it.
+    border::apply_border(view, &layer, style);
 }
 
 /// Resolve a deferred cornerRadius (stashed as `idealyst_requested_
@@ -1509,23 +1520,27 @@ impl Backend for MacosBackend {
         };
         // `.value()` is the resolved literal/fallback — the form native backends
         // apply directly (the same `Tokenized` value a styled `background` token
-        // resolves to). Paint it onto the host root's layer, forcing CALayer
-        // backing first (NSView is layer-optional on AppKit — see the
-        // `setWantsLayer` requirement in `apply_style_to_view`).
+        // resolves to).
+        //
+        // Paint the host **NSWindow's** `backgroundColor`, NOT the host root
+        // view's layer. Forcing `setWantsLayer:true` on the host root (the old
+        // impl) makes AppKit give the root an implicit CALayer and re-host its
+        // subtree — which DETACHES a child `CAMetalLayer` (the vello GPU canvas)
+        // from the render server, blanking the canvas. The window's content
+        // background sits behind the (layer-optional, bg-less) root view and
+        // shows through exactly the same, without touching any view's layer.
+        // See [[project_macos_appkit_uikit_diffs]] #21.
+        //
+        // `host_root.window` is non-nil after `setContentView:` (the same
+        // guarantee `create_private_layer_window` + the toolbar SDK rely on);
+        // no-op before then — every theme swap re-invokes once it exists.
         let ns_color = color_to_nscolor(color.value());
         unsafe {
-            let _: () = msg_send![&**host, setWantsLayer: true];
-            let layer_ptr: *mut NSObject = msg_send![&**host, layer];
-            if layer_ptr.is_null() {
+            let win_ptr: *mut objc2_app_kit::NSWindow = msg_send![&**host, window];
+            if win_ptr.is_null() {
                 return;
             }
-            // `CGColor` into the `CGColorRef` newtype — same shape as
-            // `transitions::apply_color`'s `ColorProp::Background` so the debug
-            // msg_send encoding check sees `^{CGColor=}`, not `^v`.
-            let cg: CGColorRef = msg_send![&*ns_color, CGColor];
-            if !cg.0.is_null() {
-                let _: () = msg_send![layer_ptr, setBackgroundColor: cg];
-            }
+            let _: () = msg_send![win_ptr, setBackgroundColor: &*ns_color];
         }
     }
 
@@ -3432,4 +3447,5 @@ fn external_placeholder_node(b: &mut MacosBackend, type_name: &'static str) -> M
     let _ = b.layout_for_view(&view);
     MacosNode::Label(label)
 }
+
 

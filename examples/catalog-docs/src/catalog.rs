@@ -32,6 +32,7 @@ pub enum Kind {
     Primitive,
     Utility,
     Type,
+    IconSet,
     Guide,
 }
 
@@ -43,6 +44,7 @@ impl Kind {
             Kind::Primitive => "Primitives",
             Kind::Utility => "Utilities",
             Kind::Type => "Types",
+            Kind::IconSet => "Icons",
             Kind::Guide => "Guides",
         }
     }
@@ -55,6 +57,7 @@ impl Kind {
             Kind::Primitive => "primitives",
             Kind::Utility => "utilities",
             Kind::Type => "types",
+            Kind::IconSet => "icons",
             Kind::Guide => "guides",
         }
     }
@@ -67,6 +70,7 @@ impl Kind {
             Kind::Primitive => "primitive",
             Kind::Utility => "utility",
             Kind::Type => "type",
+            Kind::IconSet => "icon set",
             Kind::Guide => "guide",
         }
     }
@@ -146,6 +150,24 @@ pub struct Recipe {
     pub primary: bool,
 }
 
+/// Metadata for a `Kind::IconSet` entry. The actual icon *geometry*
+/// isn't carried here (the catalog is names-only); the renderer joins
+/// `crate_name` to a build-linked icon registry to draw the grid (see
+/// `crate::icons`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IconSetMeta {
+    /// Cargo crate name — the bridge key to the geometry registry.
+    pub crate_name: String,
+    /// `use` path root for an icon's ident (`icons_lucide`).
+    pub import_path: String,
+    /// License of the icon artwork (`ISC`).
+    pub license: String,
+    /// Upstream homepage for attribution.
+    pub homepage: String,
+    /// Number of icons in the pack.
+    pub count: usize,
+}
+
 /// One catalog entry, normalized across kinds. Not every field applies
 /// to every kind (a guide has only `docs` as markdown `body`; a utility
 /// has `return_type` but no `composes`), but a single struct keeps the
@@ -189,6 +211,9 @@ pub struct Entry {
     /// For `Kind::Scope` entries only: the entities assigned to this
     /// scope. Empty for every other kind.
     pub members: Vec<EntryLink>,
+    /// For `Kind::IconSet` entries only: pack metadata for the icon
+    /// gallery page. `None` for every other kind.
+    pub icon_set: Option<IconSetMeta>,
 }
 
 /// The whole catalog, grouped and slugged for navigation.
@@ -430,6 +455,7 @@ impl CatalogModel {
                 return_type: String::new(),
                 scope: scope_link(cat, c.module_path),
                 members: Vec::new(),
+                icon_set: None,
             });
         }
 
@@ -465,6 +491,7 @@ impl CatalogModel {
                 // Primitives have no module path → no ambient scope.
                 scope: None,
                 members: Vec::new(),
+                icon_set: None,
             });
         }
 
@@ -497,6 +524,7 @@ impl CatalogModel {
                 return_type: u.return_type.to_string(),
                 scope: scope_link(cat, u.module_path),
                 members: Vec::new(),
+                icon_set: None,
             });
         }
 
@@ -540,6 +568,7 @@ impl CatalogModel {
                 return_type: String::new(),
                 scope: scope_link(cat, t.module_path),
                 members: Vec::new(),
+                icon_set: None,
             });
         }
 
@@ -561,6 +590,38 @@ impl CatalogModel {
                 return_type: String::new(),
                 scope: None,
                 members: Vec::new(),
+                icon_set: None,
+            });
+        }
+
+        // --- Icons ---------------------------------------------------------
+        // One entry per registered icon pack. Names-only here (count +
+        // import path + license); the gallery page joins `crate_name` to a
+        // build-linked geometry registry to render the actual glyphs.
+        for s in cat.icon_sets() {
+            entries.push(Entry {
+                kind: Kind::IconSet,
+                name: s.title.to_string(),
+                slug: slugify(s.name, ""),
+                module_path: s.import_path.to_string(),
+                docs: s.docs.to_string(),
+                fields: Vec::new(),
+                fields_documented: false,
+                variants: Vec::new(),
+                composes: Vec::new(),
+                methods: Vec::new(),
+                animations: Vec::new(),
+                recipes: Vec::new(),
+                return_type: String::new(),
+                scope: None,
+                members: Vec::new(),
+                icon_set: Some(IconSetMeta {
+                    crate_name: s.name.to_string(),
+                    import_path: s.import_path.to_string(),
+                    license: s.license.to_string(),
+                    homepage: s.homepage.to_string(),
+                    count: s.icons.len(),
+                }),
             });
         }
 
@@ -592,6 +653,7 @@ impl CatalogModel {
                 return_type: String::new(),
                 scope: None,
                 members,
+                icon_set: None,
             });
         }
 
@@ -634,12 +696,13 @@ impl CatalogModel {
     /// order. Drives the sidebar so empty kinds don't show a bare
     /// header.
     pub fn populated_kinds(&self) -> Vec<Kind> {
-        const ORDER: [Kind; 6] = [
+        const ORDER: [Kind; 7] = [
             Kind::Scope,
             Kind::Component,
             Kind::Primitive,
             Kind::Utility,
             Kind::Type,
+            Kind::IconSet,
             Kind::Guide,
         ];
         ORDER
@@ -746,6 +809,35 @@ mod tests {
             components.contains(&"Card"),
             "expected idea-ui `Card` in the runtime catalog, got components: {:?}",
             components
+        );
+    }
+
+    #[test]
+    fn icon_set_appears_in_model_with_metadata() {
+        // End-to-end: build.rs force-links icons-lucide (catalog feature),
+        // so its self-registered IconSetEntry lands in the embedded
+        // catalog.json, and from_resolved maps it to a Kind::IconSet entry
+        // with pack metadata. If the build-dep wiring regresses, the Icons
+        // kind silently vanishes — this is the canary.
+        let m = model();
+        let sets = m.of_kind(Kind::IconSet);
+        assert!(
+            !sets.is_empty(),
+            "expected at least one icon set (icons-lucide) in the model",
+        );
+        let lucide = sets
+            .iter()
+            .find(|e| {
+                e.icon_set.as_ref().map(|s| s.crate_name.as_str()) == Some("icons-lucide")
+            })
+            .expect("icons-lucide pack present");
+        let meta = lucide.icon_set.as_ref().expect("icon_set metadata");
+        assert_eq!(meta.import_path, "icons_lucide");
+        assert_eq!(meta.license, "ISC");
+        assert!(
+            meta.count > 100,
+            "lucide should carry a large icon count, got {}",
+            meta.count,
         );
     }
 

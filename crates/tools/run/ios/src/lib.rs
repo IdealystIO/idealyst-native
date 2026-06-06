@@ -448,6 +448,24 @@ pub(crate) fn sync_ios_icons_into_bundle(project_dir: &Path, app_bundle: &Path) 
     ))
 }
 
+/// Generate an `Assets.xcassets/AppIcon` asset catalog under `dest_dir` (the
+/// xcodebuild project root). Unlike [`sync_ios_icons_into_bundle`] (loose
+/// PNGs for the hand-assembled simulator bundle), the catalog is what App
+/// Store ingestion requires — `actool` compiles it and sets
+/// `CFBundleIconName`. ALWAYS writes a catalog: if the project declares no
+/// `[package.metadata.idealyst.app.icon]` block, every slot gets a generated
+/// placeholder, so a valid icon ships by default. Used by the device-install
+/// and App Store archive paths via [`device::prepare_xcode_project`].
+pub(crate) fn sync_ios_asset_catalog_into_project(
+    project_dir: &Path,
+    dest_dir: &Path,
+) -> Result<()> {
+    let config = icon_gen::load_config_from_manifest(project_dir)?;
+    let block = config.map(|c| c.resolved_for(icon_gen::Target::Ios));
+    icon_gen::sync_ios_asset_catalog(block.as_ref(), dest_dir)?;
+    Ok(())
+}
+
 /// Discover the capabilities the app's dependency graph declares, resolve
 /// them against the app's reason strings, and render the iOS Info.plist
 /// usage-description entries. Warnings (generic-reason fallback, unknown
@@ -780,6 +798,7 @@ pub(crate) mod tests_support {
                 targets: Vec::new(),
                 server_bin: None,
                 web: WebMetadata::default(),
+                macos: Default::default(),
                 permissions: Default::default(),
             },
         }
@@ -809,6 +828,7 @@ mod tests {
                 targets: Vec::new(),
                 server_bin: None,
                 web: Default::default(),
+                macos: Default::default(),
                 permissions: Default::default(),
             },
         }

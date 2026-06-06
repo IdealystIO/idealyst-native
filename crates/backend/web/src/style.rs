@@ -750,7 +750,16 @@ impl WebBackend {
                     runtime_core::StateBits::HOVERED => ":hover",
                     runtime_core::StateBits::PRESSED => ":active",
                     runtime_core::StateBits::FOCUSED => ":focus",
-                    runtime_core::StateBits::DISABLED => ":disabled",
+                    // Attribute selector, NOT the `:disabled` pseudo-class.
+                    // `set_disabled` marks the disabled node with the HTML
+                    // `disabled` *attribute*, and a pressable renders as a
+                    // `<div>`. The `:disabled` pseudo only matches real form
+                    // controls (button/input/select/...), so `.cls:disabled`
+                    // is inert on a `<div disabled>` and the disabled overlay
+                    // silently never applies. `[disabled]` matches any element
+                    // carrying the attribute — div pressables AND form
+                    // controls alike — so it's strictly more general.
+                    runtime_core::StateBits::DISABLED => "[disabled]",
                     _ => continue,
                 };
                 let selector = format!("{}{}", class_name, pseudo);

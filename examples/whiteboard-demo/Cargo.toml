@@ -57,3 +57,6 @@ targets   = ["ios", "android", "web", "macos"]
 
 [package.metadata.idealyst.app.permissions]
 camera = "Whiteboard shows your camera feed in the corner of the board."
+
+[package.metadata.idealyst.app.macos]
+category = "public.app-category.productivity"

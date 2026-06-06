@@ -246,6 +246,111 @@ pub fn sync_ios_icons(
     Ok(Some(outputs))
 }
 
+/// One slot in the generated `AppIcon.appiconset` `Contents.json`. Several
+/// slots can share a pixel size (e.g. iPhone 40pt@3x and 60pt@2x are both
+/// 120px) — they reference the same `AppIcon-<px>.png` file.
+struct CatalogSlot {
+    idiom: &'static str,
+    /// Point size string Apple expects, e.g. `"60x60"` / `"83.5x83.5"`.
+    size: &'static str,
+    scale: &'static str,
+    px: u32,
+}
+
+/// The modern universal (iPhone + iPad + App-Store-marketing) icon set.
+/// Crucially includes iPhone 60pt@2x (120px) and iPad 76pt@2x (152px) and
+/// the 1024px marketing icon, which App Store ingestion validates as
+/// required (error codes 90022 / 90023 / 90713).
+const IOS_CATALOG_SLOTS: &[CatalogSlot] = &[
+    CatalogSlot { idiom: "iphone", size: "20x20", scale: "2x", px: 40 },
+    CatalogSlot { idiom: "iphone", size: "20x20", scale: "3x", px: 60 },
+    CatalogSlot { idiom: "iphone", size: "29x29", scale: "2x", px: 58 },
+    CatalogSlot { idiom: "iphone", size: "29x29", scale: "3x", px: 87 },
+    CatalogSlot { idiom: "iphone", size: "40x40", scale: "2x", px: 80 },
+    CatalogSlot { idiom: "iphone", size: "40x40", scale: "3x", px: 120 },
+    CatalogSlot { idiom: "iphone", size: "60x60", scale: "2x", px: 120 },
+    CatalogSlot { idiom: "iphone", size: "60x60", scale: "3x", px: 180 },
+    CatalogSlot { idiom: "ipad", size: "20x20", scale: "1x", px: 20 },
+    CatalogSlot { idiom: "ipad", size: "20x20", scale: "2x", px: 40 },
+    CatalogSlot { idiom: "ipad", size: "29x29", scale: "1x", px: 29 },
+    CatalogSlot { idiom: "ipad", size: "29x29", scale: "2x", px: 58 },
+    CatalogSlot { idiom: "ipad", size: "40x40", scale: "1x", px: 40 },
+    CatalogSlot { idiom: "ipad", size: "40x40", scale: "2x", px: 80 },
+    CatalogSlot { idiom: "ipad", size: "76x76", scale: "2x", px: 152 },
+    CatalogSlot { idiom: "ipad", size: "83.5x83.5", scale: "2x", px: 167 },
+    CatalogSlot { idiom: "ios-marketing", size: "1024x1024", scale: "1x", px: 1024 },
+];
+
+/// Generate an `Assets.xcassets/AppIcon.appiconset` asset catalog under
+/// `dest_dir`, returning the `Assets.xcassets` path. ALWAYS produces a
+/// catalog — when `icon` is `None` (no icon declared) it fills every slot
+/// with [`render::render_placeholder_png`], so every app ships a valid App
+/// Store icon by default.
+///
+/// Unlike [`sync_ios_icons`] (loose PNGs for the hand-assembled simulator
+/// bundle), this is the App-Store-compliant form: `xcodebuild`'s `actool`
+/// compiles the catalog into `Assets.car` and injects `CFBundleIconName`
+/// (Apple requires icons live in an asset catalog — loose files fail
+/// validation with error 90713).
+pub fn sync_ios_asset_catalog(icon: Option<&IconBlock>, dest_dir: &Path) -> Result<PathBuf> {
+    let xcassets = dest_dir.join("Assets.xcassets");
+    let appiconset = xcassets.join("AppIcon.appiconset");
+    fs::create_dir_all(&appiconset)
+        .with_context(|| format!("create asset catalog dir {}", appiconset.display()))?;
+
+    // Renderable source — the declared icon, or the placeholder fallback.
+    let source = match icon {
+        Some(block) => Some(render::Source::from_block(block)?),
+        None => None,
+    };
+
+    // One PNG per UNIQUE pixel size (several slots share a size).
+    let mut sizes: Vec<u32> = IOS_CATALOG_SLOTS.iter().map(|s| s.px).collect();
+    sizes.sort_unstable();
+    sizes.dedup();
+    for px in sizes {
+        let png = match &source {
+            Some(s) => s.render_png(px)?,
+            None => render::render_placeholder_png(px)?,
+        };
+        let path = appiconset.join(format!("AppIcon-{px}.png"));
+        fs::write(&path, png).with_context(|| format!("write {}", path.display()))?;
+    }
+
+    // Contents.json for the appiconset — maps each (idiom, size, scale) slot
+    // to its shared PNG file.
+    let images: Vec<serde_json::Value> = IOS_CATALOG_SLOTS
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "filename": format!("AppIcon-{}.png", s.px),
+                "idiom": s.idiom,
+                "scale": s.scale,
+                "size": s.size,
+            })
+        })
+        .collect();
+    let contents = serde_json::json!({
+        "images": images,
+        "info": { "author": "idealyst", "version": 1 },
+    });
+    fs::write(
+        appiconset.join("Contents.json"),
+        serde_json::to_string_pretty(&contents).context("serialize AppIcon Contents.json")?,
+    )?;
+
+    // Root catalog manifest — Xcode expects `Assets.xcassets/Contents.json`.
+    fs::write(
+        xcassets.join("Contents.json"),
+        serde_json::to_string_pretty(
+            &serde_json::json!({ "info": { "author": "idealyst", "version": 1 } }),
+        )
+        .context("serialize Assets.xcassets Contents.json")?,
+    )?;
+
+    Ok(xcassets)
+}
+
 // ---------------------------------------------------------------------------
 // Android
 // ---------------------------------------------------------------------------
@@ -483,22 +588,28 @@ const ICNS_SLOTS: &[(u32, icns::IconType)] = &[
     (1024, icns::IconType::RGBA32_512x512_2x),
 ];
 
-pub fn sync_macos_icns(
-    icon: Option<&IconBlock>,
-    out_dir: &Path,
-) -> Result<Option<MacosOutputs>> {
-    let Some(icon) = icon else {
-        return Ok(None);
-    };
+/// Generate `AppIcon.icns` into `out_dir`. ALWAYS produces a file: when
+/// `icon` is `None` (no `[..app.icon]` block) every slot is filled with
+/// [`render::render_placeholder_png`], so a macOS app ships a valid icon by
+/// default. The slot set includes `RGBA32_512x512_2x` (1024px = 512pt@2x),
+/// which the Mac App Store requires — an `.icns` missing it is rejected with
+/// error 409.
+pub fn sync_macos_icns(icon: Option<&IconBlock>, out_dir: &Path) -> Result<MacosOutputs> {
     fs::create_dir_all(out_dir)
         .with_context(|| format!("create macOS icon output dir {}", out_dir.display()))?;
 
+    // Cache only when there's a declared icon to key on.
     let cache_path = out_dir.join(cache::CACHE_FILE_NAME);
-    if let Some(cached) = cache::try_hit::<MacosOutputs>(&cache_path, icon)? {
-        return Ok(Some(cached));
+    if let Some(icon) = icon {
+        if let Some(cached) = cache::try_hit::<MacosOutputs>(&cache_path, icon)? {
+            return Ok(cached);
+        }
     }
 
-    let source = render::Source::from_block(icon)?;
+    let source = match icon {
+        Some(block) => Some(render::Source::from_block(block)?),
+        None => None,
+    };
 
     // Dedupe sizes — several slot pairs share a pixel size (e.g.
     // `RGBA32_16x16_2x` and `RGBA32_32x32` are both 32 px). Render
@@ -511,7 +622,10 @@ pub fn sync_macos_icns(
         let img = match rendered.get(size) {
             Some(img) => img.clone(),
             None => {
-                let png_bytes = source.render_png(*size)?;
+                let png_bytes = match &source {
+                    Some(s) => s.render_png(*size)?,
+                    None => render::render_placeholder_png(*size)?,
+                };
                 let img = icns::Image::read_png(Cursor::new(png_bytes))
                     .with_context(|| format!("decode {size}px PNG for icns slot"))?;
                 rendered.insert(*size, img.clone());
@@ -531,8 +645,10 @@ pub fn sync_macos_icns(
         .with_context(|| format!("write {}", icns_path.display()))?;
 
     let outputs = MacosOutputs { icns: icns_path };
-    cache::write(&cache_path, icon, &outputs)?;
-    Ok(Some(outputs))
+    if let Some(icon) = icon {
+        cache::write(&cache_path, icon, &outputs)?;
+    }
+    Ok(outputs)
 }
 
 // ---------------------------------------------------------------------------
@@ -926,5 +1042,83 @@ mod tests {
 
         // The round variant ships at every dpi too.
         assert!(out.join("mipmap-hdpi/ic_launcher_round.png").is_file());
+    }
+
+    /// The asset catalog must carry the App-Store-required sizes (120px
+    /// iPhone, 152px iPad, 1024px marketing) and a valid `Contents.json`,
+    /// or ingestion rejects the build (errors 90022 / 90023 / 90713).
+    fn assert_catalog_valid(xcassets: &Path) {
+        let appiconset = xcassets.join("AppIcon.appiconset");
+        for px in [120u32, 152, 1024] {
+            let f = appiconset.join(format!("AppIcon-{px}.png"));
+            let img = image::open(&f).unwrap_or_else(|e| panic!("open {}: {e}", f.display()));
+            assert_eq!((img.width(), img.height()), (px, px), "{} wrong size", f.display());
+        }
+        // Contents.json parses and references the required slots.
+        let contents = std::fs::read_to_string(appiconset.join("Contents.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        let images = json["images"].as_array().expect("images array");
+        let has = |idiom: &str, size: &str, scale: &str| {
+            images.iter().any(|i| {
+                i["idiom"] == idiom && i["size"] == size && i["scale"] == scale
+            })
+        };
+        assert!(has("iphone", "60x60", "2x"), "missing iPhone 60@2x (120px)");
+        assert!(has("ipad", "76x76", "2x"), "missing iPad 76@2x (152px)");
+        assert!(has("ios-marketing", "1024x1024", "1x"), "missing marketing 1024");
+        // Root catalog manifest exists.
+        assert!(xcassets.join("Contents.json").is_file(), "root Contents.json missing");
+    }
+
+    #[test]
+    fn asset_catalog_from_declared_icon_has_required_sizes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svg = write_sample(tmp.path(), "icon.svg", SAMPLE_SVG);
+        let icon = block_with_source(svg);
+        let xcassets = sync_ios_asset_catalog(Some(&icon), tmp.path()).unwrap();
+        assert_catalog_valid(&xcassets);
+    }
+
+    #[test]
+    fn asset_catalog_falls_back_to_placeholder_when_no_icon() {
+        // No icon declared (None) ⇒ still a full, valid catalog — every app
+        // ships an App-Store-valid icon by default.
+        let tmp = tempfile::tempdir().unwrap();
+        let xcassets = sync_ios_asset_catalog(None, tmp.path()).unwrap();
+        assert_catalog_valid(&xcassets);
+    }
+
+    /// The `.icns` must contain the 512pt@2x (1024px) slot, or the Mac App
+    /// Store rejects the bundle (error 409). It's generated for a declared
+    /// icon AND for the no-icon placeholder fallback.
+    fn assert_icns_has_512pt_2x(icns_path: &Path) {
+        assert!(icns_path.is_file(), "no .icns at {}", icns_path.display());
+        let family =
+            icns::IconFamily::read(std::io::BufReader::new(fs::File::open(icns_path).unwrap()))
+                .unwrap();
+        assert!(
+            family
+                .available_icons()
+                .contains(&icns::IconType::RGBA32_512x512_2x),
+            "icns missing the 512pt@2x (1024px) slot the Mac App Store requires",
+        );
+    }
+
+    #[test]
+    fn macos_icns_from_declared_icon_has_512pt_2x() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svg = write_sample(tmp.path(), "icon.svg", SAMPLE_SVG);
+        let icon = block_with_source(svg);
+        let outs = sync_macos_icns(Some(&icon), tmp.path()).unwrap();
+        assert_icns_has_512pt_2x(&outs.icns);
+    }
+
+    #[test]
+    fn macos_icns_placeholder_when_no_icon_still_has_512pt_2x() {
+        // No icon declared (None) ⇒ still a valid .icns with every required
+        // slot — every macOS app ships an App-Store-valid icon by default.
+        let tmp = tempfile::tempdir().unwrap();
+        let outs = sync_macos_icns(None, tmp.path()).unwrap();
+        assert_icns_has_512pt_2x(&outs.icns);
     }
 }

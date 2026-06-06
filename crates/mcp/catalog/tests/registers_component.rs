@@ -1183,6 +1183,7 @@ fn catalog_json_v2_includes_every_new_slice() {
         "tools",
         "scopes",
         "sdks",
+        "icon_sets",
     ] {
         assert!(
             json[slice].is_array(),
@@ -1228,6 +1229,7 @@ fn catalog_json_round_trips_through_build_from_json() {
     assert_eq!(rebuilt.recipes().len(), direct.recipes().len(), "recipes");
     assert_eq!(rebuilt.scopes().len(), direct.scopes().len(), "scopes");
     assert_eq!(rebuilt.sdks().len(), direct.sdks().len(), "sdks");
+    assert_eq!(rebuilt.icon_sets().len(), direct.icon_sets().len(), "icon_sets");
 
     // A scope survives the JSON boundary with its fields intact.
     let rebuilt_inner = rebuilt

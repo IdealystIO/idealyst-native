@@ -21,8 +21,9 @@
 use serde_json::{json, Value};
 
 use crate::{
-    AnimationEntry, ComponentEntry, GuideEntry, MacroEntry, MethodEntry, PrimitiveEntry,
-    RecipeEntry, ScopeEntry, SdkEntry, StateEntry, ToolEntry, TypeEntry, TypeShape, UtilityEntry,
+    AnimationEntry, ComponentEntry, GuideEntry, IconSetEntry, MacroEntry, MethodEntry,
+    PrimitiveEntry, RecipeEntry, ScopeEntry, SdkEntry, StateEntry, ToolEntry, TypeEntry, TypeShape,
+    UtilityEntry,
 };
 
 /// Writer side: a catalog entry type that knows its JSON array key, how
@@ -502,6 +503,44 @@ impl CatalogSlice for SdkEntry {
             "category": self.category.as_str(),
             "kind": self.kind.as_str(),
             "guide": self.guide,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------
+// IconSet
+// ---------------------------------------------------------------------
+
+impl CatalogSlice for IconSetEntry {
+    const KEY: &'static str = "icon_sets";
+
+    fn collect_sorted() -> Vec<&'static Self> {
+        let mut v: Vec<&'static IconSetEntry> = crate::icon_sets().collect();
+        v.sort_by_key(|s| s.name);
+        v
+    }
+
+    fn to_json(&self) -> Value {
+        // The full (name, ident) list is carried so `search_icons` works
+        // off the JSON-reload path and the docs site can show the import
+        // for any icon. It's the bulk of the document for a large pack —
+        // but it's names only (no geometry), and the MCP `list_*` tools
+        // never echo it back; only `search_icons` / paginated
+        // `describe_icon_set` surface individual icons.
+        let icons: Vec<Value> = self
+            .icons
+            .iter()
+            .map(|i| json!({ "name": i.name, "ident": i.ident }))
+            .collect();
+        json!({
+            "name": self.name,
+            "title": self.title,
+            "docs": self.docs,
+            "import_path": self.import_path,
+            "license": self.license,
+            "homepage": self.homepage,
+            "icon_count": self.icons.len(),
+            "icons": icons,
         })
     }
 }

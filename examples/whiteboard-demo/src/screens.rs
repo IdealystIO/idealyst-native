@@ -8,13 +8,16 @@
 //! macOS / terminal / SSR, so without the in-content header the user couldn't get
 //! back there.
 
-use crate::settings::{aspect_label, CanvasBg, ASPECTS, ASPECT_MAX, ASPECT_MIN, CANVAS_BGS};
+use crate::settings::{
+    aspect_label, CameraShape, CameraSize, CanvasBg, ASPECTS, ASPECT_MAX, ASPECT_MIN,
+    CAMERA_SHAPES, CAMERA_SIZES, CANVAS_BGS,
+};
 use crate::style::{border_all_color, radius, reactive_style, static_style, styled};
 use crate::{BoardState, REC_FILE, REC_STORE};
 use idea_ui::{typography_kind, SegmentOption, SegmentedControl, Switch, Typography};
 use icons_lucide::X;
 use runtime_core::{
-    component, icon, safe_area_insets, ui, view, viewport_size, AlignItems, ChildList, Color,
+    component, icon, safe_area_insets, ui, view, AlignItems, ChildList, Color,
     Element, FlexDirection, FontWeight, IntoElement, JustifyContent, Length, Overflow, Ref,
     Signal, StyleRules, Tokenized, TouchPhase, TouchResponse,
 };
@@ -26,47 +29,6 @@ use std::rc::Rc;
 /// the surface follows light/dark with no per-color plumbing.
 fn tc(getter: impl Fn(&idea_ui::Colors) -> Tokenized<Color> + 'static) -> Color {
     crate::style::token(getter)
-}
-
-// ============================================================================
-// Per-text color (replaces the old `colored_text`)
-// ============================================================================
-
-/// Props for [`Label`].
-pub struct LabelProps {
-    pub text: &'static str,
-    pub hex: &'static str,
-    pub weight: FontWeight,
-    pub size: f32,
-}
-
-impl Default for LabelProps {
-    fn default() -> Self {
-        Self { text: "", hex: "#111827", weight: FontWeight::Normal, size: 15.0 }
-    }
-}
-
-/// A `text` node carrying its OWN color (+ weight/size).
-///
-/// Native backends (macOS / iOS) do NOT inherit text color from an ancestor
-/// view's `color` the way web/CSS does — each `NSTextField`/`UILabel` keeps its
-/// own color and otherwise falls back to the SYSTEM default label color, which is
-/// white in dark mode. So every piece of on-screen copy sets color on the text
-/// node itself; a `color` on the wrapping container is a web-only cascade that
-/// leaves macOS text invisible (the "white text" settings bug). Setting it
-/// explicitly is correct on web too.
-#[component]
-pub fn Label(props: &LabelProps) -> Element {
-    let label = props.text.to_string();
-    let style = static_style(StyleRules {
-        color: Some(Tokenized::Literal(Color(props.hex.into()))),
-        font_weight: Some(props.weight),
-        font_size: Some(Length::Px(props.size).into()),
-        ..Default::default()
-    });
-    ui! {
-        text(style = style) { label }
-    }
 }
 
 // ============================================================================
@@ -262,6 +224,53 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
         dark.set(v);
     });
 
+    // Camera shape + size pickers.
+    let camera_shape = state.camera_shape;
+    let camera_size = state.camera_size;
+    let shape_label = |s: CameraShape| {
+        CAMERA_SHAPES.iter().find(|(_, v)| *v == s).map(|(l, _)| *l).unwrap_or("Rounded")
+    };
+    let size_label = |s: CameraSize| {
+        CAMERA_SIZES.iter().find(|(_, v)| *v == s).map(|(l, _)| *l).unwrap_or("M")
+    };
+    let shape_sel = Signal::new(shape_label(camera_shape.get()).to_string());
+    let size_sel = Signal::new(size_label(camera_size.get()).to_string());
+    let shape_options: Vec<SegmentOption> =
+        CAMERA_SHAPES.iter().map(|(l, _)| SegmentOption::new(*l, *l)).collect();
+    let size_options: Vec<SegmentOption> =
+        CAMERA_SIZES.iter().map(|(l, _)| SegmentOption::new(*l, *l)).collect();
+    let shape_on_change: Rc<dyn Fn(String)> = Rc::new(move |id: String| {
+        shape_sel.set(id.clone());
+        if let Some((_, v)) = CAMERA_SHAPES.iter().find(|(l, _)| *l == id) {
+            camera_shape.set(*v);
+        }
+    });
+    let size_on_change: Rc<dyn Fn(String)> = Rc::new(move |id: String| {
+        size_sel.set(id.clone());
+        if let Some((_, v)) = CAMERA_SIZES.iter().find(|(l, _)| *l == id) {
+            camera_size.set(*v);
+        }
+    });
+
+    // Show the CURRENT selection in each section caption — the segmented/​swatch
+    // highlights can read subtly, so this makes the chosen value unmistakable and
+    // updates live as the user picks.
+    let aspect_caption = Signal::new(String::new());
+    runtime_core::effect!({
+        let (w, h) = aspect.get();
+        aspect_caption.set(format!("Aspect ratio · {}", aspect_label(w, h)));
+    });
+    let color_caption = Signal::new(String::new());
+    runtime_core::effect!({
+        let cur = canvas_bg.get();
+        let lbl = CANVAS_BGS
+            .iter()
+            .find(|(_, b)| *b == cur)
+            .map(|(l, _)| *l)
+            .unwrap_or("Auto");
+        color_caption.set(format!("Canvas color · {lbl}"));
+    });
+
     let list_style = static_style(StyleRules {
         flex_direction: Some(FlexDirection::Column),
         gap: Some(Length::Px(14.0).into()),
@@ -281,14 +290,14 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
         ScreenScaffold(title = "Settings", nav = nav) {
             view(style = list_style) {
                 view(style = card_style()) {
-                    Typography(content = "Aspect ratio", kind = typography_kind::Caption, muted = true)
+                    Typography(content = aspect_caption, kind = typography_kind::Caption, muted = true)
                     SegmentedControl(value = aspect_sel, on_change = aspect_on_change, options = aspect_options)
                     if aspect_sel.get() == "Custom" {
                         AspectSteppers(aspect = aspect)
                     }
                 }
                 view(style = card_style()) {
-                    Typography(content = "Canvas color", kind = typography_kind::Caption, muted = true)
+                    Typography(content = color_caption, kind = typography_kind::Caption, muted = true)
                     SwatchRow(canvas_bg = canvas_bg)
                 }
                 view(style = card_style()) {
@@ -297,6 +306,12 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
                         Typography(content = "Dark mode", kind = typography_kind::Body)
                         Switch(value = dark, on_change = dark_on_change)
                     }
+                }
+                view(style = card_style()) {
+                    Typography(content = "Camera shape", kind = typography_kind::Caption, muted = true)
+                    SegmentedControl(value = shape_sel, on_change = shape_on_change, options = shape_options)
+                    Typography(content = "Camera size", kind = typography_kind::Caption, muted = true)
+                    SegmentedControl(value = size_sel, on_change = size_on_change, options = size_options)
                 }
             }
         }
@@ -314,50 +329,84 @@ impl Default for SwatchRowProps {
     }
 }
 
-/// A row of tappable color swatches for the canvas background. The selected one
-/// gets a thick `text`-token ring; the rest a thin `border` ring. Tapping commits
-/// the choice. `Auto` shows a neutral gray (its real color depends on the theme).
+/// Props for [`Swatch`].
+pub struct SwatchProps {
+    /// This chip's canvas background.
+    pub bg: CanvasBg,
+    /// The shared selected-background signal — tapping commits `bg`, and the
+    /// chip lights when `canvas_bg == bg`.
+    pub canvas_bg: Signal<CanvasBg>,
+}
+
+impl Default for SwatchProps {
+    fn default() -> Self {
+        Self { bg: CanvasBg::Auto, canvas_bg: Signal::new(CanvasBg::Auto) }
+    }
+}
+
+/// One tappable canvas-background chip. Selected GROWS and gets a thick accent
+/// ring (a size change reads clearly even where a thin border doesn't); the rest
+/// stay small with a hairline border. `Auto` carries an "A" so it's identifiable
+/// at a glance (its swatch color is a neutral placeholder, not its theme color).
+#[component]
+pub fn Swatch(props: &SwatchProps) -> Element {
+    let bg = props.bg;
+    let canvas_bg = props.canvas_bg;
+    let is_auto = matches!(bg, CanvasBg::Auto);
+    let style = reactive_style(move || {
+        let selected = canvas_bg.get() == bg;
+        let d = if selected { 46.0 } else { 34.0 };
+        let ring = if selected { tc(|c| c.text.clone()) } else { tc(|c| c.border.clone()) };
+        styled(
+            StyleRules {
+                width: Some(Length::Px(d).into()),
+                height: Some(Length::Px(d).into()),
+                background: Some(Tokenized::Literal(Color(bg.swatch_css().into()))),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::Center),
+                ..Default::default()
+            },
+            [radius(d / 2.0), border_all_color(if selected { 3.0 } else { 1.0 }, ring)],
+        )
+    });
+    let a_style = static_style(StyleRules {
+        color: Some(Tokenized::Literal(Color("#1f2937".into()))),
+        font_weight: Some(FontWeight::Bold),
+        font_size: Some(Length::Px(16.0).into()),
+        ..Default::default()
+    });
+    ui! {
+        view(style = style) {
+            if is_auto {
+                text(style = a_style) { "A".to_string() }
+            }
+        }
+        .on_touch(move |ev| {
+            if ev.phase == TouchPhase::Ended {
+                canvas_bg.set(bg);
+            }
+            TouchResponse::CONSUMED
+        })
+    }
+}
+
+/// A row of tappable canvas-background [`Swatch`]es.
 #[component]
 pub fn SwatchRow(props: &SwatchRowProps) -> Element {
     let canvas_bg = props.canvas_bg;
-    let mut swatches: Vec<Element> = Vec::with_capacity(CANVAS_BGS.len());
-    for (_label, bg) in CANVAS_BGS {
-        let bg = *bg;
-        let style = reactive_style(move || {
-            let selected = canvas_bg.get() == bg;
-            let ring = if selected {
-                tc(|c| c.text.clone())
-            } else {
-                tc(|c| c.border.clone())
-            };
-            styled(
-                StyleRules {
-                    width: Some(Length::Px(38.0).into()),
-                    height: Some(Length::Px(38.0).into()),
-                    background: Some(Tokenized::Literal(Color(bg.swatch_css().into()))),
-                    ..Default::default()
-                },
-                [radius(19.0), border_all_color(if selected { 3.0 } else { 1.0 }, ring)],
-            )
-        });
-        let sw = ui! {
-            view(style = style) {}
-            .on_touch(move |ev| {
-                if ev.phase == TouchPhase::Ended {
-                    canvas_bg.set(bg);
-                }
-                TouchResponse::CONSUMED
-            })
-        };
-        swatches.push(sw);
-    }
     let row = static_style(StyleRules {
         flex_direction: Some(FlexDirection::Row),
         align_items: Some(AlignItems::Center),
         gap: Some(Length::Px(12.0).into()),
         ..Default::default()
     });
-    ui! { view(style = row) { swatches } }
+    ui! {
+        view(style = row) {
+            for (_label, bg) in CANVAS_BGS {
+                Swatch(bg = *bg, canvas_bg = canvas_bg)
+            }
+        }
+    }
 }
 
 /// Props for [`AspectSteppers`].
@@ -497,6 +546,9 @@ fn stepper_btn(glyph: &'static str, on_press: impl Fn() + 'static) -> Element {
 pub struct PreviewScreenProps {
     pub rec_path: Signal<Option<String>>,
     pub playback_url: Signal<String>,
+    /// The board aspect the clip was recorded at — the preview stage takes this
+    /// ratio so the video fills it with no letterbox/crop.
+    pub aspect: Signal<(u32, u32)>,
     pub nav: Ref<StackHandle>,
 }
 
@@ -505,6 +557,7 @@ impl Default for PreviewScreenProps {
         Self {
             rec_path: Signal::new(None),
             playback_url: Signal::new(String::new()),
+            aspect: Signal::new((9, 16)),
             nav: Ref::new(),
         }
     }
@@ -515,6 +568,7 @@ impl Default for PreviewScreenProps {
 #[component]
 pub fn PreviewScreen(props: &PreviewScreenProps) -> Element {
     let rec_path = props.rec_path;
+    let preview_aspect = props.aspect;
     let playback_url = props.playback_url;
     let nav = props.nav;
 
@@ -563,15 +617,13 @@ pub fn PreviewScreen(props: &PreviewScreenProps) -> Element {
         ..Default::default()
     });
     // Inner stage: takes the RECORDED clip's aspect ratio so the video fills it
-    // edge-to-edge with NO letterbox. The recording is the full-screen canvas
-    // MINUS the system bars (status + nav) — which the safe-area insets cover —
-    // so `width / (height - insets)` matches the recorded frame's aspect closely.
-    // Height-bound to the wrapper; `max_width: 100%` clamps the rare wide clip.
+    // edge-to-edge with NO letterbox. The recording IS the board stage (an
+    // aspect-locked box), so its frame aspect is exactly the board `aspect` —
+    // `width / height` of the chosen ratio. Height-bound to the wrapper;
+    // `max_width: 100%` clamps a wide (landscape) clip to the available width.
     let stage_box_style = reactive_style(move || {
-        let vp = viewport_size().get();
-        let ins = safe_area_insets().get();
-        let content_h = (vp.height - ins.top - ins.bottom).max(1.0);
-        let aspect = (vp.width / content_h).max(0.05);
+        let (aw, ah) = preview_aspect.get();
+        let aspect = (aw.max(1) as f32 / ah.max(1) as f32).max(0.05);
         styled(
             StyleRules {
                 height: Some(Length::pct(100.0).into()),
@@ -653,35 +705,56 @@ impl Default for ActionButtonProps {
     }
 }
 
-/// A labeled action button. `primary` → filled blue; else neutral.
+/// A labeled action button. `primary` → filled accent; else a neutral surface
+/// chip with a border. Theme-aware (reactive tokens) so the neutral variant stays
+/// visible in dark mode — the old hardcoded dark-on-dark colors vanished there.
 #[component]
 pub fn ActionButton(props: &ActionButtonProps) -> Element {
     let label = props.label;
-    let (bg, fg) = if props.primary {
-        ("#2563eb", "#ffffff")
-    } else {
-        ("rgba(17,24,39,0.06)", "#111827")
-    };
+    let primary = props.primary;
     let on_press = props.on_press.clone();
 
-    let btn_style = static_style(styled(
-        StyleRules {
-            height: Some(Length::Px(46.0).into()),
-            padding_left: Some(Length::Px(28.0).into()),
-            padding_right: Some(Length::Px(28.0).into()),
-            align_items: Some(AlignItems::Center),
-            justify_content: Some(JustifyContent::Center),
-            background: Some(Tokenized::Literal(Color(bg.into()))),
-            ..Default::default()
-        },
-        [radius(23.0)],
-    ));
+    let btn_style = reactive_style(move || {
+        let bg = if primary {
+            crate::style::token_intent(|i| i.primary.solid_bg.clone())
+        } else {
+            tc(|c| c.surface_alt.clone())
+        };
+        let mut extras = vec![radius(23.0)];
+        if !primary {
+            // A border gives the neutral chip a visible edge on any backdrop.
+            extras.push(border_all_color(1.0, tc(|c| c.border.clone())));
+        }
+        styled(
+            StyleRules {
+                height: Some(Length::Px(46.0).into()),
+                padding_left: Some(Length::Px(28.0).into()),
+                padding_right: Some(Length::Px(28.0).into()),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::Center),
+                background: Some(Tokenized::Literal(bg)),
+                ..Default::default()
+            },
+            extras,
+        )
+    });
+    // Label color on the text node (native doesn't inherit), reactive on theme.
+    let label_style = reactive_style(move || StyleRules {
+        color: Some(Tokenized::Literal(if primary {
+            crate::style::token_intent(|i| i.primary.solid_text.clone())
+        } else {
+            tc(|c| c.text.clone())
+        })),
+        font_weight: Some(FontWeight::SemiBold),
+        font_size: Some(Length::Px(15.0).into()),
+        ..Default::default()
+    });
 
     // Conditional callback (§9.6): bind `on_touch` only when a handler is
     // present. The label child is `ui!`-composed; the touch-carrying wrapper uses
     // the `view()` builder so the bind can be applied conditionally.
     let inner = ui! {
-        Label(text = label, hex = fg, weight = FontWeight::SemiBold, size = 15.0)
+        text(style = label_style) { label.to_string() }
     };
     let mut bound = view(vec![inner]).with_style(btn_style);
     if let Some(cb) = on_press {

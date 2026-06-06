@@ -429,7 +429,7 @@ impl LayerCompositor {
             let cam_aspect = cam_w as f32 / (cam_h as f32).max(1.0);
             let dst_aspect = vw / vh;
             let (sx, sy, ox, oy) = uv_transform(layer.fit, cam_aspect, dst_aspect);
-            let radius_px = (layer.corner_radius * scale).max(0.0);
+            let radius_px = ((layer.corner_radius)() * scale).max(0.0);
             let border_px = (layer.border_width * scale).max(0.0);
             let bc = layer.border_color;
             // [uv_scale.xy, uv_offset.xy] [rect_w, rect_h, radius_px, opacity]
