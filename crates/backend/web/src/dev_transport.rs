@@ -568,5 +568,12 @@ where
             // verb blocked until timeout — it then falls back to replay.
             wire.borrow().capture_screenshot_and_reply(request_id);
         }
+        DevToApp::QueryDeviceFrame { request_id, node } => {
+            // The WebBackend doesn't implement `device_frame` yet, so this
+            // replies `found = false` (rather than leaving the server's
+            // verb blocked until timeout). OS-level tap injection on web
+            // would drive CDP/Playwright, not this path.
+            wire.borrow().query_device_frame_and_reply(request_id, node);
+        }
     }
 }

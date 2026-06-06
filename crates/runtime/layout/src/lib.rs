@@ -76,40 +76,6 @@ use runtime_core::{
 pub type MeasureFn =
     Rc<dyn Fn(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>>;
 
-/// If an axis offers a DEFINITE constraint, fold it into the running min.
-/// `MinContent`/`MaxContent` (intrinsic-sizing probes, no hard limit) pass
-/// through unchanged.
-fn clamp_to_definite(natural: f32, available: AvailableSpace) -> f32 {
-    match available {
-        AvailableSpace::Definite(v) => natural.min(v.max(0.0)),
-        AvailableSpace::MinContent | AvailableSpace::MaxContent => natural,
-    }
-}
-
-/// A [`MeasureFn`] for vector icons. An icon has a natural `default_px` size but
-/// is a SCALABLE, SQUARE glyph — so it must never overflow the box its parent
-/// gives it, and a constraint on EITHER axis shrinks BOTH (keeping it square).
-/// The natural size is therefore clamped to the smallest definite space either
-/// axis offers; an explicit style dimension (`known`) still wins per-axis.
-///
-/// Why square-aware: flexbox measures a centered item with its MAIN-axis space
-/// as a definite constraint but its CROSS-axis space as `MaxContent`. Clamping
-/// each axis independently would shrink only the main axis (a 13×13 slot →
-/// 13×24, overflowing vertically); folding both definite limits into one square
-/// size fixes it. Shared by every backend's `create_icon` so icon sizing is one
-/// tested rule, not re-inlined per platform.
-pub fn icon_measure(default_px: f32) -> MeasureFn {
-    Rc::new(move |known, available| {
-        let mut natural = default_px;
-        natural = clamp_to_definite(natural, available.width);
-        natural = clamp_to_definite(natural, available.height);
-        Size {
-            width: known.width.unwrap_or(natural),
-            height: known.height.unwrap_or(natural),
-        }
-    })
-}
-
 // =============================================================================
 // Public types
 // =============================================================================
@@ -1026,49 +992,6 @@ mod tests {
     use super::*;
     use runtime_core::Tokenized;
 
-    // Regression: a vector icon has a natural 24px size but is scalable, so it
-    // must shrink to fit a smaller container instead of overflowing it. The
-    // backends used to inline `known.unwrap_or(24)` — which ignored the
-    // available space, so an icon dropped in a 13px box still measured 24px and
-    // bled out (the layers-list trash rendered oversized). `icon_measure` clamps
-    // the natural size to a DEFINITE available space.
-    #[test]
-    fn icon_measure_clamps_to_definite_available_space() {
-        let m = icon_measure(24.0);
-        let none = Size { width: None, height: None };
-
-        // A 13px slot → a 13px icon (NOT 24).
-        let s = m(none, Size {
-            width: AvailableSpace::Definite(13.0),
-            height: AvailableSpace::Definite(13.0),
-        });
-        assert_eq!((s.width, s.height), (13.0, 13.0), "icon clamps to its 13px box");
-
-        // Ample/unconstrained space → the natural 24px (don't grow past it).
-        let big = m(none, Size {
-            width: AvailableSpace::Definite(100.0),
-            height: AvailableSpace::MaxContent,
-        });
-        assert_eq!((big.width, big.height), (24.0, 24.0), "natural size when space is ample");
-
-        // MinContent/MaxContent probes (no hard constraint) → natural size.
-        let probe = m(none, Size {
-            width: AvailableSpace::MinContent,
-            height: AvailableSpace::MaxContent,
-        });
-        assert_eq!((probe.width, probe.height), (24.0, 24.0));
-
-        // An explicit style dimension always wins, even in a bigger/smaller box.
-        let styled = m(
-            Size { width: Some(18.0), height: Some(18.0) },
-            Size {
-                width: AvailableSpace::Definite(40.0),
-                height: AvailableSpace::Definite(40.0),
-            },
-        );
-        assert_eq!((styled.width, styled.height), (18.0, 18.0), "explicit size wins");
-    }
-
     fn px(v: f32) -> Tokenized<FwLength> {
         Tokenized::Literal(FwLength::Px(v))
     }
@@ -1665,42 +1588,6 @@ mod tests {
             label_f.height >= 39.0,
             "label must have wrapped to 2 lines (~40px), got height {}",
             label_f.height
-        );
-    }
-
-    // End-to-end: an `icon_measure`-backed leaf inside a FIXED 13×13 box lays
-    // out at 13×13, not its natural 24×24. Proves Taffy hands a fixed-box child
-    // a `Definite` available space and the measure clamps to it — i.e. the
-    // layers-list trash icon stays inside its slot. The closure-level rule is
-    // covered by `icon_measure_clamps_to_definite_available_space`; this checks
-    // it survives the real layout engine.
-    #[test]
-    fn regression_icon_fits_inside_smaller_fixed_box() {
-        let mut t = LayoutTree::new();
-        let root = t.new_node();
-
-        // A 13×13 fixed slot that centers its child (the delete-button glyph box).
-        let slot = t.new_node();
-        let mut sr = StyleRules::default();
-        sr.width = Some(px(13.0));
-        sr.height = Some(px(13.0));
-        sr.align_items = Some(runtime_core::AlignItems::Center);
-        sr.justify_content = Some(runtime_core::JustifyContent::Center);
-        t.set_style(slot, &sr);
-
-        let icon = t.new_node();
-        t.set_measure_fn(icon, icon_measure(24.0));
-
-        t.add_child(root, slot);
-        t.add_child(slot, icon);
-        t.compute(root, 400.0, 400.0);
-
-        let icon_f = t.frame_of(icon);
-        assert!(
-            icon_f.width <= 13.5 && icon_f.height <= 13.5,
-            "icon must clamp to its 13px slot (natural 24px would overflow), got {}x{}",
-            icon_f.width,
-            icon_f.height
         );
     }
 

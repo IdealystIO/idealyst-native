@@ -105,7 +105,16 @@ use serde::{Deserialize, Serialize};
 /// deserializes — `wrap` defaults to `true` (the primitive default).
 /// (Content-height "autogrow" needs no wire field: it's intrinsic
 /// sizing, reproduced by the client's own backend from the style.)
-pub const PROTOCOL_VERSION: u32 = 11;
+/// Bumped to 12 to add the `device_frame` round-trip
+/// ([`DevToApp::QueryDeviceFrame`] ⇄ [`AppToDev::DeviceFrameResult`]).
+/// This lets the Robot bridge ask a connected client for a node's
+/// **physical screen-pixel** rect (for OS-level input injection, e.g.
+/// `adb shell input tap`) in runtime-server mode — the recorder has no
+/// real layout, so the honest answer comes from the client's real
+/// backend over the wire. New `DevToApp` variant: a sender on an older
+/// client simply never receives it (the server only emits it when a
+/// `get_device_frame` Robot call is made).
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -213,6 +222,16 @@ pub enum DevToApp {
     /// sent to clients that advertised
     /// [`AppToDev::Hello::supports_screenshot`].
     CaptureScreenshot { request_id: u64 },
+
+    /// Ask the client for `node`'s rect in **physical device-screen
+    /// pixels** (`Backend::device_frame`) and reply with
+    /// [`AppToDev::DeviceFrameResult`] carrying the same `request_id`.
+    /// Used by the Robot `get_device_frame` verb in runtime-server mode:
+    /// the recorder has no real layout, so the on-screen pixel an
+    /// OS-level injector should tap can only come from the client's real
+    /// backend. `node` is the wire-side [`NodeId`] the client maps back
+    /// to its native view.
+    QueryDeviceFrame { request_id: u64, node: NodeId },
 }
 
 /// Messages sent from the app to the dev process.
@@ -339,6 +358,26 @@ pub enum AppToDev {
         png: Option<Vec<u8>>,
         width: u32,
         height: u32,
+        error: Option<String>,
+    },
+
+    /// Reply to [`DevToApp::QueryDeviceFrame`]. Carries the same
+    /// `request_id` so the server correlates it with the blocked
+    /// `get_device_frame` verb. `found` is `true` when the client's
+    /// backend returned a rect (the node is laid out and the backend
+    /// implements `device_frame`); then `x`/`y`/`width`/`height` are
+    /// the **physical screen pixels**. `found = false` means the node
+    /// has no device frame (not laid out, or backend returns `None`);
+    /// `error` carries a reason for transport/lookup failures (unknown
+    /// node id, etc.). `ViewportRect` isn't a wire type, so the rect is
+    /// sent as flat fields and rebuilt on the server side.
+    DeviceFrameResult {
+        request_id: u64,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        found: bool,
         error: Option<String>,
     },
 

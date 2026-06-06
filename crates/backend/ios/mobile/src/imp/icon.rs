@@ -166,6 +166,20 @@ pub(crate) fn create_icon(
         let cls = objc2::class!(CAShapeLayer);
         msg_send_id![cls, new]
     };
+    // Render the vector path at the SCREEN scale. A manually-created sublayer
+    // does NOT inherit `contentsScale` from the view's backing layer — it
+    // defaults to 1.0, so on a 2×/3× Retina display the path is rasterized at 1×
+    // and scaled up, making the curves blocky/"boxy" (web's SVG stays vector-
+    // crisp). Setting it to the screen scale fixes the rasterization resolution.
+    let screen_scale: CGFloat = unsafe {
+        let screen: *mut NSObject = msg_send![objc2::class!(UIScreen), mainScreen];
+        if screen.is_null() {
+            2.0
+        } else {
+            msg_send![screen, scale]
+        }
+    };
+    let _: () = unsafe { msg_send![&shape_layer, setContentsScale: screen_scale] };
     // Name it so the layout pass can recenter it within the view's
     // bounds (`sync_icon_sublayer`). The path is built at a fixed 24×24
     // origin; when flex sizes the icon view larger than the glyph (e.g.

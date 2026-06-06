@@ -1332,6 +1332,24 @@ impl Backend for WireRecordingBackend {
         self.inner.borrow().color_scheme
     }
 
+    /// Physical screen-pixel rect for OS-level input injection. The
+    /// recorder has no real layout, so the honest answer comes from the
+    /// connected client's real backend: round-trip the wire `NodeId` to
+    /// the client and back (`QueryDeviceFrame` ⇄ `DeviceFrameResult`).
+    /// Returns `None` with no client attached / on timeout — the Robot
+    /// `get_device_frame` verb then reports "no frame", same as a
+    /// not-yet-laid-out node.
+    ///
+    /// Only ever called via the Robot bridge (never the render hot path),
+    /// so the blocking round-trip is acceptable; see
+    /// `sidecar::device_frame_over_wire`.
+    fn device_frame(
+        &self,
+        node: &Self::Node,
+    ) -> Option<runtime_core::primitives::portal::ViewportRect> {
+        crate::sidecar::device_frame_over_wire(node.0)
+    }
+
     /// Wrap the wire `NodeId` so layout authors who bind a
     /// `Ref<ViewHandle>` (notably the framework's `outlet_ref` inside
     /// `build_layout`) can retrieve the assigned wire id by

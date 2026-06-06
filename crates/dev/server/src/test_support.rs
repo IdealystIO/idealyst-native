@@ -185,6 +185,10 @@ impl MockClient {
             DevToApp::CaptureScreenshot { .. } => {
                 // MockClient doesn't render a real surface; ignore.
             }
+            DevToApp::QueryDeviceFrame { .. } => {
+                // MockClient has no real layout; ignore (server verb times
+                // out and reports "no frame").
+            }
         }
     }
 }

@@ -182,6 +182,19 @@ pub(crate) fn create_icon(
         let cls = objc2::class!(CAShapeLayer);
         msg_send_id![cls, layer]
     };
+    // Render the vector path at the SCREEN scale. A manually-created sublayer
+    // does NOT inherit `contentsScale` from the view's backing layer — it
+    // defaults to 1.0, so on a Retina display the path is rasterized at 1× and
+    // scaled up, making the curves blocky/"boxy" (web's SVG stays vector-crisp).
+    let screen_scale: f64 = unsafe {
+        let screen: *mut NSObject = msg_send![objc2::class!(NSScreen), mainScreen];
+        if screen.is_null() {
+            2.0
+        } else {
+            msg_send![screen, backingScaleFactor]
+        }
+    };
+    let _: () = unsafe { msg_send![&shape_layer, setContentsScale: screen_scale] };
 
     // setPath: retains the CGPathRef; we own one +1 reference from
     // CGPathCreateMutable that we need to release after the layer

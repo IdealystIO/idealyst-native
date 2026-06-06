@@ -540,6 +540,30 @@ fn drain_sidecar_inbound(
                     );
                 }
             }
+            crate::SidecarOut::QueryDeviceFrame { session, request_id, node } => {
+                // The `get_device_frame` Robot verb wants a node's physical
+                // screen-pixel rect from the real client. Forward to every
+                // client on that session; the first to reply (via
+                // `AppToDev::DeviceFrameResult`) wins the `request_id`. No
+                // client → the verb times out and reports "no frame".
+                let mut sent = false;
+                for client in clients.iter_mut().filter(|c| c.session == session) {
+                    if send(
+                        &mut client.ws,
+                        &DevToApp::QueryDeviceFrame { request_id, node: wire::NodeId(node) },
+                    )
+                    .is_ok()
+                    {
+                        sent = true;
+                    }
+                }
+                if !sent {
+                    eprintln!(
+                        "[dev-server] QueryDeviceFrame req {request_id}: no client attached to \
+                         session {session:?}; verb will time out and report no frame"
+                    );
+                }
+            }
         }
     }
 }
@@ -892,6 +916,30 @@ fn handle_app_msg(
         return;
     }
 
+    // A real-client `device_frame` reply is correlation data, not a
+    // session event — forward as a dedicated `SidecarIn::DeviceFrameResult`
+    // so the sidecar fulfills it on its reader thread (the session thread
+    // is blocked in the `get_device_frame` verb). Same anti-deadlock
+    // routing as `ScreenshotResult`.
+    if let AppToDev::DeviceFrameResult { request_id, x, y, width, height, found, error } = &msg {
+        if let Some(slot) = sidecar_slot {
+            if let Ok(guard) = slot.lock() {
+                if let Some(sidecar) = guard.as_ref() {
+                    sidecar.send(crate::SidecarIn::DeviceFrameResult {
+                        request_id: *request_id,
+                        x: *x,
+                        y: *y,
+                        width: *width,
+                        height: *height,
+                        found: *found,
+                        error: error.clone(),
+                    });
+                }
+            }
+        }
+        return;
+    }
+
     // Snapshot viewport from ViewportChanged so the SessionTracker
     // can replay it after a sidecar respawn. Forwarding the event
     // to the sidecar still happens below — this is a peek, not a
@@ -989,6 +1037,10 @@ fn handle_app_msg(
         // Single-process mode has no real client capture path; the verb
         // falls back to the wgpu replay, so a result never arrives here.
         AppToDev::ScreenshotResult { .. } => {}
+        // Single-process mode has no sidecar round-trip; `device_frame`
+        // is answered by the local backend directly, so a wire reply
+        // never arrives here.
+        AppToDev::DeviceFrameResult { .. } => {}
     }
 }
 

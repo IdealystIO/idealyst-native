@@ -319,6 +319,48 @@ where
             }));
     }
 
+    /// Handle a [`DevToApp::QueryDeviceFrame`]: look the wire `node` up in
+    /// the node map, ask the real backend for its physical screen-pixel
+    /// rect (`Backend::device_frame`), and reply with an
+    /// [`AppToDev::DeviceFrameResult`] carrying the same `request_id`.
+    /// An unknown node id (or a backend that doesn't implement
+    /// `device_frame`) replies with `found = false` so the server's
+    /// `get_device_frame` verb reports "no frame" rather than hanging.
+    pub fn query_device_frame_and_reply(&self, request_id: u64, node: NodeId) {
+        let msg = match self.nodes.get(&node) {
+            Some(n) => match self.backend.borrow().device_frame(n) {
+                Some(r) => AppToDev::DeviceFrameResult {
+                    request_id,
+                    x: r.x,
+                    y: r.y,
+                    width: r.width,
+                    height: r.height,
+                    found: true,
+                    error: None,
+                },
+                None => AppToDev::DeviceFrameResult {
+                    request_id,
+                    x: 0.0,
+                    y: 0.0,
+                    width: 0.0,
+                    height: 0.0,
+                    found: false,
+                    error: None,
+                },
+            },
+            None => AppToDev::DeviceFrameResult {
+                request_id,
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+                found: false,
+                error: Some(format!("unknown node id {}", node.0)),
+            },
+        };
+        let _ = self.outbound.send(msg);
+    }
+
     /// Install a `GraphicsRegistry`, replacing whatever's there. The
     /// registry owns the app-local `(on_ready, on_resize, on_lost)`
     /// factories that the wire `CreateGraphics { renderer }` command

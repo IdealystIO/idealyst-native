@@ -230,15 +230,10 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // socket — even a loopback one — with the INTERNET permission. The
     // runtime-server manifest already declares INTERNET for its websocket; the
     // local-mode manifest declares no permissions, so without this the bridge
-    // fails to bind (EACCES) and host tooling / MCP can't reach the app. Gate
-    // on the dev/robot feature so a *production* local build isn't granted
-    // needless network access.
-    let robot_bridge_active = !opts.mode.is_runtime_server()
-        && opts
-            .user_features
-            .iter()
-            .any(|f| f.contains("dev") || f.contains("robot"));
-    if robot_bridge_active && !uses_permissions.contains("android.permission.INTERNET") {
+    // fails to bind (EACCES) and host tooling / MCP can't reach the app.
+    if local_robot_build_needs_internet(opts.mode.is_runtime_server(), &opts.user_features)
+        && !uses_permissions.contains("android.permission.INTERNET")
+    {
         if !uses_permissions.is_empty() {
             uses_permissions.push('\n');
         }
@@ -945,6 +940,23 @@ fn adb_reverse(adb: &Path, serial: &str, port: u16) -> Result<()> {
     Ok(())
 }
 
+/// Whether a build needs the INTERNET permission injected so the Robot
+/// bridge can bind its localhost listener.
+///
+/// Only **local-mode** builds with the `robot`/`dev` feature active need
+/// it: runtime-server builds already declare INTERNET for their
+/// websocket, and a production local build (no robot feature) shouldn't
+/// be granted needless network access. Without this, the bridge's
+/// `TcpListener::bind` fails with EACCES on Android and host tooling /
+/// MCP can't reach the app — see the live-verification of the `device_frame`
+/// / `adb input tap` path that surfaced this gap.
+fn local_robot_build_needs_internet(is_runtime_server: bool, user_features: &[String]) -> bool {
+    !is_runtime_server
+        && user_features
+            .iter()
+            .any(|f| f.contains("dev") || f.contains("robot"))
+}
+
 fn adb_launch(adb: &Path, serial: &str, component: &str) -> Result<()> {
     eprintln!("[run-android] adb shell am start -n {component}");
     let status = Command::new(adb)
@@ -1043,7 +1055,7 @@ fn xml_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ANDROID_MANIFEST_LOCAL_XML;
+    use super::{local_robot_build_needs_internet, ANDROID_MANIFEST_LOCAL_XML};
 
     /// The dev/run manifest must enable cleartext HTTP so a dev build can
     /// reach a server-function / `#[sse]` host running over `http://` on the
@@ -1056,5 +1068,27 @@ mod tests {
             ANDROID_MANIFEST_LOCAL_XML.contains("android:usesCleartextTraffic=\"true\""),
             "dev manifest must allow cleartext so the app can reach a local http dev server"
         );
+    }
+
+    /// Regression: a local-mode dev/robot build must get INTERNET injected so
+    /// the Robot bridge can bind its loopback listener (Android denies socket
+    /// creation without it). Runtime-server builds already declare it; a
+    /// production local build (no robot feature) must NOT be granted it.
+    #[test]
+    fn internet_injected_only_for_local_robot_builds() {
+        let dev = vec!["runtime-core/dev".to_string()];
+        let robot = vec!["robot".to_string()];
+        let none: Vec<String> = vec![];
+
+        // Local + robot/dev feature → needs it.
+        assert!(local_robot_build_needs_internet(false, &dev));
+        assert!(local_robot_build_needs_internet(false, &robot));
+
+        // Local, no robot feature (production local build) → must NOT add it.
+        assert!(!local_robot_build_needs_internet(false, &none));
+
+        // Runtime-server mode already declares INTERNET → never injected here,
+        // even with the dev feature on.
+        assert!(!local_robot_build_needs_internet(true, &dev));
     }
 }

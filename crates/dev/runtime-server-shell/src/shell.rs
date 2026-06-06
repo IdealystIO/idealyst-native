@@ -417,6 +417,12 @@ fn apply_dev_msg<B: Backend + 'static>(client: &mut RuntimeServerClient<B>, msg:
             // is queued on the outbound channel before this returns.
             client.capture_screenshot_and_reply(request_id);
         }
+        DevToApp::QueryDeviceFrame { request_id, node } => {
+            // Measure the node's physical screen-pixel rect on the real
+            // backend and reply over the wire. `getLocationOnScreen`-class
+            // call fires inline, so the reply is queued before this returns.
+            client.query_device_frame_and_reply(request_id, node);
+        }
     }
 }
 

@@ -137,6 +137,11 @@ where
             // outbound channel and flushed by the caller's drain loop.
             wire.capture_screenshot_and_reply(request_id);
         }
+        DevToApp::QueryDeviceFrame { request_id, node } => {
+            // Measure the node's physical screen-pixel rect on the real
+            // backend; the reply is queued on the outbound channel.
+            wire.query_device_frame_and_reply(request_id, node);
+        }
     }
     Ok(())
 }

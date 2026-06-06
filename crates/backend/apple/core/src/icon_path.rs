@@ -361,7 +361,13 @@ fn arc_to_bezier(
     let mut angle = theta1;
     for _ in 0..n_segs {
         let next_angle = angle + seg_angle;
-        let alpha = (seg_angle / 2.0).tan() * 4.0 / 3.0;
+        // Cubic-Bézier control-handle length for a circular arc segment spanning
+        // `seg_angle`: the standard kappa `(4/3)·tan(seg_angle/4)`. (Using
+        // `/2` here made handles ~2.41× too long, so every rounded corner
+        // overshot — the "boxy" Lucide icons on Apple; web renders the SVG arc
+        // natively and was unaffected. See
+        // `arc_quarter_circle_uses_correct_kappa_handles`.)
+        let alpha = (seg_angle / 4.0).tan() * 4.0 / 3.0;
 
         let cos_a = angle.cos();
         let sin_a = angle.sin();
@@ -485,16 +491,39 @@ mod tests {
         assert_eq!(e.ops, vec!["M(0,0)", "C(1,2;3,4;5,6)"]);
     }
 
+    #[derive(Default)]
+    struct PointEmitter {
+        curves: Vec<(f64, f64, f64, f64, f64, f64)>,
+    }
+    impl PathEmitter for PointEmitter {
+        fn move_to(&mut self, _x: f64, _y: f64) {}
+        fn line_to(&mut self, _x: f64, _y: f64) {}
+        fn curve_to(&mut self, c1x: f64, c1y: f64, c2x: f64, c2y: f64, x: f64, y: f64) {
+            self.curves.push((c1x, c1y, c2x, c2y, x, y));
+        }
+        fn close(&mut self) {}
+    }
+
+    // Regression: an SVG quarter-circle arc must approximate the circle, i.e. its
+    // cubic control handles use the kappa `(4/3)·tan(θ/4)` (= 0.5523·r for a 90°
+    // arc). The parser used `tan(θ/2)`, making the handles ~2.41× too long, so
+    // every rounded corner overshot/distorted — the "boxy" Lucide icons on Apple
+    // (web renders the SVG arc natively and was unaffected). This pins the
+    // bottom-right corner of the trash-2 can body: a radius-2 quarter arc from
+    // (19,20) to (17,22) about centre (17,20).
     #[test]
-    fn debug_trash_can_body_arc_emits_curves() {
-        // The lucide trash-2 can body: down the right side, ROUNDED bottom-right
-        // corner (a2 2 …), across, rounded bottom-left, up. The corners are arcs
-        // — they must emit `C(…)` curves, not collapse to `L(…)` (which renders
-        // as the boxy corners reported on Apple).
-        let mut e = LogEmitter::default();
-        parse_svg_path("M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6", 1.0, 1.0, &mut e);
-        // Print the actual op stream for inspection.
-        panic!("TRASH CAN-BODY OPS: {:?}", e.ops);
+    fn arc_quarter_circle_uses_correct_kappa_handles() {
+        let mut e = PointEmitter::default();
+        // v14 → line to (19,20); a2 2 0 0 1 -2 2 → the corner arc.
+        parse_svg_path("M19 6v14a2 2 0 0 1-2 2", 1.0, 1.0, &mut e);
+        assert_eq!(e.curves.len(), 1, "the quarter arc is one cubic segment");
+        let (c1x, c1y, c2x, c2y, ex, ey) = e.curves[0];
+        // Correct kappa positions (k = 0.5523·r, r = 2 → 1.1046):
+        //   C1 = (19, 21.105)  C2 = (18.105, 22)  end = (17, 22)
+        let approx = |a: f64, b: f64| (a - b).abs() < 0.01;
+        assert!(approx(c1x, 19.0) && approx(c1y, 21.105), "C1 was ({c1x},{c1y}), want (19, 21.105)");
+        assert!(approx(c2x, 18.105) && approx(c2y, 22.0), "C2 was ({c2x},{c2y}), want (18.105, 22)");
+        assert!(approx(ex, 17.0) && approx(ey, 22.0), "end was ({ex},{ey}), want (17, 22)");
     }
 
     #[test]

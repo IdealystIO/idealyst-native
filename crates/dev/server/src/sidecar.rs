@@ -107,6 +107,17 @@ pub enum SidecarOut {
     /// `wire::AppToDev::ScreenshotResult` comes back as a
     /// [`SidecarIn::ScreenshotResult`] carrying the same `request_id`.
     CaptureScreenshot { session: String, request_id: u64 },
+    /// The `get_device_frame` Robot verb wants a node's physical
+    /// screen-pixel rect from the **real client**. The host forwards
+    /// this to `session`'s client as a
+    /// `wire::DevToApp::QueryDeviceFrame { request_id, node }`; the
+    /// client's `wire::AppToDev::DeviceFrameResult` comes back as a
+    /// [`SidecarIn::DeviceFrameResult`] carrying the same `request_id`.
+    QueryDeviceFrame {
+        session: String,
+        request_id: u64,
+        node: u64,
+    },
 }
 
 /// Frames going *from* the host *to* the sidecar. Carries the
@@ -179,6 +190,20 @@ pub enum SidecarIn {
         height: u32,
         error: Option<String>,
     },
+    /// A client's reply to [`SidecarOut::QueryDeviceFrame`]. The host
+    /// received `wire::AppToDev::DeviceFrameResult` and forwards it here
+    /// so the blocked `get_device_frame` Robot verb (waiting on
+    /// `request_id`) wakes with the rect. Handled on the sidecar's
+    /// stdin-reader thread — NOT the (blocked) session thread.
+    DeviceFrameResult {
+        request_id: u64,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        found: bool,
+        error: Option<String>,
+    },
 }
 
 /// A resolved real-client screenshot: `Ok((png, width, height))` or an
@@ -218,6 +243,106 @@ fn cancel_shot_request(id: u64) {
 fn fulfill_shot_request(id: u64, result: ShotResult) {
     if let Some(tx) = shot_pending().lock().expect("shot pending poisoned").remove(&id) {
         let _ = tx.send(result);
+    }
+}
+
+/// A resolved real-client `device_frame`: `Some(rect)` when the node is
+/// laid out and the backend reports a physical-pixel rect; `None` when
+/// it doesn't (not laid out, backend returns `None`, unknown node, or a
+/// transport timeout). Robot collapses all "no frame" cases to `None`.
+type FrameResult = Option<runtime_core::primitives::portal::ViewportRect>;
+
+/// Correlation map for in-flight `device_frame` queries — the
+/// `device_frame` analog of [`SHOT_PENDING`]. Same threading rules: the
+/// `get_device_frame` verb (session thread) registers + blocks; the
+/// stdin-reader thread fulfills on [`SidecarIn::DeviceFrameResult`].
+static FRAME_PENDING: std::sync::OnceLock<Mutex<std::collections::HashMap<u64, mpsc::Sender<FrameResult>>>> =
+    std::sync::OnceLock::new();
+static FRAME_NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn frame_pending() -> &'static Mutex<std::collections::HashMap<u64, mpsc::Sender<FrameResult>>> {
+    FRAME_PENDING.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+fn register_frame_request() -> (u64, mpsc::Receiver<FrameResult>) {
+    let id = FRAME_NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (tx, rx) = mpsc::channel();
+    frame_pending().lock().expect("frame pending poisoned").insert(id, tx);
+    (id, rx)
+}
+
+fn cancel_frame_request(id: u64) {
+    let _ = frame_pending().lock().expect("frame pending poisoned").remove(&id);
+}
+
+/// Deliver a client's `device_frame` reply to the blocked verb. Called
+/// from the stdin-reader thread on [`SidecarIn::DeviceFrameResult`].
+fn fulfill_frame_request(id: u64, result: FrameResult) {
+    if let Some(tx) = frame_pending().lock().expect("frame pending poisoned").remove(&id) {
+        let _ = tx.send(result);
+    }
+}
+
+thread_local! {
+    /// The current session thread's IPC sink — the shared stdout writer
+    /// and this session's id — so a `Backend::device_frame` call made on
+    /// the session thread can issue a [`SidecarOut::QueryDeviceFrame`]
+    /// and block for the reply. Set once at the top of
+    /// [`run_session_thread`]; `None` on any non-session thread (where
+    /// `device_frame` then has no client to ask and returns `None`).
+    static SESSION_SINK: std::cell::RefCell<Option<(Arc<Mutex<std::io::Stdout>>, String)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Record the session thread's IPC sink so `device_frame_over_wire` can
+/// reach the client. Called at session-thread startup.
+fn set_session_sink(out: Arc<Mutex<std::io::Stdout>>, session: String) {
+    SESSION_SINK.with(|s| *s.borrow_mut() = Some((out, session)));
+}
+
+/// Ask the connected client for `node_id`'s physical screen-pixel rect,
+/// blocking (with timeout) for the reply. Returns `None` when there's no
+/// session sink (not a wire session), no client replies in time, or the
+/// client reports the node has no device frame. Mirrors
+/// [`capture_via_client`]'s round-trip. Called by
+/// `WireRecordingBackend::device_frame` on the session thread.
+pub(crate) fn device_frame_over_wire(node_id: u64) -> FrameResult {
+    // Clone the sink out of the thread-local BEFORE the blocking round
+    // trip so we don't hold the RefCell borrow across `recv_timeout`.
+    let sink = SESSION_SINK.with(|s| s.borrow().clone());
+    let (out, session) = sink?;
+    let (request_id, rx) = register_frame_request();
+    {
+        let mut o = match out.lock() {
+            Ok(o) => o,
+            Err(_) => {
+                cancel_frame_request(request_id);
+                return None;
+            }
+        };
+        if write_frame(
+            &mut *o,
+            &SidecarOut::QueryDeviceFrame {
+                session: session.clone(),
+                request_id,
+                node: node_id,
+            },
+        )
+        .is_err()
+        {
+            cancel_frame_request(request_id);
+            return None;
+        }
+        let _ = o.flush();
+    }
+    // 2s is plenty for a `getLocationOnScreen`-class call; bounds the
+    // Robot verb so "no capable client connected" can't hang the bridge.
+    match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+        Ok(result) => result,
+        Err(_) => {
+            cancel_frame_request(request_id);
+            None
+        }
     }
 }
 
@@ -933,6 +1058,27 @@ mod runtime {
                     };
                     fulfill_shot_request(request_id, result);
                 }
+                SidecarIn::DeviceFrameResult {
+                    request_id,
+                    x,
+                    y,
+                    width,
+                    height,
+                    found,
+                    error,
+                } => {
+                    // Fulfilled on the stdin-reader thread (the session
+                    // thread is blocked in `device_frame_over_wire`). A
+                    // `found` rect resolves to `Some`; anything else (not
+                    // laid out, unknown node, error) collapses to `None`.
+                    if let Some(e) = &error {
+                        eprintln!("[runtime-server-app] device_frame query {request_id} failed: {e}");
+                    }
+                    let rect = found.then_some(
+                        runtime_core::primitives::portal::ViewportRect { x, y, width, height },
+                    );
+                    fulfill_frame_request(request_id, rect);
+                }
             }
         }
 
@@ -959,6 +1105,10 @@ mod runtime {
         register_extensions: fn(&mut WireRecordingBackend),
         initial_viewport: Option<wire::WireViewport>,
     ) {
+        // Record this session thread's IPC sink so a `device_frame` Robot
+        // query made on this thread (via the bridge poll `mount` starts
+        // below) can round-trip to the connected client and back.
+        set_session_sink(out.clone(), session.clone());
         let mut recorder = WireRecordingBackend::new();
         // Register the app's SDK extensions (navigator recording
         // handlers, externals) on the recorder BEFORE mount, so an
@@ -1274,6 +1424,9 @@ mod runtime {
             // it as a dedicated `SidecarIn::ScreenshotResult` and never
             // routes it here. Present only for match exhaustiveness.
             ScreenshotResult { .. } => {}
+            // Likewise: `device_frame` replies are fulfilled on the
+            // reader thread, never routed to the (blocked) session thread.
+            DeviceFrameResult { .. } => {}
         }
     }
 }
