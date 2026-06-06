@@ -191,6 +191,8 @@ struct ForcedDep {
     /// table sourced to match how the project resolves the same crate
     /// (path in workspace mode, git in git mode), so cargo unifies them
     /// into a single instance rather than a parallel `runtime_core`.
+    /// Carries `features = ["catalog"]` when the crate declares a `catalog`
+    /// feature (the MCP self-registration gate — see [`dep_line_for`]).
     dep_line: String,
 }
 
@@ -321,7 +323,19 @@ fn collect_forced_deps(
             continue;
         };
         let pkg_source = pkg.get("source").and_then(|s| s.as_str());
-        let Some(dep_line) = dep_line_for(source, dir, pkg_source) else {
+        // Some component-library crates gate their MCP self-registration
+        // behind their OWN `catalog` feature (a separate inventory slice
+        // from `runtime-core/catalog`'s `#[component]` emission) — e.g.
+        // `icons-lucide`'s `IconSetEntry` and the recipe system. Enabling
+        // `runtime-core/catalog` does NOT transitively turn those on, so we
+        // must enable each crate's `catalog` feature explicitly or its
+        // registrations compile out and never reach the catalog.
+        let features: &[&str] = if pkg_has_catalog_feature(pkg) {
+            &["catalog"]
+        } else {
+            &[]
+        };
+        let Some(dep_line) = dep_line_for(source, dir, pkg_source, features) else {
             // git mode + third-party source: skip (see fn docs).
             eprintln!(
                 "[idealyst mcp] skipping force-link of `{name}` — its source isn't the \
@@ -368,6 +382,18 @@ fn pkg_depends_on_runtime_core(pkg: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// True if a package declares a `catalog` Cargo feature — the framework's
+/// convention for gating `mcp_catalog::inventory::submit!` self-registration
+/// that `#[component]` emission doesn't cover (icon packs' `IconSetEntry`,
+/// the recipe system, …). `cargo metadata` exposes the feature map on every
+/// package, so this is a pure lookup.
+fn pkg_has_catalog_feature(pkg: &Value) -> bool {
+    pkg.get("features")
+        .and_then(|f| f.as_object())
+        .map(|m| m.contains_key("catalog"))
+        .unwrap_or(false)
+}
+
 /// The package's importable lib target name (`idea_ui`), or `None` if it
 /// has no normal library target (e.g. a binary-only or proc-macro crate,
 /// which can't be `use`d as a linked library).
@@ -394,10 +420,30 @@ fn pkg_lib_target_name(pkg: &Value) -> Option<String> {
 /// - **Git mode**: a `git` dep pinned to the same url + refspec as the
 ///   framework. Returns `None` for a dependency whose source isn't that
 ///   git repo — re-declaring a foreign source would fork the crate graph.
-fn dep_line_for(source: &FrameworkSource, manifest_dir: &Path, pkg_source: Option<&str>) -> Option<String> {
+///
+/// `features` are appended verbatim (e.g. `["catalog"]`) so a crate whose
+/// MCP registration is feature-gated is built with that gate on. Feature
+/// unification then enables it on the single shared crate instance.
+fn dep_line_for(
+    source: &FrameworkSource,
+    manifest_dir: &Path,
+    pkg_source: Option<&str>,
+    features: &[&str],
+) -> Option<String> {
+    // `, features = ["a", "b"]` or empty.
+    let feat = if features.is_empty() {
+        String::new()
+    } else {
+        let list = features
+            .iter()
+            .map(|f| format!("\"{}\"", f))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(", features = [{}]", list)
+    };
     match source {
         FrameworkSource::Workspace { .. } => {
-            Some(format!("{{ path = \"{}\" }}", manifest_dir.display()))
+            Some(format!("{{ path = \"{}\"{} }}", manifest_dir.display(), feat))
         }
         FrameworkSource::Git { url, refspec } => {
             // Only force-link crates that come from the framework's git
@@ -408,7 +454,7 @@ fn dep_line_for(source: &FrameworkSource, manifest_dir: &Path, pkg_source: Optio
                 return None;
             }
             let (key, value) = refspec.as_pair();
-            Some(format!("{{ git = \"{}\", {} = \"{}\" }}", url, key, value))
+            Some(format!("{{ git = \"{}\", {} = \"{}\"{} }}", url, key, value, feat))
         }
     }
 }
@@ -603,6 +649,77 @@ mod tests {
         // Workspace mode → path dep to the resolved manifest dir, which
         // is exactly what the project's own dep resolves to (unifies).
         assert_eq!(d.dep_line, "{ path = \"/ws/crates/ui/idea-ui\" }");
+    }
+
+    #[test]
+    fn collect_enables_catalog_feature_on_deps_that_declare_one() {
+        // A crate that gates its MCP self-registration behind a `catalog`
+        // feature (like `icons-lucide`'s IconSetEntry) must be force-linked
+        // WITH that feature on — otherwise the submission compiles out and
+        // its slice is empty. Crates without a `catalog` feature (idea-ui)
+        // must stay bare so we don't enable a feature that doesn't exist.
+        let mut meta = sample_metadata();
+        // Add an icons-lucide-shaped package with a `catalog` feature.
+        meta["packages"].as_array_mut().unwrap().push(json!({
+            "id": "icons",
+            "name": "icons-lucide",
+            "manifest_path": "/ws/crates/ui/icons-lucide/Cargo.toml",
+            "source": null,
+            "dependencies": [{"name": "runtime-core", "kind": null}],
+            "targets": [{"name": "icons_lucide", "kind": ["lib"]}],
+            "features": {"registry": [], "catalog": ["dep:mcp-catalog"]}
+        }));
+        meta["resolve"]["nodes"][0]["deps"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"pkg": "icons", "dep_kinds": [{"kind": null}]}));
+
+        let src = FrameworkSource::Workspace { root: PathBuf::from("/ws") };
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app");
+        assert_eq!(deps.len(), 2, "got: {deps:?}");
+
+        let icons = deps.iter().find(|d| d.pkg_name == "icons-lucide").expect("icons-lucide forced");
+        assert_eq!(
+            icons.dep_line,
+            "{ path = \"/ws/crates/ui/icons-lucide\", features = [\"catalog\"] }",
+            "icons-lucide must be force-linked with its catalog feature on",
+        );
+        // idea-ui declares no `catalog` feature → stays bare (regression
+        // guard: we don't enable a non-existent feature).
+        let ui = deps.iter().find(|d| d.pkg_name == "idea-ui").expect("idea-ui forced");
+        assert_eq!(ui.dep_line, "{ path = \"/ws/crates/ui/idea-ui\" }");
+    }
+
+    #[test]
+    fn collect_enables_catalog_feature_in_git_mode_too() {
+        let url = "https://github.com/IdealystIO/idealyst-native";
+        let src = FrameworkSource::Git {
+            url: url.to_string(),
+            refspec: GitRef::Rev("abc123".to_string()),
+        };
+        let mut meta = sample_metadata();
+        meta["packages"].as_array_mut().unwrap().push(json!({
+            "id": "icons",
+            "name": "icons-lucide",
+            "manifest_path": "/ws/crates/ui/icons-lucide/Cargo.toml",
+            "source": format!("git+{url}?rev=abc123#abc123"),
+            "dependencies": [{"name": "runtime-core", "kind": null}],
+            "targets": [{"name": "icons_lucide", "kind": ["lib"]}],
+            "features": {"catalog": ["dep:mcp-catalog"]}
+        }));
+        // idea-ui must also be sourced from the framework git repo to be kept.
+        meta["packages"][1]["source"] = json!(format!("git+{url}?rev=abc123#abc123"));
+        meta["resolve"]["nodes"][0]["deps"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"pkg": "icons", "dep_kinds": [{"kind": null}]}));
+
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app");
+        let icons = deps.iter().find(|d| d.pkg_name == "icons-lucide").expect("icons-lucide forced");
+        assert_eq!(
+            icons.dep_line,
+            format!("{{ git = \"{url}\", rev = \"abc123\", features = [\"catalog\"] }}"),
+        );
     }
 
     #[test]

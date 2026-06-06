@@ -273,8 +273,30 @@ impl LayoutTree {
     }
 
     /// Remove `child` from `parent` (for dynamic mounts / unmounts).
+    ///
+    /// Tolerant of `child` not actually being a child of `parent`: Taffy's
+    /// `remove_child` resolves the index with `children.position(..).unwrap()`
+    /// and PANICS on a non-child — and that panic can't be caught by the
+    /// `let _ =` below (it's an internal unwrap, not a returned `Err`). On a
+    /// backend's non-unwinding FFI boundary (objc method / JNI callback) that
+    /// panic becomes a whole-process abort. A portal / detached-window-root
+    /// node is an orphan Taffy ROOT that was never wired as a child of
+    /// `parent`, so the anchorless spliced-`when` unmount path
+    /// (`Backend::remove_child(parent, portal)`) would hit exactly this.
+    /// Guard by membership; removing a non-child is a no-op.
+    ///
+    /// Regression: tapping a `Modal`'s backdrop to dismiss it crashed here on
+    /// iOS and Android — `if open { Modal }`'s unmount calls `remove_child`
+    /// with the Modal's portal node (an orphan root).
     pub fn remove_child(&mut self, parent: LayoutNode, child: LayoutNode) {
-        let _ = self.tree.remove_child(parent.0, child.0);
+        let is_child = self
+            .tree
+            .children(parent.0)
+            .map(|kids| kids.contains(&child.0))
+            .unwrap_or(false);
+        if is_child {
+            let _ = self.tree.remove_child(parent.0, child.0);
+        }
     }
 
     /// Drop a node entirely (frees its slot in the tree).
@@ -857,6 +879,49 @@ mod tests {
     }
     fn pct(v: f32) -> Tokenized<FwLength> {
         Tokenized::Literal(FwLength::Percent(v))
+    }
+
+    /// Regression: `remove_child` must NOT panic when `child` isn't
+    /// actually a child of `parent`.
+    ///
+    /// The Modal-dismiss crash (iOS + Android): a `Modal` lowers to an
+    /// `Element::Portal`, which the backends register as an orphan Taffy
+    /// ROOT (`insert`/`insert_at` deliberately skip wiring a portal as a
+    /// child of its surrounding parent). When `if open { Modal }` flips
+    /// false, the anchorless spliced-`when` unmount calls
+    /// `Backend::remove_child(parent, portal)` → `LayoutTree::remove_child`.
+    /// Taffy's `remove_child` does `children.position(..).unwrap()` and
+    /// panics because the portal isn't in `parent`'s child list; on the
+    /// backend's non-unwinding FFI boundary that panic aborts the process
+    /// ("panic in a function that cannot unwind" → SIGABRT). The fix makes a
+    /// non-child removal a no-op. This test panics before the fix and passes
+    /// after.
+    #[test]
+    fn regression_remove_child_ignores_non_child_no_panic() {
+        let mut t = LayoutTree::new();
+        let parent = t.new_node();
+        let orphan = t.new_node(); // never added as a child of `parent`
+
+        // Before the fix this aborts inside taffy's `remove_child`
+        // (`called Option::unwrap() on a None value`).
+        t.remove_child(parent, orphan);
+        assert_eq!(
+            t.children_of(parent).len(),
+            0,
+            "removing a non-child leaves the parent's child set untouched"
+        );
+
+        // A genuine child is still removed (the fix doesn't break the
+        // normal path).
+        let real_child = t.new_node();
+        t.add_child(parent, real_child);
+        assert_eq!(t.children_of(parent).len(), 1);
+        t.remove_child(parent, real_child);
+        assert_eq!(
+            t.children_of(parent).len(),
+            0,
+            "a real child is detached as before"
+        );
     }
 
     /// Reproduces the welcome example's sun-glare wrapper layout

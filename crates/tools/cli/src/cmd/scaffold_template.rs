@@ -524,12 +524,21 @@ pub fn register<B>(_backend: &mut B) {{
 
 fn catalog_bin_rs(lib_name: &str) -> String {
     format!(
-        r##"//! MCP catalog emitter.
+        r##"//! MCP catalog emitter (manual / fallback).
 //!
 //! Run with `cargo run --bin catalog --features catalog -- --emit-catalog`
-//! to print this project's MCP catalog as JSON on stdout. The
-//! Idealyst MCP server (`idealyst mcp`) spawns this binary on file
-//! changes to refresh its in-memory catalog without process restart.
+//! to print this project's MCP catalog as JSON on stdout.
+//!
+//! By default `idealyst mcp` does NOT run this binary. It generates its
+//! own ephemeral wrapper crate (under `target/idealyst/<project>/catalog/`)
+//! that force-links your component-library dependencies and turns on their
+//! catalog features, so dependency-provided entries (e.g. icon packs'
+//! icon sets) surface too. This bin is the fallback the server uses with
+//! `--no-watch` (when a prebuilt `target/<profile>/catalog` exists, for a
+//! lock-free fast path) and the target of `idealyst mcp --from-bin <path>`.
+//! It links only THIS crate's registrations plus whatever the project's
+//! own `catalog` feature turns on, so it may miss dependency-only entries
+//! the managed wrapper would surface.
 //!
 //! Linking the user's library here is what populates the
 //! distributed `inventory` slices for components/methods/animations
@@ -569,10 +578,12 @@ const GITIGNORE: &str =
 /// The bare `["mcp"]` args are enough: with no `--project-root` /
 /// `--from-bin`, `idealyst mcp` extracts the catalog from its current
 /// directory, which Claude Code sets to this project root when it
-/// launches the server. The server finds (or `cargo run`-builds) this
-/// project's `catalog` bin and lists every `#[component]`. When an app
-/// is also running (`idealyst dev`), the live catalog flows over its
-/// Robot bridge and takes precedence.
+/// launches the server. The server generates + `cargo run`-builds a
+/// managed wrapper crate (force-linking component-library deps and
+/// enabling their catalog features) and lists every `#[component]` plus
+/// dependency-provided entries (icon sets, …). When an app is also
+/// running (`idealyst dev`), the live catalog flows over its Robot
+/// bridge and takes precedence.
 const MCP_JSON: &str = r#"{
   "mcpServers": {
     "idealyst": {

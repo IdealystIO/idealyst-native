@@ -3,7 +3,9 @@
 //! sibling overlays) lives in [`crate::chrome`].
 
 use crate::style::{reactive_style, static_style, token};
-use crate::{parse_rgba, paint_stroke, BoardState, CanvasCapture, RecHandle, Stroke, Strokes};
+use crate::{
+    parse_rgba, paint_stroke, BoardState, CanvasCapture, CanvasStore, RecHandle, Stroke, Strokes,
+};
 use runtime_core::{
     component, ui, Element, IntoElement, Length, Overflow, Position, Signal, StyleRules, Tokenized,
     TouchPhase, TouchResponse,
@@ -23,6 +25,9 @@ use std::rc::Rc;
 pub struct BoardScreenProps {
     pub state: BoardState,
     pub strokes: Strokes,
+    /// The saved canvas documents — threaded to the chrome so the Layers popover
+    /// can list / switch / add / delete them.
+    pub canvases: CanvasStore,
     pub rec_handle: RecHandle,
     pub version: Signal<u64>,
     /// The canvas self-capture bundle: the writer is fed to the Canvas, the
@@ -40,6 +45,7 @@ impl Default for BoardScreenProps {
         Self {
             state: BoardState::default(),
             strokes: Rc::new(RefCell::new(Vec::new())),
+            canvases: Rc::new(RefCell::new(Vec::new())),
             rec_handle: Rc::new(RefCell::new(None)),
             version: Signal::new(0),
             capture: CanvasCapture::default(),
@@ -58,6 +64,7 @@ impl Default for BoardScreenProps {
 pub fn BoardScreen(props: &BoardScreenProps) -> Element {
     let s = props.state;
     let strokes = props.strokes.clone();
+    let canvases = props.canvases.clone();
     let rec_handle = props.rec_handle.clone();
     let version = props.version;
     let capture = props.capture.clone();
@@ -71,7 +78,15 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
     // no separate window. (Recording captures the canvas/GPU stream directly, so
     // the chrome is never in it.) As normal siblings the navigator also hides them
     // automatically when a screen is pushed (they belong to the board screen).
-    let chrome = crate::chrome::build_chrome(focused, s, strokes.clone(), rec_handle, version, capture);
+    let chrome = crate::chrome::build_chrome(
+        focused,
+        s,
+        strokes.clone(),
+        canvases,
+        rec_handle,
+        version,
+        capture,
+    );
 
     // Reactive so the letterbox around the stage follows the app theme (light/dark).
     let root_style = reactive_style(|| StyleRules {

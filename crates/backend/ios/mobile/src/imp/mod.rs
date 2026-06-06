@@ -2494,6 +2494,35 @@ impl Backend for IosBackend {
     fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
         let parent_view = parent.as_view();
         let child_view = child.as_view();
+        let child_key = child_view as *const UIView as usize;
+
+        // Symmetric with `insert` / `insert_at`'s portal + detached-root
+        // skips. A portal mounts itself into the host window as an orphan
+        // Taffy ROOT (never a child of `parent`); a detached window root
+        // (screen_recorder private layer) lives in its own `UIWindow`.
+        // Neither is `parent`'s child, so:
+        //   - `removeFromSuperview` here would detach the portal container
+        //     from the WINDOW out from under `release_portal` (which owns
+        //     the deferred, ordered teardown), and
+        //   - `layout.remove_child(parent, portal)` asks Taffy to remove a
+        //     node that isn't in `parent`'s child list.
+        // Their real teardown runs via the scope-tied `release_portal` /
+        // `release_private_layer_window`. Skip here.
+        //
+        // Regression: dismissing a `Modal` by tapping its backdrop aborted
+        // the app — `if open { Modal }`'s spliced-`when` unmount calls
+        // `remove_child(parent, portal)`, and Taffy's `remove_child`
+        // `position(..).unwrap()` panicked on the non-child portal (the
+        // panic crosses the objc method boundary → `panic_cannot_unwind` →
+        // SIGABRT). `LayoutTree::remove_child` is now also tolerant, but a
+        // portal still must not be `removeFromSuperview`'d as if it were a
+        // child here.
+        if self.portal_instances.contains_key(&child_key)
+            || self.detached_window_roots.contains_key(&child_key)
+        {
+            return;
+        }
+
         let parent_layout = self.layout_for_view(parent_view);
         if let Some(child_layout) = self.layout_of(child_view) {
             self.layout.remove_child(parent_layout, child_layout);

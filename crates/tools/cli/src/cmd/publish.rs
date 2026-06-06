@@ -85,6 +85,13 @@ pub struct Args {
     #[arg(long)]
     pub api_key_path: Option<PathBuf>,
 
+    /// macOS App Store only. Path to the `.provisionprofile` to embed in the
+    /// `.app` (TestFlight requires one). Optional — if omitted, it's
+    /// auto-located by bundle id in `~/Library/MobileDevice/Provisioning
+    /// Profiles/` (where Xcode downloads them).
+    #[arg(long)]
+    pub provisioning_profile: Option<PathBuf>,
+
     /// Where the build artifacts land. Defaults to `<project>/dist/<platform>`
     /// (`.ipa`/`.xcarchive` for iOS; `.pkg`/`.dmg` for macOS).
     #[arg(long)]
@@ -212,6 +219,7 @@ fn run_macos(args: Args) -> Result<()> {
             build_number: args.build_number.clone(),
             distribution,
             api_key,
+            provisioning_profile: args.provisioning_profile.clone(),
             output_dir,
         },
     )?;
@@ -491,6 +499,7 @@ mod tests {
             api_key_id: api_key_id.map(str::to_string),
             issuer_id: issuer_id.map(str::to_string),
             api_key_path: api_key_path.map(PathBuf::from),
+            provisioning_profile: None,
             out: None,
         }
     }

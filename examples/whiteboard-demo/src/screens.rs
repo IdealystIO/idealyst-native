@@ -13,8 +13,8 @@ use crate::settings::{
     CAMERA_SHAPES, CAMERA_SIZES, CANVAS_BGS,
 };
 use crate::style::{border_all_color, radius, reactive_style, static_style, styled};
-use crate::{BoardState, REC_FILE, REC_STORE};
-use idea_ui::{typography_kind, SegmentOption, SegmentedControl, Switch, Typography};
+use crate::{BoardState, CanvasStore, Strokes, REC_FILE, REC_STORE};
+use idea_ui::{typography_kind, Modal, SegmentOption, SegmentedControl, Switch, Typography};
 use icons_lucide::X;
 use runtime_core::{
     component, icon, safe_area_insets, ui, view, AlignItems, ChildList, Color,
@@ -164,11 +164,23 @@ pub fn ScreenHeader(props: &ScreenHeaderProps) -> Element {
 /// Props for [`SettingsScreen`].
 pub struct SettingsScreenProps {
     pub state: BoardState,
+    /// The active canvas's live strokes — read to detect drawings before an
+    /// aspect change, and cleared by the reset on confirm.
+    pub strokes: Strokes,
+    /// The saved canvas docs — checked for drawings + reset on aspect change.
+    pub canvases: CanvasStore,
+    /// Repaint tick — bumped by `reset_canvases` so the cleared board repaints.
+    pub version: Signal<u64>,
 }
 
 impl Default for SettingsScreenProps {
     fn default() -> Self {
-        Self { state: BoardState::default() }
+        Self {
+            state: BoardState::default(),
+            strokes: Default::default(),
+            canvases: Default::default(),
+            version: Signal::new(0),
+        }
     }
 }
 
@@ -202,9 +214,15 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
     let aspect = state.aspect;
     let canvas_bg = state.canvas_bg;
     let dark = state.dark;
+    let strokes = props.strokes.clone();
+    let canvases = props.canvases.clone();
+    let version = props.version;
+    let active_canvas = state.active_canvas;
+    let canvas_ids = state.canvas_ids;
+    let next_id = state.next_id;
 
     // Aspect preset picker. `aspect_sel` mirrors the chosen segment (a preset
-    // label or "Custom"); choosing a preset also commits the real aspect.
+    // label or "Custom"); choosing a preset routes through `request_aspect`.
     let (aw0, ah0) = aspect.get();
     let aspect_sel = Signal::new(aspect_label(aw0, ah0).to_string());
     let aspect_options: Vec<SegmentOption> = ASPECTS
@@ -212,12 +230,56 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
         .map(|(l, _, _)| SegmentOption::new(*l, *l))
         .chain(std::iter::once(SegmentOption::new("Custom", "Custom")))
         .collect();
-    let aspect_on_change: Rc<dyn Fn(String)> = Rc::new(move |id: String| {
-        aspect_sel.set(id.clone());
-        if let Some((_, aw, ah)) = ASPECTS.iter().find(|(l, _, _)| *l == id) {
-            aspect.set((*aw, *ah));
-        }
-        // "Custom" keeps the current aspect; the steppers below adjust it.
+
+    // The aspect-change guard. An aspect change invalidates every canvas's
+    // stage-local strokes, so changing it RESETS the whole board to one empty
+    // canvas — with a confirmation when any drawing exists. `pending` holds the
+    // requested aspect while the confirm modal is up; once confirmed (board
+    // cleared) or when the board is already empty, the change applies directly.
+    let pending: Signal<Option<(u32, u32)>> = Signal::new(None);
+    let request_aspect: Rc<dyn Fn((u32, u32))> = {
+        let canvases = canvases.clone();
+        let strokes = strokes.clone();
+        Rc::new(move |new: (u32, u32)| {
+            if new == aspect.get() {
+                return;
+            }
+            if crate::any_drawings(&canvases, &strokes, active_canvas) {
+                pending.set(Some(new));
+            } else {
+                aspect.set(new);
+            }
+        })
+    };
+    let aspect_on_change: Rc<dyn Fn(String)> = {
+        let request_aspect = request_aspect.clone();
+        Rc::new(move |id: String| {
+            aspect_sel.set(id.clone());
+            if let Some((_, aw, ah)) = ASPECTS.iter().find(|(l, _, _)| *l == id) {
+                request_aspect((*aw, *ah));
+            }
+            // "Custom" keeps the current aspect; the steppers below adjust it.
+        })
+    };
+
+    // Confirm → clear the board, then apply the pending aspect. Cancel → discard
+    // the pending change and snap the segmented selection back to the real aspect.
+    let confirm_change: Rc<dyn Fn()> = {
+        let canvases = canvases.clone();
+        let strokes = strokes.clone();
+        Rc::new(move || {
+            if let Some(new) = pending.get() {
+                crate::reset_canvases(&canvases, &strokes, active_canvas, version, canvas_ids, next_id);
+                aspect.set(new);
+                aspect_sel.set(aspect_label(new.0, new.1).to_string());
+            }
+            pending.set(None);
+        })
+    };
+    let cancel_change: Rc<dyn Fn()> = Rc::new(move || {
+        pending.set(None);
+        let (w, h) = aspect.get();
+        aspect_sel.set(aspect_label(w, h).to_string());
     });
 
     let dark_on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| {
@@ -286,6 +348,14 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
         ..Default::default()
     });
 
+    let dialog_actions_style = static_style(StyleRules {
+        flex_direction: Some(FlexDirection::Row),
+        gap: Some(Length::Px(10.0).into()),
+        justify_content: Some(JustifyContent::FlexEnd),
+        padding_top: Some(Length::Px(6.0).into()),
+        ..Default::default()
+    });
+
     ui! {
         ScreenScaffold(title = "Settings", nav = nav) {
             view(style = list_style) {
@@ -293,7 +363,7 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
                     Typography(content = aspect_caption, kind = typography_kind::Caption, muted = true)
                     SegmentedControl(value = aspect_sel, on_change = aspect_on_change, options = aspect_options)
                     if aspect_sel.get() == "Custom" {
-                        AspectSteppers(aspect = aspect)
+                        AspectSteppers(aspect = aspect, on_set = request_aspect.clone())
                     }
                 }
                 view(style = card_style()) {
@@ -312,6 +382,17 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
                     SegmentedControl(value = shape_sel, on_change = shape_on_change, options = shape_options)
                     Typography(content = "Camera size", kind = typography_kind::Caption, muted = true)
                     SegmentedControl(value = size_sel, on_change = size_on_change, options = size_options)
+                }
+            }
+            // Confirm clearing the board before an aspect change wipes drawings.
+            if pending.get().is_some() {
+                Modal(on_dismiss = Some(cancel_change.clone())) {
+                    Typography(content = "Change aspect ratio?", kind = typography_kind::H3)
+                    Typography(content = "A new aspect ratio starts a fresh board — every canvas and its drawings will be cleared. This can't be undone.", muted = true)
+                    view(style = dialog_actions_style.clone()) {
+                        ActionButton(label = "Cancel", primary = false, on_press = Some(cancel_change.clone()))
+                        ActionButton(label = "Clear & change", primary = true, on_press = Some(confirm_change.clone()))
+                    }
                 }
             }
         }
@@ -412,11 +493,17 @@ pub fn SwatchRow(props: &SwatchRowProps) -> Element {
 /// Props for [`AspectSteppers`].
 pub struct AspectStepperProps {
     pub aspect: Signal<(u32, u32)>,
+    /// The guarded aspect setter — `±` route the requested ratio through it so a
+    /// custom change clears the board (with confirmation) like a preset change.
+    pub on_set: Rc<dyn Fn((u32, u32))>,
 }
 
 impl Default for AspectStepperProps {
     fn default() -> Self {
-        Self { aspect: Signal::new(crate::settings::DEFAULT_ASPECT) }
+        Self {
+            aspect: Signal::new(crate::settings::DEFAULT_ASPECT),
+            on_set: Rc::new(|_| {}),
+        }
     }
 }
 
@@ -425,10 +512,11 @@ impl Default for AspectStepperProps {
 #[component]
 pub fn AspectSteppers(props: &AspectStepperProps) -> Element {
     let aspect = props.aspect;
+    let on_set = props.on_set.clone();
     ui! {
         view(style = aspect_steppers_col()) {
-            StepperRow(label = "Width", aspect = aspect, is_width = true)
-            StepperRow(label = "Height", aspect = aspect, is_width = false)
+            StepperRow(label = "Width", aspect = aspect, is_width = true, on_set = on_set.clone())
+            StepperRow(label = "Height", aspect = aspect, is_width = false, on_set = on_set.clone())
         }
     }
 }
@@ -447,11 +535,19 @@ pub struct StepperRowProps {
     pub label: &'static str,
     pub aspect: Signal<(u32, u32)>,
     pub is_width: bool,
+    /// Guarded aspect setter — `±` request the new ratio through it (so a custom
+    /// change clears the board with confirmation, like a preset change).
+    pub on_set: Rc<dyn Fn((u32, u32))>,
 }
 
 impl Default for StepperRowProps {
     fn default() -> Self {
-        Self { label: "", aspect: Signal::new(crate::settings::DEFAULT_ASPECT), is_width: true }
+        Self {
+            label: "",
+            aspect: Signal::new(crate::settings::DEFAULT_ASPECT),
+            is_width: true,
+            on_set: Rc::new(|_| {}),
+        }
     }
 }
 
@@ -462,19 +558,25 @@ pub fn StepperRow(props: &StepperRowProps) -> Element {
     let aspect = props.aspect;
     let is_width = props.is_width;
 
-    // `aspect` (Signal) + `is_width` (bool) are Copy, so each closure captures
-    // them independently — no shared non-Copy state to move.
-    let dec = move || {
-        let (w, h) = aspect.get();
-        let cur = if is_width { w } else { h };
-        let v = cur.saturating_sub(1).max(ASPECT_MIN);
-        aspect.set(if is_width { (v, h) } else { (w, v) });
+    // `±` request the new ratio through the guarded setter, so changing a custom
+    // dimension clears the board (with confirmation) just like a preset change.
+    let dec = {
+        let on_set = props.on_set.clone();
+        move || {
+            let (w, h) = aspect.get();
+            let cur = if is_width { w } else { h };
+            let v = cur.saturating_sub(1).max(ASPECT_MIN);
+            on_set(if is_width { (v, h) } else { (w, v) });
+        }
     };
-    let inc = move || {
-        let (w, h) = aspect.get();
-        let cur = if is_width { w } else { h };
-        let v = (cur + 1).min(ASPECT_MAX);
-        aspect.set(if is_width { (v, h) } else { (w, v) });
+    let inc = {
+        let on_set = props.on_set.clone();
+        move || {
+            let (w, h) = aspect.get();
+            let cur = if is_width { w } else { h };
+            let v = (cur + 1).min(ASPECT_MAX);
+            on_set(if is_width { (v, h) } else { (w, v) });
+        }
     };
 
     let row_style = static_style(StyleRules {

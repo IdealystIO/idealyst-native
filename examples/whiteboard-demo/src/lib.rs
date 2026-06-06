@@ -158,6 +158,158 @@ pub(crate) struct Stroke {
 /// triggers a reactive repaint without cloning the whole vec into a signal.
 pub(crate) type Strokes = Rc<RefCell<Vec<Stroke>>>;
 
+// ============================================================================
+// Multi-canvas documents
+// ============================================================================
+
+/// One whiteboard "canvas" — a saved document of strokes. The *active*
+/// document's working copy lives in the shared [`Strokes`] Rc that the
+/// painter/`on_touch`/capture all use; the store holds the inactive docs (and a
+/// snapshot of the active one, refreshed on every switch/add/delete). This keeps
+/// ONE canvas surface + ONE capture stream, so a switch is just swapping the live
+/// strokes' contents — the recording sees no seam.
+///
+/// Stable ids for the Layers list live in the parallel `canvas_ids: Signal<Vec<u64>>`
+/// (positionally aligned with this store); display labels are positional
+/// ("Canvas {i+1}").
+#[derive(Clone, Default)]
+pub(crate) struct CanvasDoc {
+    pub strokes: Vec<Stroke>,
+}
+
+/// The saved canvas documents. `!Copy` (like [`Strokes`]), so it lives outside
+/// [`BoardState`] and is threaded into the builders that need it.
+pub(crate) type CanvasStore = Rc<RefCell<Vec<CanvasDoc>>>;
+
+/// Snapshot the live strokes into the active document so an out-of-document op
+/// (switch/add/delete) doesn't lose the current canvas's edits.
+pub(crate) fn save_active(store: &CanvasStore, strokes: &Strokes, active: Signal<usize>) {
+    let idx = active.get();
+    if let Some(doc) = store.borrow_mut().get_mut(idx) {
+        doc.strokes = strokes.borrow().clone();
+    }
+}
+
+/// Jump to canvas `target`: save the current doc, load the target's strokes into
+/// the live Rc, and bump `version` so the (single) canvas surface repaints the
+/// loaded document — including mid-recording, where the capture loop is already
+/// ticking `version`. Membership is unchanged, so `canvas_ids` is NOT touched
+/// (the Layers list keeps its rows; only the active highlight, driven by
+/// `active`, moves).
+pub(crate) fn switch_canvas(
+    store: &CanvasStore,
+    strokes: &Strokes,
+    active: Signal<usize>,
+    version: Signal<u64>,
+    target: usize,
+) {
+    if target == active.get() || target >= store.borrow().len() {
+        return;
+    }
+    save_active(store, strokes, active);
+    let loaded = store.borrow()[target].strokes.clone();
+    *strokes.borrow_mut() = loaded;
+    active.set(target);
+    version.set(version.get().wrapping_add(1));
+}
+
+/// Append a fresh empty canvas and switch to it. `canvas_ids` (the reactive
+/// Layers-list source) gains the new id in lock-step with the store.
+pub(crate) fn add_canvas(
+    store: &CanvasStore,
+    strokes: &Strokes,
+    active: Signal<usize>,
+    version: Signal<u64>,
+    canvas_ids: Signal<Vec<u64>>,
+    next_id: Signal<u64>,
+) {
+    save_active(store, strokes, active);
+    let id = next_id.get();
+    next_id.set(id + 1);
+    store.borrow_mut().push(CanvasDoc { id, strokes: Vec::new() });
+    let idx = store.borrow().len() - 1;
+    *strokes.borrow_mut() = Vec::new();
+    active.set(idx);
+    let mut ids = canvas_ids.get();
+    ids.push(id);
+    canvas_ids.set(ids);
+    version.set(version.get().wrapping_add(1));
+}
+
+/// Remove canvas `idx`. No-op when only one canvas remains (a board always has at
+/// least one). The active index re-clamps so it keeps pointing at a live doc, its
+/// strokes reload into the live Rc, and `canvas_ids` drops the id in lock-step.
+pub(crate) fn delete_canvas(
+    store: &CanvasStore,
+    strokes: &Strokes,
+    active: Signal<usize>,
+    version: Signal<u64>,
+    canvas_ids: Signal<Vec<u64>>,
+    idx: usize,
+) {
+    if store.borrow().len() <= 1 || idx >= store.borrow().len() {
+        return;
+    }
+    // Persist the active doc first so deleting a DIFFERENT canvas keeps the
+    // current canvas's in-progress edits.
+    save_active(store, strokes, active);
+    let cur = active.get();
+    store.borrow_mut().remove(idx);
+    let len = store.borrow().len();
+    // Shift the active pointer to still address a live doc.
+    let new_active = if idx < cur {
+        cur - 1
+    } else if idx == cur {
+        cur.min(len - 1)
+    } else {
+        cur
+    };
+    let loaded = store.borrow()[new_active].strokes.clone();
+    *strokes.borrow_mut() = loaded;
+    active.set(new_active);
+    let mut ids = canvas_ids.get();
+    if idx < ids.len() {
+        ids.remove(idx);
+    }
+    canvas_ids.set(ids);
+    version.set(version.get().wrapping_add(1));
+}
+
+/// Collapse the whole board back to a single empty canvas — used when the aspect
+/// ratio changes (every doc's stage-local strokes are invalidated by the new
+/// stage size).
+pub(crate) fn reset_canvases(
+    store: &CanvasStore,
+    strokes: &Strokes,
+    active: Signal<usize>,
+    version: Signal<u64>,
+    canvas_ids: Signal<Vec<u64>>,
+    next_id: Signal<u64>,
+) {
+    let id = next_id.get();
+    next_id.set(id + 1);
+    *store.borrow_mut() = vec![CanvasDoc { id, strokes: Vec::new() }];
+    *strokes.borrow_mut() = Vec::new();
+    active.set(0);
+    canvas_ids.set(vec![id]);
+    version.set(version.get().wrapping_add(1));
+}
+
+/// Does the board hold ANY strokes, across every canvas? The live Rc is the
+/// source of truth for the active doc (the store's copy of it can be stale), so
+/// check that plus every OTHER stored doc. Gates the aspect-change confirmation.
+pub(crate) fn any_drawings(store: &CanvasStore, strokes: &Strokes, active: Signal<usize>) -> bool {
+    if !strokes.borrow().is_empty() {
+        return true;
+    }
+    let cur = active.get();
+    store
+        .borrow()
+        .iter()
+        .enumerate()
+        .any(|(i, d)| i != cur && !d.strokes.is_empty())
+}
+
 /// The live media-writer recording handle, shared between the record button's
 /// start (sets it) and stop (consumes it). `!Send`, main-thread only.
 pub(crate) type RecHandle = Rc<RefCell<Option<media_writer::Recording>>>;
@@ -370,6 +522,18 @@ pub(crate) struct BoardState {
     pub recording: Signal<bool>,
     pub rec_path: Signal<Option<String>>,
     pub palette_open: Signal<bool>,
+    /// Whether the Layers popover (canvas list) is open. Mutually exclusive with
+    /// `palette_open` — opening one closes the other (both dock by the rail).
+    pub layers_open: Signal<bool>,
+    /// Index of the active canvas in the [`CanvasStore`].
+    pub active_canvas: Signal<usize>,
+    /// The canvas ids, in store order — the reactive source the Layers list
+    /// iterates (`for id in canvas_ids, key = id`). Mutated only when membership
+    /// changes (add/delete/reset), so a plain switch doesn't rebuild the list.
+    /// The heavy stroke docs live in the `!Copy` [`CanvasStore`] alongside it.
+    pub canvas_ids: Signal<Vec<u64>>,
+    /// Monotonic id source for new [`CanvasDoc`]s (stable list-reconciliation keys).
+    pub next_id: Signal<u64>,
     /// Board aspect ratio `(width, height)` — drives the centered canvas "stage".
     pub aspect: Signal<(u32, u32)>,
     /// Canvas drawing-surface background (`Auto` follows the app theme).
@@ -397,6 +561,10 @@ impl Default for BoardState {
             recording: Signal::new(false),
             rec_path: Signal::new(None),
             palette_open: Signal::new(false),
+            layers_open: Signal::new(false),
+            active_canvas: Signal::new(0),
+            canvas_ids: Signal::new(vec![0]),
+            next_id: Signal::new(1),
             aspect: Signal::new(settings::DEFAULT_ASPECT),
             canvas_bg: Signal::new(CanvasBg::Auto),
             dark: Signal::new(false),
@@ -455,6 +623,11 @@ pub fn app() -> Element {
         recording: signal!(false),
         rec_path: signal!(None),
         palette_open: signal!(false),
+        layers_open: signal!(false),
+        active_canvas: signal!(0),
+        // Canvas 0 is seeded below (store + this id list); next new canvas = id 1.
+        canvas_ids: signal!(vec![0u64]),
+        next_id: signal!(1),
         aspect: signal!(settings::DEFAULT_ASPECT),
         canvas_bg: signal!(CanvasBg::Auto),
         dark: signal!(start_dark),
@@ -484,6 +657,11 @@ pub fn app() -> Element {
     let rec_handle: RecHandle = Rc::new(RefCell::new(None));
     let strokes: Strokes = Rc::new(RefCell::new(Vec::new()));
     let version: Signal<u64> = signal!(0);
+
+    // The saved canvas documents. Seeded with the active doc (id 0); the live
+    // `strokes` Rc above is canvas 0's working copy. `!Copy`, so it's cloned into
+    // the board chrome + Settings builders like `strokes`/`rec_handle`.
+    let canvases: CanvasStore = Rc::new(RefCell::new(vec![CanvasDoc { id: 0, strokes: Vec::new() }]));
 
     // Keep the canvas re-rendering while the camera is on, so its composited
     // texture shows live frames (the canvas otherwise only repaints on a stroke
@@ -566,6 +744,7 @@ pub fn app() -> Element {
             let strokes = strokes.clone();
             let rec_handle = rec_handle.clone();
             let capture = capture.clone();
+            let canvases = canvases.clone();
             move |_| {
                 // `focused` is computed INSIDE the board-route builder so
                 // `use_can_go_back()` resolves in the navigator scope. `true`
@@ -584,6 +763,7 @@ pub fn app() -> Element {
                     BoardScreen(
                         state = state,
                         strokes = strokes.clone(),
+                        canvases = canvases.clone(),
                         rec_handle = rec_handle.clone(),
                         version = version,
                         capture = capture.clone(),
@@ -607,8 +787,15 @@ pub fn app() -> Element {
                 .fullscreen(true)
             }
         })
-        .screen(SETTINGS, move |_| {
-            Screen::new(ui! { SettingsScreen(state = state) }).header_shown(false)
+        .screen(SETTINGS, {
+            let strokes = strokes.clone();
+            let canvases = canvases.clone();
+            move |_| {
+                Screen::new(ui! {
+                    SettingsScreen(state = state, strokes = strokes.clone(), canvases = canvases.clone(), version = version)
+                })
+                .header_shown(false)
+            }
         })
         .screen(PREVIEW, move |_| {
             Screen::new(ui! {

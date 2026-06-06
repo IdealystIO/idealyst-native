@@ -36,6 +36,28 @@ pub(crate) fn create(b: &AndroidBackend) -> GlobalRef {
 /// the native view (`removeView`) AND the parallel Taffy child link, then
 /// `mark_dirty`s the parent so its cached measurement is recomputed.
 pub(crate) fn remove_child(b: &mut AndroidBackend, parent: &GlobalRef, child: &GlobalRef) {
+    // Symmetric with `insert` / `insert_at`'s portal + detached-root skips.
+    // A portal content holder is parented elsewhere (a viewport overlay was
+    // added to the Activity `root`; a popup owns its own content view) and a
+    // detached window root lives in its own `WindowManager` window — neither
+    // is a child of `parent`. `removeView` on a non-child is a silent no-op,
+    // but `layout.remove_child(parent, portal)` asks Taffy to remove a node
+    // that isn't in `parent`'s child list. Their real teardown runs via the
+    // scope-tied `release` / `release_private_layer_window`. Skip here.
+    //
+    // Regression: dismissing a `Modal` by tapping its backdrop aborted the
+    // app — `if open { Modal }`'s spliced-`when` unmount calls
+    // `remove_child(parent, portal)`, and Taffy's `remove_child`
+    // `position(..).unwrap()` panicked on the non-child portal (the panic
+    // crosses the JNI callback boundary → process abort). `LayoutTree::
+    // remove_child` is now also tolerant, but skipping keeps Android
+    // symmetric with `insert`/`insert_at` and avoids the bogus `removeView`.
+    if super::overlay::is_portal_node(b, child)
+        || b.detached_window_roots
+            .contains_key(&AndroidBackend::node_key_of(child))
+    {
+        return;
+    }
     let target = super::scroll_view::inner_for(b, parent).unwrap_or_else(|| parent.clone());
     with_env(|env| {
         env.call_method(

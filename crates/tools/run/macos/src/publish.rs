@@ -93,6 +93,10 @@ pub struct MacPublishOptions {
     /// App Store Connect API key — required for `AppStoreUpload` and
     /// `DeveloperId` (notarization). Unused for `AppStorePkg`.
     pub api_key: Option<AscApiKey>,
+    /// Explicit Mac App Store `.provisionprofile` to embed. `None` ⇒
+    /// auto-locate by bundle id in the standard provisioning-profile dirs.
+    /// App Store paths only (Developer ID apps embed no profile).
+    pub provisioning_profile: Option<PathBuf>,
     /// Where the `.pkg` / `.dmg` land. CLI defaults to `<project>/dist/macos`.
     pub output_dir: PathBuf,
 }
@@ -113,7 +117,7 @@ pub fn publish(project_dir: &Path, opts: MacPublishOptions) -> Result<MacPublish
     let project_dir = std::fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
     let mut manifest = parse_manifest(&project_dir)?;
-    manifest.app.require_bundle_id()?;
+    let bundle_id = manifest.app.require_bundle_id()?.to_string();
     if let Some(bn) = &opts.build_number {
         manifest.app.build_number = bn.clone();
     }
@@ -139,9 +143,15 @@ pub fn publish(project_dir: &Path, opts: MacPublishOptions) -> Result<MacPublish
         );
     }
 
-    // Resolve EVERY signing cert the chosen path needs up front — before the
-    // multi-minute build — and report all missing ones at once.
-    let signing = preflight_signing(opts.distribution, &opts.team)?;
+    // Resolve EVERY signing input the chosen path needs up front — before the
+    // multi-minute build — and report all missing ones at once (certs, and
+    // the Mac App Store provisioning profile).
+    let signing = preflight_signing(
+        opts.distribution,
+        &opts.team,
+        &bundle_id,
+        opts.provisioning_profile.as_deref(),
+    )?;
 
     std::fs::create_dir_all(&opts.output_dir)
         .with_context(|| format!("create output dir {}", opts.output_dir.display()))?;
@@ -176,8 +186,15 @@ pub fn publish(project_dir: &Path, opts: MacPublishOptions) -> Result<MacPublish
     let assembled = assemble_app_bundle(&project_dir, &built.binary, &resolved.macos_plist)?;
     let app = assembled.app_dir;
 
-    // ── 4. Entitlements + distribution signing ───────────────────
+    // ── 4. Embed the provisioning profile (App Store) + sign ─────
+    // The profile MUST be copied in BEFORE codesign so the signature seals
+    // it — TestFlight rejects a main bundle with no `embedded.provisionprofile`
+    // (error 90889). Developer ID apps embed no profile.
     let app_store = opts.distribution.is_app_store();
+    if let Some(profile) = &signing.profile {
+        embed_provisioning_profile(&app, profile)?;
+    }
+
     let entitlements = entitlements_plist(/* sandbox */ app_store, &resolved.macos_entitlements);
     let entitlements_path = app
         .parent()
@@ -279,12 +296,14 @@ fn entitlements_plist(sandbox: bool, entitlements: &[String]) -> String {
 /// Resolve the app-signing identity for the chosen path. App Store → "Apple
 /// Distribution" (or legacy "3rd Party Mac Developer Application"); Developer
 /// ID → "Developer ID Application". Honors the team to disambiguate.
-/// The signing identities a publish run needs.
+/// The signing inputs a publish run needs.
 struct Signing {
     /// Identity that signs the `.app` (Apple Distribution / Developer ID).
     app: String,
     /// Identity that signs the `.pkg` (App Store paths only).
     installer: Option<String>,
+    /// Mac App Store `.provisionprofile` to embed (App Store paths only).
+    profile: Option<PathBuf>,
 }
 
 /// Resolve every signing certificate the chosen path needs, BEFORE the slow
@@ -294,7 +313,12 @@ struct Signing {
 /// keychain policy, not `codesigning`); Developer ID needs only the Developer
 /// ID Application cert. Failing fast and complete beats discovering the
 /// installer cert is missing only after the build + app-sign succeed.
-fn preflight_signing(dist: MacDistribution, team: &str) -> Result<Signing> {
+fn preflight_signing(
+    dist: MacDistribution,
+    team: &str,
+    bundle_id: &str,
+    explicit_profile: Option<&Path>,
+) -> Result<Signing> {
     let app_kinds: &[&str] = if dist.is_app_store() {
         &["Apple Distribution", "3rd Party Mac Developer Application"]
     } else {
@@ -302,7 +326,7 @@ fn preflight_signing(dist: MacDistribution, team: &str) -> Result<Signing> {
     };
     let app = with_team(team, || resolve_signing_identity("codesigning", app_kinds));
 
-    // Installer cert only matters for the App Store `.pkg`.
+    // Installer cert + provisioning profile only matter for the App Store.
     let installer = if dist.is_app_store() {
         with_team(team, || {
             resolve_signing_identity(
@@ -313,17 +337,37 @@ fn preflight_signing(dist: MacDistribution, team: &str) -> Result<Signing> {
     } else {
         None
     };
+    let profile = if dist.is_app_store() {
+        resolve_provisioning_profile(explicit_profile, bundle_id, team)
+    } else {
+        None
+    };
 
-    let mut missing: Vec<&str> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
     if app.is_none() {
-        missing.push(if dist.is_app_store() {
-            "\"Apple Distribution\" — signs the .app"
-        } else {
-            "\"Developer ID Application\" — signs the .app"
-        });
+        missing.push(
+            if dist.is_app_store() {
+                "\"Apple Distribution\" certificate — signs the .app"
+            } else {
+                "\"Developer ID Application\" certificate — signs the .app"
+            }
+            .to_string(),
+        );
     }
     if dist.is_app_store() && installer.is_none() {
-        missing.push("\"Mac Installer Distribution\" (aka 3rd Party Mac Developer Installer) — signs the .pkg");
+        missing.push(
+            "\"Mac Installer Distribution\" (aka 3rd Party Mac Developer Installer) certificate — signs the .pkg"
+                .to_string(),
+        );
+    }
+    if dist.is_app_store() && profile.is_none() {
+        missing.push(format!(
+            "Mac App Store provisioning profile for {team}.{bundle_id} — embeds \
+             into the .app (TestFlight requires it). Create one at \
+             developer.apple.com → Profiles → \"+\" → Mac App Store, then \
+             download it (Xcode → Settings → Accounts → Download Manual \
+             Profiles), or pass --provisioning-profile <path>",
+        ));
     }
     if !missing.is_empty() {
         let list = missing
@@ -332,18 +376,104 @@ fn preflight_signing(dist: MacDistribution, team: &str) -> Result<Signing> {
             .collect::<Vec<_>>()
             .join("\n");
         anyhow::bail!(
-            "missing signing certificate(s) for team {team}:\n{list}\n\nCreate \
-             them in Xcode → Settings → Accounts → (select the team) → Manage \
-             Certificates → \"+\" (or at developer.apple.com → Certificates). \
-             Distribution certs need an Admin / App Manager role in the team. \
-             Confirm {team} is the team you mean to publish under, then re-run.",
+            "missing signing input(s) for team {team}:\n{list}\n\nCerts: Xcode → \
+             Settings → Accounts → (select the team) → Manage Certificates → \
+             \"+\" (or developer.apple.com → Certificates). Distribution certs / \
+             profiles need an Admin / App Manager role in the team. Confirm \
+             {team} is the team you mean to publish under, then re-run.",
         );
     }
 
     Ok(Signing {
         app: app.expect("checked above"),
         installer,
+        profile,
     })
+}
+
+/// Resolve the Mac App Store `.provisionprofile` to embed: an explicit path
+/// when given, else the first profile in the standard dirs whose
+/// `application-identifier` matches `<team>.<bundle_id>` (or a `<team>.*`
+/// wildcard), is a *distribution* profile (no `ProvisionedDevices`), and
+/// targets macOS (`OSX`). Returns `None` when none is found — the caller
+/// turns that into the actionable preflight error.
+fn resolve_provisioning_profile(
+    explicit: Option<&Path>,
+    bundle_id: &str,
+    team: &str,
+) -> Option<PathBuf> {
+    if let Some(p) = explicit {
+        return p.is_file().then(|| p.to_path_buf());
+    }
+    let exact = format!("{team}.{bundle_id}");
+    let wildcard = format!("{team}.*");
+    for dir in provisioning_profile_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("provisionprofile") {
+                continue;
+            }
+            let Some(plist) = decode_provisioning_profile(&path) else {
+                continue;
+            };
+            let app_id_matches = plist.contains(&format!("<string>{exact}</string>"))
+                || plist.contains(&format!("<string>{wildcard}</string>"));
+            // Distribution (not development) profiles list no devices; macOS
+            // profiles carry `OSX` in their Platform array.
+            let is_distribution = !plist.contains("ProvisionedDevices");
+            let is_macos = plist.contains("OSX");
+            if app_id_matches && is_distribution && is_macos {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+/// The dirs Xcode drops downloaded provisioning profiles into. The
+/// `MobileDevice` path is the long-standing one; Xcode 16+ also uses the
+/// `UserData` path.
+fn provisioning_profile_dirs() -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    vec![
+        home.join("Library/MobileDevice/Provisioning Profiles"),
+        home.join("Library/Developer/Xcode/UserData/Provisioning Profiles"),
+    ]
+}
+
+/// Decode a CMS-signed `.provisionprofile` to its embedded XML plist via
+/// `security cms -D`. Returns `None` if decoding fails.
+fn decode_provisioning_profile(path: &Path) -> Option<String> {
+    let out = Command::new("security")
+        .arg("cms")
+        .arg("-D")
+        .arg("-i")
+        .arg(path)
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Copy the provisioning profile into the bundle at
+/// `Contents/embedded.provisionprofile`. MUST run before `codesign` so the
+/// signature seals it (TestFlight error 90889 otherwise).
+fn embed_provisioning_profile(app: &Path, profile: &Path) -> Result<()> {
+    let dest = app.join("Contents").join("embedded.provisionprofile");
+    eprintln!(
+        "[publish macos] embed provisioning profile → {}",
+        dest.display(),
+    );
+    std::fs::copy(profile, &dest).with_context(|| {
+        format!("copy {} → {}", profile.display(), dest.display())
+    })?;
+    Ok(())
 }
 
 /// Run `f` with the team pinned into `IDEALYST_DEVELOPMENT_TEAM` so
