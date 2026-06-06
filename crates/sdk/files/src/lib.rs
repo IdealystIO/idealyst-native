@@ -86,6 +86,22 @@ pub trait FileStore: Send + Sync {
     /// hand it to a native API that wants a path. `None` on web, which has
     /// no filesystem (pass the bytes around instead).
     fn local_path(&self, path: &str) -> Option<PathBuf>;
+
+    /// A URL the platform can load the blob from directly — hand it to a
+    /// `<video>`/`<img>`/native media player. On file-backed (native) stores
+    /// this is `file://<real path>`; on web (no filesystem) it's a `blob:`
+    /// object URL wrapping the stored bytes. `None` if the blob can't be
+    /// addressed (unsafe path, or — on web — no such blob).
+    ///
+    /// This is the cross-platform replacement for an app hand-rolling
+    /// `cfg(wasm32)` blob-URL plumbing: the file:// vs blob: split lives here,
+    /// where the store already owns the native-vs-IndexedDB distinction. The
+    /// default impl serves every native backend via [`local_path`]; the web
+    /// store overrides it (it has to read the bytes and wrap them).
+    fn loadable_url(&self, path: &str) -> FileFuture<'_, Option<String>> {
+        let url = self.local_path(path).map(|p| format!("file://{}", p.display()));
+        Box::pin(async move { Ok(url) })
+    }
 }
 
 /// Validate a caller-supplied relative path and split it into components.

@@ -10,6 +10,7 @@ use runtime_core::{
     component, ui, Element, IntoElement, Length, Overflow, Position, Signal, StyleRules, Tokenized,
     TouchPhase, TouchResponse,
 };
+use runtime_core::animation::{AnimatedValue, TweenTo};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -222,14 +223,52 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
     let dark = props.state.dark;
     let canvas_el = build_canvas(strokes.clone(), version, canvas_bg, dark, capture_writer, vec![camera_layer]);
 
-    let surface_style = static_style(StyleRules {
-        width: Some(Length::pct(100.0).into()),
-        height: Some(Length::pct(100.0).into()),
-        position: Some(Position::Absolute),
-        top: Some(Length::Px(0.0).into()),
-        left: Some(Length::Px(0.0).into()),
-        ..Default::default()
+    // Canvas-change transition: the surface slides up + fades in whenever the
+    // active canvas changes. `canvas_anim` runs 0 (just swapped: low + clear) → 1
+    // (settled); `top` carries the slide and `opacity` the fade. Deliberately NOT
+    // a `transform` — a layer transform forces the surface layer-backed on macOS,
+    // detaching the canvas's `CAMetalLayer`; `top`/`opacity` both move the GPU
+    // surface safely (see `CANVAS_SLIDE_MS`).
+    let canvas_anim = props.state.canvas_anim;
+    let surface_style = reactive_style(move || {
+        let p = canvas_anim.get().clamp(0.0, 1.0);
+        StyleRules {
+            width: Some(Length::pct(100.0).into()),
+            height: Some(Length::pct(100.0).into()),
+            position: Some(Position::Absolute),
+            top: Some(Length::Px((1.0 - p) * crate::CANVAS_SLIDE_OFFSET).into()),
+            left: Some(Length::Px(0.0).into()),
+            opacity: Some(Tokenized::Literal(p)),
+            ..Default::default()
+        }
     });
+
+    // Drive `canvas_anim` with an AnimatedValue tween on every active-canvas
+    // change (add / switch / swipe / arrow key all move `active_canvas`).
+    // AnimatedValue supplies the eased, clock-driven timeline and auto-stops on
+    // settle; we mirror its value into the reactive signal so the actual move
+    // goes through the normal restyle path. The first run only PRIMES (mount
+    // isn't a transition); without the guard the canvas would slide in on load.
+    {
+        let canvas_anim = props.state.canvas_anim;
+        let anim = AnimatedValue::new(1.0f32);
+        let sub = anim.subscribe(move |v, _| canvas_anim.set(*v));
+        runtime_core::on_cleanup(move || drop(sub));
+        let active_idx = props.state.active_canvas;
+        let primed = Rc::new(Cell::new(false));
+        runtime_core::effect!({
+            let _ = active_idx.get(); // re-run on every canvas change
+            if !primed.get() {
+                primed.set(true);
+            } else {
+                anim.set(0.0); // snap to low + transparent under the just-swapped doc
+                anim.animate(
+                    TweenTo::new(1.0, std::time::Duration::from_millis(crate::CANVAS_SLIDE_MS))
+                        .ease_out(),
+                );
+            }
+        });
+    }
 
     // `active` = the touch id currently drawing a stroke (single finger).
     let active: Rc<RefCell<Option<runtime_core::TouchId>>> = Rc::new(RefCell::new(None));

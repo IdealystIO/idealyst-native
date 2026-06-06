@@ -174,6 +174,12 @@ const RUNTIME_KOTLIN_FILES: &[(&str, &str)] = &[
         ),
     ),
     (
+        "RustViewportResizeListener.kt",
+        include_str!(
+            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustViewportResizeListener.kt"
+        ),
+    ),
+    (
         "RustOverlayDismissListener.kt",
         include_str!(
             "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustOverlayDismissListener.kt"

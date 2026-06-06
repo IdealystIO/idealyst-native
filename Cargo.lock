@@ -2374,6 +2374,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -6329,6 +6330,20 @@ dependencies = [
  "quote",
  "serde_json",
  "syn",
+]
+
+[[package]]
+name = "robot-e2e-demo"
+version = "0.0.1"
+dependencies = [
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-macos",
+ "backend-terminal",
+ "backend-web",
+ "dev-server",
+ "idea-ui",
+ "runtime-core",
 ]
 
 [[package]]

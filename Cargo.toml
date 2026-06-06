@@ -169,6 +169,7 @@ members = [
     "examples/welcome",
     "examples/stack-demo",
     "examples/screenshot-demo",
+    "examples/robot-e2e-demo",
     "examples/server-fn-demo",
     "examples/mic-demo",
     "examples/screen-recorder-demo",

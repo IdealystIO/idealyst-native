@@ -83,8 +83,9 @@ mod theme_runtime;
 // that existed before the split so apps using `use idea_ui::Button,
 // install_idea_theme, …` keep compiling.
 pub use idea_theme::theme::{
-    dark_theme, idea_color, idea_header, install_idea_theme, light_theme, set_idea_theme, Colors,
-    IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing,
+    dark_theme, idea_color, idea_header, install_idea_theme, install_idea_theme_reactive,
+    light_theme, set_idea_theme, Colors, IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors,
+    Intents, Radius, Spacing,
 };
 // NB: `idea_theme::theme::Typography` (the typography *theme* struct) is
 // intentionally NOT re-exported at this crate root — the root `Typography`

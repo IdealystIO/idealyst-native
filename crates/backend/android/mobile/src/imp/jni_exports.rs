@@ -397,6 +397,29 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGlobalKeyListener_nat
     }
 }
 
+/// Root-view size-change trampoline — the `RustViewportResizeListener`
+/// attached to the host root (see
+/// `AndroidBackend::install_viewport_resize_listener`) calls this whenever
+/// the root's size changes, including the soft keyboard opening AND closing.
+/// Schedules a layout pass so the reactive viewport re-mirrors the new size.
+/// This is what makes keyboard open/close symmetric: the close otherwise
+/// leaves the layout stuck at the shrunk size because nothing else drives a
+/// layout pass at that quiet moment (see `viewport_size`'s mirror, which only
+/// runs inside `run_layout_pass`).
+///
+/// No leaked pointer: the listener carries no per-instance state — the layout
+/// pass is dispatched through the global `ANDROID_BACKEND_SELF` weak ref, and
+/// `schedule_layout_pass_retry` bails gracefully if the backend is gone.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustViewportResizeListener_nativeViewportResized(
+    _env: JNIEnv,
+    _this: JObject,
+) {
+    run_void_callback("viewport-resize", || {
+        crate::imp::scheduler::schedule_layout_pass_retry(0);
+    });
+}
+
 /// Map an Android keycode (plus a fallback unicode char for printable
 /// keys) to the canonical web-style key name. Kept tight: only the
 /// keys text-editor handlers typically reach for are named; everything

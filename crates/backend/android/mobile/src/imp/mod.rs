@@ -850,7 +850,56 @@ impl AndroidBackend {
             app_key_ptr: None,
         };
         backend.drain_self_registrars();
+        backend.install_viewport_resize_listener();
         backend
+    }
+
+    /// Attach a one-time `OnLayoutChangeListener` to the host root so ANY
+    /// size change — orientation flip, split-screen, AND the soft keyboard
+    /// (IME) opening/closing — schedules a layout pass. The layout pass
+    /// re-reads `getHeight()` and re-mirrors the reactive viewport (see
+    /// [`Self::viewport_size`]).
+    ///
+    /// Without this hook the viewport only re-mirrors when something *else*
+    /// happens to drive a layout pass. The keyboard OPEN is covered
+    /// incidentally (focus + IME animation keep frames running), but the
+    /// CLOSE is a quiet moment with no frames in flight, so the restored
+    /// height is never re-read and the layout stays stuck shrunk. The
+    /// listener makes open and close symmetric.
+    ///
+    /// Best-effort: if the staged Kotlin runtime lacks the class (e.g. the
+    /// CLI wasn't reinstalled after this feature landed), `find_class`
+    /// throws — we clear the pending JNI exception and no-op so boot never
+    /// breaks, mirroring [`keyboard::set_app_key_handler`]. The view holds a
+    /// strong ref to the listener, so there's nothing to retain or free on
+    /// the Rust side.
+    fn install_viewport_resize_listener(&self) {
+        let root = self.root.clone();
+        with_env(|env| {
+            let class = match env.find_class("io/idealyst/runtime/RustViewportResizeListener") {
+                Ok(c) => c,
+                Err(_) => {
+                    let _ = env.exception_clear();
+                    return;
+                }
+            };
+            let listener = match env.new_object(&class, "()V", &[]) {
+                Ok(o) => o,
+                Err(_) => {
+                    let _ = env.exception_clear();
+                    return;
+                }
+            };
+            let _ = env.call_method(
+                &root,
+                "addOnLayoutChangeListener",
+                "(Landroid/view/View$OnLayoutChangeListener;)V",
+                &[JValue::Object(&listener)],
+            );
+            // Clear any exception a call left pending so it can't surface on
+            // an unrelated later JNI call.
+            let _ = env.exception_clear();
+        });
     }
 
     /// Register a handler for the third-party external primitive whose

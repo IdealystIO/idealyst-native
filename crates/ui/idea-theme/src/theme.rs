@@ -22,10 +22,20 @@
 //!   (Solid, Soft, Outlined / Ghost).
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::{Color, FontFamily, Length, Tokenized};
+use runtime_core::{Color, Effect, FontFamily, Length, Tokenized};
 use crate::theme_runtime::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
+
+thread_local! {
+    /// Keepalive for [`install_idea_theme_reactive`]'s internal Effect when it's
+    /// called outside a render scope (tests, top-level binaries). In an app the
+    /// active scope owns the effect and this just holds an empty handle.
+    /// Single-slot, so repeated installs supersede rather than leak — same
+    /// posture as `theme_runtime::INSTALL_THEMES_KEEPALIVE`.
+    static REACTIVE_THEME_KEEPALIVE: RefCell<Option<Effect>> = const { RefCell::new(None) };
+}
 
 /// The default body font for every idea-ui text surface.
 ///
@@ -726,6 +736,43 @@ pub fn set_idea_theme<T: IdeaTheme>(theme: T) {
     set_theme(IdeaThemeRef::new(theme));
 }
 
+/// Install an idea theme whose choice is **reactive**: `select` re-runs whenever
+/// a signal it reads changes, swapping the active theme — so a dark-mode toggle
+/// (or any signal-driven theme) needs no hand-rolled `effect!` that calls
+/// [`set_idea_theme`].
+///
+/// ```ignore
+/// let dark = signal!(false);
+/// install_idea_theme_reactive(move || if dark.get() { dark_theme() } else { light_theme() });
+/// // flipping `dark` now re-themes the whole app.
+/// ```
+///
+/// This is the closure-driven peer of [`install_themes`](crate::install_themes)
+/// (which is keyed by a `Signal<String>`): reach for it when the source of truth
+/// is a `bool`/enum signal you also read elsewhere, so you don't need a parallel
+/// string signal. Component sheets are installed once up front; the internal
+/// effect's first run applies the initial theme (subscribing to whatever `select`
+/// reads) and later runs swap it.
+pub fn install_idea_theme_reactive<T, F>(select: F)
+where
+    T: IdeaTheme + 'static,
+    F: FnMut() -> T + 'static,
+{
+    install_default_idea_sheets();
+    let mut select = select;
+    let mut primed = false;
+    let effect = Effect::new(move || {
+        let theme = IdeaThemeRef::new(select());
+        if primed {
+            set_theme(theme);
+        } else {
+            primed = true;
+            install_theme(theme);
+        }
+    });
+    REACTIVE_THEME_KEEPALIVE.with(|k| *k.borrow_mut() = Some(effect));
+}
+
 /// Install the default stylesheets for every idea-ui component that
 /// uses the extensible modifier system. Called from
 /// [`install_idea_theme`] so apps that don't need custom modifiers
@@ -810,8 +857,61 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::{FontFamily, Length, TokenValue};
-    use crate::theme_runtime::ThemeTokens;
+    use runtime_core::{FontFamily, Length, Signal, TokenValue};
+    use crate::theme_runtime::{active_theme_untracked, ThemeTokens};
+
+    /// The active theme's `color-background` token value (the cheapest
+    /// light-vs-dark discriminant) — read untracked so the test isn't itself a
+    /// reactive subscriber.
+    fn active_background() -> Color {
+        let theme = active_theme_untracked();
+        let idea = theme.downcast_ref::<IdeaThemeRef>().expect("active theme is an IdeaThemeRef");
+        idea.tokens()
+            .into_iter()
+            .find(|e| e.name == "color-background")
+            .and_then(|e| match e.value {
+                TokenValue::Color(c) => Some(c),
+                _ => None,
+            })
+            .expect("color-background token present")
+    }
+
+    fn theme_background(t: IdeaThemeDefaults) -> Color {
+        IdeaThemeRef::new(t)
+            .tokens()
+            .into_iter()
+            .find(|e| e.name == "color-background")
+            .and_then(|e| match e.value {
+                TokenValue::Color(c) => Some(c),
+                _ => None,
+            })
+            .expect("color-background token present")
+    }
+
+    /// `install_idea_theme_reactive` applies the initial theme AND re-applies
+    /// when a signal its selector reads changes — without the app hand-rolling an
+    /// `effect!` that calls `set_idea_theme`. (`Signal::set` runs subscribed
+    /// effects synchronously, so no flush is needed.)
+    #[test]
+    fn reactive_theme_swaps_when_its_signal_flips() {
+        let light_bg = theme_background(light_theme());
+        let dark_bg = theme_background(dark_theme());
+        assert_ne!(light_bg.0, dark_bg.0, "light/dark backgrounds must differ for this test");
+
+        let dark = Signal::new(false); // Copy: a clone moves into the selector
+        install_idea_theme_reactive(move || if dark.get() { dark_theme() } else { light_theme() });
+        assert_eq!(active_background().0, light_bg.0, "initial theme is light");
+
+        dark.set(true);
+        assert_eq!(active_background().0, dark_bg.0, "flipping the signal re-themes");
+
+        dark.set(false);
+        assert_eq!(active_background().0, light_bg.0, "and flips back");
+
+        // Free the effect's arena slot before thread teardown (see the
+        // INSTALL_THEMES_KEEPALIVE test for why).
+        super::REACTIVE_THEME_KEEPALIVE.with(|k| *k.borrow_mut() = None);
+    }
 
     /// Two theme impls with different spacing/radius/typography should
     /// emit different token values via the `ThemeTokens::tokens()`

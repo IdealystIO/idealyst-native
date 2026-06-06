@@ -1,0 +1,53 @@
+[package]
+name = "robot-e2e-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Demo of an in-app, Playwright-style E2E test harness built on the framework's Robot API. The app drives its own UI (locate → click/fill → assert) and logs each step to the platform console — one harness, every backend."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `robot` mirrors `runtime-core/robot`. It MUST be a default feature: the
+# `ui!` macro's `#[cfg(feature = "robot")]` gate is evaluated in THIS
+# crate's context, so without `robot` enabled here the lowered primitives
+# omit their `test_id` slots — and the whole demo is about locating by
+# `test_id`. `idealyst dev` additionally turns on `runtime-core/dev`
+# (which implies `runtime-core/robot`); declaring our own keeps a plain
+# `cargo build`/`cargo test` of the example honest too. The E2E harness
+# module is gated on this feature so `--no-default-features` still builds
+# a plain app with no Robot dependency.
+default = ["robot"]
+robot = ["runtime-core/robot"]
+
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
+# (build-runtime-server). Pulls `dev-server` so the recorder backend is
+# available. Mirrors `screenshot-demo`.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
+backend-terminal = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Robot E2E Demo"
+bundle_id = "ai.truday.idealyst.robote2edemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]

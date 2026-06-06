@@ -68,9 +68,18 @@ mod style;
 
 pub(crate) use settings::{CameraShape, CameraSize, CanvasBg};
 
+// Link anchor: `canvas-native` self-registers its renderer via `inventory` at
+// backend construction, but only if the crate is actually linked — an otherwise-
+// unreferenced rlib dep gets dropped and its `inventory::submit!` never runs (the
+// canvas would then not render, notably on web where native is the only renderer).
+// `use … as _` forces the link without a concrete-typed call. `video` needs no
+// anchor (it's referenced directly via `video::Video` in `screens.rs`). See
+// [[project_inventory_self_registration]]. Mirrors `examples/canvas-demo`.
+use canvas_native as _;
+
 use camera::MediaStream;
 use runtime_core::primitives::navigator::use_can_go_back;
-use runtime_core::{component, signal, ui, Element, Ref, Route, Screen, Signal};
+use runtime_core::{component, node_ref, signal, ui, Element, Ref, Route, Screen, Signal};
 use stack_navigator::{Navigator, StackBuilder, StackHandle, StackScreenExt};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -79,57 +88,31 @@ pub(crate) use board::BoardScreen;
 pub(crate) use screens::{PreviewScreen, SettingsScreen};
 
 // ============================================================================
-// Per-platform external registration
+// External registration
 // ============================================================================
-//
-// The CLI-generated wrapper hands us the concrete backend. We register THREE
-// externals: the canvas renderer (so the drawable surface paints) and the video
-// display (camera + recording-preview). The chrome is plain in-tree views, so no
-// screen-recorder/PrivateLayer registration is needed. `camera` needs no
-// register. Several backends now self-register via `inventory`, so these are
-// belt-and-suspenders for the ones that don't.
 
-#[cfg(target_arch = "wasm32")]
-pub fn register_extensions(backend: &mut backend_web::WebBackend) {
-    canvas_native::register(backend);
-    video::register(backend);
-}
-
-#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
-    canvas_native::register(backend);
-    // GPU canvas via vello/Metal. iOS uses host Metal (f16/compute), so vello
-    // runs; register AFTER native so it wins (last-registration). Same uniform
-    // registration as macOS/Android.
+/// Register the externals the board needs: the canvas renderer (so the drawable
+/// surface paints) and the video display (camera + recording-preview). The
+/// chrome is plain in-tree views, so no screen-recorder/PrivateLayer
+/// registration is needed; `camera` needs none.
+///
+/// One generic function over `Backend` — not four concrete-typed copies. The
+/// CLI host wrapper calls this with the platform's concrete backend, which binds
+/// to `B` directly.
+///
+/// `canvas-native` and `video` self-register via `inventory` at backend
+/// construction (which runs before this is called), so they need no explicit
+/// call here. `canvas-vello` has no inventory hook — it's generic over `Backend`
+/// and pulls the GPU surface from `create_graphics` — so it's the only one
+/// registered here, last (last-registration-wins over native where vello is
+/// viable; it self-gates off on devices without f16). The lone `cfg` mirrors the
+/// dependency table: `canvas-vello` is only compiled for ios/android/macos.
+pub fn register_extensions<B: runtime_core::RegisterExternal>(backend: &mut B) {
+    #[cfg(any(target_os = "ios", target_os = "android", target_os = "macos"))]
     canvas_vello::register(backend);
-    video::register(backend);
+    #[cfg(not(any(target_os = "ios", target_os = "android", target_os = "macos")))]
+    let _ = backend; // web + desktop: inventory-only; vello absent from the build
 }
-
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
-    canvas_native::register(backend);
-    // GPU canvas: vello self-gates on f16 support — it wins on a real device
-    // (Adreno/Mali have f16) and steps aside on the emulator's Vulkan (no f16),
-    // leaving canvas-native. Same uniform registration as macOS.
-    canvas_vello::register(backend);
-    video::register(backend);
-}
-
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-pub fn register_extensions(backend: &mut backend_macos::MacosBackend) {
-    canvas_native::register(backend);
-    // GPU canvas: register vello AFTER native so it wins (last-registration).
-    canvas_vello::register(backend);
-    video::register(backend);
-}
-
-#[cfg(not(any(
-    target_arch = "wasm32",
-    target_os = "ios",
-    target_os = "android",
-    target_os = "macos"
-)))]
-pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 
 // ============================================================================
 // Drawing model
@@ -544,6 +527,27 @@ pub(crate) const WIDTH_THICK: f32 = 14.0;
 /// Keep dragged content this far from the stage edges.
 pub(crate) const DRAG_MARGIN: f32 = 8.0;
 
+/// Layers popover open/close animation timings (ms). `EXIT` is also how long an
+/// "add canvas" tap defers its store mutation, so the new row materializes only
+/// AFTER the popover has fully animated out — adding it mid-exit made the row
+/// pop into the closing panel (the stutter the user reported).
+pub(crate) const LAYERS_ENTER_MS: u32 = 170;
+pub(crate) const LAYERS_EXIT_MS: u32 = 130;
+
+/// Canvas change transition: when the active canvas changes (add / switch /
+/// swipe / arrow key) the drawing surface slides up into place while fading in,
+/// so the new canvas animates on instead of cutting. Driven by a `0→1` progress
+/// signal ([`BoardState::canvas_anim`]) tweened over `MS`; the surface starts
+/// `OFFSET` px low + transparent and settles at `0` + opaque.
+///
+/// The slide uses `top` (a layout offset) + `opacity` (alpha) — NOT a CSS-style
+/// `transform` — deliberately: on macOS a layer `transform` forces the surface
+/// layer-backed, which detaches the canvas's `CAMetalLayer` (renders nothing).
+/// `top` moves the frame (and its GPU child) through the normal layout pass, and
+/// `opacity` maps to `setAlphaValue`; both are safe over the metal surface.
+pub(crate) const CANVAS_SLIDE_MS: u64 = 260;
+pub(crate) const CANVAS_SLIDE_OFFSET: f32 = 22.0;
+
 /// Clamp a camera position (STAGE-local points) so a `cam_w × cam_h` widget stays
 /// fully inside a `sw × sh` stage, with a [`DRAG_MARGIN`] inset.
 pub(crate) fn clamp_cam(
@@ -635,6 +639,10 @@ pub(crate) struct BoardState {
     pub keys_enabled: Signal<bool>,
     /// Whether the two-finger swipe-between-canvases gesture is active.
     pub gestures_enabled: Signal<bool>,
+    /// Canvas-change transition progress, `0` (just swapped: low + transparent)
+    /// → `1` (settled). Read by the drawing surface's reactive style; tweened by
+    /// an Effect that fires on each `active_canvas` change. See [`CANVAS_SLIDE_MS`].
+    pub canvas_anim: Signal<f32>,
     /// The bound navigator handle — `push(&SETTINGS, ())` from the FAB,
     /// `push(&PREVIEW, ())` when a recording stops.
     pub nav: Ref<StackHandle>,
@@ -663,6 +671,7 @@ impl Default for BoardState {
             camera_size: Signal::new(CameraSize::Medium),
             keys_enabled: Signal::new(true),
             gestures_enabled: Signal::new(true),
+            canvas_anim: Signal::new(1.0),
             nav: Ref::new(),
         }
     }
@@ -681,29 +690,9 @@ pub fn app() -> Element {
     // stashed at mount like `platform()`, so it's readable here in the app body.
     let start_dark =
         matches!(runtime_core::color_scheme(), runtime_core::ColorScheme::Dark);
-    idea_ui::install_idea_theme(if start_dark {
-        idea_ui::dark_theme()
-    } else {
-        idea_ui::light_theme()
-    });
-
-    // Paint the whole window (the activity decor view on Android, equivalent
-    // elsewhere) with the theme background, so a `.fullscreen(true)` screen's
-    // now-uncovered status/nav-bar strips and the display cutout show the app
-    // background instead of the decor view's default black — independent of
-    // safe-area insets. `token(...)` subscribes to the theme, so this effect
-    // re-fires on a light/dark swap and keeps the window in sync. No-op on
-    // backends without a controllable host surface. On macOS this now paints the
-    // `NSWindow.backgroundColor` (not the host-root layer), so it no longer
-    // detaches the GPU canvas's `CAMetalLayer` — safe on every backend.
-    runtime_core::effect!({
-        runtime_core::set_app_background(runtime_core::Tokenized::Literal(
-            crate::style::token(|c| c.background.clone()),
-        ));
-    });
 
     // ---- State (root scope → survives navigation) ------------------------
-    let nav: Ref<StackHandle> = Ref::new();
+    let nav: Ref<StackHandle> = node_ref!();
     let state = BoardState {
         width: signal!(WIDTH_MEDIUM),
         color_css: signal!(PALETTE[0].1),
@@ -728,21 +717,22 @@ pub fn app() -> Element {
         camera_size: signal!(CameraSize::Medium),
         keys_enabled: signal!(true),
         gestures_enabled: signal!(true),
+        canvas_anim: signal!(1.0),
         nav,
     };
 
-    // Light/dark: `install_idea_theme` (above) installed the component sheets;
-    // this Effect swaps the ACTIVE theme whenever `dark` flips. Every token-based
-    // style (idea-ui components + our own token colors) re-resolves, so the whole
-    // app adapts. Root-scoped so it survives navigation.
+    // Theme, driven reactively by `state.dark` (the Settings toggle is the single
+    // source of truth). One framework call installs the component sheets, the
+    // initial theme, AND an internal effect that swaps the active theme whenever
+    // `dark` flips — re-resolving every token-based style and repainting the host
+    // window background (the theme system routes `color-background` through
+    // `set_app_background`, which on macOS paints `NSWindow.backgroundColor`
+    // without detaching the canvas's `CAMetalLayer`). Replaces a hand-rolled
+    // `effect!` + a separate `set_app_background` effect.
     {
         let dark = state.dark;
-        runtime_core::effect!({
-            if dark.get() {
-                idea_ui::set_idea_theme(idea_ui::dark_theme());
-            } else {
-                idea_ui::set_idea_theme(idea_ui::light_theme());
-            }
+        idea_ui::install_idea_theme_reactive(move || {
+            if dark.get() { idea_ui::dark_theme() } else { idea_ui::light_theme() }
         });
     }
 

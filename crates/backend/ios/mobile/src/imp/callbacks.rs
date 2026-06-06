@@ -581,6 +581,80 @@ impl LayoutObserverView {
 }
 
 // =========================================================================
+// KeyboardObserver — NSObject that observes the soft keyboard's frame and
+// drives the framework's viewport bottom-inset so content reflows above the
+// keyboard (and restores when it dismisses).
+//
+// Unlike Android (where the window resizes), UIKit OVERLAYS the soft keyboard
+// without changing the host view's bounds — so `LayoutObserverView` above
+// never fires for the IME, and the layout doesn't reflow on open OR close. We
+// instead observe `UIKeyboardWillChangeFrameNotification` (which covers show,
+// hide, and frame/height changes in one), read the keyboard's end frame, and
+// hand it to the backend, which computes how much of the host it covers and
+// shrinks the layout viewport by that amount.
+//
+// NSNotificationCenter does NOT retain its `addObserver:selector:…` observers,
+// so the backend retains this object in `callback_targets`; dropping that ref
+// ends observation. No ivars — the backend is reached via the global
+// `with_backend` self-handle (the notification fires on the main thread, the
+// only thread the backend is touched from).
+// =========================================================================
+declare_class!(
+    pub(crate) struct KeyboardObserver;
+
+    unsafe impl ClassType for KeyboardObserver {
+        type Super = NSObject;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystKeyboardObserver";
+    }
+
+    impl DeclaredClass for KeyboardObserver {
+        type Ivars = ();
+    }
+
+    unsafe impl KeyboardObserver {
+        #[method(keyboardFrameWillChange:)]
+        fn keyboard_frame_will_change(&self, note: &NSObject) {
+            // `note` is the NSNotification. Pull the keyboard's END frame
+            // (window/screen base coordinates) out of
+            // `userInfo[UIKeyboardFrameEndUserInfoKey]`.
+            if let Some(rect) = unsafe { keyboard_end_frame(note) } {
+                crate::imp::with_backend(|b| b.on_keyboard_frame_changed(rect));
+            }
+        }
+    }
+);
+
+impl KeyboardObserver {
+    pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(());
+        unsafe { msg_send_id![super(this), init] }
+    }
+}
+
+/// Extract the keyboard's end frame (window/screen base coordinates) from a
+/// `UIKeyboardWillChangeFrameNotification`. Returns `None` if `userInfo` or
+/// the frame value is absent. The value under `UIKeyboardFrameEndUserInfoKey`
+/// is an `NSValue` wrapping a `CGRect`.
+///
+/// # Safety
+/// `note` must be a valid `NSNotification`.
+pub(crate) unsafe fn keyboard_end_frame(note: &NSObject) -> Option<objc2_foundation::CGRect> {
+    let user_info: *mut NSObject = msg_send![note, userInfo];
+    if user_info.is_null() {
+        return None;
+    }
+    let key = NSString::from_str("UIKeyboardFrameEndUserInfoKey");
+    let value: *mut NSObject = msg_send![user_info, objectForKey: &*key];
+    if value.is_null() {
+        return None;
+    }
+    let rect: objc2_foundation::CGRect = msg_send![value, CGRectValue];
+    Some(rect)
+}
+
+// =========================================================================
 // OverlayPassthroughView — UIView subclass that only consumes touches
 // in its subviews' frames.
 //

@@ -161,4 +161,38 @@ impl FileStore for IndexedDbFileStore {
     fn local_path(&self, _path: &str) -> Option<PathBuf> {
         None // no filesystem on web
     }
+
+    fn loadable_url(&self, path: &str) -> FileFuture<'_, Option<String>> {
+        let fut = self.read(path);
+        Box::pin(async move {
+            let Some(bytes) = fut.await? else { return Ok(None) };
+            Ok(blob_url_from_bytes(&bytes))
+        })
+    }
+}
+
+/// Wrap stored bytes in an object URL (`URL.createObjectURL`) the browser can
+/// load. The container is sniffed from magic bytes so a media element picks the
+/// right decoder: MP4 (`ftyp` box, Safari's MediaRecorder) and WebM/Matroska
+/// (EBML header, Chromium's) — the two recording containers — are labeled
+/// explicitly; anything else falls back to `application/octet-stream`.
+///
+/// The URL is intentionally not revoked here — the caller owns its lifetime
+/// (a recorded blob is released on page reload; a long-lived app should
+/// `URL.revokeObjectURL` when done).
+fn blob_url_from_bytes(bytes: &[u8]) -> Option<String> {
+    let arr = js_sys::Uint8Array::from(bytes);
+    let parts = js_sys::Array::new();
+    parts.push(&arr);
+    let opts = web_sys::BlobPropertyBag::new();
+    let mime = if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
+        "video/mp4"
+    } else if bytes.len() >= 4 && bytes[..4] == [0x1A, 0x45, 0xDF, 0xA3] {
+        "video/webm"
+    } else {
+        "application/octet-stream"
+    };
+    opts.set_type(mime);
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).ok()?;
+    web_sys::Url::create_object_url_with_blob(&blob).ok()
 }

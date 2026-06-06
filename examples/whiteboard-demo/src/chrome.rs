@@ -721,7 +721,7 @@ pub fn LayersPopover(props: &LayersPopoverProps) -> Element {
                 scale: Some(0.96),
                 ..Default::default()
             },
-            170,
+            crate::LAYERS_ENTER_MS,
             Easing::EaseOut,
         ))
         .exit(PresenceAnim::new(
@@ -731,7 +731,7 @@ pub fn LayersPopover(props: &LayersPopoverProps) -> Element {
                 scale: Some(0.96),
                 ..Default::default()
             },
-            130,
+            crate::LAYERS_EXIT_MS,
             Easing::EaseIn,
         ))
         .into_element()
@@ -999,14 +999,22 @@ pub fn AddCanvasRow(props: &AddCanvasRowProps) -> Element {
         }
         .on_touch(move |ev| {
             if ev.phase == TouchPhase::Ended {
-                // Close immediately, defer the add (see `CanvasRow`) so the
-                // dismissal isn't queued behind the stroke-clone + repaint.
+                // Close the popover, then defer the add until AFTER its exit
+                // animation finishes. `add_canvas` pushes a new id into
+                // `canvas_ids` (a new row); running it now made that row pop into
+                // the still-closing panel — the stutter the user reported. Waiting
+                // for the exit means the panel is gone before the list changes; the
+                // stage cross-fade (driven by the active-canvas change) then covers
+                // the swap. The `+24` clears the exit's final unmount frame.
                 s.layers_open.set(false);
                 let canvases = canvases.clone();
                 let strokes = strokes.clone();
-                runtime_core::scheduling::schedule_microtask(move || {
-                    crate::add_canvas(&canvases, &strokes, s.active_canvas, version, s.canvas_ids, s.next_id);
-                });
+                runtime_core::scheduling::after_ms_detached(
+                    crate::LAYERS_EXIT_MS as i32 + 24,
+                    move || {
+                        crate::add_canvas(&canvases, &strokes, s.active_canvas, version, s.canvas_ids, s.next_id);
+                    },
+                );
             }
             TouchResponse::CONSUMED
         })

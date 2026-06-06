@@ -39,6 +39,8 @@ ndk-context = "0.1"
 idb = "0.6"
 js-sys = "0.3"
 wasm-bindgen = "0.2"
+# `loadable_url` wraps stored bytes in an object URL the browser can load.
+web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Url"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

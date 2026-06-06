@@ -154,6 +154,14 @@ pub struct IosBackend {
     /// dimensions and they'd render with stale sizes the moment the
     /// user navigates back.
     pub(crate) last_viewport: Option<(f32, f32)>,
+    /// Height (points) of the soft keyboard currently overlapping the host
+    /// view's bottom, or `0.0` when no keyboard is shown. UIKit overlays the
+    /// keyboard without resizing the host, so [`Self::viewport_size`]
+    /// subtracts this to shrink the layout viewport — making content reflow
+    /// above the keyboard and restore when it dismisses (the iOS analog of
+    /// Android's window resize). Driven by the `KeyboardObserver` →
+    /// [`Self::on_keyboard_frame_changed`].
+    pub(crate) keyboard_overlap: f32,
     /// Per-view cached animation state. Mirrors the web backend's
     /// `animated_states` map; see [`animated`] for the routing
     /// from [`AnimProp`](runtime_core::animation::AnimProp) to
@@ -578,6 +586,7 @@ impl IosBackend {
             applied_frames: HashMap::new(),
             layout_style_keys: HashMap::new(),
             last_viewport: None,
+            keyboard_overlap: 0.0,
             animated_states: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
@@ -875,6 +884,34 @@ impl IosBackend {
             Retained::retain(ptr).unwrap()
         };
         self.callback_targets.push(obj);
+
+        // Soft-keyboard awareness: observe the keyboard frame so content
+        // reflows above the IME and restores on dismiss. UIKit overlays the
+        // keyboard WITHOUT resizing the host, so the LayoutObserverView above
+        // never fires for it — we need the notification. NSNotificationCenter
+        // does NOT retain `addObserver:selector:…` observers, so we retain
+        // ours in `callback_targets` (dropping it ends observation at
+        // teardown).
+        let kb_observer = callbacks::KeyboardObserver::new(self.mtm);
+        unsafe {
+            let center: Retained<NSObject> =
+                msg_send_id![objc2::class!(NSNotificationCenter), defaultCenter];
+            let name = NSString::from_str("UIKeyboardWillChangeFrameNotification");
+            let nil_obj: Option<&NSObject> = None;
+            let _: () = msg_send![
+                &center,
+                addObserver: &*kb_observer,
+                selector: objc2::sel!(keyboardFrameWillChange:),
+                name: &*name,
+                object: nil_obj,
+            ];
+        }
+        let kb_obj: Retained<NSObject> = unsafe {
+            let ptr = Retained::as_ptr(&kb_observer) as *mut NSObject;
+            Retained::retain(ptr).unwrap()
+        };
+        self.callback_targets.push(kb_obj);
+
         self.host_root = Some(view);
     }
 
@@ -3888,6 +3925,19 @@ impl IosBackend {
     /// first (which is non-zero after UIKit has laid out the host),
     /// then UIScreen.main.bounds.
     fn viewport_size(&self) -> (f32, f32) {
+        let (w, h) = self.host_viewport_size();
+        // Subtract the soft-keyboard overlap so the layout viewport ends at
+        // the top of the keyboard — content reflows above it, and restores
+        // to full height when `keyboard_overlap` returns to 0 on dismiss.
+        // Width is untouched (the keyboard only ever covers the bottom).
+        (w, (h - self.keyboard_overlap).max(0.0))
+    }
+
+    /// The raw host viewport (host bounds, falling back to the screen) with
+    /// NO keyboard inset applied. Separated from [`Self::viewport_size`] so
+    /// the keyboard-overlap math in [`Self::on_keyboard_frame_changed`] can
+    /// reason about the full host without the inset feeding back into itself.
+    fn host_viewport_size(&self) -> (f32, f32) {
         if let Some(host) = &self.host_root {
             let bounds: objc2_foundation::CGRect = unsafe { msg_send![host, bounds] };
             if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
@@ -3900,6 +3950,39 @@ impl IosBackend {
                 msg_send_id![objc2::class!(UIScreen), mainScreen];
             let bounds: objc2_foundation::CGRect = msg_send![&screen, bounds];
             (bounds.size.width as f32, bounds.size.height as f32)
+        }
+    }
+
+    /// Handle a keyboard frame change (show / hide / resize). `kb_frame_screen`
+    /// is the keyboard's end frame in window/screen base coordinates (from
+    /// `UIKeyboardFrameEndUserInfoKey`). We convert it into the host's
+    /// coordinate space, intersect with the host bounds, and store the
+    /// covered height as `keyboard_overlap`. On a real change we schedule a
+    /// layout pass so the viewport (now inset) re-flows. On dismiss the end
+    /// frame sits below the host, the intersection is empty, and the overlap
+    /// returns to 0 — making open and close symmetric.
+    pub(crate) fn on_keyboard_frame_changed(&mut self, kb_frame_screen: objc2_foundation::CGRect) {
+        let overlap = match &self.host_root {
+            Some(host) => {
+                // `convertRect:fromView:nil` interprets the rect in the
+                // window's base coordinate system (where the keyboard frame
+                // is reported) and maps it into the host's local space.
+                let nil_view: Option<&UIView> = None;
+                let kb_in_host: objc2_foundation::CGRect = unsafe {
+                    msg_send![&**host, convertRect: kb_frame_screen, fromView: nil_view]
+                };
+                let host_bounds: objc2_foundation::CGRect =
+                    unsafe { msg_send![&**host, bounds] };
+                rect_overlap_height(host_bounds, kb_in_host)
+            }
+            None => 0.0,
+        };
+        if (self.keyboard_overlap - overlap).abs() > 0.5 {
+            self.keyboard_overlap = overlap;
+            // Defer to the next main-queue turn (the standard out-of-band
+            // relayout path) rather than recomputing synchronously inside the
+            // notification dispatch.
+            schedule_layout_pass();
         }
     }
 
@@ -3920,6 +4003,22 @@ impl IosBackend {
             left: insets.left as f32,
         }
     }
+}
+
+/// Vertical overlap (points) of two `CGRect`s — the soft keyboard's coverage
+/// of the host bottom. Returns 0 unless the rects also overlap horizontally,
+/// so a keyboard docked beside a split-screen host (not over it) contributes
+/// nothing.
+fn rect_overlap_height(a: objc2_foundation::CGRect, b: objc2_foundation::CGRect) -> f32 {
+    let (ax0, ax1) = (a.origin.x, a.origin.x + a.size.width);
+    let (ay0, ay1) = (a.origin.y, a.origin.y + a.size.height);
+    let (bx0, bx1) = (b.origin.x, b.origin.x + b.size.width);
+    let (by0, by1) = (b.origin.y, b.origin.y + b.size.height);
+    let x_overlap = (ax1.min(bx1) - ax0.max(bx0)).max(0.0);
+    if x_overlap <= 0.0 {
+        return 0.0;
+    }
+    (ay1.min(by1) - ay0.max(by0)).max(0.0) as f32
 }
 
 /// Build a placeholder UILabel for an unregistered external primitive
