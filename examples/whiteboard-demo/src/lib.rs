@@ -143,7 +143,14 @@ pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 pub(crate) struct Stroke {
     pub points: Vec<(f32, f32)>,
     pub width: f32,
+    /// The color snapshotted at draw time. For `ink` strokes this is the contrast
+    /// color *as resolved when drawn* — a fallback only; the live paint re-resolves
+    /// against the CURRENT backdrop so the stroke stays readable (see `ink`).
     pub rgba: (u8, u8, u8, u8),
+    /// Drawn with the adaptive [`INK`] slot. Such strokes re-resolve their color
+    /// against the live backdrop every paint (so they flip light↔dark when the
+    /// canvas color or theme changes), instead of using the snapshotted `rgba`.
+    pub ink: bool,
 }
 
 /// Shared mutable list of strokes. The `on_touch` handler mutates it and the
@@ -186,12 +193,14 @@ impl Default for CanvasCapture {
     }
 }
 
-/// Paint one stroke into the canvas scene. A single point → a filled dot; a
-/// polyline → a round-capped/joined stroke.
-pub(crate) fn paint_stroke(s: &mut canvas::Scene, stroke: &Stroke) {
+/// Paint one stroke into the canvas scene with an explicit color. A single point
+/// → a filled dot; a polyline → a round-capped/joined stroke. The caller resolves
+/// the color (so `ink` strokes get the live backdrop contrast, others their
+/// snapshotted `rgba`).
+pub(crate) fn paint_stroke(s: &mut canvas::Scene, stroke: &Stroke, rgba: (u8, u8, u8, u8)) {
     use canvas::prelude::*;
 
-    let (r, g, b, a) = stroke.rgba;
+    let (r, g, b, a) = rgba;
     let col = Color::new(r, g, b, a);
 
     if stroke.points.len() == 1 {
@@ -225,6 +234,44 @@ pub(crate) fn parse_rgba(css: &str) -> (u8, u8, u8, u8) {
     (c.r, c.g, c.b, c.a)
 }
 
+/// Sentinel for the first palette slot: "ink" — an adaptive default that resolves
+/// at use time to whichever of [`INK_ON_LIGHT`] / [`INK_ON_DARK`] contrasts the
+/// current canvas backdrop. So the default stroke is always visible, including on
+/// a dark canvas (where a fixed black would vanish). Every other palette entry is
+/// a literal CSS color.
+pub(crate) const INK: &str = "ink";
+const INK_ON_LIGHT: &str = "#111827"; // near-black ink for a light backdrop
+const INK_ON_DARK: &str = "#f9fafb"; // near-white ink for a dark backdrop
+
+/// Resolve a palette color (possibly the [`INK`] sentinel) to a concrete CSS
+/// color, given the current canvas backdrop. Non-sentinel entries pass through
+/// unchanged. Used by the draw path (snapshotted into a stroke) and by the swatch
+/// / color-button display, so all three agree on what "ink" currently is.
+pub(crate) fn resolve_color(css: &'static str, canvas_bg: CanvasBg, dark: bool) -> &'static str {
+    if css != INK {
+        return css;
+    }
+    let (r, g, b) = canvas_bg.rgb(dark);
+    // Rec. 601 perceived luminance; a dark backdrop (low luma) gets light ink.
+    let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+    if luma < 128.0 {
+        INK_ON_DARK
+    } else {
+        INK_ON_LIGHT
+    }
+}
+
+/// The effective paint color for a stroke against the CURRENT backdrop. An `ink`
+/// stroke re-resolves its contrast color every paint (stays readable when the
+/// canvas color / theme changes); a fixed-hue stroke uses its snapshot.
+pub(crate) fn stroke_color(stroke: &Stroke, canvas_bg: CanvasBg, dark: bool) -> (u8, u8, u8, u8) {
+    if stroke.ink {
+        parse_rgba(resolve_color(INK, canvas_bg, dark))
+    } else {
+        stroke.rgba
+    }
+}
+
 // ----------------------------------------------------------------------------
 // Routes — one stack-navigator screen each. The board is the root; Settings and
 // Preview are pushed onto the stack (native push/pop + back gesture on
@@ -239,9 +286,10 @@ pub(crate) const BOARD: Route<()> = Route::<()>::new("board", "/");
 pub(crate) const SETTINGS: Route<()> = Route::<()>::new("settings", "/settings");
 pub(crate) const PREVIEW: Route<()> = Route::<()>::new("preview", "/preview");
 
-/// The palette of swatch colors, as `(label, css)`. Black is first (default).
+/// The palette of swatch colors, as `(label, css)`. The first slot is the
+/// adaptive [`INK`] default (contrasts the backdrop); the rest are literal hues.
 pub(crate) const PALETTE: &[(&str, &str)] = &[
-    ("black", "#111827"),
+    ("ink", INK),
     ("red", "#ef4444"),
     ("orange", "#f59e0b"),
     ("green", "#22c55e"),
@@ -357,7 +405,16 @@ impl Default for BoardState {
 /// the 3-route stack navigator (board + Settings + Preview).
 #[component]
 pub fn app() -> Element {
-    idea_ui::install_idea_theme(idea_ui::light_theme());
+    // Open matching the OS appearance (the Settings toggle still overrides). On
+    // `Auto` (no platform preference) we fall back to light. `color_scheme()` is
+    // stashed at mount like `platform()`, so it's readable here in the app body.
+    let start_dark =
+        matches!(runtime_core::color_scheme(), runtime_core::ColorScheme::Dark);
+    idea_ui::install_idea_theme(if start_dark {
+        idea_ui::dark_theme()
+    } else {
+        idea_ui::light_theme()
+    });
 
     // ---- State (root scope → survives navigation) ------------------------
     let nav: Ref<StackHandle> = Ref::new();
@@ -375,7 +432,7 @@ pub fn app() -> Element {
         palette_open: signal!(false),
         aspect: signal!(settings::DEFAULT_ASPECT),
         canvas_bg: signal!(CanvasBg::Auto),
-        dark: signal!(false),
+        dark: signal!(start_dark),
         nav,
     };
 
@@ -531,4 +588,78 @@ pub fn app() -> Element {
         });
 
     ui! { builder.bind(nav) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        clamp_cam, parse_rgba, resolve_color, stroke_color, CanvasBg, Stroke, CAM_H, CAM_W,
+        DRAG_MARGIN, INK, INK_ON_DARK, INK_ON_LIGHT,
+    };
+
+    // Regression for "the first palette color should contrast the backdrop": the
+    // `INK` slot resolves to a light ink on a dark canvas and a dark ink on a light
+    // one, so the default stroke is always visible. Non-ink entries pass through.
+    #[test]
+    fn ink_contrasts_explicit_canvas_colors() {
+        assert_eq!(resolve_color(INK, CanvasBg::White, false), INK_ON_LIGHT);
+        assert_eq!(resolve_color(INK, CanvasBg::Paper, false), INK_ON_LIGHT);
+        assert_eq!(resolve_color(INK, CanvasBg::Slate, false), INK_ON_LIGHT);
+        assert_eq!(resolve_color(INK, CanvasBg::Charcoal, false), INK_ON_DARK);
+        assert_eq!(resolve_color(INK, CanvasBg::Black, false), INK_ON_DARK);
+    }
+
+    #[test]
+    fn ink_follows_auto_canvas_through_theme() {
+        // Auto canvas tracks the theme: white in light → dark ink; near-black in
+        // dark → light ink.
+        assert_eq!(resolve_color(INK, CanvasBg::Auto, false), INK_ON_LIGHT);
+        assert_eq!(resolve_color(INK, CanvasBg::Auto, true), INK_ON_DARK);
+    }
+
+    #[test]
+    fn non_ink_entries_pass_through_unchanged() {
+        assert_eq!(resolve_color("#ef4444", CanvasBg::Black, true), "#ef4444");
+        assert_eq!(resolve_color("#3b82f6", CanvasBg::White, false), "#3b82f6");
+    }
+
+    // Regression for settings requirement #3 ("the camera should stay in the
+    // bounds"): `clamp_cam` is the single enforcer — every read site
+    // (`clamped_cam`) funnels through it, so the widget can never escape the
+    // stage regardless of a stale drag position or an aspect change shrinking
+    // the stage under it.
+    const STAGE_W: f32 = 400.0;
+    const STAGE_H: f32 = 700.0;
+
+    #[test]
+    fn camera_inside_bounds_is_unchanged() {
+        let (x, y) = clamp_cam(120.0, 300.0, STAGE_W, STAGE_H);
+        assert_eq!((x, y), (120.0, 300.0));
+    }
+
+    #[test]
+    fn camera_past_right_and_bottom_clamps_inside() {
+        // Way past the far corner → pinned to the max inset, fully inside.
+        let (x, y) = clamp_cam(9_999.0, 9_999.0, STAGE_W, STAGE_H);
+        assert_eq!(x, STAGE_W - CAM_W - DRAG_MARGIN);
+        assert_eq!(y, STAGE_H - CAM_H - DRAG_MARGIN);
+        // The whole widget rect sits within the stage.
+        assert!(x + CAM_W + DRAG_MARGIN <= STAGE_W);
+        assert!(y + CAM_H + DRAG_MARGIN <= STAGE_H);
+    }
+
+    #[test]
+    fn camera_past_top_left_clamps_to_margin() {
+        let (x, y) = clamp_cam(-50.0, -50.0, STAGE_W, STAGE_H);
+        assert_eq!((x, y), (DRAG_MARGIN, DRAG_MARGIN));
+    }
+
+    #[test]
+    fn stage_smaller_than_widget_pins_to_margin() {
+        // An aspect change can shrink the stage below the widget size; the
+        // `.max(m)` floor keeps the position valid (top-left margin) instead of
+        // producing a negative clamp range that would invert.
+        let (x, y) = clamp_cam(200.0, 200.0, CAM_W - 10.0, CAM_H - 10.0);
+        assert_eq!((x, y), (DRAG_MARGIN, DRAG_MARGIN));
+    }
 }

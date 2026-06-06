@@ -13,13 +13,11 @@ use crate::style::{border_all_color, radius, reactive_style, static_style, style
 use crate::{BoardState, REC_FILE, REC_STORE};
 use idea_ui::{typography_kind, SegmentOption, SegmentedControl, Switch, Typography};
 use icons_lucide::X;
-use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::{
     component, icon, safe_area_insets, ui, view, viewport_size, AlignItems, ChildList, Color,
     Element, FlexDirection, FontWeight, IntoElement, JustifyContent, Length, Overflow, Ref,
-    Signal, StyleRules, Tokenized, TouchPhase, TouchResponse, ViewHandle,
+    Signal, StyleRules, Tokenized, TouchPhase, TouchResponse,
 };
-use std::time::Duration;
 use stack_navigator::StackHandle;
 use std::rc::Rc;
 
@@ -27,7 +25,7 @@ use std::rc::Rc;
 /// re-resolves when the active theme swaps. Leverages idea-ui's token system, so
 /// the surface follows light/dark with no per-color plumbing.
 fn tc(getter: impl Fn(&idea_ui::Colors) -> Tokenized<Color> + 'static) -> Color {
-    idea_ui::idea_color(getter)()
+    crate::style::token(getter)
 }
 
 // ============================================================================
@@ -181,7 +179,7 @@ pub fn ScreenHeader(props: &ScreenHeaderProps) -> Element {
 
     ui! {
         view(style = row_style) {
-            idea_ui::Typography(content = title.into(), kind = idea_ui::typography_kind::H2)
+            Typography(content = title, kind = typography_kind::H2)
             view(style = close_style) {
                 view(style = glyph_style) { glyph }
             }
@@ -260,7 +258,9 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
         // "Custom" keeps the current aspect; the steppers below adjust it.
     });
 
-    let dark_on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| dark.set(v));
+    let dark_on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| {
+        dark.set(v);
+    });
 
     let list_style = static_style(StyleRules {
         flex_direction: Some(FlexDirection::Column),
@@ -281,20 +281,20 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
         ScreenScaffold(title = "Settings", nav = nav) {
             view(style = list_style) {
                 view(style = card_style()) {
-                    Typography(content = "Aspect ratio".into(), kind = typography_kind::Caption, muted = true)
+                    Typography(content = "Aspect ratio", kind = typography_kind::Caption, muted = true)
                     SegmentedControl(value = aspect_sel, on_change = aspect_on_change, options = aspect_options)
                     if aspect_sel.get() == "Custom" {
                         AspectSteppers(aspect = aspect)
                     }
                 }
                 view(style = card_style()) {
-                    Typography(content = "Canvas color".into(), kind = typography_kind::Caption, muted = true)
+                    Typography(content = "Canvas color", kind = typography_kind::Caption, muted = true)
                     SwatchRow(canvas_bg = canvas_bg)
                 }
                 view(style = card_style()) {
-                    Typography(content = "Appearance".into(), kind = typography_kind::Caption, muted = true)
+                    Typography(content = "Appearance", kind = typography_kind::Caption, muted = true)
                     view(style = row_style) {
-                        Typography(content = "Dark mode".into(), kind = typography_kind::Body)
+                        Typography(content = "Dark mode", kind = typography_kind::Body)
                         Switch(value = dark, on_change = dark_on_change)
                     }
                 }
@@ -440,17 +440,20 @@ pub fn StepperRow(props: &StepperRowProps) -> Element {
         gap: Some(Length::Px(14.0).into()),
         ..Default::default()
     });
-    let value_text = move || {
+    // Derived reactive label for the value — a `Signal<String>` so Typography's
+    // `content` (Reactive<String>) gets the live value via `From<Signal>`.
+    let value_sig: Signal<String> = Signal::new(String::new());
+    runtime_core::effect!({
         let (w, h) = aspect.get();
-        (if is_width { w } else { h }).to_string()
-    };
+        value_sig.set((if is_width { w } else { h }).to_string());
+    });
 
     ui! {
         view(style = row_style) {
-            Typography(content = label.into(), kind = typography_kind::Body)
+            Typography(content = label, kind = typography_kind::Body)
             view(style = controls_style) {
                 stepper_btn("\u{2212}", dec)
-                Typography(content = value_text.into(), kind = typography_kind::Body)
+                Typography(content = value_sig, kind = typography_kind::Body)
                 stepper_btn("+", inc)
             }
         }
@@ -474,7 +477,7 @@ fn stepper_btn(glyph: &'static str, on_press: impl Fn() + 'static) -> Element {
     });
     ui! {
         view(style = style) {
-            Typography(content = glyph.into(), kind = typography_kind::Body)
+            Typography(content = glyph, kind = typography_kind::Body)
         }
         .on_touch(move |ev| {
             if ev.phase == TouchPhase::Ended {

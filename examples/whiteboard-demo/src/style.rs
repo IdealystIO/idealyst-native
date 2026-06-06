@@ -17,6 +17,48 @@ pub fn reactive_style(f: impl Fn() -> StyleRules + 'static) -> impl Fn() -> Styl
     move || StyleApplication::new(Rc::new(StyleSheet::r#static(f())))
 }
 
+/// Resolve an idea-ui NEUTRAL token (`surface`, `text`, `border`, …) to a
+/// concrete [`Color`] NOW. Call inside a `reactive_style` closure: reading the
+/// active theme subscribes the surrounding reactive scope, so the value
+/// re-resolves automatically on a light/dark swap. This is how the board chrome
+/// follows the app theme without per-color plumbing.
+pub fn token(getter: impl Fn(&idea_ui::Colors) -> Tokenized<Color> + 'static) -> Color {
+    idea_ui::idea_color(getter)()
+}
+
+/// Like [`token`] but applies `alpha` (0..=1) to the resolved color, returning a
+/// CSS `rgba(...)` string. The floating chrome's surfaces are frosted
+/// (translucent over the canvas); opaque tokens would lose that, so we resolve
+/// the themed color and re-attach the alpha.
+pub fn token_alpha(
+    getter: impl Fn(&idea_ui::Colors) -> Tokenized<Color> + 'static,
+    alpha: f32,
+) -> Color {
+    let c = token(getter);
+    let rgba = runtime_core::color::parse_or(&c.0, runtime_core::color::Rgba::new(255, 255, 255, 255));
+    Color(format!(
+        "rgba({},{},{},{:.3})",
+        rgba.r,
+        rgba.g,
+        rgba.b,
+        alpha.clamp(0.0, 1.0)
+    ))
+}
+
+/// Resolve an idea-ui INTENT token (`primary`, `danger`, …) to a concrete
+/// [`Color`] NOW. Mirrors [`token`] but reaches the active theme's `Intents`
+/// rather than its neutrals — used for the accent on selected tool-rail dots,
+/// which should track the brand color across themes.
+pub fn token_intent(
+    getter: impl Fn(&idea_ui::Intents) -> Tokenized<Color> + 'static,
+) -> Color {
+    let theme = idea_ui::active_theme();
+    let idea = theme
+        .downcast_ref::<idea_ui::IdeaThemeRef>()
+        .expect("token_intent: active theme is not an IdeaThemeRef — call install_idea_theme(...) first");
+    getter(idea.inner().intents()).value().clone()
+}
+
 /// A static style source from a finished `StyleRules` literal.
 pub fn static_style(rules: StyleRules) -> Rc<StyleSheet> {
     Rc::new(StyleSheet::r#static(rules))
@@ -52,22 +94,6 @@ pub fn radius(px: f32) -> StyleRules {
         border_top_right_radius: Some(Length::Px(px).into()),
         border_bottom_left_radius: Some(Length::Px(px).into()),
         border_bottom_right_radius: Some(Length::Px(px).into()),
-        ..Default::default()
-    }
-}
-
-/// Equal border on all sides.
-pub fn border_all(px: f32, color: &str) -> StyleRules {
-    let c = Tokenized::Literal(Color(color.to_string()));
-    StyleRules {
-        border_top_width: Some(px.into()),
-        border_bottom_width: Some(px.into()),
-        border_left_width: Some(px.into()),
-        border_right_width: Some(px.into()),
-        border_top_color: Some(c.clone()),
-        border_bottom_color: Some(c.clone()),
-        border_left_color: Some(c.clone()),
-        border_right_color: Some(c),
         ..Default::default()
     }
 }

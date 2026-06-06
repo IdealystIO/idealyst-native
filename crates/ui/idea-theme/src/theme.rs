@@ -241,6 +241,130 @@ impl IdeaTheme for IdeaThemeRef {
     }
 }
 
+// =============================================================================
+// Canonical token names — the single source of truth
+// =============================================================================
+//
+// idea-ui's stylesheets resolve theme colors by these *canonical* names
+// (e.g. `Tokenized::token("color-surface", ..)` in `idea_ui::stylesheets`).
+// They are the keys the token registry must be populated under, so they
+// drive `ThemeTokens::tokens()` (the install path) below. They're also the
+// only names `idea_color`/`color_token!`-built overrides effectively need:
+// the value an override carries is what matters; its `name` argument is
+// cosmetic because install keys off the field's canonical name regardless.
+
+/// Canonical token names for the non-intent neutral colors, in the same
+/// field order as [`Colors`]. The Nth entry is the canonical key for the
+/// Nth `Colors` field.
+pub const CANONICAL_NEUTRAL_TOKENS: [&str; 11] = [
+    "color-background",
+    "color-surface",
+    "color-surface-alt",
+    "color-text",
+    "color-text-muted",
+    "color-text-inverse",
+    "color-border",
+    "color-border-hover",
+    "color-border-strong",
+    "color-focus-ring",
+    "color-overlay",
+];
+
+/// The seven built-in intent names, in [`Intents`] field order.
+pub const INTENT_NAMES: [&str; 7] =
+    ["primary", "secondary", "neutral", "success", "danger", "warning", "info"];
+
+/// The six slot suffixes on each intent, in [`IntentColors`] field order.
+/// Canonical intent token = `intent-<intent>-<slot>`.
+pub const INTENT_SLOTS: [&str; 6] =
+    ["solid-bg", "solid-text", "soft-bg", "soft-text", "fg", "border"];
+
+/// Map an (`intent`, `slot`) pair to its canonical `&'static str` token
+/// name (`intent-<intent>-<slot>`). Returns a static string for every
+/// built-in combination; panics on an unknown pair (only reachable from a
+/// programming error inside this crate, never from author input).
+///
+/// A `match` over the fixed combinations avoids `Box::leak`/`format!`
+/// allocation on the install hot path — the same compile-time-dedup
+/// rationale as `intent_colors!`'s `concat!`.
+fn intent_slot_token(intent: &str, slot: &str) -> &'static str {
+    macro_rules! arm {
+        ($i:literal, $s:literal) => {
+            (concat!($i, "/", $s), concat!("intent-", $i, "-", $s))
+        };
+    }
+    // (key, canonical) for every intent × slot. `key` is "intent/slot".
+    const TABLE: &[(&str, &str)] = &[
+        arm!("primary", "solid-bg"), arm!("primary", "solid-text"),
+        arm!("primary", "soft-bg"), arm!("primary", "soft-text"),
+        arm!("primary", "fg"), arm!("primary", "border"),
+        arm!("secondary", "solid-bg"), arm!("secondary", "solid-text"),
+        arm!("secondary", "soft-bg"), arm!("secondary", "soft-text"),
+        arm!("secondary", "fg"), arm!("secondary", "border"),
+        arm!("neutral", "solid-bg"), arm!("neutral", "solid-text"),
+        arm!("neutral", "soft-bg"), arm!("neutral", "soft-text"),
+        arm!("neutral", "fg"), arm!("neutral", "border"),
+        arm!("success", "solid-bg"), arm!("success", "solid-text"),
+        arm!("success", "soft-bg"), arm!("success", "soft-text"),
+        arm!("success", "fg"), arm!("success", "border"),
+        arm!("danger", "solid-bg"), arm!("danger", "solid-text"),
+        arm!("danger", "soft-bg"), arm!("danger", "soft-text"),
+        arm!("danger", "fg"), arm!("danger", "border"),
+        arm!("warning", "solid-bg"), arm!("warning", "solid-text"),
+        arm!("warning", "soft-bg"), arm!("warning", "soft-text"),
+        arm!("warning", "fg"), arm!("warning", "border"),
+        arm!("info", "solid-bg"), arm!("info", "solid-text"),
+        arm!("info", "soft-bg"), arm!("info", "soft-text"),
+        arm!("info", "fg"), arm!("info", "border"),
+    ];
+    let key_len = intent.len() + 1 + slot.len();
+    for (key, canonical) in TABLE {
+        // Cheap pre-filter on length, then compare the "intent/slot" key.
+        if key.len() == key_len
+            && key.as_bytes()[intent.len()] == b'/'
+            && &key[..intent.len()] == intent
+            && &key[intent.len() + 1..] == slot
+        {
+            return canonical;
+        }
+    }
+    panic!("intent_slot_token: unknown intent/slot pair '{intent}/{slot}'");
+}
+
+/// Is `name` the canonical token key for an idea-ui theme color/length
+/// field? This is the predicate that distinguishes a name idea-ui will
+/// actually resolve from a free-form name that nothing reads.
+///
+/// The install path ([`ThemeTokens::tokens`]) no longer *depends* on the
+/// author using a canonical name — it keys every field off its fixed
+/// canonical name regardless — so a non-canonical `color_token!` override
+/// now WORKS instead of silently no-opping. This predicate exists for
+/// tooling/lints (and the regression test) that want to flag a token name
+/// the registry would otherwise ignore.
+pub fn is_canonical_token(name: &str) -> bool {
+    if CANONICAL_NEUTRAL_TOKENS.contains(&name) {
+        return true;
+    }
+    // intent-<intent>-<slot>
+    if let Some(rest) = name.strip_prefix("intent-") {
+        return INTENT_NAMES.iter().any(|intent| {
+            rest.strip_prefix(intent)
+                .and_then(|r| r.strip_prefix('-'))
+                .is_some_and(|slot| INTENT_SLOTS.contains(&slot))
+        });
+    }
+    // Spacing / radius / typography length tokens.
+    matches!(
+        name,
+        "spacing-xs" | "spacing-sm" | "spacing-md" | "spacing-lg" | "spacing-xl" | "spacing-xxl"
+            | "radius-sm" | "radius-md" | "radius-lg" | "radius-pill"
+            | "typography-display-size" | "typography-h1-size" | "typography-h2-size"
+            | "typography-h3-size" | "typography-body-xl-size" | "typography-body-lg-size"
+            | "typography-body-size" | "typography-body-sm-size" | "typography-caption-size"
+            | "typography-overline-size"
+    )
+}
+
 impl ThemeTokens for IdeaThemeRef {
     fn tokens(&self) -> Vec<TokenEntry> {
         let c = self.colors();
@@ -248,8 +372,23 @@ impl ThemeTokens for IdeaThemeRef {
         let s = self.spacing();
         let r = self.radius();
         let ty = self.typography();
-        fn entry(t: &Tokenized<Color>) -> TokenEntry {
-            let name = t.name().expect("color fields must be Tokenized::Token");
+        // Register each color VALUE under the CANONICAL token name for
+        // its field — *not* the free-form name the author passed to
+        // `color_token!`. idea-ui's stylesheets reference colors by the
+        // canonical name (`color-surface`, `intent-primary-solid-bg`, …,
+        // see `CANONICAL_NEUTRAL_TOKENS` / `INTENT_SLOT_TOKENS`), and the
+        // runtime resolves a `Tokenized::Token { name, .. }` by that name.
+        //
+        // Why ignore `t.name()`: a rebrand mutates theme fields with
+        // `t.colors.surface = color_token!("ok-surface", "#fff")`. If we
+        // registered under `"ok-surface"` (the field's `.name()`), the
+        // value would land under a key nothing reads and the override
+        // would silently no-op — the whole theme quietly falls back to
+        // idea-ui defaults. Keying off the field's fixed canonical name
+        // makes the override take effect regardless of the `name`
+        // argument, eliminating that footgun (see field report +
+        // `is_canonical_token`).
+        fn entry(name: &'static str, t: &Tokenized<Color>) -> TokenEntry {
             TokenEntry {
                 name,
                 value: TokenValue::Color(t.value().clone()),
@@ -261,35 +400,43 @@ impl ThemeTokens for IdeaThemeRef {
                 value: TokenValue::Length(Length::Px(v)),
             }
         }
-        // Helper: emit every field of an IntentColors block.
-        fn intent_entries(ic: &IntentColors, out: &mut Vec<TokenEntry>) {
-            out.push(entry(&ic.solid_bg));
-            out.push(entry(&ic.solid_text));
-            out.push(entry(&ic.soft_bg));
-            out.push(entry(&ic.soft_text));
-            out.push(entry(&ic.fg));
-            out.push(entry(&ic.border));
+        // Helper: emit every field of an IntentColors block under the
+        // intent's canonical slot names.
+        fn intent_entries(intent: &str, ic: &IntentColors, out: &mut Vec<TokenEntry>) {
+            for (slot, value) in [
+                ("solid-bg", &ic.solid_bg),
+                ("solid-text", &ic.solid_text),
+                ("soft-bg", &ic.soft_bg),
+                ("soft-text", &ic.soft_text),
+                ("fg", &ic.fg),
+                ("border", &ic.border),
+            ] {
+                out.push(TokenEntry {
+                    name: intent_slot_token(intent, slot),
+                    value: TokenValue::Color(value.value().clone()),
+                });
+            }
         }
         let mut out = vec![
-            entry(&c.background),
-            entry(&c.surface),
-            entry(&c.surface_alt),
-            entry(&c.text),
-            entry(&c.text_muted),
-            entry(&c.text_inverse),
-            entry(&c.border),
-            entry(&c.border_hover),
-            entry(&c.border_strong),
-            entry(&c.focus_ring),
-            entry(&c.overlay),
+            entry("color-background", &c.background),
+            entry("color-surface", &c.surface),
+            entry("color-surface-alt", &c.surface_alt),
+            entry("color-text", &c.text),
+            entry("color-text-muted", &c.text_muted),
+            entry("color-text-inverse", &c.text_inverse),
+            entry("color-border", &c.border),
+            entry("color-border-hover", &c.border_hover),
+            entry("color-border-strong", &c.border_strong),
+            entry("color-focus-ring", &c.focus_ring),
+            entry("color-overlay", &c.overlay),
         ];
-        intent_entries(&i.primary, &mut out);
-        intent_entries(&i.secondary, &mut out);
-        intent_entries(&i.neutral, &mut out);
-        intent_entries(&i.success, &mut out);
-        intent_entries(&i.danger, &mut out);
-        intent_entries(&i.warning, &mut out);
-        intent_entries(&i.info, &mut out);
+        intent_entries("primary", &i.primary, &mut out);
+        intent_entries("secondary", &i.secondary, &mut out);
+        intent_entries("neutral", &i.neutral, &mut out);
+        intent_entries("success", &i.success, &mut out);
+        intent_entries("danger", &i.danger, &mut out);
+        intent_entries("warning", &i.warning, &mut out);
+        intent_entries("info", &i.info, &mut out);
 
         // Spacing: one length token per Spacing field.
         out.push(len("spacing-xs", s.xs));
@@ -835,5 +982,93 @@ mod tests {
             "light and dark themes must share the compile-time name for \
              intent-primary-solid-bg",
         );
+    }
+
+    fn find_color<'a>(toks: &'a [TokenEntry], name: &str) -> &'a runtime_core::Color {
+        let entry = toks
+            .iter()
+            .find(|e| e.name == name)
+            .unwrap_or_else(|| panic!("token '{}' not emitted", name));
+        match &entry.value {
+            TokenValue::Color(c) => c,
+            other => panic!("token '{}' is not a Color ({:?})", name, other),
+        }
+    }
+
+    /// Regression for the silent-no-op footgun: a rebrand override written
+    /// with a NON-canonical token name (the `color_token!` first arg is
+    /// free-form) must still take effect. `install_idea_theme` keys the
+    /// install registry off each field's CANONICAL name, so the override's
+    /// VALUE lands under `color-surface` / `intent-primary-solid-bg` — the
+    /// keys idea-ui's stylesheets actually resolve — regardless of the
+    /// bogus name. Before the fix the value was registered under the bogus
+    /// name and the whole theme silently fell back to idea-ui defaults.
+    #[test]
+    fn noncanonical_override_name_still_takes_effect() {
+        let mut t = light_theme();
+        // Deliberately WRONG names — what a footgunned author would write.
+        t.colors.surface = Tokenized::token("ok-surface", Color("#abcdef".into()));
+        t.intents.primary.solid_bg = Tokenized::token("ok-primary-bg", Color("#3f73e3".into()));
+
+        let toks = IdeaThemeRef::new(t).tokens();
+
+        // The value must be reachable under the CANONICAL key idea-ui reads…
+        assert_eq!(
+            find_color(&toks, "color-surface").0,
+            "#abcdef",
+            "non-canonical surface override must register under canonical 'color-surface'"
+        );
+        assert_eq!(
+            find_color(&toks, "intent-primary-solid-bg").0,
+            "#3f73e3",
+            "non-canonical intent override must register under canonical \
+             'intent-primary-solid-bg'"
+        );
+        // …and NOT under the bogus name the author typed (nothing reads it).
+        assert!(
+            !toks.iter().any(|e| e.name == "ok-surface" || e.name == "ok-primary-bg"),
+            "the free-form color_token! name must not appear as a registered key — \
+             install keys off the field's canonical name"
+        );
+    }
+
+    /// `is_canonical_token` is the pure decision fn behind the footgun:
+    /// it classifies which names idea-ui will actually resolve. The
+    /// canonical names a theme emits must all pass; the free-form names an
+    /// author might pass to `color_token!` must fail.
+    #[test]
+    fn is_canonical_token_classifies_emitted_names() {
+        // Every name the default theme emits is canonical by construction.
+        for entry in IdeaThemeRef::new(light_theme()).tokens() {
+            assert!(
+                is_canonical_token(entry.name),
+                "emitted token '{}' must be classified canonical",
+                entry.name
+            );
+        }
+        // Spot-check representative canonical names across categories.
+        for name in [
+            "color-surface",
+            "color-focus-ring",
+            "intent-primary-solid-bg",
+            "intent-info-border",
+            "spacing-md",
+            "radius-pill",
+            "typography-body-size",
+        ] {
+            assert!(is_canonical_token(name), "'{name}' should be canonical");
+        }
+        // Free-form / typo'd names must be rejected.
+        for name in [
+            "ok-surface",
+            "ok-primary-bg",
+            "surface",
+            "color-surfce",
+            "intent-primary-solidbg",
+            "intent-bogus-fg",
+            "intent-primary-glow",
+        ] {
+            assert!(!is_canonical_token(name), "'{name}' should NOT be canonical");
+        }
     }
 }

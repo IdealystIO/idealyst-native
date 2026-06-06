@@ -10,10 +10,13 @@
 //! pushed screen. Settings / REC / palette additionally nest an inner
 //! `presence` that animates their own state toggle (open, recording, …).
 
-use crate::style::{border_all, focus_gate, radius, reactive_style, static_style, styled};
+use crate::style::{
+    border_all_color, focus_gate, radius, reactive_style, static_style, styled, token, token_alpha,
+    token_intent,
+};
 use crate::{
-    BoardState, CanvasCapture, RecHandle, Strokes, PALETTE, PREVIEW, REC_FILE, REC_STORE, SETTINGS,
-    WIDTH_MEDIUM, WIDTH_THICK, WIDTH_THIN,
+    BoardState, CanvasBg, CanvasCapture, RecHandle, Strokes, PALETTE, PREVIEW, REC_FILE, REC_STORE,
+    SETTINGS, WIDTH_MEDIUM, WIDTH_THICK, WIDTH_THIN,
 };
 use camera::{Camera, CameraConfig, CameraFacing, MediaStream};
 use icons_lucide::{CAMERA, SETTINGS as ICON_SETTINGS, TRASH_2};
@@ -47,6 +50,8 @@ pub fn build_chrome(
             focused = focused.clone(),
             color_css = s.color_css,
             palette_open = s.palette_open,
+            canvas_bg = s.canvas_bg,
+            dark = s.dark,
         )
     };
     let tool_rail = ui! {
@@ -171,27 +176,29 @@ pub fn ToolRail(props: &ToolRailProps) -> Element {
     let version = props.version;
 
     let pill = focus_gate(focused, move || {
-        let pill_style = static_style(styled(
-            StyleRules {
-                flex_direction: Some(FlexDirection::Column),
-                align_items: Some(AlignItems::Center),
-                gap: Some(Length::Px(2.0).into()),
-                padding_top: Some(Length::Px(8.0).into()),
-                padding_bottom: Some(Length::Px(8.0).into()),
-                padding_left: Some(Length::Px(6.0).into()),
-                padding_right: Some(Length::Px(6.0).into()),
-                background: Some(Tokenized::Literal(Color("rgba(255,255,255,0.92)".into()))),
-                ..Default::default()
-            },
-            [radius(24.0), border_all(1.0, "rgba(17,24,39,0.08)")],
-        ));
+        let pill_style = reactive_style(move || {
+            styled(
+                StyleRules {
+                    flex_direction: Some(FlexDirection::Column),
+                    align_items: Some(AlignItems::Center),
+                    gap: Some(Length::Px(2.0).into()),
+                    padding_top: Some(Length::Px(8.0).into()),
+                    padding_bottom: Some(Length::Px(8.0).into()),
+                    padding_left: Some(Length::Px(6.0).into()),
+                    padding_right: Some(Length::Px(6.0).into()),
+                    background: Some(Tokenized::Literal(token_alpha(|c| c.surface.clone(), 0.92))),
+                    ..Default::default()
+                },
+                [radius(24.0), border_all_color(1.0, token_alpha(|c| c.border.clone(), 0.7))],
+            )
+        });
         ui! {
             view(style = pill_style) {
                 WidthButton(w = WIDTH_THIN, width = s.width)
                 WidthButton(w = WIDTH_MEDIUM, width = s.width)
                 WidthButton(w = WIDTH_THICK, width = s.width)
                 RailDivider()
-                ColorButton(color_css = s.color_css, palette_open = s.palette_open)
+                ColorButton(color_css = s.color_css, palette_open = s.palette_open, canvas_bg = s.canvas_bg, dark = s.dark)
                 ClearButton(strokes = strokes.clone(), version = version)
                 RailDivider()
                 CameraToggle(cam_on = s.cam_on, cam_stream = s.cam_stream)
@@ -205,10 +212,10 @@ pub fn ToolRail(props: &ToolRailProps) -> Element {
 /// A horizontal divider inside the vertical rail.
 #[component]
 pub fn RailDivider() -> Element {
-    let style = static_style(StyleRules {
+    let style = reactive_style(|| StyleRules {
         width: Some(Length::Px(24.0).into()),
         height: Some(Length::Px(1.0).into()),
-        background: Some(Tokenized::Literal(Color("rgba(17,24,39,0.12)".into()))),
+        background: Some(Tokenized::Literal(token_alpha(|c| c.border.clone(), 0.6))),
         ..Default::default()
     });
     ui! { view(style = style) {} }
@@ -240,9 +247,11 @@ pub fn WidthButton(props: &WidthButtonProps) -> Element {
             StyleRules {
                 width: Some(Length::Px(d).into()),
                 height: Some(Length::Px(d).into()),
-                background: Some(Tokenized::Literal(Color(
-                    if selected { "#2563eb" } else { "#9ca3af" }.to_string(),
-                ))),
+                background: Some(Tokenized::Literal(if selected {
+                    token_intent(|i| i.primary.solid_bg.clone())
+                } else {
+                    token(|c| c.text_muted.clone())
+                })),
                 ..Default::default()
             },
             [radius(d / 2.0)],
@@ -256,6 +265,8 @@ pub fn WidthButton(props: &WidthButtonProps) -> Element {
 pub struct ColorButtonProps {
     pub color_css: Signal<&'static str>,
     pub palette_open: Signal<bool>,
+    pub canvas_bg: Signal<CanvasBg>,
+    pub dark: Signal<bool>,
 }
 
 impl Default for ColorButtonProps {
@@ -263,6 +274,8 @@ impl Default for ColorButtonProps {
         Self {
             color_css: Signal::new(PALETTE[0].1),
             palette_open: Signal::new(false),
+            canvas_bg: Signal::new(CanvasBg::Auto),
+            dark: Signal::new(false),
         }
     }
 }
@@ -273,20 +286,28 @@ impl Default for ColorButtonProps {
 pub fn ColorButton(props: &ColorButtonProps) -> Element {
     let color_css = props.color_css;
     let palette_open = props.palette_open;
+    let canvas_bg = props.canvas_bg;
+    let dark = props.dark;
     let disc_style = reactive_style(move || {
         let open = palette_open.get();
+        // Resolve the adaptive ink slot so the disc shows what will actually draw.
+        let css = crate::resolve_color(color_css.get(), canvas_bg.get(), dark.get());
         styled(
             StyleRules {
                 width: Some(Length::Px(22.0).into()),
                 height: Some(Length::Px(22.0).into()),
-                background: Some(Tokenized::Literal(Color(color_css.get().to_string()))),
+                background: Some(Tokenized::Literal(Color(css.to_string()))),
                 ..Default::default()
             },
             [
                 radius(11.0),
-                border_all(
+                border_all_color(
                     if open { 2.0 } else { 1.5 },
-                    if open { "#2563eb" } else { "rgba(17,24,39,0.28)" },
+                    if open {
+                        token_intent(|i| i.primary.solid_bg.clone())
+                    } else {
+                        token_alpha(|c| c.border.clone(), 0.7)
+                    },
                 ),
             ],
         )
@@ -312,7 +333,7 @@ impl Default for ClearButtonProps {
 pub fn ClearButton(props: &ClearButtonProps) -> Element {
     let strokes = props.strokes.clone();
     let version = props.version;
-    let glyph = icon_box(icon(TRASH_2).color(|| Color::from("#374151")).into_element());
+    let glyph = icon_box(icon(TRASH_2).color(|| token(|c| c.text.clone())).into_element());
     bare_btn(glyph, move || {
         strokes.borrow_mut().clear();
         version.set(version.get().wrapping_add(1));
@@ -342,7 +363,7 @@ pub fn CameraToggle(props: &CameraToggleProps) -> Element {
                 if cam_on.get() {
                     Color::from("#16a34a")
                 } else {
-                    Color::from("#374151")
+                    token(|c| c.text.clone())
                 }
             })
             .into_element(),
@@ -382,6 +403,8 @@ pub struct PalettePopoverProps {
     pub focused: Rc<dyn Fn() -> bool>,
     pub color_css: Signal<&'static str>,
     pub palette_open: Signal<bool>,
+    pub canvas_bg: Signal<CanvasBg>,
+    pub dark: Signal<bool>,
 }
 
 impl Default for PalettePopoverProps {
@@ -390,6 +413,8 @@ impl Default for PalettePopoverProps {
             focused: Rc::new(|| true),
             color_css: Signal::new(PALETTE[0].1),
             palette_open: Signal::new(false),
+            canvas_bg: Signal::new(CanvasBg::Auto),
+            dark: Signal::new(false),
         }
     }
 }
@@ -402,6 +427,8 @@ pub fn PalettePopover(props: &PalettePopoverProps) -> Element {
     let focused = props.focused.clone();
     let color_css = props.color_css;
     let palette_open = props.palette_open;
+    let canvas_bg = props.canvas_bg;
+    let dark = props.dark;
 
     let panel = focus_gate(focused, move || {
         presence(move || {
@@ -414,22 +441,24 @@ pub fn PalettePopover(props: &PalettePopoverProps) -> Element {
                 justify_content: Some(JustifyContent::Center),
                 ..Default::default()
             });
-            let panel_style = static_style(styled(
-                StyleRules {
-                    padding_top: Some(Length::Px(12.0).into()),
-                    padding_bottom: Some(Length::Px(12.0).into()),
-                    padding_left: Some(Length::Px(12.0).into()),
-                    padding_right: Some(Length::Px(12.0).into()),
-                    background: Some(Tokenized::Literal(Color("rgba(255,255,255,0.97)".into()))),
-                    ..Default::default()
-                },
-                [radius(18.0), border_all(1.0, "rgba(17,24,39,0.08)")],
-            ));
+            let panel_style = reactive_style(|| {
+                styled(
+                    StyleRules {
+                        padding_top: Some(Length::Px(12.0).into()),
+                        padding_bottom: Some(Length::Px(12.0).into()),
+                        padding_left: Some(Length::Px(12.0).into()),
+                        padding_right: Some(Length::Px(12.0).into()),
+                        background: Some(Tokenized::Literal(token_alpha(|c| c.surface.clone(), 0.97))),
+                        ..Default::default()
+                    },
+                    [radius(18.0), border_all_color(1.0, token_alpha(|c| c.border.clone(), 0.7))],
+                )
+            });
             ui! {
                 view(style = panel_style) {
                     view(style = grid_style) {
                         for (_label, css) in PALETTE {
-                            Swatch(css = *css, color_css = color_css, palette_open = palette_open)
+                            Swatch(css = *css, color_css = color_css, palette_open = palette_open, canvas_bg = canvas_bg, dark = dark)
                         }
                     }
                 }
@@ -485,6 +514,8 @@ pub struct SwatchProps {
     pub css: &'static str,
     pub color_css: Signal<&'static str>,
     pub palette_open: Signal<bool>,
+    pub canvas_bg: Signal<CanvasBg>,
+    pub dark: Signal<bool>,
 }
 
 impl Default for SwatchProps {
@@ -493,26 +524,35 @@ impl Default for SwatchProps {
             css: PALETTE[0].1,
             color_css: Signal::new(PALETTE[0].1),
             palette_open: Signal::new(false),
+            canvas_bg: Signal::new(CanvasBg::Auto),
+            dark: Signal::new(false),
         }
     }
 }
 
 /// A color swatch in the popover. Tapping sets the color and closes the popover.
+/// The adaptive ink slot renders its resolved contrast color against the backdrop.
 #[component]
 pub fn Swatch(props: &SwatchProps) -> Element {
     let css = props.css;
     let color_css = props.color_css;
     let palette_open = props.palette_open;
+    let canvas_bg = props.canvas_bg;
+    let dark = props.dark;
     let style = reactive_style(move || {
         let selected = color_css.get() == css;
+        let shown = crate::resolve_color(css, canvas_bg.get(), dark.get());
         styled(
             StyleRules {
                 width: Some(Length::Px(28.0).into()),
                 height: Some(Length::Px(28.0).into()),
-                background: Some(Tokenized::Literal(Color(css.to_string()))),
+                background: Some(Tokenized::Literal(Color(shown.to_string()))),
                 ..Default::default()
             },
-            [radius(14.0), border_all(if selected { 3.0 } else { 0.0 }, "#1f2937")],
+            [
+                radius(14.0),
+                border_all_color(if selected { 3.0 } else { 0.0 }, token(|c| c.text.clone())),
+            ],
         )
     });
     ui! {
@@ -653,17 +693,19 @@ pub fn RecordButton(props: &RecordButtonProps) -> Element {
             [radius(if rec { 7.0 } else { 22.0 })],
         )
     });
-    let ring_style = static_style(styled(
-        StyleRules {
-            width: Some(Length::Px(64.0).into()),
-            height: Some(Length::Px(64.0).into()),
-            align_items: Some(AlignItems::Center),
-            justify_content: Some(JustifyContent::Center),
-            background: Some(Tokenized::Literal(Color("rgba(255,255,255,0.96)".into()))),
-            ..Default::default()
-        },
-        [radius(32.0), border_all(3.0, "rgba(17,24,39,0.12)")],
-    ));
+    let ring_style = reactive_style(|| {
+        styled(
+            StyleRules {
+                width: Some(Length::Px(64.0).into()),
+                height: Some(Length::Px(64.0).into()),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::Center),
+                background: Some(Tokenized::Literal(token_alpha(|c| c.surface.clone(), 0.96))),
+                ..Default::default()
+            },
+            [radius(32.0), border_all_color(3.0, token_alpha(|c| c.border.clone(), 0.6))],
+        )
+    });
 
     ui! {
         view(style = ring_style) {
@@ -788,25 +830,35 @@ pub fn RecIndicator(props: &RecIndicatorProps) -> Element {
                 },
                 [radius(5.0)],
             ));
-            let pill_style = static_style(styled(
-                StyleRules {
-                    flex_direction: Some(FlexDirection::Row),
-                    align_items: Some(AlignItems::Center),
-                    gap: Some(Length::Px(7.0).into()),
-                    padding_top: Some(Length::Px(6.0).into()),
-                    padding_bottom: Some(Length::Px(6.0).into()),
-                    padding_left: Some(Length::Px(12.0).into()),
-                    padding_right: Some(Length::Px(12.0).into()),
-                    background: Some(Tokenized::Literal(Color("rgba(17,24,39,0.82)".into()))),
-                    color: Some(Tokenized::Literal(Color("#ffffff".into()))),
-                    ..Default::default()
-                },
-                [radius(13.0)],
-            ));
+            // The badge inverts against the app background: `text` token (near-black
+            // in light, near-white in dark) carries the frosted pill; `text_inverse`
+            // the "REC" label. So the badge reads on both the light and dark stage.
+            let pill_style = reactive_style(|| {
+                styled(
+                    StyleRules {
+                        flex_direction: Some(FlexDirection::Row),
+                        align_items: Some(AlignItems::Center),
+                        gap: Some(Length::Px(7.0).into()),
+                        padding_top: Some(Length::Px(6.0).into()),
+                        padding_bottom: Some(Length::Px(6.0).into()),
+                        padding_left: Some(Length::Px(12.0).into()),
+                        padding_right: Some(Length::Px(12.0).into()),
+                        background: Some(Tokenized::Literal(token_alpha(|c| c.text.clone(), 0.82))),
+                        color: Some(Tokenized::Literal(token(|c| c.text_inverse.clone()))),
+                        ..Default::default()
+                    },
+                    [radius(13.0)],
+                )
+            });
+            // Native text doesn't inherit container `color`; set it on the node too.
+            let rec_color = reactive_style(|| StyleRules {
+                color: Some(Tokenized::Literal(token(|c| c.text_inverse.clone()))),
+                ..Default::default()
+            });
             ui! {
                 view(style = pill_style) {
                     view(style = dot_style) {}
-                    text() { "REC".to_string() }
+                    text(style = rec_color) { "REC".to_string() }
                 }
             }
         })
@@ -874,19 +926,22 @@ pub fn SettingsFab(props: &SettingsFabProps) -> Element {
 
     let fab = focus_gate(focused, move || {
         presence(move || {
-            let glyph =
-                icon_box(icon(ICON_SETTINGS).color(|| Color::from("#374151")).into_element());
-            let fab_style = static_style(styled(
-                StyleRules {
-                    width: Some(Length::Px(44.0).into()),
-                    height: Some(Length::Px(44.0).into()),
-                    align_items: Some(AlignItems::Center),
-                    justify_content: Some(JustifyContent::Center),
-                    background: Some(Tokenized::Literal(Color("rgba(255,255,255,0.92)".into()))),
-                    ..Default::default()
-                },
-                [radius(22.0), border_all(1.0, "rgba(17,24,39,0.08)")],
-            ));
+            let glyph = icon_box(
+                icon(ICON_SETTINGS).color(|| token(|c| c.text.clone())).into_element(),
+            );
+            let fab_style = reactive_style(|| {
+                styled(
+                    StyleRules {
+                        width: Some(Length::Px(44.0).into()),
+                        height: Some(Length::Px(44.0).into()),
+                        align_items: Some(AlignItems::Center),
+                        justify_content: Some(JustifyContent::Center),
+                        background: Some(Tokenized::Literal(token_alpha(|c| c.surface.clone(), 0.92))),
+                        ..Default::default()
+                    },
+                    [radius(22.0), border_all_color(1.0, token_alpha(|c| c.border.clone(), 0.7))],
+                )
+            });
             ui! {
                 view(style = fab_style) {
                     glyph

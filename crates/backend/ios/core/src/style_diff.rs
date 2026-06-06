@@ -78,6 +78,26 @@ pub fn effective_text_color(explicit: Option<&Tokenized<Color>>) -> Tokenized<Co
     }
 }
 
+/// The effective BACKGROUND for an editable text control (UITextField /
+/// UITextView) — explicit author background wins, else the theme's
+/// `color-surface` token instead of UIKit's dark-in-dark-mode
+/// `systemBackground`. The canonical decision lives in
+/// `backend_apple_core::text_control_style` so iOS + macOS share one source of
+/// truth (host-tested there); this is a thin re-export for the iOS call sites.
+/// See that module for the idea-ui `Textarea`-renders-black rationale.
+pub fn effective_input_background(explicit: Option<&Tokenized<Color>>) -> Tokenized<Color> {
+    backend_apple_core::text_control_style::effective_input_background(explicit)
+}
+
+/// The effective TEXT COLOR for an editable text control — explicit author
+/// color wins, else the theme's `color-text` token (never the OS system label
+/// color). Delegates to the shared
+/// `backend_apple_core::text_control_style` decision; its fallback token is
+/// identical to [`effective_text_color`]'s by design (§7).
+pub fn effective_input_text_color(explicit: Option<&Tokenized<Color>>) -> Tokenized<Color> {
+    backend_apple_core::text_control_style::effective_input_text_color(explicit)
+}
+
 /// What to do with a requested corner radius at `apply_style` time.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CornerRadiusDecision {
@@ -511,5 +531,46 @@ mod tests {
                 panic!("absent text color must be a token, so a theme swap re-fires it");
             }
         }
+    }
+
+    // -- Editable text-control background (the Textarea-renders-black bug) --
+    //
+    // A full UIKit/AppKit test isn't reachable on the host (UITextView /
+    // NSTextView only link on-device). We test the pure decision that feeds
+    // the native `setBackgroundColor:` / `drawsBackground` call. The bug: an
+    // editable control with no explicit background renders the OS
+    // `systemBackground` — near-black in dark mode, so idea-ui's Textarea
+    // (which DOES set an explicit `color-surface`) showed as a dark box,
+    // meaning the explicit value wasn't reaching the native control.
+
+    // The iOS re-exports delegate to the shared apple-core decision (where the
+    // exhaustive cases are tested). These assert the delegation resolves to the
+    // theme tokens — never an OS system fill (dark box) — and that absent input
+    // text color lines up with the label decision (same `color-text` token).
+    #[test]
+    fn regression_absent_input_background_uses_theme_surface_not_os_default() {
+        match effective_input_background(None) {
+            Tokenized::Token { name, fallback } => {
+                assert_eq!(name, "color-surface");
+                assert_eq!(fallback.0, "#ffffff");
+            }
+            Tokenized::Literal(_) => {
+                panic!("absent input background must be a token so a theme swap re-fires it");
+            }
+        }
+        // Explicit author background (idea-ui's text_area path) wins unchanged.
+        let surface: Tokenized<Color> =
+            Tokenized::token("color-surface", Color("#ffffff".into()));
+        assert_eq!(effective_input_background(Some(&surface)), surface);
+    }
+
+    #[test]
+    fn input_text_color_matches_label_decision() {
+        assert_eq!(effective_input_text_color(None), effective_text_color(None));
+        let explicit = Tokenized::Literal(Color("#123456".into()));
+        assert_eq!(
+            effective_input_text_color(Some(&explicit)),
+            effective_text_color(Some(&explicit)),
+        );
     }
 }

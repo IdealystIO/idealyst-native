@@ -53,9 +53,10 @@ pub use theme_runtime::{
 // most often — keeping them flat avoids `idea_theme::theme::IdeaTheme`
 // pile-ups in user code.
 pub use theme::{
-    dark_theme, idea_color, idea_header, install_idea_theme, light_theme, set_idea_theme, Colors,
-    IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing, Typography,
-    DEFAULT_FONT_STACK,
+    dark_theme, idea_color, idea_header, install_idea_theme, is_canonical_token, light_theme,
+    set_idea_theme, Colors, IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents,
+    Radius, Spacing, Typography, CANONICAL_NEUTRAL_TOKENS, DEFAULT_FONT_STACK, INTENT_NAMES,
+    INTENT_SLOTS,
 };
 
 // The legacy `Intent` trait + 7 built-in marker types for apps that

@@ -825,6 +825,64 @@ pub fn apply_text_style(
     }
 }
 
+/// Apply the theme-resolved background + text color to an editable text control
+/// (UITextField / UITextView).
+///
+/// `apply_text_style(.., is_label = false)` deliberately leaves an editable
+/// control's text color at its native default when no explicit `color:` is set
+/// — but a native `systemBackground`/`labelColor` tracks the OS appearance and
+/// is dark/white under dark mode, so a light-theme app's text input renders as
+/// a near-black box with invisible text (the idea-ui `Textarea` bug). Editable
+/// controls must follow the installed THEME, not the OS appearance, exactly
+/// like display text (CLAUDE.md §7). This routes BOTH:
+///
+///   * background → explicit `style.background`, else theme `color-surface`;
+///   * text color → explicit `style.color`,      else theme `color-text`;
+///
+/// through the SAME `Tokenized<Color>::resolve()` machinery an authored token
+/// uses (so theme swaps re-fire and the bytes match web/Android), via the pure,
+/// host-tested [`crate::style_diff::effective_input_background`] /
+/// [`crate::style_diff::effective_input_text_color`] decisions. Caret / tint /
+/// selection are untouched (they're set elsewhere from `caret_color`).
+pub fn apply_editable_text_control_style(view: &UIView, style: &StyleRules) {
+    // Background. UIKit text controls paint their own fill, so an explicit
+    // `setBackgroundColor:` (set generically by `apply_style_to_view`) already
+    // wins for them — but a BARE input has no `style.background`, so resolve
+    // the theme surface here and set it unconditionally. The generic setter and
+    // this one converge on the same value when `background` is explicit.
+    let bg_tok = crate::style_diff::effective_input_background(style.background.as_ref());
+    let bg = color_to_uicolor(&bg_tok.resolve());
+    match effective_transition(style.background_transition.as_ref()) {
+        Some(trans) => {
+            let view_ref: Retained<UIView> = unsafe {
+                Retained::retain(view as *const UIView as *mut UIView).unwrap()
+            };
+            let bg2 = bg.clone();
+            animate(&trans, Rc::new(move || {
+                view_ref.setBackgroundColor(Some(&bg2));
+            }));
+        }
+        None => view.setBackgroundColor(Some(&bg)),
+    }
+
+    // Text color.
+    let color_tok = crate::style_diff::effective_input_text_color(style.color.as_ref());
+    let c = color_to_uicolor(&color_tok.resolve());
+    match effective_transition(style.color_transition.as_ref()) {
+        Some(trans) => {
+            let view_ref: Retained<UIView> = unsafe {
+                Retained::retain(view as *const UIView as *mut UIView).unwrap()
+            };
+            animate(&trans, Rc::new(move || {
+                let _: () = unsafe { msg_send![&view_ref, setTextColor: &*c] };
+            }));
+        }
+        None => {
+            let _: () = unsafe { msg_send![view, setTextColor: &*c] };
+        }
+    }
+}
+
 // ==========================================================================
 // Per-side border subviews
 // ==========================================================================

@@ -129,9 +129,22 @@ declare_class!(
 impl CallbackTarget {
     pub fn new(mtm: MainThreadMarker, callback: Rc<dyn Fn()>) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
+        // Stamp the settle clock at CREATION. The control is built immediately
+        // before it's mounted (navigator screens build on push, modals on open),
+        // so create-time ≈ on-screen-time. The phantom mount-tap fires within the
+        // same run-loop turn (≪ TAP_GATE_SETTLE_SECS after create) → rejected; a
+        // real human tap is always >0.35s after create → allowed on the FIRST try.
+        //
+        // The OLD behavior stamped on the first `gestureRecognizerShouldBegin:`
+        // call and rejected it outright — which assumed a phantom tap always
+        // arrives first. On a pushed screen with NO phantom (e.g. the whiteboard's
+        // Settings), that ate the user's first real tap on every Pressable/Link
+        // (SegmentedControl, Switch, …). Anchoring on create-time fixes that
+        // without re-opening the mount-time auto-open bug for immediate mounts.
+        let now = unsafe { CACurrentMediaTime() };
         let this = this.set_ivars(CallbackTargetIvars {
             callback: RefCell::new(Some(callback)),
-            window_entry: std::cell::Cell::new(-1.0),
+            window_entry: std::cell::Cell::new(now),
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -1101,15 +1114,32 @@ mod tests {
     // Regression: Link/Pressable on iOS fired `on_click` at mount.
     // UIKit delivered a phantom tap in the same run-loop turn the view
     // entered the window (QuillEMR Schedule auto-opened the appt detail
-    // modal with no user tap). `tap_gate_decision` must reject that
-    // first, run-loop-zero recognition.
+    // modal with no user tap). With `window_entry` stamped at CREATION
+    // (≈ on-demand mount), the phantom — which fires within the same
+    // run-loop turn, ≪ TAP_GATE_SETTLE_SECS after create — is rejected.
     #[test]
     fn regression_ios_pressable_tap_rejected_at_mount() {
-        // First call: window-entry not yet stamped (-1.0). UIKit's
-        // synthetic mount-time tap MUST be rejected, and `now` stamped.
-        let (allow, entry) = tap_gate_decision(-1.0, 100.0);
+        let create = 100.0;
+        // Phantom tap, same run-loop turn as mount → well within the settle
+        // window of create-time → rejected.
+        let (allow, entry) = tap_gate_decision(create, create + 0.01);
         assert!(!allow, "the mount-time phantom tap must be gated");
-        assert_eq!(entry, 100.0, "first call stamps the window-entry time");
+        assert_eq!(entry, create, "stamp stays at create-time");
+    }
+
+    // Regression: the user's FIRST real tap on a pushed screen with NO phantom
+    // mount-tap (e.g. the whiteboard Settings: SegmentedControl/Switch) used to be
+    // eaten — the OLD gate stamped on the first should-begin call and rejected it,
+    // assuming a phantom always arrives first. Stamping at CREATE-time instead
+    // means the first real human tap (well past the settle window) is allowed on
+    // the first try.
+    #[test]
+    fn regression_first_real_tap_on_pushed_screen_is_allowed() {
+        let create = 100.0;
+        let first_real_tap = create + 1.0; // human reaction, past settle
+        let (allow, entry) = tap_gate_decision(create, first_real_tap);
+        assert!(allow, "first real tap on a no-phantom screen must fire");
+        assert_eq!(entry, create);
     }
 
     #[test]
@@ -1134,8 +1164,11 @@ mod tests {
 
     #[test]
     fn tap_exactly_at_settle_boundary_is_allowed() {
-        let now = 100.0 + TAP_GATE_SETTLE_SECS;
-        let (allow, _) = tap_gate_decision(100.0, now);
+        // Anchor entry at 0.0 so `now - entry` is EXACTLY TAP_GATE_SETTLE_SECS.
+        // Using a large base (e.g. 100.0 + 0.35 - 100.0) suffers catastrophic
+        // float cancellation and lands a hair below the threshold, which would
+        // spuriously fail the inclusive (`>=`) boundary it's meant to assert.
+        let (allow, _) = tap_gate_decision(0.0, TAP_GATE_SETTLE_SECS);
         assert!(allow, "boundary is inclusive (>=)");
     }
 }

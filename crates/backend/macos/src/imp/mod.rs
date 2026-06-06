@@ -958,6 +958,46 @@ pub(crate) const THEME_TEXT_TOKEN: &str = "color-text";
 /// user's macOS is in dark mode.
 const THEME_TEXT_FALLBACK: &str = "#1a1a1f";
 
+/// Resolve the editable text control's effective BACKGROUND `Color` through the
+/// shared, host-tested `backend_apple_core::text_control_style` decision and the
+/// same `Tokenized<Color>::resolve()` machinery a styled `background:` token
+/// uses: explicit author background wins, else the theme's `color-surface`
+/// token (NOT AppKit's system text-control fill, dark in dark mode). This is
+/// what stops the idea-ui `Textarea` rendering as a near-black box. iOS shares
+/// the same decision module (CLAUDE.md §7).
+pub(crate) fn input_background_color(
+    explicit: Option<&runtime_core::Tokenized<Color>>,
+) -> Color {
+    backend_apple_core::text_control_style::effective_input_background(explicit).resolve()
+}
+
+/// Resolve the editable text control's effective TEXT `Color`: explicit author
+/// color wins, else the theme's `color-text` token (NOT the OS system label
+/// color, white in dark mode). Shared decision; mirrors `theme_text_color`'s
+/// fallback by design.
+pub(crate) fn input_text_color(
+    explicit: Option<&runtime_core::Tokenized<Color>>,
+) -> Color {
+    backend_apple_core::text_control_style::effective_input_text_color(explicit).resolve()
+}
+
+/// True when `view` is an AppKit editable text control (NSTextField — which
+/// includes the NSSecureTextField password subclass — or NSTextView). These
+/// paint their own background + text through AppKit (NOT the CALayer
+/// `backgroundColor` that `apply_style_to_view` set), so `apply_style` must
+/// mirror the author's / theme's colors onto the AppKit-level properties.
+fn is_editable_text_control(view: &NSView) -> bool {
+    for name in ["NSTextField", "NSTextView"] {
+        if let Some(cls) = objc2::runtime::AnyClass::get(name) {
+            let is: bool = unsafe { msg_send![view, isKindOfClass: cls] };
+            if is {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// The installed theme's body-text `Color`, resolved through the SAME token
 /// machinery a styled `color:` token resolves through (`Tokenized<Color>::
 /// resolve()` against the `color-text` token). Returns the framework light
@@ -1967,6 +2007,18 @@ impl Backend for MacosBackend {
             Retained::cast::<NSObject>(target)
         });
 
+        // Create-time theme default: an NSTextField with no authored style
+        // still gets the theme's surface fill + text color (drawsBackground
+        // forced on) so a BARE `text_input` is never AppKit's dark-in-dark-mode
+        // system fill before/without an `apply_style`. Explicit author colors
+        // override in `apply_style`'s editable-text-control arm. Mirrors
+        // `create_text`'s `theme_text_color` create-time default.
+        let bg = color_to_nscolor(&input_background_color(None));
+        let _: () = unsafe { msg_send![&field, setDrawsBackground: true] };
+        let _: () = unsafe { msg_send![&field, setBackgroundColor: &*bg] };
+        let fg = color_to_nscolor(&input_text_color(None));
+        let _: () = unsafe { msg_send![&field, setTextColor: &*fg] };
+
         // Upcast NSTextField → NSView via the ObjC class hierarchy.
         let view: Retained<NSView> = unsafe {
             Retained::retain(Retained::as_ptr(&field) as *mut NSView)
@@ -2046,6 +2098,16 @@ impl Backend for MacosBackend {
         let _: () = unsafe { msg_send![&view, setString: &*ns_val] };
         let _: () = unsafe { msg_send![&view, setEditable: true] };
         let _: () = unsafe { msg_send![&view, setRichText: false] };
+
+        // Create-time theme default (see `create_text_input`): a bare
+        // `text_area` gets the theme surface + text color with drawsBackground
+        // forced on, so an NSTextView is never AppKit's dark system fill in
+        // dark mode. Explicit author colors override in `apply_style`.
+        let bg = color_to_nscolor(&input_background_color(None));
+        let _: () = unsafe { msg_send![&view, setDrawsBackground: true] };
+        let _: () = unsafe { msg_send![&view, setBackgroundColor: &*bg] };
+        let fg = color_to_nscolor(&input_text_color(None));
+        let _: () = unsafe { msg_send![&view, setTextColor: &*fg] };
 
         // Wire change notification.
         // `NSTextDidChangeNotification` fires every edit on the
@@ -2415,17 +2477,23 @@ impl Backend for MacosBackend {
                 init
             ]
         };
-        let _: () = unsafe { msg_send![&spinner, setStyle: 1isize] };
+        // INVARIANT: `setStyle:`/`setControlSize:` take NSUInteger args
+        // (`NSProgressIndicatorStyle` / `NSControlSize`, encoding `Q`,
+        // unsigned). The previous raw `msg_send![…, setStyle: 1isize]` passed
+        // a signed `isize` (`q`); objc2's runtime encoding check rejects the
+        // mismatch with a NON-UNWINDING panic → the whole process SIGABRTs
+        // (uncatchable) the instant a spinner is created. We use the typed
+        // objc2 enums so the unsigned type is COMPILE-enforced — a stray
+        // integer literal can't reintroduce the crash.
+        unsafe { spinner.setStyle(objc2_app_kit::NSProgressIndicatorStyle::Spinning) };
         let _: () = unsafe { msg_send![&spinner, setIndeterminate: true] };
-        // Map ActivityIndicatorSize → controlSize. NSControlSize:
-        // 0 = regular, 1 = small, 3 = mini. Small for ::Small, large
-        // for ::Large (use Regular as the "large" mapping — macOS's
-        // spinner doesn't have an explicit large variant).
-        let control_size: isize = match size {
-            ActivityIndicatorSize::Small => 1,
-            ActivityIndicatorSize::Large => 0,
+        // Map ActivityIndicatorSize → NSControlSize. macOS's spinner has no
+        // explicit "large" variant, so ::Large maps to Regular.
+        let control_size = match size {
+            ActivityIndicatorSize::Small => objc2_app_kit::NSControlSize::Small,
+            ActivityIndicatorSize::Large => objc2_app_kit::NSControlSize::Regular,
         };
-        let _: () = unsafe { msg_send![&spinner, setControlSize: control_size] };
+        unsafe { spinner.setControlSize(control_size) };
         let _: () = unsafe { msg_send![&spinner, startAnimation: std::ptr::null::<NSObject>()] };
 
         let view: Retained<NSView> = unsafe {
@@ -2685,6 +2753,25 @@ impl Backend for MacosBackend {
                 if let Some(layout_node) = self.layout_of(view) {
                     self.layout.mark_dirty(layout_node);
                 }
+            }
+            MacosNode::View(_) if is_editable_text_control(view) => {
+                // NSTextField / NSTextView paint their OWN background + text
+                // through AppKit (the system text-control fill + `labelColor`),
+                // which composites OVER the CALayer `backgroundColor` that
+                // `apply_style_to_view` set and tracks the OS appearance — so a
+                // light-theme app's input rendered as a near-black box with
+                // invisible text under dark mode (the idea-ui `Textarea` bug).
+                // Mirror the THEME-resolved colors onto the AppKit-level
+                // properties: background→color-surface (explicit wins),
+                // text→color-text (explicit wins), and force `drawsBackground`
+                // so the fill actually paints. Editing behaviour (caret,
+                // selection, secure entry) is untouched — these are pure
+                // appearance setters. Shared decision with iOS (§7).
+                let bg = color_to_nscolor(&input_background_color(style.background.as_ref()));
+                let _: () = unsafe { msg_send![view, setDrawsBackground: true] };
+                let _: () = unsafe { msg_send![view, setBackgroundColor: &*bg] };
+                let fg = color_to_nscolor(&input_text_color(style.color.as_ref()));
+                let _: () = unsafe { msg_send![view, setTextColor: &*fg] };
             }
             MacosNode::View(_) => {
                 // NSScrollView + its NSClipView paint their background through

@@ -2,11 +2,11 @@
 //! surface, and the draggable camera widget. The capture-excluded floating
 //! chrome lives in [`crate::chrome`].
 
-use crate::style::{reactive_style, static_style};
+use crate::style::{reactive_style, static_style, token};
 use crate::{parse_rgba, paint_stroke, BoardState, CanvasCapture, RecHandle, Stroke, Strokes};
 use runtime_core::{
     component, ui, Element, IntoElement, Length, Overflow, Position, Signal, StyleRules,
-    TouchPhase, TouchResponse,
+    Tokenized, TouchPhase, TouchResponse,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -76,11 +76,13 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
     // a screen is pushed (they belong to the board screen).
     let chrome = crate::chrome::build_chrome(focused, s, strokes.clone(), rec_handle, version, capture);
 
-    let root_style = static_style(StyleRules {
+    // Reactive so the letterbox around the stage follows the app theme (light/dark).
+    let root_style = reactive_style(|| StyleRules {
         width: Some(Length::pct(100.0).into()),
         height: Some(Length::pct(100.0).into()),
         position: Some(Position::Relative),
         overflow: Some(Overflow::Hidden),
+        background: Some(Tokenized::Literal(token(|c| c.background.clone()))),
         ..Default::default()
     });
 
@@ -205,11 +207,16 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
                         return TouchResponse::IGNORED;
                     }
                     *active = Some(ev.id);
-                    let rgba = parse_rgba(color_css.get());
+                    // Flag ink strokes so they re-resolve against the backdrop every
+                    // paint; snapshot the current resolution as the `rgba` fallback.
+                    let raw = color_css.get();
+                    let ink = raw == crate::INK;
+                    let rgba = parse_rgba(crate::resolve_color(raw, canvas_bg.get(), dark.get()));
                     strokes.borrow_mut().push(Stroke {
                         points: vec![(ev.position.x, ev.position.y)],
                         width: width.get(),
                         rgba,
+                        ink,
                     });
                     version.set(version.get().wrapping_add(1));
                     TouchResponse::CLAIMED
@@ -271,8 +278,12 @@ fn build_canvas(
             s.path().add_path(Path::rect(0.0, 0.0, 100_000.0, 100_000.0));
             s.fill(Color::new(r, g, b, 255));
 
+            let cb = canvas_bg.get();
+            let dk = dark.get();
             for stroke in strokes.borrow().iter() {
-                paint_stroke(s, stroke);
+                // `ink` strokes re-resolve against the live backdrop so they stay
+                // readable across canvas-color / theme changes.
+                paint_stroke(s, stroke, crate::stroke_color(stroke, cb, dk));
             }
         }),
         // Self-capture sink: the vello renderer reads back each frame here while

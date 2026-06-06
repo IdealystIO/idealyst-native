@@ -53,3 +53,9 @@ pub mod icon_path;
 // shape so the iOS-core re-export stays a one-line `pub use`.
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub use log::apple_log;
+
+/// Pure style decisions for native editable text controls (UITextField /
+/// UITextView, NSTextField / NSTextView). NOT OS-gated — it's `runtime_core`
+/// only, so it builds AND unit-tests on the host while iOS + macOS share one
+/// source of truth for "what background/color does an editable control get".
+pub mod text_control_style;

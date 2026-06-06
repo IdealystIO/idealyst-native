@@ -1519,6 +1519,15 @@ impl Backend for IosBackend {
         }
 
         let node = IosNode::TextField(field);
+        // Create-time theme default: even before any `apply_style`, a bare
+        // `text_input` resolves its background→color-surface + text→color-text
+        // (the `None`/no-explicit path) instead of UIKit's dark-in-dark-mode
+        // `systemBackground` + `labelColor`. An authored style overrides in
+        // `apply_style`. Mirrors macOS's create-time default.
+        backend_ios_core::style::apply_editable_text_control_style(
+            node.as_view(),
+            &StyleRules::default(),
+        );
         a11y::apply(&node, a11y, None);
         node
     }
@@ -1619,6 +1628,13 @@ impl Backend for IosBackend {
         }
 
         let node = IosNode::TextView(view);
+        // Create-time theme default (see `create_text_input`): a bare
+        // `text_area` / UITextView gets the theme surface + text color instead
+        // of UIKit's dark `systemBackground` in dark mode.
+        backend_ios_core::style::apply_editable_text_control_style(
+            node.as_view(),
+            &StyleRules::default(),
+        );
         a11y::apply(&node, a11y, None);
         node
     }
@@ -2842,6 +2858,13 @@ impl Backend for IosBackend {
             }
             IosNode::TextField(field) => {
                 apply_text_style(view, style, false, &self.font_registry);
+                // Editable controls follow the installed THEME, not the OS
+                // appearance: resolve background→color-surface, text→color-text
+                // when the author didn't set them, so a bare text_input isn't a
+                // dark `systemBackground` box in dark mode, and idea-ui's
+                // explicit color-surface/color-text actually paints. See
+                // `backend_ios_core::style::apply_editable_text_control_style`.
+                backend_ios_core::style::apply_editable_text_control_style(view, style);
                 // Caret color → UIKit `tintColor`. On a UITextField the
                 // caret + selection handles both follow tintColor, so a
                 // single setter covers them. Mirrors the web `caret-color`
@@ -2866,6 +2889,10 @@ impl Backend for IosBackend {
                 // pass `is_label = false` because UITextView is an
                 // editable widget, not a label.
                 apply_text_style(view, style, false, &self.font_registry);
+                // Theme-driven background + text color (color-surface /
+                // color-text fallback when unset) so the multi-line
+                // text_area / idea-ui Textarea isn't a dark box in dark mode.
+                backend_ios_core::style::apply_editable_text_control_style(view, style);
                 if let Some(caret) = &style.caret_color {
                     let c = color_to_uicolor(&caret.resolve());
                     if let Some(trans) = &style.caret_color_transition {

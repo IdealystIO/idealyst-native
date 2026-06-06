@@ -79,6 +79,29 @@
 /// ```ignore
 /// let bg = color_token!("tone-hype-fill-bg", "#ff00aa");
 /// ```
+///
+/// # The `name` argument when overriding a built-in theme color
+///
+/// When you assign a `color_token!(...)` to a field of [`Colors`] or
+/// [`IntentColors`] (rebranding `light_theme()`/`dark_theme()`), the
+/// **first argument is irrelevant** — `install_idea_theme` registers each
+/// theme field's *value* under that field's fixed CANONICAL token name
+/// (`color-surface`, `intent-primary-solid-bg`, …; see
+/// [`is_canonical_token`](crate::theme::is_canonical_token)), which is what
+/// idea-ui's stylesheets resolve by. So:
+///
+/// ```ignore
+/// let mut t = light_theme();
+/// t.colors.surface = color_token!("anything-you-like", "#ffffff"); // WORKS
+/// t.intents.primary.solid_bg = color_token!("brand-bg", "#3f73e3"); // WORKS
+/// ```
+///
+/// both take effect — the override is keyed by the field, not by the name
+/// you pass. (Historically a non-canonical name here *silently no-opped*;
+/// that footgun is fixed.) The `name` is only load-bearing for **brand-new
+/// custom tokens** (e.g. a `tone!`/`variant!` slot whose value reaches a
+/// stylesheet that references the same string) — there it must match the
+/// reader exactly.
 #[macro_export]
 macro_rules! color_token {
     ($name:literal, $hex:literal) => {

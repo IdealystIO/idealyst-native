@@ -89,21 +89,6 @@ impl CanvasBg {
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
-        CANVAS_BGS
-            .iter()
-            .find(|(_, v)| *v == self)
-            .map(|(l, _)| *l)
-            .unwrap_or("Auto")
-    }
-
-    pub(crate) fn from_label(s: &str) -> CanvasBg {
-        CANVAS_BGS
-            .iter()
-            .find(|(l, _)| *l == s)
-            .map(|(_, v)| *v)
-            .unwrap_or(CanvasBg::Auto)
-    }
 }
 
 /// The canvas "stage" rectangle: the largest box of aspect `aw:ah` that fits
