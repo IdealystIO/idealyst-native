@@ -879,6 +879,7 @@ mod regression_tests {
                 name: "Demo".to_string(),
                 bundle_id: Some("ai.example.demo".to_string()),
                 version: "0.0.1".to_string(),
+                build_number: "1".to_string(),
                 splash: SplashConfig {
                     background: "#000000".to_string(),
                     title: "Demo".to_string(),

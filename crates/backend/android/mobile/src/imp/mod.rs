@@ -2511,6 +2511,44 @@ impl Backend for AndroidBackend {
         primitives::toggle::update_value(node, value)
     }
 
+    fn set_app_background(&mut self, color: &runtime_core::Tokenized<runtime_core::Color>) {
+        // Paint the activity window's DECOR view — NOT a content view — so the
+        // app background fills the ENTIRE screen, behind any safe-area-inset
+        // content and behind hidden system bars / the display cutout. Without
+        // this, a full-screen (immersive) screen shows the decor view's default
+        // black in the now-uncovered status/nav-bar strips and the cutout. The
+        // framework calls this on theme install + swap (see
+        // `style::set_app_background`), so the window tracks the theme bg.
+        let Some(packed) = backend_android_core::helpers::parse_color(&color.value().0) else {
+            return;
+        };
+        with_env(|env| {
+            let decor = env
+                .call_method(
+                    &self.context.as_obj(),
+                    "getWindow",
+                    "()Landroid/view/Window;",
+                    &[],
+                )
+                .ok()
+                .and_then(|v| v.l().ok())
+                .filter(|w| !w.is_null())
+                .and_then(|w| {
+                    env.call_method(&w, "getDecorView", "()Landroid/view/View;", &[])
+                        .ok()
+                        .and_then(|v| v.l().ok())
+                });
+            if let Some(decor) = decor {
+                let _ = env.call_method(
+                    &decor,
+                    "setBackgroundColor",
+                    "(I)V",
+                    &[JValue::Int(packed)],
+                );
+            }
+        });
+    }
+
     fn apply_safe_area_padding(
         &mut self,
         node: &Self::Node,

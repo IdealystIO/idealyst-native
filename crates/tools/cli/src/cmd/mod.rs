@@ -9,6 +9,7 @@ pub mod icon;
 pub mod init;
 pub mod mcp;
 pub mod new;
+pub mod publish;
 pub mod run;
 pub mod rustc_capture;
 pub mod scaffold;

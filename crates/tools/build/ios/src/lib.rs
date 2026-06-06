@@ -104,8 +104,16 @@ pub struct AppMetadata {
     /// flows through `idealyst build --roku` without a misleading
     /// "iOS error" surfacing at CLI parse time.
     pub bundle_id: Option<String>,
-    /// User-visible version string. Falls back to `"0.0.1"`.
+    /// User-visible version string (→ `CFBundleShortVersionString`).
+    /// Falls back to `"0.0.1"`.
     pub version: String,
+    /// Build number (→ `CFBundleVersion`). App Store Connect requires
+    /// this to be unique and monotonically increasing across uploads of
+    /// the same `version`; the dev/sim paths don't care, so it defaults
+    /// to `"1"`. Set in TOML as
+    /// `[package.metadata.idealyst.app].build_number`, or override per
+    /// upload via `idealyst publish ios --build-number`.
+    pub build_number: String,
     /// Splash-screen settings. Always present — if the user didn't
     /// declare `[package.metadata.idealyst.app.splash]`, defaults are
     /// filled in so every project gets a working splash without
@@ -402,6 +410,8 @@ struct RawAppMetadata {
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
+    build_number: Option<String>,
+    #[serde(default)]
     splash: Option<RawSplashConfig>,
     #[serde(default)]
     targets: Option<Vec<String>>,
@@ -517,6 +527,7 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         name: app_name,
         bundle_id,
         version: app_raw.version.unwrap_or_else(|| "0.0.1".to_string()),
+        build_number: app_raw.build_number.unwrap_or_else(|| "1".to_string()),
         splash,
         targets,
         server_bin: app_raw.server_bin,
@@ -803,6 +814,7 @@ mod regression_tests {
                 name: "Demo".to_string(),
                 bundle_id: Some("ai.example.demo".to_string()),
                 version: "0.0.1".to_string(),
+                build_number: "1".to_string(),
                 splash: SplashConfig {
                     background: "#000000".to_string(),
                     title: "Demo".to_string(),
@@ -863,6 +875,33 @@ mod regression_tests {
             "iOS wrapper's user-crate dep should be a path dep so the local \
              code is what links into the staticlib; got {:?}",
             user_dep,
+        );
+    }
+
+    /// `build_number` (→ `CFBundleVersion`) parses from the manifest when
+    /// present and defaults to `"1"` otherwise. App Store Connect rejects a
+    /// re-used build number, so the field has to round-trip from TOML.
+    #[test]
+    fn build_number_parses_and_defaults() {
+        fn parse_with(extra: &str) -> Manifest {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let cargo = format!(
+                "[package]\nname = \"demo\"\nversion = \"0.0.1\"\n\
+                 [package.metadata.idealyst.app]\nbundle_id = \"ai.example.demo\"\n{extra}",
+            );
+            std::fs::write(tmp.path().join("Cargo.toml"), cargo).unwrap();
+            parse_manifest(tmp.path()).expect("parse manifest")
+        }
+
+        assert_eq!(
+            parse_with("").app.build_number,
+            "1",
+            "build_number should default to \"1\" when unset",
+        );
+        assert_eq!(
+            parse_with("build_number = \"42\"\n").app.build_number,
+            "42",
+            "build_number should round-trip from the manifest",
         );
     }
 }

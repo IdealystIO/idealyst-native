@@ -58,6 +58,26 @@ use crate::{
 };
 
 const PBXPROJ_TMPL: &str = include_str!("../templates/project.pbxproj.tmpl");
+/// Distribution variant of the pbxproj. Byte-identical to [`PBXPROJ_TMPL`]
+/// except the Release config signs with `"Apple Distribution"` (an App
+/// Store identity) instead of `"iPhone Developer"`, so `xcodebuild archive`
+/// + `-allowProvisioningUpdates` mints a *distribution* provisioning
+/// profile. Selected by [`SigningKind::Distribution`] (the `idealyst
+/// publish ios` path); the device-install path keeps the development one.
+const PBXPROJ_DIST_TMPL: &str = include_str!("../templates/project.pbxproj.dist.tmpl");
+
+/// Which signing identity the generated `.xcodeproj` should request.
+/// Drives the pbxproj template choice — development for on-device installs,
+/// distribution for App Store archives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SigningKind {
+    /// `"iPhone Developer"` — on-device install via `idealyst run ios
+    /// --device`. Mints a development profile.
+    Development,
+    /// `"Apple Distribution"` — App Store archive via `idealyst publish
+    /// ios`. Mints a distribution profile.
+    Distribution,
+}
 
 #[derive(Clone, Debug)]
 pub struct DeviceOptions {
@@ -97,7 +117,8 @@ pub fn run(project_dir: &Path, opts: DeviceOptions) -> Result<DeviceArtifact> {
     let project_dir = std::fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
     let manifest = build_ios::parse_manifest(&project_dir)?;
-    let bundle_id = manifest.app.require_bundle_id()?.to_string();
+    // Fail fast on a missing bundle id before the slow build / device probe.
+    manifest.app.require_bundle_id()?;
 
     // ── 0. Resolve the target device UP FRONT ────────────────────
     // Fail before the (slow) Rust build if no device is attached — a
@@ -118,6 +139,96 @@ pub fn run(project_dir: &Path, opts: DeviceOptions) -> Result<DeviceArtifact> {
             user_features: opts.user_features.clone(),
         },
     )?;
+
+    // ── 2-5. Lay out the signed-build project dir (shared with the
+    // `idealyst publish ios` archive path — see [`prepare_xcode_project`]).
+    // Development signing → on-device install profile.
+    let prepared = prepare_xcode_project(
+        &project_dir,
+        &manifest,
+        &artifact,
+        &PrepareOpts {
+            team: opts.team.clone(),
+            signing: SigningKind::Development,
+            subdir: "ios-device",
+            source: opts.source.clone(),
+        },
+    )?;
+
+    // ── 6. xcodebuild: sign + build for the specific device ──────
+    let build_dir = prepared.project_root.join("build");
+    xcodebuild_for_device(&prepared.xcodeproj, &prepared.scheme, &udid, &build_dir)?;
+
+    // xcodebuild writes the signed bundle here.
+    let app_bundle = build_dir
+        .join("Build")
+        .join("Products")
+        .join("Debug-iphoneos")
+        .join(format!("{}.app", prepared.scheme));
+    if !app_bundle.is_dir() {
+        anyhow::bail!(
+            "xcodebuild reported success but no .app at {}",
+            app_bundle.display(),
+        );
+    }
+
+    // ── 7. ios-deploy: install + launch ──────────────────────────
+    install_and_launch(&udid, &app_bundle)?;
+
+    Ok(DeviceArtifact {
+        app_bundle,
+        device_udid: udid,
+        xcodeproj: prepared.xcodeproj,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Shared Xcode-project layout (device install + App Store archive)
+// ---------------------------------------------------------------------------
+
+/// Knobs for [`prepare_xcode_project`]. The two callers (device install,
+/// App Store publish) differ only in signing identity and the on-disk
+/// sub-directory; everything else (Swift glue, icons, Info.plist,
+/// framework derivation) is identical.
+pub(crate) struct PrepareOpts {
+    /// Apple Developer team ID embedded as `DEVELOPMENT_TEAM`.
+    pub team: String,
+    /// Development vs distribution signing — picks the pbxproj template.
+    pub signing: SigningKind,
+    /// Project sub-directory under the wrapper root, e.g. `"ios-device"`
+    /// (install) or `"ios-dist"` (publish), so the two never collide.
+    pub subdir: &'static str,
+    /// Where the wrapper sources framework crates from (for `wrapper_root`
+    /// + the cargo-metadata framework walk).
+    pub source: FrameworkSource,
+}
+
+/// A laid-out, ready-to-`xcodebuild` Xcode project.
+pub(crate) struct PreparedProject {
+    /// The project root dir (holds `Info.plist`, icons, `swift/`, `.xcodeproj`).
+    pub project_root: PathBuf,
+    /// The generated `.xcodeproj`.
+    pub xcodeproj: PathBuf,
+    /// The scheme / target / executable name (title-cased project name).
+    pub scheme: String,
+}
+
+/// Render the Swift glue + bridging header + icons + Info.plist + a
+/// `.xcodeproj` (no `xcodegen` dependency) for an already-built staticlib.
+/// Shared by the device-install path ([`run`]) and the App Store archive
+/// path ([`crate::publish::publish`]). The only variation is the signing
+/// identity (via `opts.signing`) and the on-disk sub-directory.
+///
+/// Splash is forced OFF (duration 0): signed builds mount the framework
+/// immediately and the splash path isn't needed to validate signing.
+pub(crate) fn prepare_xcode_project(
+    project_dir: &Path,
+    manifest: &Manifest,
+    artifact: &build_ios::BuildArtifact,
+    opts: &PrepareOpts,
+) -> Result<PreparedProject> {
+    let bundle_id = manifest.app.require_bundle_id()?.to_string();
+
     // The staticlib's parent dir is what `LIBRARY_SEARCH_PATHS` points at;
     // its `-l` name is the filename stem minus `lib`/`.a`.
     let lib_dir = artifact
@@ -137,44 +248,38 @@ pub fn run(project_dir: &Path, opts: DeviceOptions) -> Result<DeviceArtifact> {
     // panics at launch. See [`crate::frameworks`].
     let frameworks = collect_ios_frameworks(&wrapper_manifest)?;
 
-    // ── 2. Lay out the device project dir ────────────────────────
-    // Sibling of the sim `ios/` dir so the two never collide.
     let project_root = opts
         .source
-        .wrapper_root(&project_dir)
+        .wrapper_root(project_dir)
         .join(&manifest.name)
-        .join("ios-device");
+        .join(opts.subdir);
     let swift_dir = project_root.join("swift");
     let executable_name = title_case_for_executable(&manifest.name);
     std::fs::create_dir_all(&swift_dir)
         .with_context(|| format!("create {}", swift_dir.display()))?;
 
-    // ── 3. Swift sources + bridging header ───────────────────────
-    // Splash is forced OFF for device builds (the splash duration is
-    // substituted to 0): on-device we want the framework mounted
-    // immediately, and the splash path isn't needed to validate signing.
+    // Swift sources + bridging header (splash forced off — see fn doc).
     std::fs::write(swift_dir.join("AppDelegate.swift"), APP_DELEGATE_SWIFT)?;
     std::fs::write(
         swift_dir.join("ViewController.swift"),
-        render_view_controller(&splashless(&manifest), &RunMode::Local),
+        render_view_controller(&splashless(manifest), &RunMode::Local),
     )?;
     std::fs::write(swift_dir.join("BridgingHeader.h"), BRIDGING_HEADER_LOCAL_H)?;
 
-    // ── 4. App-icon PNGs + Info.plist ────────────────────────────
-    // Icons land next to the Info.plist; xcodebuild copies them into the
-    // bundle. The CFBundleIcons snippet is spliced into the plist below.
-    let icon_plist_entries = sync_ios_icons_into_bundle(&project_dir, &project_root)?;
+    // App-icon PNGs + Info.plist. Icons land next to the Info.plist;
+    // xcodebuild copies them into the bundle.
+    let icon_plist_entries = sync_ios_icons_into_bundle(project_dir, &project_root)?;
     std::fs::write(
         project_root.join("Info.plist"),
         render_device_info_plist(
-            &manifest,
+            manifest,
             &executable_name,
             &icon_plist_entries,
             &permission_plist,
         )?,
     )?;
 
-    // ── 5. Generate the .xcodeproj (no xcodegen dependency) ──────
+    // Generate the .xcodeproj (no xcodegen dependency).
     let xcodeproj = project_root.join(format!("{executable_name}.xcodeproj"));
     write_xcodeproj(
         &xcodeproj,
@@ -185,33 +290,14 @@ pub fn run(project_dir: &Path, opts: DeviceOptions) -> Result<DeviceArtifact> {
             library_search_path: &lib_dir,
             lib_name: &lib_name,
             frameworks: &frameworks,
+            signing: opts.signing,
         },
     )?;
 
-    // ── 6. xcodebuild: sign + build for the specific device ──────
-    let build_dir = project_root.join("build");
-    xcodebuild_for_device(&xcodeproj, &executable_name, &udid, &build_dir)?;
-
-    // xcodebuild writes the signed bundle here.
-    let app_bundle = build_dir
-        .join("Build")
-        .join("Products")
-        .join("Debug-iphoneos")
-        .join(format!("{executable_name}.app"));
-    if !app_bundle.is_dir() {
-        anyhow::bail!(
-            "xcodebuild reported success but no .app at {}",
-            app_bundle.display(),
-        );
-    }
-
-    // ── 7. ios-deploy: install + launch ──────────────────────────
-    install_and_launch(&udid, &app_bundle)?;
-
-    Ok(DeviceArtifact {
-        app_bundle,
-        device_udid: udid,
+    Ok(PreparedProject {
+        project_root,
         xcodeproj,
+        scheme: executable_name,
     })
 }
 
@@ -253,6 +339,7 @@ fn render_device_info_plist(
         .replace("{{BUNDLE_ID}}", &xml_escape(bundle_id))
         .replace("{{EXECUTABLE}}", &xml_escape(executable_name))
         .replace("{{VERSION}}", &xml_escape(&manifest.app.version))
+        .replace("{{BUILD_NUMBER}}", &xml_escape(&manifest.app.build_number))
         .replace("{{EXTRA_PLIST_ENTRIES}}", &extra_entries))
 }
 
@@ -270,6 +357,9 @@ struct PbxParams<'a> {
     /// each SDK's declared frameworks). Drives the four framework-related
     /// pbxproj sections, replacing what used to be hardcoded in the template.
     frameworks: &'a [Framework],
+    /// Development vs distribution — selects [`PBXPROJ_TMPL`] (`"iPhone
+    /// Developer"`) vs [`PBXPROJ_DIST_TMPL`] (`"Apple Distribution"`).
+    signing: SigningKind,
 }
 
 /// Write `<name>.xcodeproj/project.pbxproj` from the parameterized
@@ -292,7 +382,11 @@ fn write_xcodeproj(xcodeproj: &Path, params: &PbxParams) -> Result<()> {
 fn render_pbxproj(params: &PbxParams) -> String {
     let (build_files, file_refs, phase_files, group_children) =
         render_frameworks_sections(params.frameworks);
-    PBXPROJ_TMPL
+    let template = match params.signing {
+        SigningKind::Development => PBXPROJ_TMPL,
+        SigningKind::Distribution => PBXPROJ_DIST_TMPL,
+    };
+    template
         .replace("{{APP_NAME}}", params.app_name)
         .replace("{{BUNDLE_ID}}", params.bundle_id)
         .replace("{{DEVELOPMENT_TEAM}}", params.team)
@@ -726,6 +820,7 @@ mod tests {
             library_search_path: Path::new("/tmp/target/aarch64-apple-ios/release"),
             lib_name: "camera_preview_demo_ios_wrapper",
             frameworks: &frameworks,
+            signing: SigningKind::Development,
         });
         assert!(
             !rendered.contains("{{"),
@@ -760,6 +855,7 @@ mod tests {
             library_search_path: Path::new("/lib"),
             lib_name: "app_ios_wrapper",
             frameworks: &frameworks,
+            signing: SigningKind::Development,
         });
         // Only UIKit/Foundation are weak (objc2 back-deploy fix).
         for fw in ["UIKit", "Foundation"] {
@@ -800,6 +896,7 @@ mod tests {
             library_search_path: Path::new("/lib"),
             lib_name: "screen_share_ios_wrapper",
             frameworks: &frameworks,
+            signing: SigningKind::Development,
         });
         // Present in all four sections.
         assert!(rendered.contains("ReplayKit.framework in Frameworks"));
@@ -810,6 +907,48 @@ mod tests {
             !line.contains("Weak"),
             "ReplayKit must strong-link so its class loads at runtime; line: {line}",
         );
+    }
+
+    /// `SigningKind` picks the pbxproj template: development signs with
+    /// `"iPhone Developer"` (on-device install), distribution with
+    /// `"Apple Distribution"` (App Store archive). A wrong identity here is
+    /// how a `publish` archive would silently get a development profile and
+    /// be rejected by App Store Connect.
+    #[test]
+    fn signing_kind_selects_distribution_identity() {
+        let frameworks = camera_frameworks();
+        let params = |signing| PbxParams {
+            app_name: "App",
+            bundle_id: "ai.example.app",
+            team: "TEAM123456",
+            library_search_path: Path::new("/lib"),
+            lib_name: "app_ios_wrapper",
+            frameworks: &frameworks,
+            signing,
+        };
+
+        let dev = render_pbxproj(&params(SigningKind::Development));
+        assert!(
+            dev.contains("CODE_SIGN_IDENTITY = \"iPhone Developer\""),
+            "development build must sign with iPhone Developer",
+        );
+        assert!(
+            !dev.contains("Apple Distribution"),
+            "development build must NOT carry a distribution identity",
+        );
+
+        let dist = render_pbxproj(&params(SigningKind::Distribution));
+        assert!(
+            dist.contains("CODE_SIGN_IDENTITY = \"Apple Distribution\""),
+            "distribution build must sign with Apple Distribution",
+        );
+        assert!(
+            !dist.contains("iPhone Developer"),
+            "distribution build must NOT carry a development identity",
+        );
+        // Both still substitute the user-facing values.
+        assert!(!dist.contains("{{"), "unsubstituted placeholder in dist pbxproj");
+        assert!(dist.contains("DEVELOPMENT_TEAM = TEAM123456;"));
     }
 
     /// Find the PBXBuildFile line for a framework in rendered pbxproj.
@@ -883,5 +1022,20 @@ iPhone 15 (17.0) (ABCDEF01-2345-6789-ABCD-EF0123456789)
         let plist = render_device_info_plist(&m, "Demo", "", "").expect("render");
         assert!(!plist.contains("NSAllowsLocalNetworking"));
         assert!(plist.contains("<key>CFBundleIdentifier</key>"));
+    }
+
+    /// `CFBundleVersion` reflects the manifest's `build_number` (it used to
+    /// be hardcoded `1`). App Store Connect keys on this for build
+    /// uniqueness, so a stale hardcoded value would block every upload past
+    /// the first.
+    #[test]
+    fn plist_build_number_is_substituted() {
+        let mut m = crate::tests_support::fake_manifest();
+        m.app.build_number = "73".to_string();
+        let plist = render_device_info_plist(&m, "Demo", "", "").expect("render");
+        assert!(
+            plist.contains("<key>CFBundleVersion</key>\n    <string>73</string>"),
+            "CFBundleVersion must come from build_number:\n{plist}",
+        );
     }
 }

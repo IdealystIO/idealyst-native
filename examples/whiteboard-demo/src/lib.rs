@@ -416,6 +416,24 @@ pub fn app() -> Element {
         idea_ui::light_theme()
     });
 
+    // Paint the whole window (the activity decor view on Android, equivalent
+    // elsewhere) with the theme background, so a `.fullscreen(true)` screen's
+    // now-uncovered status/nav-bar strips and the display cutout show the app
+    // background instead of the decor view's default black — independent of
+    // safe-area insets. `token(...)` subscribes to the theme, so this effect
+    // re-fires on a light/dark swap and keeps the window in sync. No-op on
+    // backends without a controllable host surface.
+    // [MACOS-REGRESSION-TEST] Gated OFF on macOS only: `set_app_background` forces
+    // `setWantsLayer:true` on the macOS host root, which appears to detach the
+    // vello CAMetalLayer (canvas + camera stop compositing). iOS/Android keep it.
+    // Remove the gate once the macOS backend impl is made non-destructive.
+    #[cfg(not(target_os = "macos"))]
+    runtime_core::effect!({
+        runtime_core::set_app_background(runtime_core::Tokenized::Literal(
+            crate::style::token(|c| c.background.clone()),
+        ));
+    });
+
     // ---- State (root scope → survives navigation) ------------------------
     let nav: Ref<StackHandle> = Ref::new();
     let state = BoardState {
@@ -621,6 +639,27 @@ mod tests {
     fn non_ink_entries_pass_through_unchanged() {
         assert_eq!(resolve_color("#ef4444", CanvasBg::Black, true), "#ef4444");
         assert_eq!(resolve_color("#3b82f6", CanvasBg::White, false), "#3b82f6");
+    }
+
+    // Regression for "update the stroke color if it uses the contrast color": an
+    // `ink` stroke re-resolves against whatever the backdrop currently is, so it
+    // flips light↔dark when the canvas color/theme changes and never goes
+    // invisible. A fixed-hue stroke keeps its snapshot regardless.
+    #[test]
+    fn ink_stroke_tracks_backdrop_fixed_does_not() {
+        let ink = Stroke {
+            points: vec![],
+            width: 2.0,
+            rgba: parse_rgba(INK_ON_LIGHT),
+            ink: true,
+        };
+        assert_eq!(stroke_color(&ink, CanvasBg::White, false), parse_rgba(INK_ON_LIGHT));
+        assert_eq!(stroke_color(&ink, CanvasBg::Black, false), parse_rgba(INK_ON_DARK));
+        assert_eq!(stroke_color(&ink, CanvasBg::Auto, true), parse_rgba(INK_ON_DARK));
+
+        let red = Stroke { points: vec![], width: 2.0, rgba: (239, 68, 68, 255), ink: false };
+        assert_eq!(stroke_color(&red, CanvasBg::White, false), (239, 68, 68, 255));
+        assert_eq!(stroke_color(&red, CanvasBg::Black, true), (239, 68, 68, 255));
     }
 
     // Regression for settings requirement #3 ("the camera should stay in the

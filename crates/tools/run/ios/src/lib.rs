@@ -51,6 +51,11 @@ use build_ios::{capabilities, BuildOptions, FrameworkSource, Manifest};
 /// [`device::run`] and [[project_ios_device_deploy_from_cli]].
 pub mod device;
 pub mod frameworks;
+/// App Store Connect distribution path for `idealyst publish ios`:
+/// distribution-signed archive → exported `.ipa` → optional upload. Reuses
+/// the device path's [`device::prepare_xcode_project`] layout machinery; the
+/// only divergence is the signing identity and the archive/export commands.
+pub mod publish;
 
 /// Embedded Swift sources + plist template. Tiny and identical for
 /// every project (modulo splash substitution), so we ship them as
@@ -544,6 +549,7 @@ fn render_info_plist(
         .replace("{{BUNDLE_ID}}", &xml_escape(manifest.app.require_bundle_id()?))
         .replace("{{EXECUTABLE}}", &xml_escape(executable_name))
         .replace("{{VERSION}}", &xml_escape(&manifest.app.version))
+        .replace("{{BUILD_NUMBER}}", &xml_escape(&manifest.app.build_number))
         .replace("{{EXTRA_PLIST_ENTRIES}}", &extra_entries))
 }
 
@@ -764,6 +770,7 @@ pub(crate) mod tests_support {
                 name: "Demo".to_string(),
                 bundle_id: Some("ai.example.demo".to_string()),
                 version: "0.0.1".to_string(),
+                build_number: "1".to_string(),
                 splash: SplashConfig {
                     background: "#000000".to_string(),
                     title: "Demo".to_string(),
@@ -792,6 +799,7 @@ mod tests {
                 name: "Demo".to_string(),
                 bundle_id: Some("ai.example.demo".to_string()),
                 version: "0.0.1".to_string(),
+                build_number: "1".to_string(),
                 splash: SplashConfig {
                     background: "#000000".to_string(),
                     title: "Demo".to_string(),

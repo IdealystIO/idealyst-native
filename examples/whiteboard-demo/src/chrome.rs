@@ -23,12 +23,19 @@ use icons_lucide::{CAMERA, SETTINGS as ICON_SETTINGS, TRASH_2};
 use runtime_core::{
     component, icon, presence, safe_area_insets, ui, AlignItems, Color, Easing, Element,
     FlexDirection, FlexWrap, IntoElement, JustifyContent, Length, Position, PresenceAnim,
-    PresenceState, Ref, Signal, StyleRules, Tokenized, TouchPhase, TouchResponse,
+    PresenceState, Ref, Signal, StyleRules, Tokenized, TouchPhase, TouchResponse, Transform,
 };
 use stack_navigator::StackHandle;
 use std::rc::Rc;
 
 use crate::{RAIL_EDGE, TOOL_BTN};
+
+/// Gap (in points) from the safe-area edge to the floating corner controls. The
+/// navigator is full-screen, so the safe-area inset already clears the notch /
+/// home-indicator — these add extra breathing room on top of it.
+const FAB_EDGE: f32 = 28.0; // settings FAB: top + left
+const RECORD_BOTTOM: f32 = 48.0; // record dock: bottom
+const RECORD_RIGHT: f32 = 28.0; // record dock when recording: right
 
 /// Build the board's floating chrome as the `PrivateLayer`'s children, in the
 /// SAME paint order: `[rec_indicator, palette, tool_rail, rec_dock,
@@ -77,19 +84,20 @@ pub fn build_chrome(
 // ============================================================================
 
 /// Position a child vertically centered against the right edge, inset by the
-/// safe area. The dock fills the screen but only lays the child out at center-
-/// right; the empty area passes touches through (it has no background).
+/// safe area. The wrapper is sized to the CHILD (not the full screen) and pulled
+/// to the vertical center via a `-50%` self-translate, so only the child's box
+/// captures touches — the rest of the right edge falls through to the canvas
+/// (a full-height wrapper would swallow every stroke started down that column).
 fn dock_right(child: Element) -> Element {
     ui! {
         view(style = reactive_style(move || {
             let ins = safe_area_insets().get();
             StyleRules {
                 position: Some(Position::Absolute),
-                top: Some(Length::Px(0.0).into()),
-                bottom: Some(Length::Px(0.0).into()),
+                top: Some(Length::pct(50.0).into()),
                 right: Some(Length::Px(RAIL_EDGE + ins.right).into()),
+                transform: Some(vec![Transform::TranslateY(Length::pct(-50.0))]),
                 flex_direction: Some(FlexDirection::Column),
-                justify_content: Some(JustifyContent::Center),
                 align_items: Some(AlignItems::FlexEnd),
                 ..Default::default()
             }
@@ -493,11 +501,12 @@ pub fn PalettePopover(props: &PalettePopoverProps) -> Element {
         let rail_w = TOOL_BTN + 16.0 + 12.0; // button + rail padding + gap
         StyleRules {
             position: Some(Position::Absolute),
-            top: Some(Length::Px(0.0).into()),
-            bottom: Some(Length::Px(0.0).into()),
+            // Content-sized + self-centered (not full-height) so the popover's
+            // column doesn't capture touches when closed/empty — see `dock_right`.
+            top: Some(Length::pct(50.0).into()),
             right: Some(Length::Px(RAIL_EDGE + ins.right + rail_w).into()),
+            transform: Some(vec![Transform::TranslateY(Length::pct(-50.0))]),
             flex_direction: Some(FlexDirection::Column),
-            justify_content: Some(JustifyContent::Center),
             align_items: Some(AlignItems::FlexEnd),
             ..Default::default()
         }
@@ -617,23 +626,22 @@ pub fn RecordDock(props: &RecordDockProps) -> Element {
 
     let dock_style = reactive_style(move || {
         let ins = safe_area_insets().get();
-        StyleRules {
+        // Content-sized wrapper (not full-width) so the bottom band around the
+        // button passes touches through to the canvas — see `dock_right`. Idle:
+        // horizontally centered via a `-50%` self-translate. Recording: anchored
+        // bottom-right (the button slides out of the way of the stage).
+        let mut s = StyleRules {
             position: Some(Position::Absolute),
-            left: Some(Length::Px(0.0).into()),
-            right: Some(Length::Px(0.0).into()),
-            bottom: Some(Length::Px(28.0 + ins.bottom).into()),
-            flex_direction: Some(FlexDirection::Row),
-            align_items: Some(AlignItems::Center),
-            justify_content: Some(if recording.get() {
-                JustifyContent::FlexEnd
-            } else {
-                JustifyContent::Center
-            }),
-            padding_right: Some(
-                Length::Px(if recording.get() { 24.0 + ins.right } else { 0.0 }).into(),
-            ),
+            bottom: Some(Length::Px(RECORD_BOTTOM + ins.bottom).into()),
             ..Default::default()
+        };
+        if recording.get() {
+            s.right = Some(Length::Px(RECORD_RIGHT + ins.right).into());
+        } else {
+            s.left = Some(Length::pct(50.0).into());
+            s.transform = Some(vec![Transform::TranslateX(Length::pct(-50.0))]);
         }
+        s
     });
     ui! {
         view(style = dock_style) {
@@ -880,11 +888,11 @@ pub fn RecIndicator(props: &RecIndicatorProps) -> Element {
         let ins = safe_area_insets().get();
         StyleRules {
             position: Some(Position::Absolute),
-            top: Some(Length::Px(16.0 + ins.top).into()),
-            left: Some(Length::Px(0.0).into()),
-            right: Some(Length::Px(0.0).into()),
-            flex_direction: Some(FlexDirection::Row),
-            justify_content: Some(JustifyContent::Center),
+            top: Some(Length::Px(FAB_EDGE + ins.top).into()),
+            // Content-sized + self-centered (not full-width) so the top band
+            // doesn't capture touches — see `dock_right`.
+            left: Some(Length::pct(50.0).into()),
+            transform: Some(vec![Transform::TranslateX(Length::pct(-50.0))]),
             ..Default::default()
         }
     });
@@ -976,8 +984,8 @@ pub fn SettingsFab(props: &SettingsFabProps) -> Element {
         let ins = safe_area_insets().get();
         StyleRules {
             position: Some(Position::Absolute),
-            top: Some(Length::Px(16.0 + ins.top).into()),
-            left: Some(Length::Px(16.0 + ins.left).into()),
+            top: Some(Length::Px(FAB_EDGE + ins.top).into()),
+            left: Some(Length::Px(FAB_EDGE + ins.left).into()),
             ..Default::default()
         }
     });

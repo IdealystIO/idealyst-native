@@ -2315,26 +2315,52 @@ impl Backend for IosBackend {
             let c_layout = self.layout_for_view(child_view);
             self.layout.add_child(p_layout, c_layout);
 
-            // Anchored portals route the first inserted child through
-            // the absolute-position + tracker path. Subsequent children
-            // (rare — the typical portal has one content child plus an
-            // optional backdrop) flow into the same container without
-            // their own tracker; the backdrop child is usually inserted
-            // first by the composition (it sits behind the content) and
-            // sizes itself via the portal's flex style.
+            // Anchored portals position their CONTENT child absolutely
+            // against the trigger rect and re-pin it each vsync with a
+            // CADisplayLink. Composition inserts the children in paint
+            // order: backdrop FIRST (it must sit behind), content LAST.
             //
-            // For now we apply tracker treatment only when the entry
-            // doesn't already have one. Composition convention puts the
-            // anchored content as the last child; the tracker tracks
-            // whichever child we wire it to. This works for the common
-            // single-content-child case; if a future composition layers
-            // multiple anchored children we'd need a per-child policy.
-            let needs_tracker = {
-                let entry = self.portal_instances.get(&parent_key).unwrap();
-                entry.anchor.is_some() && entry.anchor_link.is_none()
+            // The routing decision — and specifically the invariant that
+            // we re-track to the LATEST inserted child rather than freeze
+            // on the first — lives in `portal_policy::anchored_insert_action`
+            // (host-tested). Freezing on the first child pinned the
+            // BACKDROP for a `[backdrop, content]` popover and left the
+            // content laid out top-left by the container's neutral flex
+            // (the "popover renders empty / in the wrong place" bug).
+            // Re-tracking to the latest child lands the tracker on the
+            // content (inserted last); a single-child anchored portal is
+            // unaffected (its one child is both first and last).
+            //
+            // `entry` definitely exists (we're inside the
+            // `portal_instances.contains_key(&parent_key)` arm) but use
+            // `if let` rather than `unwrap()` so a future caller can't turn
+            // a transient map state into an abort.
+            let action = match self.portal_instances.get(&parent_key) {
+                Some(entry) => crate::portal_policy::anchored_insert_action(
+                    entry.anchor.is_some(),
+                    entry.anchor_link.is_some(),
+                ),
+                None => crate::portal_policy::AnchoredInsertAction::PlainChild,
             };
-            if needs_tracker {
+            use crate::portal_policy::AnchoredInsertAction;
+            if matches!(
+                action,
+                AnchoredInsertAction::StartTracker | AnchoredInsertAction::RetrackToLatest
+            ) {
+                // Tear down any prior tracker before wiring the new one,
+                // so a `[backdrop, content]` portal ends up with exactly
+                // ONE live link (on the content). A leaked backdrop link
+                // would keep re-pinning a view to anchor coordinates it
+                // shouldn't own.
+                if matches!(action, AnchoredInsertAction::RetrackToLatest) {
+                    if let Some(entry_mut) = self.portal_instances.get_mut(&parent_key) {
+                        if let Some(old_link) = entry_mut.anchor_link.take() {
+                            let _: () = unsafe { msg_send![&*old_link, invalidate] };
+                        }
+                    }
+                }
                 let (target, side, align, offset) = {
+                    // Safe: `action` is non-Plain only when `anchor.is_some()`.
                     let entry = self.portal_instances.get(&parent_key).unwrap();
                     let anchor = entry.anchor.as_ref().unwrap();
                     (anchor.target.clone(), anchor.side, anchor.align, anchor.offset)
@@ -3096,9 +3122,67 @@ impl Backend for IosBackend {
 
     fn release_portal(&mut self, node: &Self::Node) {
         let key = IosBackend::node_key(node);
-        if let Some(entry) = self.portal_instances.remove(&key) {
-            portal::release_portal(entry);
+        let Some(entry) = self.portal_instances.remove(&key) else {
+            return;
+        };
+
+        // Drop the ENTIRE portal subtree from the layout bookkeeping —
+        // not just the container's superview link. The portal container
+        // is an orphan Taffy ROOT and its descendants stay registered in
+        // `view_to_layout`; if we only `removeFromSuperview` the
+        // container (the old behaviour), every later `run_layout_pass_global`
+        // still finds the dead root, re-computes it against the viewport,
+        // and writes frames into the detached subtree — an unbounded leak
+        // plus a stale-layout source that surfaced as flaky teardown.
+        //
+        // Collect every descendant view key by walking the live UIKit
+        // subtree BEFORE detaching anything, then dedup via
+        // `portal_policy::teardown_plan` (host-tested) so no Taffy slot is
+        // freed twice. `remove_node` panics on a double free, so the dedup
+        // is load-bearing.
+        let container_key = &*entry.container as *const UIView as usize;
+        let mut descendant_keys: Vec<usize> = Vec::new();
+        fn collect_descendant_keys(view: &UIView, out: &mut Vec<usize>) {
+            for sub in view.subviews().iter() {
+                out.push(&*sub as *const UIView as usize);
+                collect_descendant_keys(&sub, out);
+            }
         }
+        collect_descendant_keys(&entry.container, &mut descendant_keys);
+
+        let plan = crate::portal_policy::teardown_plan(container_key, &descendant_keys);
+        for k in plan {
+            if let Some((_view, layout_node)) = self.view_to_layout.remove(&k) {
+                // `remove_node` frees the Taffy slot AND marks it dropped,
+                // so a stray reactive style effect that outlived the scope
+                // hits the `set_style` "already-removed node" assert with a
+                // clear message instead of corrupting the tree.
+                self.layout.remove_node(layout_node);
+            }
+            // Drop the cached "last frame we wrote for this pointer".
+            // The allocator recycles freed UIView pointers (see the
+            // `layout_for_view` re-registration which clears
+            // `layout_style_keys` for the same reason). If a stale
+            // `applied_frames` entry survives teardown, the NEXT view to
+            // land on that pointer matches its frame_key in the layout
+            // pass's short-circuit (`applied_frames.get(key) == Some(&frame_key)`)
+            // and the pass SKIPS writing the real frame — the view stays
+            // 0×0 / off-screen. That's the "modal re-opens with an empty
+            // card" symptom: the card's recycled pointer inherited the
+            // prior teardown's frame and never got laid out.
+            self.applied_frames.remove(&k);
+            // Per-node animation state (opacity/transform caches) keyed by
+            // the same pointer — drop it so a recycled pointer doesn't
+            // inherit a dead view's transform/alpha (e.g. a leftover
+            // opacity 0 from the closing card's fade).
+            self.impl_drop_animated_state(k);
+        }
+
+        // UIKit + anchor-tracker teardown: invalidates the CADisplayLink
+        // (if any) so a final vsync can't fire into the half-torn subtree,
+        // then removes the container from its window on the next runloop
+        // turn.
+        portal::release_portal(entry);
     }
 
     fn create_external(

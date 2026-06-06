@@ -107,7 +107,8 @@ fn run_web() -> Element {
 
 fn run_native() -> Element {
     let snippet = "idealyst run ios       # boot in iOS simulator\n\
-                   idealyst run android   # install on emulator or USB device";
+                   idealyst run android   # install on emulator or USB device\n\
+                   idealyst publish ios   # distribution .ipa (--upload to App Store Connect)";
     let children: Vec<Element> = vec![
         ui! { Typography(content = "Run on iOS / Android".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {

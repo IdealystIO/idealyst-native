@@ -101,7 +101,18 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
             height: Some(Length::Px(h).into()),
             // Clip strokes + the camera to the board; round the corners for a
             // card-like surface that reads as distinct from the backdrop.
-            overflow: Some(Overflow::Hidden),
+            //
+            // NOT on macOS: `overflow: Hidden` forces this view layer-backed
+            // (`masksToBounds`), which detaches the vello `CAMetalLayer` of the
+            // canvas child — the GPU surface then renders nothing. The clip is only
+            // cosmetic here (the canvas surface already bounds strokes and
+            // `clamped_cam` bounds the camera), so we drop it on macOS. See
+            // [[project_macos_appkit_uikit_diffs]].
+            overflow: if cfg!(target_os = "macos") {
+                None
+            } else {
+                Some(Overflow::Hidden)
+            },
             ..Default::default()
         }
     });

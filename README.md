@@ -116,6 +116,7 @@ cd my-app
 idealyst dev          # hot-reload web preview at http://localhost:8080
 idealyst run ios      # build + boot in the iOS simulator (requires Xcode)
 idealyst run android  # build + install on a running emulator / device
+idealyst publish ios  # distribution-signed .ipa (add --upload for App Store Connect)
 ```
 
 `idealyst new` scaffolds the [`examples/welcome`](examples/welcome) project
@@ -410,6 +411,7 @@ cd examples/welcome
 idealyst dev                # hot-reload web preview at http://localhost:8080
 idealyst run ios            # iOS simulator
 idealyst run android        # Android emulator / device
+idealyst publish ios        # distribution .ipa → App Store Connect (--upload)
 ```
 
 `idealyst new my-app` is shorthand for "copy `examples/welcome` to `my-app` and

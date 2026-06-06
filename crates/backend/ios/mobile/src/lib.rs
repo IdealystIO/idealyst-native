@@ -21,6 +21,12 @@ mod splice_policy;
 // that feeds it is ios-only. See the module docs.
 mod private_layer_hittest;
 
+// Pure portal mount/teardown decisions (which inserted child the anchor
+// tracker pins; the de-duplicated key set a portal release must drop).
+// Kept un-gated so its regression coverage runs from any host; the objc
+// mount/release that consumes it is ios-only. See the module docs.
+mod portal_policy;
+
 #[cfg(target_os = "ios")]
 pub use imp::{
     install_global_self, mount_screen_in_vc, pin_to_edges, schedule_layout_pass,

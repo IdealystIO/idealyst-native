@@ -391,6 +391,14 @@ fn compute_anchored_origin(
 /// Tear down a portal's UIKit state. Stops the anchor tracker (if
 /// any) first so a final tick can't fire into a half-torn-down
 /// hierarchy, then removes the container from its window.
+///
+/// This owns only the UIKit + tracker side. The backend's
+/// `release_portal` runs FIRST to drop the whole subtree's Taffy nodes
+/// and `view_to_layout` / `applied_frames` entries (see
+/// `crate::portal_policy::teardown_plan`); leaving those behind made the
+/// container a dead orphan Taffy root that the layout pass re-computed
+/// forever, and left stale `applied_frames` that made a re-opened modal's
+/// recycled card view render empty.
 pub(crate) fn release_portal(entry: PortalEntry) {
     if let Some(link) = entry.anchor_link {
         let _: () = unsafe { msg_send![&*link, invalidate] };

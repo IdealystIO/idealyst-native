@@ -87,8 +87,8 @@ fn phones() -> Element {
             TargetRow(
                 title = "iOS".to_string(),
                 blurb = "UIKit driven via objc2. Native UIView hierarchy, native back gestures, \
-                 native scroll physics. iOS 13+. The standard pattern for shipping an idealyst \
-                 app to the App Store.".to_string(),
+                 native scroll physics. iOS 13+. Ship to the App Store with \
+                 `idealyst publish ios --upload`.".to_string(),
             )
             TargetRow(
                 title = "Android".to_string(),

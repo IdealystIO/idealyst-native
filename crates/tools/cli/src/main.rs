@@ -48,6 +48,9 @@ enum Command {
     Build(cmd::build::Args),
     /// Build and launch on a simulator or device.
     Run(cmd::run::Args),
+    /// Build a distribution-signed app and (optionally) upload it to the
+    /// store. iOS → App Store Connect (`.ipa` archive/export/upload).
+    Publish(cmd::publish::Args),
     /// Type-check across configured platforms.
     Check(cmd::check::Args),
     /// Remove build artifacts.
@@ -106,6 +109,7 @@ fn main() -> anyhow::Result<()> {
         Command::Serve(args) => cmd::serve::run(args),
         Command::Build(args) => cmd::build::run(args),
         Command::Run(args) => cmd::run::run(args),
+        Command::Publish(args) => cmd::publish::run(args),
         Command::Check(args) => cmd::check::run(args),
         Command::Clean(args) => cmd::clean::run(args),
         Command::Doctor(args) => cmd::doctor::run(args),

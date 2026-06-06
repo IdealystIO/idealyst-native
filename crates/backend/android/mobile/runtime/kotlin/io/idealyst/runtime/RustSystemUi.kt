@@ -6,6 +6,7 @@ import android.graphics.Rect
 import android.os.Build
 import android.util.Log
 import android.view.View
+import android.view.WindowManager
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -70,6 +71,16 @@ object RustSystemUi {
             val controller = WindowInsetsControllerCompat(window, decor)
             if (enabled) {
                 WindowCompat.setDecorFitsSystemWindows(window, false)
+                // Draw into the display cutout so the window background fills
+                // behind it (API 28+); without this the cutout strip letterboxes
+                // black while the bars are hidden — leaving a black band at the
+                // top even though the app paints the rest of the screen.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    window.attributes = window.attributes.apply {
+                        layoutInDisplayCutoutMode =
+                            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                    }
+                }
                 controller.hide(WindowInsetsCompat.Type.systemBars())
                 controller.systemBarsBehavior =
                     WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -77,6 +88,12 @@ object RustSystemUi {
             } else {
                 clearEdgeExclusion(decor)
                 controller.show(WindowInsetsCompat.Type.systemBars())
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    window.attributes = window.attributes.apply {
+                        layoutInDisplayCutoutMode =
+                            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+                    }
+                }
                 WindowCompat.setDecorFitsSystemWindows(window, true)
             }
         }
