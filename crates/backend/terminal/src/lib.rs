@@ -101,6 +101,9 @@ pub struct TerminalBackend {
         u32,
         Rc<std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<TerminalBackend>>>>,
     >,
+    /// App-level key handler (fires for every key before the focused-input path),
+    /// installed by `set_app_key_handler`.
+    pub(crate) app_key_handler: Option<runtime_core::primitives::key::KeyDownHandler>,
 }
 
 impl Default for TerminalBackend {
@@ -136,6 +139,7 @@ impl TerminalBackend {
             cell_size: (1.0, 1.0),
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
             nav_handler_instances: HashMap::new(),
+            app_key_handler: None,
         };
         backend.drain_self_registrars();
         backend
@@ -677,6 +681,23 @@ impl TerminalBackend {
     /// Returns `true` if the key was consumed by an input — the host
     /// should suppress its `on_key` callback in that case.
     pub fn dispatch_key(&mut self, key: &TerminalKey) -> bool {
+        // App-level handler first — it sees EVERY key regardless of focus.
+        // Claiming the key (`PreventDefault`) stops both the focused-input path
+        // and the host's own `on_key` callback.
+        if let Some(handler) = self.app_key_handler.clone() {
+            let ev = runtime_core::primitives::key::KeyEvent {
+                key: key.key.clone(),
+                shift: key.shift,
+                ctrl: key.ctrl,
+                alt: key.alt,
+                meta: key.meta,
+                selection_start: 0,
+                selection_end: 0,
+            };
+            if matches!(handler(&ev), runtime_core::KeyOutcome::PreventDefault) {
+                return true;
+            }
+        }
         let Some(id) = self.focused_id else { return false };
         let Some(data) = self.nodes.get(&id) else { return false };
         if !matches!(data.kind, NodeKind::TextInput) {
@@ -1290,6 +1311,13 @@ impl Backend for TerminalBackend {
     /// schedule (after input + before paint) so we have the most
     /// current viewport size. `finish` would compute against stale
     /// dimensions if the terminal got resized between builds.
+    fn set_app_key_handler(
+        &mut self,
+        handler: Option<runtime_core::primitives::key::KeyDownHandler>,
+    ) {
+        self.app_key_handler = handler;
+    }
+
     fn finish(&mut self, _root: Self::Node) {}
 
     // ------------------------------------------------------------------

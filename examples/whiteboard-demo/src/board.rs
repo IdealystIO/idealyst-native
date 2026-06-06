@@ -10,7 +10,8 @@ use runtime_core::{
     component, ui, Element, IntoElement, Length, Overflow, Position, Signal, StyleRules, Tokenized,
     TouchPhase, TouchResponse,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 
@@ -82,7 +83,7 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
         focused,
         s,
         strokes.clone(),
-        canvases,
+        canvases.clone(),
         rec_handle,
         version,
         capture,
@@ -131,7 +132,7 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
     ui! {
         view(style = root_style) {
             view(style = stage_style) {
-                DrawingSurface(state = s, strokes = strokes, version = version, capture_writer = Some(capture_writer))
+                DrawingSurface(state = s, strokes = strokes, canvases = canvases, version = version, capture_writer = Some(capture_writer))
                 CameraWidget(state = s)
             }
             chrome
@@ -148,6 +149,8 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
 pub struct DrawingSurfaceProps {
     pub state: BoardState,
     pub strokes: Strokes,
+    /// The saved canvas docs — the two-finger swipe switches between them.
+    pub canvases: CanvasStore,
     pub version: Signal<u64>,
     /// The canvas self-capture sink. The renderer reads back each frame into this
     /// writer while a recorder is subscribed (macOS/vello only).
@@ -159,6 +162,7 @@ impl Default for DrawingSurfaceProps {
         Self {
             state: BoardState::default(),
             strokes: Rc::new(RefCell::new(Vec::new())),
+            canvases: Rc::new(RefCell::new(Vec::new())),
             version: Signal::new(0),
             capture_writer: None,
         }
@@ -174,8 +178,14 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
     let width = props.state.width;
     let color_css = props.state.color_css;
     let strokes = props.strokes.clone();
+    let canvases = props.canvases.clone();
     let version = props.version;
     let capture_writer = props.capture_writer.clone();
+    // Two-finger-swipe state (canvas switching).
+    let active_canvas = props.state.active_canvas;
+    let canvas_ids = props.state.canvas_ids;
+    let next_id = props.state.next_id;
+    let gestures_enabled = props.state.gestures_enabled;
 
     // Camera-as-texture: hand the canvas a reactive view of the camera stream +
     // its drag rect as a `TextureLayer`, so the renderer composites the live
@@ -221,20 +231,40 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
         ..Default::default()
     });
 
+    // `active` = the touch id currently drawing a stroke (single finger).
     let active: Rc<RefCell<Option<runtime_core::TouchId>>> = Rc::new(RefCell::new(None));
+    // All down touches in WINDOW coords: id → (start_x, start_y, cur_x, cur_y).
+    // A second concurrent touch turns the gesture into a canvas swipe.
+    let touches: Rc<RefCell<HashMap<runtime_core::TouchId, (f32, f32, f32, f32)>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    // One switch per swipe gesture (reset when all fingers lift).
+    let swipe_fired = Rc::new(Cell::new(false));
 
     ui! {
         view(style = surface_style) {
             canvas_el
         }
         .on_touch(move |ev| {
-            let mut active = active.borrow_mut();
+            let (wx, wy) = (ev.window_position.x, ev.window_position.y);
             match ev.phase {
                 TouchPhase::Began => {
-                    if active.is_some() {
+                    touches.borrow_mut().insert(ev.id, (wx, wy, wx, wy));
+                    let multi = touches.borrow().len() >= 2 && gestures_enabled.get();
+                    if multi {
+                        // A 2nd finger landed → this is a swipe, not a stroke. Cancel
+                        // the in-progress stroke the first finger started so a swipe
+                        // never leaves an accidental line.
+                        if active.borrow().is_some() {
+                            strokes.borrow_mut().pop();
+                            *active.borrow_mut() = None;
+                            version.set(version.get().wrapping_add(1));
+                        }
+                        return TouchResponse::CLAIMED;
+                    }
+                    if active.borrow().is_some() {
                         return TouchResponse::IGNORED;
                     }
-                    *active = Some(ev.id);
+                    *active.borrow_mut() = Some(ev.id);
                     // Flag ink strokes so they re-resolve against the backdrop every
                     // paint; snapshot the current resolution as the `rgba` fallback.
                     let raw = color_css.get();
@@ -250,7 +280,34 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
                     TouchResponse::CLAIMED
                 }
                 TouchPhase::Moved => {
-                    if *active != Some(ev.id) {
+                    if let Some(t) = touches.borrow_mut().get_mut(&ev.id) {
+                        t.2 = wx;
+                        t.3 = wy;
+                    }
+                    let multi = touches.borrow().len() >= 2 && gestures_enabled.get();
+                    if multi {
+                        if !swipe_fired.get() {
+                            // Average the per-touch deltas from gesture start.
+                            let (mut sdx, mut sdy, mut n) = (0.0f32, 0.0f32, 0u32);
+                            for (_, (sx, sy, cx, cy)) in touches.borrow().iter() {
+                                sdx += cx - sx;
+                                sdy += cy - sy;
+                                n += 1;
+                            }
+                            let (avg_dx, avg_dy) = (sdx / n as f32, sdy / n as f32);
+                            if let Some(action) =
+                                crate::swipe_action(avg_dx, avg_dy, crate::SWIPE_THRESHOLD)
+                            {
+                                crate::apply_canvas_action(
+                                    action, &canvases, &strokes, active_canvas, version,
+                                    canvas_ids, next_id,
+                                );
+                                swipe_fired.set(true);
+                            }
+                        }
+                        return TouchResponse::CONSUMED;
+                    }
+                    if *active.borrow() != Some(ev.id) {
                         return TouchResponse::IGNORED;
                     }
                     if let Some(last) = strokes.borrow_mut().last_mut() {
@@ -260,15 +317,18 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
                     TouchResponse::CONSUMED
                 }
                 TouchPhase::Ended | TouchPhase::Cancelled => {
-                    if *active != Some(ev.id) {
-                        return TouchResponse::IGNORED;
+                    touches.borrow_mut().remove(&ev.id);
+                    if touches.borrow().is_empty() {
+                        swipe_fired.set(false);
                     }
-                    *active = None;
-                    if ev.phase == TouchPhase::Ended {
-                        if let Some(last) = strokes.borrow_mut().last_mut() {
-                            last.points.push((ev.position.x, ev.position.y));
+                    if *active.borrow() == Some(ev.id) {
+                        *active.borrow_mut() = None;
+                        if ev.phase == TouchPhase::Ended {
+                            if let Some(last) = strokes.borrow_mut().last_mut() {
+                                last.points.push((ev.position.x, ev.position.y));
+                            }
+                            version.set(version.get().wrapping_add(1));
                         }
-                        version.set(version.get().wrapping_add(1));
                     }
                     TouchResponse::CONSUMED
                 }

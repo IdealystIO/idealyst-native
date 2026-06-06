@@ -19,6 +19,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use mcp_catalog::{ComponentEntry, EdgeStatus, EntryRef, ResolvedCatalog};
 
+use crate::adb;
 use crate::robot_bridge::RobotBridge;
 use rmcp::{
     ErrorData as McpError,
@@ -261,6 +262,34 @@ pub struct RobotSetSlider {
     pub value: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotTap {
+    /// Target app name (from `list_apps`). Optional when only one app
+    /// is registered; required otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    /// Tap the center of this element (id from `find_element` /
+    /// `find_all_elements`). Takes precedence over `test_id` and raw
+    /// `x`/`y`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub element_id: Option<u64>,
+    /// Tap the center of the element with this `test_id` — resolved over
+    /// the bridge via `find_element`. Used when `element_id` is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_id: Option<String>,
+    /// Raw tap point in **physical device pixels** (screen top-left
+    /// origin). Used when neither `element_id` nor `test_id` is given;
+    /// both `x` and `y` are required together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<i32>,
+    /// adb device serial (from `adb devices`). Optional when exactly one
+    /// device/emulator is attached; required to disambiguate otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -825,6 +854,15 @@ impl CatalogService {
         self.robot_call("get_absolute_frame", app.as_deref(), body).await
     }
 
+    #[tool(description = "Inject a REAL OS-level touch on an Android emulator/device via `adb shell input tap`. Unlike `click` — which calls the element's handler closure directly and bypasses the platform event system — this dispatches a genuine touch through the full Android input stack (InputManager → window → view hit-test), so it exercises hit-testing, overlays, z-order, and disabled-state the way a real finger would. Target the tap one of three ways: `element_id` (from `find_element`), `test_id` (resolved over the bridge), or raw `x`/`y` in physical device pixels. Element-based taps read the element's on-screen pixel rect via `get_device_frame` and tap its center — no host-side density math, since the device reports physical pixels directly. Requires Android platform-tools `adb` on PATH and a device/emulator attached (pass `serial` to disambiguate when more than one is). Android-only: other backends don't implement `device_frame` yet.")]
+    async fn tap(
+        &self,
+        Parameters(args): Parameters<RobotTap>,
+    ) -> Result<CallToolResult, McpError> {
+        let msg = self.do_tap(args).await?;
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
+
     #[tool(description = "Invoke a `#[method]`-tagged method on an element's instance (Robot's component-level escape hatch).")]
     async fn invoke_method(
         &self,
@@ -876,6 +914,21 @@ impl CatalogService {
         app: Option<&str>,
         args: serde_json::Value,
     ) -> Result<CallToolResult, McpError> {
+        let bridge = self.resolve_bridge(app).await?;
+        match bridge.call(cmd, args).await {
+            Ok(value) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    /// Resolve the target app's Robot bridge — the shared front half of
+    /// every Robot tool. Honors `--no-robot`, the pinned-bridge modes,
+    /// and discovery-by-`app`. Factored out so multi-step tools (e.g.
+    /// `tap`, which calls `find_element` then `get_device_frame`) reuse
+    /// one resolution path instead of re-implementing it.
+    async fn resolve_bridge(&self, app: Option<&str>) -> Result<Arc<RobotBridge>, McpError> {
         if matches!(self.robot_mode, RobotMode::Disabled) {
             return Err(McpError::invalid_params(
                 "Robot control is disabled — the MCP server was started with \
@@ -885,22 +938,83 @@ impl CatalogService {
                 None,
             ));
         }
-        let bridge: Arc<RobotBridge> = if let Some(b) = &self.robot {
+        if let Some(b) = &self.robot {
             // Pinned-bridge mode: `with_robot_bridge(...)` or
             // `RobotMode::Explicit`. Ignore `app` — there's exactly one.
-            b.clone()
+            Ok(b.clone())
         } else {
-            match self.resolver.resolve(app, &self.discovery).await {
-                Ok(b) => b,
-                Err(e) => return Err(e),
-            }
-        };
-        match bridge.call(cmd, args).await {
-            Ok(value) => Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
-            )])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            self.resolver.resolve(app, &self.discovery).await
         }
+    }
+
+    /// `find_element { test_id }` over the bridge → the element id.
+    async fn resolve_test_id(&self, app: Option<&str>, test_id: &str) -> Result<u64, McpError> {
+        let bridge = self.resolve_bridge(app).await?;
+        let v = bridge
+            .call("find_element", json!({ "test_id": test_id }))
+            .await
+            .map_err(|e| McpError::invalid_params(format!("find_element failed: {e}"), None))?;
+        v.get("id").and_then(|x| x.as_u64()).ok_or_else(|| {
+            McpError::invalid_params(format!("no element found with test_id {test_id:?}"), None)
+        })
+    }
+
+    /// `get_device_frame { element_id }` over the bridge → the center
+    /// point in **physical device pixels**, ready for `adb input tap`.
+    async fn element_device_center(
+        &self,
+        app: Option<&str>,
+        element_id: u64,
+    ) -> Result<(i32, i32), McpError> {
+        let bridge = self.resolve_bridge(app).await?;
+        let v = bridge
+            .call("get_device_frame", json!({ "element_id": element_id }))
+            .await
+            .map_err(|e| McpError::invalid_params(format!("get_device_frame failed: {e}"), None))?;
+        if v.is_null() {
+            return Err(McpError::invalid_params(
+                format!(
+                    "element {element_id} has no device frame yet — it isn't laid out, or \
+                     this backend doesn't implement device_frame (only Android does today)."
+                ),
+                None,
+            ));
+        }
+        let f = |k: &str| v.get(k).and_then(|n| n.as_f64()).unwrap_or(0.0);
+        let (x, y, w, h) = (f("x"), f("y"), f("width"), f("height"));
+        Ok(((x + w / 2.0).round() as i32, (y + h / 2.0).round() as i32))
+    }
+
+    /// The `tap` tool's body: resolve a physical-pixel point (from an
+    /// element, a `test_id`, or raw coords), then drive `adb` host-side
+    /// to inject a real OS touch there.
+    async fn do_tap(&self, args: RobotTap) -> Result<String, McpError> {
+        let app = args.app.as_deref();
+        let (px, py) = if let Some(id) = args.element_id {
+            self.element_device_center(app, id).await?
+        } else if let Some(test_id) = &args.test_id {
+            let id = self.resolve_test_id(app, test_id).await?;
+            self.element_device_center(app, id).await?
+        } else if let (Some(x), Some(y)) = (args.x, args.y) {
+            (x, y)
+        } else {
+            return Err(McpError::invalid_params(
+                "tap needs one of: `element_id`, `test_id`, or both `x` and `y` \
+                 (physical device pixels)."
+                    .to_string(),
+                None,
+            ));
+        };
+
+        // adb runs on the host (here), not in the app — the app is on the
+        // device and has no adb. Resolve the device, then inject.
+        let to_err = |e: anyhow::Error| McpError::invalid_params(e.to_string(), None);
+        let serial = adb::resolve_serial(args.serial.as_deref())
+            .await
+            .map_err(to_err)?;
+        adb::tap(&serial, px, py).await.map_err(to_err)?;
+
+        Ok(format!("OS-level tap on {serial} at physical ({px}, {py}) px"))
     }
 
     // -------------------------------------------------------------

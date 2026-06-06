@@ -7,6 +7,7 @@ pub(crate) mod icon;
 pub(crate) mod image;
 pub(crate) mod portal;
 pub(crate) mod phase_timer;
+pub(crate) mod keyboard;
 pub(crate) mod screenshot;
 pub(crate) mod sticky;
 pub(crate) mod text_inset;
@@ -78,6 +79,10 @@ pub struct IosBackend {
     mtm: MainThreadMarker,
     host_root: Option<Retained<UIView>>,
     callback_targets: Vec<Retained<NSObject>>,
+    /// The app-level key responder installed by `set_app_key_handler` (an
+    /// invisible first-responder view overriding `pressesBegan:`). Retained here;
+    /// removed + resigned when the handler is replaced or cleared.
+    app_key_responder: Option<Retained<keyboard::IdealystKeyResponder>>,
     /// Set of view pointers that are UIScrollViews. Used in the
     /// post-layout pass to sync `contentSize` from Taffy children.
     scroll_views: std::collections::HashSet<usize>,
@@ -562,6 +567,7 @@ impl IosBackend {
             mtm,
             host_root: None,
             callback_targets: Vec::new(),
+            app_key_responder: None,
             scroll_views: std::collections::HashSet::new(),
             icon_image_cache: HashMap::new(),
             image_cache: HashMap::new(),
@@ -1152,6 +1158,10 @@ impl Backend for IosBackend {
         crate::imp::schedule_layout_pass();
     }
 
+    fn set_app_key_handler(&mut self, handler: Option<runtime_core::primitives::key::KeyDownHandler>) {
+        keyboard::set_app_key_handler(self, handler);
+    }
+
     fn platform(&self) -> runtime_core::Platform {
         // `target_abi = "sim"` is set for `aarch64-apple-ios-sim` and
         // `x86_64-apple-ios` simulator targets; absent on real devices.
@@ -1738,6 +1748,18 @@ impl Backend for IosBackend {
         } else {
             let _: () = unsafe { msg_send![&scroll, setAlwaysBounceVertical: true] };
         }
+
+        // Deliver touches to content IMMEDIATELY rather than delaying them while
+        // UIKit decides whether the gesture is a scroll. The framework's
+        // interactive leaves (Pressable / Button / on_touch) are custom
+        // `IdealystTouchView`s, NOT `UIControl`s — with the default
+        // `delaysContentTouches = YES`, a UIScrollView withholds `touchesBegan`
+        // from them, so a button inside a scroll view (e.g. an idea-ui `Modal`'s
+        // body, which wraps content in a scroll_view) reads as unpressable while
+        // the same button in a non-scrolling overlay (a popover) works. A real
+        // scroll drag still cancels the content touch via the pan recognizer's
+        // slop, so scrolling-from-a-button is unaffected.
+        let _: () = unsafe { msg_send![&scroll, setDelaysContentTouches: false] };
 
         // Wire `on_scroll` via UIScrollViewDelegate. The delegate
         // forwards `scrollViewDidScroll:` into the Rust closure with

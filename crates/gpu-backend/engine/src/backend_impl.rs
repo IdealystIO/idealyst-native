@@ -170,6 +170,10 @@ pub struct WgpuBackend {
             std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<WgpuBackend>>>,
         >,
     >,
+    /// App-level key handler (fires for every key press regardless of focus),
+    /// installed by `set_app_key_handler`. Read by `Host::key` before the
+    /// focused-input path.
+    pub(crate) app_key_handler: Option<runtime_core::primitives::key::KeyDownHandler>,
 }
 
 /// Per-node presence interpolation entry. `node` is a strong ref so
@@ -241,6 +245,7 @@ impl WgpuBackend {
             external_handlers: runtime_core::ExternalRegistry::new(),
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
             nav_handler_instances: std::collections::HashMap::new(),
+            app_key_handler: None,
         }
     }
 
@@ -1244,6 +1249,15 @@ impl Backend for WgpuBackend {
             );
         }
         request_redraw();
+    }
+
+    fn set_app_key_handler(
+        &mut self,
+        handler: Option<runtime_core::primitives::key::KeyDownHandler>,
+    ) {
+        // Stored here; `Host::key` reads it on each key press (before the
+        // focused-input path) since the winit event loop routes through Host.
+        self.app_key_handler = handler;
     }
 
     fn finish(&mut self, root: Self::Node) {

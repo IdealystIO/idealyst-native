@@ -1157,15 +1157,24 @@ mod nav_state_lifetime_tests {
         drop(control);
     }
 
-    /// COUNTER-TEST pinning the bug: the OLD shape (nav_state owned by the
-    /// ambient build scope) is a use-after-free once that scope drops.
+    /// COUNTER-TEST pinning the bug shape: the OLD layout (nav_state owned
+    /// by the ambient build scope) is still wrong once that scope drops —
+    /// the write is lost. But generational signal handles have downgraded
+    /// it from a process-aborting panic ("signal used after its scope was
+    /// dropped" / "type mismatch" → SIGABRT across the JNI boundary) to a
+    /// SILENT NO-OP. The real fix is still the dedicated retained scope,
+    /// proven by `nav_state_survives_transient_build_scope`; this pins the
+    /// new, crash-free behavior so a regression can't reintroduce the
+    /// abort.
     #[test]
-    #[should_panic(expected = "signal used after its scope was dropped")]
-    fn nav_state_owned_by_build_scope_is_use_after_free() {
+    fn nav_state_owned_by_build_scope_stale_write_is_noop_not_panic() {
         let mut ambient = Box::new(Scope::new());
         let nav_state = with_scope(&mut ambient, fresh_nav_state);
-        drop(ambient); // frees the signals — the bug
-        nav_state.active_route.set("detail"); // hits a freed slot → panic
+        drop(ambient); // frees the signals — the old bug
+        // Pre-generational-handles this aborted the whole app. Now the
+        // stale write is a safe no-op.
+        nav_state.active_route.set("detail"); // must NOT panic
+        nav_state.depth.set(2); // must NOT panic
     }
 }
 

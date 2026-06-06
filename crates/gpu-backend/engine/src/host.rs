@@ -1536,6 +1536,15 @@ impl Host {
         if !event.pressed {
             return false;
         }
+        // App-level key handler FIRST — it fires regardless of focus (arrow /
+        // shortcut keys for app navigation). Claiming the key
+        // (`PreventDefault`) stops the focused-input path below.
+        if let Some(handler) = self.backend.borrow().app_key_handler.clone() {
+            let ev = app_key_event(event);
+            if matches!(handler(&ev), runtime_core::primitives::key::KeyOutcome::PreventDefault) {
+                return true;
+            }
+        }
         // Flash the corresponding on-screen key (if any) so
         // physical-keyboard typing animates the virtual keys
         // too. Resolves the label by walking the active skin's
@@ -2283,6 +2292,37 @@ fn label_for_action(
 }
 
 /// Same lookup, but starting from a physical [`KeyEvent`].
+/// Convert a render-API [`KeyEvent`] into the framework's app-level
+/// `KeyEvent` (Web `KeyboardEvent.key` vocabulary). Named keys map to their
+/// Web names; `Character` uses the event's `text` payload (so `+`/`-`/`=` and
+/// letters are themselves). Selection fields are 0 — an app handler has no
+/// associated text field.
+fn app_key_event(event: &KeyEvent) -> runtime_core::primitives::key::KeyEvent {
+    let key = match event.key {
+        Key::ArrowLeft => "ArrowLeft".to_string(),
+        Key::ArrowRight => "ArrowRight".to_string(),
+        Key::ArrowUp => "ArrowUp".to_string(),
+        Key::ArrowDown => "ArrowDown".to_string(),
+        Key::Enter => "Enter".to_string(),
+        Key::Backspace => "Backspace".to_string(),
+        Key::Delete => "Delete".to_string(),
+        Key::Escape => "Escape".to_string(),
+        Key::Tab => "Tab".to_string(),
+        Key::Home => "Home".to_string(),
+        Key::End => "End".to_string(),
+        Key::Character | Key::Unknown => event.text.clone().unwrap_or_default(),
+    };
+    runtime_core::primitives::key::KeyEvent {
+        key,
+        shift: event.modifiers.shift,
+        ctrl: event.modifiers.ctrl,
+        alt: event.modifiers.alt,
+        meta: event.modifiers.meta,
+        selection_start: 0,
+        selection_end: 0,
+    }
+}
+
 /// `Key::Character` resolves through the event's `text` payload
 /// (e.g. winit hands us `"a"` for an A keypress); the other
 /// keys map to their fixed [`keyboard::KeyAction`] variants.

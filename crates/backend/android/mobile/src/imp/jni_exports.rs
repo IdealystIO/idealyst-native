@@ -355,6 +355,48 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustKeyListener_nativeKey
     }
 }
 
+/// App-level key trampoline — the `RustGlobalKeyListener` attached to the root
+/// view (see `keyboard::set_app_key_handler`) calls this for every hardware key
+/// press regardless of focus. Same conversion as `nativeKey` but with no
+/// associated text field, so the selection range is 0.
+///
+/// # Safety
+/// `ptr` must be a live `*const KeyDownCallback` leaked by
+/// `keyboard::set_app_key_handler`; the listener is detached before the box is
+/// freed, so no call races a free.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGlobalKeyListener_nativeGlobalKey(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+    key_code: jint,
+    meta_state: jint,
+    unicode_char: jint,
+) -> jboolean {
+    if ptr == 0 {
+        return 0;
+    }
+    let cb = &*(ptr as *const KeyDownCallback);
+    let key = android_key_name(key_code, unicode_char);
+    let event = runtime_core::primitives::key::KeyEvent {
+        key,
+        shift: (meta_state & 0x1) != 0,
+        ctrl: (meta_state & 0x1000) != 0,
+        alt: (meta_state & 0x2) != 0,
+        meta: (meta_state & 0x10000) != 0,
+        selection_start: 0,
+        selection_end: 0,
+    };
+    let outcome = run_returning_callback(
+        "app-key",
+        std::panic::AssertUnwindSafe(|| (cb.0)(&event)),
+    );
+    match outcome {
+        runtime_core::primitives::key::KeyOutcome::PreventDefault => 1,
+        runtime_core::primitives::key::KeyOutcome::Default => 0,
+    }
+}
+
 /// Map an Android keycode (plus a fallback unicode char for printable
 /// keys) to the canonical web-style key name. Kept tight: only the
 /// keys text-editor handlers typically reach for are named; everything

@@ -286,6 +286,12 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
         dark.set(v);
     });
 
+    // Controls toggles: enable/disable the keyboard shortcuts + swipe gesture.
+    let keys_enabled = state.keys_enabled;
+    let gestures_enabled = state.gestures_enabled;
+    let keys_on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| keys_enabled.set(v));
+    let gestures_on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| gestures_enabled.set(v));
+
     // Camera shape + size pickers.
     let camera_shape = state.camera_shape;
     let camera_size = state.camera_size;
@@ -372,7 +378,7 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
                 }
                 view(style = card_style()) {
                     Typography(content = "Appearance", kind = typography_kind::Caption, muted = true)
-                    view(style = row_style) {
+                    view(style = row_style.clone()) {
                         Typography(content = "Dark mode", kind = typography_kind::Body)
                         Switch(value = dark, on_change = dark_on_change)
                     }
@@ -382,6 +388,17 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
                     SegmentedControl(value = shape_sel, on_change = shape_on_change, options = shape_options)
                     Typography(content = "Camera size", kind = typography_kind::Caption, muted = true)
                     SegmentedControl(value = size_sel, on_change = size_on_change, options = size_options)
+                }
+                view(style = card_style()) {
+                    Typography(content = "Controls", kind = typography_kind::Caption, muted = true)
+                    view(style = row_style.clone()) {
+                        Typography(content = "Keyboard shortcuts", kind = typography_kind::Body)
+                        Switch(value = keys_enabled, on_change = keys_on_change)
+                    }
+                    view(style = row_style.clone()) {
+                        Typography(content = "Swipe gestures", kind = typography_kind::Body)
+                        Switch(value = gestures_enabled, on_change = gestures_on_change)
+                    }
                 }
             }
             // Confirm clearing the board before an aspect change wipes drawings.

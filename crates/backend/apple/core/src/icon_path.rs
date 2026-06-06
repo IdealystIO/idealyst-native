@@ -486,6 +486,18 @@ mod tests {
     }
 
     #[test]
+    fn debug_trash_can_body_arc_emits_curves() {
+        // The lucide trash-2 can body: down the right side, ROUNDED bottom-right
+        // corner (a2 2 …), across, rounded bottom-left, up. The corners are arcs
+        // — they must emit `C(…)` curves, not collapse to `L(…)` (which renders
+        // as the boxy corners reported on Apple).
+        let mut e = LogEmitter::default();
+        parse_svg_path("M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6", 1.0, 1.0, &mut e);
+        // Print the actual op stream for inspection.
+        panic!("TRASH CAN-BODY OPS: {:?}", e.ops);
+    }
+
+    #[test]
     fn quadratic_lifts_to_cubic_via_default_impl() {
         // P0 = (0,0), Pc = (3,3), P2 = (6,0).
         // cp1 = P0 + 2/3·(Pc - P0) = (2, 2)

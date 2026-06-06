@@ -1834,6 +1834,30 @@ pub trait Backend {
         None
     }
 
+    /// Node's rect in **physical device-screen pixels** — origin at the
+    /// top-left of the display (status bar included), units = real
+    /// pixels, not logical/dp/pt. Returns `None` if the node isn't laid
+    /// out yet or the backend has no screen-pixel mapping. Default
+    /// `None`.
+    ///
+    /// This is distinct from [`absolute_frame`](Backend::absolute_frame),
+    /// which reports *logical* pixels in *window* coordinates for layout
+    /// /anchoring. `device_frame` exists for **OS-level input injection**:
+    /// an external driver (Android `adb shell input tap`, iOS XCUITest/idb,
+    /// macOS `CGEvent`) needs the real on-screen pixel a synthetic touch
+    /// should land on. Doing the logical→physical conversion *here*, on
+    /// the device where the true display density is known, avoids the host
+    /// having to guess a scale factor — and avoids the window-vs-screen
+    /// status-bar offset that `absolute_frame` would carry.
+    ///
+    /// Android forwards to `getLocationOnScreen` (already physical px);
+    /// other backends can layer their own injector mapping as those paths
+    /// come online.
+    #[allow(unused_variables)]
+    fn device_frame(&self, node: &Self::Node) -> Option<primitives::portal::ViewportRect> {
+        None
+    }
+
     /// Whether this backend can capture its rendered surface via
     /// [`capture_screenshot`](Backend::capture_screenshot). Default
     /// `false`. The Robot bridge only registers the live `"screenshot"`

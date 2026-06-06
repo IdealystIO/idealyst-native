@@ -133,6 +133,45 @@ fn do_request(
     // `Arc` clone.
     let _slot_guard = SlotGuard(&conn_slot);
 
+    // Run the JNI work, capturing the outcome instead of early-returning,
+    // so the pending-exception checkpoint below ALWAYS runs before this
+    // worker thread detaches.
+    let result = do_request_inner(&mut env, method, url, headers, body, &conn_slot);
+
+    // A connect/IO failure (server unreachable, wrong host, offline,
+    // relay down) throws a Java exception — e.g. `ConnectException` from
+    // `getOutputStream` / `getResponseCode`. The jni crate surfaces it
+    // as `Err(JavaException)`, which `map_jni_err` already turned into a
+    // Rust `Err` — but the exception is left PENDING on the JVM.
+    // Detaching this worker thread (or letting it exit) with a pending
+    // exception makes ART report it as an UNCAUGHT FATAL EXCEPTION on
+    // the background thread and abort the whole app — the exact crash
+    // this fixes. It also defeats the `Result`-returning server-fn
+    // contract: web catches the same failure into the reducer's error
+    // arm, so native must too. Clear it here, preferring the Java
+    // exception's own message for the returned `Err` so the reducer can
+    // show something useful.
+    if env.exception_check().unwrap_or(false) {
+        if let Some(msg) = take_pending_exception(&mut env) {
+            return Err(Error::Network(msg));
+        }
+    }
+    result
+}
+
+/// The JNI request body. Runs against an already-attached `env`; the
+/// caller ([`do_request`]) owns the attach guard, the slot guard, and
+/// the post-run pending-exception checkpoint. Early-returning from here
+/// on a `JavaException` is safe precisely because that checkpoint clears
+/// whatever exception this left pending.
+fn do_request_inner(
+    env: &mut jni::JNIEnv<'_>,
+    method: Method,
+    url: String,
+    headers: Headers,
+    body: Vec<u8>,
+    conn_slot: &ConnSlot,
+) -> Result<Response, Error> {
     // -----------------------------------------------------------------
     // URL url = new URL(url_str);
     // -----------------------------------------------------------------
@@ -244,7 +283,7 @@ fn do_request(
     // We flatten each entry's values into our `Headers` map.
     // -----------------------------------------------------------------
     let mut out_headers = Headers::new();
-    collect_headers(&mut env, &conn_obj, &mut out_headers).ok();
+    collect_headers(&mut *env, &conn_obj, &mut out_headers).ok();
 
     // -----------------------------------------------------------------
     // Body: 4xx/5xx use getErrorStream; otherwise getInputStream.
@@ -266,7 +305,7 @@ fn do_request(
             if stream.is_null() {
                 Vec::new()
             } else {
-                read_input_stream(&mut env, &stream).unwrap_or_default()
+                read_input_stream(&mut *env, &stream).unwrap_or_default()
             }
         }
         Err(_) => Vec::new(),
@@ -422,6 +461,37 @@ fn read_input_stream(
 
 fn map_jni_err(e: jni::errors::Error) -> Error {
     Error::Network(format!("JNI: {e}"))
+}
+
+/// Capture a pending Java exception's `toString()` (e.g.
+/// `"java.net.ConnectException: Failed to connect to /10.0.2.2:3000"`)
+/// and CLEAR it so the worker thread can detach/exit without ART
+/// aborting the app over an uncaught exception. Returns `None` if
+/// nothing is pending or the message can't be read — the exception is
+/// cleared either way.
+///
+/// Only the few JNI ops legal with a pending exception are used before
+/// the clear lands: `ExceptionOccurred` (to grab the throwable) then
+/// `ExceptionClear`; `toString()` runs only after the clear.
+fn take_pending_exception(env: &mut jni::JNIEnv<'_>) -> Option<String> {
+    let throwable = env.exception_occurred().ok()?;
+    // Must clear before any non-exception JNI call (the `toString`
+    // below) — calling other JNI functions with an exception pending is
+    // undefined.
+    let _ = env.exception_clear();
+    if throwable.is_null() {
+        return None;
+    }
+    let msg_obj = env
+        .call_method(&throwable, "toString", "()Ljava/lang/String;", &[])
+        .ok()?
+        .l()
+        .ok()?;
+    if msg_obj.is_null() {
+        return None;
+    }
+    let msg_str: JString = msg_obj.into();
+    env.get_string(&msg_str).ok().map(|s| s.into())
 }
 
 /// Race the worker's `oneshot` against the cancel token. If cancel

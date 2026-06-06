@@ -187,6 +187,19 @@ fn defer_or_drop(boxes: Vec<Box<dyn Any>>) {
 
 struct Arena {
     signals: Vec<Option<Box<dyn Any>>>,
+    /// Generation counter per signal slot, parallel to `signals`.
+    /// Bumped every time a slot is freed (`take_signals_batched`), so a
+    /// recycled slot gets a fresh generation. A `Signal<T>` handle
+    /// records the generation it was minted with; a read/write through
+    /// a handle whose generation no longer matches the slot's is
+    /// recognised as STALE (the original signal's scope unmounted and
+    /// the slot was reused, possibly by a different-typed signal) and
+    /// becomes a safe no-op instead of aliasing the new occupant —
+    /// which previously panicked with "signal type mismatch" (a
+    /// process-aborting crash across the JNI/FFI boundary) or, worse,
+    /// silently fired the wrong signal's subscribers. The classic
+    /// generational-arena guard (Leptos/Slotmap).
+    signal_gen: Vec<u32>,
     effects: Vec<Option<Box<dyn Any>>>,
     /// Outer `Option`: `None` once the slot is freed by its owning scope.
     /// Inner `Option<Box<dyn Any>>`: `None` while the ref exists but hasn't
@@ -258,6 +271,7 @@ impl Arena {
     fn new() -> Self {
         Self {
             signals: Vec::new(),
+            signal_gen: Vec::new(),
             effects: Vec::new(),
             refs: Vec::new(),
             signal_subscribers: Vec::new(),
@@ -269,21 +283,26 @@ impl Arena {
         }
     }
 
-    fn insert_signal<T: 'static>(&mut self, inner: SignalInner<T>) -> SignalId {
+    /// Returns the slot id AND the slot's current generation. The
+    /// caller stamps the generation into the `Signal<T>` handle so a
+    /// later read/write can detect a recycled slot (see `signal_gen`).
+    fn insert_signal<T: 'static>(&mut self, inner: SignalInner<T>) -> (SignalId, u32) {
         if let Some(idx) = self.signal_free.pop() {
             // Recycle a previously-freed slot. The slot itself is
             // `None` and `signal_subscribers[idx]` is empty (cleared
             // by `take_signals_batched`), so we just stash the new
-            // value.
+            // value. Its generation was already bumped at free time, so
+            // any still-living handle to the old occupant won't match.
             self.signals[idx as usize] = Some(Box::new(inner));
             // Defensive: in case a stale entry made it past cleanup.
             self.signal_subscribers[idx as usize].clear();
-            SignalId(idx)
+            (SignalId(idx), self.signal_gen[idx as usize])
         } else {
             let id = SignalId(self.signals.len() as u32);
             self.signals.push(Some(Box::new(inner)));
             self.signal_subscribers.push(HashSet::new());
-            id
+            self.signal_gen.push(0);
+            (id, 0)
         }
     }
 
@@ -408,6 +427,15 @@ impl Arena {
             if let Some(slot) = self.signals.get_mut(sid.0 as usize) {
                 if let Some(boxed) = slot.take() {
                     out.push(boxed);
+                    // Bump the slot's generation so any still-living
+                    // handle to this signal (e.g. captured by a
+                    // detached/deferred callback that outlived the
+                    // scope) is recognised as stale on its next
+                    // read/write instead of aliasing whatever signal
+                    // recycles this slot next.
+                    if let Some(g) = self.signal_gen.get_mut(sid.0 as usize) {
+                        *g = g.wrapping_add(1);
+                    }
                     self.signal_free.push(sid.0);
                 }
             }
@@ -992,6 +1020,11 @@ pub struct ArenaStats {
 /// a `Scope`); when the owner drops, the signal's slot is freed.
 pub struct Signal<T> {
     id: SignalId,
+    /// The arena slot generation this handle was minted with. If the
+    /// slot is later freed and recycled, its generation advances and
+    /// this handle becomes stale — reads/writes through it no-op rather
+    /// than touch the slot's new occupant. See `Arena::signal_gen`.
+    gen: u32,
     _phantom: PhantomData<T>,
 }
 
@@ -1011,7 +1044,7 @@ impl<T> Default for Signal<T> {
     /// the detached signal panics with the standard "signal used after its
     /// scope was dropped" message rather than silently misbehaving.
     fn default() -> Self {
-        Self { id: SignalId(u32::MAX), _phantom: PhantomData }
+        Self { id: SignalId(u32::MAX), gen: 0, _phantom: PhantomData }
     }
 }
 
@@ -1039,19 +1072,32 @@ impl<T: Clone + 'static> Signal<T> {
     /// surrounding render `Owner` drops. (For tests and ad-hoc usage outside
     /// a render tree, the slot leaks until the thread exits.)
     pub fn new(value: T) -> Self {
-        let id = ARENA.with(|a| {
+        let (id, gen) = ARENA.with(|a| {
             a.borrow_mut().insert_signal(SignalInner { value })
         });
         register_signal(id);
-        Self { id, _phantom: PhantomData }
+        Self { id, gen, _phantom: PhantomData }
     }
 
     pub fn get(&self) -> T {
+        let sid = self.id;
+        // Read the value first, generation-checked. `None` means the
+        // signal's slot was freed (scope unmounted) — a stale read. We
+        // deliberately do NOT record a subscription in that case (the
+        // slot's subscriber set belongs to whatever recycled it), and
+        // we don't have a `T` to hand back, so this is the one stale
+        // access that still panics — a read of a disposed signal is a
+        // genuine logic error with no safe value to return. The
+        // reported crash (and the dangerous use-after-free shape) is a
+        // stale *write*, which `set`/`update` below turn into no-ops.
+        let value = with_signal::<T, _>(sid, self.gen, |inner| inner.value.clone())
+            .unwrap_or_else(|| {
+                panic!("signal read after its scope was dropped (id {:?})", sid)
+            });
         // Record subscription if an effect is currently running. The
         // arena holds the inverse map (`signal_subscribers` +
         // `effect_dependencies`) so each link is recorded under a
         // single mutable borrow.
-        let sid = self.id;
         CURRENT.with(|c| {
             if let Some(eid) = *c.borrow() {
                 ARENA.with(|a| {
@@ -1065,14 +1111,22 @@ impl<T: Clone + 'static> Signal<T> {
                 });
             }
         });
-        with_signal::<T, _>(sid, |inner| inner.value.clone())
+        value
     }
 
     pub fn set(&self, value: T) {
         assert_not_in_memo_compute();
-        with_signal_mut::<T, _>(self.id, |inner| {
+        // Stale write (slot freed/recycled since this handle was minted)
+        // → no-op. Returning here is essential: skipping the subscriber
+        // fan-out below means we never fire the new occupant's
+        // subscribers with our (wrong-typed) write.
+        if with_signal_mut::<T, _>(self.id, self.gen, |inner| {
             inner.value = value;
-        });
+        })
+        .is_none()
+        {
+            return;
+        }
         // Subscriber lists are kept tight on the cleanup side (effect
         // drop / effect re-run), so no pruning pass needed here.
         let to_run = collect_subscribers(self.id);
@@ -1085,9 +1139,14 @@ impl<T: Clone + 'static> Signal<T> {
 
     pub fn update<F: FnOnce(&mut T)>(&self, f: F) {
         assert_not_in_memo_compute();
-        with_signal_mut::<T, _>(self.id, |inner| {
+        // Stale update → no-op (see `set`).
+        if with_signal_mut::<T, _>(self.id, self.gen, |inner| {
             f(&mut inner.value);
-        });
+        })
+        .is_none()
+        {
+            return;
+        }
         let to_run = collect_subscribers(self.id);
         notify_or_queue(&to_run);
         notify_js_subscriber(self.id);
@@ -1306,22 +1365,44 @@ fn collect_subscribers(sid: SignalId) -> Vec<EffectId> {
     })
 }
 
-fn with_signal<T: 'static, R>(id: SignalId, f: impl FnOnce(&SignalInner<T>) -> R) -> R {
+/// Generation-checked read access. Returns `None` when the handle is
+/// STALE — its slot was freed (and possibly recycled) since the handle
+/// was minted, so the generation no longer matches (or the id is the
+/// detached-`Default` sentinel / out of range). A matching generation
+/// guarantees the slot still holds the original `SignalInner<T>`, so
+/// the downcast below is an invariant, not a fallible cast.
+fn with_signal<T: 'static, R>(
+    id: SignalId,
+    gen: u32,
+    f: impl FnOnce(&SignalInner<T>) -> R,
+) -> Option<R> {
     ARENA.with(|arena| {
         let arena = arena.borrow();
-        let slot = arena
-            .signals
-            .get(id.0 as usize)
-            .and_then(|o| o.as_ref())
-            .unwrap_or_else(|| panic!("signal used after its scope was dropped (id {:?})", id));
+        if arena.signal_gen.get(id.0 as usize).copied() != Some(gen) {
+            return None; // stale handle or detached sentinel
+        }
+        let slot = arena.signals.get(id.0 as usize).and_then(|o| o.as_ref())?;
         let inner = slot
             .downcast_ref::<SignalInner<T>>()
-            .expect("internal: signal type mismatch");
-        f(inner)
+            .expect("internal: signal type mismatch (generation matched but type differs)");
+        Some(f(inner))
     })
 }
 
-fn with_signal_mut<T: 'static, R>(id: SignalId, f: impl FnOnce(&mut SignalInner<T>) -> R) -> R {
+/// Generation-checked mutable access. Returns `None` (no-op) on a stale
+/// handle — see [`with_signal`]. The take/run/restore dance is
+/// unchanged from the live path.
+fn with_signal_mut<T: 'static, R>(
+    id: SignalId,
+    gen: u32,
+    f: impl FnOnce(&mut SignalInner<T>) -> R,
+) -> Option<R> {
+    // Bail before taking the slot if the handle is stale. Single-
+    // threaded with no user code between this check and the take below,
+    // so the generation can't change underneath us.
+    if ARENA.with(|a| a.borrow().signal_gen.get(id.0 as usize).copied()) != Some(gen) {
+        return None;
+    }
     // `f` is a user closure (e.g. `Signal::update`'s) that may create or
     // touch OTHER signals — each of which re-enters the arena RefCell.
     // Holding the arena borrow across `f` would panic ("RefCell already
@@ -1341,21 +1422,28 @@ fn with_signal_mut<T: 'static, R>(id: SignalId, f: impl FnOnce(&mut SignalInner<
     // exposes this so those callbacks skip + re-arm. The guard's Drop
     // runs even if `f` panics, so the busy count can't get stuck.
     let _busy = ReactiveBusyGuard::enter();
+    // Generation already matched above, so the slot is occupied — the
+    // only way `take()` yields `None` here is the documented unsupported
+    // case of re-entrant mutation of *this same* signal inside `f`,
+    // which stays a panic (a real logic bug, distinct from a stale
+    // handle, which `None`-ed out before this point).
     let mut boxed = ARENA.with(|a| {
         a.borrow_mut()
             .signals
             .get_mut(id.0 as usize)
             .and_then(|o| o.take())
-            .unwrap_or_else(|| panic!("signal used after its scope was dropped (id {:?})", id))
+            .unwrap_or_else(|| {
+                panic!("re-entrant mutation of signal {:?} inside its own update", id)
+            })
     });
     let inner = boxed
         .downcast_mut::<SignalInner<T>>()
-        .expect("internal: signal type mismatch");
+        .expect("internal: signal type mismatch (generation matched but type differs)");
     let result = f(inner);
     ARENA.with(|a| {
         a.borrow_mut().signals[id.0 as usize] = Some(boxed);
     });
-    result
+    Some(result)
 }
 
 /// Drop every dependency link the effect currently holds. Called right
@@ -2996,6 +3084,84 @@ mod tests {
         let (s_after, e_after) = arena_inuse_counts();
         assert_eq!(s_after, s0, "all signal slots returned to baseline");
         assert_eq!(e_after, e0, "all effect slots returned to baseline");
+    }
+
+    /// Regression: a write through a STALE signal handle — one whose
+    /// owning scope unmounted and whose slot was recycled by a
+    /// different-typed signal — must be a safe no-op, NOT a
+    /// "signal type mismatch" panic. That panic, fired from a deferred
+    /// `signal.set` inside a JNI scheduled callback, aborted the whole
+    /// Android app (SIGABRT, non-unwinding FFI boundary). Generational
+    /// handles make the stale write detect the bumped generation and do
+    /// nothing. ARENA is thread-local, so this test thread's arena
+    /// starts empty and the freed slot is the one `fresh` recycles.
+    #[test]
+    fn stale_signal_write_after_scope_drop_is_noop_not_panic() {
+        let mut scope = Scope::new();
+        let stale: Signal<bool> = with_scope(&mut scope, || Signal::new(false));
+        drop(scope); // frees `stale`'s slot and bumps its generation
+
+        // Recycle the just-freed slot with a DIFFERENT-typed signal —
+        // the exact aliasing that used to make the stale write panic.
+        let fresh: Signal<u64> = Signal::new(7);
+        assert_eq!(
+            fresh.id(),
+            stale.id(),
+            "fresh signal should reuse the freed slot (LIFO freelist)"
+        );
+
+        // The crash repro: deferred write through the stale handle.
+        stale.set(true); // must NOT panic
+        assert_eq!(
+            fresh.get(),
+            7,
+            "stale write must not clobber the recycled signal"
+        );
+
+        // A stale `update` is likewise a no-op.
+        stale.update(|v| *v = true);
+        assert_eq!(fresh.get(), 7);
+
+        // The recycled signal still works normally afterward.
+        fresh.set(9);
+        assert_eq!(fresh.get(), 9);
+    }
+
+    /// A stale write must not fire the recycled occupant's subscribers
+    /// either — otherwise a disposed signal's deferred `set` could
+    /// spuriously re-run effects subscribed to whatever took its slot.
+    #[test]
+    fn stale_signal_write_does_not_fire_recycled_subscribers() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let mut scope = Scope::new();
+        let stale: Signal<bool> = with_scope(&mut scope, || Signal::new(false));
+        drop(scope);
+
+        let fresh: Signal<u64> = Signal::new(0);
+        assert_eq!(fresh.id(), stale.id());
+
+        // Subscribe an effect to the recycled signal.
+        let runs = Rc::new(Cell::new(0));
+        let r = runs.clone();
+        let _e = Effect::new(move || {
+            let _ = fresh.get();
+            r.set(r.get() + 1);
+        });
+        assert_eq!(runs.get(), 1, "effect runs once on creation");
+
+        // Stale write to the same slot index must NOT re-run the effect.
+        stale.set(true);
+        assert_eq!(
+            runs.get(),
+            1,
+            "stale write fired the recycled signal's subscribers"
+        );
+
+        // A real write to the recycled signal still re-runs it.
+        fresh.set(1);
+        assert_eq!(runs.get(), 2);
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub(crate) mod async_executor;
 pub(crate) mod callbacks;
 mod font;
 mod jni_exports;
+pub(crate) mod keyboard;
 mod primitives;
 pub(crate) mod scheduler;
 mod screenshot;
@@ -421,6 +422,11 @@ pub struct AndroidBackend {
     /// `release_private_layer_window` tears the window down.
     pub(crate) detached_window_roots:
         HashMap<usize, jni::objects::GlobalRef>,
+    /// Leaked `KeyDownCallback` pointer for the app-level key handler installed
+    /// by `set_app_key_handler` (a `RustGlobalKeyListener` on the root view holds
+    /// the same value and trampolines into `nativeGlobalKey`). `Some` while a
+    /// handler is installed; freed + detached when replaced or cleared.
+    pub(crate) app_key_ptr: Option<jlong>,
 }
 
 /// Read the device's `density` (screen-pixels-per-dp) from the
@@ -841,6 +847,7 @@ impl AndroidBackend {
             pending_sticky: HashMap::new(),
             pending_reveal: Vec::new(),
             detached_window_roots: HashMap::new(),
+            app_key_ptr: None,
         };
         backend.drain_self_registrars();
         backend
@@ -2371,7 +2378,21 @@ impl Backend for AndroidBackend {
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
-        primitives::text::update_text(node, content)
+        primitives::text::update_text(node, content);
+        // `TextView.setText` repaints the glyphs itself, but Android
+        // never tells Taffy the intrinsic content size changed — the
+        // TextView's measure_fn (installed in `primitives::text::create`)
+        // only re-runs when its Taffy node is marked dirty. Without this,
+        // the cached measure from the previous content keeps winning:
+        // a reactive `text(|| ...)` that grows (e.g. "" → "1") stays
+        // clipped to its old frame — often 0×0, hence the "the number
+        // never renders on select" symptom — and one that shrinks leaves
+        // stale blank space. Mark the node dirty so it re-measures on the
+        // next coalesced layout pass. Mirrors iOS `update_text` and the
+        // sibling `update_text_area_value`.
+        let layout = self.layout_for_view(node);
+        self.layout.mark_dirty(layout);
+        crate::imp::scheduler::schedule_layout_pass_retry(0);
     }
 
     fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
@@ -2509,6 +2530,13 @@ impl Backend for AndroidBackend {
 
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
         primitives::toggle::update_value(node, value)
+    }
+
+    fn set_app_key_handler(
+        &mut self,
+        handler: Option<runtime_core::primitives::key::KeyDownHandler>,
+    ) {
+        keyboard::set_app_key_handler(self, handler);
     }
 
     fn set_app_background(&mut self, color: &runtime_core::Tokenized<runtime_core::Color>) {
@@ -3408,6 +3436,27 @@ impl Backend for AndroidBackend {
             &ANDROID_VIEW_OPS,
             node as &dyn std::any::Any,
         )
+    }
+
+    fn device_frame(
+        &self,
+        node: &Self::Node,
+    ) -> Option<runtime_core::primitives::portal::ViewportRect> {
+        // Physical screen-pixel rect for OS-level input injection
+        // (`adb shell input tap`). `view_screen_rect` reuses the same
+        // `getLocationOnScreen` path overlay anchoring already trusts —
+        // origin = display top-left (status bar included), units = real
+        // device pixels, which is *exactly* adb's tap coordinate space.
+        // No dp→px conversion on the host: the density is applied here,
+        // on-device, where it's authoritative.
+        let rect = view_rect::view_screen_rect(node);
+        // `view_screen_rect` returns a zero rect for not-yet-laid-out
+        // views; report that as "no frame" so the driver doesn't tap
+        // (0,0) blindly.
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return None;
+        }
+        Some(rect)
     }
 
     fn on_node_unstyled(&mut self, node: &Self::Node) {

@@ -8,6 +8,7 @@
 //! See `docs/mcp-catalog-spec.md` §5 for the MCP surface this
 //! implements.
 
+mod adb;
 mod app_discovery;
 mod catalog_service;
 pub mod lint;

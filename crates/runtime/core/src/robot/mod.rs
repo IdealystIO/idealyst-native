@@ -136,6 +136,9 @@ pub(crate) struct ElementActions {
     /// Read the element's rect in **viewport/window** coordinates.
     /// Wraps `Backend::absolute_frame`.
     pub absolute_frame: Option<Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>>,
+    /// Read the element's rect in **physical device-screen pixels** for
+    /// OS-level input injection. Wraps `Backend::device_frame`.
+    pub device_frame: Option<Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>>,
 }
 
 impl ElementActions {
@@ -149,6 +152,7 @@ impl ElementActions {
             blur: None,
             frame: None,
             absolute_frame: None,
+            device_frame: None,
         }
     }
 }
@@ -646,6 +650,27 @@ impl Robot {
         }
     }
 
+    /// Read the element's rect in **physical device-screen pixels** —
+    /// the coordinate space an OS-level input injector (Android
+    /// `adb input tap`, etc.) operates in. `Ok(None)` means the element
+    /// exists but isn't laid out yet; `Err` means it's unmounted or the
+    /// backend doesn't implement `device_frame`.
+    pub fn device_frame(
+        &self,
+        element: &Element,
+    ) -> Result<Option<crate::primitives::portal::ViewportRect>, RobotError> {
+        let cb = REGISTRY.with(|r| {
+            r.borrow()
+                .get(element.id)
+                .map(|e| e.actions.device_frame.clone())
+                .ok_or(RobotError::ElementGone)
+        })?;
+        match cb {
+            Some(cb) => Ok(cb()),
+            None => Err(RobotError::ActionNotAvailable("device_frame")),
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Signal introspection
     // -------------------------------------------------------------------------
@@ -813,12 +838,14 @@ pub(crate) fn attach_frame_actions(
     id: ElementId,
     frame: Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>,
     absolute_frame: Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>,
+    device_frame: Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>,
 ) {
     REGISTRY.with(|r| {
         let mut reg = r.borrow_mut();
         if let Some(Some(entry)) = reg.entries.get_mut(id.0 as usize) {
             entry.actions.frame = Some(frame);
             entry.actions.absolute_frame = Some(absolute_frame);
+            entry.actions.device_frame = Some(device_frame);
         }
     });
 }

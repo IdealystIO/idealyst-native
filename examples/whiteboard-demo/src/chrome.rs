@@ -22,12 +22,12 @@ use crate::{
 };
 use camera::{Camera, CameraConfig, CameraFacing, MediaStream};
 use icons_lucide::{
-    CAMERA, CIRCLE, LAYERS, PALETTE as ICON_PALETTE, PEN_LINE, PLUS, SETTINGS as ICON_SETTINGS,
-    SQUARE, TRASH_2,
+    CAMERA, CIRCLE, LAYERS, PALETTE as ICON_PALETTE, PLUS, SETTINGS as ICON_SETTINGS, SQUARE,
+    TRASH_2,
 };
 use runtime_core::{
     component, icon, presence, safe_area_insets, ui, AlignItems, Color, Easing, Element,
-    FlexDirection, FlexWrap, IconData, IntoElement, JustifyContent, Length, Overflow, Position,
+    FlexDirection, FlexWrap, IconData, IntoElement, JustifyContent, Length, Position,
     PresenceAnim, PresenceState, Ref, Signal, StyleRules, Tokenized, TouchPhase, TouchResponse,
     Transform,
 };
@@ -258,36 +258,33 @@ impl Default for WidthButtonProps {
     }
 }
 
-/// A stroke-width button: a lucide pen glyph whose icon box scales with the
-/// stroke width it sets (thin → small, thick → large). Accent-blue when
-/// selected, muted grey otherwise — color, not a background box, carries state.
+/// A stroke-width button: a bare filled dot whose size tracks the stroke width
+/// it sets — the dot IS the preview of the line weight, which a repeated pen
+/// glyph can't convey. Accent-blue when selected, muted grey otherwise; color,
+/// not a background box, carries the state.
 #[component]
 pub fn WidthButton(props: &WidthButtonProps) -> Element {
     let w = props.w;
     let width = props.width;
-    // Pen icon sized by the weight it represents (thin 2 → 16, med 6 → 20,
-    // thick 14 → 28). The icon scales to fill this box, so the glyph reads bigger
-    // for a heavier stroke.
-    let box_px = 14.0 + w;
-    let glyph_style = static_style(StyleRules {
-        width: Some(Length::Px(box_px).into()),
-        height: Some(Length::Px(box_px).into()),
-        align_items: Some(AlignItems::Center),
-        justify_content: Some(JustifyContent::Center),
-        ..Default::default()
+    let dot_style = reactive_style(move || {
+        let selected = (width.get() - w).abs() < f32::EPSILON;
+        let d = 6.0 + w; // dot grows with the stroke width it represents
+        styled(
+            StyleRules {
+                width: Some(Length::Px(d).into()),
+                height: Some(Length::Px(d).into()),
+                background: Some(Tokenized::Literal(if selected {
+                    token_intent(|i| i.primary.solid_bg.clone())
+                } else {
+                    token(|c| c.text_muted.clone())
+                })),
+                ..Default::default()
+            },
+            [radius(d / 2.0)],
+        )
     });
-    let pen = icon(PEN_LINE)
-        .color(move || {
-            let selected = (width.get() - w).abs() < f32::EPSILON;
-            if selected {
-                token_intent(|i| i.primary.solid_bg.clone())
-            } else {
-                token(|c| c.text_muted.clone())
-            }
-        })
-        .into_element();
-    let glyph = ui! { view(style = glyph_style) { pen } };
-    bare_btn(glyph, move || width.set(w))
+    let dot = ui! { view(style = dot_style) {} };
+    bare_btn(dot, move || width.set(w))
 }
 
 /// Props for [`ColorButton`].
@@ -683,11 +680,14 @@ pub fn LayersPopover(props: &LayersPopoverProps) -> Element {
                     [radius(16.0), border_all_color(1.0, token_alpha(|c| c.border.clone(), 0.7))],
                 )
             });
-            // Cap the height so a long list scrolls instead of growing off-stage.
+            // A plain column for the canvas list. (A reactive `for` over a
+            // `Signal<Vec<_>>` renders as an `Element::Each`; that reconciles
+            // correctly inside a plain container — the proven pattern — but NOT
+            // inside a `scroll_view`, which silently dropped the rows. Few
+            // canvases in practice, so the popover just grows.)
             let list_style = static_style(StyleRules {
                 flex_direction: Some(FlexDirection::Column),
                 gap: Some(Length::Px(4.0).into()),
-                max_height: Some(Length::Px(264.0).into()),
                 ..Default::default()
             });
             // Separate clones for the row list vs the add row (each consumer owns
@@ -698,7 +698,7 @@ pub fn LayersPopover(props: &LayersPopoverProps) -> Element {
             let canvases_add = canvases.clone();
             ui! {
                 view(style = panel_style) {
-                    scroll_view(style = list_style) {
+                    view(style = list_style) {
                         for id in canvas_ids, key = *id {
                             CanvasRow(
                                 id = id,
@@ -832,42 +832,110 @@ pub fn CanvasRow(props: &CanvasRowProps) -> Element {
     });
     let label = move || format!("Canvas {}", index_of() + 1);
 
-    // Delete affordance — only when more than one canvas exists.
+    // Delete affordance — only when more than one canvas exists. Rendered via a
+    // reactive `if` so it's truly ABSENT for the sole canvas (NOT just sized 0):
+    // a lucide icon renders at its intrinsic size and the box isn't layer-backed
+    // on macOS, so a 0×0 box neither shrinks nor clips it — collapsing the box
+    // left the trash glyph visible. Building it as a `#[component]` keeps the
+    // `Rc` captures out of the `if` branch.
     let del_visible = move || canvas_ids.get().len() > 1;
-    let del_style = reactive_style(move || StyleRules {
-        width: Some(Length::Px(if del_visible() { 24.0 } else { 0.0 }).into()),
-        height: Some(Length::Px(24.0).into()),
-        align_items: Some(AlignItems::Center),
-        justify_content: Some(JustifyContent::Center),
-        overflow: Some(Overflow::Hidden),
-        ..Default::default()
-    });
-    let del_icon = icon(TRASH_2).color(|| token(|c| c.text_muted.clone())).into_element();
-
     let strokes_for_del = strokes.clone();
     let canvases_for_del = canvases.clone();
     ui! {
         view(style = row_style) {
             text(style = label_style) { label() }
-            view(style = del_style) {
-                del_icon
+            if del_visible() {
+                DeleteCanvasButton(
+                    id = id,
+                    state = s,
+                    strokes = strokes_for_del.clone(),
+                    canvases = canvases_for_del.clone(),
+                    version = version,
+                )
             }
-            .on_touch(move |ev| {
-                if !del_visible() {
-                    return TouchResponse::IGNORED;
-                }
-                if ev.phase == TouchPhase::Ended {
-                    crate::delete_canvas(&canvases_for_del, &strokes_for_del, active, version, canvas_ids, index_of());
-                }
-                TouchResponse::CLAIMED
-            })
         }
         .on_touch(move |ev| {
             if ev.phase == TouchPhase::Ended {
-                crate::switch_canvas(&canvases, &strokes, active, version, index_of());
+                // Close immediately, then DEFER the canvas switch to a microtask:
+                // the switch deep-clones strokes + repaints the canvas, so running
+                // it inline makes the popover's dismissal visibly lag the tap.
+                // Deferring lets the close flush this frame; the canvas swaps the
+                // next microtask (imperceptible).
                 s.layers_open.set(false);
+                let target = index_of();
+                let canvases = canvases.clone();
+                let strokes = strokes.clone();
+                runtime_core::scheduling::schedule_microtask(move || {
+                    crate::switch_canvas(&canvases, &strokes, active, version, target);
+                });
             }
             TouchResponse::CONSUMED
+        })
+    }
+}
+
+/// Props for [`DeleteCanvasButton`].
+pub struct DeleteCanvasButtonProps {
+    pub id: u64,
+    pub state: BoardState,
+    pub strokes: Strokes,
+    pub canvases: CanvasStore,
+    pub version: Signal<u64>,
+}
+
+impl Default for DeleteCanvasButtonProps {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            state: BoardState::default(),
+            strokes: Default::default(),
+            canvases: Default::default(),
+            version: Signal::new(0),
+        }
+    }
+}
+
+/// The trailing trash button on a [`CanvasRow`] — a 15px glyph in a 28px tap
+/// target. Deletes the canvas whose stable `id` this row carries (resolved to a
+/// live index against `canvas_ids` at tap time). Only mounted when more than one
+/// canvas exists (its caller gates it behind a reactive `if`).
+#[component]
+pub fn DeleteCanvasButton(props: &DeleteCanvasButtonProps) -> Element {
+    let id = props.id;
+    let s = props.state;
+    let strokes = props.strokes.clone();
+    let canvases = props.canvases.clone();
+    let version = props.version;
+    let canvas_ids = s.canvas_ids;
+    let active = s.active_canvas;
+
+    let box_style = static_style(StyleRules {
+        width: Some(Length::Px(24.0).into()),
+        height: Some(Length::Px(24.0).into()),
+        align_items: Some(AlignItems::Center),
+        justify_content: Some(JustifyContent::Center),
+        ..Default::default()
+    });
+    let glyph_style = static_style(StyleRules {
+        width: Some(Length::Px(13.0).into()),
+        height: Some(Length::Px(13.0).into()),
+        align_items: Some(AlignItems::Center),
+        justify_content: Some(JustifyContent::Center),
+        ..Default::default()
+    });
+    let glyph = icon(TRASH_2).color(|| token(|c| c.text_muted.clone())).into_element();
+    ui! {
+        view(style = box_style) {
+            view(style = glyph_style) {
+                glyph
+            }
+        }
+        .on_touch(move |ev| {
+            if ev.phase == TouchPhase::Ended {
+                let idx = canvas_ids.get().iter().position(|x| *x == id).unwrap_or(0);
+                crate::delete_canvas(&canvases, &strokes, active, version, canvas_ids, idx);
+            }
+            TouchResponse::CLAIMED
         })
     }
 }
@@ -892,7 +960,8 @@ impl Default for AddCanvasRowProps {
 }
 
 /// The "add new canvas" row at the bottom of the Layers list: a lucide plus +
-/// "New canvas". Appends an empty canvas, switches to it, and closes the popover.
+/// "New canvas". Appends an empty canvas, switches to it, and closes the popover
+/// (same as tapping a canvas row — you're now on the new canvas to draw).
 #[component]
 pub fn AddCanvasRow(props: &AddCanvasRowProps) -> Element {
     let s = props.state;
@@ -930,8 +999,14 @@ pub fn AddCanvasRow(props: &AddCanvasRowProps) -> Element {
         }
         .on_touch(move |ev| {
             if ev.phase == TouchPhase::Ended {
-                crate::add_canvas(&canvases, &strokes, s.active_canvas, version, s.canvas_ids, s.next_id);
+                // Close immediately, defer the add (see `CanvasRow`) so the
+                // dismissal isn't queued behind the stroke-clone + repaint.
                 s.layers_open.set(false);
+                let canvases = canvases.clone();
+                let strokes = strokes.clone();
+                runtime_core::scheduling::schedule_microtask(move || {
+                    crate::add_canvas(&canvases, &strokes, s.active_canvas, version, s.canvas_ids, s.next_id);
+                });
             }
             TouchResponse::CONSUMED
         })

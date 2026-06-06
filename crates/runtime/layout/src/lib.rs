@@ -76,6 +76,40 @@ use runtime_core::{
 pub type MeasureFn =
     Rc<dyn Fn(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>>;
 
+/// If an axis offers a DEFINITE constraint, fold it into the running min.
+/// `MinContent`/`MaxContent` (intrinsic-sizing probes, no hard limit) pass
+/// through unchanged.
+fn clamp_to_definite(natural: f32, available: AvailableSpace) -> f32 {
+    match available {
+        AvailableSpace::Definite(v) => natural.min(v.max(0.0)),
+        AvailableSpace::MinContent | AvailableSpace::MaxContent => natural,
+    }
+}
+
+/// A [`MeasureFn`] for vector icons. An icon has a natural `default_px` size but
+/// is a SCALABLE, SQUARE glyph — so it must never overflow the box its parent
+/// gives it, and a constraint on EITHER axis shrinks BOTH (keeping it square).
+/// The natural size is therefore clamped to the smallest definite space either
+/// axis offers; an explicit style dimension (`known`) still wins per-axis.
+///
+/// Why square-aware: flexbox measures a centered item with its MAIN-axis space
+/// as a definite constraint but its CROSS-axis space as `MaxContent`. Clamping
+/// each axis independently would shrink only the main axis (a 13×13 slot →
+/// 13×24, overflowing vertically); folding both definite limits into one square
+/// size fixes it. Shared by every backend's `create_icon` so icon sizing is one
+/// tested rule, not re-inlined per platform.
+pub fn icon_measure(default_px: f32) -> MeasureFn {
+    Rc::new(move |known, available| {
+        let mut natural = default_px;
+        natural = clamp_to_definite(natural, available.width);
+        natural = clamp_to_definite(natural, available.height);
+        Size {
+            width: known.width.unwrap_or(natural),
+            height: known.height.unwrap_or(natural),
+        }
+    })
+}
+
 // =============================================================================
 // Public types
 // =============================================================================
@@ -125,6 +159,26 @@ pub struct LayoutTree {
     auto_width: HashSet<NodeId>,
     /// Same as `auto_width` for the height axis.
     auto_height: HashSet<NodeId>,
+    /// Nodes whose `max_size.width` is the framework's *default*
+    /// `100%` cross-axis clamp — NOT an author-set `max_width`. The
+    /// clamp makes an un-stretched flex container wrap its text to the
+    /// available width like CSS/web (a flex/block box never exceeds its
+    /// parent's inline size), instead of sizing to single-line
+    /// max-content and overflowing off-screen — the native-only,
+    /// web-clean overflow bug. `set_style` re-derives the clamp on
+    /// every apply and lifts it for nodes that legitimately exceed
+    /// their parent (see `apply_default_max_width`). Cleared when the
+    /// author sets an explicit `max_width`.
+    auto_max_width: HashSet<NodeId>,
+    /// Nodes marked as horizontal scroll viewports (`overflow-x:
+    /// scroll`). Their direct children hold content that is *meant* to
+    /// be wider than the viewport (so it can scroll), so those children
+    /// are exempted from the `100%` width clamp.
+    hscroll_parents: HashSet<NodeId>,
+    /// Direct children of a [`hscroll_parents`](Self::hscroll_parents)
+    /// node — exempt from the default width clamp so horizontal-scroll
+    /// content can exceed the viewport.
+    hscroll_content: HashSet<NodeId>,
     /// Author-set padding in px, per-node, per-side. Tracked
     /// separately from the Taffy node's effective padding so we can
     /// re-combine with `safe_area_extra` whenever either changes
@@ -151,6 +205,9 @@ impl LayoutTree {
             measure_fns: HashMap::new(),
             auto_width: HashSet::new(),
             auto_height: HashSet::new(),
+            auto_max_width: HashSet::new(),
+            hscroll_parents: HashSet::new(),
+            hscroll_content: HashSet::new(),
             author_padding: HashMap::new(),
             safe_area_extra: HashMap::new(),
         }
@@ -174,6 +231,19 @@ impl LayoutTree {
         style.flex_direction = FlexDirection::Column;
         style.align_items = Some(AlignItems::Stretch);
         style.justify_content = Some(JustifyContent::FlexStart);
+        // Default cross-axis clamp: never grow wider than the parent's
+        // inline size. This is the CSS/web default a block/flex box
+        // gets for free (it fills, and content wraps to the available
+        // width); Taffy instead sizes an un-stretched flex container to
+        // its single-line max-content and overflows. `set_style`
+        // re-derives this clamp on every apply and lifts it for nodes
+        // that legitimately exceed their parent (explicit `width`,
+        // `position: absolute`, `aspect_ratio`, horizontal-scroll
+        // content). Tracked in `auto_max_width` so an author-set
+        // `max_width` overrides it. A `Percent` of an *indefinite*
+        // parent resolves to no constraint, so this is a no-op until
+        // some ancestor has a definite width — exactly when web clamps.
+        style.max_size.width = Dimension::Percent(1.0);
         let id = self
             .tree
             .new_leaf(style)
@@ -182,6 +252,7 @@ impl LayoutTree {
         // root nodes get filled to the viewport on each `compute()`.
         self.auto_width.insert(id);
         self.auto_height.insert(id);
+        self.auto_max_width.insert(id);
         LayoutNode(id)
     }
 
@@ -230,6 +301,9 @@ impl LayoutTree {
         self.tree
             .add_child(parent.0, child.0)
             .expect("taffy add_child");
+        if self.hscroll_parents.contains(&parent.0) {
+            self.exempt_as_hscroll_content(child.0);
+        }
     }
 
     /// Insert `child` into `parent` at a specific `child_index` (clamped
@@ -249,6 +323,9 @@ impl LayoutTree {
         self.tree
             .insert_child_at_index(parent.0, idx, child.0)
             .expect("taffy insert_child_at_index");
+        if self.hscroll_parents.contains(&parent.0) {
+            self.exempt_as_hscroll_content(child.0);
+        }
     }
 
     /// A node previously laid out as a ROOT has had its `Auto` size axes
@@ -305,6 +382,9 @@ impl LayoutTree {
         self.measure_fns.remove(&node.0);
         self.auto_width.remove(&node.0);
         self.auto_height.remove(&node.0);
+        self.auto_max_width.remove(&node.0);
+        self.hscroll_parents.remove(&node.0);
+        self.hscroll_content.remove(&node.0);
         self.author_padding.remove(&node.0);
         self.safe_area_extra.remove(&node.0);
         self.dropped.insert(node.0);
@@ -496,6 +576,8 @@ impl LayoutTree {
         }
         if let Some(w) = rules.max_width.as_ref().map(|t| *t.value()) {
             style.max_size.width = length_to_dim(w);
+            // Author owns max-width now — stop applying the default clamp.
+            self.auto_max_width.remove(&node.0);
         }
         if let Some(h) = rules.max_height.as_ref().map(|t| *t.value()) {
             style.max_size.height = length_to_dim(h);
@@ -580,9 +662,64 @@ impl LayoutTree {
             style.inset.left = length_to_lpa(Some(v));
         }
 
+        // Re-derive the default `max-width: 100%` cross-axis clamp from
+        // the now-merged style. Runs last so it sees the final
+        // `position` / `aspect_ratio` / explicit `width` this apply
+        // produced (state overlays carry partial rules, so we must read
+        // the merged result, not the incoming `rules`).
+        self.apply_default_max_width(node.0, &mut style);
+
         self.tree
             .set_style(node.0, style)
             .expect("taffy set_style");
+    }
+
+    /// Re-derive the framework's default `max-width: 100%` cross-axis
+    /// clamp for `node` against its merged Taffy `style`. No-op when the
+    /// author set an explicit `max_width` (node not in `auto_max_width`).
+    ///
+    /// The clamp is LIFTED (back to `Auto`) for nodes that legitimately
+    /// size wider than their parent's inline box — matching how CSS
+    /// only fits-to-content/clamps normal-flow boxes:
+    /// - **explicit `width`** (`!auto_width`): the author owns the size;
+    ///   a `width: 600` carousel inside a 300 viewport must stay 600.
+    /// - **`position: absolute`**: resolves against its containing block
+    ///   and may exceed it (e.g. an `aspect_ratio` overlay sized from a
+    ///   percentage height — the `aspect_ratio_resolves_width…` test).
+    /// - **`aspect_ratio`**: width is derived from height and may exceed
+    ///   the parent.
+    /// - **horizontal-scroll content** (`hscroll_content`): content that
+    ///   is meant to be wider than its scroll viewport so it can scroll.
+    ///
+    /// Otherwise the clamp is (re)asserted as `Percent(1.0)`.
+    fn apply_default_max_width(&self, node: NodeId, style: &mut Style) {
+        if !self.auto_max_width.contains(&node) {
+            return;
+        }
+        let exempt = style.position == Position::Absolute
+            || style.aspect_ratio.is_some()
+            || !self.auto_width.contains(&node)
+            || self.hscroll_content.contains(&node);
+        style.max_size.width = if exempt {
+            Dimension::Auto
+        } else {
+            Dimension::Percent(1.0)
+        };
+    }
+
+    /// Mark `node` as horizontal-scroll content: exempt it from the
+    /// default width clamp (so it can exceed its scroll viewport) and
+    /// clear any clamp already written to its Taffy style.
+    fn exempt_as_hscroll_content(&mut self, node: NodeId) {
+        self.hscroll_content.insert(node);
+        if self.auto_max_width.contains(&node) {
+            if let Ok(mut style) = self.tree.style(node).cloned() {
+                if style.max_size.width != Dimension::Auto {
+                    style.max_size.width = Dimension::Auto;
+                    let _ = self.tree.set_style(node, style);
+                }
+            }
+        }
     }
 
     /// Install a measure function for a node. Taffy calls it during
@@ -665,6 +802,21 @@ impl LayoutTree {
             style.flex_grow = 1.0;
             style
         });
+        // A horizontal scroller's content is meant to exceed the
+        // viewport (that's what scrolls), so its children must opt out
+        // of the default `max-width: 100%` clamp. Record the parent and
+        // exempt any children already attached; `add_child` exempts ones
+        // added later. Called at scroll-view create time, so the child
+        // list is usually empty here — the `add_child` hook does most of
+        // the work.
+        if horizontal {
+            self.hscroll_parents.insert(node.0);
+            if let Ok(children) = self.tree.children(node.0) {
+                for child in children {
+                    self.exempt_as_hscroll_content(child);
+                }
+            }
+        }
     }
 
     /// Set a node's intrinsic content size. Used by native backends
@@ -874,6 +1026,49 @@ mod tests {
     use super::*;
     use runtime_core::Tokenized;
 
+    // Regression: a vector icon has a natural 24px size but is scalable, so it
+    // must shrink to fit a smaller container instead of overflowing it. The
+    // backends used to inline `known.unwrap_or(24)` — which ignored the
+    // available space, so an icon dropped in a 13px box still measured 24px and
+    // bled out (the layers-list trash rendered oversized). `icon_measure` clamps
+    // the natural size to a DEFINITE available space.
+    #[test]
+    fn icon_measure_clamps_to_definite_available_space() {
+        let m = icon_measure(24.0);
+        let none = Size { width: None, height: None };
+
+        // A 13px slot → a 13px icon (NOT 24).
+        let s = m(none, Size {
+            width: AvailableSpace::Definite(13.0),
+            height: AvailableSpace::Definite(13.0),
+        });
+        assert_eq!((s.width, s.height), (13.0, 13.0), "icon clamps to its 13px box");
+
+        // Ample/unconstrained space → the natural 24px (don't grow past it).
+        let big = m(none, Size {
+            width: AvailableSpace::Definite(100.0),
+            height: AvailableSpace::MaxContent,
+        });
+        assert_eq!((big.width, big.height), (24.0, 24.0), "natural size when space is ample");
+
+        // MinContent/MaxContent probes (no hard constraint) → natural size.
+        let probe = m(none, Size {
+            width: AvailableSpace::MinContent,
+            height: AvailableSpace::MaxContent,
+        });
+        assert_eq!((probe.width, probe.height), (24.0, 24.0));
+
+        // An explicit style dimension always wins, even in a bigger/smaller box.
+        let styled = m(
+            Size { width: Some(18.0), height: Some(18.0) },
+            Size {
+                width: AvailableSpace::Definite(40.0),
+                height: AvailableSpace::Definite(40.0),
+            },
+        );
+        assert_eq!((styled.width, styled.height), (18.0, 18.0), "explicit size wins");
+    }
+
     fn px(v: f32) -> Tokenized<FwLength> {
         Tokenized::Literal(FwLength::Px(v))
     }
@@ -977,6 +1172,92 @@ mod tests {
 
     fn pct(v: f32) -> Tokenized<FwLength> {
         Tokenized::Literal(FwLength::Percent(v))
+    }
+
+    /// Regression: the idea-ui `Modal`'s safe-area handling relies on two
+    /// Taffy behaviors that must not silently change under an engine upgrade.
+    ///
+    /// The Modal pads its fullscreen centering container by the platform
+    /// safe-area insets so the card centers within the SAFE rect (not the
+    /// full window) — required because the insets are asymmetric (top notch ≠
+    /// bottom home-indicator), so centering in the full window would leave the
+    /// card under the larger inset. The dimming backdrop is a sibling with
+    /// `position:absolute; inset:0`, and it must STILL fill the whole window
+    /// (an absolute child resolves against its parent's padding box, which
+    /// includes the padding region) — otherwise the notch/home-indicator
+    /// strips wouldn't be dimmed.
+    ///
+    /// This pins both: backdrop == full window, and the card sits entirely
+    /// inside the safe rect under realistic asymmetric insets.
+    #[test]
+    fn regression_modal_safe_area_backdrop_fullbleed_card_centered_in_safe_rect() {
+        // iPhone-class viewport with a Dynamic Island (top) and home
+        // indicator (bottom).
+        let (vw, vh) = (393.0_f32, 852.0_f32);
+        let (top, bottom) = (59.0_f32, 34.0_f32);
+        let (card_w, card_h) = (300.0_f32, 200.0_f32);
+
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+
+        // Centering container: fills the window, padded by the insets,
+        // centers its in-flow child.
+        let container = t.new_node();
+        let mut cr = StyleRules::default();
+        cr.width = Some(pct(100.0));
+        cr.height = Some(pct(100.0));
+        cr.padding_top = Some(px(top));
+        cr.padding_bottom = Some(px(bottom));
+        cr.align_items = Some(FwAlignItems::Center);
+        cr.justify_content = Some(FwJustifyContent::Center);
+        t.set_style(container, &cr);
+
+        // Backdrop: absolute, inset 0 (sibling of the card, painted behind).
+        let backdrop = t.new_node();
+        let mut br = StyleRules::default();
+        br.position = Some(FwPosition::Absolute);
+        br.top = Some(px(0.0));
+        br.left = Some(px(0.0));
+        br.right = Some(px(0.0));
+        br.bottom = Some(px(0.0));
+        t.set_style(backdrop, &br);
+
+        // Card: a fixed size standing in for the content-sized surface.
+        let card = t.new_node();
+        let mut kr = StyleRules::default();
+        kr.width = Some(px(card_w));
+        kr.height = Some(px(card_h));
+        t.set_style(card, &kr);
+
+        t.add_child(root, container);
+        t.add_child(container, backdrop);
+        t.add_child(container, card);
+        t.compute(root, vw, vh);
+
+        // Backdrop fills the WHOLE window despite the container padding.
+        let bd = t.frame_of(backdrop);
+        assert!(
+            bd.x.abs() < 0.5
+                && bd.y.abs() < 0.5
+                && (bd.width - vw).abs() < 0.5
+                && (bd.height - vh).abs() < 0.5,
+            "backdrop must stay full-bleed (the scrim dims the whole window, \
+             notch + home-indicator included), got {bd:?}"
+        );
+
+        // Card sits entirely within the safe rect [top, vh - bottom].
+        let c = t.frame_of(card);
+        assert!(
+            c.y >= top - 0.5,
+            "card top {} must clear the top inset {top}",
+            c.y
+        );
+        assert!(
+            c.y + c.height <= vh - bottom + 0.5,
+            "card bottom {} must clear the bottom inset (safe edge {})",
+            c.y + c.height,
+            vh - bottom
+        );
     }
 
     /// Regression: `remove_child` must NOT panic when `child` isn't
@@ -1293,6 +1574,219 @@ mod tests {
             "outer scroll node WITHOUT overflow:scroll grows to its {content_h} \
              content (the bug: scroll node == content height, no overflow to \
              scroll), got {grown}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Default `max-width: 100%` cross-axis clamp (web-parity wrap) +
+    // its exemptions.
+    // -----------------------------------------------------------------
+
+    /// Simulates a UILabel/TextView measure_fn: at a finite available
+    /// width the text wraps (width = avail, height grows by line); at
+    /// `MaxContent`/unbounded it reports its single-line width;
+    /// `MinContent` reports the longest word.
+    fn text_measure(single_line: f32, longest_word: f32, line_h: f32) -> MeasureFn {
+        Rc::new(move |known, avail| {
+            if let Some(w) = known.width {
+                let lines = if w >= single_line { 1.0 } else { (single_line / w).ceil() };
+                return Size { width: w, height: known.height.unwrap_or(lines * line_h) };
+            }
+            let avail_w = match avail.width {
+                AvailableSpace::Definite(w) => w,
+                AvailableSpace::MaxContent => f32::INFINITY,
+                AvailableSpace::MinContent => longest_word,
+            };
+            if !avail_w.is_finite() || avail_w >= single_line {
+                return Size { width: single_line, height: line_h };
+            }
+            let w = avail_w.max(longest_word);
+            let lines = (single_line / w).ceil();
+            Size { width: w, height: lines * line_h }
+        })
+    }
+
+    /// Regression for the native-only, web-clean overflow bug: an
+    /// un-stretched flex ROW (circle + long text) inside a bounded card.
+    /// Web bounds the row to the card and wraps the text; native (Taffy)
+    /// used to size the row to single-line max-content (376px) and run
+    /// the text off the right edge of the 300px card.
+    ///
+    /// The default `max-width: 100%` clamp makes the row stay within the
+    /// card and the text wrap — without the author writing `width: 100%`
+    /// + `flex: 1` + `min-width: 0` by hand.
+    #[test]
+    fn regression_unstretched_flex_row_wraps_text_to_parent_width() {
+        let mut t = LayoutTree::new();
+        let card = t.new_node(); // 300-wide viewport
+
+        // Pill: column whose `align-items: flex-start` removes the
+        // cross-axis stretch — the exact shape that triggered the bug.
+        let pill = t.new_node();
+        let mut pr = StyleRules::default();
+        pr.flex_direction = Some(FwFlexDirection::Column);
+        pr.align_items = Some(runtime_core::AlignItems::FlexStart);
+        t.set_style(pill, &pr);
+
+        let row = t.new_node();
+        let mut rr = StyleRules::default();
+        rr.flex_direction = Some(FwFlexDirection::Row);
+        rr.align_items = Some(runtime_core::AlignItems::Center);
+        t.set_style(row, &rr);
+
+        let circle = t.new_node();
+        let mut cr = StyleRules::default();
+        cr.width = Some(px(26.0));
+        cr.height = Some(px(26.0));
+        t.set_style(circle, &cr);
+
+        let label = t.new_node();
+        t.set_measure_fn(label, text_measure(350.0, 80.0, 20.0));
+
+        t.add_child(card, pill);
+        t.add_child(pill, row);
+        t.add_child(row, circle);
+        t.add_child(row, label);
+        t.compute(card, 300.0, 800.0);
+
+        let row_f = t.frame_of(row);
+        let label_f = t.frame_of(label);
+        assert!(
+            row_f.width <= 300.5,
+            "row must stay within the 300px card (was 376 single-line overflow), got {}",
+            row_f.width
+        );
+        assert!(
+            label_f.x + label_f.width <= 300.5,
+            "label must not run past the card's right edge, ends at {}",
+            label_f.x + label_f.width
+        );
+        assert!(
+            label_f.height >= 39.0,
+            "label must have wrapped to 2 lines (~40px), got height {}",
+            label_f.height
+        );
+    }
+
+    // End-to-end: an `icon_measure`-backed leaf inside a FIXED 13×13 box lays
+    // out at 13×13, not its natural 24×24. Proves Taffy hands a fixed-box child
+    // a `Definite` available space and the measure clamps to it — i.e. the
+    // layers-list trash icon stays inside its slot. The closure-level rule is
+    // covered by `icon_measure_clamps_to_definite_available_space`; this checks
+    // it survives the real layout engine.
+    #[test]
+    fn regression_icon_fits_inside_smaller_fixed_box() {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+
+        // A 13×13 fixed slot that centers its child (the delete-button glyph box).
+        let slot = t.new_node();
+        let mut sr = StyleRules::default();
+        sr.width = Some(px(13.0));
+        sr.height = Some(px(13.0));
+        sr.align_items = Some(runtime_core::AlignItems::Center);
+        sr.justify_content = Some(runtime_core::JustifyContent::Center);
+        t.set_style(slot, &sr);
+
+        let icon = t.new_node();
+        t.set_measure_fn(icon, icon_measure(24.0));
+
+        t.add_child(root, slot);
+        t.add_child(slot, icon);
+        t.compute(root, 400.0, 400.0);
+
+        let icon_f = t.frame_of(icon);
+        assert!(
+            icon_f.width <= 13.5 && icon_f.height <= 13.5,
+            "icon must clamp to its 13px slot (natural 24px would overflow), got {}x{}",
+            icon_f.width,
+            icon_f.height
+        );
+    }
+
+    /// Exemption: a node with an explicit `width` larger than its parent
+    /// keeps that width (the clamp would otherwise shrink a 600px
+    /// carousel track to its 300px parent). The author owns the size.
+    #[test]
+    fn max_width_default_exempts_explicit_wide_width() {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let wide = t.new_node();
+        let mut wr = StyleRules::default();
+        wr.width = Some(px(600.0));
+        wr.height = Some(px(40.0));
+        t.set_style(wide, &wr);
+        t.add_child(root, wide);
+        t.compute(root, 300.0, 800.0);
+        assert!(
+            (t.frame_of(wide).width - 600.0).abs() < 0.5,
+            "explicit width:600 must NOT be clamped to the 300px parent, got {}",
+            t.frame_of(wide).width
+        );
+    }
+
+    /// Exemption: horizontal-scroll content may exceed its viewport so
+    /// it can scroll. A `set_overflow_scroll(.., horizontal: true)`
+    /// node's children opt out of the clamp.
+    #[test]
+    fn max_width_default_exempts_horizontal_scroll_content() {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+
+        let scroller = t.new_node();
+        t.set_overflow_scroll(scroller, true); // horizontal viewport
+        // Don't stretch the content to the viewport, so its own
+        // content-based width is what's under test.
+        let mut sr = StyleRules::default();
+        sr.align_items = Some(runtime_core::AlignItems::FlexStart);
+        t.set_style(scroller, &sr);
+
+        // Content track: a row of two 200px items → wants 400px, wider
+        // than the 300px viewport.
+        let track = t.new_node();
+        let mut tr = StyleRules::default();
+        tr.flex_direction = Some(FwFlexDirection::Row);
+        t.set_style(track, &tr);
+        for _ in 0..2 {
+            let item = t.new_node();
+            let mut ir = StyleRules::default();
+            ir.width = Some(px(200.0));
+            ir.height = Some(px(50.0));
+            t.set_style(item, &ir);
+            t.add_child(track, item);
+        }
+
+        t.add_child(root, scroller);
+        t.add_child(scroller, track); // exempts `track` from the clamp
+        t.compute(root, 300.0, 800.0);
+
+        assert!(
+            (t.frame_of(track).width - 400.0).abs() < 0.5,
+            "horizontal-scroll content must keep its 400px content width \
+             (not clamp to the 300px viewport), got {}",
+            t.frame_of(track).width
+        );
+    }
+
+    /// The author-set `max_width` still wins over the default clamp:
+    /// setting `max_width: 500` on a node inside a 300px parent must
+    /// produce a 500px cap, not the 300px default — proving the default
+    /// is released (not merely widened) when the author opts in.
+    #[test]
+    fn author_max_width_overrides_default_clamp() {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let child = t.new_node();
+        let mut cr = StyleRules::default();
+        cr.max_width = Some(px(500.0));
+        cr.width = Some(px(800.0)); // wants 800, capped by max_width 500
+        t.set_style(child, &cr);
+        t.add_child(root, child);
+        t.compute(root, 300.0, 800.0);
+        assert!(
+            (t.frame_of(child).width - 500.0).abs() < 0.5,
+            "author max_width:500 must win over the 100% default clamp, got {}",
+            t.frame_of(child).width
         );
     }
 }

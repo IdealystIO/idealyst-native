@@ -830,6 +830,19 @@ fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String
                 None => Ok("null".into()),
             }
         }
+        "get_device_frame" => {
+            // Physical device-screen pixels (origin = display top-left).
+            // This is what an OS-level input injector (`adb shell input
+            // tap`, XCUITest, CGEvent) taps at — see `Backend::device_frame`.
+            let el = resolve_element(args)?;
+            match robot.device_frame(&el).map_err(|e| e.to_string())? {
+                Some(r) => Ok(format!(
+                    "{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}",
+                    r.x, r.y, r.width, r.height
+                )),
+                None => Ok("null".into()),
+            }
+        }
         "invoke_method" => {
             let instance_id = args["instance_id"]
                 .as_u64()
@@ -1146,5 +1159,67 @@ mod tests {
             "unregistered verb must error again"
         );
         unregister_command("ping");
+    }
+
+    /// Regression: the `get_device_frame` verb routes through the
+    /// `ElementActions.device_frame` closure the walker attaches and
+    /// serializes the physical-pixel rect for the OS-injection driver.
+    /// Before `device_frame` existed there was no path from an element
+    /// id to its on-screen pixel coordinates over the bridge.
+    #[test]
+    fn get_device_frame_returns_registered_device_rect() {
+        use crate::primitives::portal::ViewportRect;
+
+        // Mirror what `walker.rs` does at mount: register the element,
+        // then attach frame closures. The `device_frame` closure reports
+        // a known physical-pixel rect; the others are inert.
+        let id = crate::robot::register(crate::robot::RegistryEntry {
+            kind: ElementKind::Button,
+            test_id: Some("dev_frame_probe"),
+            label: None,
+            label_fn: None,
+            actions: crate::robot::ElementActions::empty(),
+            parent: None,
+            children: Vec::new(),
+        });
+        crate::robot::attach_frame_actions(
+            id,
+            Rc::new(|| None),
+            Rc::new(|| None),
+            Rc::new(|| {
+                Some(ViewportRect {
+                    x: 120.0,
+                    y: 240.0,
+                    width: 80.0,
+                    height: 40.0,
+                })
+            }),
+        );
+
+        let out = invoke_command("get_device_frame", &serde_json::json!({ "element_id": id.0 }))
+            .expect("get_device_frame should dispatch");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["x"], 120.0);
+        assert_eq!(v["y"], 240.0);
+        assert_eq!(v["width"], 80.0);
+        assert_eq!(v["height"], 40.0);
+
+        // An element with no device_frame action reports `null`, not an
+        // error — the host driver treats that as "not tappable yet".
+        let bare = crate::robot::register(crate::robot::RegistryEntry {
+            kind: ElementKind::View,
+            test_id: None,
+            label: None,
+            label_fn: None,
+            actions: crate::robot::ElementActions::empty(),
+            parent: None,
+            children: Vec::new(),
+        });
+        let none_out = invoke_command("get_device_frame", &serde_json::json!({ "element_id": bare.0 }));
+        // No device_frame closure attached → ActionNotAvailable → Err.
+        assert!(none_out.is_err(), "missing device_frame action surfaces as err");
+
+        crate::robot::deregister(id);
+        crate::robot::deregister(bare);
     }
 }

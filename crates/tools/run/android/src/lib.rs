@@ -222,8 +222,29 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // Capability-derived `<uses-permission>` + `<service>` entries, discovered
     // from the wrapper's dependency graph (the same manifest the Kotlin-runtime
     // discovery below walks).
-    let (uses_permissions, services) =
+    let (mut uses_permissions, services) =
         android_manifest_entries(&so.wrapper_dir.join("Cargo.toml"), &manifest.app.permissions);
+
+    // The Robot bridge (auto-started whenever the `robot`/`dev` feature is on)
+    // binds a localhost TCP listener, and Android only permits creating a
+    // socket — even a loopback one — with the INTERNET permission. The
+    // runtime-server manifest already declares INTERNET for its websocket; the
+    // local-mode manifest declares no permissions, so without this the bridge
+    // fails to bind (EACCES) and host tooling / MCP can't reach the app. Gate
+    // on the dev/robot feature so a *production* local build isn't granted
+    // needless network access.
+    let robot_bridge_active = !opts.mode.is_runtime_server()
+        && opts
+            .user_features
+            .iter()
+            .any(|f| f.contains("dev") || f.contains("robot"));
+    if robot_bridge_active && !uses_permissions.contains("android.permission.INTERNET") {
+        if !uses_permissions.is_empty() {
+            uses_permissions.push('\n');
+        }
+        uses_permissions
+            .push_str("<uses-permission android:name=\"android.permission.INTERNET\" />");
+    }
 
     fs::write(
         &manifest_xml,

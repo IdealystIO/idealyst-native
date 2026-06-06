@@ -634,7 +634,8 @@ fn apply_drawable_path(
     // Ensure the drawable exists and is attached as the view's
     // background. We do this once per node — subsequent applies
     // mutate the drawable in place.
-    if state.drawable.is_none() {
+    let first_create = state.drawable.is_none();
+    if first_create {
         let class = env
             .find_class("android/graphics/drawable/GradientDrawable")
             .unwrap();
@@ -1018,6 +1019,32 @@ fn apply_drawable_path(
                 JValue::Float(want_radii[3]),
             ],
         );
+    }
+
+    // Repaint after mutating the persistent drawable in place.
+    //
+    // Mutating a `GradientDrawable` already attached to a View
+    // (`setColor` / `setColors` / `setCornerRadii` / `setStroke`
+    // above) does NOT notify the host View that it needs to redraw —
+    // Android only repaints on its own when you *set* a background
+    // (`setBackground`) or explicitly `invalidate()`. So the FIRST
+    // apply paints (the `setBackground` in the create branch triggers
+    // it), but every reactive re-apply that snaps a new fill/radius
+    // onto the existing drawable would otherwise be a visual no-op —
+    // the user-visible "reactive `view().with_style(...)` background
+    // never updates on a rounded/bordered view" bug. This is the same
+    // contract `RustBorderDrawable.invalidateSelf()` and the icon
+    // drawable path already honor; a plain `setBackgroundColor` view
+    // (the no-drawable branch) doesn't need it because that setter
+    // repaints itself.
+    //
+    // Gated on `!first_create` so the static mount path (one
+    // `setBackground` already repainted) pays nothing — at 10k styled
+    // rows that's 10k JNI calls saved. The animated branches start
+    // their own per-tick invalidation, so a one-shot invalidate here
+    // is correct for them too (paints the first frame immediately).
+    if !first_create {
+        let _ = env.call_method(&view, "invalidate", "()V", &[]);
     }
 }
 

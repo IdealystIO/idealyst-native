@@ -501,12 +501,15 @@ pub(super) fn build_inner<B: Backend + 'static>(
     if let Some(id) = robot_id {
         let node_for_frame = result.clone();
         let node_for_abs = result.clone();
+        let node_for_dev = result.clone();
         let backend_for_frame = backend.clone();
         let backend_for_abs = backend.clone();
+        let backend_for_dev = backend.clone();
         crate::robot::attach_frame_actions(
             id,
             Rc::new(move || backend_for_frame.borrow().frame(&node_for_frame)),
             Rc::new(move || backend_for_abs.borrow().absolute_frame(&node_for_abs)),
+            Rc::new(move || backend_for_dev.borrow().device_frame(&node_for_dev)),
         );
     }
 

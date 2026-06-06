@@ -66,9 +66,9 @@ use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
-    component, viewport_size, AlignItems, Color, Element, FlexDirection, IdealystSchema,
-    IntoElement, JustifyContent, Length, Overflow, Position, Ref, StyleApplication, StyleRules,
-    StyleSheet, Tokenized, VariantSet, ViewHandle,
+    component, safe_area_insets, viewport_size, AlignItems, Color, Element, FlexDirection,
+    IdealystSchema, IntoElement, JustifyContent, Length, Overflow, Position, Ref, StyleApplication,
+    StyleRules, StyleSheet, Tokenized, VariantSet, ViewHandle,
 };
 
 use crate::stylesheets::Modal as ModalStyle;
@@ -364,7 +364,13 @@ pub fn Modal(props: ModalProps) -> Element {
     let viewport_for_scroll = viewport_size();
     let scroller = runtime_core::primitives::scroll_view::scroll_view(vec![body])
         .with_style(move || {
-            let max_h = effective_modal_max_height(viewport_for_scroll.get().height);
+            // Cap to the SAFE height: subtract the top + bottom safe-area
+            // insets so a maximally-tall modal can't grow under the notch /
+            // Dynamic Island / home indicator (the centering container also
+            // pads by the insets — both are needed; see the overlay below).
+            let insets = safe_area_insets().get();
+            let avail_h = viewport_for_scroll.get().height - insets.top - insets.bottom;
+            let max_h = effective_modal_max_height(avail_h);
             StyleApplication::new(modal_scroll_sheet()).with_computed(
                 format!("modal-scroll-maxh-{}", max_h.round() as i32),
                 move || StyleRules {
@@ -378,8 +384,12 @@ pub fn Modal(props: ModalProps) -> Element {
     let surface = runtime_core::view(vec![scroller])
         .with_style(move || {
             let vp = viewport.get();
-            let effective = effective_modal_width(desired, vp.width);
-            let max_h = effective_modal_max_height(vp.height);
+            // Cap width/height to the SAFE rect (subtract the horizontal /
+            // vertical safe-area insets) so the card fits inside the notch /
+            // home-indicator-free region. Mirrors the scroller's height cap.
+            let insets = safe_area_insets().get();
+            let effective = effective_modal_width(desired, vp.width - insets.left - insets.right);
+            let max_h = effective_modal_max_height(vp.height - insets.top - insets.bottom);
             StyleApplication::new(ModalStyle::sheet()).with_computed(
                 format!(
                     "modal-wh-{}-{}",
@@ -448,7 +458,36 @@ pub fn Modal(props: ModalProps) -> Element {
     let mut overlay = runtime_core::overlay(vec![backdrop, card])
         .placement(ViewportPlacement::FullScreen)
         .backdrop(BackdropMode::None)
-        .with_style(StyleApplication::new(center_container_sheet()))
+        // Center the card within the SAFE rect, not the full window: pad the
+        // fullscreen centering container by the platform safe-area insets.
+        // This is what guarantees the card clears the notch / Dynamic Island /
+        // home indicator even when the insets are asymmetric (centering in the
+        // full window would leave the card under the larger inset). The
+        // dimming backdrop is `position: absolute; inset: 0`, which resolves
+        // against the container's PADDING box — so it still fills the whole
+        // window (verified in runtime-layout); only the card is constrained.
+        // Reactive: orientation flips / sheet adaptations re-fire
+        // `safe_area_insets()`. Insets are ZERO where no observer is wired
+        // (web today), degrading to the previous full-window centering.
+        .with_style(|| {
+            let insets = safe_area_insets().get();
+            StyleApplication::new(center_container_sheet()).with_computed(
+                format!(
+                    "modal-safe-{}-{}-{}-{}",
+                    insets.top.round() as i32,
+                    insets.right.round() as i32,
+                    insets.bottom.round() as i32,
+                    insets.left.round() as i32,
+                ),
+                move || StyleRules {
+                    padding_top: Some(Tokenized::Literal(Length::Px(insets.top))),
+                    padding_right: Some(Tokenized::Literal(Length::Px(insets.right))),
+                    padding_bottom: Some(Tokenized::Literal(Length::Px(insets.bottom))),
+                    padding_left: Some(Tokenized::Literal(Length::Px(insets.left))),
+                    ..Default::default()
+                },
+            )
+        })
         .trap_focus(true);
     if let Some(d) = on_dismiss {
         overlay = overlay.on_dismiss(move || (d)());
