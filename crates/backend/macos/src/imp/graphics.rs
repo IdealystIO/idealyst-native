@@ -19,7 +19,7 @@
 //! is identical.
 
 use runtime_core::primitives::graphics::{
-    GraphicsSurface, OnLost, OnReady, OnReadyEvent, OnResize,
+    GraphicsSurface, OnLost, OnReady, OnReadyEvent, OnResize, OnResizeEvent,
 };
 use objc2::msg_send;
 use objc2::msg_send_id;
@@ -27,12 +27,12 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{declare_class, mutability, ClassType, DeclaredClass};
 use objc2_app_kit::NSView;
-use objc2_foundation::{CGFloat, CGRect, MainThreadMarker, NSObject};
+use objc2_foundation::{CGFloat, CGRect, CGSize, MainThreadMarker, NSObject};
 use raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, DisplayHandle, HandleError,
     HasDisplayHandle, HasWindowHandle, WindowHandle,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -51,6 +51,21 @@ use super::MacosNode;
 // call needed).
 // =========================================================================
 
+pub(crate) struct MetalViewIvars {
+    /// Reactive resize callback (from `Backend::create_graphics`). Fired on every
+    /// frame-size change AFTER the one-time `on_ready` seeds the surface — so a
+    /// canvas whose view is resized by the layout pass (e.g. the whiteboard's
+    /// aspect-ratio stage switching 9:16↔16:9) reconfigures its wgpu surface to
+    /// the new size. Without this, the surface stays at its first-paint size and
+    /// the renderer stretches across the resized view (strokes scale/offset).
+    on_resize: RefCell<Option<OnResize>>,
+    /// Set true once the deferred `on_ready` has fired and seeded `last_size`.
+    /// `setFrameSize:` is a no-op before this (on_ready owns the first size).
+    ready: Cell<bool>,
+    /// Last physical size reported, to dedupe redundant `setFrameSize:` calls.
+    last_size: Cell<(u32, u32)>,
+}
+
 declare_class!(
     pub(crate) struct MetalView;
 
@@ -61,7 +76,7 @@ declare_class!(
     }
 
     impl DeclaredClass for MetalView {
-        type Ivars = ();
+        type Ivars = MetalViewIvars;
     }
 
     unsafe impl MetalView {
@@ -83,14 +98,98 @@ declare_class!(
                     .expect("CAMetalLayer init returned nil")
             }
         }
+
+        /// AppKit calls this whenever the view's frame size changes — including
+        /// from the framework's layout pass (`setFrame:` forwards to here). Fire
+        /// `on_resize` so the wgpu surface reconfigures to the new physical size.
+        #[method(setFrameSize:)]
+        fn set_frame_size(&self, size: CGSize) {
+            let _: () = unsafe { msg_send![super(self), setFrameSize: size] };
+            let scale: CGFloat = unsafe {
+                let layer: Retained<NSObject> = msg_send_id![self, layer];
+                msg_send![&layer, contentsScale]
+            };
+            let w = (size.width * scale).max(1.0) as u32;
+            let h = (size.height * scale).max(1.0) as u32;
+            let Some(new) = resize_decision(
+                self.ivars().ready.get(),
+                self.ivars().last_size.get(),
+                (w, h),
+            ) else {
+                return;
+            };
+            self.ivars().last_size.set(new);
+            if let Some(cb) = self.ivars().on_resize.borrow_mut().as_mut() {
+                cb(OnResizeEvent { size: new, scale: scale as f32 });
+            }
+        }
     }
 );
 
 impl MetalView {
     pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
-        let this = this.set_ivars(());
+        let this = this.set_ivars(MetalViewIvars {
+            on_resize: RefCell::new(None),
+            ready: Cell::new(false),
+            last_size: Cell::new((0, 0)),
+        });
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// Install the reactive resize callback (called once, at create time).
+    pub(crate) fn set_on_resize(&self, on_resize: OnResize) {
+        *self.ivars().on_resize.borrow_mut() = Some(on_resize);
+    }
+
+    /// Mark the surface ready and seed the last-known size — called from the
+    /// deferred `on_ready` so `setFrameSize:` starts honoring resizes.
+    pub(crate) fn mark_ready(&self, size: (u32, u32)) {
+        self.ivars().last_size.set(size);
+        self.ivars().ready.set(true);
+    }
+}
+
+/// Whether a `setFrameSize:` should fire `on_resize`, and the physical size to
+/// report. `None` = skip: not yet ready (the deferred `on_ready` owns the first
+/// size), a degenerate ≤1px size (mid-layout / not yet sized), or unchanged from
+/// the last reported size (dedupe AppKit's redundant `setFrameSize:` calls).
+fn resize_decision(ready: bool, last: (u32, u32), new: (u32, u32)) -> Option<(u32, u32)> {
+    if !ready {
+        return None;
+    }
+    let (w, h) = new;
+    if w <= 1 || h <= 1 || new == last {
+        return None;
+    }
+    Some(new)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resize_decision;
+
+    // Regression: the macOS canvas (`MetalView`) never fired `on_resize`, so its
+    // wgpu surface stayed at the first-paint size and stretched/scaled across any
+    // later resize (e.g. the whiteboard's aspect-ratio stage switching 9:16↔16:9).
+    // `setFrameSize:` now reports real size changes once `on_ready` has seeded the
+    // surface.
+    #[test]
+    fn resize_decision_fires_on_real_change_after_ready() {
+        assert_eq!(resize_decision(true, (420, 748), (600, 337)), Some((600, 337)));
+    }
+
+    #[test]
+    fn resize_decision_skips_before_ready() {
+        // Before `on_ready`, there's no surface to reconfigure.
+        assert_eq!(resize_decision(false, (0, 0), (600, 337)), None);
+    }
+
+    #[test]
+    fn resize_decision_skips_unchanged_and_degenerate() {
+        assert_eq!(resize_decision(true, (420, 748), (420, 748)), None); // dedupe
+        assert_eq!(resize_decision(true, (420, 748), (1, 1)), None); // degenerate
+        assert_eq!(resize_decision(true, (420, 748), (600, 1)), None); // half-degenerate
     }
 }
 
@@ -136,13 +235,15 @@ pub(crate) fn create_graphics(
     mtm: MainThreadMarker,
     callback_targets: &mut Vec<Retained<NSObject>>,
     on_ready: OnReady,
-    _on_resize: OnResize,
+    on_resize: OnResize,
     _on_lost: OnLost,
 ) -> MacosNode {
-    // Build the Metal-backed view + flip its layer on.
+    // Build the Metal-backed view + flip its layer on. Keep the `MetalView`
+    // handle (for ivars) alongside the `NSView` cast the rest of the fn uses.
     let metal_view = MetalView::new(mtm);
+    metal_view.set_on_resize(on_resize);
     let view: Retained<NSView> = unsafe {
-        Retained::cast(metal_view)
+        Retained::cast(metal_view.clone())
     };
     let _: () = unsafe { msg_send![&view, setWantsLayer: true] };
 
@@ -176,6 +277,7 @@ pub(crate) fn create_graphics(
     // run-loop's main-queue dispatch). The CallbackTarget bridges
     // a Rust `Fn` to an Obj-C `-(IBAction)invoke` selector.
     let view_clone = view.clone();
+    let metal_view_clone = metal_view.clone();
     let on_ready_cell: Rc<RefCell<Option<OnReady>>> = Rc::new(RefCell::new(Some(on_ready)));
     let ready_callback: Rc<dyn Fn()> = Rc::new(move || {
         if let Some(mut cb) = on_ready_cell.borrow_mut().take() {
@@ -194,6 +296,9 @@ pub(crate) fn create_graphics(
                 // physical surface instead of under-filling on retina.
                 scale: scale as f32,
             });
+            // Now that the surface exists at this size, let `setFrameSize:` fire
+            // `on_resize` for subsequent layout-driven size changes.
+            metal_view_clone.mark_ready((w, h));
         }
     });
     let target = CallbackTarget::new(mtm, ready_callback);

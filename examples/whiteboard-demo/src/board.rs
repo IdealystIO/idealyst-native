@@ -1,12 +1,13 @@
 //! The board screen's recordable content: the drawable canvas + drawing
-//! surface, and the draggable camera widget. The capture-excluded floating
-//! chrome lives in [`crate::chrome`].
+//! surface, and the draggable camera widget. The floating chrome (in-tree
+//! sibling overlays) lives in [`crate::chrome`].
 
 use crate::style::{reactive_style, static_style, token};
 use crate::{parse_rgba, paint_stroke, BoardState, CanvasCapture, RecHandle, Stroke, Strokes};
 use runtime_core::{
-    component, ui, Element, IntoElement, Length, Overflow, Position, Signal, StyleRules,
-    Tokenized, TouchPhase, TouchResponse,
+    component, safe_area_insets, ui, viewport_size, AlignItems, Element, FlexDirection,
+    IntoElement, JustifyContent, Length, Overflow, Position, Signal, StyleRules, Tokenized,
+    TouchPhase, TouchResponse,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -30,7 +31,7 @@ pub struct BoardScreenProps {
     /// whole bundle is threaded to the record chrome.
     pub capture: CanvasCapture,
     /// `true` while the board is the active stack root (no Settings/Preview
-    /// pushed). Drives the capture-excluded chrome's mount/unmount.
+    /// pushed). Drives the floating chrome's mount/unmount.
     pub focused: Rc<dyn Fn() -> bool>,
 }
 
@@ -50,7 +51,7 @@ impl Default for BoardScreenProps {
 }
 
 /// The board screen — the whiteboard itself: drawable canvas, a draggable
-/// camera, and the capture-excluded `PrivateLayer` chrome.
+/// camera, and the floating in-tree chrome.
 ///
 /// Root carries `overflow: hidden` so the full-screen app clips to the viewport
 /// and a stray sub-pixel of chrome can't leak into a page-level scrollbar (the
@@ -68,12 +69,10 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
     let capture_writer = capture.writer.clone();
 
     // The chrome (tool rail, palette, record dock, REC pill, settings FAB) as
-    // individually-positioned absolute overlays over the canvas. No longer wrapped
-    // in `screen_recorder::PrivateLayer`: that existed to exclude the toolbar from
-    // a SCREEN recording, but we now record the canvas/GPU stream directly — the
-    // chrome is never part of the canvas, so it's never in the recording anyway.
-    // As normal in-tree siblings the navigator also hides them automatically when
-    // a screen is pushed (they belong to the board screen).
+    // individually-positioned overlays over the canvas — plain in-tree siblings,
+    // no separate window. (Recording captures the canvas/GPU stream directly, so
+    // the chrome is never in it.) As normal siblings the navigator also hides them
+    // automatically when a screen is pushed (they belong to the board screen).
     let chrome = crate::chrome::build_chrome(focused, s, strokes.clone(), rec_handle, version, capture);
 
     // Reactive so the letterbox around the stage follows the app theme (light/dark).
@@ -86,42 +85,75 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
         ..Default::default()
     });
 
-    // The canvas "stage": an aspect-locked box, centered, as large as fits inside
-    // the safe area. Reactive — follows the aspect setting, rotation, and insets.
-    // The letterbox area around it shows the app's themed background.
+    // The stage is centered inside this safe-area-inset container. Chrome stays a
+    // direct child of the root (so its own absolute insets aren't double-counted).
+    let center_style = reactive_style(move || {
+        let ins = safe_area_insets().get();
+        StyleRules {
+            position: Some(Position::Absolute),
+            top: Some(Length::Px(0.0).into()),
+            left: Some(Length::Px(0.0).into()),
+            width: Some(Length::pct(100.0).into()),
+            height: Some(Length::pct(100.0).into()),
+            flex_direction: Some(FlexDirection::Column),
+            align_items: Some(AlignItems::Center),
+            justify_content: Some(JustifyContent::Center),
+            padding_top: Some(Length::Px(ins.top + crate::settings::STAGE_MARGIN).into()),
+            padding_bottom: Some(Length::Px(ins.bottom + crate::settings::STAGE_MARGIN).into()),
+            padding_left: Some(Length::Px(ins.left + crate::settings::STAGE_MARGIN).into()),
+            padding_right: Some(Length::Px(ins.right + crate::settings::STAGE_MARGIN).into()),
+            ..Default::default()
+        }
+    });
+
+    // The canvas "stage": an aspect-locked box, as large as fits in the centered
+    // container. Sized via Taffy `aspect_ratio` + a PERCENTAGE binding dimension
+    // (NOT reactive px): the canvas then resizes through the layout pass, which is
+    // the path that resizes the vello Metal surface on macOS. A reactive px size
+    // strands that surface at its degenerate first-paint size (`vp=0`), so px
+    // sizing renders nothing on macOS. See [[project_macos_appkit_uikit_diffs]].
     let aspect = s.aspect;
     let stage_style = reactive_style(move || {
         let (aw, ah) = aspect.get();
-        let (x, y, w, h) = crate::settings::stage_geom(aw, ah);
-        StyleRules {
-            position: Some(Position::Absolute),
-            left: Some(Length::Px(x).into()),
-            top: Some(Length::Px(y).into()),
-            width: Some(Length::Px(w).into()),
-            height: Some(Length::Px(h).into()),
-            // Clip strokes + the camera to the board; round the corners for a
-            // card-like surface that reads as distinct from the backdrop.
-            //
-            // NOT on macOS: `overflow: Hidden` forces this view layer-backed
-            // (`masksToBounds`), which detaches the vello `CAMetalLayer` of the
-            // canvas child — the GPU surface then renders nothing. The clip is only
-            // cosmetic here (the canvas surface already bounds strokes and
-            // `clamped_cam` bounds the camera), so we drop it on macOS. See
-            // [[project_macos_appkit_uikit_diffs]].
+        let ar = aw as f32 / ah as f32;
+        let ins = safe_area_insets().get();
+        let vp = viewport_size().get();
+        let avail_w = (vp.width - ins.left - ins.right - 2.0 * crate::settings::STAGE_MARGIN).max(1.0);
+        let avail_h = (vp.height - ins.top - ins.bottom - 2.0 * crate::settings::STAGE_MARGIN).max(1.0);
+        let mut st = StyleRules {
+            aspect_ratio: Some(ar),
+            // Positioned containing block: the absolute DrawingSurface + camera box
+            // children resolve their `top/left` against THIS stage (not the outer
+            // center container), so the camera's stage-local clamp lines up with the
+            // canvas. `Relative` keeps it a normal flex item (no offset) and — unlike
+            // `overflow`/`background` — doesn't force layer-backing on macOS.
+            position: Some(Position::Relative),
+            // Cosmetic clip (rounded card). NOT on macOS: `overflow: Hidden` forces
+            // this view layer-backed, detaching the canvas child's `CAMetalLayer`.
             overflow: if cfg!(target_os = "macos") {
                 None
             } else {
                 Some(Overflow::Hidden)
             },
             ..Default::default()
+        };
+        // Largest fitting box: if the available area is wider than the target
+        // ratio, height binds (full height, width derived); else width binds.
+        if avail_w / avail_h > ar {
+            st.height = Some(Length::pct(100.0).into());
+        } else {
+            st.width = Some(Length::pct(100.0).into());
         }
+        st
     });
 
     ui! {
         view(style = root_style) {
-            view(style = stage_style) {
-                DrawingSurface(state = s, strokes = strokes, version = version, capture_writer = Some(capture_writer))
-                CameraWidget(state = s)
+            view(style = center_style) {
+                view(style = stage_style) {
+                    DrawingSurface(state = s, strokes = strokes, version = version, capture_writer = Some(capture_writer))
+                    CameraWidget(state = s)
+                }
             }
             chrome
         }

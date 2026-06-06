@@ -22,10 +22,10 @@
 //!    reads `version`) repaints through the renderer's reactive `Effect`.
 //!
 //! 2. **Floating chrome** (tool rail, palette, record dock, REC pill, settings
-//!    FAB), inside `screen_recorder::PrivateLayer` so it's excluded from the
-//!    recording. Each dock's content is `!use_can_go_back()`-gated so it mounts
-//!    only while the board is the active route — otherwise its always-on-top
-//!    capture-excluded window would float over a pushed screen.
+//!    FAB), as in-tree sibling overlays of the canvas (no separate window — the
+//!    recording captures the canvas/GPU stream directly, so the chrome is never
+//!    in it). Each dock's content is `!use_can_go_back()`-gated so it mounts only
+//!    while the board is the active route and doesn't linger over a pushed screen.
 //!
 //! 3. **Camera widget** (NORMAL recordable content): `Camera::open` →
 //!    `MediaStream` → cover-fit `video::Video`. Draggable anywhere on the
@@ -44,8 +44,8 @@
 //!
 //! - [`board`] — the recordable board content: `BoardScreen`, `DrawingSurface`,
 //!   `CameraWidget`.
-//! - [`chrome`] — the capture-excluded `PrivateLayer` chrome: tool rail, palette,
-//!   record dock, REC pill, settings FAB (`build_chrome` assembles them).
+//! - [`chrome`] — the floating in-tree chrome: tool rail, palette, record dock,
+//!   REC pill, settings FAB (`build_chrome` assembles them).
 //! - [`screens`] — the navigator-pushed `SettingsScreen` / `PreviewScreen` and
 //!   the shared `ScreenScaffold` / `Label`.
 //! - [`style`] — shared `StyleRules` helpers (`radius`, `border_all`,
@@ -83,9 +83,9 @@ pub(crate) use screens::{PreviewScreen, SettingsScreen};
 // ============================================================================
 //
 // The CLI-generated wrapper hands us the concrete backend. We register THREE
-// externals: the canvas renderer (so the drawable surface paints), the video
-// display (camera + recording-preview), and the screen-recorder (which installs
-// the `PrivateLayer` capture-excluded overlay window). `camera` needs no
+// externals: the canvas renderer (so the drawable surface paints) and the video
+// display (camera + recording-preview). The chrome is plain in-tree views, so no
+// screen-recorder/PrivateLayer registration is needed. `camera` needs no
 // register. Several backends now self-register via `inventory`, so these are
 // belt-and-suspenders for the ones that don't.
 
@@ -277,9 +277,9 @@ pub(crate) fn stroke_color(stroke: &Stroke, canvas_bg: CanvasBg, dark: bool) -> 
 // Preview are pushed onto the stack (native push/pop + back gesture on
 // iOS/Android/web; a child-swap on macOS). The board screen sets
 // `unmount_on_blur(false)` (the default) so it stays alive under a pushed
-// screen — the camera keeps running and strokes persist — but its
-// capture-excluded `PrivateLayer` chrome is hidden via `!use_can_go_back()` so
-// the toolbar doesn't float over Settings.
+// screen — the camera keeps running and strokes persist — but its floating
+// chrome is hidden via `!use_can_go_back()` so the toolbar doesn't linger over
+// Settings.
 // ----------------------------------------------------------------------------
 
 pub(crate) const BOARD: Route<()> = Route::<()>::new("board", "/");
@@ -423,10 +423,13 @@ pub fn app() -> Element {
     // safe-area insets. `token(...)` subscribes to the theme, so this effect
     // re-fires on a light/dark swap and keeps the window in sync. No-op on
     // backends without a controllable host surface.
-    // [MACOS-REGRESSION-TEST] Gated OFF on macOS only: `set_app_background` forces
-    // `setWantsLayer:true` on the macOS host root, which appears to detach the
-    // vello CAMetalLayer (canvas + camera stop compositing). iOS/Android keep it.
-    // Remove the gate once the macOS backend impl is made non-destructive.
+    // Skipped on macOS: the board root already paints the themed background over
+    // the whole window there, so this is redundant — AND its macOS impl forces
+    // `setWantsLayer:true` on the host root, the same layer-backing that detaches
+    // the GPU canvas's `CAMetalLayer` (see the stage's `overflow` note in
+    // `board.rs`). iOS/Android still need it for `.fullscreen(true)` status/nav
+    // strips. If macOS ever needs a window-level fill, give `set_app_background` a
+    // non-destructive macOS impl (`NSWindow.backgroundColor`) and drop this gate.
     #[cfg(not(target_os = "macos"))]
     runtime_core::effect!({
         runtime_core::set_app_background(runtime_core::Tokenized::Literal(
@@ -558,9 +561,9 @@ pub fn app() -> Element {
                 // `focused` is computed INSIDE the board-route builder so
                 // `use_can_go_back()` resolves in the navigator scope. `true`
                 // while the board is the stack root (no Settings/Preview pushed):
-                // the chrome lives in a separate, always-on-top capture-excluded
-                // window, so it must vanish when a screen is pushed or it floats
-                // over Settings/Preview. We gate on `!use_can_go_back()` rather
+                // the chrome is an in-tree sibling of the canvas, so it must
+                // vanish when a screen is pushed or it lingers over
+                // Settings/Preview. We gate on `!use_can_go_back()` rather
                 // than `use_focus()`: `use_focus` reads `active_route`, which
                 // native stack handlers leave STALE after a bare `pop`, so the
                 // chrome would never come back on return (the macOS "private

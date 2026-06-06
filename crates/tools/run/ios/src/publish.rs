@@ -1,18 +1,23 @@
 //! App Store Connect distribution for `idealyst publish ios`.
 //!
-//! The device path ([`crate::device`]) signs with a *development* identity
-//! and installs to a connected phone. App Store distribution is a different
-//! chain — a distribution-signed archive, exported (or uploaded) as an
-//! `.ipa`:
+//! The device path ([`crate::device`]) signs with a development identity and
+//! installs to a connected phone. App Store distribution reuses that same
+//! development-signed build for the *archive*, then re-signs for distribution
+//! at export — the standard Xcode "Archive → Distribute App" flow:
 //!
 //! ```text
 //!   build-ios::build (device, release)        → libNAME_ios_wrapper.a
-//!   prepare_xcode_project(Distribution)        → signed .xcodeproj
-//!                                                 ("Apple Distribution")
-//!   xcodebuild … -configuration Release archive → NAME.xcarchive
+//!   prepare_xcode_project                      → .xcodeproj (automatic dev signing)
+//!   xcodebuild … -configuration Release archive → NAME.xcarchive (dev-signed)
 //!   xcodebuild -exportArchive (ExportOptions)  → NAME.ipa   (destination=export)
-//!                                              └→ upload     (destination=upload)
+//!     · method=app-store-connect re-signs the    └→ upload     (destination=upload)
+//!       app with the DISTRIBUTION cert + profile
 //! ```
+//!
+//! Hard-coding an "Apple Distribution" identity on the archive while
+//! `CODE_SIGN_STYLE = Automatic` is what `xcodebuild archive` rejects with
+//! "the … code signing identity has been manually specified" — which is why
+//! the distribution identity lives only in the export step.
 //!
 //! ## Why `generic/platform=iOS`, not `id=<UDID>`
 //!
@@ -24,10 +29,10 @@
 //! ## Credentials (both mechanisms)
 //!
 //! An **App Store Connect API key** ([`UploadAuth::ApiKey`] — key id +
-//! issuer id + `AuthKey_<id>.p8`) is the recommended path: it drives both
-//! archive signing (so automatic signing fetches a *distribution* profile
-//! headlessly) and the upload, with no Apple ID password or 2FA. Passed to
-//! `xcodebuild` via `-authenticationKeyPath/-authenticationKeyID/
+//! issuer id + `AuthKey_<id>.p8`) is the recommended path: it lets automatic
+//! signing mint the dev (archive) and distribution (export) profiles
+//! headlessly and authorizes the upload, with no Apple ID password or 2FA.
+//! Passed to `xcodebuild` via `-authenticationKeyPath/-authenticationKeyID/
 //! -authenticationKeyIssuerID` on both the archive and export invocations.
 //!
 //! Without a key we fall back to the locally signed-in **Xcode account**
@@ -40,7 +45,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use build_ios::{BuildOptions, FrameworkSource};
 
-use crate::device::{prepare_xcode_project, PrepareOpts, SigningKind};
+use crate::device::{prepare_xcode_project, PrepareOpts};
 
 /// App Store Connect credentials, used for distribution signing and upload.
 #[derive(Clone, Debug)]
@@ -74,15 +79,30 @@ pub struct PublishOptions {
     /// rejects a re-used build number for the same version, so this is the
     /// usual per-upload bump.
     pub build_number: Option<String>,
-    /// Credentials for distribution signing and (when `upload`) the push.
-    /// `None` ⇒ rely on the locally signed-in Xcode account.
+    /// Credentials for the distribution re-sign / upload. `None` ⇒ rely on
+    /// the locally signed-in Xcode account.
     pub auth: Option<UploadAuth>,
-    /// Also upload the archive to App Store Connect (`destination=upload`).
-    /// `false` ⇒ stop after writing a signed `.ipa`.
-    pub upload: bool,
+    /// What to do after the archive is built. See [`Distribution`].
+    pub distribution: Distribution,
     /// Where the `.ipa` (and `.xcarchive`) land. The CLI defaults this to
     /// `<project>/dist/ios`.
     pub output_dir: PathBuf,
+}
+
+/// What `publish` does with the archive after building it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Distribution {
+    /// Export a distribution-signed `.ipa` to `output_dir` and stop. The
+    /// user uploads it themselves (Transporter, etc.).
+    Ipa,
+    /// Export and upload straight to App Store Connect (`destination=upload`).
+    Upload,
+    /// Stop after the `.xcarchive` — do NOT export. The caller hands the
+    /// archive to Xcode's Organizer, which performs the distribution re-sign
+    /// + upload interactively (the `--organizer` path). Crucially this needs
+    /// no distribution certificate at CLI time — Organizer handles it — so
+    /// running the export here would fail for exactly the users who chose it.
+    ArchiveOnly,
 }
 
 #[derive(Debug)]
@@ -110,7 +130,9 @@ pub fn publish(project_dir: &Path, opts: PublishOptions) -> Result<PublishArtifa
         manifest.app.build_number = build_number.clone();
     }
 
-    if opts.upload && matches!(opts.auth, None | Some(UploadAuth::XcodeAccount)) {
+    if opts.distribution == Distribution::Upload
+        && matches!(opts.auth, None | Some(UploadAuth::XcodeAccount))
+    {
         eprintln!(
             "[publish ios] no App Store Connect API key provided — relying on the \
              Xcode-stored account for upload. Pass --api-key-id / --issuer-id / \
@@ -130,15 +152,17 @@ pub fn publish(project_dir: &Path, opts: PublishOptions) -> Result<PublishArtifa
         },
     )?;
 
-    // ── 2. Lay out the distribution-signed .xcodeproj (shared with the
-    // device-install path — see [`prepare_xcode_project`]). ──────────
+    // ── 2. Lay out the .xcodeproj (shared with the device-install path —
+    // see [`prepare_xcode_project`]). The archive is built with automatic
+    // DEVELOPMENT signing; the App Store *distribution* re-sign happens at
+    // the `-exportArchive` step below (forcing an "Apple Distribution"
+    // identity under automatic signing makes `xcodebuild archive` fail). ──
     let prepared = prepare_xcode_project(
         &project_dir,
         &manifest,
         &artifact,
         &PrepareOpts {
             team: opts.team.clone(),
-            signing: SigningKind::Distribution,
             subdir: "ios-dist",
             source: opts.source.clone(),
         },
@@ -149,7 +173,7 @@ pub fn publish(project_dir: &Path, opts: PublishOptions) -> Result<PublishArtifa
     let output_dir = std::fs::canonicalize(&opts.output_dir)
         .with_context(|| format!("resolve output dir {}", opts.output_dir.display()))?;
 
-    // ── 3. xcodebuild archive (distribution signing) ─────────────
+    // ── 3. xcodebuild archive (automatic development signing) ────
     let archive = prepared
         .project_root
         .join(format!("{}.xcarchive", prepared.scheme));
@@ -160,11 +184,18 @@ pub fn publish(project_dir: &Path, opts: PublishOptions) -> Result<PublishArtifa
         opts.auth.as_ref(),
     )?;
 
-    // ── 4. Export options + xcodebuild -exportArchive ────────────
-    let destination = if opts.upload {
-        ExportDestination::Upload
-    } else {
-        ExportDestination::Export
+    // ── 4. Export / upload (skipped entirely for ArchiveOnly — see
+    // [`Distribution::ArchiveOnly`]; the caller drives Organizer). ───
+    let destination = match opts.distribution {
+        Distribution::Ipa => ExportDestination::Export,
+        Distribution::Upload => ExportDestination::Upload,
+        Distribution::ArchiveOnly => {
+            return Ok(PublishArtifact {
+                ipa: None,
+                archive,
+                uploaded: false,
+            });
+        }
     };
     let export_options_path = prepared.project_root.join("ExportOptions.plist");
     std::fs::write(
@@ -200,7 +231,7 @@ pub fn publish(project_dir: &Path, opts: PublishOptions) -> Result<PublishArtifa
     Ok(PublishArtifact {
         ipa,
         archive,
-        uploaded: opts.upload,
+        uploaded: opts.distribution == Distribution::Upload,
     })
 }
 
@@ -271,9 +302,12 @@ fn append_auth_flags(cmd: &mut Command, auth: Option<&UploadAuth>) {
 }
 
 /// `xcodebuild … -configuration Release -destination 'generic/platform=iOS'
-/// archive`. Distribution signing comes from the dist pbxproj template
-/// ([`SigningKind::Distribution`]); `-allowProvisioningUpdates` (+ the API
-/// key when present) lets automatic signing mint a distribution profile.
+/// archive`. Signed with automatic DEVELOPMENT signing (the pbxproj's
+/// default); `-allowProvisioningUpdates` (+ the API key when present) lets
+/// automatic signing mint the profile. The App Store distribution re-sign
+/// happens at `-exportArchive` ([`xcodebuild_export`]) via the
+/// `app-store-connect` method — NOT here. Hard-coding an "Apple
+/// Distribution" identity under automatic signing makes archive fail.
 fn xcodebuild_archive(
     xcodeproj: &Path,
     scheme: &str,

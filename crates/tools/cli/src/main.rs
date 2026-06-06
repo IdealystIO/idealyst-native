@@ -101,6 +101,16 @@ fn main() -> anyhow::Result<()> {
     // get their own budget; this does not constrain compilation.
     memory_limit::apply(memory_limit::DEFAULT_LIMIT_MB);
 
+    // Auto-load `.env` / `.env.local` from the invocation dir (walking up
+    // to a parent) so credentials — App Store Connect API key, signing
+    // team — resolve without a manual `source`. Precedence is
+    // real-env > `.env.local` > `.env`: `dotenvy` never overrides an
+    // already-set var, so loading `.env.local` FIRST lets it shadow
+    // `.env`, and a real shell var set before launch beats both. Missing
+    // files are not an error (the common case is no `.env` at all).
+    let _ = dotenvy::from_filename(".env.local");
+    let _ = dotenvy::dotenv();
+
     let cli = Cli::parse();
     match cli.command {
         Command::New(args) => cmd::new::run(args),

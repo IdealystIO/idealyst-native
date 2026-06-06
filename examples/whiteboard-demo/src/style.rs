@@ -68,11 +68,10 @@ pub fn static_style(rules: StyleRules) -> Rc<StyleSheet> {
 ///
 /// The HIDE is INSTANT (no exit animation) on purpose: when a screen is pushed,
 /// the chrome must vanish in the same synchronous turn as the navigation commit,
-/// BEFORE the next paint — otherwise an exit fade leaves the capture-excluded
-/// toolbar briefly visible over the incoming screen / sliding transition. The
-/// RETURN fades in (a screen pop reveals the board), and each dock's own inner
-/// `presence` still animates its state toggles. `presence` mount/unmount — not a
-/// reactive resize — is what works in the detached `PrivateLayer` window.
+/// BEFORE the next paint — otherwise an exit fade leaves the toolbar briefly
+/// visible over the incoming screen / sliding transition. The RETURN fades in (a
+/// screen pop reveals the board), and each dock's own inner `presence` still
+/// animates its state toggles.
 pub fn focus_gate(
     focused: Rc<dyn Fn() -> bool>,
     child: impl Fn() -> Element + 'static,

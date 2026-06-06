@@ -58,26 +58,6 @@ use crate::{
 };
 
 const PBXPROJ_TMPL: &str = include_str!("../templates/project.pbxproj.tmpl");
-/// Distribution variant of the pbxproj. Byte-identical to [`PBXPROJ_TMPL`]
-/// except the Release config signs with `"Apple Distribution"` (an App
-/// Store identity) instead of `"iPhone Developer"`, so `xcodebuild archive`
-/// + `-allowProvisioningUpdates` mints a *distribution* provisioning
-/// profile. Selected by [`SigningKind::Distribution`] (the `idealyst
-/// publish ios` path); the device-install path keeps the development one.
-const PBXPROJ_DIST_TMPL: &str = include_str!("../templates/project.pbxproj.dist.tmpl");
-
-/// Which signing identity the generated `.xcodeproj` should request.
-/// Drives the pbxproj template choice — development for on-device installs,
-/// distribution for App Store archives.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SigningKind {
-    /// `"iPhone Developer"` — on-device install via `idealyst run ios
-    /// --device`. Mints a development profile.
-    Development,
-    /// `"Apple Distribution"` — App Store archive via `idealyst publish
-    /// ios`. Mints a distribution profile.
-    Distribution,
-}
 
 #[derive(Clone, Debug)]
 pub struct DeviceOptions {
@@ -142,14 +122,12 @@ pub fn run(project_dir: &Path, opts: DeviceOptions) -> Result<DeviceArtifact> {
 
     // ── 2-5. Lay out the signed-build project dir (shared with the
     // `idealyst publish ios` archive path — see [`prepare_xcode_project`]).
-    // Development signing → on-device install profile.
     let prepared = prepare_xcode_project(
         &project_dir,
         &manifest,
         &artifact,
         &PrepareOpts {
             team: opts.team.clone(),
-            signing: SigningKind::Development,
             subdir: "ios-device",
             source: opts.source.clone(),
         },
@@ -187,14 +165,14 @@ pub fn run(project_dir: &Path, opts: DeviceOptions) -> Result<DeviceArtifact> {
 // ---------------------------------------------------------------------------
 
 /// Knobs for [`prepare_xcode_project`]. The two callers (device install,
-/// App Store publish) differ only in signing identity and the on-disk
-/// sub-directory; everything else (Swift glue, icons, Info.plist,
-/// framework derivation) is identical.
+/// App Store publish) differ only in the on-disk sub-directory; everything
+/// else (Swift glue, icons, Info.plist, framework derivation, signing) is
+/// identical. Both archive/build with automatic **development** signing —
+/// the App Store *distribution* re-sign happens at `-exportArchive` time
+/// (see [`crate::publish`]), not here.
 pub(crate) struct PrepareOpts {
     /// Apple Developer team ID embedded as `DEVELOPMENT_TEAM`.
     pub team: String,
-    /// Development vs distribution signing — picks the pbxproj template.
-    pub signing: SigningKind,
     /// Project sub-directory under the wrapper root, e.g. `"ios-device"`
     /// (install) or `"ios-dist"` (publish), so the two never collide.
     pub subdir: &'static str,
@@ -216,8 +194,9 @@ pub(crate) struct PreparedProject {
 /// Render the Swift glue + bridging header + icons + Info.plist + a
 /// `.xcodeproj` (no `xcodegen` dependency) for an already-built staticlib.
 /// Shared by the device-install path ([`run`]) and the App Store archive
-/// path ([`crate::publish::publish`]). The only variation is the signing
-/// identity (via `opts.signing`) and the on-disk sub-directory.
+/// path ([`crate::publish::publish`]). The only variation is the on-disk
+/// sub-directory; both use automatic development signing (the publish path
+/// re-signs for distribution at export, not here).
 ///
 /// Splash is forced OFF (duration 0): signed builds mount the framework
 /// immediately and the splash path isn't needed to validate signing.
@@ -290,7 +269,6 @@ pub(crate) fn prepare_xcode_project(
             library_search_path: &lib_dir,
             lib_name: &lib_name,
             frameworks: &frameworks,
-            signing: opts.signing,
         },
     )?;
 
@@ -357,9 +335,6 @@ struct PbxParams<'a> {
     /// each SDK's declared frameworks). Drives the four framework-related
     /// pbxproj sections, replacing what used to be hardcoded in the template.
     frameworks: &'a [Framework],
-    /// Development vs distribution — selects [`PBXPROJ_TMPL`] (`"iPhone
-    /// Developer"`) vs [`PBXPROJ_DIST_TMPL`] (`"Apple Distribution"`).
-    signing: SigningKind,
 }
 
 /// Write `<name>.xcodeproj/project.pbxproj` from the parameterized
@@ -382,11 +357,7 @@ fn write_xcodeproj(xcodeproj: &Path, params: &PbxParams) -> Result<()> {
 fn render_pbxproj(params: &PbxParams) -> String {
     let (build_files, file_refs, phase_files, group_children) =
         render_frameworks_sections(params.frameworks);
-    let template = match params.signing {
-        SigningKind::Development => PBXPROJ_TMPL,
-        SigningKind::Distribution => PBXPROJ_DIST_TMPL,
-    };
-    template
+    PBXPROJ_TMPL
         .replace("{{APP_NAME}}", params.app_name)
         .replace("{{BUNDLE_ID}}", params.bundle_id)
         .replace("{{DEVELOPMENT_TEAM}}", params.team)
@@ -820,7 +791,6 @@ mod tests {
             library_search_path: Path::new("/tmp/target/aarch64-apple-ios/release"),
             lib_name: "camera_preview_demo_ios_wrapper",
             frameworks: &frameworks,
-            signing: SigningKind::Development,
         });
         assert!(
             !rendered.contains("{{"),
@@ -855,7 +825,6 @@ mod tests {
             library_search_path: Path::new("/lib"),
             lib_name: "app_ios_wrapper",
             frameworks: &frameworks,
-            signing: SigningKind::Development,
         });
         // Only UIKit/Foundation are weak (objc2 back-deploy fix).
         for fw in ["UIKit", "Foundation"] {
@@ -896,7 +865,6 @@ mod tests {
             library_search_path: Path::new("/lib"),
             lib_name: "screen_share_ios_wrapper",
             frameworks: &frameworks,
-            signing: SigningKind::Development,
         });
         // Present in all four sections.
         assert!(rendered.contains("ReplayKit.framework in Frameworks"));
@@ -909,46 +877,34 @@ mod tests {
         );
     }
 
-    /// `SigningKind` picks the pbxproj template: development signs with
-    /// `"iPhone Developer"` (on-device install), distribution with
-    /// `"Apple Distribution"` (App Store archive). A wrong identity here is
-    /// how a `publish` archive would silently get a development profile and
-    /// be rejected by App Store Connect.
+    /// The pbxproj signs with AUTOMATIC + a development identity for BOTH
+    /// device-install and App Store archive. Forcing `"Apple Distribution"`
+    /// while `CODE_SIGN_STYLE = Automatic` makes `xcodebuild archive` fail
+    /// ("the … code signing identity has been manually specified") — the
+    /// distribution re-sign belongs to `-exportArchive` (`app-store-connect`
+    /// method), not the archive. This guards against re-introducing that.
     #[test]
-    fn signing_kind_selects_distribution_identity() {
+    fn pbxproj_uses_automatic_development_signing_not_manual_distribution() {
         let frameworks = camera_frameworks();
-        let params = |signing| PbxParams {
+        let rendered = render_pbxproj(&PbxParams {
             app_name: "App",
             bundle_id: "ai.example.app",
             team: "TEAM123456",
             library_search_path: Path::new("/lib"),
             lib_name: "app_ios_wrapper",
             frameworks: &frameworks,
-            signing,
-        };
-
-        let dev = render_pbxproj(&params(SigningKind::Development));
+        });
         assert!(
-            dev.contains("CODE_SIGN_IDENTITY = \"iPhone Developer\""),
-            "development build must sign with iPhone Developer",
+            rendered.contains("CODE_SIGN_STYLE = Automatic"),
+            "archive/build must use automatic signing",
         );
         assert!(
-            !dev.contains("Apple Distribution"),
-            "development build must NOT carry a distribution identity",
+            !rendered.contains("Apple Distribution"),
+            "must NOT hard-code an Apple Distribution identity under automatic \
+             signing — that breaks `xcodebuild archive`; distribution re-signing \
+             happens at -exportArchive",
         );
-
-        let dist = render_pbxproj(&params(SigningKind::Distribution));
-        assert!(
-            dist.contains("CODE_SIGN_IDENTITY = \"Apple Distribution\""),
-            "distribution build must sign with Apple Distribution",
-        );
-        assert!(
-            !dist.contains("iPhone Developer"),
-            "distribution build must NOT carry a development identity",
-        );
-        // Both still substitute the user-facing values.
-        assert!(!dist.contains("{{"), "unsubstituted placeholder in dist pbxproj");
-        assert!(dist.contains("DEVELOPMENT_TEAM = TEAM123456;"));
+        assert!(rendered.contains("DEVELOPMENT_TEAM = TEAM123456;"));
     }
 
     /// Find the PBXBuildFile line for a framework in rendered pbxproj.

@@ -554,7 +554,10 @@ fn main() {{
 // Shared bits
 // =============================================================================
 
-const GITIGNORE: &str = "/target\n/pkg\nCargo.lock\n/.idealyst/\n";
+// `.env` / `.env.local` are auto-loaded by the CLI (signing team + App Store
+// Connect API credentials) — they hold secrets and must never be committed.
+const GITIGNORE: &str =
+    "/target\n/pkg\nCargo.lock\n/.idealyst/\n/dist/\n.env\n.env.local\n";
 
 /// Project-local MCP server config — Claude Code auto-loads this when
 /// the user opens the scaffolded project. Points at the system-

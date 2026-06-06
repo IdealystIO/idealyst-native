@@ -1,6 +1,6 @@
 //! The navigator-pushed screens (`Settings`, `Preview`) and their shared
-//! scaffold. Unlike the board's detached `PrivateLayer` chrome, these are normal
-//! host-tree content, so reactive style + ordinary components are fine.
+//! scaffold. Like the board's chrome, these are normal host-tree content, so
+//! reactive style + ordinary components are fine.
 //!
 //! Every screen carries its OWN in-content header (`ScreenHeader`: title + a back
 //! `×` that pops the stack), because `header_shown(false)` is set on every route

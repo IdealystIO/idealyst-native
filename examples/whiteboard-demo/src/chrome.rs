@@ -1,14 +1,16 @@
-//! The board's floating, capture-excluded chrome: tool rail, color palette
-//! popover, record dock + REC pill, and the settings FAB. Every piece is a
-//! [`screen_recorder::PrivateLayer`] child — an individually positioned,
-//! passthrough overlay so empty areas keep passing touches to the canvas.
+//! The board's floating chrome: tool rail, color palette popover, record dock +
+//! REC pill, and the settings FAB. Each piece is a normal in-tree sibling of the
+//! canvas (no separate window) — an individually-positioned overlay sized to its
+//! content, so the empty areas around each control have no view and touches fall
+//! straight through to the canvas. (The chrome is never part of a recording
+//! because the app records the canvas/GPU stream directly, not the screen.)
 //!
 //! Each dock keeps its POSITIONED wrapper mounted (so its inset resolves against
 //! the full window) and gates only its CONTENT via [`focus_gate`] — the
 //! instant-hide presence that vanishes the chrome the same turn a screen is
-//! pushed, so the always-on-top capture-excluded window can't float over the
-//! pushed screen. Settings / REC / palette additionally nest an inner
-//! `presence` that animates their own state toggle (open, recording, …).
+//! pushed, so it doesn't linger over the pushed screen. Settings / REC / palette
+//! additionally nest an inner `presence` that animates their own state toggle
+//! (open, recording, …).
 
 use crate::style::{
     border_all_color, focus_gate, radius, reactive_style, static_style, styled, token, token_alpha,
@@ -37,10 +39,10 @@ const FAB_EDGE: f32 = 28.0; // settings FAB: top + left
 const RECORD_BOTTOM: f32 = 48.0; // record dock: bottom
 const RECORD_RIGHT: f32 = 28.0; // record dock when recording: right
 
-/// Build the board's floating chrome as the `PrivateLayer`'s children, in the
-/// SAME paint order: `[rec_indicator, palette, tool_rail, rec_dock,
-/// settings_btn]`. A plain `fn` (not a component): `BoardScreen` splices the
-/// returned `Vec<Element>` straight into `PrivateLayer(..)`.
+/// Build the board's floating chrome as in-tree sibling overlays, in paint
+/// order: `[rec_indicator, palette, tool_rail, rec_dock, settings_btn]`. A plain
+/// `fn` (not a component): `BoardScreen` splices the returned `Vec<Element>`
+/// straight into the board root alongside the canvas stage.
 pub fn build_chrome(
     focused: Rc<dyn Fn() -> bool>,
     s: BoardState,

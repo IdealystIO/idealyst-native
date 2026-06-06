@@ -51,7 +51,7 @@ canvas-vello = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Whiteboard"
-bundle_id = "ai.truday.idealyst.whiteboard"
+bundle_id = "com.critiq.testideaapp"
 version   = "0.0.1"
 targets   = ["ios", "android", "web", "macos"]
 

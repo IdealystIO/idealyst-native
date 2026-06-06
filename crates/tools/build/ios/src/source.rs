@@ -254,6 +254,22 @@ impl FrameworkSource {
 /// inside its *own* unrelated Cargo workspace would otherwise be
 /// mistaken for an in-tree idealyst checkout.
 fn find_framework_workspace(start: &Path) -> Option<PathBuf> {
+    // A relative `start` (e.g. `.`) has no real ancestors to walk —
+    // `Path::ancestors()` yields only the literal components, never the
+    // actual filesystem parents — so a caller that forgot to canonicalize
+    // would silently fail detection and the build would fall through to
+    // git-mode. That produces TWO `runtime_core` crate instances (one from
+    // the git rev, one from the local path) and every wrapper→user-crate
+    // bridge fails with "expected `Element`, found `Element`" at the `mount`
+    // bound. Anchor a relative path to CWD first so the walk reaches the
+    // real root regardless of caller hygiene.
+    let anchored;
+    let start = if start.is_absolute() {
+        start
+    } else {
+        anchored = std::env::current_dir().ok()?.join(start);
+        anchored.as_path()
+    };
     for ancestor in start.ancestors() {
         if is_framework_root(ancestor) {
             return Some(ancestor.to_path_buf());
@@ -620,6 +636,31 @@ runtime-core = { path = "../fw/crates/runtime/core" }
         assert!(
             msg.contains("idealyst framework workspace"),
             "error message should explain what was missing: {msg}"
+        );
+    }
+
+    /// Regression: a RELATIVE `project_dir` (e.g. `.`) must still resolve the
+    /// in-tree framework workspace. A caller that passed `.` without
+    /// canonicalizing used to fall through to git-mode, producing two
+    /// `runtime_core` instances and a `mount` "expected `Element`, found
+    /// `Element`" failure (hit via `idealyst publish ios` run from a project
+    /// dir). `cargo test` runs with CWD inside this crate — which lives under
+    /// the framework workspace — so a relative `.` here must find the root.
+    #[test]
+    fn relative_project_dir_still_finds_in_tree_workspace() {
+        let from_relative = find_framework_workspace(Path::new("."))
+            .expect("a relative `.` inside the framework tree must resolve the workspace root");
+        let from_absolute = find_framework_workspace(
+            &std::env::current_dir().expect("cwd"),
+        )
+        .expect("absolute CWD must also resolve");
+        assert_eq!(
+            from_relative, from_absolute,
+            "relative and absolute project dirs must resolve the same workspace root",
+        );
+        assert!(
+            is_framework_root(&from_relative),
+            "resolved root must actually be a framework workspace",
         );
     }
 }

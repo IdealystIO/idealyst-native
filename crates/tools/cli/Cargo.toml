@@ -17,6 +17,11 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+# Auto-load `.env` / `.env.local` from the invocation directory so
+# credentials (App Store Connect API key, signing team) resolve without
+# manual `source`-ing. Does NOT override already-set process env vars, so
+# a real shell var always wins over the file.
+dotenvy = "0.15"
 # Cross-platform Ctrl-C handler. The `termination` feature widens
 # the catch to SIGTERM (terminal window closed) and SIGHUP (parent
 # shell exit) — without it, only SIGINT (literal Ctrl-C) triggered
