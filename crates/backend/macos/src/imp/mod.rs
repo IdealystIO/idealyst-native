@@ -16,6 +16,7 @@ pub(crate) mod graphics;
 pub(crate) mod handles;
 pub(crate) mod icon;
 pub(crate) mod image;
+pub(crate) mod keyboard;
 pub(crate) mod node;
 pub(crate) mod screenshot;
 pub(crate) mod text_style;
@@ -64,6 +65,11 @@ pub struct MacosBackend {
     /// lifetime so they outlive any closures they back.
     #[allow(dead_code)]
     callback_targets: Vec<Retained<NSObject>>,
+    /// The app-level key-event monitor installed by `set_app_key_handler`
+    /// (`NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown`). The
+    /// returned monitor object is retained here and passed to
+    /// `NSEvent removeMonitor:` when the handler is replaced or cleared.
+    app_key_monitor: Option<Retained<NSObject>>,
     /// Per-view cached animation state. Keyed by view pointer;
     /// holds the translate/scale/rotate components so writing one
     /// doesn't destroy the others (CALayer's `transform` is a single
@@ -359,6 +365,7 @@ impl MacosBackend {
             view_to_layout: HashMap::new(),
             font_registry: backend_apple_core::font::FontRegistry::new(),
             callback_targets: Vec::new(),
+            app_key_monitor: None,
             animated_states: HashMap::new(),
             gradient_states: HashMap::new(),
             image_cache: HashMap::new(),
@@ -1542,6 +1549,10 @@ impl Backend for MacosBackend {
             }
             let _: () = msg_send![win_ptr, setBackgroundColor: &*ns_color];
         }
+    }
+
+    fn set_app_key_handler(&mut self, handler: Option<runtime_core::primitives::key::KeyDownHandler>) {
+        keyboard::set_app_key_handler(self, handler);
     }
 
     fn supports_screenshot(&self) -> bool {

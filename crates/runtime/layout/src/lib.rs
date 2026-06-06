@@ -877,6 +877,104 @@ mod tests {
     fn px(v: f32) -> Tokenized<FwLength> {
         Tokenized::Literal(FwLength::Px(v))
     }
+    fn autol() -> Tokenized<FwLength> {
+        Tokenized::Literal(FwLength::Auto)
+    }
+    fn f32t(v: f32) -> Tokenized<f32> {
+        Tokenized::Literal(v)
+    }
+
+    /// Regression: the idea-ui `Modal` card must size to its content (up to a
+    /// viewport cap) and scroll past the cap — not collapse to 0×0.
+    ///
+    /// The bug ("modal opens but nothing renders, only the backdrop"): the
+    /// Modal's surface is a content-sized view (`max_height` cap, auto height)
+    /// wrapping a `scroll_view`. `scroll_view` seeds its node with
+    /// `flex_grow:1 / flex_basis:0` (the "fill a bounded parent" shape). With
+    /// `overflow:scroll`, that node contributes 0 to its content-sized
+    /// parent's intrinsic height, so the surface — and the whole card —
+    /// collapsed to 0 height. Only the full-bleed backdrop stayed visible.
+    ///
+    /// The fix gives the scroller the "content-sized up to a cap" shape:
+    /// `flex_grow:0 + flex_basis:auto + min_height:0 + max_height:cap` (the
+    /// body keeps `flex_shrink:0` so tall content overflows the cap and
+    /// scrolls). This test reproduces both: a short modal hugs its content; a
+    /// tall one is capped (and its body keeps full height so the scroll view
+    /// has something to scroll).
+    fn modal_card_heights(content: f32, cap: f32) -> (f32, f32, f32) {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+
+        // Surface: content-sized, definite width, clips to rounded corners.
+        let surface = t.new_node();
+        let mut sr = StyleRules::default();
+        sr.width = Some(px(300.0));
+        sr.max_height = Some(px(cap));
+        sr.overflow = Some(runtime_core::Overflow::Hidden);
+        t.set_style(surface, &sr);
+
+        // Scroller: the real path — `scroll_view` seed, then the modal's
+        // `modal_scroll_sheet` override (the fix under test).
+        let scroller = t.new_node();
+        t.set_overflow_scroll(scroller, false); // seeds grow:1/basis:0 + overflow.y scroll
+        let mut scr = StyleRules::default();
+        scr.flex_direction = Some(FwFlexDirection::Column);
+        scr.flex_grow = Some(f32t(0.0));
+        scr.flex_basis = Some(autol());
+        scr.min_height = Some(px(0.0));
+        scr.max_height = Some(px(cap));
+        t.set_style(scroller, &scr);
+
+        // Body: column, and crucially `flex_shrink:0` so it keeps full height.
+        let body = t.new_node();
+        let mut br = StyleRules::default();
+        br.flex_direction = Some(FwFlexDirection::Column);
+        br.flex_shrink = Some(f32t(0.0));
+        br.height = Some(px(content));
+        br.width = Some(px(300.0));
+        t.set_style(body, &br);
+
+        t.add_child(root, surface);
+        t.add_child(surface, scroller);
+        t.add_child(scroller, body);
+        t.compute(root, 393.0, 852.0);
+        (
+            t.frame_of(surface).height,
+            t.frame_of(scroller).height,
+            t.frame_of(body).height,
+        )
+    }
+
+    #[test]
+    fn regression_modal_scroller_content_sized_then_capped() {
+        let cap = 700.0;
+
+        // Short content: the card hugs its content (NOT 0 → the collapse bug;
+        // NOT the full cap → a giant empty box).
+        let (surface, scroller, body) = modal_card_heights(200.0, cap);
+        assert!(
+            (surface - 200.0).abs() < 1.0,
+            "short modal surface must size to its 200px content, got {surface} \
+             (0 == the collapse bug; {cap} == always-cap-tall)"
+        );
+        assert!((scroller - 200.0).abs() < 1.0, "scroller hugs content, got {scroller}");
+        assert!((body - 200.0).abs() < 1.0, "body at natural height, got {body}");
+
+        // Tall content: the card caps at the viewport, and the body keeps its
+        // full height so the scroll view has overflow to scroll.
+        let (surface, scroller, body) = modal_card_heights(2000.0, cap);
+        assert!(
+            (surface - cap).abs() < 1.0,
+            "tall modal surface must cap at {cap}, got {surface}"
+        );
+        assert!((scroller - cap).abs() < 1.0, "tall scroller caps at {cap}, got {scroller}");
+        assert!(
+            (body - 2000.0).abs() < 1.0,
+            "tall body must keep its full 2000px height (so the scroll view \
+             scrolls), got {body}"
+        );
+    }
+
     fn pct(v: f32) -> Tokenized<FwLength> {
         Tokenized::Literal(FwLength::Percent(v))
     }
@@ -1198,3 +1296,7 @@ mod tests {
         );
     }
 }
+
+
+
+

@@ -1,0 +1,28 @@
+[package]
+name = "modal-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Minimal idea-ui `Modal` demo: a short modal that hugs its content and a tall modal that caps at the viewport and scrolls. Tap the backdrop to dismiss."
+
+# Pure `rlib` — the CLI generates the per-platform wrapper crates with the
+# cdylib/staticlib crate-type + entry points; this crate is platform-agnostic.
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `sidecar`: enabled ONLY by the CLI-generated runtime-server wrapper.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+# Recorder backend for the runtime-server sidecar wrapper. Pulled in only by
+# the `sidecar` feature; never compiled for device/web targets.
+dev-server = { workspace = true, optional = true }
+
+[package.metadata.idealyst.app]
+name      = "Modal Demo"
+bundle_id = "ai.truday.idealyst.modaldemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]

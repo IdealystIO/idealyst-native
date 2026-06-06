@@ -1922,6 +1922,14 @@ thread_local! {
     static PENDING_SCROLLBAR: RefCell<Option<(Tokenized<Color>, Tokenized<Color>)>> =
         const { RefCell::new(None) };
 
+    /// Latest app-level key handler queued for `Backend::set_app_key_handler`.
+    /// Outer `Option` = "a `set_app_key_handler` call happened this cycle, drain
+    /// it"; inner = the handler (`Some` installs, `None` clears). Single slot
+    /// (latest wins) — there is exactly one app-level handler.
+    static PENDING_APP_KEY_HANDLER:
+        RefCell<Option<Option<crate::primitives::key::KeyDownHandler>>> =
+        const { RefCell::new(None) };
+
     /// Typefaces already registered with the backend this session.
     /// Drives the dedup in [`ensure_typefaces_registered_with`]: the
     /// framework calls `register_asset` + `register_typeface` once
@@ -2256,6 +2264,21 @@ pub fn set_scrollbar_theme(thumb: Tokenized<Color>, track: Tokenized<Color>) {
     PENDING_SCROLLBAR.with(|p| *p.borrow_mut() = Some((thumb, track)));
 }
 
+/// Install (or, with `None`, remove) an APP-LEVEL keyboard handler that fires on
+/// every key press regardless of focus. Routes through
+/// [`Backend::set_app_key_handler`](crate::Backend::set_app_key_handler) on the
+/// next walker flush. Single-slot: a second call before the flush replaces the
+/// first (`Some(handler)` installs, `None` clears). Backends without an
+/// app-level key source ignore it.
+///
+/// Call once near app start, e.g.
+/// `set_app_key_handler(Some(Rc::new(|e| { /* … */ KeyOutcome::Default })))`.
+/// The handler sees EVERY key (including typing into a focused input), so act
+/// only on the keys you care about and return `KeyOutcome::Default` otherwise.
+pub fn set_app_key_handler(handler: Option<crate::primitives::key::KeyDownHandler>) {
+    PENDING_APP_KEY_HANDLER.with(|p| *p.borrow_mut() = Some(handler));
+}
+
 
 /// Ensures the backend has been asked to pre-generate state for this
 /// stylesheet against the active theme. Calls `register` with the
@@ -2515,7 +2538,7 @@ pub fn is_registered(sheet: &Rc<StyleSheet>) -> bool {
 
 /// - Sweeps registrations whose `Weak<StyleSheet>` no longer upgrades
 ///   into the pending-unregister queue.
-pub fn ensure_registered_with<R, U, I, UPD, RA, RT, SAB, SST>(
+pub fn ensure_registered_with<R, U, I, UPD, RA, RT, SAB, SST, SAK>(
     sheet: &Rc<StyleSheet>,
     register: R,
     unregister: U,
@@ -2525,6 +2548,7 @@ pub fn ensure_registered_with<R, U, I, UPD, RA, RT, SAB, SST>(
     register_typeface: RT,
     set_app_background: SAB,
     set_scrollbar_theme: SST,
+    set_app_key_handler: SAK,
 ) where
     R: FnOnce(&[Rc<StyleRules>]),
     U: Fn(&[Rc<StyleRules>]),
@@ -2539,6 +2563,7 @@ pub fn ensure_registered_with<R, U, I, UPD, RA, RT, SAB, SST>(
     ),
     SAB: FnOnce(&Tokenized<Color>),
     SST: FnOnce(&Tokenized<Color>, &Tokenized<Color>),
+    SAK: FnOnce(Option<crate::primitives::key::KeyDownHandler>),
 {
     // Flush pending tokens first — backends that emit `var(--…)` need
     // the variables installed before any rule that references them
@@ -2567,6 +2592,11 @@ pub fn ensure_registered_with<R, U, I, UPD, RA, RT, SAB, SST>(
     }
     if let Some((thumb, track)) = PENDING_SCROLLBAR.with(|p| p.borrow_mut().take()) {
         set_scrollbar_theme(&thumb, &track);
+    }
+    // Drain the queued app-level key handler (outer Some = a call happened;
+    // inner Some installs, None clears). Single-slot, like the host bg above.
+    if let Some(handler) = PENDING_APP_KEY_HANDLER.with(|p| p.borrow_mut().take()) {
+        set_app_key_handler(handler);
     }
 
     let sheet_ptr = Rc::as_ptr(sheet);
@@ -2922,6 +2952,65 @@ impl<T: Clone + 'static> IntoOverrideSource<T> for crate::Signal<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pass-through no-op closures for the non-key params of
+    /// `ensure_registered_with`, so a test can focus on one slot.
+    fn drain_with_key_recorder(
+        sheet: &Rc<StyleSheet>,
+        record: impl FnOnce(Option<crate::primitives::key::KeyDownHandler>),
+    ) {
+        ensure_registered_with(
+            sheet,
+            |_| {},
+            |_| {},
+            |_| {},
+            |_| {},
+            |_, _, _| {},
+            |_, _, _, _| {},
+            |_| {},
+            |_, _| {},
+            record,
+        );
+    }
+
+    // The app-level key handler queued by `set_app_key_handler` must reach the
+    // backend (via `Backend::set_app_key_handler`) on the next flush — and only
+    // once (single-slot). Regression for the cross-backend global-keyboard path:
+    // without the drain in `ensure_registered_with`, the handler would be stashed
+    // forever and never installed, so app shortcuts would silently do nothing.
+    #[test]
+    fn set_app_key_handler_routes_to_backend_once() {
+        use std::cell::Cell;
+        let sheet = Rc::new(StyleSheet::r#static(StyleRules::default()));
+
+        // Install a handler → it drains to the recorder as `Some`.
+        let handler: crate::primitives::key::KeyDownHandler =
+            Rc::new(|_e| crate::primitives::key::KeyOutcome::Default);
+        set_app_key_handler(Some(handler));
+        let drained: Rc<Cell<Option<bool>>> = Rc::new(Cell::new(None));
+        {
+            let d = drained.clone();
+            drain_with_key_recorder(&sheet, move |h| d.set(Some(h.is_some())));
+        }
+        assert_eq!(drained.get(), Some(true), "installed handler reached the backend");
+
+        // Single-slot: a second flush with nothing queued doesn't call through.
+        let called_again = Rc::new(Cell::new(false));
+        {
+            let c = called_again.clone();
+            drain_with_key_recorder(&sheet, move |_h| c.set(true));
+        }
+        assert!(!called_again.get(), "no pending handler → no second backend call");
+
+        // Clearing (`None`) also routes through as `Some(None)`.
+        set_app_key_handler(None);
+        let cleared: Rc<Cell<Option<bool>>> = Rc::new(Cell::new(None));
+        {
+            let c = cleared.clone();
+            drain_with_key_recorder(&sheet, move |h| c.set(Some(h.is_some())));
+        }
+        assert_eq!(cleared.get(), Some(false), "clear routes through as None");
+    }
 
     /// Helper: assert a `Tokenized<Color>` resolves to a particular
     /// fallback string. Tests express the visible color, not whether

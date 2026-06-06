@@ -181,11 +181,13 @@ fn write_project(
         WELCOME_COMPONENT_CONTENT_LAYER,
     )?;
 
-    // MCP catalog emitter binary — built with the `catalog` feature
-    // (`cargo run --bin catalog --features catalog -- --emit-catalog`).
-    fs::create_dir_all(dir.join("src/bin"))
-        .with_context(|| format!("create {}", dir.join("src/bin").display()))?;
-    fs::write(dir.join("src/bin/catalog.rs"), catalog_bin_rs(lib_name))?;
+    // No project-level catalog binary or `catalog` feature is scaffolded:
+    // `idealyst mcp` generates its own ephemeral wrapper crate that turns
+    // on `runtime-core/catalog` (and each component-library dep's own
+    // `catalog` feature) for the whole graph — so a project carrying its
+    // own `catalog = ["runtime-core/catalog"]` feature + emitter bin is
+    // redundant, and worse, can't enable dependency-only catalog features.
+    // See `super::catalog_wrapper`.
 
     for (rel_path, bytes) in INTER_FONTS {
         fs::write(dir.join(rel_path), bytes)
@@ -222,27 +224,12 @@ license = "MIT OR Apache-2.0"
 [lib]
 crate-type = ["rlib"]
 
-# Catalog emitter — `cargo run --bin catalog --features catalog -- --emit-catalog`
-# prints this project's catalog (every component, method, animation,
-# type, plus all the framework's built-in primitives / utilities /
-# guides) as JSON to stdout. Consumed by the MCP server (for AI) and by
-# doc generators (for humans). `required-features = ["catalog"]` keeps
-# the bin out of normal builds — only present when the consumer opts in.
-# (You usually don't need to build this yourself: `idealyst mcp`
-# generates an equivalent wrapper on demand.)
-[[bin]]
-name = "catalog"
-path = "src/bin/catalog.rs"
-required-features = ["catalog"]
-
-[features]
-default = []
-# Turns on `mcp-catalog` registration in the `#[component]` /
-# `#[derive(IdealystSchema)]` / `#[idealyst_tool]` macros. The
-# catalog binary calls `runtime_core::__mcp::catalog_json()` (a
-# hidden re-export of `mcp-catalog`) so no direct dep is needed.
-# `mcp` is kept as a backward-compatible alias for `catalog`.
-catalog = ["runtime-core/catalog"]
+# No `catalog` feature or `[[bin]] catalog` is needed for the MCP server:
+# `idealyst mcp` generates an ephemeral wrapper crate on demand that turns
+# on `runtime-core/catalog` (and each component-library dependency's own
+# `catalog` feature) across the whole graph and force-links those deps, so
+# every `#[component]` plus dependency-provided catalog entries (icon sets,
+# …) surface. See the `catalog_wrapper` module in the CLI.
 
 [dependencies]
 runtime-core = {fcore_dep}
@@ -519,43 +506,6 @@ pub fn register<B>(_backend: &mut B) {{
     // that produces a `View` from `{props_type}`.
 }}
 "##
-    )
-}
-
-fn catalog_bin_rs(lib_name: &str) -> String {
-    format!(
-        r##"//! MCP catalog emitter (manual / fallback).
-//!
-//! Run with `cargo run --bin catalog --features catalog -- --emit-catalog`
-//! to print this project's MCP catalog as JSON on stdout.
-//!
-//! By default `idealyst mcp` does NOT run this binary. It generates its
-//! own ephemeral wrapper crate (under `target/idealyst/<project>/catalog/`)
-//! that force-links your component-library dependencies and turns on their
-//! catalog features, so dependency-provided entries (e.g. icon packs'
-//! icon sets) surface too. This bin is the fallback the server uses with
-//! `--no-watch` (when a prebuilt `target/<profile>/catalog` exists, for a
-//! lock-free fast path) and the target of `idealyst mcp --from-bin <path>`.
-//! It links only THIS crate's registrations plus whatever the project's
-//! own `catalog` feature turns on, so it may miss dependency-only entries
-//! the managed wrapper would surface.
-//!
-//! Linking the user's library here is what populates the
-//! distributed `inventory` slices for components/methods/animations
-//! /types. Without the `use {lib_name} as _;` below, those entries
-//! would not appear in the catalog (the macro emission only lands
-//! in the binary if the linker pulls the user crate in).
-
-use {lib_name} as _;
-
-fn main() {{
-    // `dump_catalog_json` does the serialize + println — keeps this
-    // binary free of a direct `serde_json` dep. The default
-    // (no-arg) path is also the catalog dump, so the MCP server can
-    // spawn it without arguments.
-    runtime_core::__mcp::dump_catalog_json();
-}}
-"##,
     )
 }
 

@@ -82,23 +82,9 @@ pub(crate) fn attach_key_listener_input(
     let input_clone = input.clone();
     let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
         if let Ok(ke) = e.dyn_into::<web_sys::KeyboardEvent>() {
-            let event = KeyEvent {
-                key: ke.key(),
-                shift: ke.shift_key(),
-                ctrl: ke.ctrl_key(),
-                alt: ke.alt_key(),
-                meta: ke.meta_key(),
-                selection_start: input_clone
-                    .selection_start()
-                    .ok()
-                    .flatten()
-                    .unwrap_or(0) as usize,
-                selection_end: input_clone
-                    .selection_end()
-                    .ok()
-                    .flatten()
-                    .unwrap_or(0) as usize,
-            };
+            let sel_start = input_clone.selection_start().ok().flatten().unwrap_or(0) as usize;
+            let sel_end = input_clone.selection_end().ok().flatten().unwrap_or(0) as usize;
+            let event = key_event_from(&ke, sel_start, sel_end);
             if handler(&event) == KeyOutcome::PreventDefault {
                 ke.prevent_default();
             }
@@ -109,6 +95,51 @@ pub(crate) fn attach_key_listener_input(
         closure.as_ref().unchecked_ref(),
     );
     b.state_listeners.entry(id).or_default().push(closure);
+}
+
+/// Convert a browser `KeyboardEvent` into the framework's `KeyEvent`. Shared by
+/// the per-input listener and the app-level document listener
+/// ([`install_app_key_handler`]); the global path has no input, so it passes
+/// `0`/`0` for the selection range.
+pub(crate) fn key_event_from(ke: &web_sys::KeyboardEvent, sel_start: usize, sel_end: usize) -> KeyEvent {
+    KeyEvent {
+        key: ke.key(),
+        shift: ke.shift_key(),
+        ctrl: ke.ctrl_key(),
+        alt: ke.alt_key(),
+        meta: ke.meta_key(),
+        selection_start: sel_start,
+        selection_end: sel_end,
+    }
+}
+
+/// Install (or, with `None`, remove) the APP-LEVEL `keydown` listener on
+/// `document` — it fires for every key press regardless of focus, routing each
+/// through `handler`. Mirrors the per-input path but at the document level, so
+/// app shortcuts work without a focused input. Replacing removes the prior
+/// listener first; `None` removes + drops it.
+pub(crate) fn install_app_key_handler(b: &mut WebBackend, handler: Option<KeyDownHandler>) {
+    use wasm_bindgen::JsCast as _;
+    // Tear down any existing global listener.
+    if let Some(prev) = b._app_key_closure.take() {
+        let _ = b
+            .doc
+            .remove_event_listener_with_callback("keydown", prev.as_ref().unchecked_ref());
+        // `prev` drops here, freeing the JS closure.
+    }
+    let Some(handler) = handler else {
+        return;
+    };
+    let closure = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |ke: web_sys::KeyboardEvent| {
+        let event = key_event_from(&ke, 0, 0);
+        if handler(&event) == KeyOutcome::PreventDefault {
+            ke.prevent_default();
+        }
+    });
+    let _ = b
+        .doc
+        .add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
+    b._app_key_closure = Some(closure);
 }
 
 pub(crate) fn update_value(node: &Node, value: &str) {

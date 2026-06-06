@@ -225,6 +225,12 @@ fn card_layer_sheet() -> Rc<StyleSheet> {
 fn modal_body_sheet() -> Rc<StyleSheet> {
     Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
         flex_direction: Some(FlexDirection::Column),
+        // Don't shrink inside the scroll viewport. The scroller is capped at
+        // the viewport height (`max_height` on `modal_scroll_sheet`); without
+        // `flex_shrink:0` the body would shrink to fit the capped scroller and
+        // there'd be nothing to scroll. With it, tall content keeps its full
+        // height and overflows the viewport → the scroll view scrolls.
+        flex_shrink: Some(Tokenized::Literal(0.0)),
         // Mirrors `ModalStyle`'s base `gap`/`padding` (spacing-md / spacing-lg).
         gap: Some(Tokenized::token("spacing-md", Length::Px(12.0))),
         padding_top: Some(Tokenized::token("spacing-lg", Length::Px(16.0))),
@@ -235,13 +241,34 @@ fn modal_body_sheet() -> Rc<StyleSheet> {
     }))
 }
 
-/// The scroll_view that sits between the clipping frame and the body. It
-/// fills the frame (`flex_grow: 1`) so it takes the capped height and
-/// scrolls its single body child when that child is taller. Static so
-/// `flex_grow` emits reliably.
+/// The scroll_view that sits between the clipping frame and the body, sized
+/// to its content up to the viewport cap (the cap is applied reactively as a
+/// `max_height` at the call site).
+///
+/// `scroll_view` creation seeds the scroll node with `flex_grow:1 /
+/// flex_basis:0` — the "fill a bounded parent" shape used when a scroll view
+/// is a flex child of a fixed-size region (e.g. a screen). That shape is
+/// WRONG for a modal: the surface is content-sized (auto height), so a
+/// fill-parent scroller contributes 0 to the surface's intrinsic height and
+/// the entire card collapses to 0×0 — the modal renders nothing but the
+/// backdrop. Override to the "content-sized up to a cap, then scroll" shape:
+///
+/// - `flex_grow:0` + `flex_basis:auto` — the scroller sizes to its body's
+///   content, so the surface (and card) size to it. A short modal hugs its
+///   content instead of collapsing.
+/// - `min_height:0` — paired with the scroll node's `overflow:scroll` (set by
+///   `scroll_view`), this lets the reactive `max_height` cap clamp the
+///   scroller BELOW its content height, so a modal taller than the viewport
+///   scrolls internally instead of overflowing the screen.
+///
+/// Verified in runtime-layout (`regression_modal_scroller_content_sized_then_capped`).
+/// MUST emit `flex_grow`/`flex_basis`/`min_height` to override the
+/// `scroll_view` seed (`set_style` only writes the fields the sheet sets).
 fn modal_scroll_sheet() -> Rc<StyleSheet> {
     Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
-        flex_grow: Some(Tokenized::Literal(1.0)),
+        flex_grow: Some(Tokenized::Literal(0.0)),
+        flex_basis: Some(Tokenized::Literal(Length::Auto)),
+        min_height: Some(Tokenized::Literal(Length::Px(0.0))),
         // The scroller is itself a column so its body child lays out
         // top-to-bottom and can grow past the visible region.
         flex_direction: Some(FlexDirection::Column),
@@ -330,8 +357,22 @@ pub fn Modal(props: ModalProps) -> Element {
     let body = runtime_core::view(content)
         .with_style(StyleApplication::new(modal_body_sheet()))
         .into_element();
+    // The scroller carries the viewport-derived height cap. It sizes to its
+    // body's content (so a short modal hugs its content) until it hits
+    // `max_height`, then `overflow:scroll` takes over. Reactive so the cap
+    // tracks orientation / split-view resizes, mirroring the surface width.
+    let viewport_for_scroll = viewport_size();
     let scroller = runtime_core::primitives::scroll_view::scroll_view(vec![body])
-        .with_style(StyleApplication::new(modal_scroll_sheet()))
+        .with_style(move || {
+            let max_h = effective_modal_max_height(viewport_for_scroll.get().height);
+            StyleApplication::new(modal_scroll_sheet()).with_computed(
+                format!("modal-scroll-maxh-{}", max_h.round() as i32),
+                move || StyleRules {
+                    max_height: Some(Tokenized::Literal(Length::Px(max_h))),
+                    ..Default::default()
+                },
+            )
+        })
         .into_element();
 
     let surface = runtime_core::view(vec![scroller])

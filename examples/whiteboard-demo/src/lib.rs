@@ -226,7 +226,7 @@ pub(crate) fn add_canvas(
     save_active(store, strokes, active);
     let id = next_id.get();
     next_id.set(id + 1);
-    store.borrow_mut().push(CanvasDoc { id, strokes: Vec::new() });
+    store.borrow_mut().push(CanvasDoc { strokes: Vec::new() });
     let idx = store.borrow().len() - 1;
     *strokes.borrow_mut() = Vec::new();
     active.set(idx);
@@ -288,7 +288,7 @@ pub(crate) fn reset_canvases(
 ) {
     let id = next_id.get();
     next_id.set(id + 1);
-    *store.borrow_mut() = vec![CanvasDoc { id, strokes: Vec::new() }];
+    *store.borrow_mut() = vec![CanvasDoc { strokes: Vec::new() }];
     *strokes.borrow_mut() = Vec::new();
     active.set(0);
     canvas_ids.set(vec![id]);
@@ -308,6 +308,75 @@ pub(crate) fn any_drawings(store: &CanvasStore, strokes: &Strokes, active: Signa
         .iter()
         .enumerate()
         .any(|(i, d)| i != cur && !d.strokes.is_empty())
+}
+
+/// A canvas-navigation command, produced by [`key_action`] (keyboard) and the
+/// two-finger swipe (board.rs), then applied against the canvas store.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CanvasAction {
+    /// Previous canvas (clamped at the first).
+    Prev,
+    /// Next canvas (clamped at the last).
+    Next,
+    /// Add a new blank canvas + switch to it.
+    Add,
+    /// Remove the current canvas — or clear it when it's the only one.
+    Remove,
+}
+
+/// Map an app-level key (Web `KeyboardEvent.key` vocabulary, which every backend
+/// normalizes to) to a [`CanvasAction`]. `=`/`_` are accepted alongside `+`/`-`
+/// because a keyboard yields the unshifted glyph. Pure → unit-tested.
+pub(crate) fn key_action(key: &str) -> Option<CanvasAction> {
+    match key {
+        "ArrowLeft" => Some(CanvasAction::Prev),
+        "ArrowRight" => Some(CanvasAction::Next),
+        "+" | "=" => Some(CanvasAction::Add),
+        "-" | "_" => Some(CanvasAction::Remove),
+        _ => None,
+    }
+}
+
+/// Apply a [`CanvasAction`] to the canvas store. `Prev`/`Next` clamp at the ends;
+/// `Remove` clears the sole canvas instead of deleting it. Shared by the keyboard
+/// handler and the swipe gesture.
+pub(crate) fn apply_canvas_action(
+    action: CanvasAction,
+    store: &CanvasStore,
+    strokes: &Strokes,
+    active: Signal<usize>,
+    version: Signal<u64>,
+    canvas_ids: Signal<Vec<u64>>,
+    next_id: Signal<u64>,
+) {
+    match action {
+        CanvasAction::Prev => {
+            let i = active.get();
+            if i > 0 {
+                switch_canvas(store, strokes, active, version, i - 1);
+            }
+        }
+        CanvasAction::Next => {
+            let i = active.get();
+            if i + 1 < store.borrow().len() {
+                switch_canvas(store, strokes, active, version, i + 1);
+            }
+        }
+        CanvasAction::Add => add_canvas(store, strokes, active, version, canvas_ids, next_id),
+        CanvasAction::Remove => {
+            if store.borrow().len() > 1 {
+                delete_canvas(store, strokes, active, version, canvas_ids, active.get());
+            } else {
+                // The last canvas: clear it rather than delete (a board always
+                // has at least one canvas).
+                strokes.borrow_mut().clear();
+                if let Some(d) = store.borrow_mut().get_mut(0) {
+                    d.strokes.clear();
+                }
+                version.set(version.get().wrapping_add(1));
+            }
+        }
+    }
 }
 
 /// The live media-writer recording handle, shared between the record button's
@@ -544,6 +613,10 @@ pub(crate) struct BoardState {
     pub camera_shape: Signal<CameraShape>,
     /// Camera widget size (S / M / L).
     pub camera_size: Signal<CameraSize>,
+    /// Whether the app-level keyboard shortcuts (←/→/+/−) are active.
+    pub keys_enabled: Signal<bool>,
+    /// Whether the two-finger swipe-between-canvases gesture is active.
+    pub gestures_enabled: Signal<bool>,
     /// The bound navigator handle — `push(&SETTINGS, ())` from the FAB,
     /// `push(&PREVIEW, ())` when a recording stops.
     pub nav: Ref<StackHandle>,
@@ -570,6 +643,8 @@ impl Default for BoardState {
             dark: Signal::new(false),
             camera_shape: Signal::new(CameraShape::RoundedRect),
             camera_size: Signal::new(CameraSize::Medium),
+            keys_enabled: Signal::new(true),
+            gestures_enabled: Signal::new(true),
             nav: Ref::new(),
         }
     }
@@ -633,6 +708,8 @@ pub fn app() -> Element {
         dark: signal!(start_dark),
         camera_shape: signal!(CameraShape::RoundedRect),
         camera_size: signal!(CameraSize::Medium),
+        keys_enabled: signal!(true),
+        gestures_enabled: signal!(true),
         nav,
     };
 
@@ -661,7 +738,36 @@ pub fn app() -> Element {
     // The saved canvas documents. Seeded with the active doc (id 0); the live
     // `strokes` Rc above is canvas 0's working copy. `!Copy`, so it's cloned into
     // the board chrome + Settings builders like `strokes`/`rec_handle`.
-    let canvases: CanvasStore = Rc::new(RefCell::new(vec![CanvasDoc { id: 0, strokes: Vec::new() }]));
+    let canvases: CanvasStore = Rc::new(RefCell::new(vec![CanvasDoc { strokes: Vec::new() }]));
+
+    // App-level keyboard shortcuts (desktop): ←/→ switch canvases, +/- add/remove.
+    // Installed once via the cross-backend `set_app_key_handler` hook (web
+    // `document` listener, macOS `NSEvent` monitor, …) — fires regardless of
+    // focus. Gated on `keys_enabled` (a Settings toggle) and the canvas store, so
+    // it survives navigation (root-scoped capture). Returns `PreventDefault` only
+    // when it acts, so other keys route normally and macOS doesn't beep.
+    {
+        let canvases = canvases.clone();
+        let strokes = strokes.clone();
+        let active = state.active_canvas;
+        let canvas_ids = state.canvas_ids;
+        let next_id = state.next_id;
+        let keys_enabled = state.keys_enabled;
+        runtime_core::set_app_key_handler(Some(Rc::new(move |ev: &runtime_core::KeyEvent| {
+            if !keys_enabled.get() {
+                return runtime_core::KeyOutcome::Default;
+            }
+            match key_action(&ev.key) {
+                Some(action) => {
+                    apply_canvas_action(
+                        action, &canvases, &strokes, active, version, canvas_ids, next_id,
+                    );
+                    runtime_core::KeyOutcome::PreventDefault
+                }
+                None => runtime_core::KeyOutcome::Default,
+            }
+        })));
+    }
 
     // Keep the canvas re-rendering while the camera is on, so its composited
     // texture shows live frames (the canvas otherwise only repaints on a stroke
@@ -922,5 +1028,120 @@ mod tests {
         let (cw, ch, cr) = camera_dims(CameraShape::Circle, CameraSize::Medium);
         assert_eq!(cw, ch); // square
         assert_eq!(cr, cw * 0.5); // full radius → circle
+    }
+
+    // ----- Multi-canvas document ops -----------------------------------------
+
+    use super::{
+        add_canvas, any_drawings, delete_canvas, reset_canvases, switch_canvas, CanvasDoc,
+        CanvasStore, Strokes,
+    };
+    use runtime_core::Signal;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A fresh single-canvas board, matching `app()`'s seed.
+    fn board() -> (CanvasStore, Strokes, Signal<usize>, Signal<u64>, Signal<Vec<u64>>, Signal<u64>)
+    {
+        let store: CanvasStore = Rc::new(RefCell::new(vec![CanvasDoc::default()]));
+        let strokes: Strokes = Rc::new(RefCell::new(Vec::new()));
+        (
+            store,
+            strokes,
+            Signal::new(0usize),  // active
+            Signal::new(0u64),    // version
+            Signal::new(vec![0]), // canvas_ids
+            Signal::new(1u64),    // next_id
+        )
+    }
+
+    fn dot() -> Stroke {
+        Stroke { points: vec![(1.0, 1.0)], width: 2.0, rgba: (0, 0, 0, 255), ink: false }
+    }
+
+    // Adding a canvas snapshots the current drawing, appends an empty canvas, and
+    // switches to it (live strokes cleared, ids + active grow in lock-step).
+    #[test]
+    fn add_canvas_snapshots_and_switches() {
+        let (store, strokes, active, version, ids, next_id) = board();
+        strokes.borrow_mut().push(dot()); // draw on canvas 0
+        add_canvas(&store, &strokes, active, version, ids, next_id);
+        assert_eq!(active.get(), 1, "switched to the new canvas");
+        assert_eq!(ids.get(), vec![0, 1], "ids grew in order");
+        assert!(strokes.borrow().is_empty(), "new canvas is blank");
+        assert_eq!(store.borrow()[0].strokes.len(), 1, "canvas 0's drawing was saved");
+        assert_eq!(next_id.get(), 2, "id source advanced");
+    }
+
+    // Switching saves the current canvas and restores the target's strokes.
+    #[test]
+    fn switch_canvas_round_trips_strokes() {
+        let (store, strokes, active, version, ids, next_id) = board();
+        strokes.borrow_mut().push(dot()); // canvas 0 has 1 stroke
+        add_canvas(&store, &strokes, active, version, ids, next_id); // -> canvas 1, blank
+        strokes.borrow_mut().push(dot());
+        strokes.borrow_mut().push(dot()); // canvas 1 has 2 strokes
+        switch_canvas(&store, &strokes, active, version, 0);
+        assert_eq!(active.get(), 0);
+        assert_eq!(strokes.borrow().len(), 1, "canvas 0 restored");
+        switch_canvas(&store, &strokes, active, version, 1);
+        assert_eq!(strokes.borrow().len(), 2, "canvas 1 restored");
+    }
+
+    // Deleting the active canvas removes it, re-clamps active to a live doc, and
+    // loads that doc's strokes; the last canvas can't be deleted.
+    #[test]
+    fn delete_canvas_reclamps_and_guards_last() {
+        let (store, strokes, active, version, ids, next_id) = board();
+        add_canvas(&store, &strokes, active, version, ids, next_id); // canvas 1 (active)
+        strokes.borrow_mut().push(dot()); // canvas 1 has a stroke
+        // Delete the active (idx 1) → falls back to canvas 0 (blank).
+        delete_canvas(&store, &strokes, active, version, ids, 1);
+        assert_eq!(ids.get(), vec![0]);
+        assert_eq!(active.get(), 0);
+        assert!(strokes.borrow().is_empty(), "loaded canvas 0 (blank)");
+        // Can't delete the only remaining canvas.
+        delete_canvas(&store, &strokes, active, version, ids, 0);
+        assert_eq!(ids.get(), vec![0], "last canvas is protected");
+    }
+
+    // Deleting a canvas BEFORE the active one shifts the active index down so it
+    // still addresses the same document.
+    #[test]
+    fn delete_before_active_shifts_index() {
+        let (store, strokes, active, version, ids, next_id) = board();
+        add_canvas(&store, &strokes, active, version, ids, next_id); // 1
+        add_canvas(&store, &strokes, active, version, ids, next_id); // 2 (active)
+        assert_eq!(active.get(), 2);
+        delete_canvas(&store, &strokes, active, version, ids, 0); // remove first
+        assert_eq!(ids.get(), vec![1, 2]);
+        assert_eq!(active.get(), 1, "active shifted down to still point at the same doc");
+    }
+
+    // Resetting collapses the board to one blank canvas regardless of prior state.
+    #[test]
+    fn reset_canvases_collapses_to_one_blank() {
+        let (store, strokes, active, version, ids, next_id) = board();
+        strokes.borrow_mut().push(dot());
+        add_canvas(&store, &strokes, active, version, ids, next_id);
+        add_canvas(&store, &strokes, active, version, ids, next_id);
+        reset_canvases(&store, &strokes, active, version, ids, next_id);
+        assert_eq!(store.borrow().len(), 1);
+        assert_eq!(ids.get().len(), 1);
+        assert_eq!(active.get(), 0);
+        assert!(strokes.borrow().is_empty());
+        assert!(!any_drawings(&store, &strokes, active), "a fresh board has no drawings");
+    }
+
+    // `any_drawings` sees the live active strokes AND strokes saved in other docs.
+    #[test]
+    fn any_drawings_spans_all_canvases() {
+        let (store, strokes, active, version, ids, next_id) = board();
+        assert!(!any_drawings(&store, &strokes, active), "empty board");
+        // Draw on canvas 0, move to a blank canvas 1 → still counts (canvas 0 saved).
+        strokes.borrow_mut().push(dot());
+        add_canvas(&store, &strokes, active, version, ids, next_id);
+        assert!(strokes.borrow().is_empty(), "on the blank canvas 1");
+        assert!(any_drawings(&store, &strokes, active), "canvas 0 still has a drawing");
     }
 }

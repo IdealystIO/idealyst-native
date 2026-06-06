@@ -56,8 +56,10 @@ pub struct Args {
 
     /// Override `CFBundleVersion` (the build number) for this archive.
     /// App Store Connect rejects a re-used build number for the same app
-    /// version, so bump this each upload. Defaults to the manifest's
-    /// `[package.metadata.idealyst.app].build_number` (itself `"1"`).
+    /// version, so bump this each upload. Pass `auto` to use the current Unix
+    /// time (always unique + increasing, no hand-bumping). Defaults to the
+    /// manifest's `[package.metadata.idealyst.app].build_number` (itself
+    /// `"1"`).
     #[arg(long)]
     pub build_number: Option<String>,
 
@@ -165,7 +167,7 @@ fn run_ios(args: Args) -> Result<()> {
             team,
             source,
             user_features: Vec::new(),
-            build_number: args.build_number.clone(),
+            build_number: resolve_build_number(args.build_number.clone()),
             auth,
             distribution,
             output_dir,
@@ -216,7 +218,7 @@ fn run_macos(args: Args) -> Result<()> {
             team,
             source,
             user_features: Vec::new(),
-            build_number: args.build_number.clone(),
+            build_number: resolve_build_number(args.build_number.clone()),
             distribution,
             api_key,
             provisioning_profile: args.provisioning_profile.clone(),
@@ -408,6 +410,27 @@ fn mac_distribution(notarize: bool, upload: bool) -> run_macos::publish::MacDist
     }
 }
 
+/// Resolve the `--build-number` value. The special value `auto` generates a
+/// monotonic build number from the current Unix time (seconds) — every
+/// upload is then unique and strictly increasing without hand-bumping (App
+/// Store Connect rejects a re-used `CFBundleVersion`). Epoch seconds fit in a
+/// single `CFBundleVersion` integer (< 2^32 until year 2106) and never go
+/// backwards, even across machines. Any other value passes through; `None`
+/// falls back to the manifest's `build_number`.
+fn resolve_build_number(arg: Option<String>) -> Option<String> {
+    match arg.as_deref() {
+        Some("auto") => {
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(1);
+            eprintln!("[publish] --build-number auto → {secs}");
+            Some(secs.to_string())
+        }
+        _ => arg,
+    }
+}
+
 /// macOS API-key resolution → [`run_macos::publish::AscApiKey`]. Same
 /// resolution as the iOS auth, but with no Xcode-account fallback (macOS
 /// upload/notarization always go through the API key).
@@ -568,6 +591,17 @@ mod tests {
             expand_tilde_with(PathBuf::from("/abs/k.p8"), Some(home)),
             PathBuf::from("/abs/k.p8"),
         );
+    }
+
+    #[test]
+    fn build_number_auto_is_a_monotonic_integer() {
+        // `auto` → current Unix seconds (a large all-digit string); other
+        // values pass through; None stays None (manifest default applies).
+        let auto = resolve_build_number(Some("auto".to_string())).unwrap();
+        assert!(auto.chars().all(|c| c.is_ascii_digit()), "auto must be numeric: {auto}");
+        assert!(auto.parse::<u64>().unwrap() > 1_700_000_000, "auto should be a recent epoch");
+        assert_eq!(resolve_build_number(Some("42".to_string())).as_deref(), Some("42"));
+        assert_eq!(resolve_build_number(None), None);
     }
 
     #[test]

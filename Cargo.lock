@@ -4713,6 +4713,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "modal-demo"
+version = "0.0.1"
+dependencies = [
+ "dev-server",
+ "idea-ui",
+ "runtime-core",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

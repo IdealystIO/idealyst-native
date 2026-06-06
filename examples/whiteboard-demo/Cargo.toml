@@ -54,6 +54,7 @@ name      = "Whiteboard"
 bundle_id = "com.critiq.testideaapp"
 version   = "0.0.1"
 targets   = ["ios", "android", "web", "macos"]
+build_number = "2"
 
 [package.metadata.idealyst.app.permissions]
 camera = "Whiteboard shows your camera feed in the corner of the board."

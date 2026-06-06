@@ -195,13 +195,40 @@ pub fn publish(project_dir: &Path, opts: MacPublishOptions) -> Result<MacPublish
         embed_provisioning_profile(&app, profile)?;
     }
 
-    let entitlements = entitlements_plist(/* sandbox */ app_store, &resolved.macos_entitlements);
+    // App Store signatures must carry the App ID + team entitlements that
+    // match the provisioning profile (Xcode injects these; we hand-craft the
+    // entitlements, so we add them ourselves — error 90886 otherwise).
+    let string_entitlements: Vec<(String, String)> = if app_store {
+        vec![
+            (
+                "com.apple.application-identifier".to_string(),
+                format!("{}.{}", opts.team, bundle_id),
+            ),
+            (
+                "com.apple.developer.team-identifier".to_string(),
+                opts.team.clone(),
+            ),
+        ]
+    } else {
+        Vec::new()
+    };
+    let entitlements = entitlements_plist(
+        /* sandbox */ app_store,
+        &resolved.macos_entitlements,
+        &string_entitlements,
+    );
     let entitlements_path = app
         .parent()
         .unwrap_or(&output_dir)
         .join("idealyst.entitlements.plist");
     std::fs::write(&entitlements_path, entitlements)
         .with_context(|| format!("write {}", entitlements_path.display()))?;
+
+    // Strip extended attributes (notably `com.apple.quarantine`, which the
+    // browser stamps onto a downloaded `.provisionprofile`) from the WHOLE
+    // bundle before signing — quarantined files are rejected from the App
+    // Store / TestFlight (error 91109).
+    strip_xattrs(&app)?;
 
     codesign_app(
         &app,
@@ -269,24 +296,46 @@ pub fn publish(project_dir: &Path, opts: MacPublishOptions) -> Result<MacPublish
 /// Render an `entitlements.plist`. App Store builds get
 /// `com.apple.security.app-sandbox` (mandatory); every capability-derived
 /// entitlement (e.g. `com.apple.security.device.camera`) is added as a
-/// boolean `true`. Pure (no IO) so it's unit-testable.
-fn entitlements_plist(sandbox: bool, entitlements: &[String]) -> String {
+/// boolean `true`. `string_entitlements` carry string VALUES — the App Store
+/// `com.apple.application-identifier` (`<team>.<bundle>`) +
+/// `com.apple.developer.team-identifier`, which must be sealed into the
+/// signature to match the provisioning profile (error 90886). Pure (no IO)
+/// so it's unit-testable.
+fn entitlements_plist(
+    sandbox: bool,
+    bool_entitlements: &[String],
+    string_entitlements: &[(String, String)],
+) -> String {
     let mut keys: Vec<String> = Vec::new();
     if sandbox {
         keys.push("com.apple.security.app-sandbox".to_string());
     }
-    keys.extend(entitlements.iter().cloned());
+    keys.extend(bool_entitlements.iter().cloned());
     keys.sort();
     keys.dedup();
-    let body: String = keys
+    let bools: String = keys
         .iter()
         .map(|k| format!("    <key>{k}</key>\n    <true/>\n"))
+        .collect();
+    let strings: String = string_entitlements
+        .iter()
+        .map(|(k, v)| format!("    <key>{k}</key>\n    <string>{v}</string>\n"))
         .collect();
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-<plist version=\"1.0\">\n<dict>\n{body}</dict>\n</plist>\n"
+<plist version=\"1.0\">\n<dict>\n{strings}{bools}</dict>\n</plist>\n"
     )
+}
+
+/// `xattr -cr <path>` — recursively clear all extended attributes from the
+/// bundle. The browser stamps `com.apple.quarantine` onto a downloaded
+/// `.provisionprofile`; that attribute anywhere in the bundle is rejected by
+/// App Store / TestFlight ingestion (error 91109). Run before `codesign`.
+fn strip_xattrs(app: &Path) -> Result<()> {
+    let mut cmd = Command::new("xattr");
+    cmd.args(["-cr"]).arg(app);
+    run(cmd, "xattr -cr (strip quarantine)")
 }
 
 // ---------------------------------------------------------------------------
@@ -623,22 +672,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn app_store_entitlements_require_sandbox() {
-        let ent = entitlements_plist(true, &["com.apple.security.device.camera".to_string()]);
+    fn app_store_entitlements_require_sandbox_and_app_id() {
+        let ent = entitlements_plist(
+            true,
+            &["com.apple.security.device.camera".to_string()],
+            &[(
+                "com.apple.application-identifier".to_string(),
+                "TEAMID1234.com.example.app".to_string(),
+            )],
+        );
         assert!(
             ent.contains("<key>com.apple.security.app-sandbox</key>"),
             "App Store entitlements must enable the sandbox:\n{ent}",
         );
         assert!(ent.contains("<key>com.apple.security.device.camera</key>"));
+        // The app-identifier (string value) must be present + correctly typed,
+        // or the signature won't match the provisioning profile (90886).
+        assert!(
+            ent.contains(
+                "<key>com.apple.application-identifier</key>\n    <string>TEAMID1234.com.example.app</string>"
+            ),
+            "missing application-identifier string entitlement:\n{ent}",
+        );
     }
 
     #[test]
-    fn developer_id_entitlements_have_no_sandbox() {
-        let ent = entitlements_plist(false, &["com.apple.security.device.audio-input".to_string()]);
+    fn developer_id_entitlements_have_no_sandbox_or_app_id() {
+        let ent = entitlements_plist(
+            false,
+            &["com.apple.security.device.audio-input".to_string()],
+            &[],
+        );
         assert!(
             !ent.contains("app-sandbox"),
             "Developer ID builds must NOT force the sandbox:\n{ent}",
         );
+        assert!(!ent.contains("application-identifier"));
         assert!(ent.contains("<key>com.apple.security.device.audio-input</key>"));
     }
 

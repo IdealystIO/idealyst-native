@@ -191,6 +191,7 @@ members = [
     "examples/icon-gallery",
     "examples/i18n-demo",
     "examples/whiteboard-demo",
+    "examples/modal-demo",
     "benchmark",
     "benchmark/idealyst-native/wasm",
     "benchmark/idealyst-native-anim/wasm",

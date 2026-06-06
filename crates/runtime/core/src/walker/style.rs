@@ -353,6 +353,7 @@ fn attach_style_signal_class<B: Backend + 'static>(
         let backend_for_typeface = backend.clone();
         let backend_for_app_bg = backend.clone();
         let backend_for_scrollbar = backend.clone();
+        let backend_for_app_key = backend.clone();
         style::ensure_registered_with(
             &app.sheet,
             |rules| { backend_for_register.borrow_mut().register_stylesheet(rules); },
@@ -365,6 +366,7 @@ fn attach_style_signal_class<B: Backend + 'static>(
             },
             |c| { backend_for_app_bg.borrow_mut().set_app_background(c); },
             |thumb, track| { backend_for_scrollbar.borrow_mut().set_scrollbar_theme(thumb, track); },
+            |h| { backend_for_app_key.borrow_mut().set_app_key_handler(h); },
         );
         // `mint_class_for_app` mints a fresh dynamic class if the
         // app's resolved content isn't already a pre-generated
@@ -444,6 +446,7 @@ pub(super) fn apply_one<B: Backend + 'static>(
         let backend_for_typeface = backend.clone();
         let backend_for_app_bg = backend.clone();
         let backend_for_scrollbar = backend.clone();
+        let backend_for_app_key = backend.clone();
         style::ensure_registered_with(
             &app.sheet,
             |rules| {
@@ -479,6 +482,9 @@ pub(super) fn apply_one<B: Backend + 'static>(
                 backend_for_scrollbar
                     .borrow_mut()
                     .set_scrollbar_theme(thumb, track);
+            },
+            |h| {
+                backend_for_app_key.borrow_mut().set_app_key_handler(h);
             },
         );
     }
@@ -661,6 +667,7 @@ fn attach_style_reactive<B: Backend + 'static>(
             let backend_for_typeface = backend_for_effect.clone();
             let backend_for_app_bg = backend_for_effect.clone();
             let backend_for_scrollbar = backend_for_effect.clone();
+            let backend_for_app_key = backend_for_effect.clone();
             style::ensure_registered_with(
                 &app.sheet,
                 |rules| {
@@ -696,6 +703,9 @@ fn attach_style_reactive<B: Backend + 'static>(
                     backend_for_scrollbar
                         .borrow_mut()
                         .set_scrollbar_theme(thumb, track);
+                },
+                |h| {
+                    backend_for_app_key.borrow_mut().set_app_key_handler(h);
                 },
             );
         }

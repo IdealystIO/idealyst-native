@@ -313,6 +313,10 @@ pub struct WebBackend {
     /// the layout tree. The click handler itself lives in
     /// `_click_closures` (shared shape: `FnMut()` no-arg).
     pub(crate) _pressable_key_closures: Vec<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
+    /// The single APP-LEVEL `keydown` listener installed on `document` by
+    /// `set_app_key_handler` (fires regardless of focus). Held so JS keeps it
+    /// alive; removing + dropping it tears the listener down.
+    pub(crate) _app_key_closure: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
     /// Closures attached to `<a>` elements for `Element::Link`.
     /// Held so JS doesn't drop them while the anchor is still in
     /// the layout tree. Same posture as `_click_closures`.
@@ -1009,6 +1013,7 @@ impl WebBackend {
             hydration_remount_resume: None,
             _click_closures: Vec::new(),
             _pressable_key_closures: Vec::new(),
+            _app_key_closure: None,
             _link_click_closures: Vec::new(),
             _touch_closures: Vec::new(),
             state_listeners: HashMap::new(),
@@ -2741,6 +2746,13 @@ impl Backend for WebBackend {
         track: &runtime_core::Tokenized<runtime_core::Color>,
     ) {
         self.impl_set_scrollbar_theme(thumb, track)
+    }
+
+    fn set_app_key_handler(
+        &mut self,
+        handler: Option<runtime_core::primitives::key::KeyDownHandler>,
+    ) {
+        crate::primitives::text_input::install_app_key_handler(self, handler)
     }
 
     fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {

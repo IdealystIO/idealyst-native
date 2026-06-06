@@ -406,6 +406,7 @@ fn enqueue_primitive<B: Backend + 'static>(
                         let backend_for_typeface = backend.clone();
                         let backend_for_app_bg = backend.clone();
                         let backend_for_scrollbar = backend.clone();
+                        let backend_for_app_key = backend.clone();
                         style::ensure_registered_with(
                             &app.sheet,
                             |rules| {
@@ -452,6 +453,11 @@ fn enqueue_primitive<B: Backend + 'static>(
                                 backend_for_scrollbar
                                     .borrow_mut()
                                     .set_scrollbar_theme(thumb, track);
+                            },
+                            |h| {
+                                backend_for_app_key
+                                    .borrow_mut()
+                                    .set_app_key_handler(h);
                             },
                         );
                     }

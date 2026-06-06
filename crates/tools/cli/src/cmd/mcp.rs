@@ -8,8 +8,9 @@
 //!   functions, plus framework primitives / utilities / guides.
 //!   Sourced live from running apps over their Robot bridge's
 //!   `get_catalog` command (discovered via `~/.idealyst/apps/`
-//!   registration files), or from a project's catalog binary at
-//!   startup when no app is running.
+//!   registration files), or — when no app is running — from an
+//!   ephemeral catalog wrapper crate the CLI generates for the project
+//!   (see `catalog_wrapper`).
 //! - The **Robot tools**: `find_element`, `click`, `type_text`,
 //!   `get_snapshot`, and so on. These proxy to the running app's
 //!   Robot bridge over TCP, discovered via the same
@@ -28,7 +29,7 @@
 //! ```text
 //! idealyst mcp                      # catalog (from cwd) + Robot
 //! idealyst mcp --no-robot           # catalog-only (e.g. CI doc-gen)
-//! idealyst mcp --project-root DIR   # extract catalog from DIR's catalog binary at startup
+//! idealyst mcp --project-root DIR   # build + extract DIR's catalog via a generated wrapper
 //! idealyst mcp --check              # lint pass, exit non-zero on findings
 //! ```
 
@@ -70,15 +71,16 @@ pub struct Args {
     #[arg(long)]
     pub strict_scopes: bool,
 
-    /// Path to a project directory whose catalog binary should populate
-    /// the server's catalog at startup. The CLI looks for
-    /// `<dir>/target/debug/catalog` (then `target/release/catalog`) and
-    /// invokes it with `--emit-catalog`; if neither exists yet it runs
-    /// `cargo run --bin catalog --features mcp -- --emit-catalog` in the
-    /// directory to build it. Either way the JSON is piped into the live
-    /// catalog. Use this when running the MCP server against a project
-    /// that isn't currently running — when an app IS running, the
-    /// catalog flows automatically over its Robot bridge.
+    /// Path to a project directory whose catalog should populate the
+    /// server at startup. The CLI generates an ephemeral catalog wrapper
+    /// crate for the project (under `target/idealyst/<name>/catalog/`) and
+    /// runs it — the wrapper turns on `runtime-core/catalog` and each
+    /// component-library dependency's own `catalog` feature, then
+    /// force-links those deps, so the catalog is complete (every
+    /// `#[component]` plus dependency-provided entries like icon sets). Use
+    /// this when running the MCP server against a project that isn't
+    /// currently running — when an app IS running, the catalog flows
+    /// automatically over its Robot bridge.
     ///
     /// **Defaults to the current directory** when neither this flag nor
     /// `--from-bin` is given, so the bare `idealyst mcp` the scaffolded
@@ -186,14 +188,9 @@ pub fn run(args: Args) -> Result<()> {
 
     // Catalog source resolution (see `resolve_catalog_source`). The
     // factory the server preloads — and re-runs on each watch event —
-    // must print the project's catalog JSON to stdout.
-    //
-    // When watching, we force the rebuilding managed wrapper
-    // (`prefer_rebuild = true`): a pre-built `catalog` binary can't
-    // recompile, so re-running it on a source change would just re-serve
-    // a stale snapshot. The managed wrapper rebuilds via `cargo run`, so
-    // new components and dependencies actually surface. With `--no-watch`
-    // we keep the lock-free pre-built fast-path.
+    // must print the project's catalog JSON to stdout. Unless `--from-bin`
+    // points at a prebuilt emitter, this is the managed wrapper, which
+    // rebuilds via `cargo run` so new components and dependencies surface.
     //
     // `managed` records whether the chosen source rebuilds, so we only
     // default-enable the watcher when refreshing it would do something.
@@ -202,7 +199,6 @@ pub fn run(args: Args) -> Result<()> {
         args.from_bin.clone(),
         args.project_root.clone(),
         cwd.clone(),
-        want_watch,
     ) {
         CatalogSource::Prebuilt(bin) => {
             let bin = std::sync::Arc::new(bin);
@@ -289,11 +285,11 @@ pub fn run(args: Args) -> Result<()> {
 enum CatalogSource {
     /// Execute a prebuilt binary directly: `<path> --emit-catalog`.
     /// Acquires no cargo build lock, so it never contends with a
-    /// concurrent `idealyst dev` build. Covers `--from-bin` and a
-    /// project that ships its own pre-built `catalog` bin.
+    /// concurrent `idealyst dev` build. Only produced by an explicit
+    /// `--from-bin` — the no-toolchain / lock-free escape hatch.
     Prebuilt(std::path::PathBuf),
     /// Generate a catalog wrapper crate for the project rooted here and
-    /// run it. The project needs no `[[bin]] catalog` and no `mcp`
+    /// run it. The project needs no `[[bin]] catalog` and no `catalog`
     /// feature — the wrapper supplies both (see [`super::catalog_wrapper`]).
     Managed(std::path::PathBuf),
     /// No project context at all (no cwd) — leave the catalog to the
@@ -304,39 +300,35 @@ enum CatalogSource {
 /// Decide where the catalog comes from:
 ///
 /// 1. `--from-bin PATH` wins — run that prebuilt binary. The no-cargo
-///    escape hatch (CI, doc-gen, sandboxes without a toolchain).
+///    escape hatch (CI, doc-gen, sandboxes without a toolchain): the one
+///    way to point the server at a pre-built emitter.
 /// 2. Otherwise resolve a project root: `--project-root <dir>` if
 ///    given, else the current directory. This cwd default is what makes
 ///    the scaffolded `.mcp.json` (`{"args": ["mcp"]}`) populate the
 ///    catalog — Claude Code launches the server with the project root
 ///    as cwd. Within that root, the CLI generates + runs a managed
-///    wrapper.
+///    wrapper (see [`super::catalog_wrapper`]).
 ///
-/// `prefer_rebuild` is set when the server will watch + auto-refresh.
-/// A pre-built `target/{debug,release}/catalog` binary can't recompile,
-/// so re-running it on a source change re-serves a stale snapshot —
-/// when watching, we therefore skip that fast-path and always use the
-/// managed wrapper (which rebuilds via `cargo run`). With watching off
-/// (`--no-watch`) we keep the lock-free pre-built fast-path: it never
-/// takes a cargo build lock, so it can't contend with `idealyst dev`.
+/// The managed wrapper is the single source of truth: it turns on
+/// `runtime-core/catalog` (and each component-library dep's own `catalog`
+/// feature) across the whole graph, so the catalog is always complete —
+/// every `#[component]` plus dependency-provided entries (icon sets, …).
+/// There is no auto-discovered "prebuilt project `catalog` bin" fast path:
+/// projects no longer scaffold such a bin, and one built from a project's
+/// static `catalog` feature couldn't see dependency-only entries anyway.
+/// Use `--from-bin` for the explicit lock-free / no-toolchain case.
 fn resolve_catalog_source(
     from_bin: Option<std::path::PathBuf>,
     project_root: Option<std::path::PathBuf>,
     cwd: Option<std::path::PathBuf>,
-    prefer_rebuild: bool,
 ) -> CatalogSource {
     if let Some(bin) = from_bin {
         return CatalogSource::Prebuilt(bin);
     }
-    let Some(root) = project_root.or(cwd) else {
-        return CatalogSource::None;
-    };
-    if !prefer_rebuild {
-        if let Some(bin) = find_catalog_binary(&root) {
-            return CatalogSource::Prebuilt(bin);
-        }
+    match project_root.or(cwd) {
+        Some(root) => CatalogSource::Managed(root),
+        None => CatalogSource::None,
     }
-    CatalogSource::Managed(root)
 }
 
 /// The default set of paths to watch when the user didn't pass an
@@ -362,20 +354,6 @@ fn default_watch_paths(project_root: Option<&std::path::Path>) -> Vec<std::path:
         paths.push(cargo);
     }
     paths
-}
-
-/// Resolve a project's catalog binary by looking at the scaffolded
-/// `[[bin]] name = "catalog"` output path. Prefers `target/debug` over
-/// `target/release` since dev is the typical flow; release is checked
-/// as a fallback in case the user pre-built for production.
-fn find_catalog_binary(project_root: &std::path::Path) -> Option<std::path::PathBuf> {
-    for profile in ["debug", "release"] {
-        let candidate = project_root.join("target").join(profile).join("catalog");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 fn run_install(args: InstallArgs) -> Result<()> {
@@ -469,14 +447,6 @@ mod tests {
         dir
     }
 
-    fn write_catalog_bin(root: &std::path::Path, profile: &str) -> PathBuf {
-        let bin_dir = root.join("target").join(profile);
-        fs::create_dir_all(&bin_dir).unwrap();
-        let bin = bin_dir.join("catalog");
-        fs::write(&bin, b"#!/bin/sh\n").unwrap();
-        bin
-    }
-
     /// Regression: `idealyst mcp` with NO flags must default to the
     /// current directory and wire a catalog subprocess. Before the fix
     /// the resolver returned `None` here, so `list_components` served
@@ -486,13 +456,13 @@ mod tests {
     #[test]
     fn no_flags_defaults_to_cwd_not_none() {
         let cwd = tmp_dir("cwd-default");
-        // Fresh project: no prebuilt binary yet → managed wrapper.
-        let src = resolve_catalog_source(None, None, Some(cwd.clone()), false);
+        // No --from-bin → the managed wrapper for the cwd project.
+        let src = resolve_catalog_source(None, None, Some(cwd.clone()));
         assert_eq!(src, CatalogSource::Managed(cwd));
 
         // The pre-fix behavior we must never regress to:
         assert_ne!(
-            resolve_catalog_source(None, None, Some(std::env::temp_dir()), false),
+            resolve_catalog_source(None, None, Some(std::env::temp_dir())),
             CatalogSource::None,
             "no-flag invocation must not yield an empty catalog source \
              when a cwd is available"
@@ -500,77 +470,32 @@ mod tests {
     }
 
     #[test]
-    fn prebuilt_binary_preferred_over_managed_wrapper_when_not_watching() {
-        // With `prefer_rebuild = false` (i.e. `--no-watch`), the
-        // lock-free pre-built fast-path applies.
-        let root = tmp_dir("prebuilt");
-        let bin = write_catalog_bin(&root, "debug");
-        // cwd default
+    fn project_root_uses_managed_wrapper() {
+        // A project root (explicit or cwd) always resolves to the managed
+        // wrapper — there is no auto-discovered prebuilt-bin fast path. The
+        // wrapper is the single source of truth (turns on every dep's
+        // catalog feature), so the catalog is always complete.
+        let root = tmp_dir("proj-root");
         assert_eq!(
-            resolve_catalog_source(None, None, Some(root.clone()), false),
-            CatalogSource::Prebuilt(bin.clone())
+            resolve_catalog_source(None, Some(root.clone()), None),
+            CatalogSource::Managed(root.clone())
         );
-        // explicit --project-root
+        // cwd default resolves the same way.
         assert_eq!(
-            resolve_catalog_source(None, Some(root.clone()), None, false),
-            CatalogSource::Prebuilt(bin)
-        );
-    }
-
-    #[test]
-    fn watching_forces_managed_wrapper_over_prebuilt_binary() {
-        // Regression: with the watcher on (the default), a stale
-        // pre-built `catalog` binary must NOT be preferred — re-running
-        // it on a source change would re-serve the same frozen catalog,
-        // defeating auto-refresh. `prefer_rebuild = true` forces the
-        // managed wrapper so reloads recompile and pick up new
-        // components / dependencies.
-        let root = tmp_dir("watch-forces-managed");
-        write_catalog_bin(&root, "debug");
-        assert_eq!(
-            resolve_catalog_source(None, None, Some(root.clone()), true),
+            resolve_catalog_source(None, None, Some(root.clone())),
             CatalogSource::Managed(root)
         );
     }
 
     #[test]
-    fn release_binary_used_when_no_debug() {
-        let root = tmp_dir("release-only");
-        let bin = write_catalog_bin(&root, "release");
-        assert_eq!(
-            resolve_catalog_source(None, Some(root), None, false),
-            CatalogSource::Prebuilt(bin)
-        );
-    }
-
-    #[test]
-    fn from_bin_wins_over_everything() {
+    fn from_bin_wins_over_project_root_and_cwd() {
+        // The one prebuilt path: explicit --from-bin. Wins over both
+        // --project-root and the cwd default.
         let root = tmp_dir("from-bin");
-        // Even with a prebuilt under the project root and a cwd, an
-        // explicit --from-bin takes precedence — and even when watching.
-        write_catalog_bin(&root, "debug");
         let explicit = root.join("custom-catalog");
         assert_eq!(
-            resolve_catalog_source(
-                Some(explicit.clone()),
-                Some(root.clone()),
-                Some(root.clone()),
-                false,
-            ),
-            CatalogSource::Prebuilt(explicit.clone())
-        );
-        assert_eq!(
-            resolve_catalog_source(Some(explicit.clone()), Some(root.clone()), Some(root), true),
+            resolve_catalog_source(Some(explicit.clone()), Some(root.clone()), Some(root)),
             CatalogSource::Prebuilt(explicit)
-        );
-    }
-
-    #[test]
-    fn project_root_with_no_binary_uses_managed_wrapper() {
-        let root = tmp_dir("no-bin");
-        assert_eq!(
-            resolve_catalog_source(None, Some(root.clone()), None, false),
-            CatalogSource::Managed(root)
         );
     }
 
@@ -579,11 +504,7 @@ mod tests {
         // Only when there is genuinely no project context (no cwd, no
         // flags) do we leave the catalog to live apps / in-process.
         assert_eq!(
-            resolve_catalog_source(None, None, None, false),
-            CatalogSource::None
-        );
-        assert_eq!(
-            resolve_catalog_source(None, None, None, true),
+            resolve_catalog_source(None, None, None),
             CatalogSource::None
         );
     }

@@ -2377,6 +2377,28 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Install (or, with `None`, remove) an APP-LEVEL keyboard handler that fires
+    /// for key presses regardless of focus — unlike the per-input `on_key_down`
+    /// on `create_text_input`/`create_text_area`, which only fires while that
+    /// input is focused. Backends that can observe key events at the window /
+    /// activity / event-loop level (web `document`, AppKit `NSEvent` monitor,
+    /// UIKit `pressesBegan:`, Android root-view `OnKeyListener`, winit's event
+    /// loop, the terminal input loop) install a single native source here and
+    /// route each press through `handler`, returning [`KeyOutcome::PreventDefault`]
+    /// to swallow the platform default. The handler should be conservative — act
+    /// only on the keys it cares about and return [`KeyOutcome::Default`]
+    /// otherwise — because it sees EVERY key, including typing into a focused
+    /// input.
+    ///
+    /// Routed from [`crate::set_app_key_handler`] (single-slot, drained on the
+    /// next walker flush), mirroring [`set_app_background`](Backend::set_app_background).
+    /// Default no-op for backends with no app-level key source (and the many that
+    /// haven't wired it up).
+    #[allow(unused_variables)]
+    fn set_app_key_handler(&mut self, handler: Option<crate::primitives::key::KeyDownHandler>) {
+        // default: no-op
+    }
+
     fn finish(&mut self, root: Self::Node);
 
     /// Drive a fresh layout pass over the backend's registered view
