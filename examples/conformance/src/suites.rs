@@ -12,7 +12,12 @@ use runtime_core::robot::ElementKind;
 
 /// Entry point scheduled from `app()` ~1s after mount.
 pub(crate) fn run_all() {
-    run_suites(vec![primitives_suite(), modal_suite(), navigation_suite()]);
+    run_suites(vec![
+        primitives_suite(),
+        modal_suite(),
+        navigation_suite(),
+        idea_ui_suite(),
+    ]);
 }
 
 fn primitives_suite() -> robot_e2e::Suite {
@@ -66,6 +71,21 @@ fn primitives_suite() -> robot_e2e::Suite {
                 expect(&page.get_by_test_id("greeting")).to_have_text("Hello, Ada")?;
                 Ok(())
             }),
+            // Per-row conditional drop on list shrink — the whiteboard
+            // "delete button won't disappear on the last canvas" bug. Three
+            // rows each render a `del-marker` gated on `rows.len() > 1`.
+            // Removing rows down to one must drop EVERY marker (each surviving
+            // row's `when` re-evaluates to false). If a kept row's conditional
+            // doesn't drop, the count stays > 0 and this fails.
+            test("per-row conditional drops when the list shrinks to one", |page: &Page| {
+                let del = page.get_by_test_id("del-marker");
+                expect(&del).to_have_count(3)?;
+                page.get_by_test_id("remove-row").click()?; // 3 -> 2
+                expect(&del).to_have_count(2)?;
+                page.get_by_test_id("remove-row").click()?; // 2 -> 1: all markers gone
+                expect(&del).to_have_count(0)?;
+                Ok(())
+            }),
         ],
     )
 }
@@ -92,6 +112,34 @@ fn modal_suite() -> robot_e2e::Suite {
                 Ok(())
             },
         )],
+    )
+}
+
+fn idea_ui_suite() -> robot_e2e::Suite {
+    // idea-ui "as a key implementor": its Switch/Checkbox/Button forward a
+    // `test_id` to their root primitive (idea-ui `robot` feature), so the
+    // robot can locate + drive them. A flow because it navigates (push +
+    // async pop) and each component's reactive status settles across ticks.
+    suite(
+        "idea-ui components",
+        vec![flow("switch, checkbox, button forward test_id and respond")
+            .act(|p: &Page| p.get_by_test_id("goto-components").click())
+            .act(|p: &Page| expect(&p.get_by_test_id("components-marker")).to_be_visible())
+            // Switch: toggles on click; status text reflects the bound signal.
+            .act(|p: &Page| expect(&p.get_by_test_id("ui-switch-status")).to_have_text("switch=false"))
+            .act(|p: &Page| p.get_by_test_id("ui-switch").click())
+            .act(|p: &Page| expect(&p.get_by_test_id("ui-switch-status")).to_have_text("switch=true"))
+            // Checkbox.
+            .act(|p: &Page| p.get_by_test_id("ui-check").click())
+            .act(|p: &Page| expect(&p.get_by_test_id("ui-check-status")).to_have_text("check=true"))
+            // Button: each click increments the counter.
+            .act(|p: &Page| p.get_by_test_id("ui-button").click())
+            .act(|p: &Page| p.get_by_test_id("ui-button").click())
+            .act(|p: &Page| expect(&p.get_by_test_id("ui-button-status")).to_have_text("clicks=2"))
+            // Back to root (async pop).
+            .act(|p: &Page| p.get_by_test_id("comp-back").click())
+            .poll(|p: &Page| expect(&p.get_by_test_id("components-marker")).not_to_be_visible())
+            .build()],
     )
 }
 

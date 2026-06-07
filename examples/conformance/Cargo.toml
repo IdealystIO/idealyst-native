@@ -15,7 +15,7 @@ crate-type = ["rlib"]
 # suite is blind. It also pulls the `robot-e2e` harness + turns on the real
 # Robot API. `--no-default-features` still builds a plain, untested app.
 default = ["robot"]
-robot = ["runtime-core/robot", "dep:robot-e2e"]
+robot = ["runtime-core/robot", "idea-ui/robot", "dep:robot-e2e"]
 
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
 # (build-runtime-server). Pulls `dev-server` + the navigators' recorder

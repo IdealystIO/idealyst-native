@@ -47,6 +47,11 @@ objc2-foundation = { version = "0.2", features = [
     "NSGeometry",
     # MainThreadMarker::new() is gated on NSThread.
     "NSThread",
+    # NSProcessInfo + NSActivityOptions: hold a "user-initiated" activity
+    # assertion so a dev app (with its robot bridge) isn't App-Napped when
+    # backgrounded — keeps the bridge responsive for the Inspector reading
+    # it from the foreground.
+    "NSProcessInfo",
 ] }
 objc2-app-kit = { version = "0.2", features = [
     "NSResponder",

@@ -73,6 +73,9 @@ pub struct ButtonProps {
     /// When `true`, the button stretches to fill its container's width
     /// (a full-bleed CTA). Default `false` — the button hugs its content.
     pub block: bool,
+    /// Optional robot/E2E test id, forwarded to the root pressable. Only
+    /// honored when idea-ui's `robot` feature is on; ignored otherwise.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for ButtonProps {
@@ -89,6 +92,7 @@ impl Default for ButtonProps {
             leading_icon: None,
             trailing_icon: None,
             block: false,
+            test_id: None,
         }
     }
 }
@@ -247,6 +251,12 @@ pub fn Button(props: &ButtonProps) -> Element {
     }
     if let Some(r) = bind_to {
         bound = bound.bind(r);
+    }
+    // Forward the test id to the root pressable for robot/E2E location.
+    // Gated: `.test_id()` only exists under `runtime-core/robot`.
+    #[cfg(feature = "robot")]
+    if let Some(tid) = props.test_id {
+        bound = bound.test_id(tid);
     }
     bound.into_element()
 }

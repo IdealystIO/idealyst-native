@@ -68,6 +68,10 @@ pub struct SwitchProps {
     pub variant: VariantRef,
     /// Track + thumb scale. Default Md.
     pub size: ControlSize,
+    /// Optional robot/E2E test id, forwarded to the interactive track
+    /// (the pressable that toggles). Only honored when idea-ui's `robot`
+    /// feature is on; ignored otherwise.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for SwitchProps {
@@ -79,6 +83,7 @@ impl Default for SwitchProps {
             tone: ToneRef::default(),
             variant: VariantRef::default(),
             size: ControlSize::default(),
+            test_id: None,
         }
     }
 }
@@ -130,6 +135,14 @@ pub fn Switch(props: &SwitchProps) -> Element {
     let track = runtime_core::pressable(vec![thumb], toggle)
         .with_style(track_style)
         .into_element();
+    // Forward the test id to the interactive track so a robot suite can
+    // locate + click it. Gated: `with_test_id` only exists under
+    // `runtime-core/robot`.
+    #[cfg(feature = "robot")]
+    let track = match props.test_id {
+        Some(tid) => track.with_test_id(tid),
+        None => track,
+    };
 
     match crate::components::optional_reactive_text(props.label.clone(), FieldLabel()) {
         Some(label) => ui! {

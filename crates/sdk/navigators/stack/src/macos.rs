@@ -30,6 +30,10 @@ use std::rc::Rc;
 struct ScreenEntry {
     node: MacosNode,
     scope_id: u64,
+    /// Route name + full path, carried so the robot back-stack reporter can
+    /// name each screen in the history (the `MacosNode` doesn't know its route).
+    route: &'static str,
+    path: String,
 }
 
 pub struct MacosStackHandler {
@@ -75,8 +79,19 @@ impl NavigatorHandler<MacosBackend> for MacosStackHandler {
         let release_screen = host.release_screen.clone();
         let depth_changed = host.depth_changed.clone();
 
+        // Robot back-stack reporter: report the live screen vec as
+        // `(route, path)` pairs, root-first (the vec is already bottom→top).
+        let stack_for_snapshot = self.stack.clone();
+        host.control.install_stack_snapshot(Box::new(move || {
+            stack_for_snapshot
+                .borrow()
+                .iter()
+                .map(|e| (e.route.to_string(), e.path.clone()))
+                .collect()
+        }));
+
         host.control.install(Box::new(move |cmd| match cmd {
-            NavCommand::Push { name, params, .. } => {
+            NavCommand::Push { name, url, params, .. } => {
                 let result = mount_screen(name, params, None);
                 with_global_backend(|b| {
                     let mut outlet_node = outlet_for_dispatch.clone();
@@ -93,9 +108,10 @@ impl NavigatorHandler<MacosBackend> for MacosStackHandler {
                 stack_rc.borrow_mut().push(ScreenEntry {
                     node: result.node,
                     scope_id: result.scope_id,
+                    route: name,
+                    path: url,
                 });
                 depth_changed(stack_rc.borrow().len());
-                let _ = name;
             }
             NavCommand::Pop => {
                 let popped = stack_rc.borrow_mut().pop();
@@ -113,7 +129,7 @@ impl NavigatorHandler<MacosBackend> for MacosStackHandler {
                 release_screen(popped.scope_id);
                 depth_changed(stack_rc.borrow().len());
             }
-            NavCommand::Replace { name, params, .. } => {
+            NavCommand::Replace { name, url, params, .. } => {
                 let result = mount_screen(name, params, None);
                 let popped = stack_rc.borrow_mut().pop();
                 with_global_backend(|b| {
@@ -129,10 +145,11 @@ impl NavigatorHandler<MacosBackend> for MacosStackHandler {
                 stack_rc.borrow_mut().push(ScreenEntry {
                     node: result.node,
                     scope_id: result.scope_id,
+                    route: name,
+                    path: url,
                 });
-                let _ = name;
             }
-            NavCommand::Reset { name, params, .. } => {
+            NavCommand::Reset { name, url, params, .. } => {
                 let result = mount_screen(name, params, None);
                 let drained: Vec<ScreenEntry> =
                     stack_rc.borrow_mut().drain(..).collect();
@@ -149,9 +166,10 @@ impl NavigatorHandler<MacosBackend> for MacosStackHandler {
                 stack_rc.borrow_mut().push(ScreenEntry {
                     node: result.node,
                     scope_id: result.scope_id,
+                    route: name,
+                    path: url,
                 });
                 depth_changed(stack_rc.borrow().len());
-                let _ = name;
             }
             NavCommand::Select { .. } | NavCommand::Custom(_) => {
                 panic!(
@@ -175,7 +193,18 @@ impl NavigatorHandler<MacosBackend> for MacosStackHandler {
         let Some(outlet) = self.outlet.clone() else { return };
         let mut outlet_mut = outlet;
         backend.insert(&mut outlet_mut, screen.clone());
-        self.stack.borrow_mut().push(ScreenEntry { node: screen, scope_id });
+        // The initial screen's route/path live in the control's nav_state
+        // (set by the substrate before attach); read them so the bottom of
+        // the back-stack is named like every pushed screen.
+        let (route, path) = self
+            .control
+            .as_ref()
+            .and_then(|c| c.nav_state_snapshot())
+            .map(|(r, p, _, _)| (r, p))
+            .unwrap_or(("", String::new()));
+        self.stack
+            .borrow_mut()
+            .push(ScreenEntry { node: screen, scope_id, route, path });
     }
 
     fn release(&mut self, _backend: &mut MacosBackend) {

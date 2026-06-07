@@ -51,6 +51,18 @@ pub use backend_ios_core::render_loop::install_render_loop;
 #[cfg(target_os = "ios")]
 pub use backend_ios_core::scheduler::install_scheduler;
 
+/// Install the Apple NSLog-backed `Logger` so `runtime_core::log_*` reach the
+/// iOS system log (Xcode console / `simctl log show`). Without it,
+/// `log_info!`/`log_error!` fall back to `StderrLogger`, whose stderr the
+/// system log doesn't capture — Rust-side logs (e.g. an in-app E2E suite's
+/// `[E2E-RESULT]` line) silently vanish. Mirror of the web logger install.
+#[cfg(target_os = "ios")]
+pub use backend_apple_core::log::install_logger;
+
+/// Non-iOS no-op so cross-compile of host code still type-checks.
+#[cfg(not(target_os = "ios"))]
+pub fn install_logger() {}
+
 #[cfg(not(target_os = "ios"))]
 pub use stub::IosBackend;
 

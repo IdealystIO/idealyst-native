@@ -237,6 +237,27 @@ impl Locator {
     pub fn count(&self) -> usize {
         Robot::new().find_all(self.query()).len()
     }
+
+    /// The element's laid-out rect in parent coordinates. `Err` if it isn't
+    /// present or hasn't been laid out yet. Used to assert layout outcomes
+    /// (e.g. that a content-sized container reflows when its children change).
+    pub fn frame(&self) -> Result<runtime_core::primitives::portal::ViewportRect, String> {
+        let el = self.resolve()?;
+        Robot::new()
+            .frame(&el)
+            .map_err(|e| format!("{}.frame() failed: {e:?}", self.desc))?
+            .ok_or_else(|| format!("{}.frame() — element not laid out yet", self.desc))
+    }
+
+    /// The element's laid-out height in parent coordinates.
+    pub fn height(&self) -> Result<f32, String> {
+        Ok(self.frame()?.height)
+    }
+
+    /// The element's laid-out width in parent coordinates.
+    pub fn width(&self) -> Result<f32, String> {
+        Ok(self.frame()?.width)
+    }
 }
 
 // ---------------------------------------------------------------------------

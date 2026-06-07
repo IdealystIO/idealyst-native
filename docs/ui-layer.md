@@ -218,14 +218,39 @@ counter(&CounterProps { label: "Score".into(), value: score, .. })
 
 ### Reactive `if`
 
-`if` inside `ui!` / `jsx!` is rewritten to `when(...)` **only when the
-condition contains a `.get()` call**. A condition without `.get()`
-parses as a normal `if` expression and the branch is chosen once at
-construction.
+`if` inside `ui!` / `jsx!` is reactive (rewritten to `when(...)`) in
+**two** cases, and static (a plain Rust `if`, branch chosen once at
+construction) otherwise:
 
-This is the macro's only reactivity heuristic and it's intentionally
-overt: the author writes `.get()` when they want reactivity, the
-macro emits `when` accordingly.
+1. **Visible signal read** — the condition tokens contain a `.get()`,
+   e.g. `if items.get().len() > 1`. The macro sees the read syntactically
+   and wraps the condition in a `when` closure. (Needed because such a
+   condition's *type* is a plain `bool`, so the type-driven path below
+   couldn't tell it apart from a static `if 3 < 4`.)
+2. **Reactive-typed condition** — a bare `Signal<bool>` (what `memo(…)`
+   returns) or `Derived<bool>`, e.g.
+   `let visible = memo(move || items.get().len() > 1); … if visible { … }`.
+   This is **type-driven**, mirroring the reactive `for` loop: the macro
+   emits `(COND).__idealyst_if(then, else)` with `StaticCond` (for `bool`)
+   and `ReactiveCond` (for `Signal<bool>`/`Derived<bool>`) in scope, and
+   Rust method resolution picks the impl from the condition's *type*. Only
+   bare `path`/`field` conditions route through this dispatch — every
+   provably-`bool` condition (literal, `&&`/`!`, a function/method call,
+   a comparison) stays a plain borrowing `if`.
+
+Consequence — and the deliberate contract: an **opaque** `fn() -> bool`
+call like `if del_visible()` (where `del_visible` is a plain closure) is
+**static**. Reactivity must be carried by a reactive *type* (`memo` /
+`Signal<bool>`) or a *visible* `.get()`; it is never inferred from an
+opaque call's hidden body. This keeps a genuinely static `if helper()`
+free of any reactive machinery, and is why `del_visible` is authored as a
+`memo` rather than a bare `move || …` closure. (`if let PAT = EXPR { … }`
+is always a plain static `if let` — a re-binding reactive `if let` is not
+a construct; use `match sig.get() { … }`.)
+
+This mirrors the `for` loop's `StaticForEach` / `ReactiveForEach`
+type-dispatch: reactivity lives in the *type*, not in a guess about
+syntax.
 
 ### Reactive `match`
 

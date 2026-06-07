@@ -838,13 +838,20 @@ pub fn CanvasRow(props: &CanvasRowProps) -> Element {
     // on macOS, so a 0×0 box neither shrinks nor clips it — collapsing the box
     // left the trash glyph visible. Building it as a `#[component]` keeps the
     // `Rc` captures out of the `if` branch.
-    let del_visible = move || canvas_ids.get().len() > 1;
+    //
+    // `del_visible` is a `memo` (a `Signal<bool>`), NOT a plain closure: `ui!`
+    // is type-driven, so `if del_visible` is reactive *because its type is a
+    // reactive Signal* — the same way `for x in sig` is reactive by type. A
+    // bare `move || …` closure would be an opaque `fn() -> bool`, which the
+    // macro treats as STATIC (built once) — that was the original
+    // "delete button won't disappear on the last canvas" bug.
+    let del_visible = runtime_core::memo(move || canvas_ids.get().len() > 1);
     let strokes_for_del = strokes.clone();
     let canvases_for_del = canvases.clone();
     ui! {
         view(style = row_style) {
             text(style = label_style) { label() }
-            if del_visible() {
+            if del_visible {
                 DeleteCanvasButton(
                     id = id,
                     state = s,

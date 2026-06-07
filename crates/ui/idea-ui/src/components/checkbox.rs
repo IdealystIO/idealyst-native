@@ -48,6 +48,9 @@ pub struct CheckboxProps {
     pub variant: VariantRef,
     /// Box scale. Default Md.
     pub size: ControlSize,
+    /// Optional robot/E2E test id, forwarded to the interactive row. Only
+    /// honored when idea-ui's `robot` feature is on; ignored otherwise.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for CheckboxProps {
@@ -59,6 +62,7 @@ impl Default for CheckboxProps {
             tone: ToneRef::default(),
             variant: VariantRef::default(),
             size: ControlSize::default(),
+            test_id: None,
         }
     }
 }
@@ -122,7 +126,14 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
     }
 
     let toggle = move || (on_change)(!value.get());
-    runtime_core::pressable(kids, toggle)
-        .with_style(|| StyleApplication::new(ControlRow::sheet()))
-        .into_element()
+    let row = runtime_core::pressable(kids, toggle)
+        .with_style(|| StyleApplication::new(ControlRow::sheet()));
+    // Forward the test id to the interactive row for robot/E2E location.
+    // Gated: `.test_id()` only exists under `runtime-core/robot`.
+    #[cfg(feature = "robot")]
+    let row = match props.test_id {
+        Some(tid) => row.test_id(tid),
+        None => row,
+    };
+    row.into_element()
 }

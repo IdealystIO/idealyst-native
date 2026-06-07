@@ -192,10 +192,17 @@ pub(super) fn robot_extract_meta(node: &Element) -> Option<RobotMeta> {
                 },
             })
         }
-        Element::Navigator { .. } => Some(RobotMeta {
+        // Carry the SDK presentation `type_name` as the label — the honest,
+        // kind-agnostic kind carrier. The framework can't know Stack vs Tab
+        // vs Drawer (one `Element::Navigator` variant, TypeId-keyed handler);
+        // inferring the kind from the string here would be a per-kind hack
+        // (CLAUDE.md §7), so we expose the raw name and let the dashboard
+        // classify. The `TabNavigator`/`DrawerNavigator` kinds stay reserved
+        // for a future SDK-driven path.
+        Element::Navigator { type_name, .. } => Some(RobotMeta {
             kind: ElementKind::Navigator,
             test_id: None,
-            label: None,
+            label: Some((*type_name).to_string()),
             label_fn: None,
             actions: ElementActions::empty(),
         }),

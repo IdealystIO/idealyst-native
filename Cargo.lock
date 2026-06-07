@@ -3958,6 +3958,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "inspector"
+version = "0.0.1"
+dependencies = [
+ "backend-macos",
+ "backend-terminal",
+ "icons-lucide",
+ "idea-ui",
+ "runtime-core",
+ "serde_json",
+ "stack-navigator",
+]
+
+[[package]]
 name = "inventory"
 version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"

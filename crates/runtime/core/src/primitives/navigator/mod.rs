@@ -34,7 +34,16 @@ pub use shared::{
     peek_initial_path, record_routes, set_initial_path, take_initial_path,
     take_route_collector, use_can_go_back, use_focus, AmbientNavContext, AmbientNavContextGuard,
     AmbientNavGuard,
-    MountResult, NavBaseGuard, NavCommand, NavState, NavigatorConfig, NavigatorControl,
+    MountResult, NavBaseGuard, NavCommand, NavId, NavState, NavigatorConfig, NavigatorControl,
     NavigatorHandle, NavigatorOps, ParamsFromSegments, Route, RouteEntry, RouteParams, Screen,
     ScreenBuilder, ScreenRouteGuard, ScreenStateGuard,
 };
+
+/// Robot-only navigator introspection surface (global registry + snapshots).
+#[cfg(feature = "robot")]
+pub use shared::{
+    all_navigators, deregister_navigator, navigator_snapshot, register_navigator, NavSnapshot,
+};
+
+#[cfg(all(test, feature = "robot"))]
+pub(crate) use shared::nav_registry_reset;

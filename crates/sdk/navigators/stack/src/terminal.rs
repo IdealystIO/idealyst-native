@@ -29,6 +29,10 @@ use std::rc::Rc;
 struct ScreenEntry {
     node: TermNode,
     scope_id: u64,
+    /// Route name + full path, carried so the robot back-stack reporter can
+    /// name each history entry.
+    route: &'static str,
+    path: String,
 }
 
 pub struct TerminalStackHandler {
@@ -86,8 +90,19 @@ impl NavigatorHandler<TerminalBackend> for TerminalStackHandler {
         let release_screen = host.release_screen.clone();
         let depth_changed = host.depth_changed.clone();
 
+        // Robot back-stack reporter: live screen vec as `(route, path)`,
+        // root-first (the vec is bottom→top).
+        let stack_for_snapshot = self.stack.clone();
+        host.control.install_stack_snapshot(Box::new(move || {
+            stack_for_snapshot
+                .borrow()
+                .iter()
+                .map(|e| (e.route.to_string(), e.path.clone()))
+                .collect()
+        }));
+
         host.control.install(Box::new(move |cmd| match cmd {
-            NavCommand::Push { name, params, .. } => {
+            NavCommand::Push { name, url, params, .. } => {
                 let result = mount_screen(name, params, None);
                 with_backend(|b| {
                     if let Some(top) = stack_rc.borrow().last() {
@@ -99,9 +114,10 @@ impl NavigatorHandler<TerminalBackend> for TerminalStackHandler {
                 stack_rc.borrow_mut().push(ScreenEntry {
                     node: result.node,
                     scope_id: result.scope_id,
+                    route: name,
+                    path: url,
                 });
                 depth_changed(stack_rc.borrow().len());
-                let _ = name; // route name is tracked by substrate
             }
             NavCommand::Pop => {
                 let popped = stack_rc.borrow_mut().pop();
@@ -116,7 +132,7 @@ impl NavigatorHandler<TerminalBackend> for TerminalStackHandler {
                 release_screen(popped.scope_id);
                 depth_changed(stack_rc.borrow().len());
             }
-            NavCommand::Replace { name, params, .. } => {
+            NavCommand::Replace { name, url, params, .. } => {
                 let result = mount_screen(name, params, None);
                 let popped = stack_rc.borrow_mut().pop();
                 with_backend(|b| {
@@ -132,10 +148,11 @@ impl NavigatorHandler<TerminalBackend> for TerminalStackHandler {
                 stack_rc.borrow_mut().push(ScreenEntry {
                     node: result.node,
                     scope_id: result.scope_id,
+                    route: name,
+                    path: url,
                 });
-                let _ = name;
             }
-            NavCommand::Reset { name, params, .. } => {
+            NavCommand::Reset { name, url, params, .. } => {
                 let result = mount_screen(name, params, None);
                 // Drain prior frames, detach + release each.
                 let drained: Vec<ScreenEntry> =
@@ -153,9 +170,10 @@ impl NavigatorHandler<TerminalBackend> for TerminalStackHandler {
                 stack_rc.borrow_mut().push(ScreenEntry {
                     node: result.node,
                     scope_id: result.scope_id,
+                    route: name,
+                    path: url,
                 });
                 depth_changed(stack_rc.borrow().len());
-                let _ = name;
             }
             NavCommand::Select { .. } | NavCommand::Custom(_) => {
                 // The stack navigator's command vocabulary is
@@ -181,9 +199,18 @@ impl NavigatorHandler<TerminalBackend> for TerminalStackHandler {
     ) {
         let Some(mut outlet) = self.outlet else { return };
         backend.insert(&mut outlet, screen);
+        // Name the bottom-of-stack entry from the control's nav_state.
+        let (route, path) = self
+            .control
+            .as_ref()
+            .and_then(|c| c.nav_state_snapshot())
+            .map(|(r, p, _, _)| (r, p))
+            .unwrap_or(("", String::new()));
         self.stack.borrow_mut().push(ScreenEntry {
             node: screen,
             scope_id,
+            route,
+            path,
         });
     }
 

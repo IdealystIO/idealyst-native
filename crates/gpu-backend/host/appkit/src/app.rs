@@ -16,7 +16,9 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSView, NSWindow,
     NSWindowStyleMask,
 };
-use objc2_foundation::{CGSize, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    CGSize, MainThreadMarker, NSActivityOptions, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
+};
 
 #[derive(Clone, Debug)]
 pub struct RunOptions {
@@ -106,6 +108,31 @@ where
     let nsapp = NSApplication::sharedApplication(mtm);
     nsapp.setActivationPolicy(NSApplicationActivationPolicy::Regular);
 
+    // ── Disable App Nap ───────────────────────────────────────────
+    // A dev app runs the robot bridge (a TCP server polled on the UI
+    // thread). When the app is backgrounded, macOS App Nap suspends the
+    // process — the run loop stops pumping, the bridge poll never fires,
+    // and the bridge goes silent. That breaks the Inspector, which reads a
+    // *backgrounded* target from the foreground. Holding a "user-initiated"
+    // activity assertion for the app's lifetime keeps it scheduled (and out
+    // of nap) so the bridge stays responsive in the background. The token
+    // must be retained for as long as we want the assertion held — bind it
+    // for the whole `run_with` body, which spans the run loop below.
+    // SAFETY: standard NSProcessInfo activity API; the returned token is a
+    // retained NSObject we simply hold and drop on app exit.
+    let _app_nap_assertion = {
+        let reason = NSString::from_str("idealyst dev: keep the robot bridge responsive in the background");
+        unsafe {
+            // `…UserInitiatedAllowingIdleSystemSleep` exempts the app from
+            // App Nap (it's a user-initiated activity) WITHOUT pinning the
+            // whole system awake — the Mac can still idle-sleep normally.
+            NSProcessInfo::processInfo().beginActivityWithOptions_reason(
+                NSActivityOptions::NSActivityUserInitiatedAllowingIdleSystemSleep,
+                &reason,
+            )
+        }
+    };
+
     // ── App delegate ──────────────────────────────────────────────
     // Without a delegate that returns YES from
     // `applicationShouldTerminateAfterLastWindowClosed:`, closing
@@ -127,6 +154,11 @@ where
     // Required before `render(...)` so `after_ms`/`raf_loop` etc.
     // dispatch through NSTimer instead of synchronously.
     backend_apple_core::scheduler::install_scheduler();
+    // Route runtime-core `log_*` through NSLog so they reach the macOS system
+    // log / stderr the same way iOS and web now do — otherwise Rust-side logs
+    // (e.g. an in-app E2E suite's `[E2E-RESULT]`) hit the StderrLogger fallback
+    // and may be missed by log scrapers. Idempotent (first install wins).
+    backend_apple_core::log::install_logger();
 
     // ── Window ────────────────────────────────────────────────────
     let frame = NSRect {
@@ -275,6 +307,11 @@ pub fn run_aas(url: &str, opts: RunOptions) -> Result<(), RunError> {
     // synchronous native fallback. Skipping this is what makes the
     // welcome example's intro freeze on `opacity:0` in any mode.
     backend_apple_core::scheduler::install_scheduler();
+    // Route runtime-core `log_*` through NSLog so they reach the macOS system
+    // log / stderr the same way iOS and web now do — otherwise Rust-side logs
+    // (e.g. an in-app E2E suite's `[E2E-RESULT]`) hit the StderrLogger fallback
+    // and may be missed by log scrapers. Idempotent (first install wins).
+    backend_apple_core::log::install_logger();
 
     // ── Window + host root ─ same as local-render ────────────────
     let frame = NSRect {

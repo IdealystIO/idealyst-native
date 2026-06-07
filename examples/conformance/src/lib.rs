@@ -52,6 +52,7 @@ pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBacke
 
 pub(crate) const ROOT: Route<()> = Route::<()>::new("root", "/");
 pub(crate) const DETAIL: Route<()> = Route::<()>::new("detail", "/detail");
+pub(crate) const COMPONENTS: Route<()> = Route::<()>::new("components", "/components");
 
 /// App-wide reactive state. Lives in the root scope so it survives
 /// navigation — the suite asserts against it across push/pop.
@@ -99,6 +100,9 @@ pub fn app() -> Element {
         })
         .screen(DETAIL, move |_| {
             Screen::new(screens::detail_page(nav)).title("Detail")
+        })
+        .screen(COMPONENTS, move |_| {
+            Screen::new(screens::components_page(nav)).title("Components")
         });
 
     runtime_core::ui! { builder.bind(nav) }

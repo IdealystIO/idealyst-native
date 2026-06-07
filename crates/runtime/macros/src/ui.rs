@@ -1787,6 +1787,16 @@ fn emit_if(
     //     `tests/match_reactive_call_regression.rs::b5_*`).
     //   - Wrap the value in `Rc`/`Arc` and clone a handle per arm, or hoist
     //     it into an owner the arm borrows rather than moves.
+    // 0. `if let PAT = EXPR { … }` — the condition is a refutable `let`, not a
+    //    value. It can't be a `bool`/`Signal<bool>`, so neither the reactive
+    //    paths nor the type-driven `__idealyst_if` dispatch apply (you can't
+    //    call a method on a `let` expression). Emit a plain Rust `if let`,
+    //    splicing the binding so the then-branch sees it. Always static — a
+    //    reactive `if let` (re-binding on signal change) is not a supported
+    //    construct; author it as `match sig.get() { … }` instead.
+    if matches!(cond, Expr::Let(_)) {
+        return emit_plain_if(cond, then_body, else_body, ctx);
+    }
     if let Some(structured_cond) = try_emit_derived_call::<bool>(cond) {
         let then_expr = emit_block_as_primitive(then_body);
         let else_expr = else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
@@ -1802,7 +1812,87 @@ fn emit_if(
         };
     }
 
-    // 3. Static `if` — no reactivity. How it lowers depends on context.
+    // 3. Type-driven dispatch — ONLY for a condition whose TYPE could be a
+    //    reactive bool: a bare path (`if del_visible`) or field access
+    //    (`if state.open`). Those are the only shapes that might be a
+    //    `Signal<bool>`/`Derived<bool>` rather than a plain `bool`. We emit
+    //    `(COND).__idealyst_if(then, els)` with BOTH `StaticCond` and
+    //    `ReactiveCond` in scope; Rust method resolution picks the impl from
+    //    COND's type:
+    //      - `bool` → `StaticCond` → the taken branch's flat node list;
+    //      - `Signal<bool>` (e.g. `memo(...)`) / `Derived<bool>` →
+    //        `ReactiveCond` → one reactive `when`.
+    //    Both return `Vec<Element>`, so the branch thunks emit flat node lists
+    //    (preserving no-wrapper flat-splat) and `ChildList`/`one_or_view`
+    //    normalize per ctx.
+    //
+    //    EVERY OTHER condition shape — a literal, `&&`/`||`/`!`, a method or
+    //    function call, a comparison — is *guaranteed* `bool` by Rust's `if`,
+    //    so it falls through to `emit_plain_if` (a plain Rust `if`, captures
+    //    BORROWED). That keeps the common static `if helper() { … }` /
+    //    `if a && b { … }` free of the `'static` move-capture the dispatch's
+    //    thunks would otherwise impose. (A bare-path bool condition DOES route
+    //    through the dispatch, so its branch captures are moved — clone a value
+    //    if it's reused after such an `if`. This is the narrow, diagnosable
+    //    cost of supporting `if <reactive Signal<bool>>` by the same syntax.)
+    if !matches!(cond, Expr::Path(_) | Expr::Field(_)) {
+        return emit_plain_if(cond, then_body, else_body, ctx);
+    }
+    let then_thunk = {
+        let parts = then_body.iter().map(|n| emit_node(n, Ctx::Child));
+        quote! {
+            move || {
+                let mut __c: ::std::vec::Vec<::runtime_core::Element>
+                    = ::std::vec::Vec::new();
+                #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
+                __c
+            }
+        }
+    };
+    let else_thunk = match else_body {
+        Some(eb) => {
+            let parts = eb.iter().map(|n| emit_node(n, Ctx::Child));
+            quote! {
+                move || {
+                    let mut __c: ::std::vec::Vec<::runtime_core::Element>
+                        = ::std::vec::Vec::new();
+                    #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
+                    __c
+                }
+            }
+        }
+        None => quote! { move || ::std::vec::Vec::<::runtime_core::Element>::new() },
+    };
+    let dispatch = quote! {
+        {
+            #[allow(unused_imports)]
+            use ::runtime_core::{StaticCond as _, ReactiveCond as _};
+            (#cond).__idealyst_if(#then_thunk, #else_thunk)
+        }
+    };
+    match ctx {
+        // Children-slot: the dispatch IS a `Vec<Element>` — the surrounding
+        // `ChildList::append_to` flattens it (static branch → flat siblings,
+        // reactive branch → the single `when`).
+        Ctx::Child => dispatch,
+        // Single-slot: must be one Element. `one_or_view` returns the sole
+        // element verbatim (a reactive `when`, or a single static node — NO
+        // wrapper) and only wraps a genuinely multi-node static branch.
+        Ctx::Single => quote! { ::runtime_core::one_or_view(#dispatch) },
+    }
+}
+
+/// Emit a STATIC `if` as a plain Rust `if` — the lowering for a condition that
+/// is *provably* `bool` (a literal, `&&`/`||`/`!`, a method/function call, …)
+/// or an `if let` binding. Captures are borrowed (no `move`), so a branch may
+/// freely reference a value also used after the `if` — the behavior a plain
+/// Rust `if` has always had. Used by `emit_if` for the non-dispatch cases.
+fn emit_plain_if(
+    cond: &Expr,
+    then_body: &[UiNode],
+    else_body: Option<&[UiNode]>,
+    ctx: Ctx,
+) -> TokenStream2 {
     match ctx {
         // Single-slot: must be one Element. Plain Rust `if`, both arms
         // coerced to Element (missing `else` → empty View).
@@ -1812,10 +1902,9 @@ fn emit_if(
                 else_body.map(emit_block_as_primitive).unwrap_or_else(empty_view_primitive);
             quote! { if #cond { #then_expr } else { #else_expr } }
         }
-        // Children-slot: flatten to a `Vec<Element>`. The taken branch
-        // appends its nodes as FLAT siblings (no wrapper View); a missing
-        // `else` contributes nothing (no empty-View placeholder). The
-        // surrounding `ChildList::append_to` flattens the vec.
+        // Children-slot: flatten to a `Vec<Element>`. The taken branch appends
+        // its nodes as FLAT siblings (no wrapper View); a missing `else`
+        // contributes nothing (no empty-View placeholder).
         Ctx::Child => {
             let then_parts = then_body.iter().map(|n| emit_node(n, Ctx::Child));
             let else_block = match else_body {
@@ -1852,6 +1941,16 @@ fn emit_if(
 /// scrutinees like `screen.get()` and compound ones like
 /// `(a.get(), b.get())`.
 fn condition_is_reactive(cond: &Expr) -> bool {
+    // Detects a VISIBLE signal read in the condition tokens — an inline
+    // `.get()` such as `if sig.get() > 1` or `match screen.get()`. This is the
+    // one syntactic reactive path the macro keeps, because such a condition's
+    // *type* is a plain `bool`/enum and would otherwise dispatch to the static
+    // `StaticCond` impl. It is NOT a guess about hidden behavior: an opaque
+    // call like `if del_visible()` is left for the type-driven `StaticCond` /
+    // `ReactiveCond` dispatch in `emit_if` — a bare `fn() -> bool` is static
+    // and free, while a reactive `Signal<bool>` (e.g. `memo(...)`) is reactive
+    // by type. (Same philosophy as the for-loop's `StaticForEach` /
+    // `ReactiveForEach`, which replaced the old `.get()`-iterable heuristic.)
     let raw = cond.to_token_stream().to_string();
     let compact: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
     compact.contains(".get()")

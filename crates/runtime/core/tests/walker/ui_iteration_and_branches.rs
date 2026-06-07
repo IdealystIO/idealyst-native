@@ -31,7 +31,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::{on_cleanup, signal, text, ui, view, when, Element, IntoElement, Signal};
+use runtime_core::{memo, on_cleanup, signal, text, ui, view, when, Element, IntoElement, Signal};
 
 use crate::common::{Event, MockBackendConfig, TestRuntime};
 
@@ -534,6 +534,110 @@ fn reactive_if_without_else_toggles_presence() {
     assert_eq!(count_text(&rt.events(), "visible"), 1, "shown after toggle");
 }
 
+/// Type-carried reactivity: an `if` whose condition is a BARE reactive bool
+/// — a `Signal<bool>` (what `memo(...)` returns) — re-evaluates on every
+/// change. The `ui!` macro dispatches on the condition's *type*
+/// (`ReactiveCond` for `Signal<bool>`), so no `.get()` is needed at the call
+/// site. This is the canonical fix for the whiteboard "delete button won't
+/// disappear" bug: `del_visible` is authored as a `memo`, and `if del_visible`
+/// reacts when the underlying list shrinks to one. Mirrors `for x in sig`
+/// being reactive by type.
+#[test]
+fn reactive_if_bare_signal_bool_reevaluates() {
+    let rt = TestRuntime::new();
+    let ids: Signal<Vec<i32>> = signal!(vec![1, 2]);
+    let del_visible: Signal<bool> = memo(move || ids.get().len() > 1);
+    let tree: Element = ui! {
+        view {
+            if del_visible {
+                text { "del".to_string() }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    assert_eq!(count_text(&rt.events(), "del"), 1, "marker present while >1 item");
+
+    // Shrink to one → the memo recomputes false and the branch is TORN DOWN.
+    // The default backend uses the anchored `when` path, so the teardown is
+    // observable as a `ClearChildren` on the region's anchor.
+    rt.backend_mut().clear_events();
+    ids.set(vec![1]);
+    assert!(
+        rt.events().iter().any(|e| matches!(e, Event::ClearChildren { .. })),
+        "shrinking must tear the branch down (reactive `when`), not leave a stale marker: {:?}",
+        rt.events()
+    );
+
+    // Grow back → the branch is rebuilt, proving the subscription is live both ways.
+    rt.backend_mut().clear_events();
+    ids.set(vec![1, 2, 3]);
+    assert_eq!(count_text(&rt.events(), "del"), 1, "marker returns when the list grows again");
+}
+
+/// The Tier-1 idiom: a VISIBLE `.get()` read on a reactive bool
+/// (`if del_visible.get()`) is reactive too — the macro detects the inline
+/// `.get()` syntactically and wraps it (its *type* is plain `bool`, so the
+/// type-driven dispatch alone would treat it as static). Proves the visible-
+/// read path still works alongside the bare-type path.
+#[test]
+fn reactive_if_visible_get_on_memo_reevaluates() {
+    let rt = TestRuntime::new();
+    let ids: Signal<Vec<i32>> = signal!(vec![1, 2]);
+    let del_visible: Signal<bool> = memo(move || ids.get().len() > 1);
+    let tree: Element = ui! {
+        view {
+            if del_visible.get() {
+                text { "del".to_string() }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    assert_eq!(count_text(&rt.events(), "del"), 1, "marker present while >1 item");
+
+    rt.backend_mut().clear_events();
+    ids.set(vec![1]);
+    assert!(
+        rt.events().iter().any(|e| matches!(e, Event::ClearChildren { .. })),
+        "visible `.get()` condition must react on change: {:?}",
+        rt.events()
+    );
+}
+
+/// The deliberate counterpart: an `if` whose condition is an OPAQUE bare
+/// closure CALL returning `bool` (`if del_visible()`) is STATIC under the
+/// type-carried model — its type is `bool`, so it dispatches to `StaticCond`
+/// and is built exactly once, allocating zero reactive machinery. Changing
+/// the underlying signal produces NO teardown and NO rebuild. This is the
+/// intended trade: reactivity must be expressed by a reactive TYPE
+/// (`memo`/`Signal<bool>`) or a visible `.get()`, not inferred from an opaque
+/// call — so a genuinely static `if helper()` never pays for an unused
+/// reactive region.
+#[test]
+fn static_if_opaque_bool_call_does_not_react() {
+    let rt = TestRuntime::new();
+    let ids: Signal<Vec<i32>> = signal!(vec![1, 2]);
+    let del_visible = move || ids.get().len() > 1; // plain `impl Fn() -> bool`
+    let tree: Element = ui! {
+        view {
+            if del_visible() {
+                text { "del".to_string() }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    assert_eq!(count_text(&rt.events(), "del"), 1, "static branch built once at len 2");
+
+    // Mutating the signal does nothing — the condition was a build-time call,
+    // not a reactive region: no anchor, no Effect, no teardown, no rebuild.
+    rt.backend_mut().clear_events();
+    ids.set(vec![1]);
+    assert!(
+        rt.events().is_empty(),
+        "opaque-call condition is static; signal mutation must produce no events: {:?}",
+        rt.events()
+    );
+}
+
 /// Flipping a reactive `if` drops the OLD branch's scope before
 /// building the new one — freeing its signals/effects. The then-branch
 /// registers an `on_cleanup`; flipping to else must fire it exactly
@@ -563,6 +667,35 @@ fn reactive_if_flip_releases_old_branch_scope() {
 
     flag.set(false); // flip → drop then-scope → cleanup fires
     assert_eq!(cleaned.get(), 1, "old branch scope freed on flip");
+}
+
+/// `if let PAT = EXPR { … }` keeps its plain-Rust lowering under the
+/// type-driven dispatch: the condition is a refutable `let`, not a `bool` or
+/// `Signal<bool>`, so it must NOT route through `__idealyst_if` (which would
+/// try to call a method on a `let` expression). The binding is visible in the
+/// then-branch and the else-branch renders when the pattern doesn't match.
+#[test]
+fn if_let_binding_lowers_to_plain_if_let() {
+    let rt = TestRuntime::new();
+    let some: Option<&str> = Some("hi");
+    let none: Option<&str> = None;
+    let tree: Element = ui! {
+        view {
+            if let Some(s) = some {
+                text { format!("got {s}") }
+            } else {
+                text { "empty-some".to_string() }
+            }
+            if let Some(s) = none {
+                text { format!("got {s}") }
+            } else {
+                text { "empty-none".to_string() }
+            }
+        }
+    };
+    let _owner = rt.render(tree);
+    let t = texts(&rt.events());
+    assert_eq!(t, vec!["got hi", "empty-none"], "if let binds + else falls through: {t:?}");
 }
 
 // ---------------------------------------------------------------------------

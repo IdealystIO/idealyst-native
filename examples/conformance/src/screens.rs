@@ -14,11 +14,13 @@ use std::rc::Rc;
 
 use idea_ui::{Modal, Stack, StackGap, StackPadding};
 use icons_lucide::HOME;
+use runtime_core::presence;
 use runtime_core::primitives::activity_indicator::activity_indicator;
 use runtime_core::primitives::scroll_view::scroll_view;
 use runtime_core::primitives::slider::slider;
 use runtime_core::{
-    button, icon, pressable, text, text_input, toggle, ui, view, when, Element, IntoElement, Ref,
+    button, component, icon, pressable, signal, text, text_input, toggle, ui, view, when, Element,
+    IntoElement, Ref, Signal,
 };
 use stack_navigator::StackHandle;
 
@@ -110,6 +112,11 @@ pub(crate) fn root_page(state: State, nav: Ref<StackHandle>) -> Element {
     let push = move || {
         nav.get().map(|h| h.push(&crate::DETAIL, ())).unwrap_or_default();
     };
+    let goto_components = move || {
+        nav.get()
+            .map(|h| h.push(&crate::COMPONENTS, ()))
+            .unwrap_or_default();
+    };
 
     let children: Vec<Element> = vec![
         text("Conformance").test_id("title").into_element(),
@@ -133,13 +140,126 @@ pub(crate) fn root_page(state: State, nav: Ref<StackHandle>) -> Element {
             .into_element(),
         confirmed,
         modal_branch,
+        ui! { ReflowBox() },
         button("Push detail", push).test_id("push-detail").into_element(),
+        button("Components", goto_components)
+            .test_id("goto-components")
+            .into_element(),
     ];
 
     // Wrap in a scroll view (weird condition: scrollable content) around a
     // spaced Stack.
     let column = ui! { Stack(gap = StackGap::Md, padding = StackPadding::Lg) { children } };
     scroll_view(vec![column]).into_element()
+}
+
+/// Reactive list with a PER-ROW conditional affordance — the exact shape of
+/// the whiteboard Layers popover's `CanvasRow`: a `for` over a `Signal<Vec>`
+/// where each KEPT row renders `if rows.len() > 1 { DelMarker }`. When the list
+/// shrinks to a single row, every surviving row's `when` must re-evaluate to
+/// false and REMOVE its marker. The suite asserts the marker count drops to 0.
+/// Guards the iOS bug where a kept row's conditional didn't drop on list
+/// shrink (the whiteboard "delete button won't disappear on the last canvas").
+#[component]
+fn ReflowBox() -> Element {
+    let rows: Signal<Vec<i32>> = signal!(vec![0, 1, 2]);
+    let active: Signal<usize> = signal!(0);
+    let remove = move || {
+        // Mimic `delete_canvas`: CHANGE `active` to a different value FIRST
+        // (re-running the row's sibling effect that reads active + the list),
+        // THEN shrink the list.
+        active.set(active.get().wrapping_add(1));
+        rows.update(|v| {
+            if v.len() > 1 {
+                v.remove(0);
+            }
+        });
+    };
+
+    let remove_btn = button("Remove row", remove)
+        .test_id("remove-row")
+        .into_element();
+
+    // Wrap the list in TWO NESTED presences — the whiteboard popover is
+    // `focus_gate(presence(... Each ...))`, and `focus_gate` is itself a
+    // `presence`. Tests whether a `when` inside an `Each` inside nested
+    // presences still drops on list shrink.
+    let list_presence = presence(move || {
+        presence(move || {
+            ui! {
+                view {
+                    for r in rows, key = *r {
+                        ReflowRow(rows = rows, active = active, id = r)
+                    }
+                }
+            }
+        })
+        .into_element()
+    })
+    .into_element();
+
+    ui! {
+        view {
+            list_presence
+            remove_btn
+        }
+    }
+}
+
+/// One row — a `#[component]` (like the whiteboard's `CanvasRow`) that holds the
+/// `if rows.len() > 1 { DelMarker }` conditional and reads the LIST signal via a
+/// prop. This is the faithful shape: a `when` INSIDE a kept component INSIDE an
+/// `Each`, gated on the same list that drives the `Each`.
+#[component]
+fn ReflowRow(props: &ReflowRowProps) -> Element {
+    let rows = props.rows;
+    let active = props.active;
+    let id = props.id;
+    // This row's POSITION in the (reactive) list — exactly the whiteboard's
+    // `index_of = canvas_ids.position(id)`. Read it in a SIBLING reactive effect
+    // (like `row_style`/`label_style` read `active == index_of()`), so multiple
+    // per-row effects subscribe to the list signal via `position`, and a delete
+    // SHIFTS those positions.
+    let index_of = move || rows.get().iter().position(|x| *x == id).unwrap_or(0);
+    // EXACTLY like the whiteboard's `del_visible`: a `memo` (a `Signal<bool>`),
+    // branched on as a BARE `if del_visible`. `ui!` is type-driven, so this is
+    // reactive because the condition's *type* is a reactive signal — and it
+    // must re-evaluate to false (dropping the marker) when the list shrinks to
+    // one. A plain `move || …` closure here would be an opaque `fn() -> bool`,
+    // which the macro treats as STATIC — the original "won't disappear" bug.
+    let del_visible = runtime_core::memo(move || rows.get().len() > 1);
+    ui! {
+        view {
+            text(move || format!("i{} a{}", index_of(), active.get()))
+            if del_visible {
+                DelMarker()
+            }
+        }
+    }
+}
+
+pub struct ReflowRowProps {
+    pub rows: Signal<Vec<i32>>,
+    pub active: Signal<usize>,
+    pub id: i32,
+}
+
+impl Default for ReflowRowProps {
+    fn default() -> Self {
+        Self {
+            rows: Signal::new(Vec::new()),
+            active: Signal::new(0),
+            id: 0,
+        }
+    }
+}
+
+/// The per-row conditional affordance. A `#[component]` (like the whiteboard's
+/// `DeleteCanvasButton`) so the `if` branch holds no captures. All rows share
+/// the `del-marker` test_id; the suite counts them.
+#[component]
+fn DelMarker() -> Element {
+    text("del").test_id("del-marker").into_element()
 }
 
 /// The pushed detail screen — proves stack push/pop. Its `detail-marker`
@@ -154,4 +274,59 @@ pub(crate) fn detail_page(nav: Ref<StackHandle>) -> Element {
         button("Back", back).test_id("back").into_element(),
     ];
     ui! { Stack(gap = StackGap::Lg, padding = StackPadding::Lg) { children } }
+}
+
+/// idea-ui component coverage — `Switch`, `Checkbox`, `Button` (idea-ui "as a
+/// key implementor"). Each carries a forwarded `test_id` so the robot can
+/// drive it; each is paired with a primitive status `text` (whose own
+/// `test_id` the suite asserts on) reflecting the component's state.
+pub(crate) fn components_page(nav: Ref<StackHandle>) -> Element {
+    use idea_ui::{Button, Checkbox, Switch};
+
+    let sw = runtime_core::signal!(false);
+    let cb = runtime_core::signal!(false);
+    let clicks = runtime_core::signal!(0_i32);
+
+    let on_sw: Rc<dyn Fn(bool)> = Rc::new(move |v| sw.set(v));
+    let on_cb: Rc<dyn Fn(bool)> = Rc::new(move |v| cb.set(v));
+    let on_btn: Rc<dyn Fn()> = Rc::new(move || clicks.update(|n| *n += 1));
+    let on_back: Rc<dyn Fn()> = Rc::new(move || {
+        nav.get().map(|h| h.pop()).unwrap_or_default();
+    });
+
+    let sw_status = text(move || format!("switch={}", sw.get()))
+        .test_id("ui-switch-status")
+        .into_element();
+    let cb_status = text(move || format!("check={}", cb.get()))
+        .test_id("ui-check-status")
+        .into_element();
+    let btn_status = text(move || format!("clicks={}", clicks.get()))
+        .test_id("ui-button-status")
+        .into_element();
+
+    let children: Vec<Element> = vec![
+        text("Components").test_id("components-marker").into_element(),
+        ui! {
+            Switch(
+                value = sw,
+                on_change = on_sw,
+                label = Some("Notifications".to_string()),
+                test_id = Some("ui-switch"),
+            )
+        },
+        sw_status,
+        ui! {
+            Checkbox(
+                value = cb,
+                on_change = on_cb,
+                label = Some("Accept terms".to_string()),
+                test_id = Some("ui-check"),
+            )
+        },
+        cb_status,
+        ui! { Button(label = "Tap me".to_string(), on_click = on_btn, test_id = Some("ui-button")) },
+        btn_status,
+        ui! { Button(label = "Back".to_string(), on_click = on_back, test_id = Some("comp-back")) },
+    ];
+    ui! { Stack(gap = StackGap::Md, padding = StackPadding::Lg) { children } }
 }

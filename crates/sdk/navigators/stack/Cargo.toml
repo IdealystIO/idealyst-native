@@ -21,6 +21,13 @@ license.workspace = true
 # See `drawer-navigator`'s identical feature for rationale.
 runtime-server = ["dep:dev-server", "dep:wire"]
 
+# Test-only: turns on the robot registry in `runtime-core` so the
+# `robot_screen_tree` regression test can assert a navigator's screen
+# content is captured by `Robot::snapshot()`. Off by default — `robot`
+# adds per-node registry overhead and is never wanted in a shipping app.
+# Run: `cargo test -p stack-navigator --features robot --test robot_screen_tree`.
+robot = ["runtime-core/robot"]
+
 [dependencies]
 runtime-core = { workspace = true }
 # Self-registration of the per-backend navigator handler at construction.
@@ -38,6 +45,12 @@ wire = { workspace = true, optional = true }
 # dependency — and therefore no target cfg.
 [dev-dependencies]
 backend-ssr = { workspace = true }
+
+# Regression test for navigator screen content surfacing in the robot
+# registry. Needs the `robot` feature, so it only builds when that's on.
+[[test]]
+name = "robot_screen_tree"
+required-features = ["robot"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }

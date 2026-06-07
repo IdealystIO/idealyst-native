@@ -17,6 +17,12 @@ crate-type = ["rlib"]
 # generated impls aren't free.
 docs = ["dep:idea-ui-docs-derive"]
 
+# Off by default. When on, components forward an optional `test_id` prop to
+# their root interactive primitive via `Element::with_test_id`, so a robot/
+# E2E suite can locate them. Mirrors `runtime-core/robot`; production apps
+# leave it off (the forwarding compiles out).
+robot = ["runtime-core/robot"]
+
 [dependencies]
 runtime-core = { workspace = true }
 idea-theme = { workspace = true }

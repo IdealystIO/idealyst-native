@@ -861,6 +861,109 @@ fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String
             )?;
             Ok("\"ok\"".into())
         }
+        "get_arena_stats" => {
+            // Reactive-arena occupancy: signal/effect/ref slot counts plus
+            // aggregate subscriber/dependency link totals. A leak shows up
+            // as `*_total` (or `total_subscribers`/`total_deps`) climbing
+            // while `*_in_use` stays bounded. See `reactive::ArenaStats`.
+            let s = robot.arena_stats();
+            Ok(format!(
+                "{{\"signals_in_use\":{},\"signals_total\":{},\
+                   \"effects_in_use\":{},\"effects_total\":{},\
+                   \"refs_in_use\":{},\"refs_total\":{},\
+                   \"total_subscribers\":{},\"total_deps\":{}}}",
+                s.signals_in_use, s.signals_total,
+                s.effects_in_use, s.effects_total,
+                s.refs_in_use, s.refs_total,
+                s.total_subscribers, s.total_deps,
+            ))
+        }
+        "list_watched_signals" => {
+            // Every live signal registered via `signal!` (auto) or
+            // `robot::watch_signal` (explicit), with its current value.
+            let items: Vec<String> = super::watch::list_watched()
+                .iter()
+                .map(|s| {
+                    format!(
+                        "{{\"id\":{},\"name\":{},\"value\":{}}}",
+                        s.id,
+                        serde_json::to_string(&s.name).unwrap_or_else(|_| "\"\"".into()),
+                        // `Value`'s Display emits valid compact JSON.
+                        s.value,
+                    )
+                })
+                .collect();
+            Ok(format!("[{}]", items.join(",")))
+        }
+        "read_signal" => {
+            // Read one watched signal by `name` or raw `id`. `null` when
+            // absent or stale (recycled slot — generation mismatch).
+            let value = if let Some(name) = args["name"].as_str() {
+                super::watch::read_watched_by_name(name)
+            } else if let Some(id) = args["id"].as_u64() {
+                super::watch::read_watched_by_id(id as u32)
+            } else {
+                return Err("read_signal requires a 'name' or 'id' argument".into());
+            };
+            Ok(value.map(|v| v.to_string()).unwrap_or_else(|| "null".into()))
+        }
+        "list_navigators" => {
+            // Every mounted navigator: which is current, its route/path/depth,
+            // and its full back-stack. Use `get_children` with an entry's
+            // `element_id` to read that navigator's current-screen elements.
+            let items: Vec<String> = crate::primitives::navigator::all_navigators()
+                .iter()
+                .map(nav_snapshot_json)
+                .collect();
+            Ok(format!("[{}]", items.join(",")))
+        }
+        "get_navigator_state" => {
+            let nav_id = args["nav_id"].as_u64().ok_or("missing 'nav_id' argument")? as u32;
+            match crate::primitives::navigator::navigator_snapshot(
+                crate::primitives::navigator::NavId(nav_id),
+            ) {
+                Some(s) => Ok(nav_snapshot_json(&s)),
+                None => Ok("null".into()),
+            }
+        }
+        // Perf phase counters live behind `debug-stats`. When the target
+        // wasn't built with it, the counters don't exist — return a clear
+        // hint so the dashboard explains *why* perf is empty rather than
+        // showing a silent blank. `take_phase_counters` drains, so each
+        // poll reports activity since the previous read.
+        #[cfg(feature = "debug-stats")]
+        "get_perf_counters" => {
+            let counters = crate::debug::take_phase_counters();
+            let mut items: Vec<String> = counters
+                .iter()
+                .map(|(phase, c)| {
+                    format!(
+                        "{{\"phase\":{},\"call_count\":{},\"total_us\":{},\"max_us\":{}}}",
+                        serde_json::to_string(phase).unwrap_or_else(|_| "\"\"".into()),
+                        c.call_count, c.total_us, c.max_us,
+                    )
+                })
+                .collect();
+            // HashMap iteration order is nondeterministic; sort the rendered
+            // rows (each begins `{"phase":"<name>"`) for a stable display.
+            items.sort();
+            Ok(format!("[{}]", items.join(",")))
+        }
+        #[cfg(not(feature = "debug-stats"))]
+        "get_perf_counters" => Err(
+            "perf disabled: rebuild the target app with the `debug-stats` feature \
+             to capture phase counters"
+                .into(),
+        ),
+        #[cfg(feature = "debug-stats")]
+        "clear_perf_counters" => {
+            crate::debug::clear_phase_counters();
+            Ok("\"ok\"".into())
+        }
+        #[cfg(not(feature = "debug-stats"))]
+        "clear_perf_counters" => Err(
+            "perf disabled: rebuild the target app with the `debug-stats` feature".into(),
+        ),
         // Fall back to a dev-mode-registered custom verb (e.g.
         // "screenshot") before declaring the command unknown.
         _ => match try_custom_command(cmd, args) {
@@ -947,6 +1050,39 @@ fn tree_node_json(node: &TreeNode) -> String {
         opt_str_json(node.test_id),
         opt_string_json(node.label.as_deref()),
         children.join(","),
+    )
+}
+
+fn nav_snapshot_json(s: &crate::primitives::navigator::NavSnapshot) -> String {
+    let stack: Vec<String> = s
+        .stack
+        .iter()
+        .map(|(route, path)| {
+            format!(
+                "{{\"route\":{},\"path\":{}}}",
+                serde_json::to_string(route).unwrap_or_else(|_| "\"\"".into()),
+                serde_json::to_string(path).unwrap_or_else(|_| "\"\"".into()),
+            )
+        })
+        .collect();
+    let element_id = match s.element_id {
+        Some(id) => id.to_string(),
+        None => "null".into(),
+    };
+    format!(
+        "{{\"nav_id\":{},\"element_id\":{},\"type_name\":{},\"active_route\":{},\
+           \"active_path\":{},\"depth\":{},\"can_go_back\":{},\"is_current\":{},\
+           \"base\":{},\"stack\":[{}]}}",
+        s.nav_id,
+        element_id,
+        serde_json::to_string(s.type_name).unwrap_or_else(|_| "\"\"".into()),
+        serde_json::to_string(&s.active_route).unwrap_or_else(|_| "\"\"".into()),
+        serde_json::to_string(&s.active_path).unwrap_or_else(|_| "\"\"".into()),
+        s.depth,
+        s.can_go_back,
+        s.is_current,
+        serde_json::to_string(&s.base).unwrap_or_else(|_| "\"\"".into()),
+        stack.join(","),
     )
 }
 
@@ -1221,5 +1357,180 @@ mod tests {
 
         crate::robot::deregister(id);
         crate::robot::deregister(bare);
+    }
+
+    /// The `get_arena_stats` verb serializes all eight `ArenaStats`
+    /// fields as a flat JSON object so the inspector's perf panel can
+    /// read reactive-arena occupancy over the bridge. Before this verb
+    /// the arena counts were reachable via `Robot::arena_stats()` only
+    /// in-process — never over the wire.
+    #[test]
+    fn arena_stats_verb_serializes_eight_fields() {
+        // Touch the arena so the counts are plausibly non-trivial; the
+        // exact values don't matter, only that all keys are present and
+        // numeric.
+        let s = crate::reactive::Signal::new(7i32);
+        let _ = crate::reactive::untrack(|| s.get());
+
+        let out = invoke_command("get_arena_stats", &serde_json::json!({}))
+            .expect("get_arena_stats should dispatch");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        for key in [
+            "signals_in_use",
+            "signals_total",
+            "effects_in_use",
+            "effects_total",
+            "refs_in_use",
+            "refs_total",
+            "total_subscribers",
+            "total_deps",
+        ] {
+            assert!(
+                v.get(key).and_then(|n| n.as_u64()).is_some(),
+                "arena stats must expose numeric '{key}', got {v}"
+            );
+        }
+    }
+
+    /// The `list_watched_signals` / `read_signal` verbs expose a
+    /// `signal!`- or `watch_signal`-registered signal's live value over
+    /// the bridge. Before these, signal values were reachable only via a
+    /// typed in-process handle — nothing crossed the JSON wire.
+    #[test]
+    fn watch_verbs_read_live_signal_value_over_bridge() {
+        crate::robot::watch::clear();
+        let s = crate::reactive::Signal::new(1i32);
+        crate::robot::watch_signal("bridge_counter", s);
+        s.set(42);
+
+        // read_signal by name
+        let out = invoke_command("read_signal", &serde_json::json!({ "name": "bridge_counter" }))
+            .expect("read_signal by name should dispatch");
+        assert_eq!(out, "\"42\"");
+
+        // read_signal by raw id
+        let by_id = invoke_command("read_signal", &serde_json::json!({ "id": s.id() })).unwrap();
+        assert_eq!(by_id, "\"42\"");
+
+        // list_watched_signals carries the row
+        let list = invoke_command("list_watched_signals", &serde_json::json!({})).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&list).unwrap();
+        assert!(
+            v.as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["name"] == "bridge_counter" && r["value"] == "42"),
+            "list_watched_signals must include the watched signal, got {v}"
+        );
+
+        // Missing both args is a clear error, not a panic.
+        assert!(invoke_command("read_signal", &serde_json::json!({})).is_err());
+        crate::robot::watch::unwatch_signal(s.id() as u32);
+    }
+
+    /// The `list_navigators` / `get_navigator_state` verbs render a
+    /// registered navigator's route/depth/back-stack over the bridge. The
+    /// navigator registry + JSON shape are what the inspector's Navigators
+    /// panel consumes.
+    #[test]
+    fn navigator_verbs_render_registered_navigator() {
+        use crate::primitives::navigator::{
+            all_navigators, nav_registry_reset, register_navigator, NavId, NavState,
+            NavigatorControl,
+        };
+        use crate::reactive::{with_scope, Scope, Signal};
+        use std::rc::Rc;
+
+        nav_registry_reset();
+        let control = Rc::new(NavigatorControl::new());
+        let mut scope = Box::new(Scope::new());
+        let ns = with_scope(&mut scope, || NavState {
+            active_route: Signal::new("detail"),
+            active_path: Signal::new("/items/5".to_string()),
+            depth: Signal::new(2),
+            can_go_back: Signal::new(true),
+        });
+        control.attach_nav_state(ns);
+        control.install_stack_snapshot(Box::new(|| {
+            vec![
+                ("list".to_string(), "/items".to_string()),
+                ("detail".to_string(), "/items/5".to_string()),
+            ]
+        }));
+        let id = register_navigator(&control, "stack_navigator::Presentation", Some(3));
+        control.set_nav_id(id);
+
+        let list = invoke_command("list_navigators", &serde_json::json!({})).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&list).unwrap();
+        let row = &v.as_array().unwrap()[0];
+        assert_eq!(row["nav_id"].as_u64(), Some(id.0 as u64));
+        assert_eq!(row["element_id"].as_u64(), Some(3));
+        assert_eq!(row["type_name"], "stack_navigator::Presentation");
+        assert_eq!(row["active_route"], "detail");
+        assert_eq!(row["depth"].as_u64(), Some(2));
+        assert_eq!(row["can_go_back"], true);
+        assert_eq!(row["is_current"], true);
+        assert_eq!(row["stack"].as_array().unwrap().len(), 2);
+        assert_eq!(row["stack"][1]["route"], "detail");
+
+        // get_navigator_state by id returns the same shape.
+        let one =
+            invoke_command("get_navigator_state", &serde_json::json!({ "nav_id": id.0 })).unwrap();
+        let o: serde_json::Value = serde_json::from_str(&one).unwrap();
+        assert_eq!(o["active_path"], "/items/5");
+
+        // Unknown id → null.
+        let none = invoke_command("get_navigator_state", &serde_json::json!({ "nav_id": 9999 }))
+            .unwrap();
+        assert_eq!(none, "null");
+
+        let _ = all_navigators();
+        nav_registry_reset();
+        let _ = NavId(0);
+    }
+
+    /// With `debug-stats` on, `get_perf_counters` drains the phase
+    /// counters and renders them as `[{phase,call_count,total_us,max_us}]`.
+    /// This is the only path from the backend's apply-phase timers to an
+    /// external dashboard.
+    #[cfg(feature = "debug-stats")]
+    #[test]
+    fn perf_counters_verb_round_trips_a_recorded_phase() {
+        crate::debug::clear_phase_counters();
+        crate::debug::record_apply_phase("unit_test_phase", 1234);
+
+        let out = invoke_command("get_perf_counters", &serde_json::json!({}))
+            .expect("get_perf_counters should dispatch under debug-stats");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let row = v
+            .as_array()
+            .and_then(|rows| rows.iter().find(|r| r["phase"] == "unit_test_phase"))
+            .expect("recorded phase must appear in the perf counters");
+        assert_eq!(row["call_count"].as_u64(), Some(1));
+        assert_eq!(row["total_us"].as_u64(), Some(1234));
+        assert_eq!(row["max_us"].as_u64(), Some(1234));
+
+        // `get_perf_counters` drains: a second read no longer sees it.
+        let out2 = invoke_command("get_perf_counters", &serde_json::json!({})).unwrap();
+        let v2: serde_json::Value = serde_json::from_str(&out2).unwrap();
+        assert!(
+            v2.as_array()
+                .map(|rows| rows.iter().all(|r| r["phase"] != "unit_test_phase"))
+                .unwrap_or(true),
+            "drain semantics: phase should be gone after the first read"
+        );
+    }
+
+    /// Without `debug-stats`, the verb returns a clear hint (not a silent
+    /// empty array) so the dashboard can explain why perf is unavailable.
+    #[cfg(not(feature = "debug-stats"))]
+    #[test]
+    fn perf_counters_verb_hints_when_debug_stats_off() {
+        let out = invoke_command("get_perf_counters", &serde_json::json!({}));
+        let err = out.expect_err("perf verb must error when debug-stats is off");
+        assert!(
+            err.contains("debug-stats"),
+            "error must name the missing feature, got {err:?}"
+        );
     }
 }

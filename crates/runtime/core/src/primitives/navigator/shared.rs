@@ -78,6 +78,369 @@ pub fn ambient_navigator() -> Option<Rc<NavigatorControl>> {
 }
 
 // ---------------------------------------------------------------------------
+// Global navigator registry — robot introspection
+// ---------------------------------------------------------------------------
+//
+// Unlike `AMBIENT_NAV` (transient — only the navigator currently building a
+// screen), this is a persistent slab of every MOUNTED navigator, so the robot
+// bridge can enumerate "all loaded navigators" and report which is current.
+// Entries hold a `Weak<NavigatorControl>` (the control is owned by the backend
+// instance + SDK handler; the registry must not keep it alive) and are removed
+// when the navigator's build scope drops (`deregister_navigator`, wired as an
+// `on_cleanup` in the walker — same lifetime as the navigator's robot element
+// entry). Robot-feature-gated: dead code in production builds.
+
+/// Stable id for a navigator in the global registry. Cheap to copy.
+/// `pub` regardless of feature so `NavigatorControl`'s `nav_id` field type
+/// is always nameable, but only populated/used under `robot`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NavId(pub u32);
+
+#[cfg(feature = "robot")]
+#[derive(Default)]
+struct NavRegistry {
+    /// Slab; index = `NavId`. `None` = freed slot (LIFO recycled via `free`).
+    entries: Vec<Option<NavRegEntry>>,
+    free: Vec<u32>,
+    /// Most-recently-dispatched-against navigator — the inspector's "current".
+    active: Option<NavId>,
+}
+
+#[cfg(feature = "robot")]
+struct NavRegEntry {
+    control: std::rc::Weak<NavigatorControl>,
+    /// SDK presentation type name (e.g. `stack_navigator::Presentation`) —
+    /// the honest, kind-agnostic kind carrier (the framework can't know
+    /// Stack vs Tab vs Drawer; the dashboard classifies from this string).
+    type_name: &'static str,
+    /// Raw robot `ElementId` of this navigator's `Element::Navigator` entry,
+    /// so the inspector can `get_children` to read the current screen's
+    /// elements. `None` if the robot element wasn't registered.
+    element_id: Option<u32>,
+}
+
+#[cfg(feature = "robot")]
+thread_local! {
+    static NAV_REGISTRY: RefCell<NavRegistry> = RefCell::new(NavRegistry::default());
+}
+
+/// A read-only snapshot of one registered navigator, returned by
+/// [`all_navigators`] / [`navigator_snapshot`]. All reactive reads are
+/// untracked (querying never subscribes a scope).
+#[cfg(feature = "robot")]
+#[derive(Clone, Debug)]
+pub struct NavSnapshot {
+    pub nav_id: u32,
+    pub element_id: Option<u32>,
+    pub type_name: &'static str,
+    pub active_route: String,
+    pub active_path: String,
+    pub depth: usize,
+    pub can_go_back: bool,
+    /// `true` for the most-recently-dispatched-against navigator.
+    pub is_current: bool,
+    pub base: String,
+    /// Back-stack `(route, path)` pairs, root-first, current last.
+    pub stack: Vec<(String, String)>,
+}
+
+/// Register a freshly-built navigator. Returns its stable [`NavId`]; the
+/// walker stores it on the control via [`NavigatorControl::set_nav_id`] and
+/// arranges [`deregister_navigator`] on scope drop. If no navigator is yet
+/// marked current, this one becomes current (cold-start root).
+#[cfg(feature = "robot")]
+pub fn register_navigator(
+    control: &Rc<NavigatorControl>,
+    type_name: &'static str,
+    element_id: Option<u32>,
+) -> NavId {
+    NAV_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        let entry = NavRegEntry {
+            control: Rc::downgrade(control),
+            type_name,
+            element_id,
+        };
+        let id = if let Some(idx) = reg.free.pop() {
+            reg.entries[idx as usize] = Some(entry);
+            NavId(idx)
+        } else {
+            let idx = reg.entries.len() as u32;
+            reg.entries.push(Some(entry));
+            NavId(idx)
+        };
+        if reg.active.is_none() {
+            reg.active = Some(id);
+        }
+        id
+    })
+}
+
+/// Remove a navigator from the registry (its build scope dropped). Clears
+/// `active` if it pointed here. No-op for an unknown id.
+#[cfg(feature = "robot")]
+pub fn deregister_navigator(id: NavId) {
+    NAV_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        if let Some(slot) = reg.entries.get_mut(id.0 as usize) {
+            if slot.take().is_some() {
+                reg.free.push(id.0);
+            }
+        }
+        if reg.active == Some(id) {
+            reg.active = None;
+        }
+    });
+}
+
+/// Mark a navigator as the current/active one (last driven). Called from
+/// [`NavigatorControl::dispatch`].
+#[cfg(feature = "robot")]
+pub(crate) fn mark_active_navigator(id: NavId) {
+    NAV_REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        if reg
+            .entries
+            .get(id.0 as usize)
+            .map(|s| s.is_some())
+            .unwrap_or(false)
+        {
+            reg.active = Some(id);
+        }
+    });
+}
+
+/// Snapshot every live navigator. Dead `Weak`s (control dropped without a
+/// clean deregister) are skipped and pruned.
+#[cfg(feature = "robot")]
+pub fn all_navigators() -> Vec<NavSnapshot> {
+    // Collect (id, type_name, element_id, control, is_current) under a short
+    // borrow, then build snapshots after dropping it — snapshotting reads
+    // signals (untracked), which must not happen while NAV_REGISTRY is borrowed.
+    let collected: Vec<(u32, &'static str, Option<u32>, Rc<NavigatorControl>, bool)> =
+        NAV_REGISTRY.with(|r| {
+            let reg = r.borrow();
+            let active = reg.active;
+            let mut out = Vec::new();
+            for (i, slot) in reg.entries.iter().enumerate() {
+                if let Some(entry) = slot {
+                    if let Some(control) = entry.control.upgrade() {
+                        out.push((
+                            i as u32,
+                            entry.type_name,
+                            entry.element_id,
+                            control,
+                            active == Some(NavId(i as u32)),
+                        ));
+                    }
+                }
+            }
+            out
+        });
+    collected
+        .into_iter()
+        .filter_map(|(nav_id, type_name, element_id, control, is_current)| {
+            build_nav_snapshot(nav_id, type_name, element_id, &control, is_current)
+        })
+        .collect()
+}
+
+/// Snapshot one navigator by id. `None` if absent or its control is gone.
+#[cfg(feature = "robot")]
+pub fn navigator_snapshot(id: NavId) -> Option<NavSnapshot> {
+    let (type_name, element_id, control, is_current) = NAV_REGISTRY.with(|r| {
+        let reg = r.borrow();
+        let entry = reg.entries.get(id.0 as usize)?.as_ref()?;
+        let control = entry.control.upgrade()?;
+        Some((entry.type_name, entry.element_id, control, reg.active == Some(id)))
+    })?;
+    build_nav_snapshot(id.0, type_name, element_id, &control, is_current)
+}
+
+#[cfg(feature = "robot")]
+fn build_nav_snapshot(
+    nav_id: u32,
+    type_name: &'static str,
+    element_id: Option<u32>,
+    control: &Rc<NavigatorControl>,
+    is_current: bool,
+) -> Option<NavSnapshot> {
+    let (active_route, active_path, depth, can_go_back) = control.nav_state_snapshot()?;
+    Some(NavSnapshot {
+        nav_id,
+        element_id,
+        type_name,
+        active_route: active_route.to_string(),
+        active_path,
+        depth,
+        can_go_back,
+        is_current,
+        base: control.base(),
+        stack: control.stack_routes(),
+    })
+}
+
+/// Test-only: clear the registry between cases (it's thread-local, so this
+/// is just belt-and-suspenders for same-thread test ordering).
+#[cfg(all(test, feature = "robot"))]
+pub(crate) fn nav_registry_reset() {
+    NAV_REGISTRY.with(|r| *r.borrow_mut() = NavRegistry::default());
+}
+
+#[cfg(all(test, feature = "robot"))]
+mod nav_registry_tests {
+    //! Registry-level coverage. The SDK navigator *handlers* (stack/tab/
+    //! drawer) live in separate crates, so a full walker-driven mount isn't
+    //! reachable from runtime-core; these drive the registry API with a
+    //! hand-built `NavigatorControl` (the part this change owns) plus a
+    //! scope-drop test mirroring the walker's `on_cleanup` deregister wiring.
+    //! End-to-end walker registration is exercised by the inspector app.
+
+    use super::*;
+    use crate::reactive::{with_scope, Scope, Signal};
+
+    fn control_with_state(
+        route: &'static str,
+        path: &str,
+        depth: usize,
+        base: &str,
+    ) -> (Rc<NavigatorControl>, Box<Scope>) {
+        let control = Rc::new(NavigatorControl::new());
+        let mut scope = Box::new(Scope::new());
+        let ns = with_scope(&mut scope, || NavState {
+            active_route: Signal::new(route),
+            active_path: Signal::new(path.to_string()),
+            depth: Signal::new(depth),
+            can_go_back: Signal::new(depth > 1),
+        });
+        control.attach_nav_state(ns);
+        control.set_base(base.to_string());
+        (control, scope)
+    }
+
+    #[test]
+    fn enumerates_and_reports_state() {
+        nav_registry_reset();
+        let (control, _scope) = control_with_state("detail", "/items/5", 3, "");
+        let id = register_navigator(&control, "stack_navigator::Presentation", Some(7));
+        control.set_nav_id(id);
+
+        let all = all_navigators();
+        assert_eq!(all.len(), 1);
+        let s = &all[0];
+        assert_eq!(s.nav_id, id.0);
+        assert_eq!(s.element_id, Some(7));
+        assert_eq!(s.type_name, "stack_navigator::Presentation");
+        assert_eq!(s.active_route, "detail");
+        assert_eq!(s.active_path, "/items/5");
+        assert_eq!(s.depth, 3);
+        assert!(s.can_go_back);
+        assert!(s.is_current, "first-registered navigator is current (cold start)");
+        nav_registry_reset();
+    }
+
+    #[test]
+    fn current_tracks_mark_active() {
+        nav_registry_reset();
+        let (a, _sa) = control_with_state("home", "/", 1, "");
+        let (b, _sb) = control_with_state("profile", "/profile", 1, "/tab2");
+        let id_a = register_navigator(&a, "tab", None);
+        a.set_nav_id(id_a);
+        let id_b = register_navigator(&b, "stack", None);
+        b.set_nav_id(id_b);
+
+        // Cold start: the first registered (a) is current.
+        let cur = |id: NavId| navigator_snapshot(id).unwrap().is_current;
+        assert!(cur(id_a) && !cur(id_b));
+
+        // Dispatching against b marks it current.
+        mark_active_navigator(id_b);
+        assert!(!cur(id_a) && cur(id_b));
+        nav_registry_reset();
+    }
+
+    #[test]
+    fn prunes_dropped_control() {
+        nav_registry_reset();
+        let (control, _scope) = control_with_state("home", "/", 1, "");
+        let id = register_navigator(&control, "stack", None);
+        control.set_nav_id(id);
+        drop(control); // the Weak can no longer upgrade
+        assert!(all_navigators().is_empty(), "dropped control must not enumerate");
+        nav_registry_reset();
+    }
+
+    #[test]
+    fn deregister_removes_entry() {
+        nav_registry_reset();
+        let (control, _scope) = control_with_state("home", "/", 1, "");
+        let id = register_navigator(&control, "stack", None);
+        control.set_nav_id(id);
+        assert!(navigator_snapshot(id).is_some());
+        deregister_navigator(id);
+        assert!(navigator_snapshot(id).is_none());
+        assert!(all_navigators().is_empty());
+        nav_registry_reset();
+    }
+
+    #[test]
+    fn stack_routes_default_and_installed() {
+        nav_registry_reset();
+        let (control, _scope) = control_with_state("detail", "/items/5", 1, "");
+        let id = register_navigator(&control, "stack", None);
+        control.set_nav_id(id);
+
+        // No reporter installed → single current route.
+        assert_eq!(
+            navigator_snapshot(id).unwrap().stack,
+            vec![("detail".to_string(), "/items/5".to_string())]
+        );
+
+        // Installed reporter → full history, root-first.
+        control.install_stack_snapshot(Box::new(|| {
+            vec![
+                ("home".to_string(), "/".to_string()),
+                ("list".to_string(), "/items".to_string()),
+                ("detail".to_string(), "/items/5".to_string()),
+            ]
+        }));
+        let stack = navigator_snapshot(id).unwrap().stack;
+        assert_eq!(stack.len(), 3);
+        assert_eq!(stack.first().unwrap().0, "home");
+        assert_eq!(stack.last().unwrap().0, "detail", "current route is last");
+        nav_registry_reset();
+    }
+
+    /// Mirrors the walker's wiring: registration paired with an
+    /// `on_cleanup(deregister)` anchored to the navigator's build scope.
+    /// When that scope drops (navigator unmounts / `when`-branch flips), the
+    /// registry entry must be gone — no phantom navigator in the inspector.
+    #[test]
+    fn regression_navigator_registry_freed_on_scope_drop() {
+        nav_registry_reset();
+        let (control, _ns_scope) = control_with_state("home", "/", 1, "");
+
+        // The navigator's build scope (separate from the nav_state scope the
+        // control retains, exactly as in the walker).
+        let mut build_scope = Box::new(Scope::new());
+        let id = with_scope(&mut build_scope, || {
+            let id = register_navigator(&control, "stack", None);
+            control.set_nav_id(id);
+            crate::reactive::on_cleanup(move || deregister_navigator(id));
+            id
+        });
+        assert!(navigator_snapshot(id).is_some(), "registered while mounted");
+
+        drop(build_scope); // navigator unmounts
+        assert!(
+            navigator_snapshot(id).is_none(),
+            "registry entry must be freed when the build scope drops"
+        );
+        nav_registry_reset();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Hierarchical base path — a nested navigator's URL prefix
 // ---------------------------------------------------------------------------
 //
@@ -587,6 +950,22 @@ pub struct NavigatorControl {
     /// the signals to the navigator's real lifetime: freed when the control
     /// drops on navigator teardown (leak-free), never sooner.
     owning_scope: RefCell<Option<Box<crate::reactive::Scope>>>,
+    /// This navigator's id in the global registry (robot introspection).
+    /// Set once at build via [`set_nav_id`](Self::set_nav_id); `None` until
+    /// then. `dispatch` reads it to mark this navigator "current" so the
+    /// inspector can highlight the last-driven navigator.
+    nav_id: RefCell<Option<NavId>>,
+    /// SDK-installed back-stack reporter. Returns the full route history
+    /// root-first (index 0 = bottom, last = current/top), each entry a
+    /// `(route_name, full_path)`. The framework only tracks the current
+    /// route + depth in `nav_state`; real history lives in the per-backend
+    /// handler's screen vec (UINavigationController VCs, web history, the
+    /// fragment back-stack), so each handler installs a closure reading its
+    /// own container. `None` until installed — [`stack_routes`](Self::stack_routes)
+    /// then falls back to the single current route. Contract is uniform
+    /// across backends (root-first, current last); only the mechanism
+    /// differs (CLAUDE.md §7).
+    stack_snapshot: RefCell<Option<Box<dyn Fn() -> Vec<(String, String)>>>>,
 }
 
 impl NavigatorControl {
@@ -599,6 +978,8 @@ impl NavigatorControl {
             link_activator: RefCell::new(None),
             request_layout: RefCell::new(None),
             owning_scope: RefCell::new(None),
+            nav_id: RefCell::new(None),
+            stack_snapshot: RefCell::new(None),
         }
     }
 
@@ -680,10 +1061,69 @@ impl NavigatorControl {
         *self.depth.borrow()
     }
 
+    /// Record this navigator's global-registry id. Called once at build
+    /// from `walker::navigator::build` after [`register_navigator`].
+    pub fn set_nav_id(&self, id: NavId) {
+        *self.nav_id.borrow_mut() = Some(id);
+    }
+
+    /// This navigator's global-registry id, if registered.
+    pub fn nav_id(&self) -> Option<NavId> {
+        *self.nav_id.borrow()
+    }
+
+    /// Install the SDK handler's back-stack reporter (see the
+    /// `stack_snapshot` field). Called once at `init`. The closure must
+    /// return the history root-first with the current route last, reading
+    /// its container untracked. Cheap no-op storage when nothing reads it
+    /// (the `robot` bridge is the only reader).
+    pub fn install_stack_snapshot(&self, f: Box<dyn Fn() -> Vec<(String, String)>>) {
+        *self.stack_snapshot.borrow_mut() = Some(f);
+    }
+
+    /// The navigator's back-stack as `(route, path)` pairs, root-first,
+    /// current last. Uses the SDK-installed reporter when present; else
+    /// falls back to the single current route from `nav_state` (so a
+    /// handler that hasn't opted in still reports something coherent).
+    pub fn stack_routes(&self) -> Vec<(String, String)> {
+        if let Some(f) = self.stack_snapshot.borrow().as_ref() {
+            return f();
+        }
+        match self.nav_state_snapshot() {
+            Some((route, path, _, _)) => vec![(route.to_string(), path)],
+            None => Vec::new(),
+        }
+    }
+
+    /// Snapshot the reactive nav-state as `(active_route, active_path,
+    /// depth, can_go_back)`, reading every signal **untracked** so a
+    /// caller (the robot bridge) never subscribes a scope. `None` if
+    /// `nav_state` hasn't been attached yet.
+    pub fn nav_state_snapshot(&self) -> Option<(&'static str, String, usize, bool)> {
+        let st = self.nav_state.borrow();
+        let st = st.as_ref()?;
+        Some(crate::reactive::untrack(|| {
+            (
+                st.active_route.get(),
+                st.active_path.get(),
+                st.depth.get(),
+                st.can_go_back.get(),
+            )
+        }))
+    }
+
     /// Dispatch a NavCommand against this navigator. Updates the
     /// reactive nav-state mirror (for commands that change the active
     /// route) before forwarding to the SDK's installed dispatcher.
     pub fn dispatch(&self, cmd: NavCommand) {
+        // Mark this navigator "current" for the inspector: a dispatch is
+        // the framework-observable signal that this navigator is being
+        // driven (programmatic nav, link taps, and native gestures all
+        // route here or through the active_changed callback).
+        #[cfg(feature = "robot")]
+        if let Some(id) = *self.nav_id.borrow() {
+            mark_active_navigator(id);
+        }
         // Compose this navigator's base prefix onto the command's
         // (navigator-relative) url, so the nav-state mirror, chrome, and the
         // platform URL all see the full hierarchical path. For the root

@@ -152,8 +152,9 @@ pub use handles::{
     StateBits, TextHandle, TextOps, ViewHandle, ViewOps,
 };
 pub use builder::{
-    button, each_keyed, pressable, switch, text, view, when, Bindable, Bound, BuildElement,
-    ChildList, IntoDisabledSource, IntoElement, ReactiveForEach, ReactiveListKeyed, StaticForEach,
+    button, each_keyed, one_or_view, pressable, switch, text, view, when, Bindable, Bound,
+    BuildElement, ChildList, IntoDisabledSource, IntoElement, ReactiveCond, ReactiveForEach,
+    ReactiveListKeyed, StaticCond, StaticForEach,
 };
 pub use derive::{Action, Derived, IntoAction, IntoDerived};
 pub use identity::{
@@ -363,6 +364,14 @@ pub use mcp_catalog as __mcp;
 /// let count = signal!(0);
 /// // same as: let count = Signal::new(0);
 /// ```
+/// To watch a signal's live value in the Idealyst Inspector, mark it
+/// explicitly with [`robot::watch_signal`](crate::robot::watch_signal)
+/// (the value type must be `Debug`). Automatic watch-on-create was
+/// attempted but is impossible to do safely in stable Rust: rendering a
+/// value requires `Debug`, and forcing that on every `signal!` breaks
+/// signals over non-`Debug` types (closures, handles, `Option<MediaStream>`,
+/// …) — and the "use Debug if present" trick is not inference-safe (it
+/// fails to compile for inference-deferred types like `signal!(None)`).
 #[macro_export]
 macro_rules! signal {
     ($value:expr) => {

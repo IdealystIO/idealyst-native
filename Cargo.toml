@@ -172,6 +172,7 @@ members = [
     "examples/screenshot-demo",
     "examples/robot-e2e-demo",
     "examples/conformance",
+    "examples/inspector",
     "examples/server-fn-demo",
     "examples/mic-demo",
     "examples/screen-recorder-demo",

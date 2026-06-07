@@ -773,6 +773,122 @@ where
 }
 
 // =============================================================================
+// if dispatch — type-driven reactive-vs-static conditionals.
+// =============================================================================
+//
+// `ui!`'s `if COND { … } else { … }` lowers — AFTER the macro's syntactic
+// reactive paths (a visible inline `.get()` like `if sig.get() > 1`, and the
+// structured `if key(state)` call shape) — to
+// `(COND).__idealyst_if(|| then_nodes, || else_nodes)` inside a block that
+// brings BOTH traits below into scope. Rust method resolution then picks the
+// impl from COND's *type*:
+//
+//   - `bool` → `StaticCond` → the taken branch's flat node list, built once.
+//   - `Signal<bool>` (what `memo(|| …)` returns) / `Derived<bool>` →
+//     `ReactiveCond` → one reactive `when` that re-evaluates the condition and
+//     swaps branches on change.
+//
+// This mirrors the for-loop's `StaticForEach`/`ReactiveForEach` dispatch: the
+// *type* decides, so a bare `fn() -> bool` call is static (and allocates no
+// reactive machinery) while a reactive `Signal<bool>` is reactive. There is no
+// `.get()` substring guess at THIS step. The macro still detects an INLINE
+// `.get()` read syntactically and wraps it in a `when` BEFORE reaching here,
+// because such a condition's *type* is a plain `bool` and would otherwise
+// dispatch to `StaticCond` — the same special-case the reactive `for` range
+// (`for i in 0..n.get()`) needs.
+//
+// **Fn vs FnOnce — deliberate asymmetry.** `StaticCond` takes `FnOnce` branch
+// thunks: a static branch is built exactly once, so it may freely MOVE
+// captured non-`Copy` values, exactly like a plain Rust `if` block (no
+// regression). `ReactiveCond` takes `Fn + 'static` thunks: a reactive branch
+// is rebuilt on every change, so its captures must be re-readable — the same
+// constraint a hand-written `when(...)` imposes. Because only ONE trait
+// applies for a given condition type, the SAME emitted closure is checked
+// against whichever bound the selected impl carries: static `if`s keep FnOnce
+// ergonomics, reactive `if`s correctly require `Fn`.
+
+/// Collapse a branch's flat node list to a single `Element` root: an empty
+/// list → an empty `view`, exactly one node → that node verbatim (no wrapper),
+/// many → one `view` wrapping them. Used by [`ReactiveCond`] (a reactive
+/// branch needs one root per the anchor) and by the `ui!` macro's single-slot
+/// `if`/`match` normalization (where a one-element result must NOT pick up a
+/// spurious wrapper `view`).
+#[doc(hidden)]
+pub fn one_or_view(mut nodes: Vec<Element>) -> Element {
+    if nodes.len() == 1 {
+        nodes.pop().unwrap()
+    } else {
+        crate::IntoElement::into_element(view(nodes))
+    }
+}
+
+/// Static (built-once) `if` lowering for a plain `bool`. See the module note
+/// above; the `ui!` macro selects this vs [`ReactiveCond`] by the condition's
+/// *type*. `FnOnce` branches — a static branch may move captured values.
+#[doc(hidden)]
+pub trait StaticCond {
+    fn __idealyst_if<T, E>(self, then: T, else_: E) -> Vec<Element>
+    where
+        T: FnOnce() -> Vec<Element>,
+        E: FnOnce() -> Vec<Element>;
+}
+
+impl StaticCond for bool {
+    fn __idealyst_if<T, E>(self, then: T, else_: E) -> Vec<Element>
+    where
+        T: FnOnce() -> Vec<Element>,
+        E: FnOnce() -> Vec<Element>,
+    {
+        if self {
+            then()
+        } else {
+            else_()
+        }
+    }
+}
+
+/// Reactive `if` lowering for a reactive bool — a `Signal<bool>` (what `memo`
+/// returns) or a `Derived<bool>`. Produces a single reactive `when` (wrapped
+/// in a one-element vec so the call site flattens it uniformly with the static
+/// path). `Fn + 'static` branches — a reactive branch is rebuilt on change.
+#[doc(hidden)]
+pub trait ReactiveCond {
+    fn __idealyst_if<T, E>(self, then: T, else_: E) -> Vec<Element>
+    where
+        T: Fn() -> Vec<Element> + 'static,
+        E: Fn() -> Vec<Element> + 'static;
+}
+
+impl ReactiveCond for crate::Signal<bool> {
+    fn __idealyst_if<T, E>(self, then: T, else_: E) -> Vec<Element>
+    where
+        T: Fn() -> Vec<Element> + 'static,
+        E: Fn() -> Vec<Element> + 'static,
+    {
+        let sig = self;
+        vec![when(
+            move || sig.get(),
+            move || one_or_view(then()),
+            move || one_or_view(else_()),
+        )]
+    }
+}
+
+impl ReactiveCond for crate::derive::Derived<bool> {
+    fn __idealyst_if<T, E>(self, then: T, else_: E) -> Vec<Element>
+    where
+        T: Fn() -> Vec<Element> + 'static,
+        E: Fn() -> Vec<Element> + 'static,
+    {
+        vec![when(
+            self,
+            move || one_or_view(then()),
+            move || one_or_view(else_()),
+        )]
+    }
+}
+
+// =============================================================================
 // IntoElement — coercion helper used by the `ui!` macro and direct
 // when/switch callers.
 // =============================================================================

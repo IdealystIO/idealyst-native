@@ -755,6 +755,10 @@ pub unsafe extern "C" fn ios_main(root_view: *mut std::ffi::c_void) {{
     // synchronously at call time, which breaks long-press
     // recognizers and any other timer-driven feature.
     backend_ios::install_scheduler();
+    // Route runtime-core `log_*` through NSLog so they reach the iOS system
+    // log (Xcode console / `simctl log show`). Without it the StderrLogger
+    // fallback's output isn't captured there. Same fix as the web bootstrap.
+    backend_ios::install_logger();
 
     // `mount` runs the user's `app()` inside the root reactive
     // scope, so reactive primitives declared at the top of `app()`

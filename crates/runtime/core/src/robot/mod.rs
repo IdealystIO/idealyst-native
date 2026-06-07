@@ -57,11 +57,13 @@ pub mod bridge;
 pub mod components;
 pub mod logs;
 pub mod screenshot;
+pub mod watch;
 
 pub use components::{
     invoke_method, list_components, register_component, ComponentInstanceId,
     ComponentRegistration, ComponentSnapshot, Method,
 };
+pub use watch::watch_signal;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -485,9 +487,24 @@ impl Robot {
             let reg = r.borrow();
             match query {
                 Query::TestId(ref id) => {
-                    reg.find_by_test_id(id)
-                        .and_then(|eid| reg.get(eid).map(|e| vec![Element::from_registry(eid, e)]))
-                        .unwrap_or_default()
+                    // Scan ALL entries (not the `by_test_id` 1:1 index) so a
+                    // `test_id` shared by sibling list items returns every
+                    // match — `find_all`/`to_have_count` over a repeated row
+                    // affordance is a core E2E pattern (Playwright's
+                    // `getByTestId(...).toHaveCount(n)`). The `by_test_id` map
+                    // keeps last-wins and still backs the single `find`.
+                    reg.entries
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, slot)| {
+                            let entry = slot.as_ref()?;
+                            if entry.test_id == Some(id.as_str()) {
+                                Some(Element::from_registry(ElementId(i as u32), entry))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
                 }
                 Query::Label(ref text) => {
                     reg.entries
@@ -707,18 +724,38 @@ impl Robot {
     }
 
     /// Produce a recursive snapshot of the component hierarchy. Returns
-    /// the root elements (those with no parent) with their full subtree.
+    /// the root elements with their full subtree.
+    ///
+    /// A "root" is any entry that has **no reachable parent**: either
+    /// `parent == None`, or `parent == Some(pid)` where `pid` is no longer
+    /// a live registry entry (a freed/recycled slot). The second case —
+    /// an *orphan* — must surface, not silently disappear: navigation-time
+    /// screen mounts can register content against a parent id that is dead
+    /// by snapshot time (e.g. a navigator's robot id captured on
+    /// `current_parent()` whose slot was reused, or any timing where the
+    /// build's `PARENT_STACK` top no longer exists). Before this, such an
+    /// orphan was unreachable from every `parent == None` root, so the
+    /// current screen's elements vanished from `snapshot()` and `find`
+    /// could still see them but the tree showed only a bare `Navigator` —
+    /// see `stack-navigator/tests/robot_nav_screen_tree`. Treating a dead
+    /// parent as "no parent" keeps mounted content always visible in the
+    /// tree, independent of which backend/handler mounted it.
     pub fn snapshot(&self) -> Vec<TreeNode> {
         REGISTRY.with(|r| {
             let reg = r.borrow();
-            // Find root elements (no parent).
+            // Find root elements: no parent, or a parent that no longer
+            // resolves to a live entry (orphaned by a recycled/freed slot).
             let roots: Vec<ElementId> = reg
                 .entries
                 .iter()
                 .enumerate()
                 .filter_map(|(i, slot)| {
                     let entry = slot.as_ref()?;
-                    if entry.parent.is_none() {
+                    let is_root = match entry.parent {
+                        None => true,
+                        Some(pid) => reg.get(pid).is_none(),
+                    };
+                    if is_root {
                         Some(ElementId(i as u32))
                     } else {
                         None
@@ -882,4 +919,92 @@ pub(crate) fn add_child(parent: ElementId, child: ElementId) {
             entry.children.push(child);
         }
     });
+}
+
+#[cfg(test)]
+mod find_all_tests {
+    use super::*;
+
+    fn entry(test_id: &'static str) -> RegistryEntry {
+        RegistryEntry {
+            kind: ElementKind::Text,
+            test_id: Some(test_id),
+            label: None,
+            label_fn: None,
+            actions: ElementActions::empty(),
+            parent: None,
+            children: Vec::new(),
+        }
+    }
+
+    /// Regression: `find_all` by `test_id` must return EVERY element sharing
+    /// that id — sibling list rows legitimately share one affordance test_id
+    /// (Playwright's `getByTestId(...).toHaveCount(n)`). Previously it read the
+    /// `by_test_id` 1:1 index and returned at most one, so a list-affordance
+    /// count assertion (e.g. the conformance per-row del-marker) always saw 1.
+    #[test]
+    fn find_all_returns_every_duplicate_test_id() {
+        let robot = Robot::new();
+        robot.reset();
+        register(entry("row-del"));
+        register(entry("row-del"));
+        register(entry("row-del"));
+        register(entry("other"));
+
+        assert_eq!(robot.find_all(Query::test_id("row-del")).len(), 3);
+        assert_eq!(robot.find_all(Query::test_id("other")).len(), 1);
+        // The single `find` still resolves (last-wins via `by_test_id`).
+        assert!(robot.find(Query::test_id("row-del")).is_some());
+        robot.reset();
+    }
+
+    /// Regression: `snapshot()` must surface an *orphaned* entry — one whose
+    /// `parent` points to a freed/recycled slot — as a root, not hide it.
+    ///
+    /// This is the navigation-time screen-content loss: a screen mounted on
+    /// navigation can register content against a parent id (the navigator's
+    /// robot id captured via `current_parent()`) whose slot is dead by
+    /// snapshot time. Before the fix, `snapshot()` collected only
+    /// `parent == None` roots, so the orphan was unreachable from any root and
+    /// the current screen's elements vanished from the tree (only a bare
+    /// `Navigator` showed). Mounted content must always be reachable.
+    #[test]
+    fn snapshot_surfaces_orphan_with_dead_parent() {
+        let robot = Robot::new();
+        robot.reset();
+
+        // A live parent that we then free, leaving its child orphaned.
+        let dead_parent = register(entry("dead-parent"));
+        let child = register(RegistryEntry {
+            kind: ElementKind::Text,
+            test_id: Some("orphan-child"),
+            label: None,
+            label_fn: None,
+            actions: ElementActions::empty(),
+            parent: Some(dead_parent),
+            children: Vec::new(),
+        });
+        // Free the parent slot WITHOUT touching the child (simulating the
+        // navigator robot id whose slot was reused / the parent scope that
+        // dropped first). `remove` unlinks the child from the parent's list,
+        // but the child still holds `parent = Some(dead_parent)`.
+        REGISTRY.with(|r| {
+            // Manually drop just the parent slot so the child keeps its stale
+            // parent id (the real orphan condition).
+            r.borrow_mut().entries[dead_parent.0 as usize] = None;
+            r.borrow_mut().free.push(dead_parent.0);
+        });
+
+        // The child must appear as a snapshot root (its dead parent makes it
+        // unreachable any other way).
+        let tree = robot.snapshot();
+        let surfaced = tree.iter().any(|n| n.id == child && n.test_id == Some("orphan-child"));
+        assert!(
+            surfaced,
+            "orphaned entry (parent points to a freed slot) must surface as a \
+             snapshot root; tree = {:?}",
+            tree.iter().map(|n| (n.id, n.test_id)).collect::<Vec<_>>()
+        );
+        robot.reset();
+    }
 }

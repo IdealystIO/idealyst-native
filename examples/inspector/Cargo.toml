@@ -1,0 +1,34 @@
+[package]
+name = "inspector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Idealyst Inspector — a runtime debugging dashboard. Connects to a running idealyst app's robot bridge (the single TCP newline-JSON transport) and shows, live: every loaded navigator (current + back-stack), the element tree, components and their callable methods, reactive-arena + perf phase counters, watched signal values, and captured logs. MVP host: macOS desktop."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# The inspector is a CLIENT of the robot bridge, not a robot target — it
+# does NOT enable `runtime-core/robot`. It just renders an idealyst UI and
+# speaks the bridge's newline-JSON protocol over std::net.
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+icons-lucide = { workspace = true }
+stack-navigator = { workspace = true }
+serde_json = "1"
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+# Non-macOS native fallback so `cargo build`/check on a Linux CI host (or a
+# dev box building for the host target) still compiles the crate. The MVP
+# host is macOS; the terminal backend keeps the workspace green elsewhere.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "macos", target_os = "ios", target_os = "android")))'.dependencies]
+backend-terminal = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Inspector"
+bundle_id = "ai.truday.idealyst.inspector"
+version   = "0.0.1"
+targets   = ["macos"]

@@ -207,6 +207,22 @@ pub(super) fn build<B: Backend + 'static>(
     control.retain_scope(nav_scope);
     control.attach_nav_state(nav_state.clone());
 
+    // Register this navigator in the global registry so the robot bridge can
+    // enumerate it and report its route/depth/back-stack. The navigator's own
+    // robot `ElementId` is the current parent (pushed in `build_inner` before
+    // this dispatch), giving the inspector a `get_children` link to the current
+    // screen's elements. Deregister on the same scope-drop that removes the
+    // robot element entry, keeping the two registries consistent.
+    #[cfg(feature = "robot")]
+    {
+        let element_id = crate::robot::current_parent().map(|e| e.0);
+        let nav_id = primitives::navigator::register_navigator(&control, type_name, element_id);
+        control.set_nav_id(nav_id);
+        crate::reactive::on_cleanup(move || {
+            primitives::navigator::deregister_navigator(nav_id)
+        });
+    }
+
     let depth_changed: Rc<dyn Fn(usize)> = {
         let control = Rc::downgrade(&control);
         let depth_sig = nav_state.depth;
@@ -416,10 +432,30 @@ pub(super) fn build<B: Backend + 'static>(
         fill(handle);
     }
 
-    // Keep nav chrome scopes alive for the navigator's lifetime.
+    // Keep nav chrome scopes AND the per-screen `scopes` map alive for the
+    // navigator's lifetime — owned by the FRAMEWORK, not left to whether an
+    // SDK handler happens to retain the `NavigatorHost`.
+    //
+    // The per-screen `scopes` map owns each mounted screen's reactive scope,
+    // and those scopes own the screen content's robot-registry entries (via
+    // the `on_cleanup(deregister)` the walker anchors per element). The map's
+    // only other owners are the `Rc` clones captured by `mount_screen` /
+    // `release_screen` / `build_in_screen` and moved into the `NavigatorHost`.
+    // A handler that drops the host (e.g. the SSR primitive-chrome handler)
+    // — or any backend that doesn't retain the control — lets the map's
+    // refcount hit zero when `build` returns, dropping every screen scope and
+    // wiping the current screen's elements from the robot registry, so
+    // `Robot::snapshot()` shows a bare `Navigator` with no children. Retaining
+    // the map here makes screen-scope lifetime deterministic across every
+    // backend; `release_screen` still removes individual screens on pop, so
+    // popped screens deregister at the right time (this also fixes the stale
+    // "popped screen still in the registry" leak). Regression:
+    // `stack-navigator/tests/robot_screen_tree` (run with `--features robot`).
     let _chrome_keepalive = nav_chrome_scopes.clone();
+    let _screen_scopes_keepalive = scopes.clone();
     let _keepalive_effect = Effect::new(move || {
         let _ = &_chrome_keepalive;
+        let _ = &_screen_scopes_keepalive;
     });
 
     node

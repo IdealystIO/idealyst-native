@@ -424,6 +424,11 @@ impl Arena {
             // signal-stringifier, both of which become meaningless
             // once the signal slot is freed.
             self.signal_js_notifiers.remove(&(sid.0 as u64));
+            // Drop any robot watch entry for this slot at the same point —
+            // eager counterpart to the watch registry's lazy generation
+            // pruning, so a freed signal leaves the inspector immediately.
+            #[cfg(feature = "robot")]
+            crate::robot::watch::on_signal_freed(sid.0);
             if let Some(slot) = self.signals.get_mut(sid.0 as usize) {
                 if let Some(boxed) = slot.take() {
                     out.push(boxed);
@@ -993,6 +998,37 @@ pub fn arena_stats() -> ArenaStats {
             total_subscribers: a.signal_subscribers.iter().map(|s| s.len()).sum(),
             total_deps: a.effect_dependencies.iter().map(|d| d.len()).sum(),
         }
+    })
+}
+
+/// Current generation of a signal slot, or `0` if the index is out of
+/// range. Robot-only: the signal-watch registry captures this at
+/// registration time so a later read can detect a recycled slot. See
+/// [`signal_is_live`].
+#[cfg(feature = "robot")]
+pub fn signal_generation(signal_id_raw: u64) -> u32 {
+    ARENA.with(|a| {
+        a.borrow()
+            .signal_gen
+            .get(signal_id_raw as usize)
+            .copied()
+            .unwrap_or(0)
+    })
+}
+
+/// `true` if the slot for `signal_id_raw` is currently occupied AND its
+/// generation still matches `gen`. Lets robot-side introspection read a
+/// watched signal *without* risking `Signal::get`'s stale-read panic: a
+/// freed-then-recycled slot fails the generation check, so the watch
+/// registry skips it instead of reading the new occupant's value. One
+/// arena borrow, two `Vec` index reads. Robot-only.
+#[cfg(feature = "robot")]
+pub fn signal_is_live(signal_id_raw: u64, gen: u32) -> bool {
+    let idx = signal_id_raw as usize;
+    ARENA.with(|a| {
+        let a = a.borrow();
+        a.signal_gen.get(idx).copied() == Some(gen)
+            && a.signals.get(idx).map_or(false, |s| s.is_some())
     })
 }
 

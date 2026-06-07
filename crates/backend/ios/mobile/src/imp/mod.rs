@@ -2599,6 +2599,24 @@ impl Backend for IosBackend {
         }
         self.layout.mark_dirty(parent_layout);
         unsafe { child_view.removeFromSuperview() };
+
+        // Reflow after the removal — SYMMETRIC with `insert_at`. Marking the
+        // parent dirty only invalidates its cached size; nothing recomputes
+        // layout until a pass runs. `insert_at` runs one so a spliced child
+        // paints immediately; removal needs the mirror so a content-sized
+        // ancestor *shrinks* to fit the now-shorter child set in the same
+        // turn (the "Layers popover doesn't shrink on iOS" bug). Same
+        // window-attached discriminator: a live parent reflows synchronously;
+        // a mid-build removal on a floating parent defers to the closing
+        // `finish()` pass (a sync pass against a partial tree would cache
+        // wrong sizes).
+        let parent_window: *const NSObject = unsafe { msg_send![parent_view, window] };
+        if !parent_window.is_null() && !sync_layout_already_done_this_turn() {
+            arm_sync_layout_done_reset();
+            self.run_layout_pass_global();
+        } else {
+            schedule_layout_pass();
+        }
     }
 
     /// Insert `child` into `parent` at `index` among its current subviews
