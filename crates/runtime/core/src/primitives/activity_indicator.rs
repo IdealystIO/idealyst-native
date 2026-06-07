@@ -53,6 +53,8 @@ pub fn activity_indicator() -> Bound<ActivityIndicatorHandle> {
         style: None,
         ref_fill: None,
         accessibility: crate::accessibility::AccessibilityProps::default(),
+        #[cfg(feature = "robot")]
+        test_id: None,
     })
 }
 

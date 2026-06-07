@@ -138,6 +138,14 @@ pub struct MacosBackend {
     /// window, so the layout pass lays the toolbar out inside it.
     pub(crate) detached_window_roots:
         HashMap<usize, Retained<objc2_app_kit::NSWindow>>,
+    /// View-pointer keys of `create_portal` content views. A portal mounts
+    /// itself into the host window's content view and is its OWN Taffy root, so
+    /// (mirroring iOS's `portal_instances`) `insert` must SKIP the walker's
+    /// attempt to reparent it into the surrounding tree — otherwise the overlay
+    /// renders inline at the declaration site (e.g. a Modal landing at the bottom
+    /// of a Settings list with no backdrop). The layout pass computes each against
+    /// the viewport so a FullScreen portal fills the window.
+    pub(crate) portal_roots: std::collections::HashSet<usize>,
     /// Layout node of the top-of-tree root, stashed by `finish` so a
     /// post-mount `schedule_layout_pass()` can recompute from it without
     /// the `root: Node` argument `finish` receives. `finish` runs exactly
@@ -374,6 +382,7 @@ impl MacosBackend {
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
             nav_handler_instances: HashMap::new(),
             detached_window_roots: HashMap::new(),
+            portal_roots: std::collections::HashSet::new(),
             root_layout: None,
         };
         backend.drain_self_registrars();
@@ -1144,6 +1153,133 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     // SegmentedControl/Tabs active underline, Field borders, the whiteboard
     // swatch ring) rendered borderless on macOS while iOS/web showed it.
     border::apply_border(view, &layer, style);
+
+    // Overflow → CALayer `masksToBounds` (AppKit's equivalent of UIView's
+    // `clipsToBounds`). Mirrors iOS `style.rs` so the backends converge (Rule
+    // #7): a plain `overflow: Hidden` view clips its children on macOS too. The
+    // macOS backend previously honored overflow ONLY on scroll views, so a
+    // styled non-scroll view silently never clipped (iOS/Android/web did). When
+    // overflow is unset we leave `masksToBounds` as the cornerRadius branch above
+    // decided. Clipping is a layer mask — it does NOT detach a child's hosted
+    // `CAMetalLayer`; the view is already layer-backed (`setWantsLayer` above) and
+    // the GPU surface keeps presenting, clipped to bounds.
+    if let Some(clip) = overflow_masks_to_bounds(style) {
+        let _: () = unsafe { msg_send![&layer, setMasksToBounds: clip] };
+    }
+}
+
+/// The `masksToBounds` value an explicit `overflow` requests: `Hidden` clips,
+/// `Visible` doesn't, and an unset overflow returns `None` so the caller leaves
+/// whatever the cornerRadius branch decided. Pure so it's host-testable — a full
+/// NSView mount needs a main thread + live layer (see `imp::icon` tests), so the
+/// clip *decision* is the closest reachable guard for this branch.
+fn overflow_masks_to_bounds(style: &StyleRules) -> Option<bool> {
+    style
+        .overflow
+        .as_ref()
+        .map(|o| matches!(o, runtime_core::Overflow::Hidden))
+}
+
+#[cfg(test)]
+mod overflow_tests {
+    use super::overflow_masks_to_bounds;
+    use runtime_core::{Overflow, StyleRules};
+
+    // Regression: macOS used to ignore `overflow` on non-scroll views entirely,
+    // so a styled `overflow: Hidden` parent never clipped its children (iOS /
+    // Android / web all did). `apply_style_to_view` now routes the decision here.
+    #[test]
+    fn overflow_decides_masks_to_bounds() {
+        assert_eq!(
+            overflow_masks_to_bounds(&StyleRules { overflow: Some(Overflow::Hidden), ..Default::default() }),
+            Some(true),
+            "overflow: Hidden must clip (masksToBounds = true)",
+        );
+        assert_eq!(
+            overflow_masks_to_bounds(&StyleRules { overflow: Some(Overflow::Visible), ..Default::default() }),
+            Some(false),
+            "overflow: Visible must not clip",
+        );
+        assert_eq!(
+            overflow_masks_to_bounds(&StyleRules::default()),
+            None,
+            "unset overflow leaves the cornerRadius decision untouched",
+        );
+    }
+}
+
+/// The Taffy style a `create_portal` container view gets, from its target. The
+/// container is computed as an orphan root against the viewport (Auto axes fill
+/// to the window), so this only carries the flex justify/align that positions the
+/// single content child within that frame. Mirrors iOS
+/// `portal::container_style_for_placement` / `container_style_for_anchor` (Rule
+/// #7 — keep the two backends' portal placement identical). Pure → host-testable.
+fn portal_container_style(target: &runtime_core::primitives::portal::PortalTarget) -> StyleRules {
+    use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
+    use runtime_core::{AlignItems, FlexDirection, JustifyContent};
+
+    let mut rules = StyleRules { flex_direction: Some(FlexDirection::Column), ..Default::default() };
+    let placement = match target {
+        PortalTarget::Viewport(p) => *p,
+        // Anchored/named portals span the viewport with neutral flex; the content
+        // positions itself (absolute insets). FullScreen is the closest neutral.
+        _ => ViewportPlacement::FullScreen,
+    };
+    match placement {
+        ViewportPlacement::Center => {
+            rules.justify_content = Some(JustifyContent::Center);
+            rules.align_items = Some(AlignItems::Center);
+        }
+        ViewportPlacement::Top => {
+            rules.justify_content = Some(JustifyContent::FlexStart);
+            rules.align_items = Some(AlignItems::Stretch);
+        }
+        ViewportPlacement::Bottom => {
+            rules.justify_content = Some(JustifyContent::FlexEnd);
+            rules.align_items = Some(AlignItems::Stretch);
+        }
+        ViewportPlacement::Left => {
+            rules.justify_content = Some(JustifyContent::FlexStart);
+            rules.align_items = Some(AlignItems::FlexStart);
+        }
+        ViewportPlacement::Right => {
+            rules.justify_content = Some(JustifyContent::FlexStart);
+            rules.align_items = Some(AlignItems::FlexEnd);
+        }
+        ViewportPlacement::FullScreen => {
+            rules.justify_content = Some(JustifyContent::FlexStart);
+            rules.align_items = Some(AlignItems::Stretch);
+        }
+    }
+    rules
+}
+
+#[cfg(test)]
+mod portal_tests {
+    use super::portal_container_style;
+    use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
+    use runtime_core::{AlignItems, JustifyContent};
+
+    // Regression: a `FullScreen` portal (idea-ui `Modal`) rendered inline at the
+    // bottom of its screen on macOS — `insert` reparented it into the main tree
+    // instead of keeping it an escaped, viewport-sized root. The container style
+    // must stretch its child to fill the window so the Modal's own centering
+    // container can center the card. (The escape itself — the `portal_roots`
+    // `insert` skip + per-root layout — needs a live AppKit window to verify; this
+    // pins the placement style, mirroring iOS.)
+    #[test]
+    fn fullscreen_portal_stretches_its_child() {
+        let s = portal_container_style(&PortalTarget::Viewport(ViewportPlacement::FullScreen));
+        assert_eq!(s.align_items, Some(AlignItems::Stretch));
+        assert_eq!(s.justify_content, Some(JustifyContent::FlexStart));
+    }
+
+    #[test]
+    fn center_portal_centers_its_child() {
+        let s = portal_container_style(&PortalTarget::Viewport(ViewportPlacement::Center));
+        assert_eq!(s.align_items, Some(AlignItems::Center));
+        assert_eq!(s.justify_content, Some(JustifyContent::Center));
+    }
 }
 
 /// Resolve a deferred cornerRadius (stashed as `idealyst_requested_
@@ -1370,15 +1506,11 @@ impl MacosBackend {
             animated::sync_transform_after_layout(view, &self.animated_states);
         }
 
-        // Size every NSScrollView's documentView to its content's bounding
-        // box. The framework parents a scroll view's children under the OUTER
-        // scroll-view Taffy node (mirroring iOS's single-UIScrollView model) so
-        // the layout pass actually reaches and sizes them; the inner
-        // documentView is a native-only container that AppKit scrolls. Taffy
-        // never positions the documentView, so without this it stays 0×0 and
-        // the (correctly laid-out) children are clipped to nothing — the macOS
-        // "scroll page renders blank" bug. Mirrors iOS's contentSize sync.
-        self.sync_scroll_document_views();
+        // (Scroll documentView sizing is deferred to the END of this method — it
+        // must run AFTER the detached + portal subtrees are laid out, or a scroll
+        // view inside a portal (e.g. an idea-ui Modal's body) gets a documentView
+        // sized against stale/uncomputed frames and its content is clipped /
+        // un-hit-testable. See the `sync_scroll_document_views` call below.)
 
         // Keep every detached (screen_recorder private-layer) overlay window
         // covering the host's content area BEFORE we recompute its contents.
@@ -1424,6 +1556,35 @@ impl MacosBackend {
         for (key, size) in detached {
             self.layout_detached_root(key, size);
         }
+
+        // Lay out each portal container against the FULL viewport. A portal is
+        // its own orphan Taffy root (not reachable from the host root computed
+        // above; `insert` keeps it escaped via `portal_roots`), so it needs an
+        // explicit compute — `layout_detached_root` computes it against the given
+        // size (Auto axes fill to the viewport) and frames its subtree. Mirrors
+        // iOS, where `run_layout_pass_global` computes every Taffy root against
+        // the viewport. Without this the portal subtree kept a 0/stale frame.
+        if !self.portal_roots.is_empty() {
+            let portal_size = CGSize { width: width as f64, height: height as f64 };
+            let portal_keys: Vec<usize> = self.portal_roots.iter().copied().collect();
+            for key in portal_keys {
+                self.layout_detached_root(key, portal_size);
+            }
+        }
+
+        // Size every NSScrollView's documentView to its content's bounding box —
+        // LAST, so it sees the final frames of EVERY subtree (main, detached, and
+        // portal). The framework parents a scroll view's children under the OUTER
+        // scroll-view Taffy node (mirroring iOS's single-UIScrollView model), so
+        // the layout passes above gave each child a real frame; the inner
+        // documentView is a native-only container Taffy never positions, so
+        // without sizing it here it stays 0×0 and clips its children to nothing.
+        // Critically it must run after the portal pass: a scroll view inside a
+        // portal (an idea-ui Modal's scrollable body) would otherwise be sized
+        // against stale frames and its content — including the action buttons —
+        // would be clipped and un-hit-testable (the "modal renders but nothing is
+        // pressable" bug). Mirrors iOS's `contentSize` sync.
+        self.sync_scroll_document_views();
     }
 
     /// The host window's current content rect in SCREEN coordinates, or `None`
@@ -2566,6 +2727,19 @@ impl Backend for MacosBackend {
         // (sized to the window by the detached-root pass in `finish`) and the
         // walker's child-insert already populated it. Mirror of iOS.
         let child_key = child_view as *const NSView as usize;
+
+        // Portal container: it already mounted ITSELF into the host window's
+        // content view in `create_portal` and is its own viewport-sized Taffy
+        // root (laid out in `compute_and_apply_layout`). The walker still calls
+        // `insert(declaration_parent, portal_node)` for it — doing the reparent
+        // here would yank the overlay out of the host overlay and INTO the
+        // surrounding tree, so it'd render inline at the declaration site (a
+        // Modal at the bottom of its screen, no full-window backdrop). Skip it.
+        // Mirrors iOS's `portal_instances` guard.
+        if self.portal_roots.contains(&child_key) {
+            return;
+        }
+
         if self.detached_window_roots.contains_key(&child_key) {
             return;
         }
@@ -3197,14 +3371,13 @@ impl Backend for MacosBackend {
         _trap_focus: bool,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        // v1: full-viewport overlay attached to the host window's
-        // contentView. Anchor positioning, scrim styling, named-slot
-        // routing, on_dismiss event firing, and focus trapping are
-        // deferred — match iOS's portal_instances surface when those
-        // land. Today this is enough to keep author code mounting a
-        // `<Portal>` from panicking; the subtree appears as a
-        // top-of-window overlay.
-        let _ = target; // No per-target behavior in v1.
+        // Full-viewport overlay attached to the host window's contentView. Scrim
+        // styling, named-slot routing, on_dismiss event firing, and focus
+        // trapping are deferred — match iOS's portal_instances surface when those
+        // land. The container's flex style (from the placement) positions its
+        // single content child within the viewport; FullScreen stretches it so a
+        // self-centering child (idea-ui `Modal`) fills the window.
+        let container_rules = portal_container_style(&target);
 
         let content = FlippedView::new(self.mtm);
         let content: Retained<NSView> = Retained::into_super(content);
@@ -3219,15 +3392,15 @@ impl Backend for MacosBackend {
             unsafe { host.addSubview(&content) };
         }
 
-        // Register in the layout tree as a Taffy root. Match what
-        // iOS does for FullScreen portals: the content fills the
-        // viewport, so its style is a full-flex container. Anchor
-        // positioning is a future addition.
+        // Register the container as its own Taffy root, sized via the placement
+        // flex style. It's an orphan (no Taffy parent — `insert` skips the
+        // walker's reparent via `portal_roots`), so `compute_and_apply_layout`
+        // computes it against the viewport (Auto axes fill to the window) and the
+        // placement's justify/align positions the content child inside it.
         let layout_node = self.layout_for_view(&content);
-        // Default style is the framework-default (full-stretch);
-        // anchor-driven positioning lands when the anchor module
-        // does, mirroring `portal::container_style_for_anchor`.
-        let _ = layout_node;
+        self.layout.set_style(layout_node, &container_rules);
+        let portal_key = &*content as *const NSView as usize;
+        self.portal_roots.insert(portal_key);
 
         // Hold a strong ref so a future `release_portal` can
         // detach it cleanly. Without a side-map entry, removal
@@ -3242,6 +3415,7 @@ impl Backend for MacosBackend {
         // `portal_instances` lands (mirroring iOS's per-portal
         // entry map), we'll also drop any KVO observers / dismiss
         // gesture recognizers attached at create time.
+        self.portal_roots.remove(&node.view_key());
         let view = node.as_view();
         unsafe { view.removeFromSuperview() };
     }

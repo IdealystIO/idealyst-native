@@ -26,11 +26,6 @@ files = { workspace = true }
 # where the canvas / video / screen-recorder externals register their handlers.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
-# Blob-URL playback of a recorded file (web has no `file://`; IndexedDB bytes →
-# `URL.createObjectURL`). See `resolve_playback_url`.
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Url"] }
 
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }

@@ -199,7 +199,78 @@ pub(super) fn robot_extract_meta(node: &Element) -> Option<RobotMeta> {
             label_fn: None,
             actions: ElementActions::empty(),
         }),
+        // Passive/visual primitives: no actions, but findable by `test_id`
+        // and kind so an E2E suite can assert "this rendered". Registering
+        // them is what lets the conformance app verify an `icon` / spinner /
+        // scroll container actually mounted (previously they fell through to
+        // the catch-all and were invisible to the robot — see the
+        // conformance `static primitives render` regression).
+        Element::Icon { test_id, .. } => Some(RobotMeta {
+            kind: ElementKind::Icon,
+            test_id: *test_id,
+            label: None,
+            label_fn: None,
+            actions: ElementActions::empty(),
+        }),
+        Element::ActivityIndicator { test_id, .. } => Some(RobotMeta {
+            kind: ElementKind::ActivityIndicator,
+            test_id: *test_id,
+            label: None,
+            label_fn: None,
+            actions: ElementActions::empty(),
+        }),
+        Element::ScrollView { test_id, .. } => Some(RobotMeta {
+            kind: ElementKind::ScrollView,
+            test_id: *test_id,
+            label: None,
+            label_fn: None,
+            actions: ElementActions::empty(),
+        }),
+        Element::Graphics { test_id, .. } => Some(RobotMeta {
+            kind: ElementKind::Graphics,
+            test_id: *test_id,
+            label: None,
+            label_fn: None,
+            actions: ElementActions::empty(),
+        }),
+        Element::Presence { test_id, .. } => Some(RobotMeta {
+            kind: ElementKind::Presence,
+            test_id: *test_id,
+            label: None,
+            label_fn: None,
+            actions: ElementActions::empty(),
+        }),
         // Structural/reactive primitives don't get registered.
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::robot_extract_meta;
+    use crate::primitives::activity_indicator::activity_indicator;
+    use crate::primitives::scroll_view::scroll_view;
+    use crate::robot::ElementKind;
+    use crate::IntoElement;
+
+    /// Regression: passive/visual primitives (`activity_indicator`,
+    /// `scroll_view`, …) must carry a `test_id` *and* be extracted by the
+    /// robot walker, so an E2E suite can locate them. Before this, both the
+    /// `test_id` field and the `robot_extract_meta` arm were missing: the
+    /// builder's `.test_id()` silently no-op'd and the element fell through
+    /// to the catch-all `_ => None` — invisible to the robot. Caught by the
+    /// conformance app's `static primitives render` test failing on
+    /// `getByTestId("spinner")`.
+    #[test]
+    fn passive_primitives_carry_and_expose_test_id() {
+        let ai = activity_indicator().test_id("spin").into_element();
+        let meta = robot_extract_meta(&ai).expect("activity_indicator must register");
+        assert_eq!(meta.kind, ElementKind::ActivityIndicator);
+        assert_eq!(meta.test_id, Some("spin"));
+
+        let sv = scroll_view(Vec::new()).test_id("scroll").into_element();
+        let meta = robot_extract_meta(&sv).expect("scroll_view must register");
+        assert_eq!(meta.kind, ElementKind::ScrollView);
+        assert_eq!(meta.test_id, Some("scroll"));
     }
 }

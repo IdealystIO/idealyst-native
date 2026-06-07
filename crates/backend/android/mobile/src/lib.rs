@@ -40,6 +40,9 @@
 #[cfg(target_os = "android")]
 mod imp;
 
+#[cfg(target_os = "android")]
+mod logger;
+
 /// Phase-timer wrapper around `runtime_core::debug`'s aggregator.
 /// Zero-cost stub when `debug-stats` is off (the macro expansion is
 /// a let-binding the optimizer elides). Enabled by passing

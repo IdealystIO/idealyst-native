@@ -1577,6 +1577,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "conformance"
+version = "0.0.1"
+dependencies = [
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-macos",
+ "backend-terminal",
+ "backend-web",
+ "dev-server",
+ "icons-lucide",
+ "idea-ui",
+ "robot-e2e",
+ "runtime-core",
+ "stack-navigator",
+]
+
+[[package]]
 name = "console_error_panic_hook"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6333,6 +6350,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "robot-e2e"
+version = "0.0.1"
+dependencies = [
+ "runtime-core",
+]
+
+[[package]]
 name = "robot-e2e-demo"
 version = "0.0.1"
 dependencies = [
@@ -9221,14 +9245,11 @@ dependencies = [
  "files",
  "icons-lucide",
  "idea-ui",
- "js-sys",
  "media-stream",
  "media-writer",
  "runtime-core",
  "stack-navigator",
  "video",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]

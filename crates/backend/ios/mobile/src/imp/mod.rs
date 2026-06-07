@@ -1768,12 +1768,10 @@ impl Backend for IosBackend {
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        // Plain UIScrollView, frame-based. Children are added
-        // directly as subviews (no inner UIStackView). Their frames
-        // come from Taffy via `apply_frames`. We sync the scroll
-        // view's `contentSize` to the bounding rect of its Taffy
-        // children at the end of every layout pass so scrolling
-        // works.
+        // Plain UIScrollView, frame-based. Children are added directly as
+        // subviews (no inner UIStackView); their frames come from Taffy via
+        // `apply_frames`. We sync `contentSize` to the bounding rect of the Taffy
+        // children at the end of every layout pass so scrolling works.
         let scroll = unsafe { UIScrollView::new(self.mtm) };
 
         // Always allow scroll gestures even when content fits — UIKit
@@ -2277,6 +2275,19 @@ impl Backend for IosBackend {
         // the recognizer's `UIGestureRecognizerDelegate`; see its
         // `gestureRecognizerShouldBegin:` + `TAP_GATE_SETTLE_SECS`.
         let _: () = unsafe { msg_send![&*tap_gr, setDelegate: &*target] };
+        // Do NOT cancel touches in the view (and its subtree) when this tap
+        // recognizes. A Pressable can WRAP other interactive content — the idea-ui
+        // `Modal` makes its whole card a no-op Pressable (so a tap on the card's
+        // empty area is consumed instead of dismissing via the backdrop), with the
+        // action buttons (raw `on_touch` `IdealystTouchView`s) nested inside it.
+        // With the default `cancelsTouchesInView = YES`, the card's tap recognizer
+        // recognizes a tap that lands on a button and CANCELS that button's touch
+        // sequence, so the button's `touchesEnded` (where its tap handler fires)
+        // never arrives and the button does nothing. `false` lets the recognizer
+        // still fire this pressable's own click while delivering the touch through
+        // to nested interactive descendants. (The pressable still consumes
+        // outside-taps purely by being a hit-test-opaque view over the backdrop.)
+        let _: () = unsafe { msg_send![&*tap_gr, setCancelsTouchesInView: false] };
         let _: () = unsafe { msg_send![&view, addGestureRecognizer: &*tap_gr] };
         self.retain_target(&target);
 

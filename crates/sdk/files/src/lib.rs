@@ -158,6 +158,22 @@ mod tests {
         assert_eq!(safe_relative("./x").unwrap(), PathBuf::from("x"));
     }
 
+    /// The native `loadable_url` default returns a `file://` URL built from the
+    /// store's real path (it addresses the blob, independent of whether the file
+    /// exists yet). The web override — bytes → object URL — is exercised in the
+    /// browser, not here.
+    #[tokio::test]
+    async fn native_loadable_url_is_file_scheme() {
+        let store = app_files("files-test-loadable").expect("app dir resolves on the test host");
+        let url = store
+            .loadable_url("rec/clip.mp4")
+            .await
+            .expect("loadable_url ok")
+            .expect("native path resolves");
+        assert!(url.starts_with("file://"), "expected a file:// URL, got {url}");
+        assert!(url.ends_with("rec/clip.mp4"), "URL should end with the relative path, got {url}");
+    }
+
     #[test]
     fn safe_relative_rejects_escapes() {
         assert!(matches!(

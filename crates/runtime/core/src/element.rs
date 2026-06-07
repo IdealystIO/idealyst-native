@@ -242,6 +242,8 @@ pub enum Element {
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
     },
     /// Controlled text input. The parent owns the value as a
     /// `Signal<String>`; on every native input event the framework
@@ -347,6 +349,8 @@ pub enum Element {
         /// `OnScrollChangeListener`, etc.).
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         accessibility: AccessibilityProps,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
     },
     /// Controlled numeric slider. Like `TextInput`/`Toggle`, the parent
     /// owns the value signal. If `step` is set, the framework snaps
@@ -372,6 +376,8 @@ pub enum Element {
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
     },
     /// Virtualized list. Runtime backends consume the closures
     /// (`render_item` / `item_count.compute` / `item_key`) and
@@ -432,6 +438,8 @@ pub enum Element {
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
     },
     /// Reactive conditional. Renders `then()` while `cond` evaluates
     /// to true and `otherwise()` when it's false. `cond` is a
@@ -680,6 +688,8 @@ pub enum Element {
         exit: Option<primitives::presence::PresenceAnim>,
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
     },
     /// Lazy — code-splitting boundary. The subtree is shipped as a
     /// separate wasm chunk on web (via `wasm-split`) and inlined
@@ -718,10 +728,15 @@ impl Element {
             | Element::Button { test_id, .. }
             | Element::Pressable { test_id, .. }
             | Element::Image { test_id, .. }
+            | Element::Icon { test_id, .. }
             | Element::TextInput { test_id, .. }
             | Element::TextArea { test_id, .. }
             | Element::Toggle { test_id, .. }
-            | Element::Slider { test_id, .. } => {
+            | Element::Slider { test_id, .. }
+            | Element::ScrollView { test_id, .. }
+            | Element::ActivityIndicator { test_id, .. }
+            | Element::Graphics { test_id, .. }
+            | Element::Presence { test_id, .. } => {
                 *test_id = Some(id);
             }
             _ => {
@@ -740,10 +755,15 @@ impl Element {
             | Element::Button { test_id, .. }
             | Element::Pressable { test_id, .. }
             | Element::Image { test_id, .. }
+            | Element::Icon { test_id, .. }
             | Element::TextInput { test_id, .. }
             | Element::TextArea { test_id, .. }
             | Element::Toggle { test_id, .. }
-            | Element::Slider { test_id, .. } => *test_id,
+            | Element::Slider { test_id, .. }
+            | Element::ScrollView { test_id, .. }
+            | Element::ActivityIndicator { test_id, .. }
+            | Element::Graphics { test_id, .. }
+            | Element::Presence { test_id, .. } => *test_id,
             _ => None,
         }
     }

@@ -891,49 +891,10 @@ pub fn ActionButton(props: &ActionButtonProps) -> Element {
 // Playback-URL resolution (native file:// vs web blob URL)
 // ============================================================================
 
-/// Resolve a playable URL for a recorded file in the `REC_STORE`.
-///
-/// Native → a `file://` URL via the store's real on-disk path (synchronous, but
-/// `async` for a uniform signature). Web has no filesystem: the file lives as
-/// bytes in IndexedDB, so we read them and wrap them in a blob URL
-/// (`URL.createObjectURL`) the `<video>` can play.
+/// Resolve a playable URL for a recorded file in the `REC_STORE`. The
+/// file:// (native) vs blob: (web) split lives in the `files` SDK's
+/// [`loadable_url`](files::FileStore::loadable_url) — no per-platform code here.
 async fn resolve_playback_url(path: &str) -> Option<String> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let store = files::app_files(REC_STORE).ok()?;
-        let p = store.local_path(path)?;
-        Some(format!("file://{}", p.display()))
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let store = files::app_files(REC_STORE).ok()?;
-        let bytes = match store.read(path).await {
-            Ok(Some(b)) => b,
-            _ => return None,
-        };
-        blob_url_from_bytes(&bytes)
-    }
-}
-
-/// Wrap recorded bytes in an object URL the browser `<video>` can load. The
-/// container is browser-chosen (Chromium → WebM, Safari → MP4); we sniff `ftyp`
-/// to label MP4, else assume WebM, so the media element picks the right decoder.
-///
-/// The URL is intentionally not revoked — a demo records occasionally and the
-/// blob is released on page reload; a production app would `revokeObjectURL` when
-/// the preview unmounts.
-#[cfg(target_arch = "wasm32")]
-fn blob_url_from_bytes(bytes: &[u8]) -> Option<String> {
-    let arr = js_sys::Uint8Array::from(bytes);
-    let parts = js_sys::Array::new();
-    parts.push(&arr);
-    let opts = web_sys::BlobPropertyBag::new();
-    let mime = if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
-        "video/mp4"
-    } else {
-        "video/webm"
-    };
-    opts.set_type(mime);
-    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).ok()?;
-    web_sys::Url::create_object_url_with_blob(&blob).ok()
+    let store = files::app_files(REC_STORE).ok()?;
+    store.loadable_url(path).await.ok().flatten()
 }

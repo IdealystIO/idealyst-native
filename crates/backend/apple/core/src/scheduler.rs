@@ -36,6 +36,10 @@ pub fn install_scheduler() {
     runtime_core::scheduling::install_debug_log(Box::new(|msg| {
         crate::log::apple_log(msg);
     }));
+    // Route the author-facing logger (`runtime_core::log` / `log_info!`)
+    // through NSLog too, so app logs surface in the Xcode/Console.app
+    // unified log rather than only stderr. First-install wins.
+    crate::log::install_logger();
     // Install the cooperative main-thread async executor alongside the
     // scheduler. Without it, `runtime_core::driver::spawn_async` falls back
     // to `pollster::block_on` ON THE MAIN THREAD — fine for short one-shot

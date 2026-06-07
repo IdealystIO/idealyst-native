@@ -1,0 +1,52 @@
+[package]
+name = "conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform conformance app: mounts the framework's primitives, idea-ui components, and navigators in deliberately weird configurations, each tagged with a stable test_id, and drives them with an in-app robot-e2e suite. Run it on any backend to get a pass/fail verdict on the framework core."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `robot` MUST be a default feature: the `ui!` macro's
+# `#[cfg(feature = "robot")]` gate is evaluated in THIS crate's context, so
+# without it the lowered primitives omit their `test_id` slots and the whole
+# suite is blind. It also pulls the `robot-e2e` harness + turns on the real
+# Robot API. `--no-default-features` still builds a plain, untested app.
+default = ["robot"]
+robot = ["runtime-core/robot", "dep:robot-e2e"]
+
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
+# (build-runtime-server). Pulls `dev-server` + the navigators' recorder
+# registration so the suite can run over the runtime-server wire too.
+sidecar = ["dep:dev-server", "stack-navigator/runtime-server"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+icons-lucide = { workspace = true }
+stack-navigator = { workspace = true }
+robot-e2e = { workspace = true, optional = true }
+dev-server = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android", target_os = "macos")))'.dependencies]
+backend-terminal = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Conformance"
+bundle_id = "ai.truday.idealyst.conformance"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]

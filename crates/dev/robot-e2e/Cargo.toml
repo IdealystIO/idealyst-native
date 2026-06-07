@@ -1,0 +1,17 @@
+[package]
+name = "robot-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared, in-app Playwright-style E2E harness built on the framework's Robot API. Provides Page/Locator/expect + a multi-suite runner that narrates every step to the platform console and emits a machine-readable `[E2E-RESULT]` summary for cross-platform automation."
+
+[lib]
+crate-type = ["rlib"]
+
+# The harness is a test-support crate: it always wants the real Robot API
+# (find/click/type_text/…), which lives behind `runtime-core/robot`. A
+# consuming app still declares its OWN `robot` feature so the `ui!` macro
+# emits `test_id` slots in THAT crate's context — see the conformance app's
+# Cargo.toml. Here we just turn the API on unconditionally.
+[dependencies]
+runtime-core = { workspace = true, features = ["robot"] }

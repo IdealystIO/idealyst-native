@@ -117,15 +117,14 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
             top: Some(Length::Px(y).into()),
             width: Some(Length::Px(w).into()),
             height: Some(Length::Px(h).into()),
-            // Cosmetic clip (rounded card). NOT on macOS: `overflow: Hidden` forces
-            // this view layer-backed, detaching the canvas child's `CAMetalLayer`
-            // (the GPU surface then renders nothing). The clip is only cosmetic here
-            // (the canvas surface bounds strokes; `clamped_cam` bounds the camera).
-            overflow: if cfg!(target_os = "macos") {
-                None
-            } else {
-                Some(Overflow::Hidden)
-            },
+            // Cosmetic clip — uniform across backends now that the macOS backend
+            // honors `overflow: Hidden` on plain views too (it routes to the
+            // layer's `masksToBounds`, which clips the GPU canvas to bounds
+            // without detaching its `CAMetalLayer`). The canvas fills the stage
+            // exactly, so this is a no-op visually today, but it keeps the clip
+            // correct if the stage ever gains a rounded-card radius — and with no
+            // per-platform branch.
+            overflow: Some(Overflow::Hidden),
             ..Default::default()
         }
     });
@@ -199,6 +198,7 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
     let aspect = props.state.aspect;
     let cam_shape = props.state.camera_shape;
     let cam_size = props.state.camera_size;
+    let canvas_anim = props.state.canvas_anim;
     let camera_layer = canvas::TextureLayer::new(
         Rc::new(move || cam_stream.get()),
         // Clamped to the stage so the camera can't leave the board — and the same
@@ -221,26 +221,35 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
 
     let canvas_bg = props.state.canvas_bg;
     let dark = props.state.dark;
-    let canvas_el = build_canvas(strokes.clone(), version, canvas_bg, dark, capture_writer, vec![camera_layer]);
+    // Cross-dissolve buffers for the canvas-change transition. `fade_from` holds
+    // the OUTGOING canvas's strokes (drawn fading out beneath the incoming live
+    // strokes); `last_rendered` tracks the last settled content so the trigger can
+    // capture it as the next `fade_from` — content-based, so it's correct for
+    // switch / add / delete alike (no store-index bookkeeping).
+    let fade_from: Strokes = Rc::new(RefCell::new(Vec::new()));
+    let last_rendered: Strokes = Rc::new(RefCell::new(strokes.borrow().clone()));
+    let canvas_el = build_canvas(
+        strokes.clone(),
+        fade_from.clone(),
+        canvas_anim,
+        version,
+        canvas_bg,
+        dark,
+        capture_writer,
+        vec![camera_layer],
+    );
 
-    // Canvas-change transition: the surface slides up + fades in whenever the
-    // active canvas changes. `canvas_anim` runs 0 (just swapped: low + clear) → 1
-    // (settled); `top` carries the slide and `opacity` the fade. Deliberately NOT
-    // a `transform` — a layer transform forces the surface layer-backed on macOS,
-    // detaching the canvas's `CAMetalLayer`; `top`/`opacity` both move the GPU
-    // surface safely (see `CANVAS_SLIDE_MS`).
-    let canvas_anim = props.state.canvas_anim;
-    let surface_style = reactive_style(move || {
-        let p = canvas_anim.get().clamp(0.0, 1.0);
-        StyleRules {
-            width: Some(Length::pct(100.0).into()),
-            height: Some(Length::pct(100.0).into()),
-            position: Some(Position::Absolute),
-            top: Some(Length::Px((1.0 - p) * crate::CANVAS_SLIDE_OFFSET).into()),
-            left: Some(Length::Px(0.0).into()),
-            opacity: Some(Tokenized::Literal(p)),
-            ..Default::default()
-        }
+    // The surface fills the stage exactly and never moves. The canvas-change
+    // transition is a cross-dissolve INSIDE the scene (see `build_canvas`), so
+    // nothing here slides or fades — that's precisely what keeps the composited
+    // camera out of the animation (only the background strokes cross-fade).
+    let surface_style = static_style(StyleRules {
+        width: Some(Length::pct(100.0).into()),
+        height: Some(Length::pct(100.0).into()),
+        position: Some(Position::Absolute),
+        top: Some(Length::Px(0.0).into()),
+        left: Some(Length::Px(0.0).into()),
+        ..Default::default()
     });
 
     // Drive `canvas_anim` with an AnimatedValue tween on every active-canvas
@@ -250,9 +259,17 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
     // goes through the normal restyle path. The first run only PRIMES (mount
     // isn't a transition); without the guard the canvas would slide in on load.
     {
-        let canvas_anim = props.state.canvas_anim;
         let anim = AnimatedValue::new(1.0f32);
-        let sub = anim.subscribe(move |v, _| canvas_anim.set(*v));
+        // Mirror the tween into the reactive signal; once settled, record the
+        // now-current content as the next transition's fade-out source.
+        let strokes_settle = strokes.clone();
+        let last_rendered_settle = last_rendered.clone();
+        let sub = anim.subscribe(move |v, _| {
+            canvas_anim.set(*v);
+            if *v >= 0.999 {
+                *last_rendered_settle.borrow_mut() = strokes_settle.borrow().clone();
+            }
+        });
         runtime_core::on_cleanup(move || drop(sub));
         let active_idx = props.state.active_canvas;
         let primed = Rc::new(Cell::new(false));
@@ -261,9 +278,12 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
             if !primed.get() {
                 primed.set(true);
             } else {
-                anim.set(0.0); // snap to low + transparent under the just-swapped doc
+                // Capture the just-displaced content to fade OUT, then cross-fade
+                // the freshly-swapped live strokes IN (driven by the 0→1 tween).
+                *fade_from.borrow_mut() = last_rendered.borrow().clone();
+                anim.set(0.0);
                 anim.animate(
-                    TweenTo::new(1.0, std::time::Duration::from_millis(crate::CANVAS_SLIDE_MS))
+                    TweenTo::new(1.0, std::time::Duration::from_millis(crate::CANVAS_FADE_MS))
                         .ease_out(),
                 );
             }
@@ -376,10 +396,13 @@ pub fn DrawingSurface(props: &DrawingSurfaceProps) -> Element {
     }
 }
 
-/// The `canvas::Canvas` painter. A reactive repaint dependency (`version`)
-/// re-runs the draw closure on every stroke mutation.
+/// The `canvas::Canvas` painter. Reactive repaint deps: `version` (stroke
+/// mutations) and `canvas_anim` (the canvas-change cross-dissolve).
+#[allow(clippy::too_many_arguments)]
 fn build_canvas(
     strokes: Strokes,
+    fade_from: Strokes,
+    canvas_anim: Signal<f32>,
     version: Signal<u64>,
     canvas_bg: Signal<crate::CanvasBg>,
     dark: Signal<bool>,
@@ -396,21 +419,38 @@ fn build_canvas(
 
     canvas::Canvas(CanvasProps {
         draw: canvas::draw(move |s: &mut Scene| {
-            let _ = version.get(); // reactive repaint dependency
+            let _ = version.get(); // reactive repaint dependency (stroke edits)
+            let p = canvas_anim.get().clamp(0.0, 1.0); // dep: the cross-dissolve tween
             // The drawing-surface background — the chosen `CanvasBg` (Auto follows
             // the app theme). Reading both signals here makes a color/theme change
             // repaint the canvas.
-            let (r, g, b) = canvas_bg.get().rgb(dark.get());
+            let cb = canvas_bg.get();
+            let dk = dark.get();
+            let (r, g, b) = cb.rgb(dk);
 
             s.path().add_path(Path::rect(0.0, 0.0, 100_000.0, 100_000.0));
             s.fill(Color::new(r, g, b, 255));
 
-            let cb = canvas_bg.get();
-            let dk = dark.get();
+            // Canvas-change cross-dissolve: the OUTGOING strokes fade out
+            // (alpha·(1-p)) and the live strokes fade in (alpha·p), both over the
+            // constant background. Nothing moves, and the camera — a `TextureLayer`
+            // composited ON TOP of these scene ops — is untouched, so only the
+            // background animates. Alpha blends against the opaque bg drawn above,
+            // so this works on the opaque Metal surface (a compositor-level fade
+            // would instead fade the camera too). `p == 1` is the steady state:
+            // live strokes paint at full alpha and the fade-out layer is skipped.
+            if p < 1.0 {
+                for stroke in fade_from.borrow().iter() {
+                    let (sr, sg, sb, sa) = crate::stroke_color(stroke, cb, dk);
+                    paint_stroke(s, stroke, (sr, sg, sb, (sa as f32 * (1.0 - p)) as u8));
+                }
+            }
             for stroke in strokes.borrow().iter() {
                 // `ink` strokes re-resolve against the live backdrop so they stay
                 // readable across canvas-color / theme changes.
-                paint_stroke(s, stroke, crate::stroke_color(stroke, cb, dk));
+                let (sr, sg, sb, sa) = crate::stroke_color(stroke, cb, dk);
+                let a = if p < 1.0 { (sa as f32 * p) as u8 } else { sa };
+                paint_stroke(s, stroke, (sr, sg, sb, a));
             }
         }),
         // Self-capture sink: the vello renderer reads back each frame here while

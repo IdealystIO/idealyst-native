@@ -48,6 +48,8 @@ pub fn scroll_view(children: Vec<Element>) -> Bound<ScrollViewHandle> {
         safe_area_sides: crate::SafeAreaSides::NONE,
         on_scroll: None,
         accessibility: crate::accessibility::AccessibilityProps::default(),
+        #[cfg(feature = "robot")]
+        test_id: None,
     })
 }
 

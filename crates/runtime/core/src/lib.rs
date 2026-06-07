@@ -238,8 +238,9 @@ pub use breakpoint::{
     breakpoints, current_breakpoint, install_breakpoints, Breakpoint, Breakpoints,
 };
 pub use scheduling::{
-    after_animation_frame, after_ms, after_ms_detached, after_ms_scoped, is_frame_active, raf_loop,
-    raf_loop_scoped, schedule_microtask, set_frame_active, RafLoop, ScheduledTask,
+    after_animation_frame, after_ms, after_ms_detached, after_ms_scoped, drain_buffered_microtasks,
+    is_frame_active, raf_loop, raf_loop_scoped, schedule_microtask, set_frame_active, RafLoop,
+    ScheduledTask,
 };
 pub use logging::{install_logger, is_logger_installed, log, LogLevel, Logger, StderrLogger};
 

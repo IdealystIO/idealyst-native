@@ -111,6 +111,11 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
                 .with_max_level(log::LevelFilter::Info)
                 .with_tag("idealyst"),
         );
+        // Route `runtime_core::log` / `log_info!` through the same `log`
+        // facade so author-level logs reach logcat instead of vanishing
+        // into Android's discarded native stderr (the `StderrLogger`
+        // fallback). Idempotent.
+        crate::logger::install_logger();
     });
     let _ = JAVA_VM.set(vm);
     JNI_VERSION_1_6

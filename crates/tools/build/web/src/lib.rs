@@ -850,6 +850,12 @@ pub fn main() {{
     // and never paints -- the canvas mounts but stays blank.
     backend_web::install_scheduler();
     backend_web::install_time_source();
+    // Route runtime-core `log_*` through the browser `console.*`. Without
+    // this, `log_info!`/`log_error!` hit the wasm stderr no-op sink and
+    // vanish — Rust-side logs (incl. an in-app E2E suite's `[E2E-RESULT]`
+    // summary) never reach devtools. JS-side shim logs are unaffected; this
+    // is specifically the Rust logging channel.
+    backend_web::install_logger();
     backend_web::install_async_executor();
     backend_web::install_render_loop();
     // NOTE: the viewport observer is installed INSIDE the start fns, not
