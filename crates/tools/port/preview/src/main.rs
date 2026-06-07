@@ -3,7 +3,8 @@
 //! Usage:
 //!
 //! ```text
-//! port-preview <path-or-git-url> [-o <output-dir>] [--framework-path <path>]
+//! port-preview <path-or-git-url> [-o <output-dir>] [--workspace-root <path>]
+//!                                [--root-name <Name>] [--root-file <path>]
 //! ```
 //!
 //! Ports the given project, scaffolds a scratch Cargo crate, runs
@@ -12,7 +13,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use port_preview::{discover_runtime_core, preview, CheckResult, PreviewConfig};
+use port_preview::{discover_workspace_root, preview, CheckResult, PreviewConfig};
 use port_project::git;
 use port_project::report::Status;
 
@@ -45,21 +46,21 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
 
-    // Resolve runtime-core. Explicit `--framework-path` wins;
-    // otherwise we walk up from the binary's launch dir looking
-    // for `crates/framework/core/Cargo.toml`. This is the path
-    // people running inside the idealyst-native checkout will
-    // hit by default.
-    let framework_path = match args.framework_path {
+    // Resolve the idealyst-native checkout root (the scratch crate
+    // references runtime-core et al. via path deps under it). Explicit
+    // `--workspace-root` wins; otherwise we walk up from the binary's
+    // launch dir looking for `crates/framework/core/Cargo.toml`. This is
+    // the path people running inside the checkout will hit by default.
+    let workspace_root = match args.workspace_root {
         Some(p) => p,
         None => {
             let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            match discover_runtime_core(&here) {
+            match discover_workspace_root(&here) {
                 Some(p) => p,
                 None => {
                     eprintln!(
-                        "port-preview: could not find runtime-core. \
-                         Pass --framework-path <path-to-crates/framework/core>."
+                        "port-preview: could not find the idealyst-native checkout root. \
+                         Pass --workspace-root <path-to-checkout>."
                     );
                     return ExitCode::from(1);
                 }
@@ -74,7 +75,9 @@ fn main() -> ExitCode {
     let outcome = match preview(&PreviewConfig {
         input: &input,
         output_dir: &output_dir,
-        runtime_core_path: &framework_path,
+        workspace_root: &workspace_root,
+        root_name: &args.root_name,
+        root_file: args.root_file.as_deref(),
     }) {
         Ok(o) => o,
         Err(e) => {
@@ -98,21 +101,32 @@ fn main() -> ExitCode {
 struct Args {
     input: String,
     output: Option<PathBuf>,
-    framework_path: Option<PathBuf>,
+    workspace_root: Option<PathBuf>,
+    root_name: String,
+    root_file: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
     let mut input: Option<String> = None;
     let mut output: Option<PathBuf> = None;
-    let mut framework_path: Option<PathBuf> = None;
+    let mut workspace_root: Option<PathBuf> = None;
+    let mut root_name: Option<String> = None;
+    let mut root_file: Option<PathBuf> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-o" | "--output" => {
                 output = Some(args.next().ok_or("expected dir after -o")?.into());
             }
-            "--framework-path" => {
-                framework_path = Some(args.next().ok_or("expected path after --framework-path")?.into());
+            "--workspace-root" => {
+                workspace_root =
+                    Some(args.next().ok_or("expected path after --workspace-root")?.into());
+            }
+            "--root-name" => {
+                root_name = Some(args.next().ok_or("expected name after --root-name")?);
+            }
+            "--root-file" => {
+                root_file = Some(args.next().ok_or("expected path after --root-file")?.into());
             }
             "-h" | "--help" => return Err(help_text()),
             other if other.starts_with('-') => {
@@ -127,17 +141,27 @@ fn parse_args() -> Result<Args, String> {
         }
     }
     let input = input.ok_or_else(|| format!("missing <path-or-git-url>\n\n{}", help_text()))?;
-    Ok(Args { input, output, framework_path })
+    Ok(Args {
+        input,
+        output,
+        workspace_root,
+        root_name: root_name.unwrap_or_else(|| "App".to_string()),
+        root_file,
+    })
 }
 
 fn help_text() -> String {
     "port-preview — port a project to Rust and check it compiles\n\n\
-     usage: port-preview <path-or-git-url> [-o <output-dir>] [--framework-path <path>]\n\
+     usage: port-preview <path-or-git-url> [-o <output-dir>] [--workspace-root <path>]\n\
+     \x20                              [--root-name <Name>] [--root-file <path>]\n\
      \n\
      - Local path: walks the tree directly.\n\
      - Git URL (https/ssh/git@): clones depth-1 to a temp dir.\n\
-     - --framework-path: location of `crates/framework/core` (auto-discovered\n\
-       by walking up from cwd if omitted).\n\
+     - --workspace-root: idealyst-native checkout root (auto-discovered by\n\
+       walking up from cwd if omitted).\n\
+     - --root-name: PascalCase render-root component (default: App).\n\
+     - --root-file: only match the root component in files whose path ends\n\
+       with this suffix (e.g. src/App.tsx).\n\
      - Output defaults to ./port-preview-out."
         .into()
 }

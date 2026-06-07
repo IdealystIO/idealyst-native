@@ -24,6 +24,18 @@ impl AppInfo {
     }
 }
 
+/// `true` if a process with `pid` exists. Uses `kill -0` (a no-op signal
+/// that just probes existence/permission) so we need no `libc` dependency.
+fn pid_is_live(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 fn apps_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -66,6 +78,14 @@ pub fn list() -> Vec<AppInfo> {
         let pid = v["pid"].as_u64().unwrap_or(0) as u32;
         if pid == self_pid {
             continue; // never offer to connect to ourselves
+        }
+        if !pid_is_live(pid) {
+            // Stale registration from a crashed/killed app (its RAII cleanup
+            // never ran). Skip it — its port may have been recycled by an
+            // UNRELATED process (e.g. `adb` squatting on the default 9718),
+            // which would accept the socket but never speak the robot
+            // protocol, leaving the inspector stuck "connecting" forever.
+            continue;
         }
         out.push(AppInfo {
             name: name.to_string(),
