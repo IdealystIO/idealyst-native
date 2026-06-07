@@ -57,6 +57,15 @@ pub fn register_extensions<B: runtime_core::RegisterExternal>(backend: &mut B) {
 /// start (sets it) and stop (consumes it). `!Send`, main-thread only.
 pub(crate) type RecHandle = Rc<RefCell<Option<media_writer::Recording>>>;
 
+/// The live microphone [`AudioStream`](media_stream::AudioStream), held for the
+/// duration of a recording so its capture keeps running. The recorder only
+/// *subscribes* to the stream's channel (which alone does NOT keep the OS mic
+/// alive — the producer is torn down when the last `AudioStream` clone drops via
+/// its stopper, exactly like `camera`'s `MediaStream`). So the app must own a
+/// clone for the recording's lifetime: set on START, cleared on STOP. `!Send`,
+/// non-`Copy`, main-thread only — lives outside `BoardState` like [`RecHandle`].
+pub(crate) type MicHandle = Rc<RefCell<Option<media_stream::AudioStream>>>;
+
 /// The canvas self-capture bundle. The Canvas writes each rendered frame into
 /// `writer`; the app records `stream` with `media-writer`. `raf` holds the
 /// capture-cadence loop that ticks the canvas `version` signal at frame rate
@@ -241,6 +250,9 @@ pub fn app() -> Element {
     // It's `!Send` + non-`Copy`, so it lives outside `BoardState` and is cloned
     // into the board builder. Strokes + a repaint tick are likewise shared.
     let rec_handle: RecHandle = Rc::new(RefCell::new(None));
+    // Holds the microphone stream while a recording runs (audio peer of the
+    // canvas video stream). Set on START, dropped on STOP — see [`MicHandle`].
+    let mic_handle: MicHandle = Rc::new(RefCell::new(None));
     let strokes: Strokes = Rc::new(RefCell::new(Vec::new()));
     let version: Signal<u64> = signal!(0);
 
@@ -349,6 +361,7 @@ pub fn app() -> Element {
         .screen(crate::BOARD, {
             let strokes = strokes.clone();
             let rec_handle = rec_handle.clone();
+            let mic_handle = mic_handle.clone();
             let capture = capture.clone();
             let canvases = canvases.clone();
             move |_| {
@@ -371,6 +384,7 @@ pub fn app() -> Element {
                         strokes = strokes.clone(),
                         canvases = canvases.clone(),
                         rec_handle = rec_handle.clone(),
+                        mic_handle = mic_handle.clone(),
                         version = version,
                         capture = capture.clone(),
                         focused = focused,

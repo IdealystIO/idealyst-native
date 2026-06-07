@@ -51,6 +51,16 @@ pub(crate) static OPS: &dyn VideoOps = &MacosVideoOps;
 #[link(name = "AVFoundation", kind = "framework")]
 extern "C" {}
 
+// AVKit provides `AVPlayerView` (the native transport-controls host used when
+// `props.controls` is set). Like AVFoundation its selectors are sent
+// dynamically, so force the linker to load the framework.
+#[link(name = "AVKit", kind = "framework")]
+extern "C" {}
+
+// AVPlayerViewControlsStyleFloating — the translucent control bar that overlays
+// the video (play/pause/scrub/volume/fullscreen). See `<AVKit/AVPlayerView.h>`.
+const AV_PLAYER_VIEW_CONTROLS_FLOATING: isize = 2;
+
 // CoreMedia `CMTime` mirror (objc2 doesn't re-export it and we don't pull in
 // core-media-sys for two struct layouts). Field order/widths MUST match
 // `<CoreMedia/CMTime.h>` exactly or AVPlayer reads garbage on `seekToTime:`.
@@ -85,8 +95,11 @@ const CM_TIME_FLAG_VALID: u32 = 1;
 /// observer.
 struct VideoEntry {
     player: Retained<AnyObject>,
+    /// `Some` for the bare-layer path; `None` when `controls` routed through an
+    /// `AVPlayerView` (which owns its own layer and is retained by the host view
+    /// as a subview). Held purely for its retention side-effect.
     #[allow(dead_code)]
-    player_layer: Retained<AnyObject>,
+    player_layer: Option<Retained<AnyObject>>,
     #[allow(dead_code)]
     loop_observer: Option<Retained<NSObject>>,
 }
@@ -135,15 +148,49 @@ fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
     {
         let initial_src = resolved_url(props).unwrap_or_default();
         let player = build_player(&initial_src);
-        let player_layer = build_player_layer(&player, props.object_fit);
 
-        let view_layer: Retained<AnyObject> = unsafe { msg_send_id![&view, layer] };
-        let _: () = unsafe { msg_send![&view_layer, addSublayer: &*player_layer] };
+        // Honor the explicit `muted` flag — NOT autoplay-forced. macOS plays
+        // unmuted autoplay fine (unlike the web), so a recording preview is
+        // audible by default; a silent background loop opts in with `muted`.
+        let _: () = unsafe { msg_send![&player, setMuted: props.muted] };
 
-        // Autoplay: muted (mirrors the web/iOS "autoplay = silent autoplay"
-        // expectation) + play.
+        // Visual host. With `controls`, an AVKit `AVPlayerView` renders the
+        // native transport bar (play/pause/scrub/volume/fullscreen) — a bare
+        // `AVPlayerLayer` (the lean path, also what live streams use) has no UI.
+        // The AVPlayerView is retained by `view` as a subview; the layer path
+        // stashes its layer in the side-table for retention. Both are sized to
+        // the host's bounds every frame (the host frame is Taffy-driven; neither
+        // child auto-tracks it — an Effect reading `bounds` would fire once at
+        // 0×0 and leave the video invisible, so the raf loop owns sizing).
+        let player_layer: Option<Retained<AnyObject>> = if props.controls {
+            let player_view = build_player_view(&player, props.object_fit);
+            let _: () = unsafe { msg_send![&view, addSubview: &*player_view] };
+            let player_view_for_size = player_view.clone();
+            let view_for_size = view.clone();
+            runtime_core::raf_loop_scoped(move || unsafe {
+                let bounds: CGRect = msg_send![&*view_for_size, bounds];
+                let _: () = msg_send![&*player_view_for_size, setFrame: bounds];
+            });
+            None
+        } else {
+            let player_layer = build_player_layer(&player, props.object_fit);
+            let view_layer: Retained<AnyObject> = unsafe { msg_send_id![&view, layer] };
+            let _: () = unsafe { msg_send![&view_layer, addSublayer: &*player_layer] };
+            // CATransaction disables the implicit frame-change animation.
+            let player_layer_for_size = player_layer.clone();
+            let view_for_size = view.clone();
+            runtime_core::raf_loop_scoped(move || unsafe {
+                let bounds: CGRect = msg_send![&*view_for_size, bounds];
+                let txn = objc2::class!(CATransaction);
+                let _: () = msg_send![txn, begin];
+                let _: () = msg_send![txn, setDisableActions: true];
+                let _: () = msg_send![&*player_layer_for_size, setFrame: bounds];
+                let _: () = msg_send![txn, commit];
+            });
+            Some(player_layer)
+        };
+
         if props.autoplay {
-            let _: () = unsafe { msg_send![&player, setMuted: true] };
             let _: () = unsafe { msg_send![&player, play] };
         }
 
@@ -159,26 +206,38 @@ fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> MacosNode {
                 key,
                 VideoEntry {
                     player: player.clone(),
-                    player_layer: player_layer.clone(),
+                    player_layer,
                     loop_observer,
                 },
             );
         });
 
-        // Size the AVPlayerLayer to the view's bounds EVERY frame. The layer
-        // doesn't auto-track its parent; an Effect reading `bounds` imperatively
-        // tracks no signal (fires once at 0×0 → invisible video), so the raf
-        // loop is the reliable home for sizing. CATransaction disables the
-        // implicit frame-change animation.
-        let player_layer_for_size = player_layer.clone();
-        let view_for_size = view.clone();
-        runtime_core::raf_loop_scoped(move || unsafe {
-            let bounds: CGRect = msg_send![&*view_for_size, bounds];
-            let txn = objc2::class!(CATransaction);
-            let _: () = msg_send![txn, begin];
-            let _: () = msg_send![txn, setDisableActions: true];
-            let _: () = msg_send![&*player_layer_for_size, setFrame: bounds];
-            let _: () = msg_send![txn, commit];
+        // Tear the player down when the Video unmounts (the preview screen pops,
+        // by Discard OR the back button OR any other navigation). Without this
+        // the AVPlayer keeps playing in the background — audible after the
+        // preview is gone — and the PLAYER_TABLE entry + its loop observer leak.
+        // `on_cleanup` fires on scope drop, same hook `raf_loop_scoped` uses
+        // above. Pausing halts the rate; nil-ing the current item releases the
+        // decode/audio pipeline immediately; removing the notification observer
+        // is required because the center retains the token (dropping our
+        // `Retained` alone wouldn't unregister it, and its block retains the
+        // player → a stray loop-seek could even restart playback).
+        runtime_core::on_cleanup(move || {
+            let Some(entry) = PLAYER_TABLE.with(|t| t.borrow_mut().remove(&key)) else {
+                return;
+            };
+            unsafe {
+                let _: () = msg_send![&*entry.player, pause];
+                let nil_item: *const AnyObject = std::ptr::null();
+                let _: () =
+                    msg_send![&*entry.player, replaceCurrentItemWithPlayerItem: nil_item];
+                if let Some(obs) = &entry.loop_observer {
+                    let center: Retained<NSObject> =
+                        msg_send_id![objc2::class!(NSNotificationCenter), defaultCenter];
+                    let _: () = msg_send![&center, removeObserver: &**obs];
+                }
+            }
+            // `entry` drops here → player / player_layer / observer token released.
         });
 
         // Reactive src. Load a new item whenever the resolved URL CHANGES to a
@@ -351,6 +410,26 @@ fn build_player_layer(
     let gravity = NSString::from_str(av_layer_gravity(object_fit));
     let _: () = unsafe { msg_send![&layer, setVideoGravity: &*gravity] };
     layer
+}
+
+/// Build an AVKit `AVPlayerView` hosting `player` with the native floating
+/// transport controls and the requested gravity. Used for the `controls = true`
+/// path (a bare `AVPlayerLayer` has no UI). `AVPlayerView.videoGravity` takes
+/// the same `AVLayerVideoGravity*` constants as the layer.
+fn build_player_view(
+    player: &Retained<AnyObject>,
+    fit: crate::ObjectFit,
+) -> Retained<AnyObject> {
+    let pv: Retained<AnyObject> = unsafe {
+        msg_send_id![msg_send_id![objc2::class!(AVPlayerView), alloc], init]
+    };
+    unsafe {
+        let _: () = msg_send![&pv, setPlayer: &**player];
+        let _: () = msg_send![&pv, setControlsStyle: AV_PLAYER_VIEW_CONTROLS_FLOATING];
+        let gravity = NSString::from_str(av_layer_gravity(fit));
+        let _: () = msg_send![&pv, setVideoGravity: &*gravity];
+    }
+    pv
 }
 
 /// `AVLayerVideoGravity*` string for an [`crate::ObjectFit`].

@@ -298,12 +298,30 @@ pub fn with_global_backend<F: FnOnce(&mut MacosBackend)>(f: F) {
 /// This schedules `run_layout_pass_global` for the next main-loop turn so the
 /// updated Taffy tree is committed to the view hierarchy.
 ///
-/// Coalesced via `LAYOUT_PASS_QUEUED`: a reactive batch touching N nodes posts
-/// exactly one pass. Deferred through `schedule_microtask` (libdispatch on
-/// macOS, same path as `finish`'s viewport mirror) so it runs *after* the
-/// current `apply_style` borrow releases — `with_global_backend`'s
-/// `try_borrow_mut` would otherwise bail while the framework still holds the
-/// backend.
+/// Coalesced via `LAYOUT_PASS_QUEUED`: a reactive batch touching N nodes (or
+/// inserting N rows) posts exactly one pass.
+///
+/// Two drains, and the difference is the whole story for flicker-free dynamic
+/// updates:
+///
+/// 1. **[`flush_pending_layout_pass`] — synchronous, before paint.** The
+///    macOS event dispatch (e.g. a Pressable mouse-up in `make_tap_handler`)
+///    calls it right after the user handler returns — i.e. after the reactive
+///    flush + all its `insert`s, but still inside the same run-loop turn,
+///    BEFORE AppKit commits + displays. So freshly-inserted rows are sized
+///    before they're ever painted. This is the path tree expand/collapse takes.
+///
+/// 2. **`schedule_microtask` — deferred, next turn.** The fallback for updates
+///    NOT driven by a macOS event (timers, async, the inspector's own poll):
+///    nothing calls `flush_pending_layout_pass` for those, so this guarantees
+///    the pass still runs. `dispatch_async(main_queue)` fires next turn (one
+///    frame after paint), which is why event-driven updates use path 1 — the
+///    microtask alone would show the inserted rows at (0,0) for a frame.
+///
+/// Both drain the same coalescing flag, so whichever runs first wins and the
+/// other no-ops — never a double pass. Deferring (vs. running inline here) is
+/// also required because `with_global_backend`'s `try_borrow_mut` would bail
+/// while the framework still holds the backend mid-`apply_style`/`insert`.
 pub fn schedule_layout_pass() {
     let should_post = LAYOUT_PASS_QUEUED
         .with(|q| crate::layout_policy::claim_coalesced_pass(q));
@@ -311,27 +329,44 @@ pub fn schedule_layout_pass() {
         return;
     }
     runtime_core::schedule_microtask(|| {
-        // Clear the slot BEFORE running so a `schedule_layout_pass` arriving
-        // during the pass re-arms and fires afterward (post-layout state this
-        // pass couldn't have captured). Mirrors iOS's trampoline ordering.
-        LAYOUT_PASS_QUEUED
-            .with(|q| crate::layout_policy::release_coalesced_pass(q));
-        // libdispatch is C; a Rust panic unwinding into it is UB. Per the
-        // crash-loud policy, log + abort rather than let a half-applied
-        // reactive mutation keep running. Mirrors the iOS layout trampoline.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            with_global_backend(|b| b.run_layout_pass_global());
-        }));
-        if let Err(payload) = result {
-            let msg = payload
-                .downcast_ref::<String>()
-                .map(|s| s.as_str())
-                .or_else(|| payload.downcast_ref::<&'static str>().copied())
-                .unwrap_or("<non-string panic payload>");
-            eprintln!("[backend-macos] layout-pass microtask panic: {msg}");
-            std::process::abort();
-        }
+        run_pending_layout_pass("microtask");
     });
+}
+
+/// Synchronously run the coalesced layout pass if one is queued, NOW. Called
+/// from the macOS event dispatch after a user handler returns (see
+/// `make_tap_handler`) so an insert triggered by that event is laid out before
+/// the turn's paint — no "rows snap from the top" flicker. No-op when nothing
+/// is queued (the common case for a click that didn't mutate the tree). Safe:
+/// runs outside any `apply_style`/`insert` borrow (the handler has returned).
+pub fn flush_pending_layout_pass() {
+    run_pending_layout_pass("event-flush");
+}
+
+/// Shared drain for both [`schedule_layout_pass`]'s microtask and
+/// [`flush_pending_layout_pass`]. Clears the coalescing flag BEFORE running so
+/// a `schedule_layout_pass` arriving during the pass re-arms and fires again
+/// (post-layout state this pass couldn't capture). `catch_unwind` + `abort`
+/// because the microtask path crosses libdispatch (C) where a Rust unwind is
+/// UB; per the crash-loud policy we log + abort rather than continue half-
+/// applied.
+fn run_pending_layout_pass(origin: &str) {
+    if !LAYOUT_PASS_QUEUED.with(|q| q.get()) {
+        return;
+    }
+    LAYOUT_PASS_QUEUED.with(|q| crate::layout_policy::release_coalesced_pass(q));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        with_global_backend(|b| b.run_layout_pass_global());
+    }));
+    if let Err(payload) = result {
+        let msg = payload
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| payload.downcast_ref::<&'static str>().copied())
+            .unwrap_or("<non-string panic payload>");
+        eprintln!("[backend-macos] layout-pass {origin} panic: {msg}");
+        std::process::abort();
+    }
 }
 
 // =========================================================================
@@ -849,6 +884,7 @@ impl MacosBackend {
             };
             let _: () = unsafe { msg_send![&**view, setFrame: rect] };
             gradient::sync_gradient_sublayer(view);
+            icon::sync_icon_sublayer(view, frame.width as f64, frame.height as f64);
         }
     }
 
@@ -922,6 +958,13 @@ fn make_tap_handler(on_click: Rc<dyn Fn()>) -> runtime_core::TouchHandler {
         TouchPhase::Ended => {
             if armed.replace(false) {
                 (on_click)();
+                // The click handler may have mutated the tree (e.g. a tree
+                // row toggling `expanded` → row inserts). Drain any coalesced
+                // layout pass NOW, synchronously, before this run-loop turn
+                // paints — so inserted rows are sized before they're shown,
+                // not snapped from (0,0) a frame later. One pass for the whole
+                // batch (coalesced); a no-op if the handler didn't resize/insert.
+                flush_pending_layout_pass();
             }
             TouchResponse::CONSUMED
         }
@@ -1490,6 +1533,10 @@ impl MacosBackend {
             // resizing in practice — mirror the resize here. No-op
             // when the view has no `idealyst_gradient` sublayer.
             gradient::sync_gradient_sublayer(view);
+            // Scale + center an icon's glyph sublayer to the new box so
+            // `Icon(size = N)` renders at N px (the path is baked at 24).
+            // No-op when the view has no `idealyst_icon` sublayer.
+            icon::sync_icon_sublayer(view, frame.width as f64, frame.height as f64);
             // Re-apply a deferred cornerRadius (stashed when apply_style
             // ran before bounds were known). Clamps to half the
             // smaller bound — required so `border-radius: 999px` on a
@@ -2797,12 +2844,17 @@ impl Backend for MacosBackend {
         let child_layout = self.layout_for_view(child_view);
         self.layout.add_child(parent_layout, child_layout);
 
-        // Post-mount insert into a window-attached parent → schedule a
-        // coalesced layout pass so the freshly-mounted subtree gets sized.
-        // During the initial build the target isn't in a window yet (the root
-        // is parented to the host in `finish`), so this no-ops then and the
-        // mount pass handles it. Mirrors `apply_style` + the Android `insert`
-        // fix. Without it, `presence` mounts stayed 0×0 and invisible on macOS.
+        // Post-mount insert into a window-attached parent → queue a coalesced
+        // layout pass so the freshly-mounted subtree gets sized. During the
+        // initial build the target isn't in a window yet (the root is parented
+        // to the host in `finish`), so this no-ops then and the mount pass
+        // handles it.
+        //
+        // `schedule_layout_pass` now runs the pass from a run-loop observer
+        // BEFORE this turn's Core Animation commit (see its docs), so a burst
+        // of inserts in one batch produces exactly ONE pass that lands before
+        // any paint: no per-insert O(N) re-layout (the lag), and no
+        // paint-at-(0,0)-then-reposition (the flicker).
         let host_window: *mut objc2_app_kit::NSWindow =
             unsafe { msg_send![&native_target, window] };
         if crate::layout_policy::insert_needs_layout_pass(!host_window.is_null()) {

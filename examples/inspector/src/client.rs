@@ -31,7 +31,7 @@ const LOG_LIMIT: u64 = 200;
 
 /// The latest state read from the target app. Plain data (no signals), so
 /// it crosses the thread boundary; the UI thread copies it into signals.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub struct Snapshot {
     pub connected: bool,
     pub error: Option<String>,

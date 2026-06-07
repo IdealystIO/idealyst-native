@@ -83,7 +83,7 @@ use runtime_core::{Route, Signal};
 // `entry`, not `app`, because the `#[component] fn app` generates a type alias
 // `app` that would collide with a module of the same name in the type namespace.
 pub use entry::{app, register_extensions, CanvasCapture};
-pub(crate) use entry::{BoardState, RecHandle};
+pub(crate) use entry::{BoardState, MicHandle, RecHandle};
 pub(crate) use board::BoardScreen;
 pub(crate) use document::*;
 pub(crate) use screens::{PreviewScreen, SettingsScreen};

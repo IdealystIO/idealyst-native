@@ -872,9 +872,18 @@ impl Encoder {
 
     /// Zero-copy native video frame: the producer (a GPU canvas) rendered into
     /// an `IOSurface` and published it; we wrap that surface in a `CVPixelBuffer`
-    /// and append it — no allocation, no `fill_bgra` swizzle, no CPU touch. The
-    /// first native frame starts the writer (live surfaces can't be buffered in
-    /// `pending` like CPU frames — the producer's ring reuses them).
+    /// and append it — no allocation, no `fill_bgra` swizzle, no CPU touch.
+    ///
+    /// Native frames can't be buffered in `pending` like CPU frames (the
+    /// producer's IOSurface ring reuses them), so we record the video format
+    /// from the surface and route through `maybe_start` — the SAME gate the CPU
+    /// path uses. When audio is also expected, the writer is NOT built until the
+    /// first audio chunk has set its format (an `AVAssetWriter` input can't be
+    /// added after `startWriting`); until then this frame is simply dropped and a
+    /// later poll starts the writer. Building eagerly here was the
+    /// "recording stop failed: unwrap() on a None value" panic — `build_writer`
+    /// unwraps `first_audio`, which is absent on the first video frame (only
+    /// reachable once audio recording was added; video-only never hit it).
     #[cfg(target_os = "macos")]
     fn on_native(&mut self, surface: *const c_void, pts_us: u64) {
         if self.failed.is_some() {
@@ -888,11 +897,26 @@ impl Encoder {
                 return;
             }
             self.first_video = Some((w, h));
-            if let Err(e) = self.build_writer(pts_us) {
-                self.failed = Some(e);
-                return;
+            if self.params.has_audio {
+                // AV recording: hold off until the audio format is known, then
+                // let `maybe_start` build the writer and flush the buffered audio
+                // (its session start derives from those audio chunks; the native
+                // video isn't in `pending`). This frame is appended below only if
+                // we actually started — otherwise it's dropped while we wait.
+                self.maybe_start();
+                if !self.started {
+                    return;
+                }
+            } else {
+                // Video-only native: no audio to wait for, and `pending` is
+                // always empty on this path, so `maybe_start` would mis-derive
+                // the session start as 0. Start at THIS frame's timestamp.
+                if let Err(e) = self.build_writer(pts_us) {
+                    self.failed = Some(e);
+                    return;
+                }
+                self.started = true;
             }
-            self.started = true;
         }
         self.append_native(surface, pts_us);
     }
@@ -1267,4 +1291,96 @@ unsafe fn audio_settings(sample_rate: u32, channels: u16, bitrate: Option<u32>) 
 unsafe fn set_obj(dict: &Retained<AnyObject>, key: *const AnyObject, value: &AnyObject) {
     let key: &AnyObject = &*key;
     let _: () = msg_send![&**dict, setObject: value, forKey: key];
+}
+
+// ---------------------------------------------------------------------------
+// Tests.
+// ---------------------------------------------------------------------------
+
+// macOS-only: the native (zero-copy IOSurface) video path only compiles on
+// macOS, and the test creates a real `IOSurface` to drive it. iOS uses the CPU
+// video tap, so this path doesn't exist there.
+#[cfg(all(test, target_os = "macos"))]
+mod native_av_tests {
+    use super::*;
+
+    #[link(name = "IOSurface", kind = "framework")]
+    extern "C" {
+        fn IOSurfaceCreate(properties: *const c_void) -> *mut c_void;
+    }
+
+    /// A small BGRA `IOSurface` for the test. Uses the documented string values
+    /// of the `kIOSurface*` property keys so we needn't link the constants.
+    /// Returns a +1 reference the caller `CFRelease`s.
+    fn make_test_surface(w: i64, h: i64) -> *const c_void {
+        unsafe {
+            let dict: Retained<AnyObject> = msg_send_id![class!(NSMutableDictionary), dictionary];
+            let put = |key: &str, val: i64| {
+                let k = NSString::from_str(key);
+                let n: Retained<AnyObject> =
+                    msg_send_id![class!(NSNumber), numberWithLongLong: val];
+                let _: () = msg_send![&*dict, setObject: &*n, forKey: &*k];
+            };
+            put("IOSurfaceWidth", w);
+            put("IOSurfaceHeight", h);
+            put("IOSurfaceBytesPerElement", 4);
+            put("IOSurfacePixelFormat", 0x4247_5241); // 'BGRA'
+            let props = (&*dict as *const AnyObject) as *const c_void;
+            let surf = IOSurfaceCreate(props);
+            assert!(!surf.is_null(), "IOSurfaceCreate returned null");
+            surf
+        }
+    }
+
+    // Regression: the zero-copy native (IOSurface) video path must NOT build the
+    // `AVAssetWriter` on the first video frame when audio is ALSO expected —
+    // `build_writer` unwraps `first_audio`, which is still `None` until the first
+    // audio chunk arrives, panicking with "called `Option::unwrap()` on a `None`
+    // value". This surfaced in the whiteboard the moment audio recording was
+    // added (the recording failed at STOP); video-only never hit it because
+    // `has_audio` was false. The fix drops the native frame until the audio
+    // format is known, then starts the writer and flushes the buffered audio.
+    #[test]
+    fn native_video_with_audio_waits_for_audio_format() {
+        let path = std::env::temp_dir().join("mw_native_av_regression.mp4");
+        let _ = std::fs::remove_file(&path);
+
+        let params = WorkerParams {
+            path: path.clone(),
+            has_video: true,
+            has_audio: true,
+            fps: 30,
+            video_bitrate: None,
+            audio_bitrate: None,
+        };
+        let mut enc = Encoder::new(params);
+        let surf = make_test_surface(64, 48);
+
+        // First native frame, audio not yet seen: must NOT panic and must NOT
+        // start the writer (this is the exact panic site before the fix).
+        enc.on_native(surf, 1_000);
+        assert!(!enc.started, "writer must wait for the audio format");
+        assert!(enc.failed.is_none(), "no failure while waiting: {:?}", enc.failed);
+
+        // Audio arrives → both formats known → writer starts + buffered audio flushes.
+        let chunk = vec![0.0f32; 480]; // ~10ms mono @ 48k
+        enc.on_audio(48_000, 1, 1_000, chunk.clone());
+        assert!(enc.started, "writer starts once the audio format is known");
+
+        // A few more interleaved frames append cleanly (steady state).
+        for i in 1..6u64 {
+            enc.on_native(surf, 1_000 + i * 33_000);
+            enc.on_audio(48_000, 1, 1_000 + i * 10_000, chunk.clone());
+        }
+        assert!(enc.failed.is_none(), "steady-state append failed: {:?}", enc.failed);
+
+        // Finalize: a real, non-empty mp4 lands.
+        let r = enc.finish();
+        assert!(r.is_ok(), "finish failed: {r:?}");
+        let meta = std::fs::metadata(&path).expect("output file exists");
+        assert!(meta.len() > 0, "output mp4 is empty");
+
+        unsafe { CFRelease(surf) };
+        let _ = std::fs::remove_file(&path);
+    }
 }

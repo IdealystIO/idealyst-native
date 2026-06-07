@@ -43,11 +43,16 @@ pub struct RunOptions {
     pub mode: RunMode,
     /// Framework-source resolution for the wrapper crate's deps.
     pub source: FrameworkSource,
-    /// If true, spawn the binary detached (stdio nulled, parent
-    /// returns immediately). Used by `idealyst dev` so the macOS
-    /// app's lifetime is decoupled from the CLI's. One-shot
-    /// `idealyst run macos` leaves this false — the user there
-    /// expects a foreground process they can Ctrl-C.
+    /// If true, spawn the binary detached (stdin nulled, parent's
+    /// launcher thread returns immediately so other dev targets can
+    /// launch). Used by `idealyst dev`. NOTE this no longer means the
+    /// app's lifetime is *decoupled* from the CLI's — the dev
+    /// orchestrator now links them bidirectionally: it sets
+    /// `IDEALYST_LAUNCHER_PID` so the AppKit host's watchdog exits the app
+    /// when the CLI dies, and it waits on the returned child so closing
+    /// the app window tears the dev session down. One-shot `idealyst run
+    /// macos` leaves this false — the user there expects a foreground
+    /// process they can Ctrl-C.
     pub background: bool,
     /// Cargo features to enable on the build. `idealyst dev` passes
     /// `runtime-core/dev` here so the Robot bridge auto-starts.

@@ -17,8 +17,8 @@ use crate::style::{
     token_intent,
 };
 use crate::{
-    BoardState, CanvasBg, CanvasCapture, CanvasStore, RecHandle, Strokes, PALETTE, PREVIEW,
-    REC_FILE, REC_STORE, SETTINGS, WIDTH_MEDIUM, WIDTH_THICK, WIDTH_THIN,
+    BoardState, CanvasBg, CanvasCapture, CanvasStore, MicHandle, RecHandle, Strokes, PALETTE,
+    PREVIEW, REC_FILE, REC_STORE, SETTINGS, WIDTH_MEDIUM, WIDTH_THICK, WIDTH_THIN,
 };
 use camera::{Camera, CameraConfig, CameraFacing, MediaStream};
 use icons_lucide::{
@@ -26,10 +26,10 @@ use icons_lucide::{
     TRASH_2,
 };
 use runtime_core::{
-    component, icon, presence, safe_area_insets, ui, AlignItems, Color, Easing, Element,
-    FlexDirection, FlexWrap, IconData, IntoElement, JustifyContent, Length, Position,
-    PresenceAnim, PresenceState, Ref, Signal, StyleRules, Tokenized, TouchPhase, TouchResponse,
-    Transform,
+    component, icon, presence, safe_area_insets, ui, viewport_size, AlignItems, Color, Easing,
+    Element, FlexDirection, FlexWrap, IconData, IntoElement, JustifyContent, Length, Overflow,
+    Position, PresenceAnim, PresenceState, Ref, Signal, StyleRules, Tokenized, TouchPhase,
+    TouchResponse, Transform,
 };
 use stack_navigator::StackHandle;
 use std::rc::Rc;
@@ -43,6 +43,16 @@ const FAB_EDGE: f32 = 28.0; // settings FAB: top + left
 const RECORD_BOTTOM: f32 = 48.0; // record dock: bottom
 const RECORD_RIGHT: f32 = 28.0; // record dock when recording: right
 
+/// Canvas-thumbnail width (px) in the Layers list. The panel is 204 wide with 8px
+/// padding each side (188 inner); 184 leaves a hair of slack. Fixed (not `100%`)
+/// because the thumbnail's draw scales strokes by `THUMB_W / stage_width`, so it
+/// needs a known pixel width — the `Fn(&mut Scene)` painter isn't told its size.
+const LAYERS_THUMB_W: f32 = 184.0;
+
+/// Minimum height (px) for the Layers scroll region, so on a very short viewport
+/// the list still shows a couple of thumbnails before scrolling.
+const LAYERS_SCROLL_MIN_H: f32 = 220.0;
+
 /// Build the board's floating chrome as in-tree sibling overlays, in paint
 /// order: `[rec_indicator, palette, tool_rail, rec_dock, settings_btn]`. A plain
 /// `fn` (not a component): `BoardScreen` splices the returned `Vec<Element>`
@@ -53,6 +63,7 @@ pub fn build_chrome(
     strokes: Strokes,
     canvases: CanvasStore,
     rec_handle: RecHandle,
+    mic_handle: MicHandle,
     version: Signal<u64>,
     capture: CanvasCapture,
 ) -> Vec<Element> {
@@ -85,6 +96,7 @@ pub fn build_chrome(
             focused = focused.clone(),
             state = s,
             rec_handle = rec_handle,
+            mic_handle = mic_handle,
             capture = capture,
             version = version,
         )
@@ -680,34 +692,62 @@ pub fn LayersPopover(props: &LayersPopoverProps) -> Element {
                     [radius(16.0), border_all_color(1.0, token_alpha(|c| c.border.clone(), 0.7))],
                 )
             });
-            // A plain column for the canvas list. (A reactive `for` over a
-            // `Signal<Vec<_>>` renders as an `Element::Each`; that reconciles
-            // correctly inside a plain container — the proven pattern — but NOT
-            // inside a `scroll_view`, which silently dropped the rows. Few
-            // canvases in practice, so the popover just grows.)
             let list_style = static_style(StyleRules {
                 flex_direction: Some(FlexDirection::Column),
                 gap: Some(Length::Px(4.0).into()),
                 ..Default::default()
             });
-            // Separate clones for the row list vs the add row (each consumer owns
-            // its own; the `for` body re-clones per iteration).
+            // Cap the scrolling region to a fraction of the viewport so the
+            // centered popover never grows past the screen; the rows scroll
+            // beyond that. Reactive on viewport so rotation / resize re-clamps.
+            let scroll_style = reactive_style(|| {
+                let vh = viewport_size().get().height;
+                let max_h = (vh * 0.6).max(LAYERS_SCROLL_MIN_H);
+                StyleRules {
+                    max_height: Some(Length::Px(max_h).into()),
+                    ..Default::default()
+                }
+            });
+            // Build the rows via `switch` (rebuilds the whole subtree synchronously
+            // when `canvas_ids` changes), NOT a reactive `for`: a reactive `for`
+            // lowers to `Element::Each`, whose macOS anchored path doesn't surface
+            // its rows to an enclosing `scroll_view` (the content stays 0-height and
+            // nothing shows). `switch` builds the list eagerly as one subtree the
+            // scroll_view sizes to — the same pattern catalog-docs uses to scroll a
+            // results list. Per-row reactivity (active highlight, thumbnail repaint)
+            // lives inside each `CanvasRow`'s own scope, so it survives between
+            // rebuilds; only add/delete (an id-set change) rebuilds the list.
             let strokes_rows = strokes.clone();
             let canvases_rows = canvases.clone();
             let strokes_add = strokes.clone();
             let canvases_add = canvases.clone();
+            let rows = runtime_core::switch(
+                move || canvas_ids.get(),
+                move |ids: &Vec<u64>| {
+                    let strokes = strokes_rows.clone();
+                    let canvases = canvases_rows.clone();
+                    let list_style = list_style.clone();
+                    let cards: Vec<Element> = ids
+                        .iter()
+                        .map(|&id| {
+                            ui! {
+                                CanvasRow(
+                                    id = id,
+                                    state = s,
+                                    strokes = strokes.clone(),
+                                    canvases = canvases.clone(),
+                                    version = version,
+                                )
+                            }
+                        })
+                        .collect();
+                    ui! { view(style = list_style) { cards } }
+                },
+            );
             ui! {
                 view(style = panel_style) {
-                    view(style = list_style) {
-                        for id in canvas_ids, key = *id {
-                            CanvasRow(
-                                id = id,
-                                state = s,
-                                strokes = strokes_rows.clone(),
-                                canvases = canvases_rows.clone(),
-                                version = version,
-                            )
-                        }
+                    scroll_view(style = scroll_style) {
+                        rows
                     }
                     AddCanvasRow(state = s, strokes = strokes_add.clone(), canvases = canvases_add.clone(), version = version)
                 }
@@ -795,70 +835,72 @@ pub fn CanvasRow(props: &CanvasRowProps) -> Element {
     // This row's current index in the (reactive) id list.
     let index_of = move || canvas_ids.get().iter().position(|x| *x == id).unwrap_or(0);
 
-    let row_style = reactive_style(move || {
+    let aspect = s.aspect;
+
+    // The card is a mini canvas preview sized to the board aspect. Active = accent
+    // border; inactive = a faint border. `overflow: hidden` rounds the canvas.
+    let card_style = reactive_style(move || {
         let is_active = active.get() == index_of();
+        let (aw, ah) = aspect.get();
+        let h = LAYERS_THUMB_W * (ah.max(1) as f32 / aw.max(1) as f32);
         styled(
             StyleRules {
-                flex_direction: Some(FlexDirection::Row),
-                align_items: Some(AlignItems::Center),
-                gap: Some(Length::Px(8.0).into()),
-                padding_top: Some(Length::Px(8.0).into()),
-                padding_bottom: Some(Length::Px(8.0).into()),
-                padding_left: Some(Length::Px(10.0).into()),
-                padding_right: Some(Length::Px(8.0).into()),
-                background: Some(Tokenized::Literal(if is_active {
-                    token_alpha(|c| c.text.clone(), 0.08)
-                } else {
-                    Color("#00000000".into())
-                })),
+                position: Some(Position::Relative),
+                width: Some(Length::Px(LAYERS_THUMB_W).into()),
+                height: Some(Length::Px(h).into()),
+                overflow: Some(Overflow::Hidden),
                 ..Default::default()
             },
-            [radius(10.0)],
+            [
+                radius(10.0),
+                if is_active {
+                    border_all_color(2.0, token_intent(|i| i.primary.solid_bg.clone()))
+                } else {
+                    border_all_color(1.0, token_alpha(|c| c.border.clone(), 0.7))
+                },
+            ],
         )
     });
-    // Label carries its own color (native text doesn't inherit): accent when active.
-    let label_style = reactive_style(move || {
-        let is_active = active.get() == index_of();
-        StyleRules {
-            color: Some(Tokenized::Literal(if is_active {
-                token_intent(|i| i.primary.solid_bg.clone())
-            } else {
-                token(|c| c.text.clone())
-            })),
-            font_size: Some(Length::Px(15.0).into()),
-            flex_grow: Some(Tokenized::Literal(1.0)),
-            ..Default::default()
-        }
-    });
-    let label = move || format!("Canvas {}", index_of() + 1);
+
+    // The live mini-preview of this canvas's strokes.
+    let thumb = build_canvas_thumbnail(id, s, strokes.clone(), canvases.clone(), version);
 
     // Delete affordance — only when more than one canvas exists. Rendered via a
-    // reactive `if` so it's truly ABSENT for the sole canvas (NOT just sized 0):
-    // a lucide icon renders at its intrinsic size and the box isn't layer-backed
-    // on macOS, so a 0×0 box neither shrinks nor clips it — collapsing the box
-    // left the trash glyph visible. Building it as a `#[component]` keeps the
-    // `Rc` captures out of the `if` branch.
-    //
-    // `del_visible` is a `memo` (a `Signal<bool>`), NOT a plain closure: `ui!`
-    // is type-driven, so `if del_visible` is reactive *because its type is a
-    // reactive Signal* — the same way `for x in sig` is reactive by type. A
-    // bare `move || …` closure would be an opaque `fn() -> bool`, which the
-    // macro treats as STATIC (built once) — that was the original
-    // "delete button won't disappear on the last canvas" bug.
+    // reactive `if` so it's truly ABSENT for the sole canvas. `del_visible` is a
+    // `memo` (a `Signal<bool>`), NOT a plain closure: `ui!` is type-driven, so
+    // `if del_visible` is reactive *because its type is a reactive Signal* — a
+    // bare `move || …` closure would be treated as STATIC (built once), the
+    // original "delete button won't disappear on the last canvas" bug.
     let del_visible = runtime_core::memo(move || canvas_ids.get().len() > 1);
+    // The trash floats in the card's top-right corner over the preview, on a
+    // frosted chip so it's legible against any canvas content.
+    let del_wrap_style = static_style(styled(
+        StyleRules {
+            position: Some(Position::Absolute),
+            top: Some(Length::Px(4.0).into()),
+            right: Some(Length::Px(4.0).into()),
+            align_items: Some(AlignItems::Center),
+            justify_content: Some(JustifyContent::Center),
+            background: Some(Tokenized::Literal(token_alpha(|c| c.surface.clone(), 0.85))),
+            ..Default::default()
+        },
+        [radius(12.0)],
+    ));
     let strokes_for_del = strokes.clone();
     let canvases_for_del = canvases.clone();
     ui! {
-        view(style = row_style) {
-            text(style = label_style) { label() }
+        view(style = card_style) {
+            thumb
             if del_visible {
-                DeleteCanvasButton(
-                    id = id,
-                    state = s,
-                    strokes = strokes_for_del.clone(),
-                    canvases = canvases_for_del.clone(),
-                    version = version,
-                )
+                view(style = del_wrap_style.clone()) {
+                    DeleteCanvasButton(
+                        id = id,
+                        state = s,
+                        strokes = strokes_for_del.clone(),
+                        canvases = canvases_for_del.clone(),
+                        version = version,
+                    )
+                }
             }
         }
         .on_touch(move |ev| {
@@ -879,6 +921,70 @@ pub fn CanvasRow(props: &CanvasRowProps) -> Element {
             TouchResponse::CONSUMED
         })
     }
+}
+
+/// A live mini-canvas preview of one canvas document's strokes, scaled from stage
+/// coordinates into the [`LAYERS_THUMB_W`]-wide thumbnail. Repaints on `version`
+/// (stroke edits / canvas ops), `active_canvas` (the active canvas reads its live
+/// working copy, every other reads its saved doc), aspect, and theme. The painter
+/// gets no size, so the scale is `THUMB_W / stage_width` (uniform — the thumbnail
+/// box already carries the board aspect, so x and y scale identically).
+fn build_canvas_thumbnail(
+    id: u64,
+    s: BoardState,
+    strokes: Strokes,
+    canvases: CanvasStore,
+    version: Signal<u64>,
+) -> Element {
+    use canvas::prelude::*;
+
+    let aspect = s.aspect;
+    let active = s.active_canvas;
+    let canvas_ids = s.canvas_ids;
+    let canvas_bg = s.canvas_bg;
+    let dark = s.dark;
+
+    let fill = static_style(StyleRules {
+        width: Some(Length::pct(100.0).into()),
+        height: Some(Length::pct(100.0).into()),
+        ..Default::default()
+    });
+
+    canvas::Canvas(CanvasProps {
+        draw: canvas::draw(move |sc: &mut Scene| {
+            let _ = version.get(); // repaint on stroke / canvas-set edits
+            let (aw, ah) = aspect.get();
+            let cb = canvas_bg.get();
+            let dk = dark.get();
+            // Backdrop (the canvas color) fills the whole thumbnail.
+            let (r, g, b) = cb.rgb(dk);
+            sc.path().add_path(Path::rect(0.0, 0.0, 100_000.0, 100_000.0));
+            sc.fill(Color::new(r, g, b, 255));
+            // Scale stage-local stroke coordinates down to the thumbnail pixels.
+            let (_x, _y, sw, _sh) = crate::settings::stage_geom(aw, ah);
+            let scale = if sw > 1.0 { LAYERS_THUMB_W / sw } else { 1.0 };
+            sc.save();
+            sc.scale(scale, scale);
+            let idx = canvas_ids.get().iter().position(|x| *x == id).unwrap_or(0);
+            if active.get() == idx {
+                // Active canvas: its live working copy lives in the shared `strokes`.
+                for stroke in strokes.borrow().iter() {
+                    let c = crate::stroke_color(stroke, cb, dk);
+                    crate::paint_stroke(sc, stroke, c);
+                }
+            } else if let Some(doc) = canvases.borrow().get(idx) {
+                // Inactive canvas: its saved doc in the store.
+                for stroke in doc.strokes.iter() {
+                    let c = crate::stroke_color(stroke, cb, dk);
+                    crate::paint_stroke(sc, stroke, c);
+                }
+            }
+            sc.restore();
+        }),
+        ..Default::default()
+    })
+    .with_style(fill)
+    .into_element()
 }
 
 /// Props for [`DeleteCanvasButton`].
@@ -1037,6 +1143,7 @@ pub struct RecordDockProps {
     pub focused: Rc<dyn Fn() -> bool>,
     pub state: BoardState,
     pub rec_handle: RecHandle,
+    pub mic_handle: MicHandle,
     pub capture: CanvasCapture,
     pub version: Signal<u64>,
 }
@@ -1047,6 +1154,7 @@ impl Default for RecordDockProps {
             focused: Rc::new(|| true),
             state: BoardState::default(),
             rec_handle: Default::default(),
+            mic_handle: Default::default(),
             capture: CanvasCapture::default(),
             version: Signal::new(0),
         }
@@ -1061,6 +1169,7 @@ pub fn RecordDock(props: &RecordDockProps) -> Element {
     let focused = props.focused.clone();
     let s = props.state;
     let rec_handle = props.rec_handle.clone();
+    let mic_handle = props.mic_handle.clone();
     let capture = props.capture.clone();
     let version = props.version;
     let recording = s.recording;
@@ -1070,6 +1179,7 @@ pub fn RecordDock(props: &RecordDockProps) -> Element {
             RecordButton(
                 state = s,
                 rec_handle = rec_handle.clone(),
+                mic_handle = mic_handle.clone(),
                 capture = capture.clone(),
                 version = version,
             )
@@ -1119,6 +1229,7 @@ pub fn RecordDock(props: &RecordDockProps) -> Element {
 pub struct RecordButtonProps {
     pub state: BoardState,
     pub rec_handle: RecHandle,
+    pub mic_handle: MicHandle,
     pub capture: CanvasCapture,
     pub version: Signal<u64>,
 }
@@ -1128,6 +1239,7 @@ impl Default for RecordButtonProps {
         Self {
             state: BoardState::default(),
             rec_handle: Default::default(),
+            mic_handle: Default::default(),
             capture: CanvasCapture::default(),
             version: Signal::new(0),
         }
@@ -1144,6 +1256,7 @@ impl Default for RecordButtonProps {
 pub fn RecordButton(props: &RecordButtonProps) -> Element {
     let s = props.state;
     let rec_handle = props.rec_handle.clone();
+    let mic_handle = props.mic_handle.clone();
     let capture = props.capture.clone();
     let version = props.version;
     let recording = s.recording;
@@ -1210,6 +1323,13 @@ pub fn RecordButton(props: &RecordButtonProps) -> Element {
                     cam_on.set(false);
                     cam_stream.set(None);
                 }
+                // Stop the microphone: drop our AudioStream clone so its stopper
+                // fires and the OS mic releases. The recorder already holds the
+                // PCM it needs; its own audio subscription drops in `rec.stop()`.
+                // Bind the take() out of the RefMut before dropping so we never
+                // hold the borrow across the drop (refmut-lifetime invariant).
+                let mic = mic_handle.borrow_mut().take();
+                drop(mic);
                 let rec_handle = rec_handle.clone();
                 runtime_core::driver::spawn_async(async move {
                     // Bind the take() out of the RefMut so we don't hold the
@@ -1245,6 +1365,7 @@ pub fn RecordButton(props: &RecordButtonProps) -> Element {
                     version.set(version.get().wrapping_add(1));
                 }));
                 let rec_handle = rec_handle.clone();
+                let mic_handle = mic_handle.clone();
                 let capture = capture.clone();
                 runtime_core::driver::spawn_async(async move {
                     let store = match files::app_files(REC_STORE) {
@@ -1256,18 +1377,43 @@ pub fn RecordButton(props: &RecordButtonProps) -> Element {
                             return;
                         }
                     };
-                    let cfg = media_writer::RecordConfig::new(store, REC_FILE);
-                    match media_writer::MediaWriter::new()
-                        .record(media_writer::MediaInputs::video(&capture.stream), cfg)
+                    // Open the microphone as the AudioStream peer of the canvas
+                    // video stream. Degrade gracefully to video-only if the mic is
+                    // unavailable or permission is denied — a recording without a
+                    // mic still beats no recording. Device defaults (usually mono).
+                    let mic = match microphone::Microphone::new()
+                        .open_stream(microphone::AudioStreamConfig::default())
                         .await
                     {
+                        Ok(stream) => Some(stream),
+                        Err(e) => {
+                            eprintln!("[whiteboard] record: mic open failed ({e}); recording video only");
+                            None
+                        }
+                    };
+                    let cfg = media_writer::RecordConfig::new(store, REC_FILE);
+                    // Mux audio in when we have a mic; the writer lip-syncs the two
+                    // by their shared `pts_micros` clock. `inputs` borrows `mic`, so
+                    // `mic` must outlive the `record(..).await` — it does (moved into
+                    // `mic_handle` only after the call returns).
+                    let inputs = match &mic {
+                        Some(m) => media_writer::MediaInputs::av(&capture.stream, m),
+                        None => media_writer::MediaInputs::video(&capture.stream),
+                    };
+                    match media_writer::MediaWriter::new().record(inputs, cfg).await {
                         Ok(rec) => {
                             *rec_handle.borrow_mut() = Some(rec);
+                            // Hold the mic stream alive for the recording's
+                            // duration; STOP drops it. The recorder only subscribed
+                            // to the channel, which alone wouldn't keep the OS mic
+                            // running (see [`MicHandle`]).
+                            *mic_handle.borrow_mut() = mic;
                         }
                         Err(e) => {
                             eprintln!("[whiteboard] record: start failed: {e}");
                             recording.set(false);
                             *capture.raf.borrow_mut() = None;
+                            // `mic` drops here, stopping capture we just started.
                         }
                     }
                 });

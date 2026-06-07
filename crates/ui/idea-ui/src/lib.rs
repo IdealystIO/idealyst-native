@@ -152,6 +152,7 @@ pub use components::spinner::{Spinner, SpinnerProps, SpinnerSize};
 pub use components::stack::{
     Stack, StackAlign, StackAxis, StackGap, StackJustify, StackPadding, StackProps,
 };
+pub use components::surface::{Surface, SurfaceColor, SurfaceProps};
 pub use components::switch::{Switch, SwitchProps};
 pub use components::table::{Table, TableCell, TableCellProps, TableProps, TableRow, TableRowProps};
 pub use components::tabs::{Tab, Tabs, TabsProps};

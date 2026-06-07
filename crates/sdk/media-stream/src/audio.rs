@@ -514,6 +514,37 @@ mod tests {
         assert_eq!(stopped.load(Ordering::Relaxed), 1, "last drop stops");
     }
 
+    // Contract: an outstanding `subscribe()` does NOT keep the producer
+    // running — the subscription holds only the `AudioChannel`, not the
+    // `AudioStreamInner` that owns the stopper. So a consumer that merely
+    // subscribes (the `media-writer` recorder) cannot keep the OS mic alive;
+    // the app must hold an `AudioStream` clone for as long as it wants capture.
+    // The whiteboard recorder relies on exactly this: it drops its mic
+    // `AudioStream` on STOP to release the device. If a future change made a
+    // subscription pin the inner alive, that STOP would silently leak the mic —
+    // this test fails first.
+    #[test]
+    fn live_subscription_does_not_keep_producer_running() {
+        let (stream, _writer) = AudioStream::new();
+        let stopped = Arc::new(AtomicUsize::new(0));
+        {
+            let stopped = stopped.clone();
+            stream.attach_stopper(move || {
+                stopped.fetch_add(1, Ordering::Relaxed);
+            });
+        }
+        // A consumer subscribes (as the recorder does) but the app drops its
+        // only `AudioStream` clone.
+        let sub = stream.subscribe(|_f: &AudioFrame| {});
+        drop(stream);
+        assert_eq!(
+            stopped.load(Ordering::Relaxed),
+            1,
+            "dropping the last AudioStream stops capture even with a live subscription",
+        );
+        drop(sub);
+    }
+
     #[test]
     fn native_source_roundtrips() {
         let (stream, _writer) = AudioStream::new();

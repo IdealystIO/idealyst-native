@@ -25,18 +25,22 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use idea_ui::{install_idea_theme, light_theme, Button, Stack, StackGap, StackPadding};
+use std::collections::HashSet;
+
+use idea_ui::{install_idea_theme, light_theme, Button, Stack, StackGap, StackPadding, Tab, Tabs};
 use runtime_core::{
-    component, signal, text, text_input, ui, Element, IntoElement, Ref, Route, Screen, Signal,
+    component, signal, text, ui, Element, IntoElement, Ref, Route, Screen, Signal,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 use stack_navigator::{Navigator, StackBuilder, StackHandle, StackScreenExt};
 
 mod client;
 mod discovery;
 mod format;
+mod panels;
 
 use client::{BridgeClient, Snapshot};
+use panels::{ElementsPanel, LogsPanel, StatsPanel};
 
 /// How often the UI thread copies the background client's latest snapshot
 /// into the reactive signal. The client refreshes independently; this is
@@ -108,7 +112,15 @@ fn schedule_poll(snapshot: Signal<Snapshot>) {
         // a `set` during that window re-enters the arena borrow and panics.
         // If we land in that window, skip this tick and catch the next one.
         if !runtime_core::is_reactive_busy() {
-            snapshot.set(client_snapshot());
+            // Only push when the data actually changed. The panels are now
+            // selectable `pressable` rows inside reactive `#[component]`
+            // scopes; an unconditional `set` every tick would rebuild every
+            // row 3×/s — wasted work, and a press could race a rebuild.
+            // `set` notifies subscribers unconditionally, so we gate here.
+            let next = client_snapshot();
+            if snapshot.get() != next {
+                snapshot.set(next);
+            }
         }
         schedule_poll(snapshot);
     });
@@ -166,105 +178,76 @@ fn picker_page(nav: Ref<StackHandle>) -> Element {
     ui! { Stack(gap = StackGap::Md, padding = StackPadding::Lg) { children } }
 }
 
-/// The live inspector. Every panel is a reactive `text` reading `snapshot`,
-/// so they re-render on each poll without any list reconciliation. The
-/// command bar drives the target back.
+/// The live inspector screen: a status header, a tab strip, and the active
+/// tab's panel. Selection / expand / filter state lives in signals here so
+/// it survives panel rebuilds and tab switches.
 fn inspector_page(snapshot: Signal<Snapshot>, nav: Ref<StackHandle>) -> Element {
-    // Command-bar inputs (local to this screen).
-    let click_id: Signal<String> = signal!(String::new());
-    let inv_instance: Signal<String> = signal!(String::new());
-    let inv_method: Signal<String> = signal!(String::new());
+    let tab: Signal<usize> = signal!(0);
+    let sel_node: Signal<Option<u64>> = signal!(None);
+    let expanded: Signal<HashSet<u64>> = signal!(HashSet::new());
+    let log_filter: Signal<String> = signal!(String::new());
 
-    // — Header / status —
     let header = text(move || format::header(&snapshot.get())).into_element();
 
-    // — Panels (each a reactive multi-line text) —
-    let navigators = panel("NAVIGATORS", move || format::navigators(&snapshot.get()));
-    let tree = panel("TREE", move || format::tree(&snapshot.get()));
-    let raw = panel("RAW ELEMENTS (find_all)", move || format::raw_elements(&snapshot.get()));
-    let components = panel("COMPONENTS", move || format::components(&snapshot.get()));
-    let perf = panel("PERF", move || format::perf(&snapshot.get()));
-    let signals = panel("SIGNALS", move || format::signals(&snapshot.get()));
-    let logs = panel("LOGS", move || format::logs(&snapshot.get()));
+    let tabs = vec![Tab::new("Elements"), Tab::new("Logs"), Tab::new("Stats")];
+    let on_tab: Rc<dyn Fn(usize)> = Rc::new(move |i| tab.set(i));
+    let strip = ui! { Tabs(tabs = tabs, active = tab, on_change = on_tab) };
 
-    // — Command bar —
-    let click_input = text_input(click_id, move |v| click_id.set(v))
-        .placeholder("test_id".to_string())
-        .into_element();
-    let do_click: Rc<dyn Fn()> = Rc::new(move || {
-        let id = click_id.get();
-        if !id.is_empty() {
-            client_action("click_test_id", json!({ "test_id": id }));
-        }
-    });
-    let click_btn = ui! { Button(label = "Click by test_id".to_string(), on_click = do_click) };
-
-    let inst_input = text_input(inv_instance, move |v| inv_instance.set(v))
-        .placeholder("instance_id".to_string())
-        .into_element();
-    let method_input = text_input(inv_method, move |v| inv_method.set(v))
-        .placeholder("method".to_string())
-        .into_element();
-    let do_invoke: Rc<dyn Fn()> = Rc::new(move || {
-        if let Ok(instance) = inv_instance.get().trim().parse::<u64>() {
-            let method = inv_method.get();
-            if !method.is_empty() {
-                client_action(
-                    "invoke_method",
-                    json!({ "instance_id": instance, "method": method, "args": {} }),
-                );
-            }
-        }
-    });
-    let invoke_btn = ui! { Button(label = "Invoke method".to_string(), on_click = do_invoke) };
-
-    let clear_logs: Rc<dyn Fn()> = Rc::new(move || client_action("clear_logs", json!({})));
-    let clear_btn = ui! { Button(label = "Clear logs".to_string(), on_click = clear_logs) };
-
-    let nav_back = nav;
     let back: Rc<dyn Fn()> = Rc::new(move || {
-        nav_back.get().map(|h| h.pop());
+        nav.get().map(|h| h.pop());
     });
     let back_btn = ui! { Button(label = "Disconnect".to_string(), on_click = back) };
 
-    let command_bar = ui! {
-        Stack(gap = StackGap::Sm, padding = StackPadding::Md) {
-            text("Actions").into_element()
-            click_input
-            click_btn
-            inst_input
-            method_input
-            invoke_btn
-            clear_btn
-            back_btn
-        }
-    };
-
     let body = ui! {
-        Stack(gap = StackGap::Md, padding = StackPadding::Md) {
-            header
-            navigators
-            tree
-            raw
-            components
-            perf
-            signals
-            logs
-            command_bar
-        }
+        InspectorBody(
+            snapshot = snapshot,
+            tab = tab,
+            sel_node = sel_node,
+            expanded = expanded,
+            log_filter = log_filter,
+        )
     };
 
-    ui! { scroll_view { body } }
+    ui! {
+        scroll_view {
+            Stack(gap = StackGap::Sm, padding = StackPadding::Sm) {
+                header
+                strip
+                body
+                back_btn
+            }
+        }
+    }
 }
 
-/// A titled panel: a bold-ish title line over a reactive body text.
-fn panel(title: &'static str, body: impl Fn() -> String + 'static) -> Element {
-    let title_el = text(title).into_element();
-    let body_el = text(body).into_element();
+/// Props for [`InspectorBody`]. All-`Signal` so `#[derive(Default)]` holds
+/// (`Signal<T>: Default` for every `T`).
+#[derive(Default)]
+struct InspectorBodyProps {
+    snapshot: Signal<Snapshot>,
+    tab: Signal<usize>,
+    sel_node: Signal<Option<u64>>,
+    expanded: Signal<HashSet<u64>>,
+    log_filter: Signal<String>,
+}
+
+/// Reactive tab switch. The scrutinee reads `tab.get()`, so the `ui!`
+/// `match` lowers to `runtime_core::switch(...)` and rebuilds the active
+/// arm whenever the tab changes. Patterns use guards on the bound `&usize`.
+#[component]
+fn InspectorBody(props: InspectorBodyProps) -> Element {
+    let InspectorBodyProps { snapshot, tab, sel_node, expanded, log_filter } = props;
     ui! {
-        Stack(gap = StackGap::Xs, padding = StackPadding::Sm) {
-            title_el
-            body_el
+        match tab.get() {
+            n if *n == 1 => {
+                LogsPanel(snapshot = snapshot, filter = log_filter)
+            }
+            n if *n == 2 => {
+                StatsPanel(snapshot = snapshot)
+            }
+            _ => {
+                ElementsPanel(snapshot = snapshot, selected = sel_node, expanded = expanded)
+            }
         }
     }
 }

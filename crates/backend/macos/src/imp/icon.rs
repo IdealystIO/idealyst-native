@@ -27,6 +27,7 @@
 use std::ffi::c_void;
 
 use objc2::encode::{Encoding, RefEncode};
+use objc2::class;
 use objc2::msg_send;
 use objc2::msg_send_id;
 use objc2::rc::Retained;
@@ -242,18 +243,115 @@ pub(crate) fn create_icon(
         let _: () = unsafe { msg_send![&shape_layer, setFillRule: &*rule] };
     }
 
-    // Frame the shape layer inside the view's bounds.
+    // Frame the shape layer inside the view's bounds. The path is baked
+    // at a fixed 24×24; the layout pass (`sync_icon_sublayer`) scales +
+    // centers this layer to the view's actual box, so `Icon(size = N)`
+    // renders at N px instead of always 24.
     let frame = CGRect {
         origin: CGPoint { x: 0.0, y: 0.0 },
         size: CGSize { width: SIZE, height: SIZE },
     };
     let _: () = unsafe { msg_send![&shape_layer, setFrame: frame] };
 
+    // Name the sublayer so the layout pass can find + scale it (and only
+    // it). Mirrors the gradient sublayer's `idealyst_gradient` marker.
+    let marker = NSString::from_str("idealyst_icon");
+    let _: () = unsafe { msg_send![&shape_layer, setName: &*marker] };
+
     // Attach the shape layer to the view's CALayer.
     let layer: Retained<NSObject> = unsafe { msg_send_id![&view, layer] };
     let _: () = unsafe { msg_send![&layer, addSublayer: &*shape_layer] };
 
     view
+}
+
+/// The natural box the icon path is baked into (see `create_icon`'s
+/// `SIZE`). The layout-pass scale divides the laid-out box by this.
+const ICON_NATURAL: f64 = 24.0;
+
+/// Uniform scale that fits the 24×24 baked glyph into a `width`×`height`
+/// box (square: the smaller side wins). Pure so it's unit-testable
+/// without a live layer.
+fn icon_scale(width: f64, height: f64) -> f64 {
+    width.min(height) / ICON_NATURAL
+}
+
+/// Scale + center the icon's shape sublayer to the view's laid-out box.
+/// Called from the layout (frame) pass on every view — a no-op unless the
+/// view owns an `idealyst_icon` sublayer — so it stays cheap for non-icons.
+///
+/// The path is baked at a fixed `ICON_NATURAL`×`ICON_NATURAL`; this applies
+/// a uniform layer transform of `min(w,h) / ICON_NATURAL` about the layer
+/// center so `Icon(size = N)` actually renders at N px. Without it the
+/// glyph always painted at 24 px regardless of the requested size — the
+/// "chevrons are huge" bug. The view's frame (origin + size) is written
+/// elsewhere in the same pass; this only touches the glyph sublayer.
+pub(crate) fn sync_icon_sublayer(view: &NSView, width: f64, height: f64) {
+    // Raw pointers + null checks (NOT `msg_send_id!`, which panics on NULL):
+    // this runs on EVERY view in the layout pass, and a non-layer-backed
+    // `NSView` returns a nil `layer`. Mirrors `gradient::sync_gradient_sublayer`.
+    let layer_ptr: *mut NSObject = unsafe { msg_send![view, layer] };
+    if layer_ptr.is_null() {
+        return;
+    }
+    let sublayers_ptr: *mut NSObject = unsafe { msg_send![layer_ptr, sublayers] };
+    if sublayers_ptr.is_null() {
+        return;
+    }
+    let count: usize = unsafe { msg_send![sublayers_ptr, count] };
+    for i in 0..count {
+        let sub_ptr: *mut NSObject = unsafe { msg_send![sublayers_ptr, objectAtIndex: i] };
+        if sub_ptr.is_null() {
+            continue;
+        }
+        let name_ptr: *mut NSString = unsafe { msg_send![sub_ptr, name] };
+        if name_ptr.is_null() {
+            continue;
+        }
+        if unsafe { &*name_ptr }.to_string() != "idealyst_icon" {
+            continue;
+        }
+        if width.min(height) <= 0.0 {
+            return;
+        }
+        let sub = unsafe { &*sub_ptr };
+        let scale = icon_scale(width, height);
+        // Skip when the scale already matches — the layer's position +
+        // bounds depend only on the (constant) box size, so a matching
+        // scale means it's already correct. This makes a normal re-render
+        // (color change, label re-render) touch the layer zero times.
+        if (super::animated::current_layer_scale(sub) - scale).abs() < 1e-3 {
+            return;
+        }
+        // Disable Core Animation's implicit action so the resize is
+        // INSTANT, not a ~0.25s animation. Setting `transform`/`bounds`/
+        // `position` on a sublayer inside the run loop otherwise animates —
+        // the "icon resizes each update" artifact. The path itself is
+        // rasterized once by `CAShapeLayer` (CA caches the bitmap); the
+        // transform is GPU compositing, not a re-rasterization.
+        unsafe {
+            let _: () = msg_send![class!(CATransaction), begin];
+            let _: () = msg_send![class!(CATransaction), setDisableActions: true];
+            // Keep the 24×24 path space; center it in the view and scale.
+            let _: () = msg_send![sub, setAnchorPoint: CGPoint { x: 0.5, y: 0.5 }];
+            let _: () = msg_send![
+                sub,
+                setBounds: CGRect {
+                    origin: CGPoint { x: 0.0, y: 0.0 },
+                    size: CGSize { width: ICON_NATURAL, height: ICON_NATURAL },
+                }
+            ];
+            let _: () = msg_send![
+                sub,
+                setPosition: CGPoint { x: width / 2.0, y: height / 2.0 }
+            ];
+        }
+        super::animated::apply_layer_scale(sub, scale);
+        unsafe {
+            let _: () = msg_send![class!(CATransaction), commit];
+        }
+        return;
+    }
 }
 
 /// Update the color on an existing icon view's CAShapeLayer. Walks the
@@ -301,6 +399,19 @@ mod tests {
     /// instant any `icon()` mounts on macOS (the whiteboard-demo did exactly
     /// this). A full mount test needs a live AppKit layer + main thread; pinning
     /// the encoding constant is the closest reachable guard.
+    /// `Icon(size = N)` must render at N px, not the baked 24. The objc
+    /// layer transform needs a live main-thread layer, so the closest
+    /// reachable guard is the pure scale ratio the layout pass applies:
+    /// a 13 px box → 13/24, a 24 px box → identity, a 48 px box → 2×.
+    #[test]
+    fn icon_scale_fits_box_to_24px_glyph() {
+        assert!((icon_scale(24.0, 24.0) - 1.0).abs() < 1e-9, "24px box = identity");
+        assert!((icon_scale(13.0, 13.0) - 13.0 / 24.0).abs() < 1e-9, "13px box scales down");
+        assert!((icon_scale(48.0, 48.0) - 2.0).abs() < 1e-9, "48px box scales up");
+        // Non-square: the smaller side wins (square glyph).
+        assert!((icon_scale(40.0, 12.0) - 0.5).abs() < 1e-9, "min side drives scale");
+    }
+
     #[test]
     fn cgpath_pointer_encodes_as_typed_cgpath() {
         assert_eq!(

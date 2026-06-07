@@ -20,6 +20,63 @@ use objc2_foundation::{
     CGSize, MainThreadMarker, NSActivityOptions, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
 };
 
+/// Env var carrying the PID of the `idealyst dev` launcher that spawned
+/// this app. Set ONLY by the dev orchestrator's background macOS launch
+/// (`cli/cmd/dev.rs::launch_macos`); absent for a standalone `.app` or a
+/// foreground `idealyst run macos`, so the watchdog below stays dormant
+/// outside dev.
+const LAUNCHER_PID_ENV: &str = "IDEALYST_LAUNCHER_PID";
+
+/// `true` while `pid` is still a live process we could signal. Uses
+/// `kill(pid, 0)`, which sends no signal — it only probes existence:
+/// `0` = alive; `ESRCH` = gone; `EPERM` = exists but not ours (treat as
+/// alive — never false-positive a teardown). Split out so it's unit-
+/// testable without spinning the run loop.
+#[cfg(unix)]
+fn launcher_alive(pid: i32) -> bool {
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    !matches!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(e) if e == libc::ESRCH
+    )
+}
+
+/// In dev, exit the app when the `idealyst dev` launcher dies — even via
+/// SIGKILL / force-quit, which no signal handler in the launcher could
+/// forward. Without this the app is orphaned to launchd and lingers after
+/// the terminal is gone. Mirrors the dev-host's own parent-pid watchdog
+/// (`dev/server/src/host.rs`), but watches the *explicit* launcher pid
+/// (via `LAUNCHER_PID_ENV`) rather than `getppid()`, so it's robust to the
+/// app being reparented (e.g. launched through a `.app` bundle).
+///
+/// No-op when `LAUNCHER_PID_ENV` is unset — a standalone app has no
+/// launcher to follow.
+#[cfg(unix)]
+fn spawn_launcher_watchdog() {
+    let Ok(raw) = std::env::var(LAUNCHER_PID_ENV) else {
+        return;
+    };
+    let Ok(pid) = raw.parse::<i32>() else {
+        return;
+    };
+    // pid 1 (launchd) / 0 are never a real launcher to follow.
+    if pid <= 1 {
+        return;
+    }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if !launcher_alive(pid) {
+            eprintln!("[host-appkit] dev launcher (pid {pid}) is gone — exiting app.");
+            std::process::exit(0);
+        }
+    });
+}
+
+#[cfg(not(unix))]
+fn spawn_launcher_watchdog() {}
+
 #[derive(Clone, Debug)]
 pub struct RunOptions {
     /// Initial window title shown in the title bar + on the Dock.
@@ -103,6 +160,9 @@ where
     let Some(mtm) = MainThreadMarker::new() else {
         return Err(RunError::NotMainThread);
     };
+
+    // Dev-mode lifecycle link: die when the `idealyst dev` launcher dies.
+    spawn_launcher_watchdog();
 
     // ── NSApplication boot ────────────────────────────────────────
     let nsapp = NSApplication::sharedApplication(mtm);
@@ -291,6 +351,9 @@ pub fn run_aas(url: &str, opts: RunOptions) -> Result<(), RunError> {
         return Err(RunError::NotMainThread);
     };
 
+    // Dev-mode lifecycle link: die when the `idealyst dev` launcher dies.
+    spawn_launcher_watchdog();
+
     // ── NSApplication boot — identical to local-render path ───────
     let nsapp = NSApplication::sharedApplication(mtm);
     nsapp.setActivationPolicy(NSApplicationActivationPolicy::Regular);
@@ -399,4 +462,35 @@ pub fn run_aas(url: &str, opts: RunOptions) -> Result<(), RunError> {
     backend_macos::runtime_server::teardown();
 
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod watchdog_tests {
+    use super::launcher_alive;
+
+    /// Our own process is, definitionally, alive.
+    #[test]
+    fn launcher_alive_true_for_self() {
+        let me = std::process::id() as i32;
+        assert!(launcher_alive(me), "the current process must read as alive");
+    }
+
+    /// A child we spawned and reaped is gone — its pid must read dead, so
+    /// the watchdog would fire. Spawning+reaping a real process is the
+    /// only deterministic way to obtain a known-dead pid.
+    #[test]
+    fn launcher_alive_false_after_child_reaped() {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn `true`");
+        let pid = child.id() as i32;
+        child.wait().expect("reap child");
+        // The pid has been reaped (not a zombie holding the slot), so
+        // `kill(pid, 0)` returns ESRCH. (Tiny race window before the
+        // kernel frees the pid is not observed in practice here.)
+        assert!(
+            !launcher_alive(pid),
+            "a reaped child's pid must read as gone"
+        );
+    }
 }

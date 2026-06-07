@@ -16,6 +16,7 @@ stack-navigator = { workspace = true }
 canvas = { workspace = true }
 canvas-native = { workspace = true }
 camera = { workspace = true }
+microphone = { workspace = true }
 media-stream = { workspace = true }
 video = { workspace = true }
 media-writer = { workspace = true }
@@ -53,6 +54,7 @@ build_number = "2"
 
 [package.metadata.idealyst.app.permissions]
 camera = "Whiteboard shows your camera feed in the corner of the board."
+microphone = "Whiteboard records audio alongside the board while recording."
 
 [package.metadata.idealyst.app.macos]
 category = "public.app-category.productivity"

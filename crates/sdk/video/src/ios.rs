@@ -205,12 +205,11 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
     // per-frame raf below unhides it only for `Stream` sources.
     let _: () = unsafe { msg_send![&display_layer, setHidden: true] };
 
-    // Optional behaviors. `muted` mirrors the web backend's autoplay
-    // pairing — iOS won't autoplay otherwise on cellular under
-    // low-power mode, and the cross-platform expectation is "autoplay
-    // = silent autoplay" anyway.
+    // Honor the explicit `muted` flag (NOT tied to autoplay — iOS plays
+    // unmuted autoplay fine, unlike the web). A recording preview wants its
+    // audio; a silent background loop sets `muted: true`.
+    let _: () = unsafe { msg_send![&player, setMuted: props.muted] };
     if props.autoplay {
-        let _: () = unsafe { msg_send![&player, setMuted: true] };
         let _: () = unsafe { msg_send![&player, play] };
     }
 
@@ -234,6 +233,28 @@ fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode {
                 loop_observer,
             },
         );
+    });
+
+    // Tear the player down on unmount (the preview pops, by any route). Without
+    // this the AVPlayer keeps playing — audible in the background — and the
+    // PLAYER_TABLE entry + its loop observer leak. `on_cleanup` fires on scope
+    // drop. Pause halts the rate; nil-ing the item releases the audio/decode
+    // pipeline; removing the notification observer is required (the center
+    // retains the token, and its block retains the player). Mirrors macOS.
+    runtime_core::on_cleanup(move || {
+        let Some(entry) = PLAYER_TABLE.with(|t| t.borrow_mut().remove(&key)) else {
+            return;
+        };
+        unsafe {
+            let _: () = msg_send![&*entry.player, pause];
+            let nil_item: *const AnyObject = std::ptr::null();
+            let _: () = msg_send![&*entry.player, replaceCurrentItemWithPlayerItem: nil_item];
+            if let Some(obs) = &entry.loop_observer {
+                let center: Retained<NSObject> =
+                    msg_send_id![objc2::class!(NSNotificationCenter), defaultCenter];
+                let _: () = msg_send![&center, removeObserver: &**obs];
+            }
+        }
     });
 
     b.register_external_view(&view);

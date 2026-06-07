@@ -332,6 +332,12 @@ pub fn run(args: Args) -> Result<()> {
     // pushes any subprocesses it spawns here; the signal handler
     // walks the vec and kills everything.
     let children: Arc<Mutex<Vec<Child>>> = Arc::new(Mutex::new(Vec::new()));
+    // PID of the spawned macOS app, if any. The macOS launcher records it
+    // here so the tail of this fn can wait on the app's lifetime: closing
+    // the app window should tear the dev session down (and bring the
+    // terminal back), the mirror of the launcher-watchdog that makes the
+    // app die when the CLI does. See the wait loop after the worker join.
+    let macos_app_pid: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
     // Interactive mode: crossterm (via host-terminal inside dev-tui)
     // captures Ctrl-C in raw mode. Installing the usual handler would
     // call `std::process::exit(0)` mid-frame, skipping host-terminal's
@@ -470,8 +476,9 @@ pub fn run(args: Args) -> Result<()> {
             let args_clone = args.shallow_clone();
             let target = *target;
             let children_for_worker = children.clone();
+            let macos_pid_for_worker = macos_app_pid.clone();
             std::thread::spawn(move || {
-                if let Err(e) = launch_target(target, &dir, &args_clone, children_for_worker, runtime_server_port) {
+                if let Err(e) = launch_target(target, &dir, &args_clone, children_for_worker, macos_pid_for_worker, runtime_server_port) {
                     crate::dlog!(&format!("dev {}", target), "launch failed: {e:#}");
                 }
             });
@@ -481,7 +488,7 @@ pub fn run(args: Args) -> Result<()> {
         // through to crossterm, not our handler — but when the app
         // exits, control returns here and we drop into the children-
         // kill loop below.
-        if let Err(e) = launch_target(Target::Terminal, &dir, &args, children.clone(), runtime_server_port) {
+        if let Err(e) = launch_target(Target::Terminal, &dir, &args, children.clone(), macos_app_pid.clone(), runtime_server_port) {
             crate::dlog!("dev terminal", "launch failed: {e:#}");
         }
         // Clean up sibling targets.
@@ -500,8 +507,9 @@ pub fn run(args: Args) -> Result<()> {
         let args_clone = args.shallow_clone();
         let target = *target;
         let children_for_worker = children.clone();
+        let macos_pid_for_worker = macos_app_pid.clone();
         let worker = std::thread::spawn(move || {
-            if let Err(e) = launch_target(target, &dir, &args_clone, children_for_worker, runtime_server_port) {
+            if let Err(e) = launch_target(target, &dir, &args_clone, children_for_worker, macos_pid_for_worker, runtime_server_port) {
                 crate::dlog!(&format!("dev {}", target), "launch failed: {e:#}");
             }
         });
@@ -598,8 +606,20 @@ pub fn run(args: Args) -> Result<()> {
     // and exits — or the host dies on its own (crash / self-exec gone
     // wrong), in which case we tear down and exit cleanly so the
     // terminal isn't left hanging.
+    // PIDs whose exit should end the whole dev session: the runtime-server
+    // host (so a host crash tears down cleanly) and the macOS app (so
+    // closing its window brings the terminal back — symptom: "I close the
+    // app and the terminal just keeps running"). Whichever exits first
+    // triggers teardown.
+    let mut watch_pids: Vec<u32> = Vec::new();
     if let Some(pid) = host_pid {
-        wait_for_host_exit(&children, pid);
+        watch_pids.push(pid);
+    }
+    if let Some(pid) = *macos_app_pid.lock().unwrap() {
+        watch_pids.push(pid);
+    }
+    if !watch_pids.is_empty() {
+        wait_for_any_child_exit(&children, &watch_pids);
         if let Ok(mut guard) = children.lock() {
             for mut child in guard.drain(..) {
                 let _ = child.kill();
@@ -611,17 +631,20 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Block until the dev-host child (`host_pid`) is no longer running,
-/// then return. Polls rather than `Child::wait()` because the `Child`
-/// handle lives in the shared `children` vec (the Ctrl-C handler needs
-/// it there to tear the host down), and `wait` would take ownership /
-/// hold the lock across a blocking call. A short poll interval keeps
-/// teardown latency low without busy-spinning.
+/// Block until ANY of `watch_pids` is no longer running, then return.
+/// Polls rather than `Child::wait()` because the `Child` handles live in
+/// the shared `children` vec (the Ctrl-C handler needs them there to tear
+/// everything down), and `wait` would take ownership / hold the lock
+/// across a blocking call. A short poll interval keeps teardown latency
+/// low without busy-spinning.
 ///
-/// Returns early if the host is no longer in `children` at all — that
-/// means the Ctrl-C handler already drained the vec (the process is
-/// exiting underneath us).
-fn wait_for_host_exit(children: &Arc<Mutex<Vec<Child>>>, host_pid: u32) {
+/// The watched pids are the long-lived "session anchors" — the
+/// runtime-server host and/or the macOS app. The first to exit ends the
+/// wait, and the caller then drains+kills the rest. Returns early if a
+/// watched pid is no longer tracked in `children` at all — that means the
+/// Ctrl-C handler already drained the vec (the process is exiting
+/// underneath us).
+fn wait_for_any_child_exit(children: &Arc<Mutex<Vec<Child>>>, watch_pids: &[u32]) {
     loop {
         std::thread::sleep(std::time::Duration::from_millis(250));
         let mut guard = match children.lock() {
@@ -630,19 +653,21 @@ fn wait_for_host_exit(children: &Arc<Mutex<Vec<Child>>>, host_pid: u32) {
             // nothing more we can sensibly wait on; let `main` return.
             Err(_) => return,
         };
-        match guard.iter_mut().find(|c| c.id() == host_pid) {
-            // Still tracked — check whether it has exited.
-            Some(child) => match child.try_wait() {
-                Ok(Some(_status)) => {
-                    eprintln!("[dev] runtime-server host exited; stopping.");
-                    return;
-                }
-                Ok(None) => { /* still running — keep waiting */ }
-                Err(_) => return,
-            },
-            // Drained by the Ctrl-C handler; the process is on its way
-            // out, so stop waiting.
-            None => return,
+        for pid in watch_pids {
+            match guard.iter_mut().find(|c| c.id() == *pid) {
+                // Still tracked — check whether it has exited.
+                Some(child) => match child.try_wait() {
+                    Ok(Some(_status)) => {
+                        eprintln!("[dev] watched process {pid} exited; stopping.");
+                        return;
+                    }
+                    Ok(None) => { /* still running */ }
+                    Err(_) => return,
+                },
+                // Drained by the Ctrl-C handler; the process is on its way
+                // out, so stop waiting.
+                None => return,
+            }
         }
     }
 }
@@ -764,6 +789,7 @@ fn launch_target(
     dir: &Path,
     args: &Args,
     children: Arc<Mutex<Vec<Child>>>,
+    macos_app_pid: Arc<Mutex<Option<u32>>>,
     runtime_server_port: Option<u16>,
 ) -> Result<()> {
     match target {
@@ -773,7 +799,7 @@ fn launch_target(
         Target::Roku => anyhow::bail!(
             "Roku has no dev-mode story yet; use `idealyst build roku` for the package"
         ),
-        Target::Macos => launch_macos(dir, args, children, runtime_server_port),
+        Target::Macos => launch_macos(dir, args, children, macos_app_pid, runtime_server_port),
         Target::Terminal => launch_terminal(dir, args, runtime_server_port),
     }
 }
@@ -1409,6 +1435,11 @@ fn launch_ios(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
             mode,
             source,
             user_features: dev_user_features_other(),
+            // The dev loop relaunches on every change; the default
+            // terminate-before-install (inside `run`) already keeps the
+            // simulator from re-foregrounding a stale process. A full
+            // uninstall would wipe app state on every reload, so keep it off.
+            clean: false,
         },
     )
     .context("iOS dev launch failed")?;
@@ -1480,7 +1511,7 @@ fn launch_android(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> 
 /// (we're already on macOS) and no runtime-server shell yet — the macOS
 /// backend's first iteration is local-render only (see
 /// `docs/macos-backend-plan.md`).
-fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, runtime_server_port: Option<u16>) -> Result<()> {
+fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, macos_app_pid: Arc<Mutex<Option<u32>>>, runtime_server_port: Option<u16>) -> Result<()> {
     let mode = if args.local {
         run_macos::RunMode::Local
     } else {
@@ -1525,7 +1556,14 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, runti
     // dev-server. Pass the endpoint as an env var the wrapper reads
     // via `runtime_server_shell_native::endpoint_or_panic()`.
     let endpoint = runtime_server_port.map(|p| format!("ws://127.0.0.1:{p}"));
-    let env_vars = dev_env_vars(dir, args, &app_name, Some(&built.binary), endpoint.as_deref());
+    let mut env_vars = dev_env_vars(dir, args, &app_name, Some(&built.binary), endpoint.as_deref());
+    // Tell the app which process launched it, so its launcher-watchdog
+    // exits the app when this CLI dies (incl. SIGKILL). Paired with the
+    // app-pid wait in the tail of `run` for the reverse direction.
+    env_vars.push((
+        "IDEALYST_LAUNCHER_PID".to_string(),
+        std::process::id().to_string(),
+    ));
     let artifact = run_macos::run(
         dir,
         run_macos::RunOptions {
@@ -1547,6 +1585,9 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, runti
     // up one zombie `<project>-macos[-aas]` process per
     // invocation, with no way to reach them short of `killall -9`.
     if let Some(child) = artifact.child {
+        // Record the app pid before moving the handle into `children`, so
+        // the tail wait can detect window-close → app-exit and tear down.
+        *macos_app_pid.lock().unwrap() = Some(child.id());
         children.lock().unwrap().push(child);
     }
 

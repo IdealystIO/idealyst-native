@@ -386,6 +386,28 @@ fn rebuild_transform(view: &NSView, state: &AnimatedState) {
     let _: () = unsafe { msg_send![&layer, setTransform: m] };
 }
 
+/// The uniform scale currently on `layer` (its `transform.m11`). The icon
+/// backend reads this to skip re-applying an unchanged scale every layout
+/// pass.
+pub(crate) fn current_layer_scale(layer: &NSObject) -> f64 {
+    let t: CATransform3D = unsafe { msg_send![layer, transform] };
+    t.m11
+}
+
+/// Apply a uniform scale (about the layer's anchor point) to `layer`'s
+/// `transform`. Shared with the icon backend, which scales a fixed-size
+/// glyph sublayer down to its laid-out box. Uses the same raw
+/// `CATransform3D` struct the animated-transform path uses.
+pub(crate) fn apply_layer_scale(layer: &NSObject, s: f64) {
+    let m = CATransform3D {
+        m11: s, m12: 0.0, m13: 0.0, m14: 0.0,
+        m21: 0.0, m22: s, m23: 0.0, m24: 0.0,
+        m31: 0.0, m32: 0.0, m33: 1.0, m34: 0.0,
+        m41: 0.0, m42: 0.0, m43: 0.0, m44: 1.0,
+    };
+    let _: () = unsafe { msg_send![layer, setTransform: m] };
+}
+
 /// CATransform3D layout — 4x4 column-major matrix of f64. Matches
 /// the C ABI Core Animation exposes.
 #[repr(C)]

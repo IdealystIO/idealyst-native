@@ -147,6 +147,14 @@ pub struct RunOptions {
     /// Cargo features to enable on the build. `idealyst dev` passes
     /// `runtime-core/dev` here so the Robot bridge auto-starts.
     pub user_features: Vec<String>,
+    /// Force a clean reinstall: `simctl uninstall` the app before the
+    /// fresh `install`, so even SpringBoard's executable cache is dropped.
+    /// Wipes the app's persisted data (UserDefaults / Keychain / sandbox).
+    /// The default flow already `terminate`s the running process before
+    /// installing, which fixes the common "stale running binary" case
+    /// without losing data; `clean` is the bigger hammer for when an
+    /// install-over still resurfaces the old build.
+    pub clean: bool,
 }
 
 #[derive(Debug)]
@@ -281,10 +289,17 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     )?;
     fs::write(app_bundle.join("PkgInfo"), b"APPL????")?;
 
-    // ── 6. Simulator: boot, install, launch ──────────────────────
+    // ── 6. Simulator: boot, then run the (re)install plan ─────────
     let udid = ensure_simulator_booted()?;
-    install_app(&udid, &app_bundle)?;
-    launch_app(&udid, manifest.app.require_bundle_id()?)?;
+    let bundle_id = manifest.app.require_bundle_id()?;
+    for step in reinstall_plan(opts.clean) {
+        match step {
+            SimStep::Terminate => terminate_app(&udid, bundle_id),
+            SimStep::Uninstall => uninstall_app(&udid, bundle_id),
+            SimStep::Install => install_app(&udid, &app_bundle)?,
+            SimStep::Launch => launch_app(&udid, bundle_id)?,
+        }
+    }
 
     Ok(RunArtifact {
         app_bundle,
@@ -721,6 +736,56 @@ fn wait_for_boot(udid: &str) -> Result<()> {
     Ok(())
 }
 
+/// One step in the simulator (re)install sequence run before the app comes
+/// up. Modeled as data so [`reinstall_plan`] is a pure, testable function.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum SimStep {
+    Terminate,
+    Uninstall,
+    Install,
+    Launch,
+}
+
+/// Ordered simulator operations for a (re)install.
+///
+/// We ALWAYS `Terminate` first: `simctl install` does replace the on-disk
+/// binary, but if the previous instance is still running, `launch` just
+/// re-foregrounds the OLD process — the exact "I killed it by hand and it
+/// still didn't update" trap (killing from the UI doesn't help; SpringBoard
+/// keeps the process). `clean` additionally `Uninstall`s so SpringBoard
+/// can't serve a cached executable at all, at the cost of the app's data.
+fn reinstall_plan(clean: bool) -> Vec<SimStep> {
+    let mut steps = vec![SimStep::Terminate];
+    if clean {
+        steps.push(SimStep::Uninstall);
+    }
+    steps.push(SimStep::Install);
+    steps.push(SimStep::Launch);
+    steps
+}
+
+/// Terminate any running instance of `bundle_id` on the simulator. Best
+/// effort: `simctl terminate` exits non-zero when the app isn't running
+/// ("found nothing to terminate"), which is the common case and not an
+/// error for us — so we don't propagate the status.
+fn terminate_app(udid: &str, bundle_id: &str) {
+    eprintln!("[run-ios] simctl terminate {bundle_id} on {udid}");
+    let _ = Command::new("xcrun")
+        .args(["simctl", "terminate", udid, bundle_id])
+        .output();
+}
+
+/// Uninstall `bundle_id` from the simulator so the next install is fully
+/// fresh (clears SpringBoard's executable cache AND the app sandbox). Best
+/// effort: a non-zero exit when the app isn't installed is expected, so we
+/// log but don't fail the run.
+fn uninstall_app(udid: &str, bundle_id: &str) {
+    eprintln!("[run-ios] simctl uninstall {bundle_id} on {udid} (--clean)");
+    let _ = Command::new("xcrun")
+        .args(["simctl", "uninstall", udid, bundle_id])
+        .output();
+}
+
 fn install_app(udid: &str, app: &Path) -> Result<()> {
     eprintln!("[run-ios] simctl install {} → {udid}", app.display());
     let status = Command::new("xcrun")
@@ -865,5 +930,32 @@ mod tests {
             // concatenated extra-entry list.
             assert_eq!(plist.matches("NSAppTransportSecurity").count(), 1);
         }
+    }
+
+    /// Default (`--clean` off) must still terminate the running instance
+    /// before installing, or `launch` re-foregrounds the stale process and
+    /// the app appears not to update even after a manual kill. Order matters:
+    /// Terminate strictly precedes Install, which precedes Launch.
+    #[test]
+    fn reinstall_plan_default_terminates_before_install() {
+        assert_eq!(
+            reinstall_plan(false),
+            vec![SimStep::Terminate, SimStep::Install, SimStep::Launch],
+        );
+    }
+
+    /// `--clean` inserts an Uninstall between Terminate and Install so
+    /// SpringBoard's cached executable is dropped, guaranteeing a fresh binary.
+    #[test]
+    fn reinstall_plan_clean_uninstalls_between_terminate_and_install() {
+        assert_eq!(
+            reinstall_plan(true),
+            vec![
+                SimStep::Terminate,
+                SimStep::Uninstall,
+                SimStep::Install,
+                SimStep::Launch,
+            ],
+        );
     }
 }

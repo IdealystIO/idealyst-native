@@ -87,6 +87,10 @@ pub struct DeviceOptions {
     /// Specific device UDID to target. `None` ⇒ auto-discover the first
     /// connected device via `xcrun xctrace list devices`.
     pub udid: Option<String>,
+    /// Force a clean reinstall: pass `--uninstall` to ios-deploy so the old
+    /// app (and its container) is removed before the fresh install, instead
+    /// of installing over it. Wipes the app's persisted data.
+    pub clean: bool,
 }
 
 #[derive(Debug)]
@@ -159,7 +163,7 @@ pub fn run(project_dir: &Path, opts: DeviceOptions) -> Result<DeviceArtifact> {
     }
 
     // ── 7. ios-deploy: install + launch ──────────────────────────
-    install_and_launch(&udid, &app_bundle)?;
+    install_and_launch(&udid, &app_bundle, opts.clean)?;
 
     Ok(DeviceArtifact {
         app_bundle,
@@ -594,16 +598,22 @@ fn xcodebuild_for_device(
 /// even when install + launch succeeded, so we treat the run as a success if
 /// the output contains the success markers rather than trusting the exit code
 /// blindly.
-fn install_and_launch(udid: &str, app_bundle: &Path) -> Result<()> {
+fn install_and_launch(udid: &str, app_bundle: &Path, clean: bool) -> Result<()> {
     ensure_ios_deploy_present()?;
     eprintln!(
-        "[run-ios --device] ios-deploy --id {udid} --bundle {}",
+        "[run-ios --device] ios-deploy --id {udid} --bundle {}{}",
         app_bundle.display(),
+        if clean { " --uninstall (--clean)" } else { "" },
     );
-    let out = Command::new("ios-deploy")
-        .args(["--id", udid])
-        .arg("--bundle")
-        .arg(app_bundle)
+    let mut cmd = Command::new("ios-deploy");
+    cmd.args(["--id", udid]).arg("--bundle").arg(app_bundle);
+    // `--uninstall` makes ios-deploy remove the existing app (and its
+    // container) before copying the new bundle, rather than installing over
+    // it — the device-side equivalent of the simulator's `--clean` path.
+    if clean {
+        cmd.arg("--uninstall");
+    }
+    let out = cmd
         .arg("--justlaunch")
         .output()
         .with_context(|| "spawn ios-deploy")?;

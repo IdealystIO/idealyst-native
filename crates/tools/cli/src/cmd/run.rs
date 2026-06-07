@@ -68,6 +68,16 @@ pub struct Args {
     #[arg(long)]
     pub udid: Option<String>,
 
+    /// iOS only: force a fully clean reinstall. The default flow already
+    /// terminates the running app before installing (so `launch` can't
+    /// re-foreground a stale process); `--clean` additionally uninstalls
+    /// the app first — on the simulator via `simctl uninstall`, on a device
+    /// via `ios-deploy --uninstall` — so even SpringBoard's cached
+    /// executable is dropped. This WIPES the app's persisted data
+    /// (UserDefaults / Keychain / sandbox files).
+    #[arg(long)]
+    pub clean: bool,
+
     /// Build the runtime-server-client variant and connect to an
     /// already-running dev-host. Requires `--runtime-server-port`
     /// (the dev-host's bound port). Default is local-render (the app
@@ -152,6 +162,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     user_features: Vec::new(),
                     team,
                     udid: args.udid.clone(),
+                    clean: args.clean,
                 },
             )?;
             eprintln!();
@@ -177,6 +188,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     mode,
                     source,
                     user_features: Vec::new(),
+                    clean: args.clean,
                 },
             )?;
             eprintln!();

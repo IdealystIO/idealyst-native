@@ -713,6 +713,9 @@ pub fn PreviewScreen(props: &PreviewScreenProps) -> Element {
     let stage_video = video::Video(video::VideoProps {
         source: video::url(move || playback_url.get()),
         autoplay: true,
+        // Play the recording's audio (mic track muxed in by media-writer); the
+        // macOS AVPlayerView controls let the viewer mute/scrub.
+        muted: false,
         controls: true,
         loop_playback: true,
         // Cover, not Contain: the stage box is already sized to the recording's

@@ -39,10 +39,17 @@ fn build_video(props: &Rc<VideoProps>) -> web_sys::Element {
 
     if props.autoplay {
         let _ = video.set_attribute("autoplay", "");
-        // Most browsers block unmuted autoplay without a user gesture;
-        // pairing the two matches the cross-platform "autoplay = silent
-        // autoplay" expectation that the iOS/Android impls also use.
+    }
+    // Mute when asked, OR whenever autoplaying — browsers block UNMUTED autoplay
+    // without a user gesture, so an autoplaying clip must start silent (the
+    // viewer un-mutes via the controls). `muted` only reliably takes via the
+    // PROPERTY (the attribute alone is ignored by the autoplay gate in some
+    // browsers), so set it on the media element too.
+    if props.muted || props.autoplay {
         let _ = video.set_attribute("muted", "");
+        if let Some(media) = video.dyn_ref::<web_sys::HtmlMediaElement>() {
+            media.set_muted(true);
+        }
     }
     if props.controls {
         let _ = video.set_attribute("controls", "");

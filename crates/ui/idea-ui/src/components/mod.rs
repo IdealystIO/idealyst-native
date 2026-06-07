@@ -135,6 +135,7 @@ pub mod skeleton;
 pub mod spacer;
 pub mod spinner;
 pub mod stack;
+pub mod surface;
 pub mod switch;
 pub mod table;
 pub mod tabs;

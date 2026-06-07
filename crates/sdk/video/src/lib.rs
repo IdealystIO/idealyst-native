@@ -76,15 +76,23 @@ pub struct VideoProps {
     /// reads signals re-populates the view on change.
     #[schema(constraint = "a VideoSource — url(...) / stream(...) / custom")]
     pub source: Box<dyn VideoSource>,
-    /// Begin playback immediately on mount. Most platforms require the
-    /// video to be muted for autoplay to work without a user gesture;
-    /// the per-backend impls pair `autoplay = true` with a silent
-    /// start automatically.
+    /// Begin playback immediately on mount. On the **web** this implies a
+    /// muted start regardless of [`muted`](Self::muted) — browsers block
+    /// unmuted autoplay without a user gesture (the viewer un-mutes via the
+    /// controls). On macOS/iOS, autoplay respects [`muted`](Self::muted), so an
+    /// autoplaying recording preview is audible by default.
     pub autoplay: bool,
+    /// Start with the audio track muted. Defaults to `false` — a clip or
+    /// recording plays with sound. Honored on macOS, iOS, and the web (where
+    /// [`autoplay`](Self::autoplay) additionally forces a muted start); set it
+    /// `true` for a silent background loop. Android's `VideoView` always plays
+    /// its audio track — muting there isn't wired yet.
+    pub muted: bool,
     /// Show native playback controls (play/pause scrubber, volume,
-    /// fullscreen). Whether this renders matches the platform's native
-    /// look — iOS UIKit controls, Android MediaController, browser
-    /// `<video controls>`.
+    /// fullscreen). Rendered with each platform's native transport UI:
+    /// browser `<video controls>` and macOS `AVPlayerView`. (iOS/Android still
+    /// render the bare player surface — wiring their native controllers
+    /// `AVPlayerViewController` / `MediaController` is pending.)
     pub controls: bool,
     /// Restart from the beginning when playback reaches the end. Field
     /// name avoids the `loop` keyword. Ignored for a live stream source.
@@ -101,6 +109,7 @@ impl Default for VideoProps {
         Self {
             source: Box::new(NoSource),
             autoplay: false,
+            muted: false,
             controls: false,
             loop_playback: false,
             object_fit: ObjectFit::Contain,

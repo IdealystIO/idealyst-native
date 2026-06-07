@@ -4,7 +4,8 @@
 
 use crate::style::{reactive_style, static_style, token};
 use crate::{
-    parse_rgba, paint_stroke, BoardState, CanvasCapture, CanvasStore, RecHandle, Stroke, Strokes,
+    parse_rgba, paint_stroke, BoardState, CanvasCapture, CanvasStore, MicHandle, RecHandle, Stroke,
+    Strokes,
 };
 use runtime_core::{
     component, ui, Element, IntoElement, Length, Overflow, Position, Signal, StyleRules, Tokenized,
@@ -31,6 +32,9 @@ pub struct BoardScreenProps {
     /// can list / switch / add / delete them.
     pub canvases: CanvasStore,
     pub rec_handle: RecHandle,
+    /// The microphone stream slot, threaded to the record chrome so START can
+    /// open a mic and STOP can drop it. See [`MicHandle`].
+    pub mic_handle: MicHandle,
     pub version: Signal<u64>,
     /// The canvas self-capture bundle: the writer is fed to the Canvas, the
     /// whole bundle is threaded to the record chrome.
@@ -49,6 +53,7 @@ impl Default for BoardScreenProps {
             strokes: Rc::new(RefCell::new(Vec::new())),
             canvases: Rc::new(RefCell::new(Vec::new())),
             rec_handle: Rc::new(RefCell::new(None)),
+            mic_handle: Rc::new(RefCell::new(None)),
             version: Signal::new(0),
             capture: CanvasCapture::default(),
             focused: Rc::new(|| true),
@@ -68,6 +73,7 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
     let strokes = props.strokes.clone();
     let canvases = props.canvases.clone();
     let rec_handle = props.rec_handle.clone();
+    let mic_handle = props.mic_handle.clone();
     let version = props.version;
     let capture = props.capture.clone();
     let focused = props.focused.clone();
@@ -86,6 +92,7 @@ pub fn BoardScreen(props: &BoardScreenProps) -> Element {
         strokes.clone(),
         canvases.clone(),
         rec_handle,
+        mic_handle,
         version,
         capture,
     );
