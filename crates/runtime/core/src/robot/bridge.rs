@@ -557,7 +557,18 @@ pub fn start(port: u16) -> BridgeHandle {
 /// Differs from [`start`] only in error handling: caller gets the
 /// `io::Error` to react to (e.g. fall back to ephemeral on conflict).
 pub fn start_on_port(port: u16) -> std::io::Result<(BridgeHandle, u16)> {
-    let listener = TcpListener::bind(("0.0.0.0", port))?;
+    // Bind LOOPBACK, not `0.0.0.0`. Two reasons:
+    //   1. Correct conflict detection. Binding `0.0.0.0:P` while another
+    //      process already holds `127.0.0.1:P` (e.g. `adb` squats on 9718,
+    //      our default) *succeeds* on macOS/BSD — but loopback connections
+    //      then route to the more-specific `127.0.0.1` listener (adb), so
+    //      our bridge is bound yet unreachable via localhost and never sees
+    //      a request. Binding `127.0.0.1:P` instead fails cleanly with
+    //      `AddrInUse`, so `start_auto_polling` falls back to an ephemeral
+    //      port that IS reachable, and registers that real port.
+    //   2. Security: the robot bridge is a local dev-control channel; it
+    //      should never be reachable from the network.
+    let listener = TcpListener::bind(("127.0.0.1", port))?;
     let bound_port = listener.local_addr()?.port();
     let (tx, rx) = mpsc::channel();
 

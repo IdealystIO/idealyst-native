@@ -1128,7 +1128,7 @@ impl<T: Clone + 'static> Signal<T> {
         // stale *write*, which `set`/`update` below turn into no-ops.
         let value = with_signal::<T, _>(sid, self.gen, |inner| inner.value.clone())
             .unwrap_or_else(|| {
-                panic!("signal read after its scope was dropped (id {:?})", sid)
+                panic!("signal used after its scope was dropped (id {:?})", sid)
             });
         // Record subscription if an effect is currently running. The
         // arena holds the inverse map (`signal_subscribers` +
