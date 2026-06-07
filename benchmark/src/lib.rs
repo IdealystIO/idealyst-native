@@ -1478,7 +1478,7 @@ fn frame_wrap() -> Element {
         view(style = FrameWrap()) {
             { frame_header() }
             {
-                webview::web_view(webview::WebViewProps {
+                webview::WebView(webview::WebViewProps {
                     url: webview::url(move || url_sig.get()),
                     on_message: Some(std::rc::Rc::new(handle_message)),
                     ..Default::default()
