@@ -99,3 +99,9 @@ runtime_kotlin = ["runtime/kotlin/io/idealyst/mediawriter/RustMediaWriter.kt"]
 # current-thread runtime, so the `!Send` `MediaStream`/`AudioStream` futures
 # run on the test thread.
 tokio = { version = "1", features = ["macros", "rt"] }
+
+# Web canvas-capture regression test runs in a real browser (it needs a DOM
+# `document` + `<canvas>`). Run from this crate dir with e.g.
+# `wasm-pack test --headless --chrome --release`.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

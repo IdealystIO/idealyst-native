@@ -2019,6 +2019,27 @@ impl Backend for MacosBackend {
         flipped.set_handler(handler);
     }
 
+    fn install_wheel_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::WheelHandler,
+    ) {
+        // Same FlippedView path as `install_touch_handler`: the view's
+        // `magnify:` / `scrollWheel:` overrides route to this handler.
+        let MacosNode::View(view) = node else {
+            return;
+        };
+        let cls = objc2::class!(IdealystFlippedView);
+        let is_flipped: bool = unsafe { msg_send![&**view, isKindOfClass: cls] };
+        if !is_flipped {
+            return;
+        }
+        // SAFETY: dynamic class confirmed `IdealystFlippedView`; layout is
+        // `NSView` + our ivars, ABI-compatible here.
+        let flipped: &FlippedView = unsafe { &*(Retained::as_ptr(view) as *const FlippedView) };
+        flipped.set_wheel_handler(handler);
+    }
+
     fn create_pressable(
         &mut self,
         on_click: Rc<dyn Fn()>,

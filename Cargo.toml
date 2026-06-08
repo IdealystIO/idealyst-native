@@ -101,6 +101,7 @@ members = [
     "crates/sdk/net",
     "crates/sdk/storage",
     "crates/sdk/pan",
+    "crates/sdk/zoom",
     "crates/sdk/microphone",
     "crates/sdk/camera",
     "crates/sdk/media-stream",
@@ -304,6 +305,7 @@ idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }
 icons-lucide = { path = "crates/ui/icons-lucide" }
 pan = { path = "crates/sdk/pan" }
+zoom = { path = "crates/sdk/zoom" }
 maps = { path = "crates/sdk/maps" }
 maps-core = { path = "crates/sdk/maps/core" }
 maps-web = { path = "crates/sdk/maps/web" }

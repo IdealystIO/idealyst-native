@@ -24,5 +24,6 @@ pub(crate) mod text_area;
 pub(crate) mod text_input;
 pub(crate) mod touch;
 pub(crate) mod toggle;
+pub(crate) mod wheel;
 pub(crate) mod view;
 pub(crate) mod virtualizer;

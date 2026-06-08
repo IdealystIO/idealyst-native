@@ -2106,6 +2106,14 @@ impl Backend for WebBackend {
         primitives::touch::install(self, node, handler);
     }
 
+    fn install_wheel_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::WheelHandler,
+    ) {
+        primitives::wheel::install(self, node, handler);
+    }
+
     // `claim_touch` keeps the default no-op. On web, claims happen
     // inline in the pointer-event listener closure (where we have
     // the live `PointerEvent` to pass to `setPointerCapture`). The

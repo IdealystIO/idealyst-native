@@ -1,0 +1,29 @@
+[package]
+name = "zoom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform zoom gesture SDK — the scale peer of the `pan` SDK.
+#
+# One small handle — `Zoom` — that turns the two ways a user expresses "zoom"
+# into a single reactive scale factor + focal point:
+#
+#   - Pinch (touch screens: iOS / Android / web-touch / macOS-touch) via the
+#     framework's two-finger `pinch` recognizer, which rides the existing
+#     touch stream — no per-backend code.
+#   - Trackpad pinch + scroll-wheel (desktop) via the framework's wheel /
+#     magnify channel (web `wheel`+ctrlKey, macOS `magnify:`), which the
+#     backend normalizes into a uniform incremental scale.
+#
+# Both feed the same `AnimatedValue<f32>` you bind to a view's `Scale`.
+# Deliberately unopinionated, exactly like `pan`: it tracks the scale and
+# reports the focal point, and gets out of the way. Min/max clamping, momentum,
+# snap-to-fit, and focal-point "zoom about cursor" translation are policy left
+# to the app or a higher-level SDK, built on the methods here.
+#
+# Pure Rust on top of core's recognizer + animation primitives — nothing
+# platform-specific to gate, so this is a single crate. No permissions.
+
+[dependencies]
+runtime-core = { workspace = true }

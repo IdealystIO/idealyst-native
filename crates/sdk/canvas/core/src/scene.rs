@@ -570,6 +570,59 @@ impl ImageSource {
 }
 
 // ============================================================================
+// Circle batch
+// ============================================================================
+
+/// One flat-colored circle in a [`DrawOp::Circles`] batch — center, radius,
+/// and a solid fill color, in logical pixels.
+///
+/// A batch exists so a renderer can draw a grid/scatter of many circles in a
+/// single GPU-instanced, analytic pass instead of tessellating one cubic-Bézier
+/// path per circle (the per-path flatten/bin cost is what makes a large grid of
+/// [`Path::circle`] fills slow). The trade is per-circle paint flexibility:
+/// the batch carries only a solid color. For gradient-filled or stroked
+/// circles, emit individual [`Fill`](DrawOp::Fill) / [`Stroke`](DrawOp::Stroke)
+/// ops with [`Path::circle`] instead.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Circle {
+    /// Center x.
+    pub cx: f32,
+    /// Center y.
+    pub cy: f32,
+    /// Radius.
+    pub r: f32,
+    /// Flat fill color. Packed as a single ARGB u32 on the wire (same shim as
+    /// every other canvas color).
+    #[serde(with = "rgba_argb")]
+    pub color: Color,
+}
+
+impl Circle {
+    /// A circle centered at `(cx, cy)` with radius `r`, filled `color`.
+    pub fn new(cx: f32, cy: f32, r: f32, color: impl Into<Color>) -> Self {
+        Self { cx, cy, r, color: color.into() }
+    }
+
+    /// The equivalent individual [`DrawOp::Fill`] — a [`Path::circle`] filled
+    /// solid with this circle's color, non-zero winding, composited with
+    /// `blend`.
+    ///
+    /// Renderers without an instanced fast path expand a [`DrawOp::Circles`]
+    /// batch into one of these per circle, **in array order**, so the observable
+    /// output is identical to authoring the fills by hand — and so every backend
+    /// (instanced or not) converges on the same pixels (CLAUDE.md §7). A renderer
+    /// *with* an instanced path is free to draw the batch directly, as long as it
+    /// matches this expansion's result.
+    pub fn to_fill_op(&self, blend: BlendMode) -> DrawOp {
+        DrawOp::Fill {
+            path: Path::circle(self.cx, self.cy, self.r),
+            paint: Paint::solid(self.color).blend(blend),
+            fill_rule: FillRule::NonZero,
+        }
+    }
+}
+
+// ============================================================================
 // Draw ops + Scene
 // ============================================================================
 
@@ -656,6 +709,23 @@ pub enum DrawOp {
         /// Opacity of the whole layer when composited, `0.0..=1.0`.
         alpha: f32,
         /// Composite mode of the layer against the current target.
+        blend: BlendMode,
+    },
+    /// Draw a batch of flat-colored circles ([`Circle`]) in one operation.
+    ///
+    /// Semantically equivalent to one [`Fill`](DrawOp::Fill) of
+    /// [`Path::circle`] per entry, **in array order** (see
+    /// [`Circle::to_fill_op`]) — the batch is purely a throughput hint. A
+    /// renderer with a GPU-instanced, analytic-SDF path draws them all in a
+    /// single pass (the fast path for a grid/scatter of many circles); one
+    /// without it expands the batch into the equivalent per-circle fills. Either
+    /// way the pixels match, so the batch never changes *what* is drawn, only how
+    /// fast. The whole batch composites with `blend` against existing content.
+    Circles {
+        /// The circles, in draw order (earlier entries are drawn under later
+        /// ones where they overlap, matching per-circle fill order).
+        circles: Vec<Circle>,
+        /// Composite mode of the batch against existing canvas content.
         blend: BlendMode,
     },
 }
@@ -896,6 +966,26 @@ impl Scene {
             alpha: alpha.clamp(0.0, 1.0),
             blend,
         });
+        self
+    }
+
+    /// Draw a batch of flat-colored [`Circle`]s in one op, source-over. The
+    /// throughput primitive for a grid or scatter of many circles: a GPU
+    /// renderer draws them in a single instanced pass, a CPU one expands them to
+    /// per-circle fills (in iteration order). Does not touch the current path.
+    /// See [`DrawOp::Circles`].
+    pub fn circles(&mut self, circles: impl IntoIterator<Item = Circle>) -> &mut Self {
+        self.circles_with(circles, BlendMode::Normal)
+    }
+
+    /// [`circles`](Self::circles) with an explicit [`BlendMode`] for the whole
+    /// batch.
+    pub fn circles_with(
+        &mut self,
+        circles: impl IntoIterator<Item = Circle>,
+        blend: BlendMode,
+    ) -> &mut Self {
+        self.ops.push(DrawOp::Circles { circles: circles.into_iter().collect(), blend });
         self
     }
 
@@ -1149,6 +1239,81 @@ mod tests {
         let p: Paint = serde_json::from_str(legacy).expect("legacy paint deserializes");
         assert_eq!(p.blend, BlendMode::Normal);
         assert_eq!(p.kind, PaintKind::Solid(Color::from_argb_u32(0x12345678)));
+    }
+
+    #[test]
+    fn circles_records_batch_in_order() {
+        let mut s = Scene::new();
+        s.circles([
+            Circle::new(10.0, 10.0, 5.0, Color::new(255, 0, 0, 255)),
+            Circle::new(20.0, 20.0, 3.0, Color::new(0, 255, 0, 255)),
+        ]);
+        assert_eq!(s.ops().len(), 1);
+        match &s.ops()[0] {
+            DrawOp::Circles { circles, blend } => {
+                assert_eq!(circles.len(), 2);
+                assert_eq!(*blend, BlendMode::Normal);
+                // Order preserved: red first (drawn under), green second (on top).
+                assert_eq!(circles[0].color, Color::new(255, 0, 0, 255));
+                assert_eq!(circles[1].cx, 20.0);
+            }
+            other => panic!("expected Circles, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn circles_with_blend_is_carried() {
+        let mut s = Scene::new();
+        s.circles_with([Circle::new(0.0, 0.0, 1.0, Color::BLACK)], BlendMode::Multiply);
+        match &s.ops()[0] {
+            DrawOp::Circles { blend, .. } => assert_eq!(*blend, BlendMode::Multiply),
+            other => panic!("expected Circles, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn circle_to_fill_op_matches_hand_authored_fill() {
+        // The §7 convergence contract: a batched circle MUST expand to exactly
+        // the fill an author would write with Path::circle, so the instanced GPU
+        // path and the CPU expand-to-fills path produce identical pixels.
+        let c = Circle::new(7.0, 8.0, 4.0, Color::new(1, 2, 3, 255));
+        let op = c.to_fill_op(BlendMode::Normal);
+        match op {
+            DrawOp::Fill { path, paint, fill_rule } => {
+                assert_eq!(path, Path::circle(7.0, 8.0, 4.0));
+                assert_eq!(paint.kind, PaintKind::Solid(Color::new(1, 2, 3, 255)));
+                assert_eq!(paint.blend, BlendMode::Normal);
+                assert_eq!(fill_rule, FillRule::NonZero);
+            }
+            other => panic!("expected Fill, got {other:?}"),
+        }
+        // Blend carries through to the expanded fill (e.g. an eraser batch).
+        match Circle::new(0.0, 0.0, 1.0, Color::new(255, 255, 255, 255)).to_fill_op(BlendMode::DestinationOut) {
+            DrawOp::Fill { paint, .. } => assert_eq!(paint.blend, BlendMode::DestinationOut),
+            other => panic!("expected Fill, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn circles_op_survives_scene_round_trip() {
+        let mut s = Scene::new();
+        s.circles_with(
+            [
+                Circle::new(10.0, 10.0, 5.0, Color::new(255, 0, 0, 255)),
+                Circle::new(20.0, 20.0, 3.0, Color::new(0, 255, 0, 128)),
+            ],
+            BlendMode::Screen,
+        );
+        let bytes = serde_json::to_vec(&s).expect("serialize");
+        let back: Scene = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(s.ops(), back.ops());
+        // The per-circle color packed/unpacked through the ARGB shim exactly.
+        match &back.ops()[0] {
+            DrawOp::Circles { circles, .. } => {
+                assert_eq!(circles[1].color, Color::new(0, 255, 0, 128));
+            }
+            other => panic!("expected Circles, got {other:?}"),
+        }
     }
 
     #[test]

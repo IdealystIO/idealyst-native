@@ -26,11 +26,19 @@
 //!
 //! # Container caveat
 //!
-//! `MediaRecorder`'s output format is browser-chosen: Safari yields real MP4,
-//! Chromium yields WebM. We request `video/mp4` and fall back to `video/webm`,
-//! writing whatever the browser produces to the path you gave. The bytes are
-//! always a valid, playable file; only the container may differ from `.mp4` on
-//! Chromium. This is a genuine platform constraint, documented in the README.
+//! `MediaRecorder`'s output format is browser-chosen. Safari has always yielded
+//! real MP4; recent Chromium versions now also support `video/mp4` (H.264/avc1)
+//! in `MediaRecorder` and pick it from our candidate list, where older versions
+//! fell back to WebM. We request `video/mp4` first and fall back to
+//! `video/webm`, writing whatever the browser produces to the path you gave.
+//! The bytes are always a valid, playable file; only the container may differ
+//! from `.mp4` on a Chromium that lacks MP4 support. This is a genuine platform
+//! constraint, documented in the README.
+//!
+//! Because Chromium now commonly encodes the canvas-capture fallback as
+//! H.264/avc1 — a codec that **cannot change resolution mid-stream** — the
+//! canvas MUST be sized to the real frame dimensions before `captureStream()`;
+//! see [`canvas_capture`].
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -136,7 +144,7 @@ pub(crate) async fn start(
             }
         } else {
             // CPU-only producer: pump frames into a canvas and capture it.
-            let (canvas, sub) = canvas_capture(stream, &combined)?;
+            let (canvas, sub) = canvas_capture(stream, &combined).await?;
             canvas_keep = Some(canvas);
             video_pump = Some(sub);
         }
@@ -219,7 +227,24 @@ fn pick_mime() -> Option<String> {
 /// Build a `<canvas>` fed by `stream`'s RGBA frames and add its captured video
 /// track to `combined`. Returns the canvas (kept alive) + the frame
 /// subscription.
-fn canvas_capture(
+///
+/// ## Why this awaits the first frame before `captureStream()`
+///
+/// A bare `<canvas>` is 300×150 until something sizes it. If we captured the
+/// stream at that default and let the first frame resize the canvas afterward,
+/// the captured video track would change resolution one frame in. The browser
+/// now commonly encodes this fallback as H.264/avc1 (see the module-level
+/// container note), and **avc1 cannot change resolution mid-stream** — Chrome
+/// logs `avc1.* … codec description is not supposed to change` and the recorded
+/// file is corrupt. So we lock the canvas to the real frame dimensions *before*
+/// `captureStream()`: pull an already-buffered frame via
+/// [`latest`](media_stream::MediaStream::latest) if the producer has one, else
+/// park until the pump draws the first pushed frame (which sizes the canvas).
+///
+/// A producer that never emits a single frame leaves this pending — by design,
+/// a zero-frame recording is degenerate, and 300×150 black is not a useful
+/// substitute.
+async fn canvas_capture(
     stream: &media_stream::MediaStream,
     combined: &MediaStream,
 ) -> Result<(HtmlCanvasElement, Subscription), MediaWriterError> {
@@ -236,9 +261,17 @@ fn canvas_capture(
         .ok_or_else(|| err("canvas 2d context missing"))?
         .unchecked_into();
 
+    // The persistent pump draws every frame and resizes the canvas if the
+    // source dimensions ever change. It also fires `first_tx` exactly once, so
+    // the size-before-capture step below can park on the first pushed frame
+    // when the producer hasn't buffered one yet.
+    let (first_tx, first_rx) = futures_oneshot();
+    let first_tx = Rc::new(RefCell::new(Some(first_tx)));
     let canvas_for_cb = canvas.clone();
+    let ctx_for_cb = ctx.clone();
+    let first_tx_cb = first_tx.clone();
     let sub = stream.subscribe(move |frame| {
-        if canvas_for_cb.width() != frame.width {
+        if canvas_for_cb.width() != frame.width || canvas_for_cb.height() != frame.height {
             canvas_for_cb.set_width(frame.width);
             canvas_for_cb.set_height(frame.height);
         }
@@ -248,9 +281,35 @@ fn canvas_capture(
             frame.width,
             frame.height,
         ) {
-            let _ = ctx.put_image_data(&image, 0.0, 0.0);
+            let _ = ctx_for_cb.put_image_data(&image, 0.0, 0.0);
+        }
+        if let Some(tx) = first_tx_cb.borrow_mut().take() {
+            let _ = tx.send(());
         }
     });
+
+    // Lock the canvas to a real frame size BEFORE captureStream() — see the
+    // doc comment: avc1 can't survive a mid-stream resolution change.
+    let mut buf = Vec::new();
+    match stream.latest(&mut buf) {
+        Some((w, h)) => {
+            // The producer already has a frame: size + draw it synchronously so
+            // captureStream()'s very first emitted frame carries content at the
+            // locked resolution (no initial blank frame). `add_subscriber` does
+            // not replay buffered frames, so without this pull the pump wouldn't
+            // fire until the *next* push and the canvas would stay 300×150.
+            canvas.set_width(w);
+            canvas.set_height(h);
+            let clamped = wasm_bindgen::Clamped(buf.as_slice());
+            if let Ok(image) =
+                web_sys::ImageData::new_with_u8_clamped_array_and_sh(clamped, w, h)
+            {
+                let _ = ctx.put_image_data(&image, 0.0, 0.0);
+            }
+        }
+        // No buffered frame yet: park until the pump draws the first pushed one.
+        None => first_rx.await,
+    }
 
     let capture: MediaStream = canvas
         .capture_stream()
@@ -267,3 +326,76 @@ fn canvas_capture(
 // `onstop` DOM event never fired and the tab FROZE on stop. The shared module
 // carries the regression tests.
 use crate::oneshot::futures_oneshot;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    // These need a DOM (`document`, `<canvas>`) + a real `captureStream`, so
+    // they run in a headless browser, not Node.
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Regression: the canvas-capture fallback must lock the canvas to the real
+    /// frame size BEFORE `captureStream()`. Pre-fix, `canvas_capture` captured
+    /// the stream while the canvas was still the bare-`<canvas>` 300×150 default
+    /// and let the first frame resize it afterward — a mid-stream resolution
+    /// change that H.264/avc1 can't encode (Chrome: "codec description is not
+    /// supposed to change", corrupt output). Here a 640×480 frame is buffered
+    /// before capture starts (the stage-canvas case); `add_subscriber` does not
+    /// replay it, so only the `latest()` pull added by the fix sizes the canvas.
+    #[wasm_bindgen_test]
+    async fn canvas_capture_locks_real_size_before_capturestream() {
+        const W: u32 = 640;
+        const H: u32 = 480;
+
+        let (stream, writer) = media_stream::MediaStream::new();
+        // Producer already has a frame when recording starts.
+        writer.write_rgba8(W, H, &vec![0u8; (W * H * 4) as usize]);
+
+        let combined = MediaStream::new().expect("new MediaStream");
+        let (canvas, _sub) = canvas_capture(&stream, &combined)
+            .await
+            .expect("canvas_capture");
+
+        assert_eq!(
+            canvas.width(),
+            W,
+            "canvas width must be locked to the frame before captureStream (was the 300×150 default)"
+        );
+        assert_eq!(
+            canvas.height(),
+            H,
+            "canvas height must be locked to the frame before captureStream (was the 300×150 default)"
+        );
+        // The captured track exists and carries the locked resolution.
+        let tracks = combined.get_video_tracks();
+        assert_eq!(tracks.length(), 1, "exactly one captured video track");
+    }
+
+    /// When no frame is buffered yet, `canvas_capture` parks until the first
+    /// pushed frame sizes the canvas, then captures at that size — never at the
+    /// 300×150 default. Pushing after the await proves the park-then-resume path.
+    #[wasm_bindgen_test]
+    async fn canvas_capture_awaits_first_pushed_frame() {
+        const W: u32 = 800;
+        const H: u32 = 600;
+
+        let (stream, writer) = media_stream::MediaStream::new();
+        let combined = MediaStream::new().expect("new MediaStream");
+
+        // No buffered frame: kick the first push from a microtask so the
+        // `first_rx.await` inside `canvas_capture` parks and then resumes. The
+        // pump is subscribed synchronously before that await, so it catches it.
+        wasm_bindgen_futures::spawn_local(async move {
+            writer.write_rgba8(W, H, &vec![0u8; (W * H * 4) as usize]);
+        });
+
+        let (canvas, _sub) = canvas_capture(&stream, &combined)
+            .await
+            .expect("canvas_capture");
+
+        assert_eq!(canvas.width(), W, "canvas sized to the first pushed frame");
+        assert_eq!(canvas.height(), H, "canvas sized to the first pushed frame");
+    }
+}

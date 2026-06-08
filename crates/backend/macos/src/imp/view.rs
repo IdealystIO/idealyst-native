@@ -38,7 +38,10 @@ use objc2_app_kit::{
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSString};
 use std::cell::Cell as StdCell;
 
-use runtime_core::{StateBits, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
+use runtime_core::{
+    StateBits, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, WheelEvent, WheelHandler,
+    WheelKind,
+};
 
 /// Stable id for the single mouse pointer (macOS has no multitouch here).
 const MOUSE_TOUCH_ID: u64 = 1;
@@ -48,6 +51,10 @@ pub struct FlippedViewIvars {
     /// views (containers, layout wrappers, native-control hosts) that carry
     /// no `on_touch`. `RefCell<Option<_>>` so it can be set after creation.
     handler: RefCell<Option<TouchHandler>>,
+    /// Installed by `Backend::install_wheel_handler`; `None` for views with no
+    /// `on_wheel`. Drives the desktop zoom/scroll channel: `magnify:` →
+    /// `WheelKind::Zoom`, `scrollWheel:` → `WheelKind::Scroll`.
+    wheel_handler: RefCell<Option<WheelHandler>>,
     /// True between a `mouseDown` we accepted (handler consumed/claimed) and
     /// the matching `mouseUp`, so drag/up events only dispatch for a gesture we
     /// actually started — mirrors iOS's `active_touches` gate.
@@ -122,6 +129,26 @@ declare_class!(
             }
         }
 
+        // Trackpad pinch → zoom. AppKit delivers `magnify:` with an
+        // incremental `magnification` fraction (e.g. +0.02 per frame as the
+        // fingers spread). We translate it to a normalized `WheelEvent` of
+        // `WheelKind::Zoom`. Bubble to super when unhandled so a parent
+        // magnifiable view still works.
+        #[method(magnifyWithEvent:)]
+        fn magnify_with_event(&self, event: &NSEvent) {
+            if !self.dispatch_wheel(event, true) {
+                let _: () = unsafe { msg_send![super(self), magnifyWithEvent: event] };
+            }
+        }
+
+        // Two-finger trackpad scroll or mouse wheel → `WheelKind::Scroll`.
+        #[method(scrollWheel:)]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            if !self.dispatch_wheel(event, false) {
+                let _: () = unsafe { msg_send![super(self), scrollWheel: event] };
+            }
+        }
+
         // Hover enter/exit, delivered via the tracking area installed in
         // `updateTrackingAreas`. Drives the `HOVERED` style state so a button
         // dims on hover on macOS, matching web's `:hover`.
@@ -192,6 +219,7 @@ impl FlippedView {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(FlippedViewIvars {
             handler: RefCell::new(None),
+            wheel_handler: RefCell::new(None),
             active: Cell::new(false),
             cursor: RefCell::new(None),
             state_setter: RefCell::new(None),
@@ -204,6 +232,12 @@ impl FlippedView {
     /// `Backend::install_touch_handler`.
     pub(crate) fn set_handler(&self, handler: TouchHandler) {
         *self.ivars().handler.borrow_mut() = Some(handler);
+    }
+
+    /// Install (or replace) the `on_wheel` handler. Called by
+    /// `Backend::install_wheel_handler`.
+    pub(crate) fn set_wheel_handler(&self, handler: WheelHandler) {
+        *self.ivars().wheel_handler.borrow_mut() = Some(handler);
     }
 
     /// `true` if an `on_touch` handler has been installed — i.e. this view is
@@ -321,6 +355,62 @@ impl FlippedView {
         // it already accepted. An explicit IGNORED on `Began` returns false so
         // the event still bubbles to a parent handler.
         response.consumed || self.ivars().active.get()
+    }
+
+    /// Translate one AppKit `magnify:` / `scrollWheel:` event into a
+    /// [`WheelEvent`] and dispatch it. `is_zoom` selects the source: `true`
+    /// for `magnifyWithEvent:` (a trackpad pinch — `WheelKind::Zoom`), `false`
+    /// for `scrollWheel:` (`WheelKind::Scroll`). Returns `true` when the
+    /// handler consumed the event (caller does NOT bubble to `super`).
+    fn dispatch_wheel(&self, event: &NSEvent, is_zoom: bool) -> bool {
+        let handler = match self.ivars().wheel_handler.borrow().as_ref() {
+            Some(h) => h.clone(),
+            None => return false,
+        };
+
+        // Same window→local conversion as `dispatch_mouse`: `isFlipped` makes
+        // this top-left dp.
+        let win: CGPoint = unsafe { msg_send![event, locationInWindow] };
+        let local: CGPoint =
+            unsafe { msg_send![self, convertPoint: win, fromView: std::ptr::null::<NSView>()] };
+        let win_tl: CGPoint = unsafe {
+            let window: *mut objc2::runtime::AnyObject = msg_send![self, window];
+            if window.is_null() {
+                local
+            } else {
+                let content: *mut objc2::runtime::AnyObject = msg_send![window, contentView];
+                if content.is_null() {
+                    local
+                } else {
+                    msg_send![content, convertPoint: win, fromView: std::ptr::null::<NSView>()]
+                }
+            }
+        };
+        let ts: f64 = unsafe { msg_send![event, timestamp] };
+
+        let (kind, delta_x, delta_y, scale) = if is_zoom {
+            // `NSEvent.magnification` is the incremental zoom fraction for this
+            // event; `scale = 1 + magnification` is the per-event multiplier
+            // the framework's normalized `WheelEvent::scale` expects (web's
+            // ctrl+wheel maps onto the same scale via `exp()`).
+            let magnification: f64 = unsafe { msg_send![event, magnification] };
+            (WheelKind::Zoom, 0.0, 0.0, 1.0 + magnification as f32)
+        } else {
+            let dx: f64 = unsafe { msg_send![event, scrollingDeltaX] };
+            let dy: f64 = unsafe { msg_send![event, scrollingDeltaY] };
+            (WheelKind::Scroll, dx as f32, dy as f32, 1.0)
+        };
+
+        let we = WheelEvent {
+            kind,
+            delta_x,
+            delta_y,
+            scale,
+            position: TouchPoint::new(local.x as f32, local.y as f32),
+            window_position: TouchPoint::new(win_tl.x as f32, win_tl.y as f32),
+            timestamp_ns: (ts * 1_000_000_000.0) as u64,
+        };
+        (handler)(&we).consumed
     }
 }
 
