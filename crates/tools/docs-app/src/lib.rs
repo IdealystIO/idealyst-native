@@ -1,4 +1,4 @@
-//! catalog-docs — a catalog-driven documentation app.
+//! docs-app — a catalog-driven documentation app.
 //!
 //! Where idea-ui-docs hand-writes one page per component, this app reads
 //! the framework's **catalog** at runtime — every `#[component]`,
@@ -94,7 +94,7 @@ pub fn register_extensions(_backend: &mut backend_android::AndroidBackend) {}
 
 // `codeblock` / `markdown` / `table` are converted-External SDKs that now
 // self-register via `inventory`, so there are no per-backend register
-// calls in any of these arms. catalog-docs ships web/ios/android (see
+// calls in any of these arms. docs-app ships web/ios/android (see
 // `[package.metadata.idealyst.app].targets`); the macOS/terminal arms
 // exist only for the CLI-generated wrappers.
 // macOS native — but NOT when the `terminal` feature is on. The terminal

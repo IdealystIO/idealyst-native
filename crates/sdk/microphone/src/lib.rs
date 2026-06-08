@@ -133,6 +133,29 @@ mod imp;
 // Public API.
 // ---------------------------------------------------------------------------
 
+/// Current microphone permission, queryable WITHOUT prompting or opening the
+/// input — unlike [`request_permission`](Microphone::request_permission), which
+/// may surface the OS prompt, or [`open`](Microphone::open), which activates the
+/// mic. Lets a host seed UI state (e.g. default the mic muted unless
+/// [`Granted`](MicPermission::Granted)) without touching the microphone.
+///
+/// `Unknown` is returned where the platform exposes no passive query — desktop
+/// Windows/Linux (cpal grants implicitly, with no status API), or a web browser
+/// whose Permissions API lacks a `microphone` descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MicPermission {
+    /// Access granted — capture will succeed without a prompt.
+    Granted,
+    /// Access denied (or restricted by policy) — capture fails until the user
+    /// changes it in system settings.
+    Denied,
+    /// Not yet decided — the next [`open`](Microphone::open) /
+    /// [`request_permission`](Microphone::request_permission) will prompt.
+    Undetermined,
+    /// The platform offers no passive status query.
+    Unknown,
+}
+
 /// A handle to the device's microphone. Cheap to construct and clone; it
 /// holds no OS resources until you [`open`](Microphone::open) a stream.
 #[derive(Clone, Default)]
@@ -157,6 +180,19 @@ impl Microphone {
     /// a recording UI.
     pub async fn request_permission(&self) -> Result<(), MicError> {
         imp::request_permission().await
+    }
+
+    /// Query the current microphone permission WITHOUT prompting or activating
+    /// the mic. Use it to seed UI state — e.g. start the mic muted unless the
+    /// status is [`MicPermission::Granted`] — so the OS prompt only appears later,
+    /// on a deliberate capture or [`request_permission`](Self::request_permission).
+    ///
+    /// Returns [`MicPermission::Unknown`] where the platform has no passive query
+    /// (desktop Windows/Linux; some browsers). Backed by `AVCaptureDevice`
+    /// authorization status on macOS, `AVAudioSession.recordPermission` on iOS,
+    /// `navigator.permissions.query` on web, and `checkSelfPermission` on Android.
+    pub async fn permission_status(&self) -> MicPermission {
+        imp::permission_status().await
     }
 
     /// Open a live capture stream. `callback` fires with each chunk of

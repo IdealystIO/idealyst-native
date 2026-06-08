@@ -20,6 +20,61 @@ use runtime_core::{Color, StyleRules, Tokenized};
 
 use super::{ResolutionCtx, Variant};
 
+/// Which interaction a [`variant_state_overlay`] represents.
+#[derive(Copy, Clone)]
+pub enum InteractState {
+    Hover,
+    Press,
+}
+
+/// The hover/press feedback overlay for a given variant — the heart of the
+/// "background-fill interactivity" upgrade.
+///
+/// A single global state overlay can't read correctly across all variants:
+/// setting a `background` on a Filled button would *replace* its tone fill
+/// (turning a brand-colored button grey on hover), because `background` is a
+/// single replacing property. So the feedback is chosen per variant:
+///
+/// - **Ghost / Outlined** (transparent-resting): a translucent neutral
+///   `background` fill (`theme.hover_overlay()` / `pressed_overlay()`). This is
+///   the toolbar-button feel — for these variants the fill *is* the affordance.
+/// - **Filled / Soft** (and any custom variant): a uniform `opacity` dim, which
+///   never clobbers the tone fill. (Compositing a translucent layer over a
+///   tone fill would need a real overlay layer; opacity is the faithful,
+///   tone-preserving stand-in.)
+///
+/// Registered as per-`(tone, variant)` `compound`s in the sheet builders so the
+/// overlay merges *after* the appearance arm and only on the active variant.
+pub fn variant_state_overlay(
+    variant_key: &str,
+    ctx: &ResolutionCtx,
+    state: InteractState,
+) -> StyleRules {
+    match variant_key {
+        "ghost" | "outlined" => {
+            let bg = match state {
+                InteractState::Hover => ctx.theme.hover_overlay(),
+                InteractState::Press => ctx.theme.pressed_overlay(),
+            };
+            StyleRules {
+                background: Some(bg),
+                ..Default::default()
+            }
+        }
+        // filled, soft, and any custom variant: a tone-preserving opacity dim.
+        _ => {
+            let o = match state {
+                InteractState::Hover => 0.92,
+                InteractState::Press => 0.85,
+            };
+            StyleRules {
+                opacity: Some(Tokenized::Literal(o)),
+                ..Default::default()
+            }
+        }
+    }
+}
+
 fn no_border() -> StyleRules {
     let zero = Tokenized::Literal(0.0);
     StyleRules {

@@ -1354,31 +1354,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
 
 [[package]]
-name = "catalog-docs"
-version = "0.0.1"
-dependencies = [
- "backend-android-mobile",
- "backend-ios-mobile",
- "backend-macos",
- "backend-terminal",
- "backend-web",
- "codeblock",
- "console_error_panic_hook",
- "dev-server",
- "drawer-navigator",
- "icons-lucide",
- "idea-ui",
- "lol_alloc",
- "markdown",
- "mcp-catalog",
- "runtime-core",
- "serde_json",
- "table",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "cbc"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2117,6 +2092,31 @@ dependencies = [
  "lol_alloc",
  "render-api",
  "runtime-core",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "docs-app"
+version = "0.0.1"
+dependencies = [
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-macos",
+ "backend-terminal",
+ "backend-web",
+ "codeblock",
+ "console_error_panic_hook",
+ "dev-server",
+ "drawer-navigator",
+ "icons-lucide",
+ "idea-ui",
+ "lol_alloc",
+ "markdown",
+ "mcp-catalog",
+ "runtime-core",
+ "serde_json",
+ "table",
  "wasm-bindgen",
  "web-sys",
 ]

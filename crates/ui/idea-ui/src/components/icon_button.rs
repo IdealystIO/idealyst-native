@@ -24,8 +24,8 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, icon, text, Element, IconData, IdealystSchema, IntoElement, Length, StyleApplication,
-    StyleRules, StyleSheet, Tokenized, VariantEnum,
+    component, icon, text, Color, Element, IconData, IdealystSchema, IntoElement, Length,
+    StyleApplication, StyleRules, StyleSheet, Tokenized, VariantEnum,
 };
 
 use idea_theme::extensible::{installed_icon_button_sheet, tone, variant, ToneRef, VariantRef};
@@ -93,6 +93,25 @@ pub struct IconButtonProps {
     /// For reactive disabling, read a signal in the enclosing render scope
     /// (`disabled = some_state.get()`); the scope re-renders on change.
     pub disabled: bool,
+    /// When `true`, paints the button with the tone's accent fill — the
+    /// "active toggle" look (a selected tool in a toolbar). Default `false`.
+    /// Pair with `variant = Ghost` for the transparent-resting tool button that
+    /// fills with the accent when active. For reactive selection, read a signal
+    /// in the enclosing render scope (`selected = tool.get() == Tool::Pen`).
+    pub selected: bool,
+    /// Override the square's side length, in px. When `Some`, it replaces the
+    /// `size` step's width/height and rescales the icon — for fitting a specific
+    /// layout (e.g. a 42px toolbar button) while still using the themed
+    /// IconButton. Default `None` (the `size` enum decides).
+    pub size_px: Option<f32>,
+    /// Override the corner radius, in px. Default `None` uses the sheet's pill
+    /// radius; set e.g. `12.0` for a rounded-square tool button.
+    pub radius: Option<f32>,
+    /// Override the icon/glyph color. Default `None` uses the tone × variant
+    /// foreground. Useful when the resting color should be neutral (ink) while
+    /// the `selected` accent fill still supplies its own contrasting text — pass
+    /// the ink color only on the un-selected instance.
+    pub color: Option<Color>,
 }
 
 impl Default for IconButtonProps {
@@ -105,6 +124,10 @@ impl Default for IconButtonProps {
             variant: variant::Filled.into(),
             size: IconButtonSize::default(),
             disabled: false,
+            selected: false,
+            size_px: None,
+            radius: None,
+            color: None,
         }
     }
 }
@@ -120,22 +143,50 @@ pub fn IconButton(props: &IconButtonProps) -> Element {
     let variant = props.variant.clone();
     let size = props.size;
     let disabled = props.disabled;
+    let selected = props.selected;
+    let size_px = props.size_px;
+    let radius = props.radius;
 
     let appearance_key = format!("{}_{}", tone.key(), variant.key());
     let size_key = size.as_variant_str().to_string();
 
-    // Static style — build-time apply, no flicker (see Button).
-    let style = StyleApplication::new(installed_icon_button_sheet())
+    // Static style — build-time apply, no flicker (see Button). `selected`
+    // drives the accent-fill toggle overlay (the active tool-button look).
+    let mut style = StyleApplication::new(installed_icon_button_sheet())
         .with("appearance", appearance_key)
-        .with("size", size_key);
+        .with("size", size_key)
+        .with("selected", if selected { "on" } else { "off" });
+    // Optional per-call overrides: a custom square size (value-keyed computed
+    // layer, so distinct sizes don't share a cache slot) and a custom radius
+    // (content-keyed override). Both win over the `size` step's defaults.
+    if let Some(px) = size_px {
+        style = style.with_computed(format!("ib-size-{}", (px * 100.0).round() as i32), move || {
+            StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(px))),
+                height: Some(Tokenized::Literal(Length::Px(px))),
+                ..Default::default()
+            }
+        });
+    }
+    if let Some(r) = radius {
+        style = style.override_border_radius(Length::Px(r));
+    }
+    if let Some(c) = props.color.clone() {
+        style = style.override_color(Tokenized::Literal(c));
+    }
 
     // A vector `icon` wins over the text `glyph`. The icon inherits the
     // button's tone text color (the primitive defaults to the ambient
     // label color), so it tints correctly per variant without an
     // explicit color. Sized to the square's content box per size step.
+    // Icon scales with the square: half the side for a custom `size_px`,
+    // otherwise the per-step default.
+    let icon_px = size_px
+        .map(|s| (s * 0.5).round())
+        .unwrap_or_else(|| icon_px_for(size));
     let child = match icon_data {
         Some(data) => icon(data)
-            .with_style(icon_button_icon_sheet(icon_px_for(size)))
+            .with_style(icon_button_icon_sheet(icon_px))
             .into_element(),
         None => text(glyph).into_element(),
     };

@@ -42,6 +42,10 @@ enum Command {
     Init(cmd::init::Args),
     /// Build and run with hot reload.
     Dev(cmd::dev::Args),
+    /// Build and serve a catalog-driven documentation site for a project
+    /// (every `#[component]`, primitive, utility, type, guide, and icon
+    /// set in the project and its component-library dependencies).
+    Docs(cmd::docs::Args),
     /// Serve a directory over HTTP.
     Serve(cmd::serve::Args),
     /// Build for one or more platforms.
@@ -117,6 +121,7 @@ fn main() -> anyhow::Result<()> {
         Command::New(args) => cmd::new::run(args),
         Command::Init(args) => cmd::init::run(args),
         Command::Dev(args) => cmd::dev::run(args),
+        Command::Docs(args) => cmd::docs::run(args),
         Command::Serve(args) => cmd::serve::run(args),
         Command::Build(args) => cmd::build::run(args),
         Command::Run(args) => cmd::run::run(args),

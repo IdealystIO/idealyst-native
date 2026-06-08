@@ -4,6 +4,7 @@ pub mod catalog_wrapper;
 pub mod check;
 pub mod clean;
 pub mod dev;
+pub mod docs;
 pub mod doctor;
 pub mod icon;
 pub mod init;

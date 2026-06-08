@@ -1,9 +1,9 @@
 [package]
-name = "catalog-docs"
+name = "docs-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Catalog-driven documentation app — renders the Idealyst component catalog (every #[component], primitive, utility, type, guide) for humans, built with idea-ui + the docs SDKs."
+description = "Catalog-driven documentation app — renders an Idealyst project's component catalog (every #[component], primitive, utility, type, guide) for humans, built with idea-ui + the docs SDKs. Backs the `idealyst docs` command; catalog source is injectable via the IDEALYST_DOCS_CATALOG env var at build time."
 
 # `cdylib` for the wasm target; `rlib` so CLI-generated native wrappers
 # under `target/idealyst/<platform>/` can depend on this crate as a
@@ -118,8 +118,8 @@ wasm-opt = false
 
 # Idealyst project config — read by `idealyst build`/`run`/`dev`.
 [package.metadata.idealyst.app]
-name      = "Catalog Docs"
-bundle_id = "io.idealyst.catalog_docs"
+name      = "Idealyst Docs"
+bundle_id = "io.idealyst.docs_app"
 version   = "0.0.1"
 targets   = ["web", "ios", "android"]
 

@@ -83,6 +83,38 @@ pub(crate) async fn request_permission() -> Result<(), MicError> {
     Ok(())
 }
 
+/// `navigator.permissions.query({name:"microphone"})` — the passive status read
+/// (no `getUserMedia`, no prompt). Support is uneven (older Firefox lacks the
+/// `microphone` descriptor), so any failure degrades to
+/// [`MicPermission::Unknown`](crate::MicPermission::Unknown).
+pub(crate) async fn permission_status() -> crate::MicPermission {
+    let Some(window) = web_sys::window() else {
+        return crate::MicPermission::Unknown;
+    };
+    let Ok(permissions) = window.navigator().permissions() else {
+        return crate::MicPermission::Unknown;
+    };
+    let desc = js_sys::Object::new();
+    if Reflect::set(&desc, &JsValue::from_str("name"), &JsValue::from_str("microphone")).is_err() {
+        return crate::MicPermission::Unknown;
+    }
+    let Ok(promise) = permissions.query(&desc) else {
+        return crate::MicPermission::Unknown;
+    };
+    let Ok(result) = JsFuture::from(promise).await else {
+        return crate::MicPermission::Unknown;
+    };
+    match result.dyn_into::<web_sys::PermissionStatus>() {
+        Ok(status) => match status.state() {
+            web_sys::PermissionState::Granted => crate::MicPermission::Granted,
+            web_sys::PermissionState::Denied => crate::MicPermission::Denied,
+            web_sys::PermissionState::Prompt => crate::MicPermission::Undetermined,
+            _ => crate::MicPermission::Unknown,
+        },
+        Err(_) => crate::MicPermission::Unknown,
+    }
+}
+
 pub(crate) async fn open(
     config: AudioStreamConfig,
     callback: BoxedCallback,

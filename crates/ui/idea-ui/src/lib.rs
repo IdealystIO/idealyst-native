@@ -147,6 +147,7 @@ pub use components::segmented_control::{
 };
 pub use components::select::{Select, SelectOption, SelectProps, SelectSize};
 pub use components::skeleton::{Skeleton, SkeletonProps, SkeletonWidth};
+pub use components::slider::{Slider, SliderProps};
 pub use components::spacer::{Spacer, SpacerProps};
 pub use components::spinner::{Spinner, SpinnerProps, SpinnerSize};
 pub use components::stack::{
@@ -155,7 +156,7 @@ pub use components::stack::{
 pub use components::surface::{Surface, SurfaceColor, SurfaceProps};
 pub use components::switch::{Switch, SwitchProps};
 pub use components::table::{Table, TableCell, TableCellProps, TableProps, TableRow, TableRowProps};
-pub use components::tabs::{Tab, Tabs, TabsProps};
+pub use components::tabs::{Tab, TabIndicator, Tabs, TabsProps};
 pub use components::tag::{Tag, TagProps};
 pub use components::textarea::{Textarea, TextareaProps};
 pub use components::toast::{

@@ -30,12 +30,35 @@
 //! ```
 
 use runtime_core::{
-    component, pressable, resolve_style, text, ui, Element, IdealystSchema, Reactive, Signal,
-    StyleApplication, StyleRules, StyleSheet,
+    component, pressable, resolve_style, text, ui, view, Element, IdealystSchema, Reactive, Signal,
+    StyleApplication, StyleRules, StyleSheet, VariantEnum,
 };
 use std::rc::Rc;
 
-use crate::stylesheets::{TabBar, TabButton};
+use crate::stylesheets::{TabBar, TabButton, TabButtonDot, TabDot};
+
+/// How the active tab is marked.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema)]
+pub enum TabIndicator {
+    /// A 2px accent underline beneath the active tab (the default tab strip).
+    #[default]
+    Underline,
+    /// A leading colored dot + a chip background on the active tab — the
+    /// compact, pill-like switcher look.
+    Dot,
+}
+
+impl VariantEnum for TabIndicator {
+    fn as_variant_str(self) -> &'static str {
+        match self {
+            TabIndicator::Underline => "underline",
+            TabIndicator::Dot => "dot",
+        }
+    }
+    fn all_variants() -> &'static [Self] {
+        &[TabIndicator::Underline, TabIndicator::Dot]
+    }
+}
 
 thread_local! {
     static TAB_LABEL_BASE_SHEET: std::cell::RefCell<Option<Rc<StyleSheet>>> =
@@ -89,6 +112,9 @@ pub struct TabsProps {
     /// mutate — pass `move |idx| active.set(idx)` to make taps
     /// actually switch.
     pub on_change: Rc<dyn Fn(usize)>,
+    /// How the active tab is marked. Default [`TabIndicator::Underline`];
+    /// [`TabIndicator::Dot`] gives the compact dot + chip switcher.
+    pub indicator: TabIndicator,
 }
 
 impl Default for TabsProps {
@@ -99,6 +125,7 @@ impl Default for TabsProps {
             tabs: Vec::new(),
             active: Signal::new(0),
             on_change: Rc::new(|_| {}),
+            indicator: TabIndicator::default(),
         }
     }
 }
@@ -112,8 +139,18 @@ pub fn Tabs(props: TabsProps) -> Element {
     let tab_items = props.tabs;
     let active = props.active;
     let on_change = props.on_change;
+    let dot_mode = matches!(props.indicator, TabIndicator::Dot);
 
     let container_style = TabBar();
+
+    // The button sheet for the chosen indicator — chip (dot) vs underline.
+    let button_sheet = move || {
+        if dot_mode {
+            TabButtonDot::sheet()
+        } else {
+            TabButton::sheet()
+        }
+    };
 
     let mut children: Vec<Element> = Vec::with_capacity(tab_items.len());
     for (idx, item) in tab_items.into_iter().enumerate() {
@@ -126,10 +163,10 @@ pub fn Tabs(props: TabsProps) -> Element {
 
         // Reactive style closure: re-runs whenever `active` fires,
         // flipping the `active` variant between `on` and `off`. The
-        // stylesheet handles the color + underline transition.
+        // stylesheet handles the color + underline/chip transition.
         let tab_style = move || {
             let variant = if active.get() == idx { "on" } else { "off" };
-            StyleApplication::new(TabButton::sheet()).with("active", variant.to_string())
+            StyleApplication::new(button_sheet()).with("active", variant.to_string())
         };
 
         // The TabButton color lives on the pressable, but native
@@ -148,7 +185,7 @@ pub fn Tabs(props: TabsProps) -> Element {
         let label_style = move || {
             let on = active.get() == idx;
             let variant = if on { "on" } else { "off" };
-            let app = StyleApplication::new(TabButton::sheet()).with("active", variant.to_string());
+            let app = StyleApplication::new(button_sheet()).with("active", variant.to_string());
             let color = resolve_style(&app).color.clone();
             let key = if on { "tab_label_on" } else { "tab_label_off" };
             StyleApplication::new(tab_label_base_sheet())
@@ -158,12 +195,23 @@ pub fn Tabs(props: TabsProps) -> Element {
                 })
         };
 
-        // Build the tab as `Pressable { Text }` via the builder
-        // functions — `Pressable` isn't a ui!-level tag (the
-        // framework macro deliberately omits it so idea-ui can own
-        // the styled wrapper), so we construct it directly.
+        // Build the tab as `Pressable { [dot,] Text }` via the builder
+        // functions — `Pressable` isn't a ui!-level tag (the framework macro
+        // deliberately omits it so idea-ui can own the styled wrapper), so we
+        // construct it directly. In Dot mode a colored leading dot precedes
+        // the label; its background sits on the view node (no inheritance
+        // concern, unlike the label's text color).
         let label_primitive: Element = text(label).with_style(label_style).into();
-        let tab_primitive: Element = pressable(vec![label_primitive], press)
+        let mut tab_children: Vec<Element> = Vec::with_capacity(2);
+        if dot_mode {
+            let dot_style = move || {
+                let variant = if active.get() == idx { "on" } else { "off" };
+                StyleApplication::new(TabDot::sheet()).with("active", variant.to_string())
+            };
+            tab_children.push(view(Vec::new()).with_style(dot_style).into());
+        }
+        tab_children.push(label_primitive);
+        let tab_primitive: Element = pressable(tab_children, press)
             .with_style(tab_style)
             .into();
         children.push(tab_primitive);

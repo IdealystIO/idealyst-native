@@ -705,7 +705,6 @@ impl GpuState {
                     self.overlay_compositor = Some(OverlayCompositor::new(&self.device));
                 }
                 let device = &self.device;
-                let queue = &self.queue;
                 let target_view = &self.target_view;
                 let (cw, ch) = (self.config.width, self.config.height);
                 let s = self.scale as f32;
@@ -717,7 +716,7 @@ impl GpuState {
                     if let Some((tex, view)) = self.cached_layers.get(&layer.id) {
                         if tex.width() == cw && tex.height() == ch {
                             tc.composite(
-                                device, queue, &mut encoder, view, target_view,
+                                device, &mut encoder, view, target_view,
                                 layer.transform, s, layer.alpha, cw, ch,
                             );
                         }

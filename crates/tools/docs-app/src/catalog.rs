@@ -790,6 +790,30 @@ mod tests {
         CatalogModel::build()
     }
 
+    // The `idealyst docs <project>` path embeds an externally-extracted
+    // catalog.json (the build.rs `IDEALYST_DOCS_CATALOG` override) and
+    // renders it through the SAME call the embedded-blob path uses:
+    // `ResolvedCatalog::build_from_json` → `CatalogModel::from_resolved`.
+    // This locks that injection contract independent of the build-script
+    // glue — a distinctive component present ONLY in the injected JSON
+    // must surface in the model, proving an arbitrary project's catalog
+    // renders, not just the framework's native extraction.
+    #[test]
+    fn injected_catalog_json_renders_its_entries() {
+        let json = r#"{"components":[
+            {"name":"InjectedWidget","module_path":"some_user_app::widgets",
+             "file":"src/widgets.rs","docs":"A project-specific component."}
+        ]}"#;
+        let cat = ResolvedCatalog::build_from_json(json).expect("parse injected catalog");
+        let m = CatalogModel::from_resolved(&cat);
+        let names: Vec<&str> =
+            m.of_kind(Kind::Component).iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            names.contains(&"InjectedWidget"),
+            "injected component must render in the model; got {names:?}",
+        );
+    }
+
     // The inventory linker-section concern, validated: because this test
     // binary links idea-ui (we reference its components in `app()` and
     // depend on the crate), idea-ui's `#[component]` `inventory::submit!`
@@ -951,7 +975,7 @@ mod tests {
     }
 
     /// Diagnostic snapshot of the *generated* docs — run with
-    /// `cargo test -p catalog-docs dump_generated_docs -- --ignored --nocapture`
+    /// `cargo test -p docs-app dump_generated_docs -- --ignored --nocapture`
     /// to see exactly what the generator produces (every kind's count,
     /// every scope + its members). Ignored by default so it doesn't spam
     /// normal test runs.

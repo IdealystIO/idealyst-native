@@ -1611,12 +1611,85 @@ stylesheet! {
                 border_bottom_color: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
             }
         }
+        // Hover/press now carry a translucent surface scrim (not just a text
+        // brighten) so tabs/segments read as interactive controls — the
+        // toolbar-button feel. `state` blocks are global (appearance-blind), but
+        // a neutral surface wash reads on the transparent-resting tab base.
         state hovered(t) {
             color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+        }
+        state pressed(t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            background: Tokenized::token("color-border", Color("#e4e6ef".into())),
         }
         transitions {
             color: 150ms EaseOut,
+            background: 120ms EaseOut,
             border_bottom_color: 200ms EaseOut,
+        }
+    }
+}
+
+// Dot-indicator tab: instead of an underline, the active tab gets a chip
+// (surface-alt) background and a colored leading dot. A parallel sheet (rather
+// than a variant axis on TabButton) keeps the `active` arm single-axis, so the
+// "active ⇒ chip background" rule resolves cleanly on every backend.
+stylesheet! {
+    pub TabButtonDot<IdeaThemeRef> {
+        base(t) {
+            background: Color("transparent".into()),
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            font_weight: FontWeight::Medium,
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(t) {
+                color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+                background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+            }
+        }
+        state hovered(t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+        }
+        state pressed(t) {
+            background: Tokenized::token("color-border", Color("#e4e6ef".into())),
+        }
+        transitions {
+            color: 150ms EaseOut,
+            background: 120ms EaseOut,
+        }
+    }
+}
+
+// The colored leading dot for a dot-indicator tab: muted when inactive, the
+// primary intent color when active.
+stylesheet! {
+    pub TabDot<IdeaThemeRef> {
+        base(t) {
+            width: 7.0,
+            height: 7.0,
+            border_radius: Tokenized::token("radius-pill", Length::Px(999.0)),
+            background: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(t) {
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+            }
+        }
+        transitions {
+            background: 150ms EaseOut,
         }
     }
 }

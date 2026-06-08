@@ -620,6 +620,30 @@ recipe!(
 );
 
 recipe!(
+    Slider,
+    /// A controlled horizontal value slider. The host owns
+    /// `value: Signal<f32>`; `on_change` fires the new value during the
+    /// drag. `min`/`max`/`step` bound and quantize it; `tone` colors the
+    /// fill + thumb. Keep a fixed `width` and don't rebuild the Slider
+    /// mid-drag (see its docs).
+    pub fn slider_controlled() -> ::runtime_core::Element {
+        use crate::{tone, Slider};
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let level = signal!(0.5f32);
+        let on_change: Rc<dyn Fn(f32)> = Rc::new(move |v| level.set(v));
+        ui! {
+            Slider(
+                value = level,
+                on_change = on_change,
+                tone = tone::Primary,
+            )
+        }
+    }
+);
+
+recipe!(
     Spinner,
     /// A spinning loading indicator for indeterminate waits. `size` picks
     /// `Small` or `Large`. Pair it with a label or center it in the area

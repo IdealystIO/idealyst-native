@@ -1809,7 +1809,7 @@ mod tests {
 
     /// Regression guard for the "android blank screen" bug: in
     /// runtime-server mode the CLI must keep running while the dev-host
-    /// child serves. `wait_for_host_exit` is the kernel of that — it
+    /// child serves. `wait_for_any_child_exit` is the kernel of that — it
     /// must block until the host process actually ends, NOT return
     /// immediately (the pre-fix behavior, which orphaned the host and
     /// let its watchdog SIGKILL it out from under a freshly-launched
@@ -1827,7 +1827,7 @@ mod tests {
         let children: Arc<Mutex<Vec<Child>>> = Arc::new(Mutex::new(vec![child]));
 
         let start = Instant::now();
-        wait_for_host_exit(&children, pid);
+        wait_for_any_child_exit(&children, &[pid]);
         let elapsed = start.elapsed();
 
         assert!(
@@ -1848,7 +1848,7 @@ mod tests {
     fn wait_for_host_exit_returns_when_host_not_tracked() {
         let children: Arc<Mutex<Vec<Child>>> = Arc::new(Mutex::new(Vec::new()));
         let start = Instant::now();
-        wait_for_host_exit(&children, 999_999);
+        wait_for_any_child_exit(&children, &[999_999]);
         assert!(
             start.elapsed() < Duration::from_secs(2),
             "a missing host pid must return promptly, not hang",

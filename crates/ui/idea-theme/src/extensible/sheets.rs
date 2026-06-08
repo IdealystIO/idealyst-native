@@ -30,16 +30,79 @@ use runtime_core::{
 use crate::theme::{IdeaTheme, IdeaThemeRef};
 use crate::theme_runtime::active_theme;
 
+use super::variant::{variant_state_overlay, InteractState};
 use super::{
     ButtonSizeRef, RefBuiltins, ResolutionCtx, ShapeRef, ToneRef, TypographyKindRef, VariantRef,
 };
 
-/// Resting → hover → press opacity for interactive controls (Button,
-/// IconButton). A subtle uniform dim that reads as interactive feedback
-/// without shifting the palette; the controls' `opacity_transition`
-/// animates between them. Shared so every clickable dims consistently.
-const HOVER_OPACITY: f32 = 0.92;
-const PRESSED_OPACITY: f32 = 0.85;
+/// Register the per-`(tone, variant)` hover + press feedback overlays for a
+/// clickable control (Button, IconButton). Each is a `compound` keyed on the
+/// active `appearance` arm AND the reserved `__state_*` axis, so the overlay
+/// merges *after* the appearance fill and only on the matching variant — letting
+/// Ghost/Outlined gain a translucent background fill while Filled/Soft keep a
+/// tone-preserving opacity dim (see [`variant_state_overlay`]).
+fn add_state_overlay_compounds(
+    mut sheet: StyleSheet,
+    appearance_key: &str,
+    tone: &ToneRef,
+    variant: &VariantRef,
+) -> StyleSheet {
+    for (state_axis, state) in [
+        ("__state_hovered", InteractState::Hover),
+        ("__state_pressed", InteractState::Press),
+    ] {
+        let tone_c = tone.clone();
+        let variant_c = variant.clone();
+        sheet = sheet.compound(
+            vec![
+                ("appearance", appearance_key.to_string()),
+                (state_axis, "on".to_string()),
+            ],
+            move |_vs| {
+                let theme_rc = active_theme();
+                let theme_ref = theme_rc
+                    .downcast_ref::<IdeaThemeRef>()
+                    .expect("state-overlay compound: install_idea_theme(...) first");
+                let ctx = ResolutionCtx {
+                    theme: theme_ref,
+                    tone: &*tone_c.0,
+                };
+                variant_state_overlay(variant_c.0.key(), &ctx, state)
+            },
+        );
+    }
+    sheet
+}
+
+/// Register the per-`(tone, variant)` **selected** (active toggle) overlay — an
+/// accent fill that wins over the appearance arm when `selected=on`. Tone-driven
+/// (the tone's solid fill + its on-fill text color) so a Ghost icon toggle fills
+/// with the accent when active, matching the toolbar tool-button feel.
+fn add_selected_overlay_compounds(
+    mut sheet: StyleSheet,
+    appearance_key: &str,
+    tone: &ToneRef,
+) -> StyleSheet {
+    let tone_c = tone.clone();
+    sheet = sheet.compound(
+        vec![
+            ("appearance", appearance_key.to_string()),
+            ("selected", "on".to_string()),
+        ],
+        move |_vs| {
+            let theme_rc = active_theme();
+            let theme_ref = theme_rc
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("selected-overlay compound: install_idea_theme(...) first");
+            StyleRules {
+                background: Some(tone_c.0.fill_bg(theme_ref)),
+                color: Some(tone_c.0.fill_fg(theme_ref)),
+                ..Default::default()
+            }
+        },
+    );
+    sheet
+}
 
 // =============================================================================
 // Thread-local sheet stashes — one per component
@@ -156,7 +219,7 @@ impl ButtonSheetBuilder {
             // never restore full opacity (the dim would stick). Web reverts
             // via the cascade regardless; this keeps the two convergent.
             opacity: Some(Tokenized::Literal(1.0)),
-            background_transition: Some(Transition::new(150, Easing::EaseOut)),
+            background_transition: Some(Transition::new(120, Easing::EaseOut)),
             color_transition: Some(Transition::new(200, Easing::EaseOut)),
             opacity_transition: Some(Transition::new(200, Easing::EaseOut)),
             border_top_color_transition: Some(Transition::new(150, Easing::EaseOut)),
@@ -175,19 +238,24 @@ impl ButtonSheetBuilder {
         for tone in &self.tones {
             for variant in &self.variants {
                 let key = format!("{}_{}", tone.current_key(), variant.current_key());
-                let tone_c = tone.clone();
-                let variant_c = variant.clone();
-                sheet = sheet.variant("appearance", key, move |_vs| {
-                    let theme_rc = active_theme();
-                    let theme_ref = theme_rc
-                        .downcast_ref::<IdeaThemeRef>()
-                        .expect("ButtonSheetBuilder closure: install_idea_theme(...) first");
-                    let ctx = ResolutionCtx {
-                        theme: theme_ref,
-                        tone: &*tone_c.0,
-                    };
-                    variant_c.0.render(&ctx)
-                });
+                {
+                    let key = key.clone();
+                    let tone_c = tone.clone();
+                    let variant_c = variant.clone();
+                    sheet = sheet.variant("appearance", key, move |_vs| {
+                        let theme_rc = active_theme();
+                        let theme_ref = theme_rc
+                            .downcast_ref::<IdeaThemeRef>()
+                            .expect("ButtonSheetBuilder closure: install_idea_theme(...) first");
+                        let ctx = ResolutionCtx {
+                            theme: theme_ref,
+                            tone: &*tone_c.0,
+                        };
+                        variant_c.0.render(&ctx)
+                    });
+                }
+                // Per-(tone,variant) hover/press feedback overlay.
+                sheet = add_state_overlay_compounds(sheet, &key, tone, variant);
             }
         }
 
@@ -223,23 +291,17 @@ impl ButtonSheetBuilder {
             });
         }
 
-        // Interaction-state overlays — a uniform opacity dim on hover and
-        // press (animated by the base `opacity_transition`). Registered under
-        // the reserved `__state_*` axes the framework recognizes: realized as
-        // CSS `:hover`/`:active` on web and event-driven on macOS
-        // (NSTrackingArea + mouseDown/Up via `attach_states`); touch backends
-        // with no hover no-op the hover arm. Disabled is intentionally NOT a
-        // state here — it's a variant-like concern handled by the pressable's
-        // disabled mechanism, not a hover-comparable overlay.
+        // Register the reserved interaction-state axes so the framework tracks
+        // hover/press (the `state_axes` set is populated only by `.variant`, not
+        // by `.compound`). Realized as CSS `:hover`/`:active` on web and
+        // event-driven on macOS (NSTrackingArea + mouseDown/Up via
+        // `attach_states`); touch backends with no hover no-op the hover axis.
+        // The arms are intentionally EMPTY — the actual feedback is emitted
+        // per-(tone,variant) by `add_state_overlay_compounds` above, so the
+        // overlay can be variant-aware (background fill vs opacity dim).
         sheet = sheet
-            .variant("__state_hovered", "on", |_vs| StyleRules {
-                opacity: Some(Tokenized::Literal(HOVER_OPACITY)),
-                ..Default::default()
-            })
-            .variant("__state_pressed", "on", |_vs| StyleRules {
-                opacity: Some(Tokenized::Literal(PRESSED_OPACITY)),
-                ..Default::default()
-            });
+            .variant("__state_hovered", "on", |_vs| StyleRules::default())
+            .variant("__state_pressed", "on", |_vs| StyleRules::default());
 
         // Defaults so an unset axis applies the most common arm.
         sheet = sheet
@@ -754,7 +816,7 @@ impl IconButtonSheetBuilder {
             cursor: Some(Cursor::Pointer),
             user_select: Some(UserSelect::None),
             opacity: Some(Tokenized::Literal(1.0)),
-            background_transition: Some(Transition::new(150, Easing::EaseOut)),
+            background_transition: Some(Transition::new(120, Easing::EaseOut)),
             color_transition: Some(Transition::new(200, Easing::EaseOut)),
             opacity_transition: Some(Transition::new(200, Easing::EaseOut)),
             border_top_color_transition: Some(Transition::new(150, Easing::EaseOut)),
@@ -764,21 +826,27 @@ impl IconButtonSheetBuilder {
             ..Default::default()
         });
 
-        // Appearance arms (tone × variant).
+        // Appearance arms (tone × variant), plus the hover/press feedback and
+        // accent-`selected` overlays for each.
         for tone in &self.tones {
             for variant in &self.variants {
                 let key = format!("{}_{}", tone.current_key(), variant.current_key());
-                let tone_c = tone.clone();
-                let variant_c = variant.clone();
-                sheet = sheet.variant("appearance", key, move |_vs| {
-                    let theme_rc = active_theme();
-                    let theme_ref = theme_rc.downcast_ref::<IdeaThemeRef>().expect("theme");
-                    let ctx = ResolutionCtx {
-                        theme: theme_ref,
-                        tone: &*tone_c.0,
-                    };
-                    variant_c.0.render(&ctx)
-                });
+                {
+                    let key = key.clone();
+                    let tone_c = tone.clone();
+                    let variant_c = variant.clone();
+                    sheet = sheet.variant("appearance", key, move |_vs| {
+                        let theme_rc = active_theme();
+                        let theme_ref = theme_rc.downcast_ref::<IdeaThemeRef>().expect("theme");
+                        let ctx = ResolutionCtx {
+                            theme: theme_ref,
+                            tone: &*tone_c.0,
+                        };
+                        variant_c.0.render(&ctx)
+                    });
+                }
+                sheet = add_state_overlay_compounds(sheet, &key, tone, variant);
+                sheet = add_selected_overlay_compounds(sheet, &key, tone);
             }
         }
 
@@ -834,20 +902,24 @@ impl IconButtonSheetBuilder {
                 ..Default::default()
             });
 
-        // Hover / press dim — same convention as ButtonSheetBuilder.
+        // Reserved interaction-state axes (empty arms; per-(tone,variant)
+        // feedback is emitted by the compounds above) — same convention as
+        // ButtonSheetBuilder.
         sheet = sheet
-            .variant("__state_hovered", "on", |_vs| StyleRules {
-                opacity: Some(Tokenized::Literal(HOVER_OPACITY)),
-                ..Default::default()
-            })
-            .variant("__state_pressed", "on", |_vs| StyleRules {
-                opacity: Some(Tokenized::Literal(PRESSED_OPACITY)),
-                ..Default::default()
-            });
+            .variant("__state_hovered", "on", |_vs| StyleRules::default())
+            .variant("__state_pressed", "on", |_vs| StyleRules::default());
+
+        // `selected` axis — on/off toggle for the accent fill (the active
+        // tool-button state). Empty arms; the accent fill is emitted per
+        // appearance by `add_selected_overlay_compounds`.
+        sheet = sheet
+            .variant("selected", "off", |_vs| StyleRules::default())
+            .variant("selected", "on", |_vs| StyleRules::default());
 
         sheet = sheet
             .variant_default("appearance", "neutral_filled")
-            .variant_default("size", "md");
+            .variant_default("size", "md")
+            .variant_default("selected", "off");
 
         Rc::new(sheet)
     }
@@ -958,6 +1030,38 @@ fn add_indicator_color_arms(
                     StyleRules { background: fg, ..Default::default() }
                 } else {
                     StyleRules { color: fg, ..Default::default() }
+                }
+            });
+        }
+    }
+    sheet
+}
+
+/// Add `appearance` arms that project `variant.render(ctx)`'s **background**
+/// (the tone fill) onto the `background` slot — for a tone-colored bar or
+/// handle (Progress fill, Slider fill + thumb). Everything else is dropped.
+fn add_background_fill_arms(
+    mut sheet: StyleSheet,
+    tones: &[ToneRef],
+    variants: &[VariantRef],
+) -> StyleSheet {
+    for tone in tones {
+        for variant in variants {
+            let key = format!("{}_{}", tone.current_key(), variant.current_key());
+            let tone_c = tone.clone();
+            let variant_c = variant.clone();
+            sheet = sheet.variant("appearance", key, move |_vs| {
+                let theme_rc = active_theme();
+                let theme_ref = theme_rc
+                    .downcast_ref::<IdeaThemeRef>()
+                    .expect("Slider sheet: install_idea_theme(...) first");
+                let ctx = ResolutionCtx {
+                    theme: theme_ref,
+                    tone: &*tone_c.0,
+                };
+                StyleRules {
+                    background: variant_c.0.render(&ctx).background,
+                    ..Default::default()
                 }
             });
         }
@@ -1491,6 +1595,153 @@ pub fn install_default_progress_sheet() {
     install_progress_sheets(ProgressSheetBuilder::new().build());
 }
 
+// =============================================================================
+// SliderSheetBuilder — horizontal value track (muted rail + tone fill + thumb)
+// =============================================================================
+//
+// Three sub-sheets, mirroring Progress's track+fill plus a draggable thumb:
+//   - `track_sheet`: the muted rail. `size` axis (rail thickness) only.
+//   - `fill_sheet`:  the tone bar from the left edge to the thumb. `appearance`
+//     arms tint `background`; the component sets `width` (the value%) via a
+//     `with_computed` layer.
+//   - `thumb_sheet`: the round handle. `appearance` arms tint `background`;
+//     `size` arms set the diameter; the component sets `left` (the value
+//     position) via a `with_computed` layer.
+
+thread_local! {
+    static SLIDER_SHEETS: RefCell<Option<SliderSheets>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone)]
+pub struct SliderSheets {
+    pub track_sheet: Rc<StyleSheet>,
+    pub fill_sheet: Rc<StyleSheet>,
+    pub thumb_sheet: Rc<StyleSheet>,
+}
+
+pub fn install_slider_sheets(sheets: SliderSheets) {
+    SLIDER_SHEETS.with(|s| *s.borrow_mut() = Some(sheets));
+}
+pub fn installed_slider_sheets() -> SliderSheets {
+    SLIDER_SHEETS.with(|s| {
+        s.borrow().as_ref().cloned().expect(
+            "no Slider stylesheet installed; call install_idea_theme(...) before rendering",
+        )
+    })
+}
+
+/// Closed dimensions per size: `(rail_thickness, thumb_diameter)` in px.
+pub const SLIDER_DIMS: [(&str, f32, f32); 3] = [("sm", 3.0, 12.0), ("md", 4.0, 16.0), ("lg", 6.0, 20.0)];
+
+pub struct SliderSheetBuilder {
+    tones: Vec<ToneRef>,
+    variants: Vec<VariantRef>,
+}
+impl SliderSheetBuilder {
+    pub fn new() -> Self {
+        Self {
+            tones: ToneRef::builtins().into_iter().map(|(_, t)| t).collect(),
+            variants: VariantRef::builtins().into_iter().map(|(_, v)| v).collect(),
+        }
+    }
+    pub fn add_tone(mut self, t: impl Into<ToneRef>) -> Self {
+        self.tones.push(t.into());
+        self
+    }
+    pub fn add_variant(mut self, v: impl Into<VariantRef>) -> Self {
+        self.variants.push(v.into());
+        self
+    }
+    pub fn build(self) -> SliderSheets {
+        use runtime_core::{Length, Overflow, Position};
+        let pill = || Tokenized::token("radius-pill", Length::Px(999.0));
+
+        // ---- track (the muted rail) ----
+        let mut track = StyleSheet::new(move |_vs: &VariantSet| {
+            let theme_rc = active_theme();
+            let theme_ref = theme_rc
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("Slider sheet: install_idea_theme(...) first");
+            StyleRules {
+                position: Some(Position::Relative),
+                background: Some(theme_ref.colors().border.clone()),
+                width: Some(Tokenized::Literal(Length::pct(100.0))),
+                overflow: Some(Overflow::Hidden),
+                border_top_left_radius: Some(pill()),
+                border_top_right_radius: Some(pill()),
+                border_bottom_left_radius: Some(pill()),
+                border_bottom_right_radius: Some(pill()),
+                ..Default::default()
+            }
+        });
+        for (key, h, _thumb) in SLIDER_DIMS {
+            track = track.variant("size", key, move |_vs| StyleRules {
+                height: Some(Tokenized::Literal(Length::Px(h))),
+                ..Default::default()
+            });
+        }
+        track = track.variant_default("size", "md");
+
+        // ---- fill (tone bar; component sets `width`) ----
+        let mut fill = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+            position: Some(Position::Absolute),
+            left: Some(Tokenized::Literal(Length::Px(0.0))),
+            top: Some(Tokenized::Literal(Length::Px(0.0))),
+            height: Some(Tokenized::Literal(Length::pct(100.0))),
+            border_top_left_radius: Some(pill()),
+            border_top_right_radius: Some(pill()),
+            border_bottom_left_radius: Some(pill()),
+            border_bottom_right_radius: Some(pill()),
+            background_transition: Some(Transition::new(120, Easing::EaseOut)),
+            ..Default::default()
+        });
+        fill = add_background_fill_arms(fill, &self.tones, &self.variants);
+        fill = fill.variant_default("appearance", "primary_filled");
+
+        // ---- thumb (round handle; component sets `left`) ----
+        let mut thumb = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+            position: Some(Position::Absolute),
+            top: Some(Tokenized::Literal(Length::Px(0.0))),
+            border_top_left_radius: Some(pill()),
+            border_top_right_radius: Some(pill()),
+            border_bottom_left_radius: Some(pill()),
+            border_bottom_right_radius: Some(pill()),
+            shadow: Some(runtime_core::Shadow {
+                x: 0.0,
+                y: 1.0,
+                blur: 4.0,
+                color: runtime_core::Color("rgba(0,0,0,0.25)".into()),
+            }),
+            ..Default::default()
+        });
+        thumb = add_background_fill_arms(thumb, &self.tones, &self.variants);
+        for (key, _h, dia) in SLIDER_DIMS {
+            thumb = thumb.variant("size", key, move |_vs| StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(dia))),
+                height: Some(Tokenized::Literal(Length::Px(dia))),
+                ..Default::default()
+            });
+        }
+        thumb = thumb
+            .variant_default("appearance", "primary_filled")
+            .variant_default("size", "md");
+
+        SliderSheets {
+            track_sheet: Rc::new(track),
+            fill_sheet: Rc::new(fill),
+            thumb_sheet: Rc::new(thumb),
+        }
+    }
+}
+impl Default for SliderSheetBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+pub fn install_default_slider_sheet() {
+    install_slider_sheets(SliderSheetBuilder::new().build());
+}
+
 
 // =============================================================================
 // Tests — selection-control + progress sheet builders
@@ -1556,6 +1807,15 @@ mod selection_sheet_tests {
     }
 
     #[test]
+    fn slider_fill_and_thumb_have_appearance_and_size() {
+        let s = SliderSheetBuilder::new().build();
+        assert_eq!(appearance_arms(&s.fill_sheet), BUILTIN_APPEARANCE_ARMS);
+        assert_eq!(appearance_arms(&s.thumb_sheet), BUILTIN_APPEARANCE_ARMS);
+        assert!(has(&s.track_sheet, "size", "sm"));
+        assert!(has(&s.thumb_sheet, "size", "lg"));
+    }
+
+    #[test]
     fn add_tone_extends_the_appearance_matrix_by_one_variant_row() {
         // A custom tone adds one arm per variant (×4) on top of builtins.
         let base = SwitchSheetBuilder::new().build();
@@ -1566,5 +1826,29 @@ mod selection_sheet_tests {
         // is unchanged. This guards against the builder silently dropping
         // the builtin set when a tone is appended.
         assert_eq!(appearance_arms(&base), appearance_arms(&extended));
+    }
+
+    /// The Button sheet registers the reserved hover/press state axes AND one
+    /// hover + one press feedback compound per `(tone, variant)` appearance arm
+    /// (the background-fill interactivity upgrade).
+    #[test]
+    fn button_sheet_has_state_overlay_compounds() {
+        let sheet = ButtonSheetBuilder::new().build();
+        assert!(has(&sheet, "__state_hovered", "on"));
+        assert!(has(&sheet, "__state_pressed", "on"));
+        // 2 compounds (hover + press) per appearance arm.
+        assert_eq!(sheet.compound_keys().len(), BUILTIN_APPEARANCE_ARMS * 2);
+    }
+
+    /// The IconButton sheet adds a `selected` axis (the accent toggle) plus its
+    /// per-appearance accent-fill compound, on top of the hover/press pair.
+    #[test]
+    fn icon_button_sheet_has_selected_axis_and_compounds() {
+        let sheet = IconButtonSheetBuilder::new().build();
+        assert!(has(&sheet, "selected", "on"));
+        assert!(has(&sheet, "selected", "off"));
+        assert!(has(&sheet, "__state_hovered", "on"));
+        // hover + press + selected = 3 compounds per appearance arm.
+        assert_eq!(sheet.compound_keys().len(), BUILTIN_APPEARANCE_ARMS * 3);
     }
 }

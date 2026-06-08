@@ -30,6 +30,7 @@
 //! verbatim (no re-gamma), matching the blitter's straight copy.
 
 use canvas_core::Transform;
+use wgpu::util::DeviceExt;
 
 /// The cached layer texture / target are `Rgba8Unorm`; the composite draws into
 /// the same format.
@@ -98,9 +99,6 @@ pub(crate) struct TransformCompositor {
     pipeline: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
     bind_layout: wgpu::BindGroupLayout,
-    /// Reused uniform buffer, rewritten per composite (the transform changes
-    /// every frame). 48 bytes — a single small upload per cached layer.
-    uniform: wgpu::Buffer,
 }
 
 impl TransformCompositor {
@@ -184,25 +182,29 @@ impl TransformCompositor {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("cached-layer-compose-uniform"),
-            size: std::mem::size_of::<Params>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        Self { pipeline, sampler, bind_layout, uniform }
+        Self { pipeline, sampler, bind_layout }
     }
 
     /// Composite the cached layer texture `src` into `dst` under the camera
     /// `transform` (logical space) at `alpha`, source-over. `dst` is LOADED, not
     /// cleared, so an earlier layer composited beneath survives where this one is
     /// transparent. `scale` is the dpr base; `(vp_w, vp_h)` is the device target
-    /// size. The caller writes the uniform via `queue` before encoding the draw.
+    /// size.
+    ///
+    /// The transform uniform is built into a **fresh** buffer per call via
+    /// `create_buffer_init` (data embedded at creation), NOT a persistent buffer
+    /// rewritten with `queue.write_buffer`. This is load-bearing on the WebGPU
+    /// backend: a staged `write_buffer` to a reused uniform that isn't flushed by
+    /// an intervening `queue.submit` can read STALE on a composite-only frame
+    /// (no vello `render_to_texture` submit to flush the staging belt) — the
+    /// "frozen-until-the-next-bake" pan bug. A per-call buffer has no staging
+    /// dependency, and giving each cached layer its own buffer also avoids the
+    /// last-write-wins aliasing of one shared uniform across multiple layers in a
+    /// frame. The per-frame cost is a 48-byte buffer per cached layer — trivial.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn composite(
         &self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         src: &wgpu::TextureView,
         dst: &wgpu::TextureView,
@@ -224,7 +226,11 @@ impl TransformCompositor {
             trans_size: [s * e, s * f, lw, lh],
             vp_alpha: [vw, vh, alpha.clamp(0.0, 1.0), 0.0],
         };
-        queue.write_buffer(&self.uniform, 0, bytemuck_cast(&params));
+        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cached-layer-compose-uniform"),
+            contents: bytemuck_cast(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
 
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("cached-layer-compose-bind-group"),
@@ -232,7 +238,7 @@ impl TransformCompositor {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: self.uniform.as_entire_binding(),
+                    resource: uniform.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,

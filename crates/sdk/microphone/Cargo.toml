@@ -34,6 +34,13 @@ license.workspace = true
 [package.metadata.idealyst]
 capabilities = ["microphone"]
 
+# AVFoundation is needed at runtime for the macOS `AVCaptureDevice` permission
+# query (`permission_status`) and the iOS `AVAudioSession`. The classes resolve
+# via objc_getClass, but the CLI links the framework into the final app from this
+# list (same mechanism `camera` uses).
+[package.metadata.idealyst.ios]
+frameworks = ["AVFoundation"]
+
 [dependencies]
 thiserror = "1"
 
@@ -48,16 +55,19 @@ media-stream = { workspace = true }
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
 cpal = "0.15"
 
-# iOS only: cpal opens the input AudioUnit, but iOS additionally requires
-# an active AVAudioSession in a record category and a granted permission
-# before that unit produces anything but silence. We drive AVAudioSession
-# through the Obj-C runtime (objc2 msg_send), no typed framework crate.
-[target.'cfg(target_os = "ios")'.dependencies]
+# iOS + macOS: drive the Obj-C runtime (objc2 msg_send), no typed framework
+# crate. macOS uses it ONLY for the passive `AVCaptureDevice
+# .authorizationStatusForMediaType` permission query (no prompt). iOS
+# additionally activates AVAudioSession in a record category + runs the async
+# record-permission request (the block2 / futures-channel deps, iOS-only below).
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString"] }
+
+# iOS only: AVAudioSession activation + the async `requestRecordPermission:`
+# completion-block → future bridge (same pattern the `net` SDK uses).
+[target.'cfg(target_os = "ios")'.dependencies]
 block2 = "0.5"
-# Bridges AVAudioSession's `requestRecordPermission:` completion block to
-# async — same callback→future pattern the `net` SDK uses for NSURLSession.
 futures-channel = "0.3"
 
 # Web (wasm) target: getUserMedia for the MediaStream, a Web Audio graph
@@ -83,6 +93,11 @@ web-sys = { version = "0.3", features = [
     "AudioProcessingEvent",
     "AudioBuffer",
     "EventTarget",
+    # Passive permission query (`permission_status`): navigator.permissions
+    # .query({name:"microphone"}) — no getUserMedia, no prompt.
+    "Permissions",
+    "PermissionStatus",
+    "PermissionState",
 ] }
 
 # Android target: AudioRecord via JNI on a dedicated reader thread.

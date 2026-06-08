@@ -103,6 +103,27 @@ pub(crate) async fn request_permission() -> Result<(), MicError> {
     Err(MicError::PermissionDenied)
 }
 
+/// Passive permission read via `checkSelfPermission` (no prompt). It only
+/// distinguishes granted vs not-granted, and a not-granted result may be either
+/// undetermined or denied — so we report `Granted` or `Undetermined` (the safe
+/// "may still prompt" state), never a definitive `Denied`. Any JNI failure →
+/// [`MicPermission::Unknown`](crate::MicPermission::Unknown).
+pub(crate) async fn permission_status() -> crate::MicPermission {
+    let Ok(vm) = java_vm() else {
+        return crate::MicPermission::Unknown;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return crate::MicPermission::Unknown;
+    };
+    let ctx = ndk_context::android_context();
+    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+    match check_self_permission(&mut env, &activity) {
+        Ok(true) => crate::MicPermission::Granted,
+        Ok(false) => crate::MicPermission::Undetermined,
+        Err(_) => crate::MicPermission::Unknown,
+    }
+}
+
 pub(crate) async fn open(
     config: AudioStreamConfig,
     callback: BoxedCallback,

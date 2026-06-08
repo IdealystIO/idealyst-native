@@ -132,6 +132,7 @@ pub mod popover;
 pub mod segmented_control;
 pub mod select;
 pub mod skeleton;
+pub mod slider;
 pub mod spacer;
 pub mod spinner;
 pub mod stack;

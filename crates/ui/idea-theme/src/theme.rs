@@ -206,6 +206,25 @@ pub trait IdeaTheme: Any + 'static {
     fn font_family(&self) -> FontFamily {
         FontFamily::System(DEFAULT_FONT_STACK.to_string())
     }
+
+    /// Translucent "state layer" painted over an interactive surface on
+    /// **hover**. Used by the Button/IconButton state-overlay compounds for
+    /// the transparent-resting variants (Ghost, Outlined) where a fill — not
+    /// just an opacity dim — is the affordance (the toolbar-button feel).
+    ///
+    /// The default is a theme-neutral grey scrim that reads on both light and
+    /// dark surfaces; a custom theme that knows its own mode (e.g. a light/dark
+    /// flag) can override with a tuned value. It must be translucent so it
+    /// composites over whatever it covers.
+    fn hover_overlay(&self) -> Tokenized<Color> {
+        Tokenized::Literal(Color("rgba(127, 127, 140, 0.14)".into()))
+    }
+
+    /// Translucent state layer for the **pressed** state — a stronger scrim
+    /// than [`hover_overlay`](Self::hover_overlay). See it for the rationale.
+    fn pressed_overlay(&self) -> Tokenized<Color> {
+        Tokenized::Literal(Color("rgba(127, 127, 140, 0.24)".into()))
+    }
 }
 
 // =============================================================================
@@ -248,6 +267,12 @@ impl IdeaTheme for IdeaThemeRef {
     }
     fn font_family(&self) -> FontFamily {
         self.inner.font_family()
+    }
+    fn hover_overlay(&self) -> Tokenized<Color> {
+        self.inner.hover_overlay()
+    }
+    fn pressed_overlay(&self) -> Tokenized<Color> {
+        self.inner.pressed_overlay()
     }
 }
 
@@ -793,6 +818,7 @@ pub fn install_default_idea_sheets() {
     crate::extensible::install_default_checkbox_sheet();
     crate::extensible::install_default_radio_sheet();
     crate::extensible::install_default_progress_sheet();
+    crate::extensible::install_default_slider_sheet();
 }
 
 /// Build a reactive color closure for a navigator's `header_*` /

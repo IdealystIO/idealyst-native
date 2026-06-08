@@ -588,7 +588,6 @@ impl RenderState {
                     self.overlay_compositor = Some(OverlayCompositor::new(&self.device));
                 }
                 let device = &self.device;
-                let queue = &self.queue;
                 let target_view = &self.target_view;
                 let (cw, ch) = (self.config.width, self.config.height);
                 let s = self.scale as f32;
@@ -601,7 +600,7 @@ impl RenderState {
                         // Skip a stale-size texture (resize race) — the app re-bakes.
                         if tex.width() == cw && tex.height() == ch {
                             tc.composite(
-                                device, queue, &mut encoder, view, target_view,
+                                device, &mut encoder, view, target_view,
                                 layer.transform, s, layer.alpha, cw, ch,
                             );
                         }
@@ -1321,7 +1320,6 @@ mod tests {
                     if let Some((_, view)) = self.cached.get(&layer.id) {
                         self.tc.composite(
                             &self.device,
-                            &self.queue,
                             &mut enc,
                             view,
                             &self.target_view,
@@ -1416,6 +1414,46 @@ mod tests {
         // Its original location is now empty (the layer moved, wasn't redrawn there).
         let vacated = px(&buf, S, 16, 16);
         assert!(vacated[3] < 8, "vacated location should be transparent, got {vacated:?}");
+    }
+
+    /// Regression: two cached layers in ONE frame composite under their OWN
+    /// transforms — not all under the last one's. `TransformCompositor` builds a
+    /// fresh per-call uniform buffer; the earlier shared-uniform + `write_buffer`
+    /// version made every draw in the frame read the LAST transform written
+    /// (last-write-wins aliasing). Layer 1 (identity) and layer 2 (translate 40,40)
+    /// bake the same local square; with the fix each lands at its own place, so the
+    /// identity layer's pixel is occupied. The aliased version would composite BOTH
+    /// under translate(40,40), leaving layer 1's spot empty → this fails.
+    #[test]
+    fn cached_layers_use_independent_transforms() {
+        const S: u32 = 64;
+        let Some(mut h) = CachedHarness::new(S) else {
+            eprintln!("skip: no GPU");
+            return;
+        };
+        let mut sc = CanvasScene::new();
+        // Both bake a 12×12 square at local (8,8); different composite transforms.
+        sc.layer_cached(1, true, canvas_core::Transform::IDENTITY, |l| {
+            l.fill_path(canvas_core::Path::rect(8.0, 8.0, 12.0, 12.0), CanvasColor::new(255, 0, 0, 255));
+        });
+        sc.layer_cached(2, true, canvas_core::Transform::translate(40.0, 40.0), |l| {
+            l.fill_path(canvas_core::Path::rect(8.0, 8.0, 12.0, 12.0), CanvasColor::new(0, 200, 80, 255));
+        });
+        let buf = h.frame(&sc);
+
+        // Layer 1 (identity) square center (14,14) must be opaque RED — proving it
+        // composited under ITS transform, not layer 2's.
+        let l1 = px(&buf, S, 14, 14);
+        assert!(
+            l1[0] > 200 && l1[1] < 60 && l1[3] > 200,
+            "layer 1 (identity) center should be opaque red, got {l1:?} — uniform aliasing?"
+        );
+        // Layer 2 (translate 40,40) square center (54,54) must be opaque GREEN.
+        let l2 = px(&buf, S, 54, 54);
+        assert!(
+            l2[1] > 150 && l2[0] < 60 && l2[3] > 200,
+            "layer 2 (translate) center should be opaque green, got {l2:?}"
+        );
     }
 
     /// §7 convergence for the cached fast path: a `Cached` scene (a cached layer
