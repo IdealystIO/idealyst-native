@@ -64,6 +64,8 @@ pub struct ElementsPanelProps {
     /// Set of expanded branch ids. Lives outside the row build so it
     /// survives poll-driven rebuilds.
     pub expanded: Signal<HashSet<u64>>,
+    /// JSON args buffer shared by the detail pane's method-invoke controls.
+    pub invoke_arg: Signal<String>,
 }
 
 /// Walk the tree depth-first, emitting one flat row per *visible* node — a
@@ -206,12 +208,106 @@ fn element_detail(snap: &Snapshot, id: u64) -> String {
     out
 }
 
+fn method_signature(method: &Value) -> String {
+    let name = method["name"].as_str().unwrap_or("?");
+    let args: Vec<String> = method["args"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|arg| {
+                    format!(
+                        "{}: {}",
+                        arg["name"].as_str().unwrap_or("?"),
+                        arg["type"].as_str().unwrap_or("?")
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    format!(".{}({})", name, args.join(", "))
+}
+
+/// `true` if the selected element is a `#[component]` root with methods.
+/// Drives the reactive `if` that shows the invoke section.
+fn linked_component_present(snap: &Snapshot, selected: Option<u64>) -> bool {
+    selected
+        .map(|eid| {
+            snap.components
+                .iter()
+                .any(|c| c["element_id"].as_u64() == Some(eid))
+        })
+        .unwrap_or(false)
+}
+
+/// The invoke section for the selected element's linked component: one row
+/// per method (an Invoke button + signature), plus a shared JSON args field
+/// when any method takes arguments. Rebuilt by the enclosing reactive `if`
+/// whenever the selection (or snapshot) changes.
+fn method_invoke_section(
+    snapshot: Signal<Snapshot>,
+    selected: Signal<Option<u64>>,
+    arg_json: Signal<String>,
+) -> Element {
+    let snap = snapshot.get();
+    let comp = selected.get().and_then(|eid| {
+        snap.components
+            .iter()
+            .find(|c| c["element_id"].as_u64() == Some(eid))
+            .cloned()
+    });
+
+    let mut kids: Vec<Element> = Vec::new();
+    if let Some(c) = comp {
+        let id = c["instance_id"].as_u64().unwrap_or(0);
+        let name = c["name"].as_str().unwrap_or("?").to_string();
+        kids.push(ui! { Typography(content = format!("Methods · {name}"), kind = typography_kind::Overline) });
+
+        let methods = c["methods"].as_array().cloned().unwrap_or_default();
+        if methods.is_empty() {
+            kids.push(text("(this component exposes no methods)").into_element());
+        }
+        let mut any_args = false;
+        for m in &methods {
+            let mname = m["name"].as_str().unwrap_or("?").to_string();
+            let has_args = m["args"].as_array().map(|a| !a.is_empty()).unwrap_or(false);
+            any_args |= has_args;
+            let sig = method_signature(m);
+            let on_invoke: Rc<dyn Fn()> = Rc::new(move || {
+                let args: Value = if has_args {
+                    serde_json::from_str(arg_json.get().trim()).unwrap_or_else(|_| json!({}))
+                } else {
+                    json!({})
+                };
+                client_action(
+                    "invoke_method",
+                    json!({ "instance_id": id, "method": mname, "args": args }),
+                );
+            });
+            kids.push(ui! {
+                Stack(axis = StackAxis::Row, align = StackAlign::Center, gap = StackGap::Sm) {
+                    Button(label = "Invoke".to_string(), on_click = on_invoke)
+                    text(sig).into_element()
+                }
+            });
+        }
+        if any_args {
+            kids.push(
+                text_input(arg_json, move |v| arg_json.set(v))
+                    .placeholder("args JSON, e.g. {\"n\": 5}".to_string())
+                    .into_element(),
+            );
+        }
+    }
+
+    ui! { Stack(gap = StackGap::Xs) { kids } }
+}
+
 /// Master/detail element inspector. Left: a collapsible, selectable tree.
-/// Right: the selected element's details (method invocation is a later
-/// pass — surfaced here as a placeholder).
+/// Right: the selected element's details and, when it's a `#[component]`
+/// root, its invokable methods.
 #[component]
 pub fn ElementsPanel(props: ElementsPanelProps) -> Element {
-    let ElementsPanelProps { snapshot, selected, expanded } = props;
+    let ElementsPanelProps { snapshot, selected, expanded, invoke_arg } = props;
 
     // Visible rows — recompute on tree / expand / selection change.
     let rows: Signal<Vec<Value>> = memo(move || {
@@ -242,7 +338,11 @@ pub fn ElementsPanel(props: ElementsPanelProps) -> Element {
                 Stack(gap = StackGap::Sm) {
                     Typography(content = "Element", kind = typography_kind::H3)
                     detail
-                    Typography(content = "Method invocation — coming soon", kind = typography_kind::Caption)
+                    // Methods appear only when the selected element is a
+                    // `#[component]` root the framework linked to an instance.
+                    if linked_component_present(&snapshot.get(), selected.get()) {
+                        method_invoke_section(snapshot, selected, invoke_arg)
+                    }
                 }
             }
         }

@@ -186,6 +186,7 @@ fn inspector_page(snapshot: Signal<Snapshot>, nav: Ref<StackHandle>) -> Element 
     let sel_node: Signal<Option<u64>> = signal!(None);
     let expanded: Signal<HashSet<u64>> = signal!(HashSet::new());
     let log_filter: Signal<String> = signal!(String::new());
+    let invoke_arg: Signal<String> = signal!(String::new());
 
     let header = text(move || format::header(&snapshot.get())).into_element();
 
@@ -205,6 +206,7 @@ fn inspector_page(snapshot: Signal<Snapshot>, nav: Ref<StackHandle>) -> Element 
             sel_node = sel_node,
             expanded = expanded,
             log_filter = log_filter,
+            invoke_arg = invoke_arg,
         )
     };
 
@@ -229,6 +231,7 @@ struct InspectorBodyProps {
     sel_node: Signal<Option<u64>>,
     expanded: Signal<HashSet<u64>>,
     log_filter: Signal<String>,
+    invoke_arg: Signal<String>,
 }
 
 /// Reactive tab switch. The scrutinee reads `tab.get()`, so the `ui!`
@@ -236,7 +239,7 @@ struct InspectorBodyProps {
 /// arm whenever the tab changes. Patterns use guards on the bound `&usize`.
 #[component]
 fn InspectorBody(props: InspectorBodyProps) -> Element {
-    let InspectorBodyProps { snapshot, tab, sel_node, expanded, log_filter } = props;
+    let InspectorBodyProps { snapshot, tab, sel_node, expanded, log_filter, invoke_arg } = props;
     ui! {
         match tab.get() {
             n if *n == 1 => {
@@ -246,7 +249,7 @@ fn InspectorBody(props: InspectorBodyProps) -> Element {
                 StatsPanel(snapshot = snapshot)
             }
             _ => {
-                ElementsPanel(snapshot = snapshot, selected = sel_node, expanded = expanded)
+                ElementsPanel(snapshot = snapshot, selected = sel_node, expanded = expanded, invoke_arg = invoke_arg)
             }
         }
     }

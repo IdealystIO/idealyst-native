@@ -51,6 +51,52 @@ thread_local! {
     static COMPONENTS: RefCell<HashMap<ComponentInstanceId, ComponentEntry>> =
         RefCell::new(HashMap::new());
     static NEXT_ID: RefCell<u32> = const { RefCell::new(1) };
+
+    /// `ComponentInstanceId → ElementId`: the robot element a component
+    /// instance renders as (its root primitive). Populated during the walk:
+    /// the `#[component]` macro wraps a methods-bearing component's root in
+    /// `Element::Component { instance, .. }`, the walker unwraps it and arms
+    /// [`set_pending_component_link`], and the next element registered (the
+    /// root primitive) consumes it via [`take_pending_component_link`] +
+    /// [`link_component_element`]. Lets the inspector map a selected element
+    /// to the component whose methods it can invoke.
+    static ELEMENT_LINKS: RefCell<HashMap<ComponentInstanceId, super::ElementId>> =
+        RefCell::new(HashMap::new());
+
+    /// Set by the walker when it unwraps an `Element::Component`; consumed by
+    /// the very next robot registration (the component's root primitive).
+    static PENDING_LINK: std::cell::Cell<Option<ComponentInstanceId>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Arm the link: the next robot-registered element is `instance`'s root.
+pub(crate) fn set_pending_component_link(instance: ComponentInstanceId) {
+    PENDING_LINK.with(|p| p.set(Some(instance)));
+}
+
+/// Take (and clear) the pending component link, if any. Cleared so only the
+/// first registration after arming — the root primitive — links.
+pub(crate) fn take_pending_component_link() -> Option<ComponentInstanceId> {
+    PENDING_LINK.with(|p| p.take())
+}
+
+/// Record that component `instance` renders as element `element`.
+pub(crate) fn link_component_element(instance: ComponentInstanceId, element: super::ElementId) {
+    ELEMENT_LINKS.with(|m| {
+        m.borrow_mut().insert(instance, element);
+    });
+}
+
+/// The component instance rendered as `element`, if any (reverse lookup).
+/// Used by the bridge so the inspector can resolve a selected element to its
+/// invokable component.
+pub fn component_for_element(element: super::ElementId) -> Option<ComponentInstanceId> {
+    ELEMENT_LINKS.with(|m| {
+        m.borrow()
+            .iter()
+            .find(|(_, el)| **el == element)
+            .map(|(id, _)| *id)
+    })
 }
 
 fn next_id() -> ComponentInstanceId {
@@ -79,6 +125,11 @@ impl Drop for ComponentRegistration {
         COMPONENTS.with(|c| {
             c.borrow_mut().remove(&self.id);
         });
+        // Drop the element link in lockstep so a recycled element id can't
+        // resolve to a dead component instance.
+        ELEMENT_LINKS.with(|m| {
+            m.borrow_mut().remove(&self.id);
+        });
     }
 }
 
@@ -97,22 +148,26 @@ pub struct ComponentSnapshot {
     pub id: ComponentInstanceId,
     pub name: &'static str,
     pub methods: Vec<(&'static str, &'static [(&'static str, &'static str)])>,
+    /// The robot element this component renders as (its root primitive), if
+    /// the link was established during the walk. Lets a UI map a selected
+    /// element to its invokable component.
+    pub element_id: Option<super::ElementId>,
 }
 
 pub fn list_components() -> Vec<ComponentSnapshot> {
     COMPONENTS.with(|c| {
-        c.borrow()
-            .iter()
-            .map(|(id, entry)| ComponentSnapshot {
-                id: *id,
-                name: entry.name,
-                methods: entry
-                    .methods
-                    .iter()
-                    .map(|m| (m.name, m.args))
-                    .collect(),
-            })
-            .collect()
+        ELEMENT_LINKS.with(|links| {
+            let links = links.borrow();
+            c.borrow()
+                .iter()
+                .map(|(id, entry)| ComponentSnapshot {
+                    id: *id,
+                    name: entry.name,
+                    methods: entry.methods.iter().map(|m| (m.name, m.args)).collect(),
+                    element_id: links.get(id).copied(),
+                })
+                .collect()
+        })
     })
 }
 
@@ -153,4 +208,45 @@ pub fn invoke_method(
         Ok::<_, String>(m.invoke.clone())
     })?;
     invoker(args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The element↔component link the inspector relies on: arm a pending
+    /// link (walker unwrap of `Element::Component`), have the next
+    /// registration consume it (the root primitive), then resolve both
+    /// directions + surface it via `list_components`. Dropping the
+    /// registration must drop the link in lockstep so a recycled element id
+    /// can't resolve to a dead instance.
+    #[test]
+    fn element_component_link_round_trips() {
+        let reg = register_component("Counter", Vec::new());
+        let id = reg.id();
+        let element = super::super::ElementId(4242);
+
+        // Walker sequence: arm, then the root primitive's registration takes
+        // it (and clears it, so only the root links — not descendants).
+        set_pending_component_link(id);
+        assert_eq!(take_pending_component_link(), Some(id));
+        assert_eq!(
+            take_pending_component_link(),
+            None,
+            "pending link is one-shot — descendants must not re-link"
+        );
+        link_component_element(id, element);
+
+        assert_eq!(component_for_element(element), Some(id), "reverse lookup");
+        let snap = list_components();
+        let entry = snap.iter().find(|s| s.id == id).expect("registered");
+        assert_eq!(entry.element_id, Some(element), "surfaced in list_components");
+
+        drop(reg);
+        assert_eq!(
+            component_for_element(element),
+            None,
+            "link dropped with the component registration"
+        );
+    }
 }

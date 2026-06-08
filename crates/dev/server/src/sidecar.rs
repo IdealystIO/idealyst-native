@@ -806,6 +806,13 @@ mod runtime {
     // used unconditionally by the `ScreenshotResult` arm; the capture +
     // encode helpers only exist under the `screenshot` feature.
     use super::fulfill_shot_request;
+    // Device-frame request correlation + session-sink registration also
+    // live in the parent module (process-global state shared with the
+    // stdin reader): the `DeviceFrameResult` arm fulfills a blocked
+    // `device_frame` verb, and `run_session_thread` records the sink so
+    // `device_frame_over_wire` can reach the client. Both are
+    // unconditional in this module (not screenshot-gated).
+    use super::{fulfill_frame_request, set_session_sink};
     #[cfg(feature = "screenshot")]
     use super::{capture_via_client, screenshot_json};
     use crate::WireRecordingBackend;

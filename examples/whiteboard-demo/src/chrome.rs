@@ -47,11 +47,12 @@ const RECORD_RIGHT: f32 = 28.0; // record dock when recording: right
 /// padding each side (188 inner); 184 leaves a hair of slack. Fixed (not `100%`)
 /// because the thumbnail's draw scales strokes by `THUMB_W / stage_width`, so it
 /// needs a known pixel width — the `Fn(&mut Scene)` painter isn't told its size.
-const LAYERS_THUMB_W: f32 = 184.0;
+/// Small on purpose — these are quick previews, not editable surfaces.
+const LAYERS_THUMB_W: f32 = 96.0;
 
 /// Minimum height (px) for the Layers scroll region, so on a very short viewport
 /// the list still shows a couple of thumbnails before scrolling.
-const LAYERS_SCROLL_MIN_H: f32 = 220.0;
+const LAYERS_SCROLL_MIN_H: f32 = 160.0;
 
 /// Build the board's floating chrome as in-tree sibling overlays, in paint
 /// order: `[rec_indicator, palette, tool_rail, rec_dock, settings_btn]`. A plain
@@ -680,8 +681,8 @@ pub fn LayersPopover(props: &LayersPopoverProps) -> Element {
                 styled(
                     StyleRules {
                         flex_direction: Some(FlexDirection::Column),
-                        width: Some(Length::Px(204.0).into()),
-                        gap: Some(Length::Px(4.0).into()),
+                        width: Some(Length::Px(176.0).into()),
+                        gap: Some(Length::Px(6.0).into()),
                         padding_top: Some(Length::Px(8.0).into()),
                         padding_bottom: Some(Length::Px(8.0).into()),
                         padding_left: Some(Length::Px(8.0).into()),
@@ -694,17 +695,34 @@ pub fn LayersPopover(props: &LayersPopoverProps) -> Element {
             });
             let list_style = static_style(StyleRules {
                 flex_direction: Some(FlexDirection::Column),
-                gap: Some(Length::Px(4.0).into()),
+                // Center the small thumbnails in the panel's width.
+                align_items: Some(AlignItems::Center),
+                gap: Some(Length::Px(6.0).into()),
                 ..Default::default()
             });
-            // Cap the scrolling region to a fraction of the viewport so the
-            // centered popover never grows past the screen; the rows scroll
-            // beyond that. Reactive on viewport so rotation / resize re-clamps.
-            let scroll_style = reactive_style(|| {
+            // The scroll region needs a DEFINITE height pinned via min_height ==
+            // max_height (NOT `height`): the macOS scroll_view's Taffy node is
+            // marked `Overflow::Scroll`, which sizes it FROM ITS PARENT — and in
+            // this absolutely-positioned, content-sized popover the parent height
+            // is indefinite, so a plain `height` is ignored and the scroll view
+            // collapses to 0 (nothing shows). Pinning min==max forces a concrete
+            // frame regardless (the catalog-docs `ResultsScroll` pattern). We
+            // compute a content-fit height (cards + gaps) capped at a fraction of
+            // the viewport, so the popover grows with the canvases then scrolls.
+            let aspect = s.aspect;
+            let scroll_style = reactive_style(move || {
+                let n = canvas_ids.get().len() as f32;
+                let (aw, ah) = aspect.get();
+                let card_h = LAYERS_THUMB_W * (ah.max(1) as f32 / aw.max(1) as f32);
+                // `card_h` per card + 6px gaps between (mirrors `list_style.gap`).
+                let content_h = n * card_h + (n - 1.0).max(0.0) * 6.0;
                 let vh = viewport_size().get().height;
-                let max_h = (vh * 0.6).max(LAYERS_SCROLL_MIN_H);
+                let cap = (vh * 0.6).max(LAYERS_SCROLL_MIN_H);
+                // +2 slack so a non-scrolling list never clips its last card.
+                let h = (content_h + 2.0).min(cap);
                 StyleRules {
-                    max_height: Some(Length::Px(max_h).into()),
+                    min_height: Some(Length::Px(h).into()),
+                    max_height: Some(Length::Px(h).into()),
                     ..Default::default()
                 }
             });

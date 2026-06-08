@@ -60,8 +60,12 @@ pub mod screenshot;
 pub mod watch;
 
 pub use components::{
-    invoke_method, list_components, register_component, ComponentInstanceId,
+    component_for_element, invoke_method, list_components, register_component, ComponentInstanceId,
     ComponentRegistration, ComponentSnapshot, Method,
+};
+// Walk-time linkage helpers — crate-internal (the walker arms/consumes them).
+pub(crate) use components::{
+    link_component_element, set_pending_component_link, take_pending_component_link,
 };
 pub use watch::watch_signal;
 

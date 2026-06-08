@@ -255,7 +255,15 @@ fn remove_existing(layer: &NSObject) {
     if sublayers_ptr.is_null() {
         return;
     }
+    // `[CALayer sublayers]` returns a *live* `CALayerArray` proxy, not a
+    // snapshot: calling `removeFromSuperlayer` inside an index walk shrinks
+    // it underneath us, so a later `objectAtIndex: i` runs past the new end
+    // and AppKit aborts with `-[CALayerArray objectAtIndex:] out of bounds`.
+    // This fires on every gradient *re-apply* (reactive re-render) where the
+    // gradient sublayer is followed by any other sublayer. Collect the
+    // matching layers in one read-only pass, then remove them.
     let count: usize = unsafe { msg_send![sublayers_ptr, count] };
+    let mut doomed: Vec<*mut NSObject> = Vec::new();
     for i in 0..count {
         let sub_ptr: *mut NSObject = unsafe { msg_send![sublayers_ptr, objectAtIndex: i] };
         if sub_ptr.is_null() {
@@ -267,8 +275,80 @@ fn remove_existing(layer: &NSObject) {
         }
         let name_ref = unsafe { &*name_ptr };
         if name_ref.to_string() == "idealyst_gradient" {
-            let _: () = unsafe { msg_send![sub_ptr, removeFromSuperlayer] };
+            doomed.push(sub_ptr);
         }
+    }
+    for sub_ptr in doomed {
+        let _: () = unsafe { msg_send![sub_ptr, removeFromSuperlayer] };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! `remove_existing` itself can't be unit-tested without a live AppKit
+    //! layer tree, so these tests model the one property that caused the
+    //! crash: `[CALayer sublayers]` is a *live* array whose `objectAtIndex:`
+    //! reads current contents and whose `removeFromSuperlayer` shrinks it in
+    //! place. The bug class is "mutate while index-walking that live array";
+    //! the fix is the two-phase "collect every match, then remove."
+
+    /// Stand-in for the live `CALayerArray` proxy. `name_at` panics on an
+    /// out-of-range index exactly as `-[CALayerArray objectAtIndex:]` aborts.
+    struct LiveLayerArray {
+        names: Vec<&'static str>,
+    }
+
+    impl LiveLayerArray {
+        fn count(&self) -> usize {
+            self.names.len()
+        }
+        fn name_at(&self, i: usize) -> &'static str {
+            self.names[i]
+        }
+        fn remove_first_gradient(&mut self) {
+            if let Some(p) = self.names.iter().position(|n| *n == "idealyst_gradient") {
+                self.names.remove(p);
+            }
+        }
+    }
+
+    /// The original one-phase walk: snapshot `count`, then remove while
+    /// indexing. When a removed gradient is followed by another sublayer,
+    /// the array shrinks and the next `objectAtIndex:` runs past the end.
+    #[test]
+    #[should_panic]
+    fn one_phase_walk_indexes_past_shrunk_array() {
+        let mut arr = LiveLayerArray {
+            names: vec!["idealyst_gradient", "author_content"],
+        };
+        let count = arr.count();
+        for i in 0..count {
+            if arr.name_at(i) == "idealyst_gradient" {
+                arr.remove_first_gradient();
+            }
+        }
+    }
+
+    /// The two-phase fix: collect all matches in a read-only pass, then
+    /// remove. The removal phase never re-indexes the shrinking array, so
+    /// no out-of-bounds access occurs and every gradient layer is removed.
+    #[test]
+    fn two_phase_collect_then_remove_is_safe_and_complete() {
+        let mut arr = LiveLayerArray {
+            names: vec!["idealyst_gradient", "author_content", "idealyst_gradient"],
+        };
+        let count = arr.count();
+        let mut doomed = Vec::new();
+        for i in 0..count {
+            if arr.name_at(i) == "idealyst_gradient" {
+                doomed.push(i);
+            }
+        }
+        assert_eq!(doomed, vec![0, 2]);
+        for _ in &doomed {
+            arr.remove_first_gradient();
+        }
+        assert_eq!(arr.names, vec!["author_content"]);
     }
 }
 

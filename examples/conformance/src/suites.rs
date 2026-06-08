@@ -17,6 +17,7 @@ pub(crate) fn run_all() {
         modal_suite(),
         navigation_suite(),
         idea_ui_suite(),
+        component_methods_suite(),
     ]);
 }
 
@@ -157,5 +158,58 @@ fn navigation_suite() -> robot_e2e::Suite {
             .act(|p: &Page| p.get_by_test_id("back").click())
             .poll(|p: &Page| expect(&p.get_by_test_id("detail-marker")).not_to_be_visible())
             .build()],
+    )
+}
+
+/// `methods! { … }` invocation over the robot surface — the same
+/// `list_components` → `invoke_method` path the MCP server and the Inspector
+/// use. Also asserts the element↔component link the macro/walker establish
+/// (so the Inspector can resolve a selected element to its methods).
+fn component_methods_suite() -> robot_e2e::Suite {
+    use runtime_core::robot::{invoke_method, list_components};
+
+    suite(
+        "component methods",
+        vec![test(
+            "list_components + invoke_method drive a methods! component; element link resolves",
+            |page: &Page| {
+                // Locate the live instance and confirm the walker linked it to
+                // its root element id (what the Inspector resolves a selection
+                // against).
+                let comps = list_components();
+                let counter = comps
+                    .iter()
+                    .find(|c| c.name == "MethodCounter")
+                    .expect("MethodCounter registered its methods");
+                assert!(
+                    counter.element_id.is_some(),
+                    "walker linked the component to its root element",
+                );
+
+                // Starts at the mounted `initial = 10`.
+                expect(&page.get_by_test_id("method-counter-val")).to_have_text("methods: 10")?;
+
+                // increment() — no args (the inspector's easy manual case).
+                invoke_method(counter.id, "increment", &runtime_core::__serde_json::json!({}))
+                    .expect("increment()");
+                expect(&page.get_by_test_id("method-counter-val")).to_have_text("methods: 11")?;
+
+                // bump_by(5) — args deserialized from JSON, same as the bridge.
+                invoke_method(
+                    counter.id,
+                    "bump_by",
+                    &runtime_core::__serde_json::json!({ "n": 5 }),
+                )
+                .expect("bump_by(5)");
+                expect(&page.get_by_test_id("method-counter-val")).to_have_text("methods: 16")?;
+
+                // reset() — no args; visible because we started non-zero.
+                invoke_method(counter.id, "reset", &runtime_core::__serde_json::json!({}))
+                    .expect("reset()");
+                expect(&page.get_by_test_id("method-counter-val")).to_have_text("methods: 0")?;
+
+                Ok(())
+            },
+        )],
     )
 }

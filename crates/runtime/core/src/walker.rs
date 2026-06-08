@@ -378,6 +378,17 @@ pub(super) fn build_inner<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     node: Element,
 ) -> B::Node {
+    // Robot: a `#[component]` with `methods!` wraps its root primitive in
+    // `Element::Component` (via `__component_root`). Unwrap it BEFORE anything
+    // else sees it — arm the element↔component link, then build the real
+    // child. The child's registration (just below, on recursion) consumes the
+    // pending link, mapping the component instance to its root element id.
+    #[cfg(feature = "robot")]
+    if let Element::Component { instance, child } = node {
+        crate::robot::set_pending_component_link(instance);
+        return build_inner(backend, *child);
+    }
+
     // Walker-level timing. Record the kind once on entry; the matching
     // exit fires after the match returns. Tag covers the full subtree
     // build (children inclusive). Each backend create call below
@@ -405,6 +416,11 @@ pub(super) fn build_inner<B: Backend + 'static>(
             // Link child → parent.
             if let Some(pid) = parent {
                 robot::add_child(pid, id);
+            }
+            // If a `#[component]` wrapper armed a pending link, this element
+            // is that component's root primitive — record element↔component.
+            if let Some(instance) = robot::take_pending_component_link() {
+                robot::link_component_element(instance, id);
             }
             // Deregister when this element's owning reactive scope drops.
             // A `when`/`switch`/`each` branch builds inside a fresh
@@ -487,6 +503,12 @@ pub(super) fn build_inner<B: Backend + 'static>(
                  on its own. Wrap it in a View / ScrollView / fragment."
             );
         }
+        // Unwrapped at the top of `build_inner` (early return); never reaches
+        // dispatch. Arm exists only for match exhaustiveness.
+        #[cfg(feature = "robot")]
+        Element::Component { .. } => unreachable!(
+            "Element::Component is unwrapped before dispatch in build_inner"
+        ),
     };
     let result = dispatcher(backend, node);
 

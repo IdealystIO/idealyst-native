@@ -811,10 +811,15 @@ fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String
                             )
                         })
                         .collect();
+                    let element_id = match s.element_id {
+                        Some(eid) => eid.0.to_string(),
+                        None => "null".to_string(),
+                    };
                     format!(
-                        "{{\"instance_id\":{},\"name\":{},\"methods\":[{}]}}",
+                        "{{\"instance_id\":{},\"name\":{},\"element_id\":{},\"methods\":[{}]}}",
                         s.id.0,
                         serde_json::to_string(s.name).unwrap(),
+                        element_id,
                         methods.join(",")
                     )
                 })

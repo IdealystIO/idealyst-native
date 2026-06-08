@@ -426,13 +426,28 @@ fn rewrite_body(
     // the scope owns the slot and frees it (and the captured guard)
     // on scope drop. That ties the component's registration lifetime
     // to its mounted lifetime.
+    // Capture the instance id BEFORE the keepalive moves the registration
+    // into its Effect closure. Used by `__component_root` to tag the
+    // component's root element so the robot walker links element↔component
+    // (for the inspector's "select an element → call its methods"). `Copy`,
+    // so capturing it doesn't disturb the move into the keepalive.
+    let instance_id_stmt: Stmt = syn::parse_quote! {
+        let __robot_component_instance = __robot_component_registration.id();
+    };
+    // The Effect's closure captures the registration guard by move.
+    // While a `Scope` is active (the build walker runs each Element
+    // inside one), the returned `Effect` handle is a no-op on drop —
+    // the scope owns the slot and frees it (and the captured guard)
+    // on scope drop. That ties the component's registration lifetime
+    // to its mounted lifetime.
     let keepalive_stmt: Stmt = syn::parse_quote! {
         let _ = ::runtime_core::Effect::new(move || {
             let _ = &__robot_component_registration;
         });
     };
     item_fn.block.stmts.insert(idx + 1, registration_stmt);
-    item_fn.block.stmts.insert(idx + 2, keepalive_stmt);
+    item_fn.block.stmts.insert(idx + 2, instance_id_stmt);
+    item_fn.block.stmts.insert(idx + 3, keepalive_stmt);
 
     // Now wrap the trailing expression with Bindable::new.
     //
@@ -449,7 +464,10 @@ fn rewrite_body(
             let inner = std::mem::replace(expr, syn::parse_quote!(()));
             *expr = syn::parse_quote! {
                 ::runtime_core::Bindable::new(
-                    ::runtime_core::IntoElement::into_element(#inner),
+                    ::runtime_core::__component_root(
+                        ::runtime_core::IntoElement::into_element(#inner),
+                        __robot_component_instance,
+                    ),
                     __component_handle,
                 )
             };
@@ -463,7 +481,10 @@ fn rewrite_body(
             *last = Stmt::Expr(
                 syn::parse_quote! {
                     ::runtime_core::Bindable::new(
-                        ::runtime_core::IntoElement::into_element(#inner),
+                        ::runtime_core::__component_root(
+                            ::runtime_core::IntoElement::into_element(#inner),
+                            __robot_component_instance,
+                        ),
                         __component_handle,
                     )
                 },

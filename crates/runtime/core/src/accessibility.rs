@@ -471,6 +471,9 @@ pub fn primitive_kind(p: &crate::Element) -> Option<PrimitiveKind> {
         | Element::Switch { .. }
         | Element::Each { .. }
         | Element::Repeat { .. } => None,
+        // Robot wrapper — transparent; unwrapped before this is consulted.
+        #[cfg(feature = "robot")]
+        Element::Component { .. } => None,
     }
 }
 

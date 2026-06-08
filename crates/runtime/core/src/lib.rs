@@ -109,8 +109,20 @@ pub mod robot {
         pub invoke: Rc<dyn Fn(&serde_json::Value) -> Result<(), String>>,
     }
 
+    /// Stub mirror of the real `ComponentInstanceId` so the macro's
+    /// `__component_root(.., registration.id())` call type-checks.
+    #[derive(Copy, Clone)]
+    pub struct ComponentInstanceId(pub u32);
+
     /// Inert registration guard — no registry entry exists to remove.
     pub struct ComponentRegistration;
+
+    impl ComponentRegistration {
+        /// Stub id — never used (the no-op `__component_root` ignores it).
+        pub fn id(&self) -> ComponentInstanceId {
+            ComponentInstanceId(0)
+        }
+    }
 
     /// No-op when the `robot` feature is off. The real implementation
     /// inserts into the thread-local component registry the bridge reads.
@@ -120,6 +132,28 @@ pub mod robot {
     ) -> ComponentRegistration {
         ComponentRegistration
     }
+}
+
+/// Tag a `#[component]`'s root primitive with its component instance so the
+/// robot walker can link element↔component (for the inspector's "select an
+/// element → call its methods"). Called UNCONDITIONALLY by the `#[component]`
+/// macro for `methods!`-bearing components — cfg-selected like
+/// [`robot::register_component`]: a transparent `Element::Component` wrapper
+/// when `robot` is on, an identity no-op (zero overhead, no wrapper) when off.
+#[cfg(feature = "robot")]
+#[doc(hidden)]
+pub fn __component_root(child: Element, instance: robot::ComponentInstanceId) -> Element {
+    Element::Component {
+        instance,
+        child: Box::new(child),
+    }
+}
+
+#[cfg(not(feature = "robot"))]
+#[doc(hidden)]
+#[inline(always)]
+pub fn __component_root(child: Element, _instance: robot::ComponentInstanceId) -> Element {
+    child
 }
 
 /// Re-export of `serde_json` for use by the `#[component]` macro's

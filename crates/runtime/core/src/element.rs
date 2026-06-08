@@ -715,6 +715,20 @@ pub enum Element {
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,
     },
+    /// Robot-only transparent wrapper tagging `child` (a `#[component]`'s
+    /// root primitive) with the component instance it renders. The
+    /// `#[component]` macro emits it (via `__component_root`) for any
+    /// component with a `methods! { … }` block; the walker unwraps it
+    /// BEFORE dispatch — arming a pending element↔component link the child's
+    /// registration consumes — so no backend or other `Element` consumer
+    /// ever sees it. Lets the inspector resolve a selected element to the
+    /// component whose methods it can invoke. See
+    /// [`robot::set_pending_component_link`](crate::robot).
+    #[cfg(feature = "robot")]
+    Component {
+        instance: crate::robot::ComponentInstanceId,
+        child: Box<Element>,
+    },
 }
 
 impl Element {
@@ -772,6 +786,15 @@ impl Element {
     /// style. The style argument can be either a `StyleApplication`
     /// (static) or a closure returning one (reactive).
     pub fn with_style<S: IntoStyleSource>(mut self, style: S) -> Self {
+        // Robot wrapper is transparent: style its wrapped root primitive so
+        // `Component().with_style(..)` lands on the real element, not the tag.
+        #[cfg(feature = "robot")]
+        if let Element::Component { instance, child } = self {
+            return Element::Component {
+                instance,
+                child: Box::new(child.with_style(style)),
+            };
+        }
         let src = style.into_style_source();
         match &mut self {
             Element::View { style, .. }
@@ -811,6 +834,10 @@ impl Element {
                 // animations on its child; styling belongs on the
                 // child View, not on the Presence node. No-op.
             }
+            // Handled by the early `if let` return above; arm exists only for
+            // match exhaustiveness.
+            #[cfg(feature = "robot")]
+            Element::Component { .. } => unreachable!(),
         }
         self
     }

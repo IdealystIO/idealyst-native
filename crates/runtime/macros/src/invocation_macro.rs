@@ -107,7 +107,12 @@ pub(crate) fn generate_build_impl(item_fn: &ItemFn, attr: &ComponentAttr) -> Tok
         #[automatically_derived]
         impl ::runtime_core::BuildElement for #path {
             fn build(self) -> ::runtime_core::Element {
-                #fn_name(#amp self)
+                // Coerce via `IntoElement` so a component returning a richer
+                // type than bare `Element` still satisfies `-> Element`:
+                // identity for `Element`, `.primitive` for `Bound`/`Bindable`
+                // (a `methods!` component returns `Bindable<Handle>`). The tag
+                // form drops the handle — use the fn-call form to `.bind` it.
+                ::runtime_core::IntoElement::into_element(#fn_name(#amp self))
             }
             #defaults_method
         }
@@ -134,7 +139,9 @@ fn emit_no_args_impl(
         #[automatically_derived]
         impl ::runtime_core::BuildElement for #fn_name {
             fn build(self) -> ::runtime_core::Element {
-                #fn_name()
+                // See the props-bearing impl: coerce so `Bound`/`Bindable`
+                // returns satisfy `-> Element`.
+                ::runtime_core::IntoElement::into_element(#fn_name())
             }
         }
     }

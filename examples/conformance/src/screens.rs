@@ -19,8 +19,8 @@ use runtime_core::primitives::activity_indicator::activity_indicator;
 use runtime_core::primitives::scroll_view::scroll_view;
 use runtime_core::primitives::slider::slider;
 use runtime_core::{
-    button, component, icon, pressable, signal, text, text_input, toggle, ui, view, when, Element,
-    IntoElement, Ref, Signal,
+    button, component, icon, pressable, signal, text, text_input, toggle, ui, view, when,
+    Bindable, Element, IntoElement, Ref, Signal,
 };
 use stack_navigator::StackHandle;
 
@@ -141,6 +141,12 @@ pub(crate) fn root_page(state: State, nav: Ref<StackHandle>) -> Element {
         confirmed,
         modal_branch,
         ui! { ReflowBox() },
+        // A `methods!`-bearing component: exercises robot/inspector method
+        // invocation (`bump_by` / `reset`) + the element↔component link. The
+        // `ui!` tag form works now that `BuildElement::build` coerces a
+        // `Bindable<Handle>` return via `IntoElement` (the handle is dropped —
+        // the inspector invokes over the bridge by instance id, not a `Ref`).
+        ui! { MethodCounter(initial = 10i32) },
         button("Push detail", push).test_id("push-detail").into_element(),
         button("Components", goto_components)
             .test_id("goto-components")
@@ -329,4 +335,42 @@ pub(crate) fn components_page(nav: Ref<StackHandle>) -> Element {
         ui! { Button(label = "Back".to_string(), on_click = on_back, test_id = Some("comp-back")) },
     ];
     ui! { Stack(gap = StackGap::Md, padding = StackPadding::Lg) { children } }
+}
+
+// ---------------------------------------------------------------------------
+// MethodCounter — a `methods!`-bearing component for exercising component
+// method invocation (robot bridge + the inspector's "select element → call
+// its methods"). The `#[component]` macro registers the methods AND links
+// this instance to its root element id, so selecting the `method-counter`
+// view in the inspector surfaces `bump_by` / `reset` as Invoke buttons.
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+pub(crate) struct MethodCounterProps {
+    pub initial: i32,
+}
+
+#[component]
+pub(crate) fn MethodCounter(props: &MethodCounterProps) -> Bindable<MethodCounterHandle> {
+    let value = signal!(props.initial);
+    methods! {
+        // No-arg — the easy manual test: Invoke it and the value visibly
+        // ticks up (no JSON args to type). Watch the value in the TARGET
+        // app window (it's this component's own label), not the inspector.
+        fn increment(&self) {
+            value.update(|v| *v += 1);
+        }
+        fn reset(&self) {
+            value.set(0);
+        }
+        fn bump_by(&self, n: i32) {
+            value.update(|v| *v += n);
+        }
+    }
+    // Builder-form tail (reliable `test_id` under `runtime-core/robot`); the
+    // `#[component]` macro wraps this root view in the instance link.
+    let label = text(format!("methods: {}", value.get()))
+        .test_id("method-counter-val")
+        .into_element();
+    view(vec![label]).test_id("method-counter")
 }
