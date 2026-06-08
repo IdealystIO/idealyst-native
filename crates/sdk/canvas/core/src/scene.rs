@@ -570,55 +570,116 @@ impl ImageSource {
 }
 
 // ============================================================================
-// Circle batch
+// Shape batch
 // ============================================================================
 
-/// One flat-colored circle in a [`DrawOp::Circles`] batch — center, radius,
-/// and a solid fill color, in logical pixels.
+/// One flat-colored analytic shape in a [`DrawOp::Shapes`] batch: a **rounded
+/// box** defined by center, half-extents, corner radius, and a solid color, in
+/// logical pixels.
 ///
-/// A batch exists so a renderer can draw a grid/scatter of many circles in a
-/// single GPU-instanced, analytic pass instead of tessellating one cubic-Bézier
-/// path per circle (the per-path flatten/bin cost is what makes a large grid of
-/// [`Path::circle`] fills slow). The trade is per-circle paint flexibility:
-/// the batch carries only a solid color. For gradient-filled or stroked
-/// circles, emit individual [`Fill`](DrawOp::Fill) / [`Stroke`](DrawOp::Stroke)
-/// ops with [`Path::circle`] instead.
+/// A rounded box is deliberately general — with the right radius it is a
+/// rectangle (`radius = 0`), a rounded rectangle, a circle (`hw == hh`,
+/// `radius = hw`), or a pill (`radius = min(hw, hh)`). The named constructors
+/// ([`circle`](Self::circle), [`rect`](Self::rect),
+/// [`rounded_rect`](Self::rounded_rect), [`pill`](Self::pill)) cover these
+/// cases, and a single GPU SDF (`sd_round_box`) rasterizes all of them, so one
+/// instanced pass draws a mixed batch. (More SDF families — triangle, polygon —
+/// can be added later behind a shape-type discriminant without changing the
+/// batch's pipeline or wire shape.)
+///
+/// A batch exists so a renderer can draw a grid/scatter of many shapes in a
+/// single GPU-instanced, analytic pass instead of tessellating one path per
+/// shape (the per-path flatten/bin cost is what makes a large grid of
+/// [`Path::circle`]/[`Path::rounded_rect`] fills slow). The trade is per-shape
+/// paint flexibility: the batch carries only a solid color. For gradient-filled
+/// or stroked shapes, emit individual [`Fill`](DrawOp::Fill) /
+/// [`Stroke`](DrawOp::Stroke) ops instead.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Circle {
+pub struct ShapeInstance {
     /// Center x.
     pub cx: f32,
     /// Center y.
     pub cy: f32,
-    /// Radius.
-    pub r: f32,
+    /// Half-width — the box spans `cx - hw ..= cx + hw`.
+    pub hw: f32,
+    /// Half-height — the box spans `cy - hh ..= cy + hh`.
+    pub hh: f32,
+    /// Corner radius. `0` = sharp rectangle; `min(hw, hh)` = fully rounded
+    /// (a circle when `hw == hh`). Clamped to `0..=min(hw, hh)` at rasterization
+    /// (see [`effective_radius`](Self::effective_radius)).
+    pub radius: f32,
     /// Flat fill color. Packed as a single ARGB u32 on the wire (same shim as
     /// every other canvas color).
     #[serde(with = "rgba_argb")]
     pub color: Color,
 }
 
-impl Circle {
-    /// A circle centered at `(cx, cy)` with radius `r`, filled `color`.
-    pub fn new(cx: f32, cy: f32, r: f32, color: impl Into<Color>) -> Self {
-        Self { cx, cy, r, color: color.into() }
+impl ShapeInstance {
+    /// A rounded box centered at `(cx, cy)` with the given half-extents and
+    /// corner `radius`, filled `color`.
+    pub fn new(cx: f32, cy: f32, hw: f32, hh: f32, radius: f32, color: impl Into<Color>) -> Self {
+        Self { cx, cy, hw, hh, radius, color: color.into() }
     }
 
-    /// The equivalent individual [`DrawOp::Fill`] — a [`Path::circle`] filled
-    /// solid with this circle's color, non-zero winding, composited with
-    /// `blend`.
+    /// A circle: equal half-extents `r` with a full corner radius.
+    pub fn circle(cx: f32, cy: f32, r: f32, color: impl Into<Color>) -> Self {
+        Self::new(cx, cy, r, r, r, color)
+    }
+
+    /// A sharp-cornered rectangle from its top-left `(x, y)` and size `w × h`.
+    pub fn rect(x: f32, y: f32, w: f32, h: f32, color: impl Into<Color>) -> Self {
+        Self::new(x + w * 0.5, y + h * 0.5, w * 0.5, h * 0.5, 0.0, color)
+    }
+
+    /// A rounded rectangle from its top-left `(x, y)`, size `w × h`, and corner
+    /// `radius`.
+    pub fn rounded_rect(
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: f32,
+        color: impl Into<Color>,
+    ) -> Self {
+        Self::new(x + w * 0.5, y + h * 0.5, w * 0.5, h * 0.5, radius, color)
+    }
+
+    /// A pill / capsule from its top-left `(x, y)` and size `w × h` — fully
+    /// rounded on the short axis.
+    pub fn pill(x: f32, y: f32, w: f32, h: f32, color: impl Into<Color>) -> Self {
+        let (hw, hh) = (w * 0.5, h * 0.5);
+        Self::new(x + hw, y + hh, hw, hh, hw.min(hh), color)
+    }
+
+    /// The corner radius actually used when rasterizing: `radius` clamped to
+    /// `0..=min(hw, hh)`. Both the GPU SDF pass and the fill-expansion fallback
+    /// use this so they converge on the same geometry.
+    pub fn effective_radius(&self) -> f32 {
+        self.radius.clamp(0.0, self.hw.min(self.hh).max(0.0))
+    }
+
+    /// The equivalent individual [`DrawOp::Fill`] — a path matching this shape,
+    /// filled solid with its color, non-zero winding, composited with `blend`.
     ///
-    /// Renderers without an instanced fast path expand a [`DrawOp::Circles`]
-    /// batch into one of these per circle, **in array order**, so the observable
+    /// Renderers without an instanced fast path expand a [`DrawOp::Shapes`]
+    /// batch into one of these per shape, **in array order**, so the observable
     /// output is identical to authoring the fills by hand — and so every backend
     /// (instanced or not) converges on the same pixels (CLAUDE.md §7). A renderer
     /// *with* an instanced path is free to draw the batch directly, as long as it
     /// matches this expansion's result.
     pub fn to_fill_op(&self, blend: BlendMode) -> DrawOp {
-        DrawOp::Fill {
-            path: Path::circle(self.cx, self.cy, self.r),
-            paint: Paint::solid(self.color).blend(blend),
-            fill_rule: FillRule::NonZero,
-        }
+        let r = self.effective_radius();
+        let (x, y, w, h) = (self.cx - self.hw, self.cy - self.hh, self.hw * 2.0, self.hh * 2.0);
+        let path = if r <= 0.0 {
+            Path::rect(x, y, w, h)
+        } else if self.hw == self.hh && r >= self.hw {
+            // Exact circle — the dedicated cubic-Bézier circle is the canonical
+            // geometry (a full-radius rounded rect approximates it with quads).
+            Path::circle(self.cx, self.cy, self.hw)
+        } else {
+            Path::rounded_rect(x, y, w, h, r)
+        };
+        DrawOp::Fill { path, paint: Paint::solid(self.color).blend(blend), fill_rule: FillRule::NonZero }
     }
 }
 
@@ -711,20 +772,21 @@ pub enum DrawOp {
         /// Composite mode of the layer against the current target.
         blend: BlendMode,
     },
-    /// Draw a batch of flat-colored circles ([`Circle`]) in one operation.
+    /// Draw a batch of flat-colored analytic shapes ([`ShapeInstance`], each a
+    /// rounded box) in one operation.
     ///
-    /// Semantically equivalent to one [`Fill`](DrawOp::Fill) of
-    /// [`Path::circle`] per entry, **in array order** (see
-    /// [`Circle::to_fill_op`]) — the batch is purely a throughput hint. A
-    /// renderer with a GPU-instanced, analytic-SDF path draws them all in a
-    /// single pass (the fast path for a grid/scatter of many circles); one
-    /// without it expands the batch into the equivalent per-circle fills. Either
-    /// way the pixels match, so the batch never changes *what* is drawn, only how
-    /// fast. The whole batch composites with `blend` against existing content.
-    Circles {
-        /// The circles, in draw order (earlier entries are drawn under later
-        /// ones where they overlap, matching per-circle fill order).
-        circles: Vec<Circle>,
+    /// Semantically equivalent to one [`Fill`](DrawOp::Fill) per entry, **in
+    /// array order** (see [`ShapeInstance::to_fill_op`]) — the batch is purely a
+    /// throughput hint. A renderer with a GPU-instanced, analytic-SDF path draws
+    /// them all in a single pass (the fast path for a grid/scatter of many
+    /// shapes); one without it expands the batch into the equivalent per-shape
+    /// fills. Either way the pixels match, so the batch never changes *what* is
+    /// drawn, only how fast. The whole batch composites with `blend` against
+    /// existing content.
+    Shapes {
+        /// The shapes, in draw order (earlier entries are drawn under later
+        /// ones where they overlap, matching per-shape fill order).
+        shapes: Vec<ShapeInstance>,
         /// Composite mode of the batch against existing canvas content.
         blend: BlendMode,
     },
@@ -969,23 +1031,23 @@ impl Scene {
         self
     }
 
-    /// Draw a batch of flat-colored [`Circle`]s in one op, source-over. The
-    /// throughput primitive for a grid or scatter of many circles: a GPU
+    /// Draw a batch of flat-colored [`ShapeInstance`]s in one op, source-over.
+    /// The throughput primitive for a grid or scatter of many shapes: a GPU
     /// renderer draws them in a single instanced pass, a CPU one expands them to
-    /// per-circle fills (in iteration order). Does not touch the current path.
-    /// See [`DrawOp::Circles`].
-    pub fn circles(&mut self, circles: impl IntoIterator<Item = Circle>) -> &mut Self {
-        self.circles_with(circles, BlendMode::Normal)
+    /// per-shape fills (in iteration order). Does not touch the current path.
+    /// See [`DrawOp::Shapes`].
+    pub fn shapes(&mut self, shapes: impl IntoIterator<Item = ShapeInstance>) -> &mut Self {
+        self.shapes_with(shapes, BlendMode::Normal)
     }
 
-    /// [`circles`](Self::circles) with an explicit [`BlendMode`] for the whole
+    /// [`shapes`](Self::shapes) with an explicit [`BlendMode`] for the whole
     /// batch.
-    pub fn circles_with(
+    pub fn shapes_with(
         &mut self,
-        circles: impl IntoIterator<Item = Circle>,
+        shapes: impl IntoIterator<Item = ShapeInstance>,
         blend: BlendMode,
     ) -> &mut Self {
-        self.ops.push(DrawOp::Circles { circles: circles.into_iter().collect(), blend });
+        self.ops.push(DrawOp::Shapes { shapes: shapes.into_iter().collect(), blend });
         self
     }
 
@@ -1242,43 +1304,66 @@ mod tests {
     }
 
     #[test]
-    fn circles_records_batch_in_order() {
+    fn shapes_records_batch_in_order() {
         let mut s = Scene::new();
-        s.circles([
-            Circle::new(10.0, 10.0, 5.0, Color::new(255, 0, 0, 255)),
-            Circle::new(20.0, 20.0, 3.0, Color::new(0, 255, 0, 255)),
+        s.shapes([
+            ShapeInstance::circle(10.0, 10.0, 5.0, Color::new(255, 0, 0, 255)),
+            ShapeInstance::rect(20.0, 20.0, 6.0, 4.0, Color::new(0, 255, 0, 255)),
         ]);
         assert_eq!(s.ops().len(), 1);
         match &s.ops()[0] {
-            DrawOp::Circles { circles, blend } => {
-                assert_eq!(circles.len(), 2);
+            DrawOp::Shapes { shapes, blend } => {
+                assert_eq!(shapes.len(), 2);
                 assert_eq!(*blend, BlendMode::Normal);
                 // Order preserved: red first (drawn under), green second (on top).
-                assert_eq!(circles[0].color, Color::new(255, 0, 0, 255));
-                assert_eq!(circles[1].cx, 20.0);
+                assert_eq!(shapes[0].color, Color::new(255, 0, 0, 255));
+                // rect(20,20,6,4) → center (23,22), half (3,2), sharp.
+                assert_eq!((shapes[1].cx, shapes[1].cy), (23.0, 22.0));
+                assert_eq!((shapes[1].hw, shapes[1].hh, shapes[1].radius), (3.0, 2.0, 0.0));
             }
-            other => panic!("expected Circles, got {other:?}"),
+            other => panic!("expected Shapes, got {other:?}"),
         }
     }
 
     #[test]
-    fn circles_with_blend_is_carried() {
+    fn shapes_with_blend_is_carried() {
         let mut s = Scene::new();
-        s.circles_with([Circle::new(0.0, 0.0, 1.0, Color::BLACK)], BlendMode::Multiply);
+        s.shapes_with([ShapeInstance::circle(0.0, 0.0, 1.0, Color::BLACK)], BlendMode::Multiply);
         match &s.ops()[0] {
-            DrawOp::Circles { blend, .. } => assert_eq!(*blend, BlendMode::Multiply),
-            other => panic!("expected Circles, got {other:?}"),
+            DrawOp::Shapes { blend, .. } => assert_eq!(*blend, BlendMode::Multiply),
+            other => panic!("expected Shapes, got {other:?}"),
         }
     }
 
     #[test]
-    fn circle_to_fill_op_matches_hand_authored_fill() {
-        // The §7 convergence contract: a batched circle MUST expand to exactly
-        // the fill an author would write with Path::circle, so the instanced GPU
-        // path and the CPU expand-to-fills path produce identical pixels.
-        let c = Circle::new(7.0, 8.0, 4.0, Color::new(1, 2, 3, 255));
-        let op = c.to_fill_op(BlendMode::Normal);
-        match op {
+    fn shape_constructors_and_effective_radius() {
+        // circle: square half-extents, full radius.
+        let c = ShapeInstance::circle(5.0, 6.0, 4.0, Color::BLACK);
+        assert_eq!((c.cx, c.cy, c.hw, c.hh, c.radius), (5.0, 6.0, 4.0, 4.0, 4.0));
+        assert_eq!(c.effective_radius(), 4.0);
+        // rect from top-left: sharp corners, centered.
+        let r = ShapeInstance::rect(0.0, 0.0, 10.0, 8.0, Color::BLACK);
+        assert_eq!((r.cx, r.cy, r.hw, r.hh, r.radius), (5.0, 4.0, 5.0, 4.0, 0.0));
+        // rounded rect: radius preserved, clamped on use.
+        let rr = ShapeInstance::rounded_rect(0.0, 0.0, 10.0, 8.0, 3.0, Color::BLACK);
+        assert_eq!(rr.effective_radius(), 3.0);
+        // pill: fully rounded on the short axis (height here).
+        let p = ShapeInstance::pill(0.0, 0.0, 20.0, 6.0, Color::BLACK);
+        assert_eq!(p.radius, 3.0);
+        assert_eq!(p.effective_radius(), 3.0);
+        // over-large radius clamps to min(hw, hh).
+        let over = ShapeInstance::new(0.0, 0.0, 5.0, 3.0, 100.0, Color::BLACK);
+        assert_eq!(over.effective_radius(), 3.0);
+    }
+
+    #[test]
+    fn shape_to_fill_op_matches_hand_authored_fill() {
+        // The §7 convergence contract: a batched shape MUST expand to exactly the
+        // fill an author would write, so the instanced GPU path and the CPU
+        // expand-to-fills path produce identical geometry → identical pixels.
+
+        // Circle case → Path::circle (canonical cubic geometry).
+        match ShapeInstance::circle(7.0, 8.0, 4.0, Color::new(1, 2, 3, 255)).to_fill_op(BlendMode::Normal) {
             DrawOp::Fill { path, paint, fill_rule } => {
                 assert_eq!(path, Path::circle(7.0, 8.0, 4.0));
                 assert_eq!(paint.kind, PaintKind::Solid(Color::new(1, 2, 3, 255)));
@@ -1287,32 +1372,43 @@ mod tests {
             }
             other => panic!("expected Fill, got {other:?}"),
         }
+        // Sharp rect → Path::rect.
+        match ShapeInstance::rect(0.0, 0.0, 10.0, 8.0, Color::BLACK).to_fill_op(BlendMode::Normal) {
+            DrawOp::Fill { path, .. } => assert_eq!(path, Path::rect(0.0, 0.0, 10.0, 8.0)),
+            other => panic!("expected Fill, got {other:?}"),
+        }
+        // Rounded rect → Path::rounded_rect.
+        match ShapeInstance::rounded_rect(0.0, 0.0, 10.0, 8.0, 3.0, Color::BLACK).to_fill_op(BlendMode::Normal) {
+            DrawOp::Fill { path, .. } => assert_eq!(path, Path::rounded_rect(0.0, 0.0, 10.0, 8.0, 3.0)),
+            other => panic!("expected Fill, got {other:?}"),
+        }
         // Blend carries through to the expanded fill (e.g. an eraser batch).
-        match Circle::new(0.0, 0.0, 1.0, Color::new(255, 255, 255, 255)).to_fill_op(BlendMode::DestinationOut) {
+        match ShapeInstance::circle(0.0, 0.0, 1.0, Color::new(255, 255, 255, 255)).to_fill_op(BlendMode::DestinationOut) {
             DrawOp::Fill { paint, .. } => assert_eq!(paint.blend, BlendMode::DestinationOut),
             other => panic!("expected Fill, got {other:?}"),
         }
     }
 
     #[test]
-    fn circles_op_survives_scene_round_trip() {
+    fn shapes_op_survives_scene_round_trip() {
         let mut s = Scene::new();
-        s.circles_with(
+        s.shapes_with(
             [
-                Circle::new(10.0, 10.0, 5.0, Color::new(255, 0, 0, 255)),
-                Circle::new(20.0, 20.0, 3.0, Color::new(0, 255, 0, 128)),
+                ShapeInstance::circle(10.0, 10.0, 5.0, Color::new(255, 0, 0, 255)),
+                ShapeInstance::rounded_rect(20.0, 20.0, 8.0, 6.0, 2.0, Color::new(0, 255, 0, 128)),
             ],
             BlendMode::Screen,
         );
         let bytes = serde_json::to_vec(&s).expect("serialize");
         let back: Scene = serde_json::from_slice(&bytes).expect("deserialize");
         assert_eq!(s.ops(), back.ops());
-        // The per-circle color packed/unpacked through the ARGB shim exactly.
+        // The per-shape color packed/unpacked through the ARGB shim exactly.
         match &back.ops()[0] {
-            DrawOp::Circles { circles, .. } => {
-                assert_eq!(circles[1].color, Color::new(0, 255, 0, 128));
+            DrawOp::Shapes { shapes, .. } => {
+                assert_eq!(shapes[1].color, Color::new(0, 255, 0, 128));
+                assert_eq!(shapes[1].radius, 2.0);
             }
-            other => panic!("expected Circles, got {other:?}"),
+            other => panic!("expected Shapes, got {other:?}"),
         }
     }
 

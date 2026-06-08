@@ -15,7 +15,10 @@
 
 use crate::encode::encode_scene;
 use crate::native_capture::{LayerCompositor, NativeCapture};
-use canvas_core::{paint_scene, CanvasProps, Scene as CanvasScene, TextureLayer};
+use crate::shape_pass::ShapePass;
+use canvas_core::{
+    paint_scene, BlendMode, CanvasProps, DrawOp, Scene as CanvasScene, ShapeInstance, TextureLayer,
+};
 use media_stream::FrameWriter;
 use runtime_core::accessibility::AccessibilityProps;
 use runtime_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
@@ -219,6 +222,11 @@ struct RenderState {
     /// the recording. Empty when the canvas has no `layers`.
     layers: Vec<TextureLayer>,
     layer_compositor: Option<LayerCompositor>,
+    /// Instanced analytic-shape pass, built lazily the first time a PURE-shape
+    /// scene is rendered (a canvas that never uses `DrawOp::Shapes` pays
+    /// nothing). Draws a rounded-box-SDF grid in one instanced draw instead of
+    /// one tessellated fill per shape. See [`ShapePass`].
+    shape_pass: Option<ShapePass>,
 }
 
 fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
@@ -240,6 +248,32 @@ fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::T
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
+}
+
+/// If every op in `ops` is a [`DrawOp::Shapes`] batch with [`BlendMode::Normal`],
+/// return the per-batch shape slices (in op order) for the instanced fast path;
+/// `None` if the scene contains any other op (vector fill/stroke/image/layer/
+/// transform) or a non-Normal batch blend — those need vello's compositor, so
+/// they go through `encode_scene` (which expands shapes to ordered fills,
+/// matching this pass's output, CLAUDE.md §7). An empty op list returns
+/// `Some(vec![])`, which the pass renders as a transparent clear.
+///
+/// The predicate is deliberately strict: a single non-shape op disables the fast
+/// path for the whole frame. That keeps z-order and blending exact (vello can't
+/// cheaply layer a custom pass between its own draws) at the cost of not
+/// accelerating mixed scenes — the common bulk case (a grid/scatter of shapes,
+/// nothing else) is the one that wins, and it wins completely.
+fn pure_shape_batches(ops: &[DrawOp]) -> Option<Vec<&[ShapeInstance]>> {
+    let mut out = Vec::with_capacity(ops.len());
+    for op in ops {
+        match op {
+            DrawOp::Shapes { shapes, blend } if *blend == BlendMode::Normal => {
+                out.push(shapes.as_slice())
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
 }
 
 impl RenderState {
@@ -364,6 +398,7 @@ impl RenderState {
             layers,
             capture,
             readback: None,
+            shape_pass: None,
         })
     }
 
@@ -387,24 +422,40 @@ impl RenderState {
     /// uses the return to retry the FIRST frame until it lands, so the initial
     /// scene (e.g. the canvas's white background) isn't lost to a dark surface.
     fn render(&mut self, canvas_scene: &CanvasScene) -> bool {
-        self.scene.reset();
-        // Base transform = device scale: the author's Scene is in LOGICAL
-        // coordinates; scaling by the dpr makes it fill the physical-pixel
-        // surface (no retina under-fill). `1.0` → identity (physical scale).
-        encode_scene(canvas_scene.ops(), &mut self.scene, Affine::scale(self.scale));
+        // Fast path: a PURE-shape scene (every op a Normal-blend `Shapes` batch)
+        // is drawn by the instanced SDF pass below instead of vello — one draw
+        // for the whole grid. Any other op (vector fill/stroke/image/layer/
+        // transform, or a non-Normal batch blend) falls through to vello, which
+        // expands shapes to ordered per-shape fills (encode.rs) so the pixels are
+        // identical (CLAUDE.md §7) — the fast path is an optimization, not a fork.
+        let fast = pure_shape_batches(canvas_scene.ops());
 
-        let params = RenderParams {
-            base_color: Color::from_rgba8(0, 0, 0, 0),
-            width: self.config.width,
-            height: self.config.height,
-            antialiasing_method: AaConfig::Area,
-        };
-        if self
-            .renderer
-            .render_to_texture(&self.device, &self.queue, &self.scene, &self.target_view, &params)
-            .is_err()
-        {
-            return false;
+        if fast.is_none() {
+            self.scene.reset();
+            // Base transform = device scale: the author's Scene is in LOGICAL
+            // coordinates; scaling by the dpr makes it fill the physical-pixel
+            // surface (no retina under-fill). `1.0` → identity (physical scale).
+            encode_scene(canvas_scene.ops(), &mut self.scene, Affine::scale(self.scale));
+
+            let params = RenderParams {
+                base_color: Color::from_rgba8(0, 0, 0, 0),
+                width: self.config.width,
+                height: self.config.height,
+                antialiasing_method: AaConfig::Area,
+            };
+            if self
+                .renderer
+                .render_to_texture(
+                    &self.device,
+                    &self.queue,
+                    &self.scene,
+                    &self.target_view,
+                    &params,
+                )
+                .is_err()
+            {
+                return false;
+            }
         }
 
         let frame = match self.surface.get_current_texture() {
@@ -418,6 +469,30 @@ impl RenderState {
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("canvas-vello-blit"),
             });
+        // Instanced shape fast path: clear the target and draw the whole shape
+        // grid in one instanced pass, BEFORE the layer composite and blit (it
+        // owns the target clear that vello would otherwise have done). Disjoint
+        // field borrows — bind the shared refs to locals first.
+        if let Some(batches) = fast.as_ref() {
+            if self.shape_pass.is_none() {
+                self.shape_pass = Some(ShapePass::new(&self.device));
+            }
+            let device = &self.device;
+            let queue = &self.queue;
+            let target_view = &self.target_view;
+            let (cw, ch) = (self.config.width, self.config.height);
+            let s = self.scale as f32;
+            self.shape_pass.as_mut().unwrap().render(
+                device,
+                queue,
+                &mut encoder,
+                target_view,
+                batches,
+                s,
+                cw,
+                ch,
+            );
+        }
         // Texture layers (macOS): composite the camera/screen-share/… into the
         // target BEFORE the blits, so the strokes + layers are one image that
         // both the on-screen surface AND the recording IOSurface receive.
@@ -595,6 +670,7 @@ mod tests {
     use super::*;
     use canvas_core::{
         Color as CanvasColor, ImageSource, Paint, Path, Rect as CanvasRect, Scene as CanvasScene,
+        ShapeInstance,
     };
 
     /// Render a canvas scene to an `S×S` RGBA8 buffer on a real GPU and
@@ -752,6 +828,31 @@ mod tests {
             corner[0] > 200 && corner[3] > 200,
             "frame-1 red must persist into frame 2, got {corner:?}"
         );
+    }
+
+    /// The `DrawOp::Shapes` fallback path: `encode_scene` expands a batch into
+    /// ordered per-shape fills, which vello renders. Proves a batched shape
+    /// reaches the GPU and paints a filled circle — the path every mixed scene
+    /// (and the web backend) takes. The instanced fast path is proven separately
+    /// in `shape_pass.rs`; both must paint the same interior, which is how the
+    /// optimization stays a no-op on output (CLAUDE.md §7).
+    #[test]
+    fn shapes_batch_renders_via_vello_fallback() {
+        const S: u32 = 64;
+        let mut cs = CanvasScene::new();
+        cs.shapes([ShapeInstance::circle(32.0, 32.0, 20.0, CanvasColor::new(0, 200, 80, 255))]);
+
+        let Some(buf) = render_to_rgba(&cs, S) else {
+            eprintln!("skip: no GPU");
+            return;
+        };
+        let center = px(&buf, S, 32, 32);
+        assert!(
+            center[1] > 180 && center[0] < 60 && center[3] > 200,
+            "circle center should be opaque green, got {center:?}"
+        );
+        let corner = px(&buf, S, 2, 2);
+        assert!(corner[3] < 8, "corner should be transparent, got {corner:?}");
     }
 
     /// End-to-end GPU proof of the image blit: a 2×2 image (green top-left,

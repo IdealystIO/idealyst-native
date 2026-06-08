@@ -25,6 +25,31 @@ ui! {
 Any `Signal` read inside `draw` re-renders the canvas when it changes (the same
 reactive convention as `video`/`svg`).
 
+## Bulk shapes (instanced)
+
+For a grid or scatter of **many** simple shapes, filling one `Path::circle` /
+`Path::rounded_rect` per shape gets expensive — each path is flattened and binned
+individually. `Scene::shapes` takes a batch of flat-colored
+[`ShapeInstance`](core/)s instead:
+
+```rust
+s.shapes((0..10_000).map(|i| {
+    let (x, y) = ((i % 100) as f32 * 8.0, (i / 100) as f32 * 8.0);
+    ShapeInstance::circle(x, y, 3.0, Color::new(40, 120, 255, 255))
+}));
+```
+
+A `ShapeInstance` is a **rounded box** — the constructors `circle`, `rect`,
+`rounded_rect`, and `pill` cover the common shapes, and one SDF rasterizes them
+all, so a single batch can mix shapes. On `canvas-vello`, a scene made entirely
+of `shapes` batches (Normal blend) is drawn in **one GPU-instanced, analytic-SDF
+pass** — thousands of shapes cost one draw call, not one tessellated fill each.
+Any other scene (shapes mixed with paths/images, or a non-Normal blend) falls
+back to expanding each shape to the equivalent per-shape fill, in order: the
+pixels are identical (CLAUDE.md §7), so the batch only ever changes *how fast* it
+draws, never *what*. The batch carries a solid color per shape; for gradient or
+stroked shapes, use individual `fill`/`stroke` calls.
+
 ## Renderers
 
 Pick **one** at bootstrap (the `Element::External` registry is `TypeId`-keyed,

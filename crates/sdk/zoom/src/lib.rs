@@ -320,12 +320,22 @@ mod tests {
         }
     }
 
-    /// Two fingers from `start_gap` to `end_gap` px apart (centered on x=200).
+    /// Two fingers from `start_gap` to `end_gap` px apart, centered on x=200.
+    /// Both fingers move out symmetrically so the midpoint stays at the center
+    /// and the final distance is exactly `end_gap` → scale `end_gap/start_gap`.
     fn pinch_spread(h: &TouchHandler, start_gap: f32, end_gap: f32) {
         let c = 200.0;
         h(&touch(TouchPhase::Began, 1, c - start_gap / 2.0, 0.0, 0));
         h(&touch(TouchPhase::Began, 2, c + start_gap / 2.0, 0.0, 0));
+        h(&touch(TouchPhase::Moved, 1, c - end_gap / 2.0, 0.0, 16_000_000));
         h(&touch(TouchPhase::Moved, 2, c + end_gap / 2.0, 0.0, 16_000_000));
+    }
+
+    /// Lift both fingers, fully resetting the recognizer to idle so a
+    /// subsequent `pinch_spread` starts a clean gesture.
+    fn end_both(h: &TouchHandler) {
+        h(&touch(TouchPhase::Ended, 2, 300.0, 0.0, 32_000_000));
+        h(&touch(TouchPhase::Ended, 1, 100.0, 0.0, 33_000_000));
     }
 
     #[test]
@@ -342,7 +352,7 @@ mod tests {
         let zoom = Zoom::new();
         let h = zoom.pinch_handler();
         pinch_spread(&h, 100.0, 200.0); // → 2.0
-        h(&touch(TouchPhase::Ended, 2, 300.0, 0.0, 32_000_000));
+        end_both(&h);
         assert!((zoom.value() - 2.0).abs() < 1e-3);
         // A second pinch that doubles again must land on 4.0, not 2.0 — base is
         // snapshotted from the resting scale.
@@ -413,12 +423,8 @@ mod tests {
         let ph = zoom.pinch_handler();
         let wh = zoom.wheel_handler();
         pinch_spread(&ph, 100.0, 200.0); // → 2.0
-        h_end(&ph);
+        end_both(&ph);
         wh(&wheel_zoom(1.5, 0.0, 0.0)); // 2.0 × 1.5
         assert!((zoom.value() - 3.0).abs() < 1e-3, "got {}", zoom.value());
-    }
-
-    fn h_end(h: &TouchHandler) {
-        h(&touch(TouchPhase::Ended, 2, 300.0, 0.0, 32_000_000));
     }
 }

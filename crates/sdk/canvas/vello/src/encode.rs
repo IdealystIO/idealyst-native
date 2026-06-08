@@ -157,6 +157,18 @@ pub(crate) fn encode_scene(ops: &[DrawOp], vs: &mut VelloScene, base: Affine) {
                     vs.pop_layer();
                 });
             }
+            DrawOp::Shapes { shapes, blend } => {
+                // The shared encoder has no GPU device, so no instanced fast path
+                // here: expand the batch to per-shape fills, in array order, at
+                // the current transform. Recursing through `encode_scene` reuses
+                // the Fill arm's brush + blend-layer handling verbatim, so a
+                // batched shape and a hand-authored fill encode identically
+                // (CLAUDE.md §7). The render.rs GPU path intercepts PURE-shape
+                // scenes before encoding and draws them instanced; this remains
+                // the correct fallback for the web backend and any mixed scene.
+                let fills: Vec<DrawOp> = shapes.iter().map(|sh| sh.to_fill_op(*blend)).collect();
+                encode_scene(&fills, vs, cur);
+            }
             _ => {}
         }
     }

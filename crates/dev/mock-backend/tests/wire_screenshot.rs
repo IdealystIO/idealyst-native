@@ -37,6 +37,7 @@ fn colored_fill(hex: &'static str) -> Element {
         ref_fill: None,
         safe_area_sides: SafeAreaSides::NONE,
         on_touch: None,
+        on_wheel: None,
         is_container: false,
         accessibility: Default::default(),
         // `test_id` is present: this crate pins runtime-core/robot.

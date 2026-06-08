@@ -32,6 +32,13 @@ mod render;
 #[cfg(not(target_arch = "wasm32"))]
 pub use render::register;
 
+// Instanced analytic-shape (rounded-box SDF) fast path for PURE-shape scenes —
+// the native renderer's throughput path for a `DrawOp::Shapes` grid/scatter.
+// Web stays on the encoder's expand-to-fills for now (per-canvas WebGPU is the
+// constraint there); the fallback is identical output, just unaccelerated.
+#[cfg(not(target_arch = "wasm32"))]
+mod shape_pass;
+
 // Web renderer: async wgpu init over the browser's WebGPU backend, with a
 // per-canvas Canvas2D fallback when WebGPU is unavailable.
 #[cfg(target_arch = "wasm32")]

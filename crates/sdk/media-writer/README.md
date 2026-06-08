@@ -52,11 +52,20 @@ sources on different threads.
 
 ### Web container caveat
 
-`MediaRecorder`'s output container is browser-chosen: **Safari yields real MP4;
-Chromium yields WebM.** The writer requests `video/mp4` and falls back to
-`video/webm`, writing whatever the browser produces to the path you gave. The
-bytes are always a valid, playable file; only the container may differ from
-`.mp4` on Chromium. This is a genuine platform constraint of the web encoder.
+`MediaRecorder`'s output container is browser-chosen. **Safari has always
+yielded real MP4; recent Chromium versions now also support `video/mp4`
+(H.264/avc1) and pick it, where older versions fell back to WebM.** The writer
+requests `video/mp4` first and falls back to `video/webm`, writing whatever the
+browser produces to the path you gave. The bytes are always a valid, playable
+file; only the container may differ from `.mp4` on a Chromium that lacks MP4
+support. This is a genuine platform constraint of the web encoder.
+
+Because Chromium now commonly encodes as H.264/avc1 — a codec that **cannot
+change resolution mid-stream** — the CPU-producer canvas-capture fallback sizes
+its `<canvas>` to the real frame dimensions *before* `captureStream()`. A bare
+`<canvas>` defaults to 300×150; capturing at that size and resizing on the first
+frame would make avc1 see a mid-stream resolution change (`avc1.* … codec
+description is not supposed to change`) and corrupt the file.
 
 ## Verification status
 
@@ -68,7 +77,10 @@ bytes are always a valid, playable file; only the container may differ from
 - **Android** — compile-checked for `aarch64-linux-android`; the
   MediaCodec/MediaMuxer path resolves at runtime on a device (same posture as
   the `camera`/`biometrics` Android backends).
-- **web** — compile-checked for `wasm32-unknown-unknown`.
+- **web** — compile-checked for `wasm32-unknown-unknown`; the canvas-capture
+  fallback's size-before-`captureStream()` invariant is browser-verified by the
+  `#[wasm_bindgen_test]`s in `src/web.rs` (run with
+  `wasm-pack test --headless --safari --release` from this crate dir).
 
 ## Permissions / linking
 

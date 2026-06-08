@@ -357,6 +357,14 @@ fn apply_op(ctx: &CanvasRenderingContext2d, op: &DrawOp) {
         DrawOp::Layer { id, clear, ops: nested, alpha, blend } => {
             draw_layer(ctx, *id, *clear, nested, *alpha, *blend);
         }
+        DrawOp::Shapes { shapes, blend } => {
+            // Canvas2D has no instanced fast path: expand the batch to per-shape
+            // fills, in array order, replaying each through the Fill arm so a
+            // batched shape and a hand-authored fill match (CLAUDE.md §7).
+            for sh in shapes {
+                apply_op(ctx, &sh.to_fill_op(*blend));
+            }
+        }
         DrawOp::Image { image, dst, alpha, blend } => {
             if !image.is_valid() || image.width == 0 || image.height == 0 {
                 return;

@@ -174,8 +174,43 @@ isn't pleasant unless this works.
    style-recompute path during pans, even with Rust in the per-frame
    loop. Separate plan doc when we get there.
 
+## Zoom: pinch + the desktop wheel/magnify channel (landed)
+
+Zoom is the first gesture that needs **two** input families, and it shows how
+they stay decoupled:
+
+- **Pinch** is a single-view, two-finger recognizer — `runtime_core::pinch`,
+  alongside `pan`/`tap`/`long_press`. It rides the existing per-touch stream
+  (two concurrent `TouchId`s in one handler), so it needs **no backend
+  plumbing** and works on every backend that delivers touches. It tracks the
+  first two fingers, activates past a distance slop, and emits `PinchEvent`
+  with a cumulative `scale` (relative to the two-finger-down distance) + the
+  focal midpoint + smoothed scale-velocity. A lone finger returns `IGNORED` so
+  a tap/pan on the same chain still sees it; once active it `CLAIM`s.
+
+- **Trackpad pinch + scroll-wheel** are *not* touches, so they get a separate
+  channel: `Backend::install_wheel_handler` + an `on_wheel` slot on View,
+  delivering `runtime_core::WheelEvent` (`WheelKind::Zoom | Scroll`). The
+  desktop backends source it — **web** (`wheel`; `ctrlKey` ⇒ Zoom, the rest
+  Scroll) and **macOS** (`magnify:` ⇒ Zoom, `scrollWheel:` ⇒ Scroll). Each
+  backend normalizes its native zoom signal into `WheelEvent.scale` (an
+  incremental multiplier) so app code carries no per-platform constant. iOS /
+  Android keep the trait default no-op — no trackpad/wheel there; pinch covers
+  them.
+
+The two converge in the `zoom` SDK (`crates/sdk/zoom`), which drives one
+`AnimatedValue<f32>` scale from both a `pinch_handler()` (`on_touch`) and a
+`wheel_handler()` (`on_wheel`) — the scale peer of the `pan` SDK.
+
 ## Out of scope (for v1)
 
+- Composing two *different* recognizers on one view (e.g. pan + pinch on the
+  same node) — `on_touch` holds a single handler, so a node is pan **or**
+  pinch today. Zoom sidesteps this by pairing pinch (touch) with the wheel
+  channel (separate slot) rather than with pan. A general composition layer
+  can come later.
+- Rotate / two-finger pan recognizers (the per-touch model supports them; just
+  not built yet).
 - Multi-finger gestures requiring simultaneous recognition across views
   (e.g. one finger on a slider, another on a pan) — supported by the
   per-touch model but the recognizer composition story can wait.

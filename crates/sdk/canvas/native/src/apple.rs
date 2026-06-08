@@ -302,6 +302,15 @@ impl ApplePainter {
             DrawOp::Layer { id, clear, ops: nested, alpha, blend } => {
                 self.draw_layer(ctx, *id, *clear, nested, *alpha, *blend);
             }
+            DrawOp::Shapes { shapes, blend } => {
+                // CPU painter has no instanced fast path: expand the batch to
+                // per-shape fills, in array order, replaying each through the
+                // Fill arm so a batched shape and a hand-authored fill produce
+                // identical pixels (CLAUDE.md §7).
+                for sh in shapes {
+                    self.apply_op(ctx, &sh.to_fill_op(*blend));
+                }
+            }
             // `DrawOp` is `#[non_exhaustive]`; future ops no-op until wired.
             _ => {}
         }

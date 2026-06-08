@@ -621,6 +621,14 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
             DrawOp::Layer { id, clear, ops: nested, alpha, blend } => {
                 self.draw_layer(*id, *clear, nested, *alpha, *blend);
             }
+            DrawOp::Shapes { shapes, blend } => {
+                // android.graphics has no instanced fast path: expand the batch to
+                // per-shape fills, in array order, replaying each through the Fill
+                // arm so a batched shape matches a hand-authored fill (CLAUDE.md §7).
+                for sh in shapes {
+                    self.apply(&sh.to_fill_op(*blend));
+                }
+            }
             DrawOp::Image { image, dst, alpha, blend } => {
                 let Some(bmp) = self.cached_bitmap(image) else { return };
                 self.reset_paint();
