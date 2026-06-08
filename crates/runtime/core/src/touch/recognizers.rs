@@ -553,6 +553,301 @@ pub fn long_press<F: Fn() + 'static>(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Pinch (two-finger zoom)
+// ---------------------------------------------------------------------------
+
+/// Minimum change (CSS pixels) in the distance between the two fingers
+/// before the pinch becomes active and fires [`PinchEvent::Began`]. Below
+/// this, finger jitter or the opening moments of a two-finger *pan* (both
+/// fingers translating together, distance roughly constant) don't spuriously
+/// start a zoom.
+pub const DEFAULT_PINCH_SLOP_PX: f32 = 6.0;
+
+/// EMA mixing factor for scale-velocity smoothing — same constant the pan
+/// recognizer uses for positional velocity.
+const PINCH_VELOCITY_SMOOTHING: f32 = 0.6;
+
+/// Configuration for [`pinch`]. Construct via [`PinchRecognizer::new`] and
+/// customize with the builder setters.
+#[derive(Clone, Copy, Debug)]
+pub struct PinchRecognizer {
+    pub slop_px: f32,
+}
+
+impl Default for PinchRecognizer {
+    fn default() -> Self {
+        Self {
+            slop_px: DEFAULT_PINCH_SLOP_PX,
+        }
+    }
+}
+
+impl PinchRecognizer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn slop_px(mut self, v: f32) -> Self {
+        self.slop_px = v;
+        self
+    }
+}
+
+/// Lifecycle events fired by [`pinch`]. Scale is **cumulative relative to
+/// the two-finger-down distance**, mirroring how [`PanEvent`]'s delta is
+/// cumulative from the finger-down position — handlers multiply it onto a
+/// value snapshotted at [`PinchEvent::Began`].
+#[derive(Clone, Copy, Debug)]
+pub enum PinchEvent {
+    /// Two fingers are down and the distance between them has moved past
+    /// slop. `focus` is the midpoint of the two fingers in view-local
+    /// coordinates — the natural point to zoom about.
+    Began { focus: TouchPoint },
+    /// Pinch in progress. `scale` is the cumulative factor relative to the
+    /// two-finger-down distance (`1.0` = unchanged, `2.0` = fingers twice as
+    /// far apart, `0.5` = half). `focus` is the current midpoint.
+    /// `velocity` is in scale-units per second, EMA-smoothed so a single
+    /// jittery frame doesn't spike it.
+    Changed {
+        focus: TouchPoint,
+        scale: f32,
+        velocity: f32,
+    },
+    /// One of the two fingers lifted after the pinch was active. The final
+    /// `velocity` lets handlers fling the zoom to a momentum settle.
+    Ended { velocity: f32 },
+    /// Pinch interrupted by the platform (incoming call, system gesture,
+    /// view detach). Handlers should reset / animate back to rest.
+    Cancelled,
+}
+
+/// One tracked finger. `Copy` so [`PinchState`] stays `Copy` and can live in
+/// a `Cell` (see the note on [`PanState`]).
+#[derive(Clone, Copy)]
+struct PinchFinger {
+    id: TouchId,
+    pos: TouchPoint,
+}
+
+#[derive(Clone, Copy)]
+enum PinchState {
+    /// Fewer than two fingers down.
+    Idle,
+    /// Exactly one finger tracked; waiting for a second to form the pair.
+    One { a: PinchFinger },
+    /// Two fingers tracked. `active` flips true once `|cur_dist - start_dist|`
+    /// crosses slop; before that no callback has fired. `scale` is always
+    /// computed as `cur_dist / start_dist`.
+    Two {
+        a: PinchFinger,
+        b: PinchFinger,
+        start_dist: f32,
+        active: bool,
+        last_scale: f32,
+        last_ts_ns: u64,
+        velocity: f32,
+    },
+}
+
+fn pinch_dist(a: TouchPoint, b: TouchPoint) -> f32 {
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
+    (dx * dx + dy * dy).sqrt()
+}
+
+fn pinch_midpoint(a: TouchPoint, b: TouchPoint) -> TouchPoint {
+    TouchPoint::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
+}
+
+/// Build a two-finger pinch [`TouchHandler`].
+///
+/// State machine:
+/// - First finger down → track it but **return [`TouchResponse::IGNORED`]**,
+///   so a single-finger tap / pan recognizer on the same responder chain
+///   still sees it. (Unlike [`pan`], pinch only cares about two fingers, so
+///   it doesn't claim ownership of a lone touch.)
+/// - Second finger down → record the start distance; still inactive.
+/// - First `Moved` whose `|cur_dist - start_dist|` exceeds `slop_px` →
+///   fire [`PinchEvent::Began`] (with the midpoint) then an immediate
+///   [`PinchEvent::Changed`], and switch to returning
+///   [`TouchResponse::CLAIMED`] to suppress parent scroll / sibling
+///   gestures.
+/// - Subsequent `Moved` → [`PinchEvent::Changed`] with cumulative scale +
+///   smoothed velocity.
+/// - Either finger lifts while active → [`PinchEvent::Ended`]; the other
+///   finger stays tracked so a fresh second touch can start a new pinch.
+/// - `Cancelled` while active → [`PinchEvent::Cancelled`].
+///
+/// Single-handler-per-view note: a view's `on_touch` slot holds one handler,
+/// so install *either* a pan/tap recognizer *or* this — composing pan + pinch
+/// on the same node is a higher-level concern (see the zoom SDK, which pairs
+/// this with the wheel/magnify path rather than with pan).
+pub fn pinch<F: Fn(&PinchEvent) + 'static>(config: PinchRecognizer, on_pinch: F) -> TouchHandler {
+    use std::cell::Cell;
+    let on_pinch = Rc::new(on_pinch);
+    let state: Rc<Cell<PinchState>> = Rc::new(Cell::new(PinchState::Idle));
+    Rc::new(move |ev: &TouchEvent| -> TouchResponse {
+        let cur = state.get();
+        match ev.phase {
+            TouchPhase::Began => match cur {
+                PinchState::Idle => {
+                    state.set(PinchState::One {
+                        a: PinchFinger {
+                            id: ev.id,
+                            pos: ev.position,
+                        },
+                    });
+                    TouchResponse::IGNORED
+                }
+                PinchState::One { a } if a.id != ev.id => {
+                    let b = PinchFinger {
+                        id: ev.id,
+                        pos: ev.position,
+                    };
+                    // Floor start_dist so the scale division can never blow up
+                    // if two pointers report the same coordinate on landing.
+                    let start_dist = pinch_dist(a.pos, b.pos).max(0.0001);
+                    state.set(PinchState::Two {
+                        a,
+                        b,
+                        start_dist,
+                        active: false,
+                        last_scale: 1.0,
+                        last_ts_ns: ev.timestamp_ns,
+                        velocity: 0.0,
+                    });
+                    TouchResponse::IGNORED
+                }
+                // A third finger, or a duplicate id — single-pair recognizer
+                // ignores extras.
+                _ => TouchResponse::IGNORED,
+            },
+
+            TouchPhase::Moved => match cur {
+                PinchState::One { mut a } if a.id == ev.id => {
+                    a.pos = ev.position;
+                    state.set(PinchState::One { a });
+                    TouchResponse::IGNORED
+                }
+                PinchState::Two {
+                    mut a,
+                    mut b,
+                    start_dist,
+                    active,
+                    last_scale,
+                    last_ts_ns,
+                    velocity,
+                } => {
+                    if a.id == ev.id {
+                        a.pos = ev.position;
+                    } else if b.id == ev.id {
+                        b.pos = ev.position;
+                    } else {
+                        // Movement from a third finger we're not tracking.
+                        return TouchResponse::IGNORED;
+                    }
+                    let cur_dist = pinch_dist(a.pos, b.pos);
+                    let scale = cur_dist / start_dist;
+                    let focus = pinch_midpoint(a.pos, b.pos);
+                    if !active {
+                        if (cur_dist - start_dist).abs() > config.slop_px {
+                            state.set(PinchState::Two {
+                                a,
+                                b,
+                                start_dist,
+                                active: true,
+                                last_scale: scale,
+                                last_ts_ns: ev.timestamp_ns,
+                                velocity: 0.0,
+                            });
+                            on_pinch(&PinchEvent::Began { focus });
+                            on_pinch(&PinchEvent::Changed {
+                                focus,
+                                scale,
+                                velocity: 0.0,
+                            });
+                            TouchResponse::CLAIMED
+                        } else {
+                            state.set(PinchState::Two {
+                                a,
+                                b,
+                                start_dist,
+                                active: false,
+                                last_scale: scale,
+                                last_ts_ns: ev.timestamp_ns,
+                                velocity,
+                            });
+                            TouchResponse::IGNORED
+                        }
+                    } else {
+                        let dt_sec = if ev.timestamp_ns > last_ts_ns {
+                            ((ev.timestamp_ns - last_ts_ns) as f32) / 1_000_000_000.0
+                        } else {
+                            1.0 / 60.0
+                        };
+                        let dt_sec = dt_sec.max(0.001);
+                        let raw_v = (scale - last_scale) / dt_sec;
+                        let mix = PINCH_VELOCITY_SMOOTHING;
+                        let new_velocity = velocity * (1.0 - mix) + raw_v * mix;
+                        state.set(PinchState::Two {
+                            a,
+                            b,
+                            start_dist,
+                            active: true,
+                            last_scale: scale,
+                            last_ts_ns: ev.timestamp_ns,
+                            velocity: new_velocity,
+                        });
+                        on_pinch(&PinchEvent::Changed {
+                            focus,
+                            scale,
+                            velocity: new_velocity,
+                        });
+                        TouchResponse::CLAIMED
+                    }
+                }
+                _ => TouchResponse::IGNORED,
+            },
+
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                let is_cancel = matches!(ev.phase, TouchPhase::Cancelled);
+                match cur {
+                    PinchState::One { a } if a.id == ev.id => {
+                        state.set(PinchState::Idle);
+                        TouchResponse::IGNORED
+                    }
+                    PinchState::Two { a, b, active, velocity, .. }
+                        if a.id == ev.id || b.id == ev.id =>
+                    {
+                        let remaining = if a.id == ev.id { b } else { a };
+                        if active {
+                            if is_cancel {
+                                on_pinch(&PinchEvent::Cancelled);
+                            } else {
+                                on_pinch(&PinchEvent::Ended { velocity });
+                            }
+                        }
+                        // A real lift (Ended) leaves the other finger down →
+                        // demote to One so a new second touch can re-pinch.
+                        // A Cancelled tears the whole interaction down.
+                        if is_cancel {
+                            state.set(PinchState::Idle);
+                        } else {
+                            state.set(PinchState::One { a: remaining });
+                        }
+                        if active {
+                            TouchResponse::CONSUMED
+                        } else {
+                            TouchResponse::IGNORED
+                        }
+                    }
+                    _ => TouchResponse::IGNORED,
+                }
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -939,5 +1234,88 @@ mod tests {
         h(&ev(TouchPhase::Began, 2, 0.0, 0.0, 700_000_000));
         advance_ms(501);
         assert_eq!(fires.get(), 2);
+    }
+
+    // -----------------------------------------------------------------
+    // Pinch tests
+    // -----------------------------------------------------------------
+
+    fn pinch_collect() -> (TouchHandler, Rc<RefCell<Vec<PinchEvent>>>) {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let sink = log.clone();
+        let h = pinch(PinchRecognizer::new(), move |e| sink.borrow_mut().push(*e));
+        (h, log)
+    }
+
+    #[test]
+    fn pinch_activates_and_reports_cumulative_scale() {
+        let (h, log) = pinch_collect();
+        // Two fingers land 100 px apart on the x axis.
+        h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        h(&ev(TouchPhase::Began, 2, 100.0, 0.0, 0));
+        // Spread to 200 px apart → scale 2.0, focus at midpoint (100, 0).
+        h(&ev(TouchPhase::Moved, 2, 200.0, 0.0, 16_000_000));
+        let events = log.borrow();
+        assert!(
+            matches!(events.first(), Some(PinchEvent::Began { .. })),
+            "first event is Began"
+        );
+        match events.last() {
+            Some(PinchEvent::Changed { scale, focus, .. }) => {
+                assert!((*scale - 2.0).abs() < 1e-3, "scale should be 2.0, got {scale}");
+                assert!((focus.x - 100.0).abs() < 1e-3 && focus.y.abs() < 1e-3);
+            }
+            other => panic!("expected Changed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pinch_does_not_activate_below_slop() {
+        let (h, log) = pinch_collect();
+        h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        h(&ev(TouchPhase::Began, 2, 100.0, 0.0, 0));
+        // Move only 3 px — under the 6 px default slop.
+        h(&ev(TouchPhase::Moved, 2, 103.0, 0.0, 16_000_000));
+        assert!(log.borrow().is_empty(), "no pinch below slop");
+    }
+
+    #[test]
+    fn pinch_single_finger_emits_nothing_and_does_not_consume() {
+        let (h, log) = pinch_collect();
+        // A lone finger must bubble so a tap/pan on the same chain still
+        // sees it — pinch only owns the touch once two fingers are active.
+        let r = h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        assert!(!r.consumed, "pinch must not consume a single finger");
+        h(&ev(TouchPhase::Moved, 1, 80.0, 0.0, 16_000_000));
+        h(&ev(TouchPhase::Ended, 1, 80.0, 0.0, 32_000_000));
+        assert!(log.borrow().is_empty());
+    }
+
+    #[test]
+    fn pinch_ends_and_claims_once_active() {
+        let (h, log) = pinch_collect();
+        h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        h(&ev(TouchPhase::Began, 2, 100.0, 0.0, 0));
+        let r = h(&ev(TouchPhase::Moved, 2, 200.0, 0.0, 16_000_000));
+        assert!(r.claim, "active pinch claims to preempt parent scroll");
+        h(&ev(TouchPhase::Ended, 2, 200.0, 0.0, 32_000_000));
+        assert!(matches!(log.borrow().last(), Some(PinchEvent::Ended { .. })));
+    }
+
+    #[test]
+    fn pinch_scale_relative_to_start_not_absolute() {
+        // Fingers start 50 px apart, spread to 150 → scale 3.0, regardless
+        // of absolute screen position.
+        let (h, log) = pinch_collect();
+        h(&ev(TouchPhase::Began, 1, 300.0, 0.0, 0));
+        h(&ev(TouchPhase::Began, 2, 350.0, 0.0, 0));
+        h(&ev(TouchPhase::Moved, 2, 450.0, 0.0, 16_000_000));
+        let events = log.borrow();
+        match events.last() {
+            Some(PinchEvent::Changed { scale, .. }) => {
+                assert!((*scale - 3.0).abs() < 1e-3, "got {scale}")
+            }
+            other => panic!("expected Changed, got {other:?}"),
+        }
     }
 }

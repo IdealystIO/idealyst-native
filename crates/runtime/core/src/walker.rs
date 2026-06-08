@@ -575,11 +575,12 @@ fn dispatch_text<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) 
 #[inline(never)]
 fn dispatch_view<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::View {
-        children, style, ref_fill, safe_area_sides, on_touch, is_container, accessibility, ..
+        children, style, ref_fill, safe_area_sides, on_touch, on_wheel, is_container, accessibility, ..
     } = node
     else { unreachable!() };
     view::build(
-        backend, children, style, ref_fill, safe_area_sides, on_touch, is_container, accessibility,
+        backend, children, style, ref_fill, safe_area_sides, on_touch, on_wheel, is_container,
+        accessibility,
     )
 }
 

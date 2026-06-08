@@ -594,6 +594,29 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Install a wheel / magnify handler on `node`. The framework calls
+    /// this once per `Element::View { on_wheel: Some(_), .. }` after the
+    /// node is created.
+    ///
+    /// This is the desktop zoom/scroll channel — distinct from touch.
+    /// The backend wires `handler` to its native wheel / pinch-gesture
+    /// source (web `wheel` events, macOS `magnify:` + `scrollWheel:`) and
+    /// invokes it with each event translated into a [`crate::WheelEvent`],
+    /// normalizing the zoom amount into `WheelEvent::scale` so app code
+    /// carries no per-platform constant.
+    ///
+    /// Default impl is a no-op — correct for iOS / Android, which have no
+    /// trackpad/wheel and rely on the `pinch` touch recognizer instead.
+    /// See `docs/native-touch-plan.md`.
+    #[allow(unused_variables)]
+    fn install_wheel_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: crate::WheelHandler,
+    ) {
+        // default: no-op
+    }
+
     /// Placeholder node for reactive `when` / `switch` branches.
     /// The walker creates one of these as a stable parent that
     /// stays put across branch swaps, with the live branch's

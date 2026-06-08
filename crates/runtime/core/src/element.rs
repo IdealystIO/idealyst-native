@@ -113,6 +113,11 @@ pub enum Element {
         /// [`crate::touch`] for the event model and the claim
         /// protocol.
         on_touch: Option<crate::TouchHandler>,
+        /// Optional wheel / magnify handler — the desktop zoom/scroll
+        /// channel (web `wheel`, macOS `magnify:`/`scrollWheel:`). `None`
+        /// on every view by default; only set via `.on_wheel(..)`. iOS /
+        /// Android ignore it (no trackpad/wheel). See [`crate::wheel`].
+        on_wheel: Option<crate::WheelHandler>,
         /// Container-query containment context opt-in (`.container()`).
         /// When `true`, descendant `container (min_width: N)` style
         /// overlays resolve against *this* view's resolved inline-size

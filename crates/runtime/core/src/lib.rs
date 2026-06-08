@@ -26,6 +26,7 @@ pub mod time;
 mod sources;
 mod style;
 mod touch;
+pub mod wheel;
 mod walker;
 pub mod primitives;
 
@@ -203,8 +204,10 @@ pub use sources::{
     TextSource,
 };
 pub use touch::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, TouchResponse};
+pub use wheel::{WheelEvent, WheelHandler, WheelKind};
 pub use touch::recognizers::{
-    long_press, pan, tap, LongPressRecognizer, PanEvent, PanRecognizer, TapRecognizer,
+    long_press, pan, pinch, tap, LongPressRecognizer, PanEvent, PanRecognizer, PinchEvent,
+    PinchRecognizer, TapRecognizer,
 };
 pub use walker::{build_detached, mount, render, DetachedScope, Owner};
 pub use primitives::navigator::{

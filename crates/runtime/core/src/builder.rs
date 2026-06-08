@@ -233,6 +233,27 @@ impl Bound<ViewHandle> {
         }
         self
     }
+
+    /// Install a wheel / magnify handler — the desktop zoom/scroll channel,
+    /// parallel to [`Bound::on_touch`]. The closure receives every
+    /// [`WheelEvent`](crate::WheelEvent) the backend delivers to this view
+    /// (web `wheel`, macOS `magnify:`/`scrollWheel:`) and returns a
+    /// [`TouchResponse`](crate::TouchResponse) whose `consumed` flag asks the
+    /// backend to suppress the platform default (page scroll / browser zoom).
+    ///
+    /// No-op on iOS / Android (no trackpad/wheel — use a `pinch` handler via
+    /// [`Bound::on_touch`] there). The zoom SDK pairs the two for you.
+    ///
+    /// Calling twice replaces the handler.
+    pub fn on_wheel<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::WheelEvent) -> crate::TouchResponse + 'static,
+    {
+        if let Element::View { on_wheel, .. } = &mut self.primitive {
+            *on_wheel = Some(std::rc::Rc::new(handler));
+        }
+        self
+    }
 }
 
 impl Bound<PressableHandle> {
@@ -410,6 +431,7 @@ pub fn view(children: Vec<Element>) -> Bound<ViewHandle> {
         ref_fill: None,
         safe_area_sides: crate::SafeAreaSides::NONE,
         on_touch: None,
+        on_wheel: None,
         is_container: false,
         accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]
