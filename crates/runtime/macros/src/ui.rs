@@ -24,6 +24,29 @@
 //! no brace) is parsed as a plain Rust expression — useful for things
 //! like dropping a precomputed `Element` into a children slot.
 //!
+//! ## Children — what's legal inside `{ … }`
+//!
+//! A children block is a sequence of *nodes*, and a node is any of:
+//!
+//!  - **a component or primitive invocation** — `Foo(...)`,
+//!    `Foo(...) { ... }`, `Foo { ... }`, `view { ... }`, `text(...) { ... }`;
+//!  - **control flow** — `if cond { … } else { … }`, `for x in iter { … }`,
+//!    `match scrutinee { … }` (a reactive `if`/`match`, i.e. a condition
+//!    that calls `.get()`, desugars to `when(...)`);
+//!  - **any Rust expression** that yields a `ChildList`-compatible value
+//!    (anything `IntoElement`). This is the escape hatch and it is *not*
+//!    restricted to bare identifiers: a precomputed `let el = …; … el …`,
+//!    a **helper-fn call** (`my_section()`), a `Vec<Element>` splat, or an
+//!    iterator chain all work as children — and equally as the body of a
+//!    `for`. If a child "isn't allowed," it's almost always because the
+//!    expression's *type* isn't `IntoElement`, not because the position
+//!    forbids expressions.
+//!
+//! The one thing to keep straight: a bare identifier becomes a component
+//! only when followed by `(` or `{` (see *Component recognition*). So
+//! `widget` is an expression child, while `widget()` and `widget { … }`
+//! are invocations.
+//!
 //! ## Dispatch
 //!
 //! Each parsed component emits one of:

@@ -12,7 +12,49 @@
 //! about UIView subclassing, `MotionEvent` action codes, Pointer Events,
 //! or winit — those are backend implementation details.
 //!
+//! ## Dispatch model (identical on every backend)
+//!
+//! Delivery is **deepest-view-first, then bubble to ancestors** — the
+//! responder model, not a parent-intercepts-first model. For a `Began`
+//! at a point, the *deepest* view under that point whose handler is
+//! installed is asked first; if it returns [`IGNORED`] the event re-tries
+//! the nearest ancestor handler, repeating up the chain until one
+//! consumes (or the chain runs out and the event is dropped). The
+//! ancestor that consumes the `Began` keeps every later event for that
+//! [`TouchId`]. Every backend realizes this the same way despite
+//! different mechanisms: hit-test → `nextResponder`/`super` on Apple and
+//! winit, bubble-phase Pointer Events on web, and `OnTouchListener`
+//! target dispatch on Android. A parent handler therefore does **not**
+//! pre-empt its children — a tap on an interactive descendant reaches the
+//! descendant first.
+//!
+//! ## Two footguns this model creates
+//!
+//! 1. **A `claim` on an ancestor captures the whole subtree's gesture.**
+//!    [`CLAIMED`] (i.e. `claim: true`) invokes the backend's capture
+//!    protocol — `setPointerCapture` on web, disallow-intercept / claim
+//!    on native. Once an ancestor captures a pointer, descendant controls
+//!    that rely on their own touch stream — or on a synthesized `click`,
+//!    which web only fires when `pointerdown`+`pointerup` both land on the
+//!    same element — never see the gesture and go dead. **Put the handler
+//!    on the leaf that should claim, not on a container that wraps live
+//!    controls.** An ancestor that only needs to stop a touch from
+//!    falling through to a surface *beneath* it (e.g. a scrim over a
+//!    canvas) should return [`CONSUMED`] (consume **without** `claim`) and
+//!    must not enclose the controls it means to keep interactive.
+//!
+//! 2. **[`IGNORED`] bubbles to ancestors, never to siblings or layers
+//!    beneath.** There is no `pointer-events: none` and no z-order
+//!    fall-through: a handler cannot return `IGNORED` to "let the touch
+//!    reach the view stacked under me." If two stacked surfaces must share
+//!    a region, route the hit-testing through a single owning surface that
+//!    inspects the point and dispatches itself, rather than relying on
+//!    fall-through between siblings.
+//!
 //! [`Backend`]: crate::Backend
+//! [`IGNORED`]: TouchResponse::IGNORED
+//! [`CONSUMED`]: TouchResponse::CONSUMED
+//! [`CLAIMED`]: TouchResponse::CLAIMED
 
 pub mod recognizers;
 

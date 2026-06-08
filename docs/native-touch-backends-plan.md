@@ -172,8 +172,21 @@ parallel `TouchEvent` streams sharing a handler.
 
 ### Event capture
 
+> **Implementation note (superseded sketch below).** The shipped
+> backend does **not** override `dispatchTouchEvent`. It installs a
+> `View.OnTouchListener` (`RustTouchListener`) per node — see
+> `crates/backend/android/mobile/src/imp/primitives/touch.rs`. An
+> `OnTouchListener` fires on the *target* (deepest) view first and only
+> propagates to ancestors when the child declines, which gives the
+> **deepest-view-first → bubble-to-ancestor** responder model the other
+> backends use (and that `runtime_core::touch` documents). A
+> `dispatchTouchEvent` override would instead make a parent intercept
+> *before* its children — the opposite order — so it was rejected. The
+> original sketch is kept for historical context:
+
 The framework's View primitive already maps to a `FrameLayout`
-subclass (or similar). Grow that subclass with `dispatchTouchEvent`:
+subclass (or similar). The original sketch grew that subclass with
+`dispatchTouchEvent`:
 
 ```kotlin
 override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -182,9 +195,11 @@ override fun dispatchTouchEvent(event: MotionEvent): Boolean {
 }
 ```
 
-`dispatchTouchEvent` intercepts before children — matches iOS's
-"parent sees touch first" model and gives us control over the
-bubble.
+That intercepts *before* children (parent-first), which contradicts
+the responder model the framework settled on — hence the
+`OnTouchListener` approach above instead. (iOS likewise delivers to the
+deepest hit-tested view first and bubbles via the responder chain; it
+is not "parent sees touch first.")
 
 ### Event translation
 

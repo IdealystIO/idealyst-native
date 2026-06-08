@@ -650,6 +650,12 @@ pub enum UserSelect {
 /// - Web: `box-shadow: {x}px {y}px {blur}px {color}`
 /// - iOS: `layer.shadowOffset/Opacity/Radius/Color` setters
 /// - Android: `setElevation` + tinting (approximation)
+///
+/// Note: `blur` here is the *shadow's* blur radius. There is no
+/// **backdrop-filter / content blur** (the "glassmorphism" effect of
+/// blurring what's behind a translucent panel) — it has no portable
+/// equivalent across UIView/Android/DOM that the framework will commit
+/// to. Approximate it with a more-opaque translucent `background` fill.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shadow {
     pub x: f32,

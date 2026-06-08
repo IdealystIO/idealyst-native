@@ -796,6 +796,29 @@ pub enum DrawOp {
 /// canvas renderer consumes. Build it imperatively; the current-path
 /// cursor mirrors Canvas2D semantics (`path()` begins a path,
 /// `fill()`/`stroke()` consume the current path).
+///
+/// # The current path
+///
+/// Geometry builders ([`move_to`](Self::move_to),
+/// [`line_to`](Self::line_to), [`add_path`](Self::add_path), …) append to
+/// a single **current path**; [`fill`](Self::fill) /
+/// [`stroke`](Self::stroke) then paint *that* accumulated path. This is
+/// the Canvas2D model, and it has one classic footgun: a loop that draws
+/// many shapes without resetting between them appends them all into one
+/// path, so each `fill`/`stroke` repaints every prior shape with the
+/// latest paint (the "my color applied to all strokes" bug).
+///
+/// The `Scene` defuses it: once a draw consumes the current path, the
+/// next geometry call **auto-begins a fresh path**, so a forgotten
+/// [`path`](Self::path) can't accumulate. You still *may* call
+/// [`path`](Self::path) to start a new path explicitly, and the
+/// legitimate fill-then-stroke-the-same-shape pattern still works (no
+/// geometry is added between the two draws, so no reset happens).
+///
+/// When a shape is self-contained, prefer the one-shot
+/// [`fill_path`](Self::fill_path) / [`stroke_path`](Self::stroke_path),
+/// which paint a freestanding [`Path`] without touching the current-path
+/// cursor at all — no ordering to remember.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Scene {
     /// The recorded ops, in draw order.

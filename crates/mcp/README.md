@@ -40,6 +40,20 @@ Each scaffolded project ships a `catalog` binary that exposes its
 own catalog. Drift between code and surface is structurally
 impossible — they come from the same source.
 
+### Scope: the catalog is the linked dependency graph
+
+Project-awareness has a corollary worth calling out: the catalog only
+contains what the project **actually links**. An SDK you haven't added
+to `Cargo.toml` yet contributes nothing to the `inventory` slices, so
+`list_components` / `describe_component` / `list_icon_sets` return
+nothing for it — you can't introspect an SDK's API *before* depending on
+it. This is by construction (the catalog is collected at link time from
+the crates in the build), not a bug. To explore a not-yet-added SDK,
+add the dependency first (then rebuild the `catalog` binary), or read
+the SDK crate's own docs/README. A registry that lets tools browse
+*available-but-unlinked* SDKs would be a separate surface from this
+link-time catalog.
+
 ## Robot is the other half
 
 The catalog is the *static* view. Robot (in `runtime-core` under a

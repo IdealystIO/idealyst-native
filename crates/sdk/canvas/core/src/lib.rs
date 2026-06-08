@@ -452,17 +452,15 @@ mod tests {
         use runtime_core::{resolve_style, Length, StyleSource, Tokenized};
 
         let mut canvas = Canvas(CanvasProps::default());
-        let style = match canvas.primitive_mut() {
+        let rules = match canvas.primitive_mut() {
             runtime_core::Element::External { style, .. } => {
-                style.clone().expect("unstyled Canvas must attach a fill style")
+                match style.as_ref().expect("unstyled Canvas must attach a fill style") {
+                    StyleSource::Static(a) => resolve_style(a),
+                    _ => panic!("the fill default is a static sheet"),
+                }
             }
             _ => panic!("Canvas builds an External element"),
         };
-        let app = match style {
-            StyleSource::Static(a) => a,
-            _ => panic!("the fill default is a static sheet"),
-        };
-        let rules = resolve_style(&app);
         assert_eq!(rules.flex_grow, Some(Tokenized::Literal(1.0)));
         assert_eq!(rules.width, Some(Tokenized::Literal(Length::Percent(100.0))));
         assert_eq!(rules.height, Some(Tokenized::Literal(Length::Percent(100.0))));
@@ -479,15 +477,15 @@ mod tests {
         let sheet = std::rc::Rc::new(StyleSheet::r#static(fixed));
 
         let mut canvas = Canvas(CanvasProps::default()).with_style(sheet);
-        let style = match canvas.primitive_mut() {
-            runtime_core::Element::External { style, .. } => style.clone().unwrap(),
+        let rules = match canvas.primitive_mut() {
+            runtime_core::Element::External { style, .. } => {
+                match style.as_ref().unwrap() {
+                    StyleSource::Static(a) => resolve_style(a),
+                    _ => panic!("static sheet expected"),
+                }
+            }
             _ => panic!("Canvas builds an External element"),
         };
-        let app = match style {
-            StyleSource::Static(a) => a,
-            _ => panic!("static sheet expected"),
-        };
-        let rules = resolve_style(&app);
         assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(120.0))));
         // The fill default's flex_grow is gone — the author's sheet won.
         assert_eq!(rules.flex_grow, None);

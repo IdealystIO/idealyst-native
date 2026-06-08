@@ -213,6 +213,9 @@ async fn build_render_fn(ev: OnReadyEvent, props: Rc<CanvasProps>) -> RenderFn {
     // `web_layer::WebLayerCompositor`), so a layered canvas no longer forces
     // Canvas2D — it stays on WebGPU/vello (the instanced backdrop included).
     let gpu_viable = !force_canvas2d();
+    if !gpu_viable {
+        marker("canvas-vello: Canvas2D forced (__IDEALYST_FORCE_CANVAS2D set)");
+    }
 
     if gpu_viable {
         if let Some(gpu) = GpuState::try_new(ev, canvas.clone(), props.layers.clone()).await {
@@ -273,6 +276,11 @@ struct GpuState {
     /// [`WebLayerCompositor`]. Empty when the canvas has no layers.
     layers: Vec<TextureLayer>,
     layer_compositor: Option<WebLayerCompositor>,
+    /// TEMP frame-rate meter (remove after benchmarking): frames this window,
+    /// window-start µs, last-frame µs, worst inter-frame gap µs. Logs canvas FPS +
+    /// worst frame gap to the console once a second WHILE rendering (so the number
+    /// reflects interaction — pan/zoom — not idle, when `render` isn't called).
+    fps: (u32, u64, u64, u64),
     /// Instanced analytic-shape pass for a leading shape backdrop (the hybrid
     /// path), built lazily the first time a shape-led scene is rendered.
     shape_pass: Option<ShapePass>,
@@ -306,20 +314,32 @@ impl GpuState {
         });
 
         // Headless adapter+device — `compatible_surface: None` never touches the
-        // canvas, so it stays unclaimed if any of this fails.
-        let adapter = instance
+        // canvas, so it stays unclaimed if any of this fails. TEMP: each failure
+        // logs WHY we fall back to Canvas2D (remove the markers once diagnosed).
+        let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
                 compatible_surface: None,
             })
             .await
-            .ok()?;
+        {
+            Ok(a) => a,
+            Err(e) => {
+                marker(&format!("canvas-vello: WebGPU probe — no adapter ({e:?})"));
+                return None;
+            }
+        };
+        let info = adapter.get_info();
+        marker(&format!(
+            "canvas-vello: WebGPU adapter ok — {:?} / {} (backend {:?})",
+            info.device_type, info.name, info.backend
+        ));
 
         // vello's `flatten` shader wants f16 where the backend offers it; request
         // it when present. Take the adapter's own limits (never over-asks).
         let f16 = wgpu::Features::SHADER_F16 & adapter.features();
-        let (device, queue) = adapter
+        let (device, queue) = match adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("canvas-vello-web-device"),
                 required_features: f16,
@@ -329,12 +349,18 @@ impl GpuState {
                 trace: wgpu::Trace::Off,
             })
             .await
-            .ok()?;
+        {
+            Ok(dq) => dq,
+            Err(e) => {
+                marker(&format!("canvas-vello: WebGPU probe — request_device failed ({e:?})"));
+                return None;
+            }
+        };
 
         // Build the vello pipeline BEFORE claiming the canvas: this is the last
         // step that can fail on a too-weak GPU. If it errors, the canvas is still
         // pristine and the caller falls back to Canvas2D.
-        let renderer = Renderer::new(
+        let renderer = match Renderer::new(
             &device,
             RendererOptions {
                 use_cpu: false,
@@ -342,11 +368,22 @@ impl GpuState {
                 num_init_threads: None,
                 pipeline_cache: None,
             },
-        )
-        .ok()?;
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                marker(&format!("canvas-vello: WebGPU probe — vello Renderer::new failed ({e:?})"));
+                return None;
+            }
+        };
 
         // --- Commit: this is the only step that binds the canvas to webgpu. ---
-        let surface = instance.create_surface(ev.surface).ok()?;
+        let surface = match instance.create_surface(ev.surface) {
+            Ok(s) => s,
+            Err(e) => {
+                marker(&format!("canvas-vello: WebGPU probe — create_surface failed ({e:?})"));
+                return None;
+            }
+        };
 
         let caps = surface.get_capabilities(&adapter);
         // Prefer a NON-sRGB surface format: vello writes already-sRGB-encoded
@@ -391,6 +428,7 @@ impl GpuState {
             shape_pass: None,
             overlay: None,
             overlay_compositor: None,
+            fps: (0, 0, 0, 0),
         })
     }
 
@@ -400,6 +438,36 @@ impl GpuState {
     }
 
     fn render(&mut self, canvas_scene: &CanvasScene) {
+        // TEMP FPS meter (remove after benchmarking). Inter-frame interval → FPS +
+        // worst gap, logged once a second. `render` only runs on repaint, so this
+        // measures the rate DURING interaction (pan/zoom) — a steady ~60 with a
+        // small worst-gap is smooth; a low FPS or a big worst-gap is the stutter.
+        {
+            let now = runtime_core::time::now_micros();
+            let (frames, win, last, maxgap) = &mut self.fps;
+            if *last != 0 {
+                *maxgap = (*maxgap).max(now.saturating_sub(*last));
+            }
+            *last = now;
+            if *win == 0 {
+                *win = now;
+            }
+            *frames += 1;
+            let elapsed = now.saturating_sub(*win);
+            if elapsed >= 1_000_000 {
+                let fps = *frames as f64 * 1_000_000.0 / elapsed as f64;
+                let worst_ms = *maxgap as f64 / 1000.0;
+                marker(&format!(
+                    "canvas-vello fps: {fps:.0} ({} frames in {:.2}s), worst frame gap {worst_ms:.1}ms",
+                    *frames,
+                    elapsed as f64 / 1_000_000.0
+                ));
+                *frames = 0;
+                *win = now;
+                *maxgap = 0;
+            }
+        }
+
         // Live resize: the graphics primitive keeps the canvas backing store at
         // box × dpr, so reconfigure the surface + target when it changes (web has
         // no separate swapchain-size signal we need to thread through).
