@@ -69,6 +69,55 @@ fn build_canvas(props: &Rc<CanvasProps>) -> web_sys::Element {
     let _ = el.set_attribute("data-external-kind", "canvas_core::CanvasProps");
 
     let canvas: HtmlCanvasElement = el.clone().dyn_into().expect("canvas element cast");
+
+    // Latest painted scene — written by the content effect, read by both
+    // the effect's own render and the resize observer.
+    let cell: Rc<RefCell<Scene>> = Rc::new(RefCell::new(Scene::new()));
+
+    // Per-frame rasterizer (2d ctx + texture layers + captureStream). Shared
+    // behind `Rc<RefCell>` because both the ResizeObserver and the reactive
+    // effect drive a repaint from the latest `cell`.
+    let rasterize = Rc::new(RefCell::new(make_2d_rasterizer(canvas, props)));
+
+    let cb = Closure::<dyn FnMut()>::new({
+        let rasterize = rasterize.clone();
+        let cell = cell.clone();
+        move || (rasterize.borrow_mut())(&cell.borrow())
+    });
+    let observer = ResizeObserver::new(cb.as_ref().unchecked_ref()).expect("ResizeObserver::new");
+    observer.observe(&el);
+    let guard = ObserverGuard { observer, _cb: cb };
+
+    // Reactive repaint. The walker runs us inside the mount scope, so this
+    // Effect (and the `guard` + `rasterize` it owns) live until unmount.
+    let props = props.clone();
+    effect!({
+        // Capture the observer guard into the scope-owned effect so it is
+        // dropped (→ disconnected) exactly when the canvas unmounts.
+        let _keep = &guard;
+        *cell.borrow_mut() = paint_scene(&props);
+        (rasterize.borrow_mut())(&cell.borrow());
+    });
+
+    el
+}
+
+/// Build a per-frame rasterizer that replays a [`Scene`] into `canvas`'s `2d`
+/// context (including texture layers and `captureStream` self-capture). The
+/// returned closure resizes the backing store to the CSS box × dpr and replays
+/// the scene on each call; the caller owns the repaint triggers (a reactive
+/// effect, a `ResizeObserver`, or the graphics primitive's `on_resize`).
+///
+/// Used by canvas-native's own handler AND by `canvas-vello`'s web renderer as
+/// its **WebGPU-unavailable fallback**: vello hands this the SAME `<canvas>` the
+/// `graphics` primitive created — still *unclaimed*, so this `getContext("2d")`
+/// is the canvas's first and only context (a `<canvas>` is permanently bound to
+/// its first context type on the web). Output is identical to the native-on-web
+/// path (CLAUDE.md §7).
+pub fn make_2d_rasterizer(
+    canvas: HtmlCanvasElement,
+    props: &Rc<CanvasProps>,
+) -> Box<dyn FnMut(&Scene)> {
     let ctx: CanvasRenderingContext2d = canvas
         .get_context("2d")
         .ok()
@@ -77,9 +126,10 @@ fn build_canvas(props: &Rc<CanvasProps>) -> web_sys::Element {
         .dyn_into()
         .expect("2d context cast");
 
-    // Latest painted scene — written by the content effect, read by both
-    // the effect's own render and the resize observer.
-    let cell: Rc<RefCell<Scene>> = Rc::new(RefCell::new(Scene::new()));
+    let document = web_sys::window()
+        .expect("no window")
+        .document()
+        .expect("no document");
 
     // Texture layers (camera): a hidden <video> per layer, drawImage'd over the
     // scene so `captureStream` records it too (web parity for camera-in-canvas).
@@ -87,53 +137,32 @@ fn build_canvas(props: &Rc<CanvasProps>) -> web_sys::Element {
     let layers = props.layers.clone();
     let layer_videos: Rc<RefCell<Vec<LayerVideo>>> = Rc::new(RefCell::new(Vec::new()));
 
-    // Size the backing store to the CSS box × dpr, then replay the cell.
-    let render: Rc<dyn Fn()> = {
-        let canvas = canvas.clone();
-        let ctx = ctx.clone();
-        let cell = cell.clone();
-        let layers = layers.clone();
-        let layer_videos = layer_videos.clone();
-        let document = document.clone();
-        Rc::new(move || {
-            render_scene(&canvas, &ctx, &cell.borrow());
-            if !layers.is_empty() {
-                draw_layers(&document, &ctx, &layers, &layer_videos);
-            }
-        })
-    };
+    publish_capture_stream(&canvas, props);
 
-    let cb = Closure::<dyn FnMut()>::new({
-        let render = render.clone();
-        move || render()
-    });
-    let observer = ResizeObserver::new(cb.as_ref().unchecked_ref()).expect("ResizeObserver::new");
-    observer.observe(&el);
-    let guard = ObserverGuard { observer, _cb: cb };
+    Box::new(move |scene: &Scene| {
+        render_scene(&canvas, &ctx, scene);
+        if !layers.is_empty() {
+            draw_layers(&document, &ctx, &layers, &layer_videos);
+        }
+    })
+}
 
-    // Self-capture (web): when the canvas has a `capture` sink, hand the browser
-    // the `<canvas>` via `captureStream()` and publish that `MediaStream` as the
-    // stream's native source. The recorder records it directly — no readback.
-    // (The app must keep the canvas re-rendering, e.g. a `version` raf, while
-    // recording, or the captured stream is a frozen frame.)
+/// Publish `canvas` as a `captureStream()` [`MediaStream`] into `props.capture`
+/// (web self-capture). No-op when the canvas has no `capture` sink. The recorder
+/// records the canvas directly — no readback.
+///
+/// Shared by the 2D rasterizer and `canvas-vello`'s web **GPU** path:
+/// `captureStream` works on any canvas regardless of context type, so the vello
+/// path reuses this instead of a GPU→CPU readback (the readback's blocking
+/// `map`+`poll` is illegal on the wasm main thread). (The app must keep the
+/// canvas re-rendering, e.g. a `version` raf, while recording, or the captured
+/// stream is a frozen frame.)
+pub fn publish_capture_stream(canvas: &HtmlCanvasElement, props: &CanvasProps) {
     if let Some(capture) = &props.capture {
         if let Ok(stream) = canvas.capture_stream_with_frame_request_rate(CAPTURE_FPS) {
             capture.publish_native_source(Rc::new(stream));
         }
     }
-
-    // Reactive repaint. The walker runs us inside the mount scope, so this
-    // Effect (and the `guard` + `render` it owns) live until unmount.
-    let props = props.clone();
-    effect!({
-        // Capture the observer guard into the scope-owned effect so it is
-        // dropped (→ disconnected) exactly when the canvas unmounts.
-        let _keep = &guard;
-        *cell.borrow_mut() = paint_scene(&props);
-        render();
-    });
-
-    el
 }
 
 /// Frame rate for the web self-capture `captureStream()`.

@@ -17,6 +17,12 @@
 mod web;
 #[cfg(target_arch = "wasm32")]
 pub use web::register;
+// Reusable Canvas2D rasterizer + capture helper — `canvas-vello`'s web renderer
+// calls these as its WebGPU-unavailable fallback (renders into the graphics
+// primitive's own `<canvas>`, same output as this crate's standalone handler)
+// and for self-capture on its GPU path (captureStream works on any canvas).
+#[cfg(target_arch = "wasm32")]
+pub use web::{make_2d_rasterizer, publish_capture_stream};
 
 // Shared CoreGraphics painter for the Apple platforms (iOS + macOS).
 // The Scene→CGContext op-replay is platform-identical; only context

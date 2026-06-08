@@ -27,6 +27,9 @@ files = { workspace = true }
 # where the canvas / video / screen-recorder externals register their handlers.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
+# GPU canvas on web (vello over WebGPU) — overrides canvas-native (last-wins)
+# when the browser exposes WebGPU; falls back to Canvas2D per-canvas otherwise.
+canvas-vello = { workspace = true }
 
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }

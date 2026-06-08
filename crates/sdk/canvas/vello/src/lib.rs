@@ -6,23 +6,38 @@
 //! `Element::External` handler for `canvas_core::CanvasProps`,
 //! last-registration-wins).
 //!
-//! Native-only: vello needs compute shaders (Metal / Vulkan / DX12 /
-//! WebGPU). Web has a native 2D API (Canvas2D via `canvas-native`) and the
-//! repo's web `wgpu` is WebGL-only, so `register` is a no-op on wasm32.
+//! vello needs compute shaders (Metal / Vulkan / DX12 / WebGPU). On native
+//! backends that's always available; on **web** it requires WebGPU, which is
+//! not universal — so the web renderer ([`render_web`]) decides per canvas at
+//! runtime: a headless WebGPU probe in `on_ready` either commits the canvas to
+//! webgpu+vello or falls back to Canvas2D (`canvas-native`'s rasterizer) on the
+//! same element. See `render_web.rs` for why the fallback is per-canvas and
+//! in-place (web binds a `<canvas>` to its first context type permanently, and
+//! the web backend can't swap a mounted node).
 //!
-//! A single generic [`register`] covers every native backend: the GPU
-//! surface is obtained from `Backend::create_graphics`, so no per-platform
-//! module is needed (unlike `canvas-native`).
+//! A single generic [`register`] covers every backend: the GPU surface is
+//! obtained from `Backend::create_graphics`, so no per-platform module is
+//! needed (unlike `canvas-native`).
 #![allow(missing_docs)]
 
-// vello runs on every native backend: macOS + iOS (objc2 0.6 Metal coexists with
-// the framework's 0.2 — see Cargo.toml; iOS sim/devices use host Metal, which has
-// f16/compute), Android (Vulkan), and desktop Linux/Windows. NOT on web (WebGL-only
-// wgpu; web has Canvas2D via `canvas-native`).
+// Scene→vello translation, shared by the native and web renderers (no GPU or
+// async — pure op-list walk). Identical output across targets (CLAUDE.md §7).
+mod encode;
+
+// Native renderer: blocking wgpu init. macOS + iOS (objc2 0.6 Metal coexists
+// with the framework's 0.2 — see Cargo.toml; iOS sim/devices use host Metal,
+// which has f16/compute), Android (Vulkan), and desktop Linux/Windows.
 #[cfg(not(target_arch = "wasm32"))]
 mod render;
 #[cfg(not(target_arch = "wasm32"))]
 pub use render::register;
+
+// Web renderer: async wgpu init over the browser's WebGPU backend, with a
+// per-canvas Canvas2D fallback when WebGPU is unavailable.
+#[cfg(target_arch = "wasm32")]
+mod render_web;
+#[cfg(target_arch = "wasm32")]
+pub use render_web::register;
 
 // Zero-copy capture target (`render.rs` uses `NativeCapture` uniformly): the
 // real IOSurface ring on macOS, a no-op stub on the other vello targets. iOS uses
@@ -32,10 +47,3 @@ mod native_capture;
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))]
 #[path = "native_capture_stub.rs"]
 mod native_capture;
-
-/// No-op `register` on web (WebGL-only wgpu): uses `canvas-native` (Canvas2D).
-/// Still registers the wire serde so a canvas can round-trip over the wire.
-#[cfg(target_arch = "wasm32")]
-pub fn register<B: runtime_core::Backend>(_backend: &mut B) {
-    canvas_core::ensure_wire_serde();
-}

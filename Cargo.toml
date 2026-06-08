@@ -100,6 +100,7 @@ members = [
     # SDK — utility (non-primitive) crates.
     "crates/sdk/net",
     "crates/sdk/storage",
+    "crates/sdk/pan",
     "crates/sdk/microphone",
     "crates/sdk/camera",
     "crates/sdk/media-stream",
@@ -302,6 +303,7 @@ idea-theme = { path = "crates/ui/idea-theme" }
 idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }
 icons-lucide = { path = "crates/ui/icons-lucide" }
+pan = { path = "crates/sdk/pan" }
 maps = { path = "crates/sdk/maps" }
 maps-core = { path = "crates/sdk/maps/core" }
 maps-web = { path = "crates/sdk/maps/web" }

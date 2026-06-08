@@ -1327,6 +1327,8 @@ name = "canvas-vello"
 version = "0.0.1"
 dependencies = [
  "canvas-core",
+ "canvas-native",
+ "js-sys",
  "log",
  "media-stream",
  "objc2 0.6.4",
@@ -1338,6 +1340,10 @@ dependencies = [
  "raw-window-handle",
  "runtime-core",
  "vello",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
  "wgpu",
 ]
 
@@ -5460,6 +5466,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
  "ttf-parser 0.25.1",
+]
+
+[[package]]
+name = "pan"
+version = "0.0.1"
+dependencies = [
+ "runtime-core",
 ]
 
 [[package]]

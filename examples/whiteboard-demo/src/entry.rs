@@ -40,13 +40,24 @@ use crate::{BoardScreen, CanvasDoc, CanvasStore, PreviewScreen, SettingsScreen, 
 /// call here. `canvas-vello` has no inventory hook — it's generic over `Backend`
 /// and pulls the GPU surface from `create_graphics` — so it's the only one
 /// registered here, last (last-registration-wins over native where vello is
-/// viable; it self-gates off on devices without f16). The lone `cfg` mirrors the
-/// dependency table: `canvas-vello` is only compiled for ios/android/macos.
+/// viable; it self-gates off where the GPU can't run vello). The `cfg` mirrors
+/// the dependency table: `canvas-vello` is compiled for ios/android/macos AND
+/// web (wasm32 → vello over WebGPU, with a per-canvas Canvas2D fallback).
 pub fn register_extensions<B: runtime_core::RegisterExternal>(backend: &mut B) {
-    #[cfg(any(target_os = "ios", target_os = "android", target_os = "macos"))]
+    #[cfg(any(
+        target_os = "ios",
+        target_os = "android",
+        target_os = "macos",
+        target_arch = "wasm32"
+    ))]
     canvas_vello::register(backend);
-    #[cfg(not(any(target_os = "ios", target_os = "android", target_os = "macos")))]
-    let _ = backend; // web + desktop: inventory-only; vello absent from the build
+    #[cfg(not(any(
+        target_os = "ios",
+        target_os = "android",
+        target_os = "macos",
+        target_arch = "wasm32"
+    )))]
+    let _ = backend; // desktop: inventory-only; vello absent from the build
 }
 
 // ============================================================================

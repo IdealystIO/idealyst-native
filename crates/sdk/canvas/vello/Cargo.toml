@@ -12,11 +12,14 @@ license.workspace = true
 # `canvas_vello::register` at bootstrap (registers an `Element::External`
 # handler for `CanvasProps`, last-registration-wins).
 #
-# NATIVE ONLY: vello requires compute shaders (Metal / Vulkan / DX12 /
-# WebGPU). The repo's web wgpu is WebGL-only, and web already has a native
-# 2D API (Canvas2D via `canvas-native`), so there's no web vello path —
-# `register` is a no-op on wasm32. One generic `register<B>` covers every
-# native backend because the GPU surface comes from `Backend::create_graphics`.
+# vello requires compute shaders (Metal / Vulkan / DX12 / WebGPU). On native
+# backends that's always available. On WEB it renders over wgpu's WebGPU backend
+# (wgpu 29 vendors its WebGPU bindings, so no `--cfg=web_sys_unstable_apis`
+# needed) — but WebGPU isn't universal, so `render_web.rs` decides per canvas at
+# runtime: a headless probe in `on_ready` commits the canvas to webgpu+vello or
+# falls back to Canvas2D (`canvas-native`'s rasterizer) on the same element. One
+# generic `register<B>` covers every backend because the GPU surface comes from
+# `Backend::create_graphics`.
 
 [dependencies]
 runtime-core = { workspace = true }
@@ -34,13 +37,47 @@ log = "0.4"
 # name) and `canvas-vello` reaches the GPU via `raw-window-handle` (raw ptrs),
 # never crossing objc2 types with the backend. So vello is enabled on macOS AND
 # iOS (GPU canvas via Metal — same objc2-coexistence trick; iOS uses host Metal
-# which has f16/compute). Web is excluded (WebGL-only wgpu; web has Canvas2D via
-# `canvas-native`). Same wgpu major (29) the gpu-backend uses; vello 0.9 pins it too.
+# which has f16/compute). Web uses wgpu's WebGPU backend (see the wasm32 block
+# below). Same wgpu major (29) the gpu-backend uses; vello 0.9 pins it too.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 vello = "0.9"
 wgpu = "29"
 raw-window-handle = "0.6"
 pollster = "0.4"
+
+# Web (wasm32): vello over wgpu's **WebGPU** backend. `default-features = false,
+# features = ["webgpu", "wgsl"]` selects the browser WebGPU path (NOT webgl —
+# vello needs compute shaders, which WebGL can't do; where WebGPU is absent the
+# renderer falls back to Canvas2D, not webgl). wgpu 29 vendors its WebGPU
+# `web-sys` bindings (`webgpu_sys`), so this needs NO `--cfg=web_sys_unstable_apis`
+# build flag. No `pollster` — blocking is illegal on the browser main thread;
+# adapter/device acquisition is awaited via `wasm-bindgen-futures::spawn_local`.
+# `canvas-native` is the Canvas2D fallback delegate (its `make_2d_rasterizer`),
+# reached on the same `<canvas>` when WebGPU is unavailable.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+vello = "0.9"
+wgpu = { version = "29", default-features = false, features = ["webgpu", "wgsl"] }
+raw-window-handle = "0.6"
+canvas-native = { workspace = true }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    # `window().navigator()` for the synchronous `navigator.gpu` presence gate
+    # (read via `js_sys::Reflect` to avoid the unstable web-sys WebGPU bindings).
+    "Window",
+    "Navigator",
+    # Reconstructing the graphics primitive's `<canvas>` from its
+    # `WebCanvasWindowHandle` for the Canvas2D fallback path.
+    "HtmlCanvasElement",
+    # `console.log` marker of which renderer engaged (GPU vs Canvas2D fallback).
+    "console",
+] }
+
+# Deterministic gate-logic test (`js_truthy_prop`), run via `wasm-pack test`.
+# The async GPU bootstrap itself is E2E-only (Playwright + whiteboard demo).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 # Zero-copy GPU capture on macOS: render vello into an IOSurface-backed Metal
 # texture (imported into the canvas wgpu device via `wgpu::Device::as_hal` +

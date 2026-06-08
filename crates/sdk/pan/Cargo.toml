@@ -1,0 +1,31 @@
+[package]
+name = "pan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform pan / drag gesture SDK.
+#
+# One small handle — `Pan` — that turns the raw single-finger pan stream
+# (which the framework already unifies across mouse, touch, and pen) into a
+# reactive 2D offset you can bind to a view's translate, plus the lifecycle
+# callbacks (start / change / end / cancel) you need to build everything on
+# top. Deliberately unopinionated: it tracks the offset and gets out of the
+# way. Momentum, snap points, axis-locking, bounds-clamping, and
+# swipe-to-dismiss are NOT here — they are app- / higher-SDK-level policy
+# layered on the methods this crate exposes (`pan.x().animate(...)` in
+# `on_end`, `set_offset(...)`, etc.).
+#
+# Works identically on every backend with no per-platform code: the input
+# already converges at `runtime_core`'s `TouchEvent` (web Pointer Events
+# fold mouse+touch+pen together; the native backends deliver touches), and
+# the output drives `AnimatedValue::bind(.., AnimProp::TranslateX/Y)`, which
+# each backend writes through its own native transform. There is nothing
+# platform-specific to gate, so this is a single pure-Rust crate.
+#
+# No permissions required.
+
+[dependencies]
+# The whole SDK is pure Rust on top of core's touch recognizer + animation
+# primitives — no platform crates.
+runtime-core = { workspace = true }
