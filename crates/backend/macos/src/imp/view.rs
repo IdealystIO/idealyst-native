@@ -153,9 +153,9 @@ declare_class!(
             // across resizes/scrolls); `ActiveInActiveApp` tracks while our
             // app is frontmost; `MouseEnteredAndExited` delivers the two
             // methods above. Owner is `self`, so they route here.
-            let opts = NSTrackingAreaOptions::MouseEnteredAndExited
-                | NSTrackingAreaOptions::ActiveInActiveApp
-                | NSTrackingAreaOptions::InVisibleRect;
+            let opts = NSTrackingAreaOptions::NSTrackingMouseEnteredAndExited
+                | NSTrackingAreaOptions::NSTrackingActiveInActiveApp
+                | NSTrackingAreaOptions::NSTrackingInVisibleRect;
             let mtm = MainThreadMarker::from(self);
             let area: Retained<NSTrackingArea> = unsafe {
                 msg_send_id![
