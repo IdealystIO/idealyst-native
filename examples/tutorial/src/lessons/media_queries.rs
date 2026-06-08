@@ -195,9 +195,9 @@ stylesheet! {
 
 // Mark the box the card should measure itself against:
 ui! {
-    view(style = sidebar).container() {         // establishes the context
+    view(style = sidebar) {                     // establishes the context
         Card()                                  // keys off `sidebar`'s width
-    }
+    }.container()                               // modifier trails the block
 }"##.to_string())
 
             Typography(

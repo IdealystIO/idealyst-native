@@ -175,6 +175,7 @@ members = [
     "examples/inspector",
     "examples/server-fn-demo",
     "examples/mic-demo",
+    "examples/container-demo",
     "examples/screen-recorder-demo",
     "examples/camera-demo",
     "examples/camera-preview-demo",

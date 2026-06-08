@@ -1,0 +1,32 @@
+[package]
+name = "container-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Container-queries demo — the same Card lays itself out Column in a narrow container and Row in a wide one, keyed off the nearest container's width (not the viewport)."
+
+# Pure `rlib` app crate — the CLI-generated per-target wrappers carry the
+# platform crate-type + entry point.
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `robot` must be a default feature so the `ui!` macro emits `test_id`
+# slots in THIS crate's context (the cfg gate is evaluated here). The demo
+# tags its swatches so a driver can read their frames over the robot bridge
+# and confirm the container-query layout switch.
+default = ["robot"]
+robot = ["runtime-core/robot"]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+[package.metadata.idealyst.app]
+name      = "Container Demo"
+bundle_id = "ai.truday.idealyst.containerdemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]

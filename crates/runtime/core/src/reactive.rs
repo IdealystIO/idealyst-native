@@ -1852,6 +1852,17 @@ fn run_effect(id: EffectId) {
 }
 
 fn run_effects(ids: &[EffectId]) {
+    // Hold ONE busy guard across the whole fan-out. Each `run_effect` enters
+    // its own inner guard, but `REACTIVE_BUSY` must not drop to 0 *between*
+    // sibling effects: the reactive-idle hook (a backend's synchronous layout
+    // flush) fires at depth→0, and one `Signal::set` that wakes N subscriber
+    // effects is a SINGLE mutation window, not N. Without this outer guard,
+    // selecting a row in a list where all N rows subscribe to the selection
+    // signal would re-run N style effects, each bouncing depth to 0 and each
+    // triggering a full layout pass — O(N²) per selection (the regression this
+    // guards against). With it, the hook fires once, after the last effect, and
+    // the coalesced pass runs exactly once. The guard's Drop runs the hook.
+    let _busy = ReactiveBusyGuard::enter();
     for &id in ids {
         // Skip freed effects gracefully.
         let alive = ARENA.with(|a| {
@@ -2326,6 +2337,51 @@ mod tests {
         let s2 = s; // Copy: no .clone() needed.
         s.set(42);
         assert_eq!(s2.get(), 42);
+    }
+
+    #[test]
+    fn idle_hook_coalesces_fanout_to_one_window() {
+        // Regression: selecting a row in a list where every visible row
+        // subscribes to the selection signal must not run one layout pass per
+        // row. The reactive-idle hook (a backend's synchronous layout flush)
+        // fires at REACTIVE_BUSY→0; a single `Signal::set` that wakes N
+        // subscriber effects must be ONE mutation window, not N. On macOS the
+        // unguarded path produced N full layout passes per selection — O(N²).
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let fires = Rc::new(Cell::new(0u32));
+        let f = fires.clone();
+        install_reactive_idle_hook(Rc::new(move || f.set(f.get() + 1)));
+
+        // N effects, all reading the SAME signal (the "every row reads
+        // `selected`" shape).
+        let sel = Signal::new(0i32);
+        const N: usize = 64;
+        let mut keep = Vec::with_capacity(N);
+        for _ in 0..N {
+            keep.push(Effect::new(move || {
+                let _ = sel.get();
+            }));
+        }
+
+        // Ignore the N initial creation runs; measure only the fan-out.
+        fires.set(0);
+        sel.set(1);
+
+        let fired = fires.get();
+        // Value-write window + fan-out window = 2. The old per-effect path
+        // fired N+1 (one per subscriber), which is the bug.
+        assert!(
+            fired <= 2,
+            "fan-out of {N} subscribers must coalesce to a single reactive \
+             window (≤2 idle fires); got {fired} — run_effects lost its outer \
+             busy guard"
+        );
+
+        // Don't leak the counting hook onto this worker thread's later tests.
+        install_reactive_idle_hook(Rc::new(|| {}));
+        drop(keep);
     }
 
     #[test]

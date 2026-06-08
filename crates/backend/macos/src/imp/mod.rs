@@ -204,6 +204,16 @@ thread_local! {
     static LAYOUT_PASS_QUEUED: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
 
+    /// Profiling (§6): set `IDEALYST_LAYOUT_TRACE=1` to log every layout pass
+    /// that actually runs (origin, duration, running totals) plus how many
+    /// times the reactive-idle hook fired. The smoking gun for an O(N²)
+    /// regression is many *real* passes (not early-returns) inside one
+    /// interaction. Read once, cached — zero cost when unset.
+    static LAYOUT_TRACE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+    static PASS_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static IDLE_FIRE_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+
     /// Last viewport size mirrored into `runtime_core::set_viewport_size`, so
     /// `finish` schedules exactly one deferred mirror per actual change and
     /// none in the steady state (unchanged bounds every paint). See the long
@@ -227,6 +237,9 @@ pub fn install_global_self(weak: std::rc::Weak<RefCell<MacosBackend>>) {
     // change that isn't inside a reactive window. No-op when nothing's
     // pending, so it's cheap on every update.
     runtime_core::install_reactive_idle_hook(std::rc::Rc::new(|| {
+        if layout_trace_enabled() {
+            IDLE_FIRE_COUNT.with(|c| c.set(c.get() + 1));
+        }
         flush_pending_layout_pass();
     }));
 }
@@ -353,6 +366,21 @@ pub fn flush_pending_layout_pass() {
     run_pending_layout_pass("event-flush");
 }
 
+/// Cached read of `IDEALYST_LAYOUT_TRACE` (§6 profiling toggle). Returns
+/// `false` unless the env var is set to a non-empty, non-`0` value.
+fn layout_trace_enabled() -> bool {
+    LAYOUT_TRACE.with(|c| match c.get() {
+        Some(v) => v,
+        None => {
+            let v = std::env::var("IDEALYST_LAYOUT_TRACE")
+                .map(|s| !s.is_empty() && s != "0")
+                .unwrap_or(false);
+            c.set(Some(v));
+            v
+        }
+    })
+}
+
 /// Shared drain for both [`schedule_layout_pass`]'s microtask and
 /// [`flush_pending_layout_pass`]. Clears the coalescing flag BEFORE running so
 /// a `schedule_layout_pass` arriving during the pass re-arms and fires again
@@ -365,9 +393,23 @@ fn run_pending_layout_pass(origin: &str) {
         return;
     }
     LAYOUT_PASS_QUEUED.with(|q| crate::layout_policy::release_coalesced_pass(q));
+    let trace = layout_trace_enabled();
+    let started = if trace { Some(std::time::Instant::now()) } else { None };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         with_global_backend(|b| b.run_layout_pass_global());
     }));
+    if let Some(started) = started {
+        let n = PASS_COUNT.with(|c| {
+            let n = c.get() + 1;
+            c.set(n);
+            n
+        });
+        let fires = IDLE_FIRE_COUNT.with(|c| c.get());
+        eprintln!(
+            "[layout-trace] pass #{n} ({origin}) {:.2}ms — idle-fires so far this run: {fires}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
     if let Err(payload) = result {
         let msg = payload
             .downcast_ref::<String>()
@@ -3238,6 +3280,23 @@ impl Backend for MacosBackend {
 
     fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
         handles::make_view_handle(node)
+    }
+
+    /// Node's rect in its parent's coordinate system. The framework's
+    /// views are layer-backed + flipped (top-left origin, matching Taffy),
+    /// so `-[NSView frame]` reads in the same top-left space the layout
+    /// pass writes. Enables the robot bridge's `get_frame` verb on macOS
+    /// (used by the inspector + e2e drivers); previously the default
+    /// `None` stub left every element frame-less here.
+    fn frame(&self, node: &Self::Node) -> Option<runtime_core::primitives::portal::ViewportRect> {
+        let view = node.as_view();
+        let frame: CGRect = unsafe { msg_send![view, frame] };
+        Some(runtime_core::primitives::portal::ViewportRect {
+            x: frame.origin.x as f32,
+            y: frame.origin.y as f32,
+            width: frame.size.width as f32,
+            height: frame.size.height as f32,
+        })
     }
 
     fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
