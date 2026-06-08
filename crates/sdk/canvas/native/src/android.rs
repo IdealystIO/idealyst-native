@@ -408,6 +408,13 @@ thread_local! {
     /// survive and accumulate. A size change rebuilds the bitmap.
     static LAYER_BITMAPS: RefCell<HashMap<u32, (GlobalRef, i32, i32)>> =
         RefCell::new(HashMap::new());
+
+    /// Persistent [`DrawOp::LayerCached`] surfaces — a `Bitmap` (`GlobalRef`) +
+    /// its `w × h` per layer id, baked once (`dirty`) and composited under a
+    /// camera transform every frame. Distinct from [`LAYER_BITMAPS`] so a cached
+    /// and an accumulate layer can share an id.
+    static CACHED_LAYER_BITMAPS: RefCell<HashMap<u32, (GlobalRef, i32, i32)>> =
+        RefCell::new(HashMap::new());
 }
 
 fn rgba_bitmap<'env>(
@@ -621,6 +628,9 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
             DrawOp::Layer { id, clear, ops: nested, alpha, blend } => {
                 self.draw_layer(*id, *clear, nested, *alpha, *blend);
             }
+            DrawOp::LayerCached { id, dirty, transform, ops: nested, alpha, blend } => {
+                self.draw_cached_layer(*id, *dirty, transform, nested, *alpha, *blend);
+            }
             DrawOp::Shapes { shapes, blend } => {
                 // android.graphics has no instanced fast path: expand the batch to
                 // per-shape fills, in array order, replaying each through the Fill
@@ -759,6 +769,182 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
             ],
         );
         let _ = self.env.call_method(self.canvas, "restore", "()V", &[]);
+    }
+
+    /// Replay `nested` into the cached layer `id`'s offscreen `Bitmap` (only
+    /// when `dirty` — or first sight / after a resize), then composite it into
+    /// the main canvas under the camera `transform` at `alpha`/`blend`. The CPU
+    /// **fallback** counterpart of the vello `TransformCompositor` (on a real
+    /// device the GPU vello path handles this; this runs on the emulator).
+    ///
+    /// The bitmap holds device-resolution content (baked at the main canvas
+    /// matrix, like [`draw_layer`](Self::draw_layer)). To composite it under the
+    /// LOGICAL `transform`, the main matrix `M` is replaced with `M · T · M⁻¹`
+    /// (the transform conjugated into device space) and the bitmap drawn 1:1 —
+    /// so the cached raster moves with the camera at `O(1)`, correct for any base
+    /// matrix (scale and/or translation). A `dirty: false` pan reuses the bitmap.
+    fn draw_cached_layer(
+        &mut self,
+        id: u32,
+        dirty: bool,
+        transform: &canvas_core::Transform,
+        nested: &[DrawOp],
+        alpha: f32,
+        blend: BlendMode,
+    ) {
+        let w = self
+            .env
+            .call_method(self.canvas, "getWidth", "()I", &[])
+            .ok()
+            .and_then(|v| v.i().ok())
+            .unwrap_or(0);
+        let h = self
+            .env
+            .call_method(self.canvas, "getHeight", "()I", &[])
+            .ok()
+            .and_then(|v| v.i().ok())
+            .unwrap_or(0);
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let Some((bitmap, fresh)) = self.cached_layer_bitmap(id, w, h) else { return };
+
+        // Bake only on `dirty` (or first sight / post-resize) — a not-dirty pan
+        // reuses the retained bitmap, which is the whole point.
+        if dirty || fresh {
+            let _ = self.env.call_method(bitmap.as_obj(), "eraseColor", "(I)V", &[JValue::Int(0)]);
+            let Ok(canvas_class) = self.env.find_class("android/graphics/Canvas") else { return };
+            let Ok(layer_canvas) = self.env.new_object(
+                &canvas_class,
+                "(Landroid/graphics/Bitmap;)V",
+                &[JValue::Object(bitmap.as_obj())],
+            ) else {
+                return;
+            };
+            // Mirror the main canvas transform so nested logical ops align with
+            // device pixels (the bitmap is device-resolution).
+            if let Ok(m) = self
+                .env
+                .call_method(self.canvas, "getMatrix", "()Landroid/graphics/Matrix;", &[])
+                .and_then(|v| v.l())
+            {
+                let _ = self.env.call_method(
+                    &layer_canvas,
+                    "setMatrix",
+                    "(Landroid/graphics/Matrix;)V",
+                    &[JValue::Object(&m)],
+                );
+            }
+            if let Some(mut sub) = CanvasPainter::new(&mut *self.env, &layer_canvas) {
+                for op in nested {
+                    sub.apply(op);
+                }
+            }
+        }
+
+        // Composite under the camera transform (conjugated into device space).
+        self.reset_paint();
+        let p = self.paint.clone();
+        let a = (alpha.clamp(0.0, 1.0) * 255.0).round() as i32;
+        let _ = self.env.call_method(p.as_obj(), "setAlpha", "(I)V", &[JValue::Int(a)]);
+        // Bilinear so a zoomed cached layer stays smooth.
+        let _ = self.env.call_method(p.as_obj(), "setFilterBitmap", "(Z)V", &[JValue::Bool(1)]);
+        self.set_blend(blend);
+        let _ = self.env.call_method(self.canvas, "save", "()I", &[]);
+        if let Some(conj) = self.cached_composite_matrix(transform) {
+            let _ = self.env.call_method(
+                self.canvas,
+                "setMatrix",
+                "(Landroid/graphics/Matrix;)V",
+                &[JValue::Object(&conj)],
+            );
+        }
+        let _ = self.env.call_method(
+            self.canvas,
+            "drawBitmap",
+            "(Landroid/graphics/Bitmap;FFLandroid/graphics/Paint;)V",
+            &[
+                JValue::Object(bitmap.as_obj()),
+                JValue::Float(0.0),
+                JValue::Float(0.0),
+                JValue::Object(p.as_obj()),
+            ],
+        );
+        let _ = self.env.call_method(self.canvas, "restore", "()V", &[]);
+    }
+
+    /// Build `M · T · M⁻¹` (the logical camera `transform` conjugated by the main
+    /// canvas matrix `M`) as an Android `Matrix`, so a device-resolution cached
+    /// bitmap drawn 1:1 under it lands at the camera-transformed logical position.
+    fn cached_composite_matrix(
+        &mut self,
+        transform: &canvas_core::Transform,
+    ) -> Option<JObject<'env>> {
+        let m_base = self
+            .env
+            .call_method(self.canvas, "getMatrix", "()Landroid/graphics/Matrix;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        let c =
+            self.make_matrix(transform.a, transform.b, transform.c, transform.d, transform.e, transform.f)?;
+        let class = self.env.find_class("android/graphics/Matrix").ok()?;
+        // conj = copy(M); conj.preConcat(T) ⇒ M·T.
+        let conj = self
+            .env
+            .new_object(&class, "(Landroid/graphics/Matrix;)V", &[JValue::Object(&m_base)])
+            .ok()?;
+        let _ = self.env.call_method(
+            &conj,
+            "preConcat",
+            "(Landroid/graphics/Matrix;)V",
+            &[JValue::Object(&c)],
+        );
+        // inv = M⁻¹; conj.preConcat(inv) ⇒ M·T·M⁻¹.
+        let inv = self.env.new_object(&class, "()V", &[]).ok()?;
+        let _ = self.env.call_method(
+            &m_base,
+            "invert",
+            "(Landroid/graphics/Matrix;)Z",
+            &[JValue::Object(&inv)],
+        );
+        let _ = self.env.call_method(
+            &conj,
+            "preConcat",
+            "(Landroid/graphics/Matrix;)V",
+            &[JValue::Object(&inv)],
+        );
+        Some(conj)
+    }
+
+    /// Get-or-build the cached-layer `Bitmap` (as a `GlobalRef`) for `id` at
+    /// `w × h`, returning `(bitmap, fresh)` where `fresh` is `true` when this
+    /// call created (or resized → recreated) it — so the caller bakes on first
+    /// sight even if the frame said not-dirty. A size change rebuilds it.
+    fn cached_layer_bitmap(&mut self, id: u32, w: i32, h: i32) -> Option<(GlobalRef, bool)> {
+        if let Some((g, cw, ch)) =
+            CACHED_LAYER_BITMAPS.with(|c| c.borrow().get(&id).map(|(g, w, h)| (g.clone(), *w, *h)))
+        {
+            if cw == w && ch == h {
+                return Some((g, false));
+            }
+        }
+        let config = argb_8888_config(&mut self.env)?;
+        let bitmap_class = self.env.find_class("android/graphics/Bitmap").ok()?;
+        let bitmap = self
+            .env
+            .call_static_method(
+                &bitmap_class,
+                "createBitmap",
+                "(IILandroid/graphics/Bitmap$Config;)Landroid/graphics/Bitmap;",
+                &[JValue::Int(w), JValue::Int(h), JValue::Object(&config)],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        let global = self.env.new_global_ref(&bitmap).ok()?;
+        CACHED_LAYER_BITMAPS.with(|c| c.borrow_mut().insert(id, (global.clone(), w, h)));
+        Some((global, true))
     }
 
     /// Get-or-build the persistent layer `Bitmap` (as a `GlobalRef`) for `id`

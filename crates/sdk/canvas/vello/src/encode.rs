@@ -157,6 +157,40 @@ pub(crate) fn encode_scene(ops: &[DrawOp], vs: &mut VelloScene, base: Affine) {
                     vs.pop_layer();
                 });
             }
+            DrawOp::LayerCached { id, dirty, transform, ops: nested, alpha, blend } => {
+                // The shared encoder has no GPU device, so it can't bake the layer
+                // to a texture — that fast path lives in the renderers (render.rs /
+                // render_web.rs via `ScenePlan::Cached`). This is the CORRECT
+                // device-less fallback (web Canvas2D's vello-on-web path before a
+                // GPU is confirmed, headless tests, and any scene whose structure
+                // the plan classifier doesn't route to the fast path): a retained
+                // vello op-log per layer id, re-encoded only when `dirty`, then
+                // `append`ed under `transform` every frame. It retains across
+                // frames (so `dirty: false` reuses last bake) and applies the
+                // transform — the same observable pixels the texture-cache path
+                // produces (CLAUDE.md §7), just re-rasterized rather than cached.
+                CACHED_LAYER_SCENES.with(|m| {
+                    let mut map = m.borrow_mut();
+                    let layer = map.entry(*id).or_insert_with(VelloScene::new);
+                    if *dirty {
+                        layer.reset();
+                        // Bake at identity — the layer holds content in its own
+                        // logical coords; `transform` (+ `cur`/dpr) is applied at
+                        // composite time via `append`.
+                        encode_scene(nested, layer, Affine::IDENTITY);
+                    }
+                    // Compose the layer under the camera transform. Isolated group
+                    // (like `DrawOp::Layer`) so an eraser inside the layer can't
+                    // punch through content drawn into `vs` before this op.
+                    let t = cur * affine_of(transform);
+                    let b = peniko_blend(*blend)
+                        .unwrap_or(BlendMode::new(Mix::Normal, Compose::SrcOver));
+                    let clip = Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6);
+                    vs.push_layer(Fill::NonZero, b, *alpha, t, &clip);
+                    vs.append(layer, Some(t));
+                    vs.pop_layer();
+                });
+            }
             DrawOp::Shapes { shapes, blend } => {
                 // The shared encoder has no GPU device, so no instanced fast path
                 // here: expand the batch to per-shape fills, in array order, at
@@ -216,6 +250,16 @@ thread_local! {
     /// total ops drawn since the last clear — the same bound as the author's
     /// own vector model would carry; documented on `DrawOp::Layer`.
     static LAYER_SCENES: RefCell<HashMap<u32, VelloScene>> = RefCell::new(HashMap::new());
+}
+
+thread_local! {
+    /// Per-render-thread retained op-logs for [`DrawOp::LayerCached`] keyed by
+    /// layer id — the device-less fallback's counterpart to the renderers' GPU
+    /// texture cache. Re-encoded only on a `dirty` bake and `append`ed under the
+    /// camera transform every frame, so a `dirty: false` pan reuses the last
+    /// bake. Distinct from [`LAYER_SCENES`] so cached and accumulate layers can
+    /// share an id without colliding.
+    static CACHED_LAYER_SCENES: RefCell<HashMap<u32, VelloScene>> = RefCell::new(HashMap::new());
 }
 
 thread_local! {

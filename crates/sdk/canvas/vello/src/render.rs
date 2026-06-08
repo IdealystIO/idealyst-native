@@ -14,9 +14,10 @@
 //! per-backend dpr wiring.
 
 use crate::compose::OverlayCompositor;
+use crate::compose_transform::TransformCompositor;
 use crate::encode::encode_scene;
 use crate::native_capture::{LayerCompositor, NativeCapture};
-use crate::plan::{plan_scene, ScenePlan};
+use crate::plan::{plan_scene, CachedRef, ScenePlan};
 use crate::shape_pass::ShapePass;
 use canvas_core::{
     paint_scene, CanvasProps, DrawOp, Scene as CanvasScene, ShapeInstance, TextureLayer,
@@ -27,6 +28,7 @@ use runtime_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
 use runtime_core::{Backend, Effect, RegisterExternal};
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use vello::kurbo::Affine;
@@ -237,6 +239,14 @@ struct RenderState {
     /// Full-frame source-over compositor for the hybrid path, built lazily
     /// alongside `overlay`. See [`OverlayCompositor`].
     overlay_compositor: Option<OverlayCompositor>,
+    /// Baked, viewport-sized textures for `DrawOp::LayerCached`, keyed by layer
+    /// id. Re-rendered only on a `dirty` bake; composited under the camera
+    /// transform every frame (the infinite pan/zoom fast path). Cleared on
+    /// resize (stale-size); the app re-bakes on the resize repaint.
+    cached_layers: HashMap<u32, (wgpu::Texture, wgpu::TextureView)>,
+    /// Transformed-quad compositor for `cached_layers`, built lazily the first
+    /// time a cached-layer scene is rendered. See [`TransformCompositor`].
+    transform_compositor: Option<TransformCompositor>,
 }
 
 fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
@@ -388,6 +398,8 @@ impl RenderState {
             shape_pass: None,
             overlay: None,
             overlay_compositor: None,
+            cached_layers: HashMap::new(),
+            transform_compositor: None,
         })
     }
 
@@ -396,13 +408,48 @@ impl RenderState {
         self.config.height = size.1.max(1);
         self.surface.configure(&self.device, &self.config);
         // Read-back buffer + hybrid overlay are sized to the target; invalidate
-        // so render() recreates them for the new dimensions.
+        // so render() recreates them for the new dimensions. Cached layer
+        // textures are viewport-sized too — drop them so a stale-size raster is
+        // never composited; the app re-bakes (`dirty`) on the resize repaint.
         self.readback = None;
         self.overlay = None;
+        self.cached_layers.clear();
         let (target, target_view) =
             make_target(&self.device, self.config.width, self.config.height);
         self.target = target;
         self.target_view = target_view;
+    }
+
+    /// (Re)bake the dirty cached layers in a `ScenePlan::Cached` backdrop into
+    /// their viewport-sized textures. A layer is rendered only when `dirty` (or
+    /// the first time we see it / after a resize dropped its texture) — that's
+    /// the whole point: a `dirty: false` pan reuses the retained texture and this
+    /// does nothing, so per-frame cost is the composite, not the raster.
+    fn bake_cached_layers(&mut self, layers: &[CachedRef]) {
+        let (w, h) = (self.config.width, self.config.height);
+        for layer in layers {
+            let missing = !self.cached_layers.contains_key(&layer.id);
+            if !(layer.dirty || missing) {
+                continue;
+            }
+            if missing {
+                self.cached_layers.insert(layer.id, make_target(&self.device, w, h));
+            }
+            // Encode the layer's ops at the dpr base into a fresh vello scene,
+            // then compute-render into the layer texture (transparent base).
+            self.scene.reset();
+            encode_scene(layer.ops, &mut self.scene, Affine::scale(self.scale));
+            let params = RenderParams {
+                base_color: Color::from_rgba8(0, 0, 0, 0),
+                width: w,
+                height: h,
+                antialiasing_method: AaConfig::Area,
+            };
+            let view = &self.cached_layers.get(&layer.id).unwrap().1;
+            let _ = self
+                .renderer
+                .render_to_texture(&self.device, &self.queue, &self.scene, view, &params);
+        }
     }
 
     /// Render the scene and present a frame. Returns `true` iff a frame was
@@ -433,7 +480,27 @@ impl RenderState {
                 (Some(rest), true)
             }
             ScenePlan::Shapes(_) => (None, false),
+            ScenePlan::Cached { rest, .. } => {
+                // Cached layers form the backdrop (composited from their textures
+                // below); the live ink (`rest`) renders through vello into the
+                // overlay so the backdrop survives underneath, exactly like Hybrid.
+                if rest.is_empty() {
+                    (None, false)
+                } else {
+                    if self.overlay.is_none() {
+                        self.overlay =
+                            Some(make_target(&self.device, self.config.width, self.config.height));
+                    }
+                    (Some(rest), true)
+                }
+            }
         };
+        // Bake any dirty cached layers into their viewport-sized textures (only
+        // re-rasters on `dirty`); composited under their transforms in the encoder
+        // pass below. Done before the content render — both reuse `self.scene`.
+        if let ScenePlan::Cached { layers, .. } = &plan {
+            self.bake_cached_layers(layers);
+        }
         if let Some(ops) = content_ops {
             self.scene.reset();
             // Base transform = device scale: the author's Scene is in LOGICAL
@@ -511,6 +578,45 @@ impl RenderState {
                     overlay_view,
                     target_view,
                 );
+            }
+            ScenePlan::Cached { layers, rest } => {
+                // Lazy-build the compositors (disjoint from the locals bound next).
+                if self.transform_compositor.is_none() {
+                    self.transform_compositor = Some(TransformCompositor::new(&self.device));
+                }
+                if !rest.is_empty() && self.overlay_compositor.is_none() {
+                    self.overlay_compositor = Some(OverlayCompositor::new(&self.device));
+                }
+                let device = &self.device;
+                let queue = &self.queue;
+                let target_view = &self.target_view;
+                let (cw, ch) = (self.config.width, self.config.height);
+                let s = self.scale as f32;
+                // Clear, then composite each cached layer (in order) under its
+                // camera transform — one transformed quad each, no per-op work.
+                crate::compose_transform::clear_to_transparent(&mut encoder, target_view);
+                let tc = self.transform_compositor.as_ref().unwrap();
+                for layer in layers {
+                    if let Some((tex, view)) = self.cached_layers.get(&layer.id) {
+                        // Skip a stale-size texture (resize race) — the app re-bakes.
+                        if tex.width() == cw && tex.height() == ch {
+                            tc.composite(
+                                device, queue, &mut encoder, view, target_view,
+                                layer.transform, s, layer.alpha, cw, ch,
+                            );
+                        }
+                    }
+                }
+                // Live ink (`rest`, rendered into overlay) over the backdrop.
+                if !rest.is_empty() {
+                    let overlay_view = &self.overlay.as_ref().unwrap().1;
+                    self.overlay_compositor.as_ref().unwrap().composite(
+                        device,
+                        &mut encoder,
+                        overlay_view,
+                        target_view,
+                    );
+                }
             }
         }
         // Texture layers (macOS): composite the camera/screen-share/… into the
@@ -1003,6 +1109,8 @@ mod tests {
                 renderer.render_to_texture(&device, &queue, &vs, &overlay_view, &params).ok()?;
             }
             ScenePlan::Shapes(_) => {}
+            // `Cached` scenes are exercised by `CachedHarness`, not this helper.
+            ScenePlan::Cached { .. } => unreachable!("plan_render_to_rgba: not used for Cached"),
         }
 
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -1015,6 +1123,7 @@ mod tests {
                 shape_pass.render(&device, &queue, &mut enc, &target_view, prefix, 1.0, s, s);
                 compositor.composite(&device, &mut enc, &overlay_view, &target_view);
             }
+            ScenePlan::Cached { .. } => unreachable!("plan_render_to_rgba: not used for Cached"),
         }
 
         let bpr = s * 4;
@@ -1087,6 +1196,273 @@ mod tests {
                 assert!(
                     (a[c] as i32 - b[c] as i32).abs() <= 6,
                     "pixel ({x},{y}) chan {c}: hybrid {a:?} vs all-vello {b:?}"
+                );
+            }
+        }
+    }
+
+    /// Headless harness that exercises the `ScenePlan::Cached` GPU fast path —
+    /// the bake-to-texture + transform-composite logic from `RenderState::render`
+    /// — without a surface, persisting the cached-layer textures across `frame`
+    /// calls so retention (`dirty: false` reuse) is testable. Mirrors
+    /// `plan_render_to_rgba`'s standalone-GPU approach (`RenderState::new` needs a
+    /// real `GraphicsSurface`, so it can't be built in a unit test). `None` when
+    /// the host has no usable GPU (callers skip rather than fail).
+    struct CachedHarness {
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        renderer: Renderer,
+        tc: crate::compose_transform::TransformCompositor,
+        overlay_compositor: OverlayCompositor,
+        cached: std::collections::HashMap<u32, (wgpu::Texture, wgpu::TextureView)>,
+        s: u32,
+        target: wgpu::Texture,
+        target_view: wgpu::TextureView,
+        overlay_view: wgpu::TextureView,
+    }
+
+    impl CachedHarness {
+        fn new(s: u32) -> Option<Self> {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::all(),
+                flags: wgpu::InstanceFlags::default(),
+                memory_budget_thresholds: Default::default(),
+                backend_options: wgpu::BackendOptions::default(),
+                display: None,
+            });
+            let adapter = pollster::block_on(instance.request_adapter(
+                &wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    force_fallback_adapter: false,
+                    compatible_surface: None,
+                },
+            ))
+            .ok()?;
+            let (device, queue) = pollster::block_on(adapter.request_device(
+                &wgpu::DeviceDescriptor { label: Some("cached-test"), ..Default::default() },
+            ))
+            .ok()?;
+            let renderer = Renderer::new(
+                &device,
+                RendererOptions {
+                    use_cpu: false,
+                    antialiasing_support: AaSupport::area_only(),
+                    num_init_threads: None,
+                    pipeline_cache: None,
+                },
+            )
+            .ok()?;
+            let tc = crate::compose_transform::TransformCompositor::new(&device);
+            let overlay_compositor = OverlayCompositor::new(&device);
+            let (target, target_view) = make_target(&device, s, s);
+            let (_overlay, overlay_view) = make_target(&device, s, s);
+            Some(Self {
+                device,
+                queue,
+                renderer,
+                tc,
+                overlay_compositor,
+                cached: std::collections::HashMap::new(),
+                s,
+                target,
+                target_view,
+                overlay_view,
+            })
+        }
+
+        /// Render one frame of a `Cached`-plan scene into the target and read it
+        /// back. Scale is 1.0 (no dpr) so texel↔logical is 1:1.
+        fn frame(&mut self, scene: &CanvasScene) -> Vec<u8> {
+            let plan = plan_scene(scene.ops());
+            let params = RenderParams {
+                base_color: Color::from_rgba8(0, 0, 0, 0),
+                width: self.s,
+                height: self.s,
+                antialiasing_method: AaConfig::Area,
+            };
+            // Bake dirty layers; render the live ink (rest) into the overlay.
+            if let ScenePlan::Cached { layers, rest } = &plan {
+                for layer in layers {
+                    let missing = !self.cached.contains_key(&layer.id);
+                    if layer.dirty || missing {
+                        if missing {
+                            self.cached
+                                .insert(layer.id, make_target(&self.device, self.s, self.s));
+                        }
+                        let mut vs = VelloScene::new();
+                        encode_scene(layer.ops, &mut vs, Affine::scale(1.0));
+                        let view = &self.cached.get(&layer.id).unwrap().1;
+                        self.renderer
+                            .render_to_texture(&self.device, &self.queue, &vs, view, &params)
+                            .unwrap();
+                    }
+                }
+                if !rest.is_empty() {
+                    let mut vs = VelloScene::new();
+                    encode_scene(rest, &mut vs, Affine::scale(1.0));
+                    self.renderer
+                        .render_to_texture(
+                            &self.device,
+                            &self.queue,
+                            &vs,
+                            &self.overlay_view,
+                            &params,
+                        )
+                        .unwrap();
+                }
+            }
+
+            let mut enc = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            if let ScenePlan::Cached { layers, rest } = &plan {
+                crate::compose_transform::clear_to_transparent(&mut enc, &self.target_view);
+                for layer in layers {
+                    if let Some((_, view)) = self.cached.get(&layer.id) {
+                        self.tc.composite(
+                            &self.device,
+                            &self.queue,
+                            &mut enc,
+                            view,
+                            &self.target_view,
+                            layer.transform,
+                            1.0,
+                            layer.alpha,
+                            self.s,
+                            self.s,
+                        );
+                    }
+                }
+                if !rest.is_empty() {
+                    self.overlay_compositor.composite(
+                        &self.device,
+                        &mut enc,
+                        &self.overlay_view,
+                        &self.target_view,
+                    );
+                }
+            }
+
+            // Read the target back (s chosen so s*4 is 256-aligned: s = 64).
+            let bpr = self.s * 4;
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("cached-readback"),
+                size: (bpr * self.s) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            enc.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.target,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(bpr),
+                        rows_per_image: Some(self.s),
+                    },
+                },
+                wgpu::Extent3d { width: self.s, height: self.s, depth_or_array_layers: 1 },
+            );
+            self.queue.submit([enc.finish()]);
+            buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+            let data = buffer.slice(..).get_mapped_range();
+            data.to_vec()
+        }
+    }
+
+    /// End-to-end GPU proof of the cached-layer fast path: frame 1 bakes a red
+    /// square into a cached layer (`dirty: true`); frame 2 sends **no ops**
+    /// (`dirty: false`) and only a `translate(24, 24)` transform. The square must
+    /// (a) still be there in frame 2 — proving the texture is RETAINED across
+    /// frames (frame 2 didn't re-emit it) — and (b) appear shifted by (24, 24) —
+    /// proving the transform composite. A renderer that re-rastered each frame
+    /// would show nothing in frame 2 (no ops sent), and one that ignored the
+    /// transform would leave the square in place.
+    #[test]
+    fn cached_layer_retains_and_composites_under_transform() {
+        const S: u32 = 64;
+        let Some(mut h) = CachedHarness::new(S) else {
+            eprintln!("skip: no GPU");
+            return;
+        };
+
+        // Frame 1: bake a 16×16 red square at (8, 8) (dirty).
+        let mut f1 = CanvasScene::new();
+        f1.layer_cached(1, true, canvas_core::Transform::IDENTITY, |l| {
+            l.fill_path(
+                canvas_core::Path::rect(8.0, 8.0, 16.0, 16.0),
+                CanvasColor::new(255, 0, 0, 255),
+            );
+        });
+        let _ = h.frame(&f1);
+
+        // Frame 2: NO ops, dirty=false, translate by (24, 24).
+        let mut f2 = CanvasScene::new();
+        f2.layer_cached(1, false, canvas_core::Transform::translate(24.0, 24.0), |_| {});
+        let buf = h.frame(&f2);
+
+        // The square's center was (16,16); after +(24,24) it's at (40,40).
+        let moved = px(&buf, S, 40, 40);
+        assert!(
+            moved[0] > 200 && moved[3] > 200,
+            "translated square center should be opaque red, got {moved:?}"
+        );
+        // Its original location is now empty (the layer moved, wasn't redrawn there).
+        let vacated = px(&buf, S, 16, 16);
+        assert!(vacated[3] < 8, "vacated location should be transparent, got {vacated:?}");
+    }
+
+    /// §7 convergence for the cached fast path: a `Cached` scene (a cached layer
+    /// under an integer translate + live ink on top) rendered through the GPU
+    /// bake+composite path must match the SAME scene rendered all-vello (where
+    /// `encode_scene` handles `LayerCached` via its retained-op-log + `append`).
+    /// Integer translate keeps texel sampling exact, so deep interiors match
+    /// tightly. Modeled on `hybrid_backdrop_plus_ink_matches_all_vello`.
+    #[test]
+    fn cached_fast_path_matches_all_vello() {
+        const S: u32 = 64;
+        // Unique id so the all-vello path's thread-local retained log can't
+        // collide with the other cached test sharing the render thread.
+        const ID: u32 = 0xCAC_1;
+        let build = || {
+            let mut cs = CanvasScene::new();
+            cs.layer_cached(ID, true, canvas_core::Transform::translate(10.0, 6.0), |l| {
+                l.fill_path(
+                    canvas_core::Path::rect(4.0, 4.0, 20.0, 20.0),
+                    CanvasColor::new(0, 120, 255, 255),
+                );
+            });
+            // Live ink over the cached backdrop (the `rest`).
+            cs.path().add_path(canvas_core::Path::rect(36.0, 36.0, 14.0, 14.0));
+            cs.fill(Paint::solid(CanvasColor::new(255, 0, 0, 255)));
+            cs
+        };
+        let scene = build();
+        assert!(matches!(plan_scene(scene.ops()), ScenePlan::Cached { .. }));
+
+        let Some(mut h) = CachedHarness::new(S) else {
+            eprintln!("skip: no GPU");
+            return;
+        };
+        let fast = h.frame(&scene);
+        // All-vello reference (encode_scene's retained-op-log fallback path).
+        let reference = render_to_rgba(&build(), S).expect("reference render");
+
+        // Cached blue shifted to (10+8 .. 10+24, 6+4 .. 6+24) ⇒ interior (20,16);
+        // live red ink interior (42,42); a transparent corner (2,2).
+        for &(x, y) in &[(20u32, 16u32), (42, 42), (2, 2)] {
+            let a = px(&fast, S, x, y);
+            let b = px(&reference, S, x, y);
+            for c in 0..4 {
+                assert!(
+                    (a[c] as i32 - b[c] as i32).abs() <= 8,
+                    "pixel ({x},{y}) chan {c}: cached {a:?} vs all-vello {b:?}"
                 );
             }
         }

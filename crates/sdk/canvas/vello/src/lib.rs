@@ -49,6 +49,11 @@ mod shape_pass;
 // shape backdrop in the hybrid path. Shared by the native and web renderers.
 mod compose;
 
+// Transformed-quad compositor: composites a cached layer texture under a camera
+// affine (the `DrawOp::LayerCached` fast path). Shared by the native and web
+// renderers. Pure wgpu + `canvas_core`, so it isn't wasm-gated.
+mod compose_transform;
+
 // Web renderer: async wgpu init over the browser's WebGPU backend, with a
 // per-canvas Canvas2D fallback when WebGPU is unavailable.
 #[cfg(target_arch = "wasm32")]

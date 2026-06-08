@@ -302,6 +302,9 @@ impl ApplePainter {
             DrawOp::Layer { id, clear, ops: nested, alpha, blend } => {
                 self.draw_layer(ctx, *id, *clear, nested, *alpha, *blend);
             }
+            DrawOp::LayerCached { id, dirty, transform, ops: nested, alpha, blend } => {
+                self.draw_cached_layer(ctx, *id, *dirty, transform, nested, *alpha, *blend);
+            }
             DrawOp::Shapes { shapes, blend } => {
                 // CPU painter has no instanced fast path: expand the batch to
                 // per-shape fills, in array order, replaying each through the
@@ -375,6 +378,88 @@ impl ApplePainter {
             CGContextSetBlendMode(ctx, cg_blend_mode(blend));
             CGContextSetAlpha(ctx, alpha as CGFloat);
             CGContextTranslateCTM(ctx, clip.origin.x, clip.origin.y + clip.size.height as CGFloat);
+            CGContextScaleCTM(ctx, 1.0, -1.0);
+            let r = CGRect::new(
+                CGPoint::new(0.0, 0.0),
+                CGSize::new(lw as CGFloat, lh as CGFloat),
+            );
+            CGContextDrawImage(ctx, r, image);
+            CGContextRestoreGState(ctx);
+            CGImageRelease(image);
+        }
+    }
+
+    /// Replay `nested` into the cached layer `id`'s offscreen bitmap (only when
+    /// `dirty` — or the first time it's seen / after a resize), then composite it
+    /// into `ctx` under the camera `transform` at `alpha`/`blend`. The CPU
+    /// **fallback** counterpart of the vello `TransformCompositor` (on real Apple
+    /// devices the GPU vello path handles this; this runs on the iOS simulator).
+    ///
+    /// Same bake as [`draw_layer`](Self::draw_layer) (logical scale, row-0-top
+    /// image), but the composite concatenates the logical camera `transform`
+    /// before the place-and-flip, so the cached raster moves with the camera at
+    /// `O(1)`. A `dirty: false` pan reuses the retained bitmap.
+    fn draw_cached_layer(
+        &self,
+        ctx: CGContextRef,
+        id: u32,
+        dirty: bool,
+        transform: &canvas_core::Transform,
+        nested: &[DrawOp],
+        alpha: f32,
+        blend: BlendMode,
+    ) {
+        let clip = unsafe { CGContextGetClipBoundingBox(ctx) };
+        let ctm = unsafe { CGContextGetCTM(ctx) };
+        let sx = (ctm.a as f64).abs();
+        let sy = (ctm.d as f64).abs();
+        let lw = clip.size.width as f64;
+        let lh = clip.size.height as f64;
+        let w = (lw * sx).round() as usize;
+        let h = (lh * sy).round() as usize;
+        if w == 0 || h == 0 || sx == 0.0 || sy == 0.0 {
+            return;
+        }
+        let Some((bmp, fresh)) = cached_layer_bitmap(id, w, h) else { return };
+
+        // Bake only on `dirty` (or first sight / post-resize) — a not-dirty pan
+        // reuses the retained bitmap, which is the whole point.
+        if dirty || fresh {
+            let full =
+                CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(w as CGFloat, h as CGFloat));
+            unsafe { CGContextClearRect(bmp, full) };
+            unsafe {
+                CGContextSaveGState(bmp);
+                CGContextScaleCTM(bmp, sx as CGFloat, sy as CGFloat);
+                CGContextTranslateCTM(bmp, -(clip.origin.x), -(clip.origin.y));
+            }
+            for op in nested {
+                self.apply_op(bmp, op);
+            }
+            unsafe { CGContextRestoreGState(bmp) };
+        }
+
+        let image = unsafe { CGBitmapContextCreateImage(bmp) };
+        if image.is_null() {
+            return;
+        }
+        // The camera transform in logical (top-left) coords — same convention as
+        // the `DrawOp::Transform` arm.
+        let m = CGAffineTransform {
+            a: transform.a as CGFloat,
+            b: transform.b as CGFloat,
+            c: transform.c as CGFloat,
+            d: transform.d as CGFloat,
+            tx: transform.e as CGFloat,
+            ty: transform.f as CGFloat,
+        };
+        unsafe {
+            CGContextSaveGState(ctx);
+            CGContextSetBlendMode(ctx, cg_blend_mode(blend));
+            CGContextSetAlpha(ctx, alpha as CGFloat);
+            // Apply the camera transform before placing the layer (logical space).
+            CGContextConcatCTM(ctx, m);
+            CGContextTranslateCTM(ctx, clip.origin.x, clip.origin.y + lh as CGFloat);
             CGContextScaleCTM(ctx, 1.0, -1.0);
             let r = CGRect::new(
                 CGPoint::new(0.0, 0.0),
@@ -502,6 +587,48 @@ thread_local! {
     /// resize, which rebuilds the surface); canvas authors use a small, stable
     /// set of layer ids.
     static LAYER_BITMAPS: RefCell<HashMap<u32, BitmapSurface>> = RefCell::new(HashMap::new());
+
+    /// Persistent [`DrawOp::LayerCached`] bitmap contexts keyed by layer id —
+    /// baked once (`dirty`) and composited under a camera transform every frame.
+    /// Distinct from [`LAYER_BITMAPS`] so a cached and an accumulate layer can
+    /// share an id.
+    static CACHED_LAYER_BITMAPS: RefCell<HashMap<u32, BitmapSurface>> = RefCell::new(HashMap::new());
+}
+
+/// Get-or-build the cached-layer bitmap context for `id` at `w × h` device
+/// pixels, returning `(ctx, fresh)` where `fresh` is `true` when this call
+/// created (or resized → recreated) it — so the caller bakes on first sight even
+/// if the frame said not-dirty. A size change releases the old context.
+fn cached_layer_bitmap(id: u32, w: usize, h: usize) -> Option<(CGContextRef, bool)> {
+    CACHED_LAYER_BITMAPS.with(|m| {
+        let mut map = m.borrow_mut();
+        if let Some(s) = map.get(&id) {
+            if s.w == w && s.h == h {
+                return Some((s.ctx, false));
+            }
+            unsafe { CGContextRelease(s.ctx) };
+            map.remove(&id);
+        }
+        let mut buf = vec![0u8; w * h * 4];
+        let cs = unsafe { CGColorSpaceCreateDeviceRGB() };
+        let ctx = unsafe {
+            CGBitmapContextCreate(
+                buf.as_mut_ptr() as *mut c_void,
+                w,
+                h,
+                8,
+                w * 4,
+                cs,
+                CG_IMAGE_ALPHA_PREMULTIPLIED_LAST,
+            )
+        };
+        unsafe { CGColorSpaceRelease(cs) };
+        if ctx.is_null() {
+            return None;
+        }
+        map.insert(id, BitmapSurface { ctx, _buf: buf, w, h });
+        Some((ctx, true))
+    })
 }
 
 /// Get-or-build the persistent bitmap context for layer `id` at `w × h`

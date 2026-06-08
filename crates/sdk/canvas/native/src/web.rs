@@ -17,7 +17,7 @@
 use backend_web::WebBackend;
 use canvas_core::{
     paint_scene, BlendMode, CanvasProps, Color, DrawOp, FillRule, ImageSource, LineCap, LineJoin,
-    LinearGradient, Paint, PaintKind, Path, PathSeg, RadialGradient, Scene, TextureLayer,
+    LinearGradient, Paint, PaintKind, Path, PathSeg, RadialGradient, Scene, TextureLayer, Transform,
 };
 use runtime_core::effect;
 use std::cell::RefCell;
@@ -357,6 +357,9 @@ fn apply_op(ctx: &CanvasRenderingContext2d, op: &DrawOp) {
         DrawOp::Layer { id, clear, ops: nested, alpha, blend } => {
             draw_layer(ctx, *id, *clear, nested, *alpha, *blend);
         }
+        DrawOp::LayerCached { id, dirty, transform, ops: nested, alpha, blend } => {
+            draw_cached_layer(ctx, *id, *dirty, transform, nested, *alpha, *blend);
+        }
         DrawOp::Shapes { shapes, blend } => {
             // Canvas2D has no instanced fast path: expand the batch to per-shape
             // fills, in array order, replaying each through the Fill arm so a
@@ -402,6 +405,14 @@ thread_local! {
     /// Persistent `DrawOp::Layer` surfaces — an offscreen `<canvas>` per layer
     /// id, retained across frames so baked strokes survive and accumulate.
     static LAYER_CANVAS_CACHE: RefCell<HashMap<u32, HtmlCanvasElement>> =
+        RefCell::new(HashMap::new());
+
+    /// Persistent `DrawOp::LayerCached` surfaces — an offscreen `<canvas>` per
+    /// layer id, baked once (`dirty`) and composited under a camera transform
+    /// every frame. Distinct from [`LAYER_CANVAS_CACHE`] so the cached and
+    /// accumulate layers can share an id. This is the Canvas2D **fallback** for
+    /// the cached-layer fast path (the WebGPU/vello path is the ideal web path).
+    static CACHED_LAYER_CANVAS_CACHE: RefCell<HashMap<u32, HtmlCanvasElement>> =
         RefCell::new(HashMap::new());
 }
 
@@ -450,6 +461,92 @@ fn draw_layer(
     apply_blend(ctx, blend);
     let _ = ctx.draw_image_with_html_canvas_element(&layer_canvas, 0.0, 0.0);
     ctx.restore();
+}
+
+/// Replay `nested` into the cached layer `id`'s offscreen canvas (only when
+/// `dirty`), then composite it onto `ctx` under `transform` at `alpha`/`blend`.
+///
+/// The Canvas2D **fallback** counterpart of the vello `TransformCompositor`
+/// (the WebGPU/vello path is the ideal web path; this runs only when WebGPU is
+/// unavailable). The offscreen holds device-resolution content (baked at the
+/// main context's current transform — the dpr base, since a cached layer leads
+/// its scene). Compositing applies the logical `transform` in device space:
+/// `setTransform(a, b, c, d, dpr·e, dpr·f)` is the conjugation of the logical
+/// affine by the dpr scale (linear part unchanged; translation scaled by dpr),
+/// matching the GPU path's `device = dpr · transform · logical`. `dirty: false`
+/// skips the bake and just re-composites the retained raster — the cheap
+/// per-frame pan/zoom path.
+fn draw_cached_layer(
+    ctx: &CanvasRenderingContext2d,
+    id: u32,
+    dirty: bool,
+    transform: &Transform,
+    nested: &[DrawOp],
+    alpha: f32,
+    blend: BlendMode,
+) {
+    let Some(main_canvas) = ctx.canvas() else { return };
+    let (bw, bh) = (main_canvas.width(), main_canvas.height());
+    if bw == 0 || bh == 0 {
+        return;
+    }
+    let Some(layer_canvas) = cached_layer_canvas_cached(id, bw, bh) else { return };
+
+    if dirty {
+        let Ok(Some(obj)) = layer_canvas.get_context("2d") else { return };
+        let Ok(octx) = obj.dyn_into::<CanvasRenderingContext2d>() else { return };
+        let _ = octx.reset_transform();
+        octx.clear_rect(0.0, 0.0, bw as f64, bh as f64);
+        // Bake at the main context's current transform (the dpr base for a
+        // leading cached layer), so nested logical ops land at device resolution.
+        if let Ok(m) = ctx.get_transform() {
+            let _ = octx.set_transform(m.a(), m.b(), m.c(), m.d(), m.e(), m.f());
+        }
+        for op in nested {
+            apply_op(&octx, op);
+        }
+    }
+
+    // Composite under the logical camera transform, conjugated by dpr (the
+    // offscreen is already device-space). `setTransform` is absolute, replacing
+    // the dpr base — correct because a cached layer leads its scene (no author
+    // transform is active above it), matching the GPU fast path's plan gate.
+    let dpr = web_sys::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
+    ctx.save();
+    let _ = ctx.set_transform(
+        transform.a as f64,
+        transform.b as f64,
+        transform.c as f64,
+        transform.d as f64,
+        transform.e as f64 * dpr,
+        transform.f as f64 * dpr,
+    );
+    ctx.set_global_alpha(alpha as f64);
+    apply_blend(ctx, blend);
+    let _ = ctx.draw_image_with_html_canvas_element(&layer_canvas, 0.0, 0.0);
+    ctx.restore();
+}
+
+/// Get-or-build the persistent offscreen `<canvas>` for cached layer `id`, sized
+/// to the main backing store. A size change resizes (and clears) it — the app
+/// re-bakes (`dirty`) on the resize repaint, same as the GPU path.
+fn cached_layer_canvas_cached(id: u32, bw: u32, bh: u32) -> Option<HtmlCanvasElement> {
+    CACHED_LAYER_CANVAS_CACHE.with(|c| {
+        if let Some(existing) = c.borrow().get(&id) {
+            if existing.width() != bw || existing.height() != bh {
+                existing.set_width(bw);
+                existing.set_height(bh);
+            }
+            return Some(existing.clone());
+        }
+        let document = web_sys::window()?.document()?;
+        let canvas: HtmlCanvasElement =
+            document.create_element("canvas").ok()?.dyn_into().ok()?;
+        canvas.set_width(bw);
+        canvas.set_height(bh);
+        c.borrow_mut().insert(id, canvas.clone());
+        Some(canvas)
+    })
 }
 
 /// Get-or-build the persistent offscreen `<canvas>` for layer `id`, sized to

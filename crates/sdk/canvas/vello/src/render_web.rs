@@ -35,8 +35,9 @@
 //! would be illegal on the wasm main thread.
 
 use crate::compose::OverlayCompositor;
+use crate::compose_transform::TransformCompositor;
 use crate::encode::encode_scene;
-use crate::plan::{plan_scene, ScenePlan};
+use crate::plan::{plan_scene, CachedRef, ScenePlan};
 use crate::shape_pass::ShapePass;
 use crate::web_layer::WebLayerCompositor;
 use canvas_core::{paint_scene, CanvasProps, DrawOp, Scene as CanvasScene, TextureLayer};
@@ -45,6 +46,7 @@ use runtime_core::primitives::graphics::{GraphicsSurface, OnReadyEvent, OnResize
 use runtime_core::{Backend, Effect, RegisterExternal};
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -339,6 +341,12 @@ struct GpuState {
     /// backdrop in `target`. Lazily created, invalidated on resize.
     overlay: Option<(wgpu::Texture, wgpu::TextureView)>,
     overlay_compositor: Option<OverlayCompositor>,
+    /// Baked, viewport-sized textures for `DrawOp::LayerCached`, keyed by layer
+    /// id — the infinite pan/zoom fast path on WebGPU (the ideal web path;
+    /// Canvas2D is only the no-WebGPU fallback). Re-rendered on a `dirty` bake,
+    /// composited under the camera transform every frame. Cleared on resize.
+    cached_layers: HashMap<u32, (wgpu::Texture, wgpu::TextureView)>,
+    transform_compositor: Option<TransformCompositor>,
 }
 
 impl GpuState {
@@ -485,6 +493,8 @@ impl GpuState {
             shape_pass: None,
             overlay: None,
             overlay_compositor: None,
+            cached_layers: HashMap::new(),
+            transform_compositor: None,
             fps: (0, 0, 0, 0),
         })
     }
@@ -492,6 +502,37 @@ impl GpuState {
     fn into_render_fn(self) -> RenderFn {
         let mut state = self;
         Box::new(move |scene: &CanvasScene| state.render(scene))
+    }
+
+    /// (Re)bake the dirty cached layers in a `ScenePlan::Cached` backdrop into
+    /// their viewport-sized textures — only on `dirty` (or first sight / after a
+    /// resize dropped the texture). A `dirty: false` pan reuses the retained
+    /// texture and this does nothing, so the per-frame cost is the composite, not
+    /// the raster. The WebGPU/vello path is the ideal web path; this is where the
+    /// pan/zoom win lands (Canvas2D is only the no-WebGPU fallback).
+    fn bake_cached_layers(&mut self, layers: &[CachedRef]) {
+        let (w, h) = (self.config.width, self.config.height);
+        for layer in layers {
+            let missing = !self.cached_layers.contains_key(&layer.id);
+            if !(layer.dirty || missing) {
+                continue;
+            }
+            if missing {
+                self.cached_layers.insert(layer.id, make_target(&self.device, w, h));
+            }
+            self.scene.reset();
+            encode_scene(layer.ops, &mut self.scene, Affine::scale(self.scale));
+            let params = RenderParams {
+                base_color: Color::from_rgba8(0, 0, 0, 0),
+                width: w,
+                height: h,
+                antialiasing_method: AaConfig::Area,
+            };
+            let view = &self.cached_layers.get(&layer.id).unwrap().1;
+            let _ = self
+                .renderer
+                .render_to_texture(&self.device, &self.queue, &self.scene, view, &params);
+        }
     }
 
     fn render(&mut self, canvas_scene: &CanvasScene) {
@@ -543,6 +584,9 @@ impl GpuState {
             self.target = target;
             self.target_view = target_view;
             self.overlay = None; // sized to target; rebuilt on demand
+            // Cached layer textures are viewport-sized — drop stale-size rasters;
+            // the app re-bakes (`dirty`) on the resize repaint.
+            self.cached_layers.clear();
         }
 
         // Classify the scene (see `crate::plan`) — same hybrid instanced-backdrop
@@ -560,7 +604,26 @@ impl GpuState {
                 (Some(rest), true)
             }
             ScenePlan::Shapes(_) => (None, false),
+            ScenePlan::Cached { rest, .. } => {
+                // Cached layers form the backdrop (composited from their textures
+                // below); the live ink (`rest`) goes through vello into the overlay
+                // so the backdrop survives underneath — exactly like Hybrid.
+                if rest.is_empty() {
+                    (None, false)
+                } else {
+                    if self.overlay.is_none() {
+                        self.overlay =
+                            Some(make_target(&self.device, self.config.width, self.config.height));
+                    }
+                    (Some(rest), true)
+                }
+            }
         };
+        // Bake dirty cached layers into their viewport-sized textures (only
+        // re-rasters on `dirty`); composited under their transforms below.
+        if let ScenePlan::Cached { layers, .. } = &plan {
+            self.bake_cached_layers(layers);
+        }
         if let Some(ops) = content_ops {
             self.scene.reset();
             // Base transform = device scale: the author's Scene is logical; scaling
@@ -633,6 +696,42 @@ impl GpuState {
                     overlay_view,
                     target_view,
                 );
+            }
+            ScenePlan::Cached { layers, rest } => {
+                if self.transform_compositor.is_none() {
+                    self.transform_compositor = Some(TransformCompositor::new(&self.device));
+                }
+                if !rest.is_empty() && self.overlay_compositor.is_none() {
+                    self.overlay_compositor = Some(OverlayCompositor::new(&self.device));
+                }
+                let device = &self.device;
+                let queue = &self.queue;
+                let target_view = &self.target_view;
+                let (cw, ch) = (self.config.width, self.config.height);
+                let s = self.scale as f32;
+                // Clear, then composite each cached layer (in order) under its
+                // camera transform — one transformed quad each, no per-op work.
+                crate::compose_transform::clear_to_transparent(&mut encoder, target_view);
+                let tc = self.transform_compositor.as_ref().unwrap();
+                for layer in layers {
+                    if let Some((tex, view)) = self.cached_layers.get(&layer.id) {
+                        if tex.width() == cw && tex.height() == ch {
+                            tc.composite(
+                                device, queue, &mut encoder, view, target_view,
+                                layer.transform, s, layer.alpha, cw, ch,
+                            );
+                        }
+                    }
+                }
+                if !rest.is_empty() {
+                    let overlay_view = &self.overlay.as_ref().unwrap().1;
+                    self.overlay_compositor.as_ref().unwrap().composite(
+                        device,
+                        &mut encoder,
+                        overlay_view,
+                        target_view,
+                    );
+                }
             }
         }
 

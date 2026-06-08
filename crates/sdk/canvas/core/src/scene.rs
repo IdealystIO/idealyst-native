@@ -777,6 +777,57 @@ pub enum DrawOp {
         /// Composite mode of the layer against the current target.
         blend: BlendMode,
     },
+    /// Draw `ops` into a **persistent, transform-composited** raster layer
+    /// identified by `id`, then composite that layer's baked raster into the
+    /// current target under `transform`, at `alpha` opacity with `blend`.
+    ///
+    /// This is the [`Layer`](DrawOp::Layer) variant's sibling for an infinite,
+    /// pan/zoom canvas. Where `Layer` re-rasterizes its op-log every frame (so a
+    /// moving camera repaints the whole world each frame), `LayerCached` bakes
+    /// the layer **once** to a viewport-sized texture and then composites that
+    /// texture under an affine — one textured quad per frame, no per-element
+    /// work — so pan/zoom is `O(1)` regardless of how many ops the layer holds.
+    ///
+    /// - **`dirty: true`** — (re)rasterize `ops` into layer `id`'s cached raster
+    ///   (transparent base) this frame. Emit a full repaint of the layer's
+    ///   content; the renderer caches the result.
+    /// - **`dirty: false`** — `ops` is ignored (pass an empty list); the renderer
+    ///   reuses the retained raster from the last `dirty` bake. This is the
+    ///   common per-frame case while panning/zooming.
+    /// - **every frame** — the cached raster is composited under `transform` (a
+    ///   logical-coordinate affine, applied on top of the renderer's dpr base) at
+    ///   `alpha`/`blend`.
+    ///
+    /// The cached raster is **viewport-sized**: it holds whatever `ops` drew at
+    /// bake time, clipped to the drawable. Panning past the baked region's edge
+    /// reveals un-baked (transparent) space until the next `dirty` bake — the
+    /// standard "soft while gesturing, crisp on settle" infinite-canvas behavior.
+    /// The typical loop is: bake at a reference camera (`dirty: true`), pass the
+    /// live gesture-delta camera as `transform` each frame (`dirty: false`), and
+    /// re-bake on gesture settle.
+    ///
+    /// Renderers diverge in mechanism but converge in output (CLAUDE.md §7): the
+    /// GPU backend (vello) bakes to a wgpu texture and composites it with a
+    /// transformed quad; the CPU backends bake to an offscreen bitmap/`<canvas>`
+    /// and composite it under the conjugated transform. The observable pixels —
+    /// retention across frames and the transform composite — are identical.
+    LayerCached {
+        /// Stable identity of the persistent cached layer surface.
+        id: u32,
+        /// Re-bake `ops` into the layer this frame; `false` reuses the retained
+        /// raster and ignores `ops`.
+        dirty: bool,
+        /// Affine applied to the cached raster when compositing it into the
+        /// target, in the canvas's logical coordinate space (the camera).
+        transform: Transform,
+        /// Ops baked into the layer when `dirty`; ignored (and typically empty)
+        /// when `dirty` is `false`.
+        ops: Vec<DrawOp>,
+        /// Opacity of the whole layer when composited, `0.0..=1.0`.
+        alpha: f32,
+        /// Composite mode of the layer against the current target.
+        blend: BlendMode,
+    },
     /// Draw a batch of flat-colored analytic shapes ([`ShapeInstance`], each a
     /// rounded box) in one operation.
     ///
@@ -1062,6 +1113,51 @@ impl Scene {
         self
     }
 
+    /// Draw into the cached layer `id` via the builder `f`, then composite it
+    /// under `transform` fully opaque, source-over. `dirty` re-bakes `ops`;
+    /// `dirty = false` reuses the retained raster (pass an empty builder). See
+    /// [`DrawOp::LayerCached`].
+    pub fn layer_cached(
+        &mut self,
+        id: u32,
+        dirty: bool,
+        transform: Transform,
+        f: impl FnOnce(&mut Scene),
+    ) -> &mut Self {
+        self.layer_cached_with(id, dirty, transform, 1.0, BlendMode::Normal, f)
+    }
+
+    /// [`layer_cached`](Self::layer_cached) with explicit composite `alpha` and
+    /// `blend` for the whole layer.
+    pub fn layer_cached_with(
+        &mut self,
+        id: u32,
+        dirty: bool,
+        transform: Transform,
+        alpha: f32,
+        blend: BlendMode,
+        f: impl FnOnce(&mut Scene),
+    ) -> &mut Self {
+        // Only bake when dirty; `dirty = false` carries no ops (the renderer
+        // reuses its retained raster), so skip running the builder entirely.
+        let ops = if dirty {
+            let mut sub = Scene::new();
+            f(&mut sub);
+            sub.ops
+        } else {
+            Vec::new()
+        };
+        self.ops.push(DrawOp::LayerCached {
+            id,
+            dirty,
+            transform,
+            ops,
+            alpha: alpha.clamp(0.0, 1.0),
+            blend,
+        });
+        self
+    }
+
     /// Draw a batch of flat-colored [`ShapeInstance`]s in one op, source-over.
     /// The throughput primitive for a grid or scatter of many shapes: a GPU
     /// renderer draws them in a single instanced pass, a CPU one expands them to
@@ -1241,6 +1337,59 @@ mod tests {
         s.layer(1, true, |l| {
             l.path().add_path(Path::circle(5.0, 5.0, 3.0));
             l.stroke(Paint::eraser(), Stroke::width(2.0));
+        });
+        let bytes = serde_json::to_vec(&s).expect("serialize");
+        let back: Scene = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(s.ops(), back.ops());
+    }
+
+    #[test]
+    fn layer_cached_builder_captures_transform_and_ops() {
+        let mut s = Scene::new();
+        let t = Transform::translate(12.0, -8.0).then(Transform::scale(2.0, 2.0));
+        s.layer_cached_with(9, true, t, 0.5, BlendMode::Multiply, |l| {
+            l.path().add_path(Path::rect(0.0, 0.0, 4.0, 4.0));
+            l.fill(Color::new(255, 0, 0, 255));
+        });
+        match &s.ops()[0] {
+            DrawOp::LayerCached { id, dirty, transform, ops, alpha, blend } => {
+                assert_eq!(*id, 9);
+                assert!(*dirty);
+                assert_eq!(*transform, t);
+                assert_eq!(*alpha, 0.5);
+                assert_eq!(*blend, BlendMode::Multiply);
+                assert_eq!(ops.len(), 1, "nested fill recorded when dirty");
+                assert!(matches!(ops[0], DrawOp::Fill { .. }));
+            }
+            other => panic!("expected LayerCached, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn layer_cached_not_dirty_carries_no_ops() {
+        // `dirty = false` reuses the retained raster: the builder is skipped and
+        // no ops are recorded (even though the closure draws), so a per-frame
+        // pan doesn't re-serialize the whole world.
+        let mut s = Scene::new();
+        s.layer_cached(1, false, Transform::translate(3.0, 0.0), |l| {
+            l.path().add_path(Path::rect(0.0, 0.0, 10.0, 10.0));
+            l.fill(Color::new(0, 0, 0, 255));
+        });
+        match &s.ops()[0] {
+            DrawOp::LayerCached { dirty, ops, .. } => {
+                assert!(!*dirty);
+                assert!(ops.is_empty(), "not-dirty layer must not carry ops");
+            }
+            other => panic!("expected LayerCached, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn layer_cached_op_survives_scene_round_trip() {
+        let mut s = Scene::new();
+        s.layer_cached(2, true, Transform::scale(1.5, 1.5), |l| {
+            l.path().add_path(Path::circle(5.0, 5.0, 3.0));
+            l.fill(Paint::solid(Color::new(10, 20, 30, 255)));
         });
         let bytes = serde_json::to_vec(&s).expect("serialize");
         let back: Scene = serde_json::from_slice(&bytes).expect("deserialize");
