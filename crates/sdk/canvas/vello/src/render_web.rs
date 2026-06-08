@@ -220,11 +220,12 @@ fn schedule_repaint(
     };
     let render_fn = render_fn.clone();
     let scene_cell = scene_cell.clone();
-    let frame_pending = frame_pending.clone();
+    // Clone for the closure; keep the `&Rc` param for the error fallback below.
+    let pending_cb = frame_pending.clone();
     // `once_into_js` keeps the closure alive until JS invokes it once, then drops
     // it — no manual `Closure` lifetime management for a one-shot rAF.
     let cb = Closure::once_into_js(move || {
-        frame_pending.set(false);
+        pending_cb.set(false);
         repaint(&render_fn, &scene_cell);
     });
     if window.request_animation_frame(cb.unchecked_ref()).is_err() {
