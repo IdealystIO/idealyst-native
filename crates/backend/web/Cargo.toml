@@ -118,6 +118,7 @@ features = [
     "NodeList",
     "Performance",
     "PointerEvent",
+    "PointerEventInit",
     "WheelEvent",
     "Text",
     "PopStateEvent",

@@ -1655,3 +1655,131 @@ fn portal_focus_trap_bounce_does_not_throw_on_reentrant_focusin() {
     );
     drop(on_error);
 }
+
+// ---------------------------------------------------------------------------
+// Touch responder model — regression for the web backend ignoring
+// `TouchResponse::CONSUMED` when deciding event propagation.
+//
+// The framework's responder contract (crates/runtime/core/src/touch/mod.rs)
+// says: whichever ancestor consumes the `Began` keeps the gesture and the
+// event does NOT bubble to further ancestors; an unconsumed `Began` bubbles
+// up to retry one level higher. The web backend delivers touches via native
+// DOM Pointer Event listeners and relies on DOM bubbling to walk the
+// ancestor chain — so honoring "consumed" means calling
+// `stop_propagation()` on the consumed event. Before the fix it never did,
+// and a child's CONSUMED still let the parent's `on_touch` fire (e.g. an
+// overlay closing on every interior button press).
+// ---------------------------------------------------------------------------
+
+/// Build a `pointerdown` that actually bubbles, dispatch it on `target`,
+/// and let it walk the ancestor chain like a real pointer press.
+fn dispatch_bubbling_pointerdown(target: &web_sys::Element) {
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let ev = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init)
+        .expect("construct bubbling pointerdown");
+    target.dispatch_event(&ev).expect("dispatch pointerdown");
+}
+
+/// REGRESSION TEST.
+///
+/// A child whose `on_touch` returns `CONSUMED` must stop the `Began` from
+/// also reaching an ancestor's `on_touch`. Before the fix the web backend
+/// never called `stop_propagation`, so both handlers fired — the
+/// overlay-tap-to-close-on-interior-press bug.
+#[wasm_bindgen_test]
+fn regression_web_touch_consumed_child_stops_ancestor_on_touch() {
+    use runtime_core::{Backend, TouchResponse};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    // Parent wraps child; both are connected to the document so DOM
+    // bubbling is live (listeners are registered bubble-phase, so child
+    // fires before parent).
+    let parent = doc.create_element("div").unwrap();
+    let child = doc.create_element("div").unwrap();
+    parent.append_child(&child).unwrap();
+    doc.body().unwrap().append_child(&parent).unwrap();
+
+    let parent_fired = Rc::new(Cell::new(false));
+    let child_fired = Rc::new(Cell::new(false));
+
+    let pf = parent_fired.clone();
+    backend.install_touch_handler(
+        &parent.clone().unchecked_into(),
+        Rc::new(move |_| {
+            pf.set(true);
+            TouchResponse::CONSUMED
+        }),
+    );
+    let cf = child_fired.clone();
+    backend.install_touch_handler(
+        &child.clone().unchecked_into(),
+        Rc::new(move |_| {
+            cf.set(true);
+            TouchResponse::CONSUMED
+        }),
+    );
+
+    dispatch_bubbling_pointerdown(&child);
+
+    assert!(child_fired.get(), "child on_touch must fire on its own press");
+    assert!(
+        !parent_fired.get(),
+        "child CONSUMED must stop the Began from bubbling to the parent on_touch",
+    );
+}
+
+/// REGRESSION TEST (companion).
+///
+/// The fix must NOT break the bubble-up retry: an `IGNORED` (unconsumed)
+/// child press must still reach the parent, since the responder model
+/// re-tries one level up until someone consumes.
+#[wasm_bindgen_test]
+fn web_touch_ignored_child_still_bubbles_to_ancestor() {
+    use runtime_core::{Backend, TouchResponse};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+
+    let parent = doc.create_element("div").unwrap();
+    let child = doc.create_element("div").unwrap();
+    parent.append_child(&child).unwrap();
+    doc.body().unwrap().append_child(&parent).unwrap();
+
+    let parent_fired = Rc::new(Cell::new(false));
+    let child_fired = Rc::new(Cell::new(false));
+
+    let pf = parent_fired.clone();
+    backend.install_touch_handler(
+        &parent.clone().unchecked_into(),
+        Rc::new(move |_| {
+            pf.set(true);
+            TouchResponse::CONSUMED
+        }),
+    );
+    let cf = child_fired.clone();
+    backend.install_touch_handler(
+        &child.clone().unchecked_into(),
+        Rc::new(move |_| {
+            cf.set(true);
+            TouchResponse::IGNORED
+        }),
+    );
+
+    dispatch_bubbling_pointerdown(&child);
+
+    assert!(child_fired.get(), "child on_touch must fire on its own press");
+    assert!(
+        parent_fired.get(),
+        "an IGNORED child press must still bubble up to the parent on_touch",
+    );
+}

@@ -80,6 +80,13 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
             };
             let response = (handler)(&te);
             if response.consumed {
+                // Honor the responder model: whichever ancestor consumes
+                // the Began keeps every subsequent event for this TouchId.
+                // Listeners are bubble-phase, so the deepest element fires
+                // first; halting propagation here stops the same Began from
+                // also reaching ancestor `on_touch` listeners. An unconsumed
+                // Began (no stop) still bubbles up to retry one level higher.
+                ev.stop_propagation();
                 active.borrow_mut().insert(ev.pointer_id());
                 if response.claim {
                     capture_pointer(&element_for_capture, ev.pointer_id(), &captured);
@@ -116,6 +123,9 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 force: pressure_to_force(ev.pressure()),
             };
             let response = (handler)(&te);
+            if response.consumed {
+                ev.stop_propagation();
+            }
             if response.claim && !captured.borrow().contains(&pid) {
                 capture_pointer(&element_for_capture, pid, &captured);
             }
@@ -149,7 +159,9 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 timestamp_ns: timestamp_ns(&ev),
                 force: pressure_to_force(ev.pressure()),
             };
-            let _ = (handler)(&te);
+            if (handler)(&te).consumed {
+                ev.stop_propagation();
+            }
         });
         let _ = element.add_event_listener_with_callback(
             "pointerup",
@@ -180,7 +192,9 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 timestamp_ns: timestamp_ns(&ev),
                 force: pressure_to_force(ev.pressure()),
             };
-            let _ = (handler)(&te);
+            if (handler)(&te).consumed {
+                ev.stop_propagation();
+            }
         });
         let _ = element.add_event_listener_with_callback(
             "pointercancel",

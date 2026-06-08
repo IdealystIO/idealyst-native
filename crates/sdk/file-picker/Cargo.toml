@@ -1,0 +1,91 @@
+[package]
+name = "file-picker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Pick file(s) from the user's filesystem through the platform's own "open"
+# UI — the counterpart to `file-export` (which saves to a user-chosen
+# location). Documents go through the general file picker (MIME-filtered);
+# photos/videos route to the dedicated media picker where the platform has one:
+#
+#   - iOS:     UIDocumentPickerViewController (open) + PHPickerViewController
+#   - macOS:   NSOpenPanel
+#   - Android: ACTION_OPEN_DOCUMENT + the Photo Picker
+#   - Windows: IFileOpenDialog
+#   - Linux:   xdg-desktop-portal FileChooser.OpenFile
+#   - web:     showOpenFilePicker(), with an <input type=file> fallback
+#
+# Like `file-export`, every backend is user-initiated UI that grants access to
+# the chosen file(s), so this SDK needs NO storage/photo permission on any
+# platform. A picked file is a lazy, streamable handle — never buffered whole,
+# so a 10 GB video never lands in memory. The platform-agnostic surface
+# (FilePicker / PickRequest / PickedFile / FileStream / PickError) lives here;
+# one cfg-gated backend compiles per target.
+
+[dependencies]
+thiserror = "1"
+
+# iOS / macOS: drive NSOpenPanel (macOS) / UIDocumentPickerViewController +
+# PHPickerViewController (iOS) through the Obj-C runtime, the same posture
+# `file-export`/`camera` take.
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSURL"] }
+# `block2` for the PHPicker `loadFileRepresentation` completion block (iOS).
+block2 = "0.5"
+# Bridges the iOS picker-delegate callbacks to async (oneshot), like the
+# file-export document-picker flow.
+futures-channel = "0.3"
+
+# Android: ACTION_OPEN_DOCUMENT / Photo Picker via a Kotlin shim that launches
+# the intent and routes the result back through the shared `RustActivityResult`
+# registry (same path file-export's SAF save uses). Reads stream over a
+# detached file descriptor (no bytes copied across JNI).
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+futures-channel = "0.3"
+
+# Web: showOpenFilePicker() (File System Access API) with an <input type=file>
+# fallback for browsers without it (Safari/Firefox). Reads stream a `Blob` via
+# its ReadableStream reader.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Node",
+    "Element",
+    "HtmlElement",
+    "HtmlInputElement",
+    "Event",
+    "File",
+    "FileList",
+    "Blob",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+] }
+
+# Windows: the native Open dialog (IFileOpenDialog) via the COM Shell API.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_Storage_FileSystem",
+] }
+windows-core = "0.58"
+
+# Linux: the desktop portal's FileChooser.OpenFile (sandbox-friendly), via
+# `ashpd` — the same portal posture file-export's Linux save takes.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = "0.9"
+
+# The Kotlin shim driving ACTION_OPEN_DOCUMENT / the Photo Picker. `idealyst
+# run android` discovers and compiles it from here, like file-export.
+[package.metadata.idealyst.android]
+runtime_kotlin = ["runtime/kotlin/io/idealyst/filepicker/RustFilePicker.kt"]

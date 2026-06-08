@@ -1,0 +1,28 @@
+[package]
+name = "file-picker-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Picks file(s) from the local filesystem with the file-picker SDK. A 'Pick files' button opens the document picker and a 'Pick photos/videos' button opens the media picker (the dedicated photo picker on mobile). For each pick it shows the name, MIME, and size, and reads just the first chunk via the streaming reader — proving a multi-GB file is never buffered whole."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+file-picker = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+# A nice property worth showing: picking is user-initiated UI that grants
+# access to the chosen file(s), so this app needs NO storage or photo-library
+# permission on any platform — note the empty permissions table.
+[package.metadata.idealyst.app]
+name      = "File Picker"
+bundle_id = "ai.truday.idealyst.filepicker"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]

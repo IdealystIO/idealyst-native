@@ -2395,6 +2395,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "file-picker"
+version = "0.0.1"
+dependencies = [
+ "ashpd",
+ "block2 0.5.1",
+ "futures-channel",
+ "jni 0.21.1",
+ "js-sys",
+ "ndk-context",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "thiserror 1.0.69",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "windows 0.58.0",
+ "windows-core 0.58.0",
+]
+
+[[package]]
+name = "file-picker-demo"
+version = "0.0.1"
+dependencies = [
+ "dev-server",
+ "file-picker",
+ "idea-ui",
+ "runtime-core",
+]
+
+[[package]]
 name = "files"
 version = "0.0.1"
 dependencies = [

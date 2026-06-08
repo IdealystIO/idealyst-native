@@ -32,12 +32,20 @@ mod render;
 #[cfg(not(target_arch = "wasm32"))]
 pub use render::register;
 
-// Instanced analytic-shape (rounded-box SDF) fast path for PURE-shape scenes —
+// Instanced analytic-shape (rounded-box SDF) fast path for shape-batch scenes —
 // the native renderer's throughput path for a `DrawOp::Shapes` grid/scatter.
-// Web stays on the encoder's expand-to-fills for now (per-canvas WebGPU is the
-// constraint there); the fallback is identical output, just unaccelerated.
+// Drives both a PURE shape scene (the whole frame is the instanced pass) and a
+// HYBRID scene whose leading ops are shapes (an instanced backdrop, then vello
+// over the top — see `compose`). Native-only: the web GPU path has no layer
+// compositor, so any canvas with `layers` (the common rich-canvas case) takes
+// the Canvas2D fallback there, which expands shapes to fills (identical output).
 #[cfg(not(target_arch = "wasm32"))]
 mod shape_pass;
+
+// Full-frame source-over compositor: lays vello's content over the instanced
+// shape backdrop in the hybrid path. Native-only, alongside `shape_pass`.
+#[cfg(not(target_arch = "wasm32"))]
+mod compose;
 
 // Web renderer: async wgpu init over the browser's WebGPU backend, with a
 // per-canvas Canvas2D fallback when WebGPU is unavailable.

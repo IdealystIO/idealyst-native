@@ -13,6 +13,7 @@
 //! behavior); today macOS reports `backingScaleFactor`, others are `1.0` pending
 //! per-backend dpr wiring.
 
+use crate::compose::OverlayCompositor;
 use crate::encode::encode_scene;
 use crate::native_capture::{LayerCompositor, NativeCapture};
 use crate::shape_pass::ShapePass;
@@ -222,11 +223,19 @@ struct RenderState {
     /// the recording. Empty when the canvas has no `layers`.
     layers: Vec<TextureLayer>,
     layer_compositor: Option<LayerCompositor>,
-    /// Instanced analytic-shape pass, built lazily the first time a PURE-shape
-    /// scene is rendered (a canvas that never uses `DrawOp::Shapes` pays
-    /// nothing). Draws a rounded-box-SDF grid in one instanced draw instead of
-    /// one tessellated fill per shape. See [`ShapePass`].
+    /// Instanced analytic-shape pass, built lazily the first time a scene with a
+    /// leading shape batch is rendered (a canvas that never uses `DrawOp::Shapes`
+    /// pays nothing). Draws a rounded-box-SDF grid in one instanced draw instead
+    /// of one tessellated fill per shape. See [`ShapePass`].
     shape_pass: Option<ShapePass>,
+    /// Secondary Rgba8Unorm target vello renders the `rest` of a HYBRID scene
+    /// into (over a transparent base), then [`compose`](crate::compose) lays it
+    /// over the instanced backdrop in `target`. Lazily created, invalidated on
+    /// resize. `None` until the first hybrid frame.
+    overlay: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Full-frame source-over compositor for the hybrid path, built lazily
+    /// alongside `overlay`. See [`OverlayCompositor`].
+    overlay_compositor: Option<OverlayCompositor>,
 }
 
 fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
@@ -250,30 +259,54 @@ fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::T
     (texture, view)
 }
 
-/// If every op in `ops` is a [`DrawOp::Shapes`] batch with [`BlendMode::Normal`],
-/// return the per-batch shape slices (in op order) for the instanced fast path;
-/// `None` if the scene contains any other op (vector fill/stroke/image/layer/
-/// transform) or a non-Normal batch blend — those need vello's compositor, so
-/// they go through `encode_scene` (which expands shapes to ordered fills,
-/// matching this pass's output, CLAUDE.md §7). An empty op list returns
-/// `Some(vec![])`, which the pass renders as a transparent clear.
-///
-/// The predicate is deliberately strict: a single non-shape op disables the fast
-/// path for the whole frame. That keeps z-order and blending exact (vello can't
-/// cheaply layer a custom pass between its own draws) at the cost of not
-/// accelerating mixed scenes — the common bulk case (a grid/scatter of shapes,
-/// nothing else) is the one that wins, and it wins completely.
-fn pure_shape_batches(ops: &[DrawOp]) -> Option<Vec<&[ShapeInstance]>> {
-    let mut out = Vec::with_capacity(ops.len());
-    for op in ops {
-        match op {
-            DrawOp::Shapes { shapes, blend } if *blend == BlendMode::Normal => {
-                out.push(shapes.as_slice())
-            }
-            _ => return None,
+/// How [`render`](RenderState::render) will draw a scene, decided by its LEADING
+/// ops. The instanced [`ShapePass`] can own the frame's clear and draw a batch of
+/// shapes in one call, but vello can't cheaply interleave a custom pass between
+/// its own draws — so the pass is only used for shapes at the *start* of the
+/// scene (a backdrop), with vello compositing everything after on top. Whatever
+/// path is taken, the pixels match the all-vello expansion (CLAUDE.md §7): the
+/// instanced pass is an optimization, never a behavioral fork.
+enum ScenePlan<'a> {
+    /// No leading shape batch — vello renders the whole scene (the historical
+    /// path). Scenes that open with any non-shape op (or a non-Normal blend
+    /// shape batch) land here; trailing shape batches expand to fills in
+    /// `encode_scene`.
+    Vello,
+    /// Every op is a Normal-blend [`DrawOp::Shapes`] batch: the instanced pass
+    /// owns the whole frame (clear + draw) and vello isn't run. An empty op list
+    /// is `Shapes(vec![])`, which the pass renders as a transparent clear.
+    Shapes(Vec<&'a [ShapeInstance]>),
+    /// A leading run of Normal-blend `Shapes` batches (the `prefix` backdrop)
+    /// followed by other ops (`rest`): the instanced pass draws the backdrop into
+    /// the target, vello renders `rest` into a separate target over a transparent
+    /// base, and [`compose`](crate::compose) lays that content over the backdrop.
+    /// The backdrop is GPU-instanced while everything else stays exact vello, all
+    /// in the one canvas that's displayed AND self-captured (recording unaffected).
+    Hybrid { prefix: Vec<&'a [ShapeInstance]>, rest: &'a [DrawOp] },
+}
+
+/// Split `ops` into the longest leading run of Normal-blend [`DrawOp::Shapes`]
+/// batches and whatever follows, classifying the scene for [`render`].
+fn plan_scene(ops: &[DrawOp]) -> ScenePlan<'_> {
+    let mut prefix: Vec<&[ShapeInstance]> = Vec::new();
+    let mut i = 0;
+    while let Some(DrawOp::Shapes { shapes, blend }) = ops.get(i) {
+        if *blend != BlendMode::Normal {
+            break;
         }
+        prefix.push(shapes.as_slice());
+        i += 1;
     }
-    Some(out)
+    if i == ops.len() {
+        // Every op (possibly none) was a Normal shape batch: the instanced pass
+        // owns the whole frame, vello isn't run. An empty list is `Shapes(vec![])`
+        // — a transparent clear, the same cheap path the old fast path took.
+        ScenePlan::Shapes(prefix)
+    } else if prefix.is_empty() {
+        ScenePlan::Vello
+    } else {
+        ScenePlan::Hybrid { prefix, rest: &ops[i..] }
+    }
 }
 
 impl RenderState {
@@ -399,6 +432,8 @@ impl RenderState {
             capture,
             readback: None,
             shape_pass: None,
+            overlay: None,
+            overlay_compositor: None,
         })
     }
 
@@ -406,9 +441,10 @@ impl RenderState {
         self.config.width = size.0.max(1);
         self.config.height = size.1.max(1);
         self.surface.configure(&self.device, &self.config);
-        // Read-back buffer is sized to the target; invalidate so render()
-        // recreates it for the new dimensions.
+        // Read-back buffer + hybrid overlay are sized to the target; invalidate
+        // so render() recreates them for the new dimensions.
         self.readback = None;
+        self.overlay = None;
         let (target, target_view) =
             make_target(&self.device, self.config.width, self.config.height);
         self.target = target;
@@ -422,20 +458,34 @@ impl RenderState {
     /// uses the return to retry the FIRST frame until it lands, so the initial
     /// scene (e.g. the canvas's white background) isn't lost to a dark surface.
     fn render(&mut self, canvas_scene: &CanvasScene) -> bool {
-        // Fast path: a PURE-shape scene (every op a Normal-blend `Shapes` batch)
-        // is drawn by the instanced SDF pass below instead of vello — one draw
-        // for the whole grid. Any other op (vector fill/stroke/image/layer/
-        // transform, or a non-Normal batch blend) falls through to vello, which
-        // expands shapes to ordered per-shape fills (encode.rs) so the pixels are
-        // identical (CLAUDE.md §7) — the fast path is an optimization, not a fork.
-        let fast = pure_shape_batches(canvas_scene.ops());
+        // Decide how to draw this scene from its leading ops (see `ScenePlan`).
+        // A scene that's entirely Normal-blend shape batches is drawn by the
+        // instanced pass alone; a scene whose LEADING ops are shapes (a backdrop)
+        // instances those and composites vello's content over them; anything else
+        // is plain vello. All three converge on the same pixels (CLAUDE.md §7).
+        let plan = plan_scene(canvas_scene.ops());
 
-        if fast.is_none() {
+        // vello renders its content (the whole scene for `Vello`, only `rest` for
+        // `Hybrid`) over a transparent base. `Vello` targets the main `target`;
+        // `Hybrid` targets the separate `overlay`, so the instanced backdrop drawn
+        // into `target` below survives underneath. `Shapes` skips vello entirely.
+        let (content_ops, to_overlay): (Option<&[DrawOp]>, bool) = match &plan {
+            ScenePlan::Vello => (Some(canvas_scene.ops()), false),
+            ScenePlan::Hybrid { rest, .. } => {
+                if self.overlay.is_none() {
+                    self.overlay =
+                        Some(make_target(&self.device, self.config.width, self.config.height));
+                }
+                (Some(rest), true)
+            }
+            ScenePlan::Shapes(_) => (None, false),
+        };
+        if let Some(ops) = content_ops {
             self.scene.reset();
             // Base transform = device scale: the author's Scene is in LOGICAL
             // coordinates; scaling by the dpr makes it fill the physical-pixel
             // surface (no retina under-fill). `1.0` → identity (physical scale).
-            encode_scene(canvas_scene.ops(), &mut self.scene, Affine::scale(self.scale));
+            encode_scene(ops, &mut self.scene, Affine::scale(self.scale));
 
             let params = RenderParams {
                 base_color: Color::from_rgba8(0, 0, 0, 0),
@@ -443,15 +493,10 @@ impl RenderState {
                 height: self.config.height,
                 antialiasing_method: AaConfig::Area,
             };
+            let view = if to_overlay { &self.overlay.as_ref().unwrap().1 } else { &self.target_view };
             if self
                 .renderer
-                .render_to_texture(
-                    &self.device,
-                    &self.queue,
-                    &self.scene,
-                    &self.target_view,
-                    &params,
-                )
+                .render_to_texture(&self.device, &self.queue, &self.scene, view, &params)
                 .is_err()
             {
                 return false;
@@ -469,29 +514,50 @@ impl RenderState {
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("canvas-vello-blit"),
             });
-        // Instanced shape fast path: clear the target and draw the whole shape
-        // grid in one instanced pass, BEFORE the layer composite and blit (it
-        // owns the target clear that vello would otherwise have done). Disjoint
-        // field borrows — bind the shared refs to locals first.
-        if let Some(batches) = fast.as_ref() {
-            if self.shape_pass.is_none() {
-                self.shape_pass = Some(ShapePass::new(&self.device));
+        // Instanced shape backdrop, BEFORE the layer composite and blit (it owns
+        // the target clear that vello would otherwise have done). For a `Hybrid`
+        // scene, follow it by compositing vello's content (in `overlay`) over the
+        // backdrop. Disjoint field borrows — bind the shared refs to locals first.
+        match &plan {
+            ScenePlan::Vello => {}
+            ScenePlan::Shapes(batches) => {
+                if self.shape_pass.is_none() {
+                    self.shape_pass = Some(ShapePass::new(&self.device));
+                }
+                let device = &self.device;
+                let queue = &self.queue;
+                let target_view = &self.target_view;
+                let (cw, ch) = (self.config.width, self.config.height);
+                let s = self.scale as f32;
+                self.shape_pass.as_mut().unwrap().render(
+                    device, queue, &mut encoder, target_view, batches, s, cw, ch,
+                );
             }
-            let device = &self.device;
-            let queue = &self.queue;
-            let target_view = &self.target_view;
-            let (cw, ch) = (self.config.width, self.config.height);
-            let s = self.scale as f32;
-            self.shape_pass.as_mut().unwrap().render(
-                device,
-                queue,
-                &mut encoder,
-                target_view,
-                batches,
-                s,
-                cw,
-                ch,
-            );
+            ScenePlan::Hybrid { prefix, .. } => {
+                if self.shape_pass.is_none() {
+                    self.shape_pass = Some(ShapePass::new(&self.device));
+                }
+                if self.overlay_compositor.is_none() {
+                    self.overlay_compositor = Some(OverlayCompositor::new(&self.device));
+                }
+                let device = &self.device;
+                let queue = &self.queue;
+                let target_view = &self.target_view;
+                let (cw, ch) = (self.config.width, self.config.height);
+                let s = self.scale as f32;
+                // 1) instanced backdrop into target_view (clears + draws it).
+                self.shape_pass.as_mut().unwrap().render(
+                    device, queue, &mut encoder, target_view, prefix, s, cw, ch,
+                );
+                // 2) vello's content (in overlay) over the backdrop, in place.
+                let overlay_view = &self.overlay.as_ref().unwrap().1;
+                self.overlay_compositor.as_ref().unwrap().composite(
+                    device,
+                    &mut encoder,
+                    overlay_view,
+                    target_view,
+                );
+            }
         }
         // Texture layers (macOS): composite the camera/screen-share/… into the
         // target BEFORE the blits, so the strokes + layers are one image that
@@ -882,5 +948,193 @@ mod tests {
         assert!(tl[1] > 200 && tl[0] < 60 && tl[3] > 200, "top-left should be green, got {tl:?}");
         let br = px(&buf, S, 56, 56);
         assert!(br[0] > 200 && br[1] < 60 && br[3] > 200, "bottom-right should be red, got {br:?}");
+    }
+
+    /// `plan_scene` classifies a scene by its LEADING ops: all-shapes → `Shapes`
+    /// (the whole-frame instanced pass), leading-shapes-then-other → `Hybrid`
+    /// (instanced backdrop + vello over it), anything else → `Vello`. A non-Normal
+    /// blend shape batch ends the leading run (it needs vello's compositor).
+    #[test]
+    fn plan_scene_classifies_by_leading_ops() {
+        let green = CanvasColor::new(0, 200, 80, 255);
+
+        // Empty scene → Shapes(empty) (the pass renders a transparent clear).
+        assert!(matches!(plan_scene(CanvasScene::new().ops()), ScenePlan::Shapes(b) if b.is_empty()));
+
+        // Every op a Normal shape batch → Shapes.
+        let mut all_shapes = CanvasScene::new();
+        all_shapes.shapes([ShapeInstance::circle(8.0, 8.0, 4.0, green)]);
+        all_shapes.shapes([ShapeInstance::rect(0.0, 0.0, 4.0, 4.0, green)]);
+        assert!(matches!(plan_scene(all_shapes.ops()), ScenePlan::Shapes(b) if b.len() == 2));
+
+        // Leading shape batch, then a fill → Hybrid (prefix = the one batch).
+        let mut backdrop_then_ink = CanvasScene::new();
+        backdrop_then_ink.shapes([ShapeInstance::rect(0.0, 0.0, 16.0, 16.0, green)]);
+        backdrop_then_ink.path().add_path(Path::rect(2.0, 2.0, 4.0, 4.0));
+        backdrop_then_ink.fill(Paint::solid(CanvasColor::new(255, 0, 0, 255)));
+        assert!(matches!(
+            plan_scene(backdrop_then_ink.ops()),
+            ScenePlan::Hybrid { prefix, rest } if prefix.len() == 1 && rest.len() == 1
+        ));
+
+        // A fill BEFORE the shapes → no leading shape run → Vello.
+        let mut ink_then_shapes = CanvasScene::new();
+        ink_then_shapes.path().add_path(Path::rect(2.0, 2.0, 4.0, 4.0));
+        ink_then_shapes.fill(Paint::solid(green));
+        ink_then_shapes.shapes([ShapeInstance::circle(8.0, 8.0, 4.0, green)]);
+        assert!(matches!(plan_scene(ink_then_shapes.ops()), ScenePlan::Vello));
+
+        // A non-Normal blend shape batch can't lead the instanced pass → Vello.
+        let mut multiply_shapes = CanvasScene::new();
+        multiply_shapes
+            .shapes_with([ShapeInstance::circle(8.0, 8.0, 4.0, green)], BlendMode::Multiply);
+        assert!(matches!(plan_scene(multiply_shapes.ops()), ScenePlan::Vello));
+    }
+
+    /// Render a scene through the FULL plan path (instanced [`ShapePass`] backdrop
+    /// + vello content + [`OverlayCompositor`]), into an `S×S` target, headless —
+    /// the same drawing `render` does, minus the surface acquire/blit/capture.
+    /// `None` when the host has no usable GPU (callers skip rather than fail).
+    fn plan_render_to_rgba(cs: &CanvasScene, s: u32) -> Option<Vec<u8>> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            flags: wgpu::InstanceFlags::default(),
+            memory_budget_thresholds: Default::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            display: None,
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: false,
+            compatible_surface: None,
+        }))
+        .ok()?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("canvas-plan-test"),
+            ..Default::default()
+        }))
+        .ok()?;
+        let mut renderer = Renderer::new(
+            &device,
+            RendererOptions {
+                use_cpu: false,
+                antialiasing_support: AaSupport::area_only(),
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .ok()?;
+        let mut shape_pass = ShapePass::new(&device);
+        let compositor = OverlayCompositor::new(&device);
+        let (target, target_view) = make_target(&device, s, s);
+        let (_overlay, overlay_view) = make_target(&device, s, s);
+        let plan = plan_scene(cs.ops());
+
+        // vello content: whole scene for `Vello` (into target), `rest` for
+        // `Hybrid` (into overlay), nothing for `Shapes`.
+        let params = RenderParams {
+            base_color: Color::from_rgba8(0, 0, 0, 0),
+            width: s,
+            height: s,
+            antialiasing_method: AaConfig::Area,
+        };
+        let mut vs = VelloScene::new();
+        match &plan {
+            ScenePlan::Vello => {
+                encode_scene(cs.ops(), &mut vs, Affine::scale(1.0));
+                renderer.render_to_texture(&device, &queue, &vs, &target_view, &params).ok()?;
+            }
+            ScenePlan::Hybrid { rest, .. } => {
+                encode_scene(rest, &mut vs, Affine::scale(1.0));
+                renderer.render_to_texture(&device, &queue, &vs, &overlay_view, &params).ok()?;
+            }
+            ScenePlan::Shapes(_) => {}
+        }
+
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        match &plan {
+            ScenePlan::Vello => {}
+            ScenePlan::Shapes(batches) => {
+                shape_pass.render(&device, &queue, &mut enc, &target_view, batches, 1.0, s, s);
+            }
+            ScenePlan::Hybrid { prefix, .. } => {
+                shape_pass.render(&device, &queue, &mut enc, &target_view, prefix, 1.0, s, s);
+                compositor.composite(&device, &mut enc, &overlay_view, &target_view);
+            }
+        }
+
+        let bpr = s * 4;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: (bpr * s) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bpr),
+                    rows_per_image: Some(s),
+                },
+            },
+            wgpu::Extent3d { width: s, height: s, depth_or_array_layers: 1 },
+        );
+        queue.submit([enc.finish()]);
+        buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let data = buffer.slice(..).get_mapped_range();
+        Some(data.to_vec())
+    }
+
+    /// The §7 convergence guarantee for the HYBRID path on the GPU: an instanced
+    /// shape backdrop with vello ink composited over it must match the SAME scene
+    /// rendered entirely through vello (where the shape batch expands to per-shape
+    /// fills via `encode_scene`). Build a blue backdrop + green dot (leading
+    /// shapes) under a red ink rect, render it both ways, and compare interiors
+    /// (away from AA edges, where SDF vs tessellation legitimately differ).
+    #[test]
+    fn hybrid_backdrop_plus_ink_matches_all_vello() {
+        const S: u32 = 64;
+        let build = || {
+            let mut cs = CanvasScene::new();
+            cs.shapes([
+                ShapeInstance::rect(0.0, 0.0, S as f32, S as f32, CanvasColor::new(0, 0, 255, 255)),
+                ShapeInstance::circle(16.0, 16.0, 7.0, CanvasColor::new(0, 200, 80, 255)),
+            ]);
+            cs.path().add_path(Path::rect(40.0, 40.0, 16.0, 16.0));
+            cs.fill(Paint::solid(CanvasColor::new(255, 0, 0, 255)));
+            cs
+        };
+        let hybrid = build();
+        assert!(matches!(plan_scene(hybrid.ops()), ScenePlan::Hybrid { .. }));
+
+        let Some(h) = plan_render_to_rgba(&hybrid, S) else {
+            eprintln!("skip: no GPU");
+            return;
+        };
+        // The reference goes all-vello: `render_to_rgba` only `encode_scene`s, so
+        // the leading shape batch is expanded to fills — no instanced pass.
+        let reference = build();
+        let v = render_to_rgba(&reference, S).expect("reference render");
+
+        // Backdrop blue (2,2), dot green (16,16), ink red (47,47) — all interiors.
+        for &(x, y) in &[(2u32, 2u32), (16, 16), (47, 47)] {
+            let a = px(&h, S, x, y);
+            let b = px(&v, S, x, y);
+            for c in 0..4 {
+                assert!(
+                    (a[c] as i32 - b[c] as i32).abs() <= 6,
+                    "pixel ({x},{y}) chan {c}: hybrid {a:?} vs all-vello {b:?}"
+                );
+            }
+        }
     }
 }
