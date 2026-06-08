@@ -119,6 +119,15 @@ fn force_canvas2d() -> bool {
     }
 }
 
+/// Device-pixel ratio from `window.devicePixelRatio`. The web graphics primitive
+/// sizes the canvas backing store to css × dpr but reports `OnReadyEvent.scale ==
+/// 1.0` ("size is physical, no separate scale"), so the GPU renderer derives the
+/// real dpr here — matching the Canvas2D path — to scale the logical author scene
+/// up to the physical surface. Without it the scene fills only the top-left 1/dpr.
+fn web_dpr() -> f64 {
+    web_sys::window().map(|w| w.device_pixel_ratio()).filter(|d| *d > 0.0).unwrap_or(1.0)
+}
+
 fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node {
     // Latest painted scene + the installed renderer, shared between the reactive
     // effect and the surface lifecycle callbacks. `render_fn` is `None` until
@@ -302,7 +311,14 @@ impl GpuState {
         layers: Vec<TextureLayer>,
     ) -> Option<GpuState> {
         let (w, h) = (ev.size.0.max(1), ev.size.1.max(1));
-        let scale = if ev.scale > 0.0 { ev.scale as f64 } else { 1.0 };
+        // The web graphics primitive reports `size` as PHYSICAL (css × dpr) with
+        // `ev.scale == 1.0` ("size is physical, no separate scale" contract). So
+        // the device-pixel ratio has to be derived here — exactly like the
+        // Canvas2D path (`canvas-native` web `render_scene`) — and used as the
+        // base transform to scale the LOGICAL author scene up to the physical
+        // surface. Using `ev.scale` (1.0) renders the scene at 1× into the
+        // dpr-sized target, filling only the top-left 1/dpr (the retina bug).
+        let scale = web_dpr();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             // On wasm32 `PRIMARY` is the browser's WebGPU backend.
@@ -467,6 +483,11 @@ impl GpuState {
                 *maxgap = 0;
             }
         }
+
+        // Refresh the device-pixel ratio each frame (it can change when the window
+        // moves between monitors or the page zooms); the backing-store size below
+        // tracks it via the graphics primitive, and the base transform uses it.
+        self.scale = web_dpr();
 
         // Live resize: the graphics primitive keeps the canvas backing store at
         // box × dpr, so reconfigure the surface + target when it changes (web has
