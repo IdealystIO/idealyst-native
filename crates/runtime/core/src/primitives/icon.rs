@@ -273,6 +273,28 @@ impl Bound<IconHandle> {
         self.animate(StrokeAnimation::new(duration_ms, easing))
     }
 
+    /// Pin the icon to a `size × size` point square.
+    ///
+    /// A raw `icon(data)` has no intrinsic content size, so under a flex
+    /// parent it collapses to a 0×0 box (invisible, and un-hittable).
+    /// Sizing is therefore set through the style system — but the
+    /// builder surface should agree with the `ui!` struct-literal form,
+    /// where `Icon(data = …, size = …)` already works. `.size(n)` is the
+    /// builder equivalent: shorthand for a `width: n, height: n,
+    /// flex_shrink: 0` style.
+    ///
+    /// ```ignore
+    /// icon(SEARCH).size(20.0).color(|| theme_color())
+    /// ```
+    ///
+    /// Composes with the rest of the builder. It applies a style, so a
+    /// subsequent `.with_style(...)` that also sets width/height would
+    /// override the pinned square — set size last, or fold it into the
+    /// custom sheet.
+    pub fn size(self, size: f32) -> Self {
+        self.with_style(icon_size_sheet(size))
+    }
+
     /// Bind to a `Ref<IconHandle>` so the parent can call
     /// `animate_stroke()`, `set_stroke_progress()`, or `replay()`
     /// imperatively.
@@ -281,5 +303,83 @@ impl Bound<IconHandle> {
             *ref_fill = Some(RefFill::Icon(Box::new(move |h| r.fill(h))));
         }
         self
+    }
+}
+
+thread_local! {
+    /// Cache of the square-sizing sheets minted by [`icon_size_sheet`],
+    /// keyed by integer-encoded size (`px * 100`, rounded) so distinct
+    /// sizes get distinct cached sheets without float-key hashing. One
+    /// `Rc<StyleSheet>` per size keeps stylesheet registration/class
+    /// generation deduped across every icon at that size.
+    static ICON_SIZE_SHEETS: std::cell::RefCell<
+        std::collections::HashMap<u32, Rc<crate::style::StyleSheet>>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// A cached static sheet pinning the icon to a `px × px` square. Icons
+/// have no intrinsic content size, so an explicit width/height keeps
+/// them from collapsing to a 0×0 box under flex. Shared by the
+/// primitive's [`Bound::<IconHandle>::size`] builder and the `idea-ui`
+/// `Icon` component so both mint identical, deduped sheets.
+pub(crate) fn icon_size_sheet(px: f32) -> Rc<crate::style::StyleSheet> {
+    use crate::style::{Length, StyleRules, StyleSheet, Tokenized};
+    let key = (px * 100.0).round() as u32;
+    ICON_SIZE_SHEETS.with(|m| {
+        if let Some(s) = m.borrow().get(&key) {
+            return s.clone();
+        }
+        let sheet = Rc::new(StyleSheet::r#static(StyleRules {
+            width: Some(Tokenized::Literal(Length::Px(px))),
+            height: Some(Tokenized::Literal(Length::Px(px))),
+            flex_shrink: Some(Tokenized::Literal(0.0)),
+            ..Default::default()
+        }));
+        m.borrow_mut().insert(key, sheet.clone());
+        sheet
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::style::{resolve as resolve_style, Length, Tokenized};
+    use crate::sources::StyleSource;
+    use crate::FillRule;
+
+    const DOT: crate::IconData = crate::IconData {
+        view_box: (24, 24),
+        paths: &["M12 12h.01"],
+        fill_rule: FillRule::NonZero,
+        filled: true,
+    };
+
+    /// `.size()` is the builder peer of the `ui!` `Icon(size = …)` prop:
+    /// it pins a `size × size` square so the icon doesn't collapse to a
+    /// 0×0 box under flex. Regression test for the "raw `icon()` has no
+    /// `.size()`" papercut (Whiteboard Pro feedback).
+    #[test]
+    fn size_pins_a_square_style() {
+        let el = icon(DOT).size(18.0).primitive;
+        let style = match el {
+            Element::Icon { style, .. } => style.expect(".size() must attach a style"),
+            _ => panic!("icon() builds an Icon element"),
+        };
+        let app = match style {
+            StyleSource::Static(a) => a,
+            _ => panic!(".size() uses a cached static sheet"),
+        };
+        let rules = resolve_style(&app);
+        assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(18.0))));
+        assert_eq!(rules.height, Some(Tokenized::Literal(Length::Px(18.0))));
+        assert_eq!(rules.flex_shrink, Some(Tokenized::Literal(0.0)));
+    }
+
+    /// The same size mints the same `Rc<StyleSheet>` (registration dedup).
+    #[test]
+    fn same_size_shares_one_sheet() {
+        let a = icon_size_sheet(24.0);
+        let b = icon_size_sheet(24.0);
+        assert!(Rc::ptr_eq(&a, &b), "equal sizes must share one cached sheet");
     }
 }

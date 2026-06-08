@@ -173,7 +173,7 @@ impl Tokenized<Color> {
         match self {
             Tokenized::Literal(v) => v.clone(),
             Tokenized::Token { name, fallback } => {
-                debug_assert_theme_installed(name);
+                debug_warn_resolve_on_unthemed_thread(name);
                 with_or_create_token_signal(name, || TokenValue::Color(fallback.clone()))
                     .map(|sig| match sig.get() {
                         TokenValue::Color(c) => c,
@@ -194,7 +194,7 @@ impl Tokenized<Length> {
         match self {
             Tokenized::Literal(v) => *v,
             Tokenized::Token { name, fallback } => {
-                debug_assert_theme_installed(name);
+                debug_warn_resolve_on_unthemed_thread(name);
                 with_or_create_token_signal(name, || TokenValue::Length(*fallback))
                     .map(|sig| match sig.get() {
                         TokenValue::Length(l) => l,
@@ -215,7 +215,7 @@ impl Tokenized<f32> {
         match self {
             Tokenized::Literal(v) => *v,
             Tokenized::Token { name, fallback } => {
-                debug_assert_theme_installed(name);
+                debug_warn_resolve_on_unthemed_thread(name);
                 with_or_create_token_signal(name, || TokenValue::Number(*fallback))
                     .map(|sig| match sig.get() {
                         TokenValue::Number(n) => n,
@@ -250,6 +250,33 @@ impl From<f32> for Tokenized<Length> {
 impl From<i32> for Tokenized<Length> {
     fn from(v: i32) -> Self {
         Tokenized::Literal(Length::Px(v as f32))
+    }
+}
+
+// Border widths are `Tokenized<f32>` (not `Tokenized<Length>`) on
+// purpose: a border can't be a percentage of anything, so the type
+// excludes that invalid state. But authors reasonably reach for the
+// same length spellings they use everywhere else (`Length::Px(2.0)`,
+// or a `px(..)`-style helper). Bridge `Length` → `Tokenized<f32>` so
+// `border_width: Length::Px(2.0)` type-checks; the px component is
+// taken and `Percent`/`Auto` collapse to `0.0` (they're meaningless
+// for a border) with a debug-only warning, rather than a confusing
+// trait-mismatch error at the call site.
+impl From<Length> for Tokenized<f32> {
+    fn from(l: Length) -> Self {
+        match l {
+            Length::Px(v) => Tokenized::Literal(v),
+            other => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "[runtime-core] border width was given {:?}, but borders only \
+                     support pixel widths (percent/auto don't apply) — using 0.0",
+                    other
+                );
+                let _ = other;
+                Tokenized::Literal(0.0)
+            }
+        }
     }
 }
 
@@ -872,7 +899,9 @@ pub struct StyleRules {
     pub border_bottom_right_radius: Option<Tokenized<Length>>,
 
     // --- Border widths (per-side, `f32` not `Length` — borders aren't
-    //     percentages). All four are independent. ---
+    //     percentages). All four are independent. A `Length` coerces in
+    //     (`border_left_width: Length::Px(2.0)`) via `From<Length>`;
+    //     percent/auto are rejected (→ 0 + debug warning). ---
     pub border_top_width: Option<Tokenized<f32>>,
     pub border_right_width: Option<Tokenized<f32>>,
     pub border_bottom_width: Option<Tokenized<f32>>,
@@ -2094,72 +2123,110 @@ thread_local! {
     static WARNED_SYSTEM_FONTS: RefCell<HashSet<String>> =
         RefCell::new(HashSet::new());
 
-    /// Debug-only tripwire: `true` once `install_tokens` (or
+    /// Debug-only dedup for the "resolve on an unthemed thread while
+    /// *another* thread is themed" warning (see
+    /// [`debug_warn_resolve_on_unthemed_thread`]). One warning per
+    /// thread, not one per token, so a stylesheet applied to thousands
+    /// of nodes doesn't spam the log.
+    #[cfg(debug_assertions)]
+    static WARNED_UNTHEMED_RESOLVE: Cell<bool> = const { Cell::new(false) };
+
+    /// Tripwire-support flag: `true` once `install_tokens` (or
     /// `update_tokens`) has been called on this thread. Read in
-    /// `Tokenized::<T>::resolve()` for `Tokenized::Token` variants;
-    /// fires a `debug_assert!` when a token is resolved on a thread
-    /// that has never been themed.
+    /// [`debug_warn_resolve_on_unthemed_thread`] (the
+    /// `Tokenized::<T>::resolve()` path for `Tokenized::Token`).
     ///
-    /// **Why thread-local, not global.** The token registry above is
-    /// itself thread-local — every supported backend today renders on
-    /// a single thread, and the registry, resolution cache, and
-    /// signal state all live on that thread. A render thread that
-    /// hasn't installed tokens would silently fall back to
-    /// `Tokenized::fallback` and miss every theme value. The check
-    /// surfaces that misuse loudly in debug builds rather than
-    /// shipping the silent-default-paint regression to a user.
+    /// **Why thread-local.** The token registry above is itself
+    /// thread-local — every supported backend today renders on a
+    /// single thread, and the registry, resolution cache, and signal
+    /// state all live on that thread. A render thread that hasn't
+    /// installed tokens falls back to `Tokenized::fallback` and misses
+    /// every theme value.
     ///
     /// **Why a separate flag and not "registry non-empty".** The
     /// registry can be non-empty on this thread because *some other
     /// code path* (e.g. `with_or_create_token_signal` from a prior
     /// resolve) lazily inserted a slot. That's not a theme install.
-    /// We want the assert to track the explicit theme-install event,
-    /// not registry shape.
-    ///
-    /// **Trade-off.** The audit's preferred long-term fix is a
-    /// `OnceCell` keyed per-`ThemeId` so the cache is multi-thread
-    /// safe by construction. That refactor is deferred — this flag
-    /// is the minimum-viable check to make misuse visible while the
-    /// thread-local cache stands.
+    /// The flag tracks the explicit theme-install event, not registry
+    /// shape.
     static THEME_INSTALLED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Mark this thread as having an installed theme. Idempotent.
-/// `install_tokens` / `update_tokens` call this so the
-/// `debug_assert_theme_installed` check in `Tokenized::resolve()`
+/// Process-global companion to the thread-local [`THEME_INSTALLED`]:
+/// `true` once *any* thread has installed a theme. Lets
+/// [`debug_warn_resolve_on_unthemed_thread`] distinguish the two cases
+/// it must treat differently:
+///
+/// - **No theme installed anywhere** → an app that styles entirely
+///   with literal values (or just leans on primitive default tokens)
+///   and never calls `install_theme`. Resolving to the embedded
+///   `Tokenized::fallback` is exactly what we want, and it's exactly
+///   what the web backend already does (`var(--name, fallback)` with
+///   no `:root` definition). Stay silent — native must match web here
+///   (CLAUDE.md §7).
+/// - **A theme exists, but not on this thread** → the genuine
+///   cross-thread footgun. The resolve silently misses every theme
+///   value. Warn (debug only) so it's visible.
+static ANY_THEME_INSTALLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Mark this thread as having an installed theme, and record globally
+/// that *some* thread is now themed. Idempotent. `install_tokens` /
+/// `update_tokens` call this so [`debug_warn_resolve_on_unthemed_thread`]
 /// can distinguish a genuinely-unthemed thread from one that just
 /// hasn't lazily registered every individual token signal yet.
 #[inline]
 fn mark_theme_installed() {
     THEME_INSTALLED.with(|f| f.set(true));
+    ANY_THEME_INSTALLED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Debug-build-only check: panic if the calling thread has never
-/// had `install_tokens` (or `update_tokens`) invoked. Called from
-/// `Tokenized::<T>::resolve()` for the `Tokenized::Token` variant.
+/// Debug-only dev guardrail for `Tokenized::<T>::resolve()` on the
+/// `Tokenized::Token` path. **Never panics, never changes behavior** —
+/// resolving without a theme always falls back to the embedded
+/// `Tokenized::fallback`, on every backend, in every build.
 ///
-/// `Tokenized::Literal` resolves bypass this — literals don't read
-/// the registry and don't need a theme to be installed.
+/// It only emits a one-time warning for the genuine misuse: a token
+/// resolved on a thread with no installed theme *while another thread
+/// is themed*. That's the cross-thread footgun — the resolve silently
+/// misses real theme values. When no theme exists anywhere (a
+/// deliberately theme-less app), it stays silent so native matches the
+/// web backend's silent `var(--name, fallback)` behavior.
 ///
-/// In release builds this compiles to a no-op so the silent-fallback
-/// behavior is preserved for production code. The audit-tracked
-/// long-term fix is to key the cache on a `ThemeId` shared across
-/// threads, eliminating the misuse surface entirely.
+/// `Tokenized::Literal` resolves never reach here — literals don't read
+/// the registry and need no theme. In release builds the whole body
+/// compiles out.
 #[inline]
-fn debug_assert_theme_installed(token_name: &'static str) {
-    debug_assert!(
-        THEME_INSTALLED.with(|f| f.get()),
-        "Tokenized::resolve() called for token '{}' on thread '{:?}' \
-         that has never had install_tokens() (or update_tokens()) invoked. \
-         The Stylesheet token registry is thread-local — resolves on a \
-         thread without an installed theme silently return the literal \
-         fallback and miss every theme value. Call \
-         `runtime_core::style::install_tokens(...)` on this thread \
-         before resolving styles, or move the resolve to the host \
-         render thread.",
-        token_name,
-        std::thread::current().name().unwrap_or("<unnamed>")
-    );
+fn debug_warn_resolve_on_unthemed_thread(_token_name: &'static str) {
+    #[cfg(debug_assertions)]
+    {
+        // This thread is themed → nothing to warn about.
+        if THEME_INSTALLED.with(|f| f.get()) {
+            return;
+        }
+        // No theme anywhere → benign, web-parity fallback. Stay silent.
+        if !ANY_THEME_INSTALLED.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        // A theme exists on another thread but not here: the genuine
+        // cross-thread footgun. Warn once per thread.
+        let first = WARNED_UNTHEMED_RESOLVE.with(|c| {
+            let was = c.get();
+            c.set(true);
+            !was
+        });
+        if first {
+            eprintln!(
+                "[runtime-core] token '{}' resolved on thread '{}', which has no \
+                 installed theme, but another thread does — this resolve falls back \
+                 to the literal default and misses every theme value. Call \
+                 `runtime_core::style::install_tokens(...)` on this thread, or move \
+                 the resolve to the host render thread.",
+                _token_name,
+                std::thread::current().name().unwrap_or("<unnamed>")
+            );
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Hash, Clone)]
@@ -3645,9 +3712,9 @@ mod tests {
         // `update_tokens` for the same name can propagate.
         //
         // Install a *different* token first so the thread is marked
-        // themed and `debug_assert_theme_installed` doesn't trip; the
-        // permissive lazy-fallback semantics we're exercising apply to
-        // individual missing tokens, not to a totally-unthemed thread.
+        // themed; the permissive lazy-fallback semantics we're
+        // exercising apply to individual missing tokens, not to a
+        // totally-unthemed thread.
         install_tokens(&[TokenEntry {
             name: "tk_uninstalled_sentinel",
             value: TokenValue::Color(Color("#000".into())),
@@ -3678,10 +3745,9 @@ mod tests {
         // other registry-touching tests (registry is process-wide).
         const NAME: &str = "tk_scope_survival_color";
 
-        // Mark the thread as themed so `debug_assert_theme_installed`
-        // doesn't trip on the first lazy resolve below. The bug under
-        // test is about lazy creation of a *single missing* token's
-        // signal slot, not about a totally-unthemed thread.
+        // Mark the thread as themed. The bug under test is about lazy
+        // creation of a *single missing* token's signal slot, not about
+        // a totally-unthemed thread.
         install_tokens(&[TokenEntry {
             name: "tk_scope_survival_sentinel",
             value: TokenValue::Color(Color("#000".into())),
@@ -3878,44 +3944,66 @@ mod tests {
         assert_eq!(c.resolve().0, "#fb");
     }
 
-    /// Regression test for the debug-only "resolve on unthemed thread"
-    /// tripwire. The token registry, resolution cache, and installed
-    /// `THEME_INSTALLED` flag are all thread-local; a `Tokenized::Token`
-    /// resolved on a thread that never called `install_tokens` would
-    /// silently fall back to the literal value and miss every theme
-    /// value — a footgun once any future code path (speculative renders,
-    /// SSR, off-main-thread layout) tries to render off the host thread.
-    /// In debug builds we panic loudly instead of silently degrading.
+    /// Regression test for the "native aborts when no theme is installed"
+    /// report (Whiteboard Pro feedback, 2026-06): an app that styles with
+    /// literal colors — or just leans on primitive default tokens like
+    /// `color-text` — and never calls `install_theme` rendered fine on web
+    /// (`var(--color-text, #1a1a1f)`) but `SIGABRT`-ed deep in style
+    /// resolution on macOS via a `debug_assert!` tripwire.
     ///
-    /// Release builds preserve the silent-fallback behavior (the assert
-    /// is `debug_assert!`); the corresponding `#[cfg(debug_assertions)]`
-    /// gate on this test makes that explicit — the panic disappears in
-    /// `--release`, so the test would no-op there.
+    /// Resolving a `Tokenized::Token` on a thread with no installed theme
+    /// must return the embedded fallback and **never panic**, matching the
+    /// web backend (CLAUDE.md §7: backends converge in output). The
+    /// cross-thread footgun the tripwire originally guarded is now a
+    /// debug-only *warning* (see `debug_warn_resolve_on_unthemed_thread`),
+    /// not an abort.
+    ///
+    /// Spawning a fresh, never-themed thread is the only way to
+    /// deterministically exercise an unthemed thread — the test runner
+    /// reuses threads across tests and the parent thread gets themed by
+    /// the other registry-touching tests in this module. The assertion
+    /// holds in both debug and release builds (the behavior is identical),
+    /// so this test is intentionally *not* `#[cfg(debug_assertions)]`.
     #[test]
-    #[cfg(debug_assertions)]
-    fn resolve_panics_in_debug_when_thread_has_no_installed_theme() {
-        // Spawn a fresh thread that has NEVER touched the registry or
-        // called install_tokens — the only way to deterministically
-        // exercise an unthemed thread, since the test runner reuses
-        // threads across tests and the parent thread is themed by all
-        // the other tests in this module.
+    fn resolve_on_unthemed_thread_falls_back_without_panicking() {
         let handle = std::thread::Builder::new()
-            .name("resolve_panics_in_debug_thread".into())
+            .name("unthemed_resolve_thread".into())
             .spawn(|| {
                 let c: Tokenized<Color> =
                     Tokenized::token("tk_unthemed_thread", Color("#fall".into()));
-                // This must trip `debug_assert_theme_installed` and
-                // panic. If it ever returns, the tripwire is broken.
-                let _ = c.resolve();
+                // Must return the fallback, not panic.
+                c.resolve().0
             })
             .expect("spawn worker thread");
 
-        let result = handle.join();
-        assert!(
-            result.is_err(),
-            "expected the spawned thread to panic via debug_assert_theme_installed, \
-             but it returned successfully — the tripwire is silently broken"
+        let resolved = handle
+            .join()
+            .expect("resolving a token on an unthemed thread must not panic");
+        assert_eq!(
+            resolved, "#fall",
+            "resolving a token on an unthemed thread must return the literal \
+             fallback — native must match the web backend's silent \
+             `var(--name, fallback)` behavior"
         );
+    }
+
+    /// Regression test for the "border width type uniformity" papercut
+    /// (Whiteboard Pro feedback): `border_*_width` is `Tokenized<f32>`
+    /// while every other length field is `Tokenized<Length>`, so passing
+    /// a `Length` used to fail with a confusing trait error. A `Length`
+    /// now coerces into `Tokenized<f32>` — pixels pass through; percent
+    /// and auto are invalid for a border and collapse to `0.0`.
+    #[test]
+    fn length_coerces_into_tokenized_f32_for_border_widths() {
+        let px: Tokenized<f32> = Length::Px(2.5).into();
+        assert_eq!(px.resolve(), 2.5);
+
+        // Percent/Auto are meaningless for a border → 0.0 (not a panic,
+        // not a type error).
+        let pct: Tokenized<f32> = Length::Percent(50.0).into();
+        assert_eq!(pct.resolve(), 0.0);
+        let auto: Tokenized<f32> = Length::Auto.into();
+        assert_eq!(auto.resolve(), 0.0);
     }
 
     // -----------------------------------------------------------------

@@ -72,6 +72,14 @@ web-sys = { version = "0.3", features = [
     "HtmlCanvasElement",
     # `console.log` marker of which renderer engaged (GPU vs Canvas2D fallback).
     "console",
+    # GPU layer compositor (`web_layer`): a hidden `<video>` per texture layer
+    # plays the camera `MediaStream`; its current frame is copied into a wgpu
+    # texture each frame via `Queue::copy_external_image_to_texture`.
+    "Document",
+    "Element",
+    "HtmlVideoElement",
+    "HtmlMediaElement",
+    "MediaStream",
 ] }
 
 # Deterministic gate-logic test (`js_truthy_prop`), run via `wasm-pack test`.

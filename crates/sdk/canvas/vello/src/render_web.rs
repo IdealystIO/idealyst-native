@@ -34,8 +34,12 @@
 //! webgpu-context canvas) — no GPU→CPU readback, whose blocking `map`+`poll`
 //! would be illegal on the wasm main thread.
 
+use crate::compose::OverlayCompositor;
 use crate::encode::encode_scene;
-use canvas_core::{paint_scene, CanvasProps, Scene as CanvasScene};
+use crate::plan::{plan_scene, ScenePlan};
+use crate::shape_pass::ShapePass;
+use crate::web_layer::WebLayerCompositor;
+use canvas_core::{paint_scene, CanvasProps, DrawOp, Scene as CanvasScene, TextureLayer};
 use runtime_core::accessibility::AccessibilityProps;
 use runtime_core::primitives::graphics::{GraphicsSurface, OnReadyEvent, OnResizeEvent};
 use runtime_core::{Backend, Effect, RegisterExternal};
@@ -205,13 +209,15 @@ async fn build_render_fn(ev: OnReadyEvent, props: Rc<CanvasProps>) -> RenderFn {
         None => return Box::new(|_| {}),
     };
 
-    // Texture layers (camera) are composited only by the Canvas2D path on web —
-    // the GPU layer compositor is native-only. Force the 2D path when present.
-    let gpu_viable = !force_canvas2d() && props.layers.is_empty();
+    // Texture layers (the camera) are now composited on the GPU path too (see
+    // `web_layer::WebLayerCompositor`), so a layered canvas no longer forces
+    // Canvas2D — it stays on WebGPU/vello (the instanced backdrop included).
+    let gpu_viable = !force_canvas2d();
 
     if gpu_viable {
-        if let Some(gpu) = GpuState::try_new(ev, canvas.clone()).await {
-            // Self-capture works on a webgpu-context canvas via captureStream.
+        if let Some(gpu) = GpuState::try_new(ev, canvas.clone(), props.layers.clone()).await {
+            // Self-capture works on a webgpu-context canvas via captureStream —
+            // and the camera is composited INTO the canvas, so it's in the recording.
             canvas_native::publish_capture_stream(&canvas, &props);
             marker("canvas-vello: web GPU (WebGPU)");
             return gpu.into_render_fn();
@@ -263,6 +269,18 @@ struct GpuState {
     /// Device pixel ratio: the author's `Scene` is logical, so this base
     /// transform makes it fill the physical-pixel surface (no retina under-fill).
     scale: f64,
+    /// Texture layers (the camera) composited over the scene each frame via
+    /// [`WebLayerCompositor`]. Empty when the canvas has no layers.
+    layers: Vec<TextureLayer>,
+    layer_compositor: Option<WebLayerCompositor>,
+    /// Instanced analytic-shape pass for a leading shape backdrop (the hybrid
+    /// path), built lazily the first time a shape-led scene is rendered.
+    shape_pass: Option<ShapePass>,
+    /// Secondary target vello renders a HYBRID scene's `rest` into (over a
+    /// transparent base); [`OverlayCompositor`] lays it over the instanced
+    /// backdrop in `target`. Lazily created, invalidated on resize.
+    overlay: Option<(wgpu::Texture, wgpu::TextureView)>,
+    overlay_compositor: Option<OverlayCompositor>,
 }
 
 impl GpuState {
@@ -270,7 +288,11 @@ impl GpuState {
     /// and only then `create_surface` (the single canvas-claiming step). Returns
     /// `None` — leaving the canvas pristine for the Canvas2D fallback — when no
     /// adapter/device is available or the GPU is too weak for vello's pipeline.
-    async fn try_new(ev: OnReadyEvent, canvas: HtmlCanvasElement) -> Option<GpuState> {
+    async fn try_new(
+        ev: OnReadyEvent,
+        canvas: HtmlCanvasElement,
+        layers: Vec<TextureLayer>,
+    ) -> Option<GpuState> {
         let (w, h) = (ev.size.0.max(1), ev.size.1.max(1));
         let scale = if ev.scale > 0.0 { ev.scale as f64 } else { 1.0 };
 
@@ -364,6 +386,11 @@ impl GpuState {
             target_view,
             blitter,
             scale,
+            layers,
+            layer_compositor: None,
+            shape_pass: None,
+            overlay: None,
+            overlay_compositor: None,
         })
     }
 
@@ -385,25 +412,44 @@ impl GpuState {
             let (target, target_view) = make_target(&self.device, cw, ch);
             self.target = target;
             self.target_view = target_view;
+            self.overlay = None; // sized to target; rebuilt on demand
         }
 
-        self.scene.reset();
-        // Base transform = device scale: the author's Scene is logical; scaling
-        // by dpr fills the physical-pixel surface (no retina under-fill).
-        encode_scene(canvas_scene.ops(), &mut self.scene, Affine::scale(self.scale));
-
-        let params = RenderParams {
-            base_color: Color::from_rgba8(0, 0, 0, 0),
-            width: self.config.width,
-            height: self.config.height,
-            antialiasing_method: AaConfig::Area,
+        // Classify the scene (see `crate::plan`) — same hybrid instanced-backdrop
+        // path as the native renderer. vello renders the content (whole scene for
+        // `Vello` → `target`; only `rest` for `Hybrid` → the separate `overlay`)
+        // over a transparent base; `Shapes` skips vello entirely.
+        let plan = plan_scene(canvas_scene.ops());
+        let (content_ops, to_overlay): (Option<&[DrawOp]>, bool) = match &plan {
+            ScenePlan::Vello => (Some(canvas_scene.ops()), false),
+            ScenePlan::Hybrid { rest, .. } => {
+                if self.overlay.is_none() {
+                    self.overlay =
+                        Some(make_target(&self.device, self.config.width, self.config.height));
+                }
+                (Some(rest), true)
+            }
+            ScenePlan::Shapes(_) => (None, false),
         };
-        if self
-            .renderer
-            .render_to_texture(&self.device, &self.queue, &self.scene, &self.target_view, &params)
-            .is_err()
-        {
-            return;
+        if let Some(ops) = content_ops {
+            self.scene.reset();
+            // Base transform = device scale: the author's Scene is logical; scaling
+            // by dpr fills the physical-pixel surface (no retina under-fill).
+            encode_scene(ops, &mut self.scene, Affine::scale(self.scale));
+            let params = RenderParams {
+                base_color: Color::from_rgba8(0, 0, 0, 0),
+                width: self.config.width,
+                height: self.config.height,
+                antialiasing_method: AaConfig::Area,
+            };
+            let view = if to_overlay { &self.overlay.as_ref().unwrap().1 } else { &self.target_view };
+            if self
+                .renderer
+                .render_to_texture(&self.device, &self.queue, &self.scene, view, &params)
+                .is_err()
+            {
+                return;
+            }
         }
 
         let frame = match self.surface.get_current_texture() {
@@ -417,6 +463,66 @@ impl GpuState {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("canvas-vello-web-blit") });
+
+        // Instanced shape backdrop (+ compose vello's content over it for a
+        // `Hybrid` scene). Disjoint field borrows — bind shared refs to locals first.
+        match &plan {
+            ScenePlan::Vello => {}
+            ScenePlan::Shapes(batches) => {
+                if self.shape_pass.is_none() {
+                    self.shape_pass = Some(ShapePass::new(&self.device));
+                }
+                let device = &self.device;
+                let queue = &self.queue;
+                let target_view = &self.target_view;
+                let (cw, ch) = (self.config.width, self.config.height);
+                let s = self.scale as f32;
+                self.shape_pass.as_mut().unwrap().render(
+                    device, queue, &mut encoder, target_view, batches, s, cw, ch,
+                );
+            }
+            ScenePlan::Hybrid { prefix, .. } => {
+                if self.shape_pass.is_none() {
+                    self.shape_pass = Some(ShapePass::new(&self.device));
+                }
+                if self.overlay_compositor.is_none() {
+                    self.overlay_compositor = Some(OverlayCompositor::new(&self.device));
+                }
+                let device = &self.device;
+                let queue = &self.queue;
+                let target_view = &self.target_view;
+                let (cw, ch) = (self.config.width, self.config.height);
+                let s = self.scale as f32;
+                self.shape_pass.as_mut().unwrap().render(
+                    device, queue, &mut encoder, target_view, prefix, s, cw, ch,
+                );
+                let overlay_view = &self.overlay.as_ref().unwrap().1;
+                self.overlay_compositor.as_ref().unwrap().composite(
+                    device,
+                    &mut encoder,
+                    overlay_view,
+                    target_view,
+                );
+            }
+        }
+
+        // Composite the texture layers (camera) over the scene, INTO the same
+        // target the blit + captureStream read — so the camera is on screen AND in
+        // the recording, while the dots backdrop above stayed GPU-instanced.
+        if !self.layers.is_empty() {
+            if self.layer_compositor.is_none() {
+                self.layer_compositor = Some(WebLayerCompositor::new(&self.device));
+            }
+            let device = &self.device;
+            let queue = &self.queue;
+            let target_view = &self.target_view;
+            let (cw, ch) = (self.config.width, self.config.height);
+            let s = self.scale as f32;
+            self.layer_compositor.as_mut().unwrap().composite_layers(
+                device, queue, &mut encoder, &self.layers, target_view, s, cw, ch,
+            );
+        }
+
         self.blitter.copy(&self.device, &mut encoder, &self.target_view, &surface_view);
         self.queue.submit([encoder.finish()]);
         frame.present();
@@ -424,8 +530,10 @@ impl GpuState {
 }
 
 /// Intermediate Rgba8Unorm target vello compute-writes into, then the blitter
-/// samples. No COPY_SRC/RENDER_ATTACHMENT — web has no GPU readback (capture
-/// uses captureStream) and no GPU layer compositor.
+/// samples. `RENDER_ATTACHMENT` so the instanced [`ShapePass`], the hybrid
+/// [`OverlayCompositor`], and the [`WebLayerCompositor`] can draw into it; also
+/// the secondary `overlay` target (vello content for a hybrid scene). No
+/// COPY_SRC — web has no GPU readback (capture uses captureStream).
 fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("canvas-vello-web-target"),
@@ -434,7 +542,9 @@ fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::T
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: TARGET_FORMAT,
-        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());

@@ -32,19 +32,21 @@ mod render;
 #[cfg(not(target_arch = "wasm32"))]
 pub use render::register;
 
+// Scene classification (`ScenePlan` / `plan_scene`) for the instanced fast path,
+// shared by the native and web renderers (pure op-list walk, no GPU).
+mod plan;
+
 // Instanced analytic-shape (rounded-box SDF) fast path for shape-batch scenes —
-// the native renderer's throughput path for a `DrawOp::Shapes` grid/scatter.
-// Drives both a PURE shape scene (the whole frame is the instanced pass) and a
-// HYBRID scene whose leading ops are shapes (an instanced backdrop, then vello
-// over the top — see `compose`). Native-only: the web GPU path has no layer
-// compositor, so any canvas with `layers` (the common rich-canvas case) takes
-// the Canvas2D fallback there, which expands shapes to fills (identical output).
-#[cfg(not(target_arch = "wasm32"))]
+// the throughput path for a `DrawOp::Shapes` grid/scatter. Drives both a PURE
+// shape scene (the whole frame is the instanced pass) and a HYBRID scene whose
+// leading ops are shapes (an instanced backdrop, then vello over the top — see
+// `compose`). Pure wgpu + `canvas_core`, so it serves both the native renderer
+// and the web WebGPU renderer (`render_web`), which now composites texture layers
+// itself instead of punting layered canvases to Canvas2D.
 mod shape_pass;
 
 // Full-frame source-over compositor: lays vello's content over the instanced
-// shape backdrop in the hybrid path. Native-only, alongside `shape_pass`.
-#[cfg(not(target_arch = "wasm32"))]
+// shape backdrop in the hybrid path. Shared by the native and web renderers.
 mod compose;
 
 // Web renderer: async wgpu init over the browser's WebGPU backend, with a
@@ -53,6 +55,12 @@ mod compose;
 mod render_web;
 #[cfg(target_arch = "wasm32")]
 pub use render_web::register;
+
+// WebGPU texture-layer compositor: composites a camera `MediaStream` into the
+// canvas on web (via `copy_external_image_to_texture`), so a layered canvas can
+// stay on the WebGPU/vello path instead of falling back to Canvas2D.
+#[cfg(target_arch = "wasm32")]
+mod web_layer;
 
 // Zero-copy capture target (`render.rs` uses `NativeCapture` uniformly): the
 // real IOSurface ring on macOS, a no-op stub on the other vello targets. iOS uses

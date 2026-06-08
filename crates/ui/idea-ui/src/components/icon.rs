@@ -16,11 +16,8 @@
 //! theme-reactive) or an explicit `color`. With neither set, the icon
 //! inherits the ambient text color — matching the primitive's default.
 
-use std::rc::Rc;
-
 use runtime_core::{
-    component, icon, Color, Element, IconData, IdealystSchema, IntoElement, Length, StyleRules,
-    StyleSheet, Tokenized,
+    component, icon, Color, Element, IconData, IdealystSchema, IntoElement,
 };
 
 use idea_theme::extensible::ToneRef;
@@ -70,34 +67,6 @@ const EMPTY_ICON: IconData = IconData {
     filled: false,
 };
 
-thread_local! {
-    // Keyed by integer-encoded size (px * 100, rounded) so distinct
-    // sizes get distinct cached sheets without float-key hashing.
-    static ICON_SIZE_SHEETS: std::cell::RefCell<
-        std::collections::HashMap<u32, Rc<StyleSheet>>,
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
-/// A cached static sheet pinning the icon to a `px × px` square. Icons
-/// have no intrinsic content size, so an explicit width/height keeps
-/// them from collapsing to a 0×0 box under flex.
-fn icon_size_sheet(px: f32) -> Rc<StyleSheet> {
-    let key = (px * 100.0).round() as u32;
-    ICON_SIZE_SHEETS.with(|m| {
-        if let Some(s) = m.borrow().get(&key) {
-            return s.clone();
-        }
-        let sheet = Rc::new(StyleSheet::r#static(StyleRules {
-            width: Some(Tokenized::Literal(Length::Px(px))),
-            height: Some(Tokenized::Literal(Length::Px(px))),
-            flex_shrink: Some(Tokenized::Literal(0.0)),
-            ..Default::default()
-        }));
-        m.borrow_mut().insert(key, sheet.clone());
-        sheet
-    })
-}
-
 /// Renders a sized, optionally tinted vector icon. Wraps the framework's
 /// `icon` primitive so call sites get a themed `#[component]` instead of
 /// the raw primitive.
@@ -108,7 +77,9 @@ pub fn Icon(props: &IconProps) -> Element {
     let tone = props.tone.clone();
     let explicit = props.color.clone();
 
-    let mut node = icon(data).with_style(icon_size_sheet(size));
+    // `.size()` pins the square (the primitive owns the cached sizing
+    // sheet so every icon at the same size shares one registration).
+    let mut node = icon(data).size(size);
 
     if let Some(tone) = tone {
         // Tone wins: resolve the tone's intent (ghost) color through the
@@ -133,7 +104,9 @@ mod tests {
     use super::*;
     use idea_theme::extensible::tone;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, FillRule, StyleApplication, StyleSource};
+    use runtime_core::{
+        resolve_style, FillRule, Length, StyleApplication, StyleSource, Tokenized,
+    };
 
     fn theme() {
         install_idea_theme(light_theme());

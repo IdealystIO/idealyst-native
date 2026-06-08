@@ -52,7 +52,9 @@
 mod scene;
 pub use scene::*;
 
-use runtime_core::{external, Bound, ExternalHandle, IdealystSchema};
+use runtime_core::{
+    external, Bound, ExternalHandle, IdealystSchema, Length, StyleRules, StyleSheet,
+};
 use std::any::Any;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -328,6 +330,35 @@ pub fn paint_scene(props: &CanvasProps) -> Scene {
     scene
 }
 
+/// Default "fill the parent box" style for an unstyled canvas, built
+/// once and shared. A canvas has no intrinsic content size, so without
+/// this an unstyled `Canvas(...)` collapses to a 0×0 box on the native
+/// backends (web's `<canvas>` defaults to `0×0` too once it's an
+/// external element rather than the `graphics` primitive). The default
+/// matches the framework's canonical fill convention used by the
+/// navigators (`flex_grow: 1` + `100% × 100%`) so the same style drives
+/// Taffy on native and CSS on web — identical layout input, identical
+/// output (CLAUDE.md §7).
+///
+/// **Caveat (inherent to flexbox, not a canvas quirk):** `100%` height
+/// only resolves against a parent with a *definite* height. A canvas
+/// nested under auto-height flex parents needs either a sized ancestor
+/// or `flex_grow` on the chain — the same rule every percentage-sized
+/// box follows. `flex_grow: 1` in this default covers the common
+/// "fill the remaining main-axis space" case without a definite parent.
+fn default_fill_style() -> Rc<StyleSheet> {
+    thread_local! {
+        static SHEET: Rc<StyleSheet> = {
+            let mut fill = StyleRules::default();
+            fill.flex_grow = Some(1.0f32.into());
+            fill.width = Some(Length::pct(100.0).into());
+            fill.height = Some(Length::pct(100.0).into());
+            Rc::new(StyleSheet::r#static(fill))
+        };
+    }
+    SHEET.with(|s| s.clone())
+}
+
 /// Construct a `Canvas` primitive. Returns a typed
 /// `Bound<ExternalHandle<CanvasProps>>` so `.bind(...)` is type-checked
 /// against a call-site `Ref<ExternalHandle<CanvasProps>>`.
@@ -337,12 +368,18 @@ pub fn paint_scene(props: &CanvasProps) -> Scene {
 /// expression-interpolated (`{ canvas::Canvas(..) }`); the macro only
 /// knows the closed first-party set.
 ///
+/// **Default sizing.** An unstyled canvas fills its parent box (see
+/// [`default_fill_style`]). Any `.with_style(...)` the caller chains
+/// *replaces* this default, so a canvas that wants a fixed size or a
+/// background just sets its own sheet — the fill default is only there
+/// so a bare `Canvas(...)` is visible at all, matching every backend.
+///
 /// Registers the wire serde for [`CanvasProps`] on first construction
 /// (idempotent) so a canvas can render across the runtime-server wire.
 #[allow(non_snake_case)]
 pub fn Canvas(props: CanvasProps) -> Bound<ExternalHandle<CanvasProps>> {
     ensure_wire_serde();
-    external(props)
+    external(props).with_style(default_fill_style())
 }
 
 /// Register the wire (serialize, deserialize) pair for [`CanvasProps`]
@@ -403,6 +440,57 @@ mod tests {
     fn default_props_paint_to_empty_scene() {
         let props = CanvasProps::default();
         assert!(paint_scene(&props).is_empty());
+    }
+
+    /// Regression test for the "bare canvas doesn't fill" papercut
+    /// (Whiteboard Pro feedback): an unstyled `Canvas(...)` must carry a
+    /// fill-parent style so it's visible on every backend, instead of
+    /// collapsing to a 0×0 box on native. Mirrors the navigators' fill
+    /// convention (`flex_grow: 1` + `100% × 100%`).
+    #[test]
+    fn unstyled_canvas_defaults_to_fill_parent() {
+        use runtime_core::{resolve_style, Length, StyleSource, Tokenized};
+
+        let mut canvas = Canvas(CanvasProps::default());
+        let style = match canvas.primitive_mut() {
+            runtime_core::Element::External { style, .. } => {
+                style.clone().expect("unstyled Canvas must attach a fill style")
+            }
+            _ => panic!("Canvas builds an External element"),
+        };
+        let app = match style {
+            StyleSource::Static(a) => a,
+            _ => panic!("the fill default is a static sheet"),
+        };
+        let rules = resolve_style(&app);
+        assert_eq!(rules.flex_grow, Some(Tokenized::Literal(1.0)));
+        assert_eq!(rules.width, Some(Tokenized::Literal(Length::Percent(100.0))));
+        assert_eq!(rules.height, Some(Tokenized::Literal(Length::Percent(100.0))));
+    }
+
+    /// An explicit `.with_style(...)` replaces the fill default — authors
+    /// who size the canvas themselves aren't fighting a baked-in 100%.
+    #[test]
+    fn explicit_style_overrides_fill_default() {
+        use runtime_core::{resolve_style, Length, StyleRules, StyleSheet, StyleSource, Tokenized};
+
+        let mut fixed = StyleRules::default();
+        fixed.width = Some(Length::Px(120.0).into());
+        let sheet = std::rc::Rc::new(StyleSheet::r#static(fixed));
+
+        let mut canvas = Canvas(CanvasProps::default()).with_style(sheet);
+        let style = match canvas.primitive_mut() {
+            runtime_core::Element::External { style, .. } => style.clone().unwrap(),
+            _ => panic!("Canvas builds an External element"),
+        };
+        let app = match style {
+            StyleSource::Static(a) => a,
+            _ => panic!("static sheet expected"),
+        };
+        let rules = resolve_style(&app);
+        assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(120.0))));
+        // The fill default's flex_grow is gone — the author's sheet won.
+        assert_eq!(rules.flex_grow, None);
     }
 
     #[test]
