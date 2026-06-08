@@ -44,13 +44,14 @@ use runtime_core::accessibility::AccessibilityProps;
 use runtime_core::primitives::graphics::{GraphicsSurface, OnReadyEvent, OnResizeEvent};
 use runtime_core::{Backend, Effect, RegisterExternal};
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use vello::kurbo::Affine;
 use vello::peniko::Color;
 use vello::{AaConfig, AaSupport, Renderer, RendererOptions, RenderParams, Scene as VelloScene};
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::HtmlCanvasElement;
 
@@ -134,19 +135,27 @@ fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node
     // the async `on_ready` probe installs a GPU or Canvas2D renderer.
     let scene_cell: Rc<RefCell<CanvasScene>> = Rc::new(RefCell::new(CanvasScene::new()));
     let render_fn: Rc<RefCell<Option<RenderFn>>> = Rc::new(RefCell::new(None));
+    // Whether a `requestAnimationFrame` render is already queued. The reactive
+    // effect can fire many times per displayed frame (pan/zoom pointer/wheel
+    // events arrive in dense bursts), but we only need ONE render per frame.
+    let frame_pending: Rc<Cell<bool>> = Rc::new(Cell::new(false));
 
     // Reactive repaint, anchored in the mount scope (this is what keeps repaints
     // alive past `build_canvas` return — see [[project_flatlist_needs_component_scope]]).
-    // Recomputes the scene whenever a signal the draw closure reads changes, and
-    // draws if a renderer has been installed yet (the first draw is done by
-    // `on_ready`, once the async probe resolves).
+    // Recomputes the scene whenever a signal the draw closure reads changes, then
+    // schedules ONE rAF-aligned render (the first draw is done by `on_ready`, once
+    // the async probe resolves). Coalescing to rAF is essential on web: WebGPU's
+    // present is non-blocking, so rendering synchronously per input event
+    // over-submits to the swapchain (250+ fps) until it backpressure-stalls. One
+    // render per animation frame caps it at the display refresh.
     let _effect = Effect::new({
         let props = props.clone();
         let scene_cell = scene_cell.clone();
         let render_fn = render_fn.clone();
+        let frame_pending = frame_pending.clone();
         move || {
             *scene_cell.borrow_mut() = paint_scene(&props);
-            repaint(&render_fn, &scene_cell);
+            schedule_repaint(&render_fn, &scene_cell, &frame_pending);
         }
     });
 
@@ -190,6 +199,37 @@ fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node
         Box::new(on_lost),
         &AccessibilityProps::default(),
     )
+}
+
+/// Queue a render for the next animation frame, coalescing: if one is already
+/// pending, this is a no-op, so a burst of reactive updates within a frame
+/// collapses to a single render of the LATEST scene. The rAF callback clears the
+/// flag and repaints. This is what paces web rendering to the display refresh
+/// (WebGPU's present doesn't block, so it must be paced explicitly).
+fn schedule_repaint(
+    render_fn: &Rc<RefCell<Option<RenderFn>>>,
+    scene_cell: &Rc<RefCell<CanvasScene>>,
+    frame_pending: &Rc<Cell<bool>>,
+) {
+    if frame_pending.replace(true) {
+        return; // a frame is already queued — fold into it
+    }
+    let Some(window) = web_sys::window() else {
+        frame_pending.set(false);
+        return;
+    };
+    let render_fn = render_fn.clone();
+    let scene_cell = scene_cell.clone();
+    let frame_pending = frame_pending.clone();
+    // `once_into_js` keeps the closure alive until JS invokes it once, then drops
+    // it — no manual `Closure` lifetime management for a one-shot rAF.
+    let cb = Closure::once_into_js(move || {
+        frame_pending.set(false);
+        repaint(&render_fn, &scene_cell);
+    });
+    if window.request_animation_frame(cb.unchecked_ref()).is_err() {
+        frame_pending.set(false);
+    }
 }
 
 /// Run the installed renderer (if any) against the latest scene. Takes the

@@ -16,8 +16,11 @@ license.workspace = true
 # `IdealystSchema` derive (a no-op without the `catalog` feature, so this
 # adds no platform code to a normal build).
 runtime-core = { workspace = true }
-# Scene wire serialization (snapshot crosses the runtime-server wire).
-serde = { version = "1", features = ["derive"] }
+# Scene wire serialization (snapshot crosses the runtime-server wire). `rc` so
+# `DrawOp::Image`'s `Arc<ImageSource>` serializes (the buffer is sent as before;
+# the `Arc` only avoids a per-frame clone in-process — sharing isn't preserved
+# across the wire, which is fine).
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 # Self-capture currency: `CanvasProps.capture` is a `FrameWriter` the renderer
 # publishes rendered frames into, so the app can record the canvas's own output

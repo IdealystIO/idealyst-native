@@ -23,6 +23,8 @@
 //! CoreGraphics / `android.graphics` convention. Renderers scale to the
 //! surface's device-pixel ratio at flush time.
 
+use std::sync::Arc;
+
 use runtime_core::color::Rgba;
 use serde::{Deserialize, Serialize};
 
@@ -731,8 +733,11 @@ pub enum DrawOp {
     /// "place an image, then draw over it" primitive — author a transparent
     /// canvas above it and the strokes land on top.
     Image {
-        /// Source pixels (+ decode-cache id).
-        image: ImageSource,
+        /// Source pixels (+ decode-cache id). `Arc` so a static image placed
+        /// every frame (e.g. dragging it) costs a refcount bump per repaint, not
+        /// a full pixel-buffer clone — renderers cache the decoded upload by
+        /// [`ImageSource::id`] and never touch the buffer on a cache hit.
+        image: Arc<ImageSource>,
         /// Destination rectangle in logical pixels.
         dst: Rect,
         /// Opacity, `0.0..=1.0`.
@@ -1006,8 +1011,10 @@ impl Scene {
     }
 
     /// Blit `image` into the `dst` rectangle (scaled to fit), fully opaque,
-    /// source-over. Does not touch the current path.
-    pub fn draw_image(&mut self, image: ImageSource, dst: Rect) -> &mut Self {
+    /// source-over. Does not touch the current path. Accepts an owned
+    /// [`ImageSource`] or an `Arc<ImageSource>` — pass the `Arc` to re-blit the
+    /// same image every frame for a refcount bump instead of a buffer clone.
+    pub fn draw_image(&mut self, image: impl Into<Arc<ImageSource>>, dst: Rect) -> &mut Self {
         self.draw_image_with(image, dst, 1.0, BlendMode::Normal)
     }
 
@@ -1015,12 +1022,13 @@ impl Scene {
     /// [`BlendMode`]. Does not touch the current path.
     pub fn draw_image_with(
         &mut self,
-        image: ImageSource,
+        image: impl Into<Arc<ImageSource>>,
         dst: Rect,
         alpha: f32,
         blend: BlendMode,
     ) -> &mut Self {
-        self.ops.push(DrawOp::Image { image, dst, alpha: alpha.clamp(0.0, 1.0), blend });
+        self.ops
+            .push(DrawOp::Image { image: image.into(), dst, alpha: alpha.clamp(0.0, 1.0), blend });
         self
     }
 
