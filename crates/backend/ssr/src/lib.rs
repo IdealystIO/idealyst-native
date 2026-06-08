@@ -521,12 +521,13 @@ impl Backend for SsrBackend {
         _on_click: Rc<dyn Fn()>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // A bare clickable `<div>`, matching the web pressable: a hand
-        // cursor + button a11y. The click handler is the live bundle's
-        // job on hydration; the static first paint just needs to look
-        // and read like a button.
+        // A bare clickable `<div>`, matching the web pressable: button
+        // a11y only. No inline cursor — `cursor` is now an
+        // author/component style property (`StyleRules::cursor`), so the
+        // static first paint matches the live web pressable (neither sets
+        // an inline cursor) and hydration adoption stays consistent. The
+        // click handler is the live bundle's job on hydration.
         let mut node = HtmlNode::new("div");
-        node.style = Some(css::PRESSABLE_CURSOR_STYLE.to_string());
         node.attrs.push(("role", "button".to_string()));
         node.attrs.push(("tabindex", "0".to_string()));
         nref(node)
@@ -631,8 +632,9 @@ impl Backend for SsrBackend {
         overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
     ) {
         // States-only entry; delegate to the superset with no breakpoint
-        // overlays so the combined-key + emission logic lives in one place.
-        self.apply_styled_variants(node, base, overlays, &[]);
+        // or container overlays so the combined-key + emission logic lives
+        // in one place.
+        self.apply_styled_variants(node, base, overlays, &[], &[]);
     }
 
     fn apply_styled_variants(
@@ -641,15 +643,22 @@ impl Backend for SsrBackend {
         base: &Rc<StyleRules>,
         overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
         breakpoint_overlays: &[(runtime_core::Breakpoint, Rc<StyleRules>)],
+        container_overlays: &[(f32, Rc<StyleRules>)],
     ) {
         // Key the class by base + every state overlay + every breakpoint
-        // overlay through `css::variant_class_key` — the SINGLE SOURCE
-        // shared with the web backend. Building the key here independently
-        // (as this used to) drifted from web's scheme (`|<bits>:` vs
-        // `;<tag>:`), so the SAME stateful style minted DIFFERENT classes
-        // on server vs client and hydration couldn't reuse the server's
-        // styling. Sharing the builder guarantees byte-identical classes.
-        let combined = css::variant_class_key(&base.content_key(), overlays, breakpoint_overlays);
+        // overlay + every container overlay through `css::variant_class_key`
+        // — the SINGLE SOURCE shared with the web backend. Building the key
+        // here independently (as this used to) drifted from web's scheme
+        // (`|<bits>:` vs `;<tag>:`), so the SAME stateful style minted
+        // DIFFERENT classes on server vs client and hydration couldn't
+        // reuse the server's styling. Sharing the builder guarantees
+        // byte-identical classes.
+        let combined = css::variant_class_key(
+            &base.content_key(),
+            overlays,
+            breakpoint_overlays,
+            container_overlays,
+        );
         let class = css::hash_class_name(&combined);
         self.style_rules
             .entry(class.clone())
@@ -675,7 +684,29 @@ impl Backend for SsrBackend {
                     .or_insert(rule);
             }
         }
+        // Container overlays → `@container (min-width: …) { .ui-<hash> { … } }`.
+        // Keyed by `{class}@cq<threshold-bits>` so each distinct threshold
+        // gets its own rule; the browser resolves it against the nearest
+        // `container-type` ancestor (set by `mark_container`). Stacking by
+        // source order reproduces the mobile-first cascade.
+        for (threshold, overlay) in container_overlays {
+            let body = css::rules_to_css(overlay);
+            let rule = css::container_query_rule(&class, *threshold, &body);
+            self.media_rules
+                .entry(format!("{class}@cq{:08x}", threshold.to_bits()))
+                .or_insert(rule);
+        }
         add_class(node, &class);
+    }
+
+    fn mark_container(&mut self, node: &Self::Node) {
+        // SSR mirrors web: tag the node as a containment context so
+        // descendant `@container` rules resolve against it. Emitted as a
+        // shared one-line class kept in `style_rules` (deduped by key).
+        self.style_rules
+            .entry(css::CONTAINER_TYPE_CLASS.to_string())
+            .or_insert_with(|| css::CONTAINER_TYPE_BODY.to_string());
+        add_class(node, css::CONTAINER_TYPE_CLASS);
     }
 
     fn create_link(
@@ -1423,6 +1454,7 @@ mod tests {
                 (Breakpoint::Lg, Rc::new(lg)),
                 (Breakpoint::Md, Rc::new(md)),
             ],
+            &[],
         );
 
         let html = { let mut s = String::new(); serialize(&v, &mut s); s };
@@ -1455,14 +1487,85 @@ mod tests {
         assert!(base_at < md_at, "base class rule must precede the media rules. head: {head}");
     }
 
-    /// `create_pressable` is a clickable `<div>` with a hand cursor +
-    /// button a11y, matching the web pressable.
+    /// `apply_styled_variants` emits an `@container (min-width: …)` rule per
+    /// container overlay (ascending by threshold), and `mark_container`
+    /// tags the containment context with `container-type: inline-size` — so
+    /// the SSR first paint already carries the container-responsive layout.
     #[test]
-    fn create_pressable_has_cursor_and_role() {
+    fn apply_styled_variants_emits_container_query_rule() {
+        use runtime_core::Length;
+        let mut b = SsrBackend::new();
+        let container = b.create_view(&AccessibilityProps::default());
+        b.mark_container(&container);
+        let v = b.create_view(&AccessibilityProps::default());
+
+        let mut base = StyleRules::default();
+        base.width = Some(Tokenized::Literal(Length::Px(100.0)));
+        let mut small = StyleRules::default();
+        small.width = Some(Tokenized::Literal(Length::Px(500.0)));
+        let mut large = StyleRules::default();
+        large.width = Some(Tokenized::Literal(Length::Px(900.0)));
+
+        // Pass out of threshold order to prove emission sorts ascending.
+        b.apply_styled_variants(
+            &v,
+            &Rc::new(base),
+            &[],
+            &[],
+            &[(600.0, Rc::new(large)), (300.0, Rc::new(small))],
+        );
+
+        let html = { let mut s = String::new(); serialize(&v, &mut s); s };
+        let class = html
+            .split("class=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap()
+            .to_string();
+
+        let head = b.head_css();
+        assert!(head.contains(&format!(".{class}{{width: 100px}}")), "base rule, got: {head}");
+        assert!(
+            head.contains(&format!(
+                "@container (min-width: 300px) {{ .{class} {{ width: 500px }} }}"
+            )),
+            "300px container rule, got: {head}"
+        );
+        assert!(
+            head.contains(&format!(
+                "@container (min-width: 600px) {{ .{class} {{ width: 900px }} }}"
+            )),
+            "600px container rule, got: {head}"
+        );
+        // Mobile-first cascade: lower threshold precedes higher in source.
+        let small_at = head.find("min-width: 300px").expect("300 present");
+        let large_at = head.find("min-width: 600px").expect("600 present");
+        assert!(small_at < large_at, "300px rule must precede 600px (ascending). head: {head}");
+        // The containment context carries `container-type: inline-size`.
+        assert!(
+            head.contains(&format!(".{} {{ container-type: inline-size }}", css::CONTAINER_TYPE_CLASS))
+                || head.contains(&format!(".{}{{container-type: inline-size}}", css::CONTAINER_TYPE_CLASS)),
+            "container-type rule present, got: {head}"
+        );
+        // And the container node wears the marker class.
+        let chtml = { let mut s = String::new(); serialize(&container, &mut s); s };
+        assert!(chtml.contains(css::CONTAINER_TYPE_CLASS), "container node wears marker class, got: {chtml}");
+    }
+
+    /// `create_pressable` is a clickable `<div>` with button a11y,
+    /// matching the web pressable. It carries NO inline cursor — `cursor`
+    /// is an author/component style property now (`StyleRules::cursor`),
+    /// so the static paint and the live web pressable agree (neither
+    /// stamps an inline cursor) and hydration adoption stays consistent.
+    #[test]
+    fn create_pressable_has_role_and_no_inline_cursor() {
         let mut b = SsrBackend::new();
         let node = b.create_pressable(Rc::new(|| {}), &AccessibilityProps::default());
         let html = { let mut s = String::new(); serialize(&node, &mut s); s };
-        assert!(html.contains("cursor: pointer"), "hand cursor, got: {html}");
+        assert!(
+            !html.contains("cursor"),
+            "no framework-imposed inline cursor (it's a style property now), got: {html}"
+        );
         assert!(html.contains(r#"role="button""#), "button role, got: {html}");
         assert!(html.contains(r#"tabindex="0""#), "focusable, got: {html}");
     }

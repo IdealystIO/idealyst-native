@@ -39,6 +39,7 @@ fn main() {
                 ref_fill: None,
                 safe_area_sides: runtime_core::SafeAreaSides::NONE,
                 on_touch: None,
+                is_container: false,
                 accessibility: Default::default(),
                 test_id: None,
             },
@@ -61,6 +62,7 @@ fn main() {
         ref_fill: None,
         safe_area_sides: runtime_core::SafeAreaSides::NONE,
         on_touch: None,
+        is_container: false,
         accessibility: Default::default(),
         test_id: None,
     };

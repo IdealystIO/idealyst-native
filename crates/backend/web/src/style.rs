@@ -523,10 +523,24 @@ impl WebBackend {
         base: &std::rc::Rc<StyleRules>,
         overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
     ) {
-        // States-only entry: no breakpoint overlays. Delegates to the
-        // superset so the two paths can never drift (the gradient
-        // snapshot, cache-key, and dedup logic all live in one place).
-        self.impl_apply_styled_variants(node, base, overlays, &[]);
+        // States-only entry: no breakpoint or container overlays.
+        // Delegates to the superset so the two paths can never drift (the
+        // gradient snapshot, cache-key, and dedup logic all live in one
+        // place).
+        self.impl_apply_styled_variants(node, base, overlays, &[], &[]);
+    }
+
+    /// Mark a node as a container-query containment context
+    /// (`container-type: inline-size`), so descendant `@container` rules
+    /// resolve against its inline-size. Applied as an **inline style**
+    /// rather than a class because `queue_class_apply` does a full
+    /// `className` replace on every restyle, which would wipe a container
+    /// class; an inline style is independent of the node's styled class.
+    /// See [`css::CONTAINER_TYPE_BODY`].
+    pub(crate) fn impl_mark_container(&mut self, node: &web_sys::Node) {
+        if let Some(element) = node.dyn_ref::<web_sys::HtmlElement>() {
+            let _ = element.style().set_property("container-type", "inline-size");
+        }
     }
 
     /// Superset of [`Self::impl_apply_styled_states`]: emits a node's
@@ -541,6 +555,7 @@ impl WebBackend {
         base: &std::rc::Rc<StyleRules>,
         overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
         breakpoint_overlays: &[(runtime_core::Breakpoint, std::rc::Rc<StyleRules>)],
+        container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
     ) {
         // Outer phase covers the whole call — comparing this against
         // the sum of the sub-phases lets us see how much time is
@@ -578,7 +593,7 @@ impl WebBackend {
         // on the content-key-hit branch so post-theme-swap Rcs
         // (which carry new pointers) get cached after the first
         // row in the cohort pays the content-key lookup.
-        if overlays.is_empty() && breakpoint_overlays.is_empty() {
+        if overlays.is_empty() && breakpoint_overlays.is_empty() && container_overlays.is_empty() {
             let ptr = std::rc::Rc::as_ptr(base);
             let ptr_hit = {
                 let _t = PhaseTimer::start("pregen_lookup_ptr");
@@ -680,7 +695,7 @@ impl WebBackend {
             base.content_key()
         };
 
-        if overlays.is_empty() && breakpoint_overlays.is_empty() {
+        if overlays.is_empty() && breakpoint_overlays.is_empty() && container_overlays.is_empty() {
             let pregen_hit = {
                 let _t = PhaseTimer::start("pregen_lookup");
                 self.pregen.get(&base_key).map(|entry| entry.name.clone())
@@ -714,7 +729,7 @@ impl WebBackend {
         // SOURCE shared with the SSR backend, so the same
         // `(base, states, breakpoints)` mints the IDENTICAL class on both
         // and SSR→web hydration can reuse the server's styling.
-        let key = css::variant_class_key(&base_key, overlays, breakpoint_overlays);
+        let key = css::variant_class_key(&base_key, overlays, breakpoint_overlays, container_overlays);
 
         // Cache lookup. Refcount-bump-on-hit MUST happen before we
         // release the old slot below — if the previous slot pointed
@@ -743,8 +758,9 @@ impl WebBackend {
             // and each breakpoint overlay as a `@media (min-width: …)`
             // rule. Both kinds' CSSOM indices go in one vec so
             // `release_dynamic_rule` deletes them all on teardown.
-            let mut overlay_indices: Vec<u32> =
-                Vec::with_capacity(overlays.len() + breakpoint_overlays.len());
+            let mut overlay_indices: Vec<u32> = Vec::with_capacity(
+                overlays.len() + breakpoint_overlays.len() + container_overlays.len(),
+            );
             for (bit, overlay) in overlays {
                 let pseudo = match *bit {
                     runtime_core::StateBits::HOVERED => ":hover",
@@ -792,6 +808,24 @@ impl WebBackend {
                     overlay_indices.push(idx);
                 }
             }
+            // Container overlays: emitted ascending by threshold (the
+            // walker pre-sorts `container_overlays`), so stacked
+            // `@container (min-width: …)` rules cascade with higher
+            // thresholds winning — the mobile-first cascade keyed on the
+            // nearest `container-type` ancestor's width rather than the
+            // viewport's.
+            for (threshold, overlay) in container_overlays {
+                let body = {
+                    let _t = PhaseTimer::start("rules_to_css");
+                    rules_to_css(overlay)
+                };
+                let rule = css::container_query_rule(&class_name, *threshold, &body);
+                let idx = {
+                    let _t = PhaseTimer::start("insert_rule");
+                    self.insert_rule_raw(&rule)
+                };
+                overlay_indices.push(idx);
+            }
 
             let shared = std::rc::Rc::new(DynamicPtrEntry {
                 class_name,
@@ -810,7 +844,7 @@ impl WebBackend {
             // path — when overlays are present, distinct base Rcs can
             // share a base content but require distinct combined keys,
             // so pointer identity isn't a safe shortcut.
-            if overlays.is_empty() && breakpoint_overlays.is_empty() {
+            if overlays.is_empty() && breakpoint_overlays.is_empty() && container_overlays.is_empty() {
                 self.dynamic_by_ptr
                     .insert(std::rc::Rc::as_ptr(base), shared.clone());
             }

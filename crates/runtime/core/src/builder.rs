@@ -190,6 +190,28 @@ impl Bound<ViewHandle> {
         self
     }
 
+    /// Mark this view as a **container-query containment context**.
+    /// Descendant `container (min_width: N)` style overlays then resolve
+    /// against *this* view's resolved inline-size, not the global
+    /// viewport — so the same component lays itself out differently in a
+    /// narrow sidebar vs. a wide main column.
+    ///
+    /// **Inline-size containment invariant:** the container's width must
+    /// be determinate from its parent (an explicit width, a percentage,
+    /// or a flex track) — never shrink-to-fit from the descendants that
+    /// query it. Querying a content-sized width is a cycle and is
+    /// unsupported (web enforces this via `container-type: inline-size`;
+    /// native relies on it for convergence). See
+    /// [`crate::container_query`].
+    ///
+    /// No-op on non-`view` primitives.
+    pub fn container(mut self) -> Self {
+        if let Element::View { is_container, .. } = &mut self.primitive {
+            *is_container = true;
+        }
+        self
+    }
+
     /// Install a raw touch handler. The closure receives every
     /// [`TouchEvent`](crate::TouchEvent) the backend delivers to this
     /// view and returns a [`TouchResponse`](crate::TouchResponse) that
@@ -388,6 +410,7 @@ pub fn view(children: Vec<Element>) -> Bound<ViewHandle> {
         ref_fill: None,
         safe_area_sides: crate::SafeAreaSides::NONE,
         on_touch: None,
+        is_container: false,
         accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]
         test_id: None,

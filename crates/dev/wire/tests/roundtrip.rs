@@ -395,6 +395,7 @@ fn real_walker_drives_recorder() {
         ref_fill: None,
         safe_area_sides: Default::default(),
         on_touch: None,
+        is_container: false,
         accessibility: Default::default(),
         test_id: None,
     };

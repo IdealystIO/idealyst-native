@@ -46,6 +46,13 @@ web-sys = { version = "0.3", features = [
     # canvas so captureStream records it (web parity for camera-in-canvas).
     "HtmlVideoElement",
     "HtmlMediaElement",
+    # Static-image blit (`DrawOp::Image`): raw RGBA → `ImageData` → an offscreen
+    # `<canvas>` (`put_image_data`), drawImage'd into the scene
+    # (`draw_image_with_html_canvas_element_and_dw_dh`).
+    "ImageData",
+    # Persistent layer (`DrawOp::Layer`): `get_transform()` returns a `DomMatrix`
+    # used to mirror the main context's transform onto the offscreen layer.
+    "DomMatrix",
 ] }
 
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]

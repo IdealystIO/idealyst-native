@@ -219,6 +219,16 @@ pub fn install_global_self(weak: std::rc::Weak<RefCell<MacosBackend>>) {
     MACOS_BACKEND_SELF.with(|s| {
         *s.borrow_mut() = Some(weak);
     });
+    // Flush any coalesced layout pass synchronously when a reactive mutation
+    // window closes — so views inserted by ANY reactive update (event, timer,
+    // live-update push, hot-reload) are laid out before the turn paints, not
+    // flashed at (0,0) and repositioned a frame later. The deferred
+    // `schedule_layout_pass` microtask remains the fallback for the rare
+    // change that isn't inside a reactive window. No-op when nothing's
+    // pending, so it's cheap on every update.
+    runtime_core::install_reactive_idle_hook(std::rc::Rc::new(|| {
+        flush_pending_layout_pass();
+    }));
 }
 
 /// Push a scalar animation property update to `node` on the
@@ -958,13 +968,11 @@ fn make_tap_handler(on_click: Rc<dyn Fn()>) -> runtime_core::TouchHandler {
         TouchPhase::Ended => {
             if armed.replace(false) {
                 (on_click)();
-                // The click handler may have mutated the tree (e.g. a tree
-                // row toggling `expanded` → row inserts). Drain any coalesced
-                // layout pass NOW, synchronously, before this run-loop turn
-                // paints — so inserted rows are sized before they're shown,
-                // not snapped from (0,0) a frame later. One pass for the whole
-                // batch (coalesced); a no-op if the handler didn't resize/insert.
-                flush_pending_layout_pass();
+                // The click handler's signal mutations close a reactive window,
+                // which fires the reactive-idle hook (installed in
+                // `install_global_self`) → `flush_pending_layout_pass()`. So any
+                // inserts it triggered are laid out before this turn paints,
+                // with no per-event flush needed here.
             }
             TouchResponse::CONSUMED
         }
@@ -1208,6 +1216,55 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     // the GPU surface keeps presenting, clipped to bounds.
     if let Some(clip) = overflow_masks_to_bounds(style) {
         let _: () = unsafe { msg_send![&layer, setMasksToBounds: clip] };
+    }
+
+    // Interaction (desktop affordances; touch backends no-op these). Mirrors
+    // the web `cursor` / `user-select` CSS so the backends converge (Rule #7).
+    //
+    // Cursor: only our `FlippedView` host (view / pressable / link) carries the
+    // cursor-rect override — native controls keep their own system cursor (an
+    // `NSTextField` shows the iBeam). `Some(Auto)` clears any prior cursor; an
+    // unset `cursor` leaves whatever a previous apply installed.
+    if let Some(c) = style.cursor {
+        if let Some(fv) = as_flipped_view(view) {
+            fv.set_cursor(view::cursor_for(c));
+        }
+    }
+
+    // Text selection: macOS controls it per text widget via `setSelectable:`
+    // (NSTextField / NSTextView respond; other views ignore it). `Auto` leaves
+    // the widget default — labels are already non-selectable, so a button's
+    // text isn't selectable without any opt-in, matching `user-select: none`
+    // on web.
+    if let Some(u) = style.user_select {
+        use runtime_core::UserSelect;
+        let selectable = match u {
+            UserSelect::None => Some(false),
+            UserSelect::Text | UserSelect::All => Some(true),
+            UserSelect::Auto => None,
+        };
+        if let Some(sel) = selectable {
+            let responds: bool =
+                unsafe { msg_send![view, respondsToSelector: objc2::sel!(setSelectable:)] };
+            if responds {
+                let _: () = unsafe { msg_send![view, setSelectable: sel] };
+            }
+        }
+    }
+}
+
+/// Downcast an `&NSView` to `&FlippedView` when its dynamic class is our
+/// `IdealystFlippedView` (the host for `view` / `pressable` / `link`).
+/// Returns `None` for native controls (`NSTextField`, `NSSwitch`, …). Mirrors
+/// the class-check + pointer-cast `install_touch_handler` already uses.
+fn as_flipped_view(view: &NSView) -> Option<&FlippedView> {
+    let is_flipped: bool =
+        unsafe { msg_send![view, isKindOfClass: objc2::class!(IdealystFlippedView)] };
+    if is_flipped {
+        // SAFETY: just confirmed the dynamic class is `IdealystFlippedView`.
+        Some(unsafe { &*(view as *const NSView as *const FlippedView) })
+    } else {
+        None
     }
 }
 
@@ -1551,6 +1608,16 @@ impl MacosBackend {
             // correct here, post-layout. No-op for views with
             // identity transforms.
             animated::sync_transform_after_layout(view, &self.animated_states);
+            // Feed any `on_layout` subscribers (a `.container()` view's
+            // inline-size signal) with this view's resolved size. The
+            // callbacks change-guard, so re-firing at an unchanged width
+            // is a no-op — which is what keeps the container-query
+            // restyle→relayout loop convergent.
+            handles::fire_layout_for_view(
+                handles::view_key(&**view),
+                frame.width,
+                frame.height,
+            );
         }
 
         // (Scroll documentView sizing is deferred to the END of this method — it

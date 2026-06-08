@@ -144,6 +144,7 @@ fn websocket_round_trip_basic_tree() {
             ref_fill: None,
             safe_area_sides: Default::default(),
             on_touch: None,
+            is_container: false,
             accessibility: Default::default(),
             test_id: None,
         };

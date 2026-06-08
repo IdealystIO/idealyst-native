@@ -78,6 +78,7 @@ fn make_app() -> impl FnOnce() -> Element + 'static {
             ref_fill: Some(RefFill::View(Box::new(move |h| view_for_fill.fill(h)))),
             safe_area_sides: SafeAreaSides::NONE,
             on_touch: None,
+            is_container: false,
             accessibility: Default::default(),
             test_id: None,
         }
@@ -181,6 +182,7 @@ fn end_to_end_raf_dropping_own_handle_inside_mount_does_not_panic() {
             ref_fill: None,
             safe_area_sides: SafeAreaSides::NONE,
             on_touch: None,
+            is_container: false,
             accessibility: Default::default(),
             test_id: None,
         }

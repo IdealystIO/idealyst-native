@@ -23,7 +23,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    Easing, FontWeight, StyleRules, StyleSheet, TextAlign, Tokenized, Transition, VariantSet,
+    Cursor, Easing, FontWeight, StyleRules, StyleSheet, TextAlign, Tokenized, Transition,
+    UserSelect, VariantSet,
 };
 
 use crate::theme::{IdeaTheme, IdeaThemeRef};
@@ -135,6 +136,12 @@ impl ButtonSheetBuilder {
             font_weight: Some(FontWeight::SemiBold),
             letter_spacing: Some(Tokenized::Literal(0.2)),
             text_align: Some(TextAlign::Center),
+            // Interaction affordances every button wants: a pointer cursor on
+            // desktop/web, and a label that can't be drag-selected. The
+            // framework imposes neither on the bare `pressable` primitive — a
+            // component library opts in. Touch backends no-op both.
+            cursor: Some(Cursor::Pointer),
+            user_select: Some(UserSelect::None),
             background_transition: Some(Transition::new(150, Easing::EaseOut)),
             color_transition: Some(Transition::new(200, Easing::EaseOut)),
             opacity_transition: Some(Transition::new(200, Easing::EaseOut)),
@@ -710,6 +717,9 @@ impl IconButtonSheetBuilder {
             text_align: Some(TextAlign::Center),
             align_items: Some(AlignItems::Center),
             justify_content: Some(JustifyContent::Center),
+            // Pointer cursor + non-selectable glyph — see ButtonSheetBuilder.
+            cursor: Some(Cursor::Pointer),
+            user_select: Some(UserSelect::None),
             background_transition: Some(Transition::new(150, Easing::EaseOut)),
             color_transition: Some(Transition::new(200, Easing::EaseOut)),
             border_top_color_transition: Some(Transition::new(150, Easing::EaseOut)),

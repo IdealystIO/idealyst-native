@@ -31,7 +31,7 @@ use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
-use objc2_app_kit::{NSEvent, NSTextField, NSTextFieldCell, NSView};
+use objc2_app_kit::{NSCursor, NSEvent, NSTextField, NSTextFieldCell, NSView};
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSString};
 use std::cell::Cell as StdCell;
 
@@ -49,6 +49,11 @@ pub struct FlippedViewIvars {
     /// the matching `mouseUp`, so drag/up events only dispatch for a gesture we
     /// actually started — mirrors iOS's `active_touches` gate.
     active: Cell<bool>,
+    /// The hover cursor for this view, mapped from `StyleRules::cursor`.
+    /// `None` = no custom cursor (the OS default arrow). Installed as a
+    /// cursor rect over the view's bounds in `resetCursorRects`; AppKit
+    /// rebuilds those rects when we invalidate or the geometry changes.
+    cursor: RefCell<Option<Retained<NSCursor>>>,
 }
 
 declare_class!(
@@ -97,6 +102,21 @@ declare_class!(
                 let _: () = unsafe { msg_send![super(self), mouseUp: event] };
             }
         }
+
+        // AppKit calls this to (re)build the view's cursor rects whenever the
+        // window's cursor rects are invalidated — on geometry changes and on
+        // our explicit `invalidateCursorRectsForView:` in `set_cursor`. We
+        // install a single rect over the whole bounds carrying the styled
+        // cursor; with no styled cursor we add nothing, so the view shows the
+        // OS default. Reading `self.bounds` here (not at set time) keeps the
+        // rect correct across resizes.
+        #[method(resetCursorRects)]
+        fn reset_cursor_rects(&self) {
+            if let Some(cursor) = self.ivars().cursor.borrow().as_ref() {
+                let bounds: CGRect = unsafe { msg_send![self, bounds] };
+                let _: () = unsafe { msg_send![self, addCursorRect: bounds, cursor: &**cursor] };
+            }
+        }
     }
 );
 
@@ -106,6 +126,7 @@ impl FlippedView {
         let this = this.set_ivars(FlippedViewIvars {
             handler: RefCell::new(None),
             active: Cell::new(false),
+            cursor: RefCell::new(None),
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -123,6 +144,21 @@ impl FlippedView {
     /// macOS analogue of iOS's `IdealystTouchView::has_handler`.
     pub(crate) fn has_handler(&self) -> bool {
         self.ivars().handler.borrow().is_some()
+    }
+
+    /// Set (or clear, with `None`) the hover cursor and ask the window to
+    /// rebuild this view's cursor rects so the change takes effect without
+    /// waiting for the next geometry pass. Called from `apply_style` when
+    /// `StyleRules::cursor` is present; `None` restores the OS default.
+    pub(crate) fn set_cursor(&self, cursor: Option<Retained<NSCursor>>) {
+        *self.ivars().cursor.borrow_mut() = cursor;
+        // `invalidateCursorRectsForView:` is a no-op when the view isn't in a
+        // window yet; the rect is (re)built on the first `resetCursorRects`
+        // after the view is mounted, so a pre-mount style apply still lands.
+        let window: *mut objc2::runtime::AnyObject = unsafe { msg_send![self, window] };
+        if !window.is_null() {
+            let _: () = unsafe { msg_send![window, invalidateCursorRectsForView: self] };
+        }
     }
 
     /// Translate one AppKit mouse event into a `TouchEvent` and dispatch it to
@@ -196,6 +232,36 @@ impl FlippedView {
         // it already accepted. An explicit IGNORED on `Began` returns false so
         // the event still bubbles to a parent handler.
         response.consumed || self.ivars().active.get()
+    }
+}
+
+/// Map a framework [`runtime_core::Cursor`] to the matching [`NSCursor`].
+/// Returns `None` for `Auto` (and `None` means "install no cursor rect", so
+/// the view shows the OS default). Values with no AppKit equivalent fall back
+/// to the arrow — the honest default rather than a per-platform hack; web
+/// still gets the precise keyword. Built via `msg_send` against the
+/// `NSCursor` class methods so it doesn't depend on a specific binding's
+/// method coverage.
+pub(crate) fn cursor_for(c: runtime_core::Cursor) -> Option<Retained<NSCursor>> {
+    use runtime_core::Cursor;
+    // SAFETY: each is a documented `NSCursor` class method returning a
+    // shared, autoreleased cursor; `msg_send_id` retains it.
+    unsafe {
+        let cls = objc2::class!(NSCursor);
+        Some(match c {
+            Cursor::Auto => return None,
+            Cursor::Default | Cursor::Wait | Cursor::Progress | Cursor::Help | Cursor::Move => {
+                msg_send_id![cls, arrowCursor]
+            }
+            Cursor::Pointer => msg_send_id![cls, pointingHandCursor],
+            Cursor::Text => msg_send_id![cls, IBeamCursor],
+            Cursor::NotAllowed => msg_send_id![cls, operationNotAllowedCursor],
+            Cursor::Grab => msg_send_id![cls, openHandCursor],
+            Cursor::Grabbing => msg_send_id![cls, closedHandCursor],
+            Cursor::Crosshair => msg_send_id![cls, crosshairCursor],
+            Cursor::ColResize | Cursor::EwResize => msg_send_id![cls, resizeLeftRightCursor],
+            Cursor::RowResize | Cursor::NsResize => msg_send_id![cls, resizeUpDownCursor],
+        })
     }
 }
 

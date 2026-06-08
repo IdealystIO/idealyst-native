@@ -533,6 +533,91 @@ pub enum Overflow {
     Hidden,
 }
 
+/// Pointer affordance for a node — the shape the OS pointer takes when
+/// hovering it. A **desktop / web** concern: it has no meaning on touch
+/// backends (there is no pointer), so iOS and Android silently ignore
+/// it. Mapping:
+/// - Web/SSR: CSS `cursor` keyword (`pointer`, `text`, `not-allowed`, …).
+/// - macOS (AppKit): the matching [`NSCursor`] pushed over the view's
+///   tracking rect; values without a system equivalent fall back to the
+///   arrow.
+/// - iOS / Android: no-op (touch has no hover pointer).
+///
+/// The framework imposes **no** default cursor on any primitive — a bare
+/// `Pressable`/`Button` shows the platform default. Component libraries
+/// (e.g. idea-ui) opt their clickables into [`Cursor::Pointer`] via this
+/// property; that is the single source of truth (the old hardcoded inline
+/// `cursor: pointer` on the web pressable is gone, so an author setting
+/// `cursor` here is never overridden by an un-overridable inline style).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Cursor {
+    /// Browser/OS picks based on context (CSS `auto`).
+    #[default]
+    Auto,
+    /// The standard arrow (CSS `default`).
+    Default,
+    /// Hand / pointing finger — the "this is clickable" affordance
+    /// (CSS `pointer`, `NSCursor::pointingHandCursor`).
+    Pointer,
+    /// I-beam for selectable/editable text (CSS `text`,
+    /// `NSCursor::IBeamCursor`).
+    Text,
+    /// Busy indicator (CSS `wait`). macOS has no public busy cursor →
+    /// arrow.
+    Wait,
+    /// In-progress but still interactive (CSS `progress`). macOS → arrow.
+    Progress,
+    /// Help affordance (CSS `help`). macOS → arrow.
+    Help,
+    /// Action not permitted (CSS `not-allowed`,
+    /// `NSCursor::operationNotAllowedCursor`).
+    NotAllowed,
+    /// Draggable/movable target (CSS `move`). macOS → arrow.
+    Move,
+    /// Grabbable (CSS `grab`, `NSCursor::openHandCursor`).
+    Grab,
+    /// Mid-grab (CSS `grabbing`, `NSCursor::closedHandCursor`).
+    Grabbing,
+    /// Precision crosshair (CSS `crosshair`,
+    /// `NSCursor::crosshairCursor`).
+    Crosshair,
+    /// Column / horizontal resize (CSS `col-resize`,
+    /// `NSCursor::resizeLeftRightCursor`).
+    ColResize,
+    /// Row / vertical resize (CSS `row-resize`,
+    /// `NSCursor::resizeUpDownCursor`).
+    RowResize,
+    /// East-west resize (CSS `ew-resize`, same NSCursor as `ColResize`).
+    EwResize,
+    /// North-south resize (CSS `ns-resize`, same NSCursor as `RowResize`).
+    NsResize,
+}
+
+/// Whether (and how) a node's text can be selected by the user. Like
+/// [`Cursor`], a **desktop / web** concern — touch backends don't have a
+/// drag-to-select gesture for arbitrary UI text and ignore it. Mapping:
+/// - Web/SSR: CSS `user-select` (emitted with the `-webkit-` prefix for
+///   Safari).
+/// - macOS (AppKit): toggles `NSTextField`/`NSTextView` `isSelectable`
+///   on text nodes; ignored on non-text views.
+/// - iOS / Android: no-op (their labels aren't selectable by default).
+///
+/// The canonical use is [`UserSelect::None`] on a clickable's subtree so
+/// double-clicking a button doesn't select its label text. The framework
+/// sets no default; component libraries opt in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum UserSelect {
+    /// Default selection behavior (CSS `auto`).
+    #[default]
+    Auto,
+    /// Text cannot be selected (CSS `none`).
+    None,
+    /// Text is selectable (CSS `text`).
+    Text,
+    /// Selecting selects the whole element's text at once (CSS `all`).
+    All,
+}
+
 /// Drop shadow. Mobile-shaped — no CSS `spread` (which doesn't map
 /// cleanly to UIView/Android shadow APIs). Backends translate:
 /// - Web: `box-shadow: {x}px {y}px {blur}px {color}`
@@ -838,6 +923,16 @@ pub struct StyleRules {
     /// matches CSS `transform-origin`.
     pub transform_origin: Option<(Length, Length)>,
 
+    // --- Interaction (desktop/web only; touch backends no-op) ---
+    /// Pointer shape on hover. See [`Cursor`] for the per-backend mapping.
+    /// `None` = inherit the platform default; the framework imposes no
+    /// default, so only an author/component opt-in produces a non-default
+    /// cursor.
+    pub cursor: Option<Cursor>,
+    /// Text-selection behavior. See [`UserSelect`]. The common opt-in is
+    /// [`UserSelect::None`] on a clickable so its label can't be selected.
+    pub user_select: Option<UserSelect>,
+
     // --- Transitions ---
     // One per animatable property. Set via `transitions { ... }` in
     // the `stylesheet!` macro. When the property's resolved value
@@ -909,6 +1004,7 @@ impl StyleRules {
             font_family, font_weight, font_style, line_height, letter_spacing,
             text_align, underline, strikethrough, text_transform,
             opacity, overflow, shadow, background_gradient, transform, transform_origin,
+            cursor, user_select,
             background_transition, color_transition, caret_color_transition,
             opacity_transition,
             transform_transition, width_transition, height_transition,
@@ -1076,6 +1172,10 @@ impl StyleRules {
             push_u64_hex(&mut s, length_bits(oy));
             s.push(';');
         }
+
+        // Interaction
+        write_enum(&mut s, "cur", self.cursor.map(|x| x as u8));
+        write_enum(&mut s, "usel", self.user_select.map(|x| x as u8));
 
         // Transitions — one labeled segment per animatable property.
         // Inactive (None) transitions write an empty value so the
@@ -1312,6 +1412,16 @@ pub struct StyleSheet {
     /// avoids walking the variants BTreeMap per styled node. Exactly
     /// parallel to [`Self::state_axes`].
     breakpoint_axes: Vec<(crate::Breakpoint, VariantAxis)>,
+    /// Cached list of container-query overlay axes the sheet declares,
+    /// each paired with its `min_width` threshold in px. Populated in
+    /// `.variant(...)` whenever an axis named `__cq_minw_*` is added (a
+    /// `stylesheet!`'s `container (min_width: N) { … }` block). Empty for
+    /// the common case of sheets with no container blocks —
+    /// `resolve_container_overlays` short-circuits on `is_empty()` and
+    /// avoids walking the variants BTreeMap per styled node. Parallel to
+    /// [`Self::breakpoint_axes`], but keyed on an arbitrary `f32`
+    /// threshold rather than a fixed bucket enum.
+    container_axes: Vec<(f32, VariantAxis)>,
     /// Per-sheet variant cache. Keyed on the effective `VariantSet`;
     /// value is the pre-resolved `Rc<StyleRules>` for the no-overrides
     /// case. Populated by [`ensure_registered_with`] at registration
@@ -1333,6 +1443,7 @@ impl StyleSheet {
             compounds: Vec::new(),
             state_axes: Vec::new(),
             breakpoint_axes: Vec::new(),
+            container_axes: Vec::new(),
             variant_cache: std::cell::RefCell::new(HashMap::new()),
         }
     }
@@ -1345,6 +1456,7 @@ impl StyleSheet {
             compounds: Vec::new(),
             state_axes: Vec::new(),
             breakpoint_axes: Vec::new(),
+            container_axes: Vec::new(),
             variant_cache: std::cell::RefCell::new(HashMap::new()),
         }
     }
@@ -1380,6 +1492,14 @@ impl StyleSheet {
                 self.breakpoint_axes.push((bp, axis.clone()));
             }
         }
+        // Same caching for container-query overlays (`__cq_minw_*` axes),
+        // so `resolve_container_overlays` short-circuits on the common
+        // no-container-blocks case. Keyed on the decoded px threshold.
+        if let Some(threshold) = crate::container_axis_threshold(&axis) {
+            if !self.container_axes.iter().any(|(_, a)| a == &axis) {
+                self.container_axes.push((threshold, axis.clone()));
+            }
+        }
         let entry = self.variants.entry(axis).or_insert_with(|| VariantAxisDef {
             default: None,
             values: BTreeMap::new(),
@@ -1404,6 +1524,16 @@ impl StyleSheet {
     /// full variants map. Parallel to [`Self::state_axes`].
     pub(crate) fn breakpoint_axes(&self) -> &[(crate::Breakpoint, VariantAxis)] {
         &self.breakpoint_axes
+    }
+
+    /// The cached set of container-query overlay axes declared on this
+    /// stylesheet, each with its `min_width` threshold (px). Returns an
+    /// empty slice for the common case of sheets with no `container`
+    /// blocks. Used by `resolve_container_overlays` to skip per-call
+    /// iteration of the full variants map. Parallel to
+    /// [`Self::breakpoint_axes`].
+    pub(crate) fn container_axes(&self) -> &[(f32, VariantAxis)] {
+        &self.container_axes
     }
 
     /// Per-sheet variant-cache lookup. Returns the pre-resolved
@@ -2533,7 +2663,31 @@ pub fn reset_for_ssg_render() {
 ///     effect for the remaining rows.
 pub fn is_registered(sheet: &Rc<StyleSheet>) -> bool {
     let key = RegKey { sheet: Rc::as_ptr(sheet) };
-    REGISTRATIONS.with(|r| r.borrow().contains_key(&key))
+    REGISTRATIONS.with(|r| {
+        r.borrow()
+            .get(&key)
+            // A `RegKey` is the StyleSheet's heap address. A freed
+            // StyleSheet's address is readily reused by a later
+            // `Rc::new(StyleSheet)` — and the reactive-style path mints a
+            // fresh sheet on every effect run, so this happens constantly
+            // under a theme/selection toggle. If a dead registration is
+            // still lingering at that address (its `Weak` no longer
+            // upgrades, or upgrades to a *different* live Rc that now
+            // occupies the recycled slot), a plain `contains_key` reports
+            // the NEW sheet as already-registered. The caller
+            // (`attach_style_reactive` / the batched-Repeat walker) then
+            // SKIPS `ensure_registered_with`, so the new sheet's class
+            // never has its refcount bumped while the node still applies
+            // it — and the shared CSS class is later deleted out from
+            // under live nodes when other holders decrement the
+            // undercounted refcount to zero (collapsing flex layout to
+            // block flow on the web backend). Verifying `Rc` identity
+            // closes the hole; a stale entry reports "not registered" so
+            // the caller runs `ensure_registered_with`, whose dead-`Weak`
+            // sweep reaps the stale entry before registering afresh.
+            .and_then(|reg| reg.weak.upgrade())
+            .is_some_and(|live| Rc::ptr_eq(&live, sheet))
+    })
 }
 
 /// - Sweeps registrations whose `Weak<StyleSheet>` no longer upgrades
@@ -2952,6 +3106,118 @@ impl<T: Clone + 'static> IntoOverrideSource<T> for crate::Signal<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Registration identity (recycled-address hazard) --------------------
+
+    // Regression: a stale registration left at a recycled StyleSheet address
+    // must NOT make `is_registered` report a brand-new sheet as
+    // already-registered. The reactive-style path mints a fresh
+    // `Rc<StyleSheet>` every effect run, and the allocator readily hands the
+    // new sheet the address a just-freed sheet vacated. If a dead-`Weak`
+    // registration still lingers at that address, a pointer-only
+    // `contains_key` reports the new sheet registered; the caller then skips
+    // `ensure_registered_with`, the new sheet's shared CSS class never has
+    // its refcount bumped, and that class is later deleted out from under
+    // live nodes — which on the web backend collapses flex containers to
+    // block flow (the segmented-control / toolbar layout corruption on a
+    // theme toggle). `is_registered` must verify `Rc` identity.
+    #[test]
+    fn is_registered_rejects_stale_entry_at_recycled_address() {
+        // A live sheet that was never actually registered.
+        let sheet = Rc::new(StyleSheet::r#static(StyleRules::default()));
+
+        // A dead `Weak` — the freed predecessor that used to live here.
+        let dead_weak = {
+            let gone = Rc::new(StyleSheet::r#static(StyleRules::default()));
+            Rc::downgrade(&gone)
+            // `gone` drops here, so `dead_weak` no longer upgrades.
+        };
+
+        // The recycled-address collision: an entry keyed by THIS sheet's
+        // address but carrying the dead predecessor's `Weak`.
+        REGISTRATIONS.with(|r| {
+            r.borrow_mut().insert(
+                RegKey { sheet: Rc::as_ptr(&sheet) },
+                Registration { weak: dead_weak, rules: Vec::new() },
+            );
+        });
+
+        // Never genuinely registered → must be false. (Pre-fix:
+        // `contains_key` returned true → caller skipped registration →
+        // shared-class refcount underflow.)
+        assert!(!is_registered(&sheet));
+
+        REGISTRATIONS.with(|r| r.borrow_mut().clear());
+    }
+
+    // The inverse: a sheet whose registration `Weak` upgrades to itself is
+    // genuinely registered — the steady-state fast-path skip must still fire.
+    #[test]
+    fn is_registered_accepts_live_self_registration() {
+        let sheet = Rc::new(StyleSheet::r#static(StyleRules::default()));
+        REGISTRATIONS.with(|r| {
+            r.borrow_mut().insert(
+                RegKey { sheet: Rc::as_ptr(&sheet) },
+                Registration { weak: Rc::downgrade(&sheet), rules: Vec::new() },
+            );
+        });
+        assert!(is_registered(&sheet));
+        REGISTRATIONS.with(|r| r.borrow_mut().clear());
+    }
+
+    // --- Interaction properties: cursor + user_select -----------------------
+
+    // The framework imposes no cursor/selection default: a fresh StyleRules
+    // leaves both unset, so a bare primitive inherits the platform default and
+    // only an author/component opt-in produces a non-default value.
+    #[test]
+    fn cursor_and_user_select_default_to_unset() {
+        let r = StyleRules::default();
+        assert_eq!(r.cursor, None);
+        assert_eq!(r.user_select, None);
+    }
+
+    // `merge` overlays cursor/user_select like any other property: a set value
+    // in `other` wins, an unset value leaves the base untouched.
+    #[test]
+    fn merge_overlays_cursor_and_user_select() {
+        let base = StyleRules {
+            cursor: Some(Cursor::Pointer),
+            user_select: Some(UserSelect::None),
+            ..Default::default()
+        };
+        // An overlay that sets neither leaves the base values intact.
+        let unchanged = base.clone().merge(&StyleRules::default());
+        assert_eq!(unchanged.cursor, Some(Cursor::Pointer));
+        assert_eq!(unchanged.user_select, Some(UserSelect::None));
+        // An overlay that sets them wins.
+        let over = StyleRules {
+            cursor: Some(Cursor::Text),
+            user_select: Some(UserSelect::Text),
+            ..Default::default()
+        };
+        let merged = base.merge(&over);
+        assert_eq!(merged.cursor, Some(Cursor::Text));
+        assert_eq!(merged.user_select, Some(UserSelect::Text));
+    }
+
+    // Distinct cursor / user_select values must produce distinct content keys
+    // (else the backend's class cache would collide a pointer button with a
+    // text one and mint a single shared class). Equal values share a key.
+    #[test]
+    fn content_key_distinguishes_cursor_and_user_select() {
+        let pointer = StyleRules { cursor: Some(Cursor::Pointer), ..Default::default() };
+        let text = StyleRules { cursor: Some(Cursor::Text), ..Default::default() };
+        let none = StyleRules::default();
+        assert_ne!(pointer.content_key(), text.content_key());
+        assert_ne!(pointer.content_key(), none.content_key());
+        assert_eq!(pointer.content_key(), pointer.clone().content_key());
+
+        let no_sel = StyleRules { user_select: Some(UserSelect::None), ..Default::default() };
+        let all_sel = StyleRules { user_select: Some(UserSelect::All), ..Default::default() };
+        assert_ne!(no_sel.content_key(), all_sel.content_key());
+        assert_ne!(no_sel.content_key(), none.content_key());
+    }
 
     /// Pass-through no-op closures for the non-key params of
     /// `ensure_registered_with`, so a test can focus on one slot.

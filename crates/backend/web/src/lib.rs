@@ -2925,8 +2925,19 @@ impl Backend for WebBackend {
         base: &Rc<StyleRules>,
         state_overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
         breakpoint_overlays: &[(runtime_core::Breakpoint, Rc<StyleRules>)],
+        container_overlays: &[(f32, Rc<StyleRules>)],
     ) {
-        self.impl_apply_styled_variants(node, base, state_overlays, breakpoint_overlays)
+        self.impl_apply_styled_variants(
+            node,
+            base,
+            state_overlays,
+            breakpoint_overlays,
+            container_overlays,
+        )
+    }
+
+    fn mark_container(&mut self, node: &Self::Node) {
+        self.impl_mark_container(node)
     }
 
     fn on_node_unstyled(&mut self, node: &Self::Node) {

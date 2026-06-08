@@ -41,6 +41,7 @@ fn make_app(fired: Rc<Cell<bool>>) -> impl FnOnce() -> Element + 'static {
             ref_fill: None,
             safe_area_sides: SafeAreaSides::NONE,
             on_touch: None,
+            is_container: false,
             accessibility: Default::default(),
             test_id: None,
         }

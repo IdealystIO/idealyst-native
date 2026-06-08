@@ -3818,6 +3818,13 @@ impl IosBackend {
                 frame.height,
             );
             self.applied_frames.insert(*key, frame_key);
+            // Feed any `on_layout` subscribers (a `.container()` view's
+            // inline-size signal) with this view's resolved size. Reached
+            // only when the frame actually changed (the cache `continue`
+            // above skips unchanged views), so the container signal sees a
+            // real width change — and its own change-guard absorbs any
+            // redundant fire, keeping the container-query loop convergent.
+            handles::fire_layout_for_view(*key, frame.width, frame.height);
             applied += 1;
         }
         // Drop cache entries for views that aren't registered

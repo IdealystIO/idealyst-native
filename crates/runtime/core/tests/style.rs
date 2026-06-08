@@ -49,6 +49,81 @@ stylesheet! {
     }
 }
 
+// A `stylesheet!` with a `container (min_width: …)` block. The base is the
+// narrow layout; the overlay widens once the NEAREST CONTAINER (not the
+// viewport) is at least 400px wide. This also exercises the macro's
+// container-arm parsing/emission end to end.
+stylesheet! {
+    CardCq<()> {
+        base(_t) {
+            width: Length::Px(100.0),
+        }
+        container (min_width: 400px)(_t) {
+            width: Length::Px(500.0),
+        }
+    }
+}
+
+/// FUNCTIONAL, end-to-end through the walker — the native container-query
+/// feedback loop. A `.container()` view wires its resolved inline-size into
+/// a signal; a descendant whose sheet has a `container` overlay subscribes
+/// to it. Driving the container's width across the 400px threshold must
+/// re-apply the descendant (the native analog of the browser re-evaluating
+/// `@container`). Pre-wiring, container overlays never activated on native.
+#[test]
+fn container_overlay_reapplies_on_container_width_crossing_native() {
+    use runtime_core::{drain_buffered_microtasks, view, IntoElement};
+
+    use common::{fire_all_layouts, reset_layout_subs, Event, TestRuntime};
+
+    reset_layout_subs();
+    let rt = TestRuntime::new();
+    // A `.container()` wrapper around a child styled with the container
+    // sheet. The wrapper carries no style of its own — only the child's
+    // overlay keys off the wrapper's width.
+    let tree = view(vec![view(vec![]).with_style(CardCq()).into_element()])
+        .container()
+        .into_element();
+    let _owner = rt.render(tree);
+
+    // Drop the mount-time applies (container width is still 0 → base).
+    rt.backend_mut().clear_events();
+
+    // Container resolves to 500px (≥ the 400px threshold). The on_layout
+    // callback DEFERS the signal write to a microtask (it would otherwise
+    // re-enter the backend mid-layout on a real platform), so drain to let
+    // the deferred write — and the resulting re-apply — run.
+    fire_all_layouts(500.0, 300.0);
+    drain_buffered_microtasks();
+    let applies = rt
+        .events()
+        .iter()
+        .filter(|e| matches!(e, Event::ApplyStyle { .. }))
+        .count();
+    assert!(
+        applies >= 1,
+        "crossing the container's min_width must re-apply the descendant; got {} applies",
+        applies,
+    );
+
+    // Re-firing the SAME width must NOT re-apply — the inline-size
+    // change-guard suppresses the signal write, which is what makes the
+    // restyle→relayout feedback loop converge instead of spinning.
+    rt.backend_mut().clear_events();
+    fire_all_layouts(500.0, 300.0);
+    drain_buffered_microtasks();
+    let applies_same = rt
+        .events()
+        .iter()
+        .filter(|e| matches!(e, Event::ApplyStyle { .. }))
+        .count();
+    assert_eq!(
+        applies_same, 0,
+        "re-firing the same container width must not re-apply (change-guard); got {}",
+        applies_same,
+    );
+}
+
 /// FUNCTIONAL, end-to-end through the walker.
 ///
 /// Native backends (the mock here reports `handles_states_natively ==

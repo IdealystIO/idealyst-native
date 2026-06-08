@@ -208,6 +208,8 @@ pub(crate) fn mark_active_navigator(id: NavId) {
             reg.active = Some(id);
         }
     });
+    // Current-navigator change → live-update subscribers should refresh.
+    crate::robot::bump_revision();
 }
 
 /// Snapshot every live navigator. Dead `Weak`s (control dropped without a

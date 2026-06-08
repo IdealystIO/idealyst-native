@@ -21,6 +21,9 @@ pub mod runtime;
 #[allow(unused_imports)]
 pub use counted::{counted_effect, counted_memo, FireCounter};
 #[allow(unused_imports)]
-pub use mock_backend::{BatchOpSummary, Event, MockBackend, MockBackendConfig, NodeId};
+pub use mock_backend::{
+    fire_all_layouts, reset_layout_subs, BatchOpSummary, Event, MockBackend, MockBackendConfig,
+    NodeId,
+};
 #[allow(unused_imports)]
 pub use runtime::TestRuntime;

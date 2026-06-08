@@ -77,22 +77,64 @@ pub struct ElementsPanelProps {
 /// flickering) on every tap. Selection is a per-row *reactive style*
 /// instead (see [`tree_row`]). Only the tree shape + expand state drive
 /// the `memo`, so the row list rebuilds only when it genuinely changes.
-fn build_visible(nodes: &[Value], depth: usize, expanded: &HashSet<u64>, out: &mut Vec<Value>) {
+/// Offset added to an element id to form a synthetic, collision-free row key
+/// for the component node sitting above that element. Real element ids are
+/// `u32`, so anything `>= 1<<40` is unambiguously a component row; strip it
+/// back via [`real_element_id`] to resolve methods/detail.
+const COMPONENT_ROW_OFFSET: u64 = 1 << 40;
+
+/// The element id a selected row resolves to — strips the component-row
+/// offset so a component node and its root element both map to the same
+/// element (for the detail pane + method lookup).
+fn real_element_id(selected: u64) -> u64 {
+    if selected >= COMPONENT_ROW_OFFSET {
+        selected - COMPONENT_ROW_OFFSET
+    } else {
+        selected
+    }
+}
+
+/// Flatten the tree into visible rows. When an element is a `#[component]`
+/// root (its id is a key in `component_roots`), a synthetic **component node**
+/// is emitted directly above it and the element is nested one level deeper —
+/// so the tree reads `MethodCounter → View → …` rather than a bare `View`.
+fn build_visible(
+    nodes: &[Value],
+    depth: usize,
+    expanded: &HashSet<u64>,
+    component_roots: &std::collections::HashMap<u64, String>,
+    out: &mut Vec<Value>,
+) {
     for n in nodes {
         let id = n["id"].as_u64().unwrap_or(0);
         let children = n["children"].as_array();
         let has_children = children.map(|c| !c.is_empty()).unwrap_or(false);
         let is_expanded = expanded.contains(&id);
+
+        // A component root gets a synthetic parent row carrying the component
+        // name; the element itself indents under it.
+        let node_depth = if let Some(name) = component_roots.get(&id) {
+            out.push(json!({
+                "id": id + COMPONENT_ROW_OFFSET,
+                "__depth": depth,
+                "__is_component": true,
+                "__component_name": name,
+            }));
+            depth + 1
+        } else {
+            depth
+        };
+
         let mut row = n.clone();
         if let Some(obj) = row.as_object_mut() {
             obj.remove("children");
-            obj.insert("__depth".to_string(), json!(depth));
+            obj.insert("__depth".to_string(), json!(node_depth));
             obj.insert("__has_children".to_string(), json!(has_children));
             obj.insert("__expanded".to_string(), json!(is_expanded));
         }
         out.push(row);
         if has_children && is_expanded {
-            build_visible(children.unwrap(), depth + 1, expanded, out);
+            build_visible(children.unwrap(), node_depth + 1, expanded, component_roots, out);
         }
     }
 }
@@ -148,6 +190,26 @@ fn row_sheet(depth: usize, selected: bool) -> Rc<StyleSheet> {
 fn tree_row(row: Value, selected: Signal<Option<u64>>, expanded: Signal<HashSet<u64>>) -> Element {
     let id = row["id"].as_u64().unwrap_or(0);
     let depth = row["__depth"].as_u64().unwrap_or(0) as usize;
+
+    // Synthetic component node: a labeled, non-collapsible parent (its root
+    // element renders below it). Tapping it selects → the detail pane shows
+    // its methods. Distinct lucide `COMPONENT` glyph instead of a chevron.
+    if row["__is_component"].as_bool().unwrap_or(false) {
+        let name = row["__component_name"].as_str().unwrap_or("Component").to_string();
+        let icon = ui! {
+            Icon(data = icons_lucide::COMPONENT, size = CHEVRON_PX, color = Some(Color("#7c3aed".to_string())))
+        };
+        let inner = ui! {
+            Stack(axis = StackAxis::Row, align = StackAlign::Center, gap = StackGap::Xs) {
+                icon
+                text(name).into_element()
+            }
+        };
+        return pressable(vec![inner], move || selected.set(Some(id)))
+            .with_style(move || StyleApplication::new(row_sheet(depth, selected.get() == Some(id))))
+            .into_element();
+    }
+
     let has_children = row["__has_children"].as_bool().unwrap_or(false);
     let is_expanded = row["__expanded"].as_bool().unwrap_or(false);
 
@@ -231,7 +293,8 @@ fn method_signature(method: &Value) -> String {
 /// Drives the reactive `if` that shows the invoke section.
 fn linked_component_present(snap: &Snapshot, selected: Option<u64>) -> bool {
     selected
-        .map(|eid| {
+        .map(|sel| {
+            let eid = real_element_id(sel);
             snap.components
                 .iter()
                 .any(|c| c["element_id"].as_u64() == Some(eid))
@@ -249,7 +312,8 @@ fn method_invoke_section(
     arg_json: Signal<String>,
 ) -> Element {
     let snap = snapshot.get();
-    let comp = selected.get().and_then(|eid| {
+    let comp = selected.get().and_then(|sel| {
+        let eid = real_element_id(sel);
         snap.components
             .iter()
             .find(|c| c["element_id"].as_u64() == Some(eid))
@@ -309,18 +373,26 @@ fn method_invoke_section(
 pub fn ElementsPanel(props: ElementsPanelProps) -> Element {
     let ElementsPanelProps { snapshot, selected, expanded, invoke_arg } = props;
 
-    // Visible rows — recompute on tree / expand / selection change.
+    // Visible rows — recompute on tree / expand change.
     let rows: Signal<Vec<Value>> = memo(move || {
         let snap = snapshot.get();
         let exp = expanded.get();
+        // element_id → component name, so a component root gets a synthetic
+        // parent node in the tree.
+        let mut roots: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+        for c in &snap.components {
+            if let (Some(eid), Some(name)) = (c["element_id"].as_u64(), c["name"].as_str()) {
+                roots.insert(eid, name.to_string());
+            }
+        }
         let mut out = Vec::new();
-        build_visible(&snap.tree, 0, &exp, &mut out);
+        build_visible(&snap.tree, 0, &exp, &roots, &mut out);
         out
     });
 
     // Detail body (expr reads `.get()` → macro reactive-wraps it).
     let detail = text(match selected.get() {
-        Some(id) => element_detail(&snapshot.get(), id),
+        Some(id) => element_detail(&snapshot.get(), real_element_id(id)),
         None => "Select an element on the left to inspect it.".to_string(),
     })
     .into_element();

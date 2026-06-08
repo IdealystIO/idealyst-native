@@ -35,6 +35,46 @@ use std::rc::Rc;
 #[cfg(feature = "debug-stats")]
 use crate::debug;
 
+thread_local! {
+    /// Build-time stack of the nearest ancestor containment context's
+    /// inline-size signal. A `.container()` view pushes its width signal
+    /// before its children are built and pops it after, so during a
+    /// descendant's `attach_style` the top is exactly its nearest
+    /// container ancestor.
+    ///
+    /// Why a build-time stack rather than `provide`/`inject`: the build
+    /// walk is synchronous and depth-first, but a plain `view` opens no
+    /// reactive scope, so `provide` would leak a container's signal to
+    /// its *siblings*. The stack is pushed/popped around the exact
+    /// `insert_children` window that builds the subtree, so it sees only
+    /// descendants. Each styled descendant captures the signal (a cheap
+    /// `Copy` handle) into its style Effect at build time; the stack
+    /// itself is empty again once the build returns.
+    static CONTAINER_STACK: RefCell<Vec<Signal<f32>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Push a containment context's inline-size signal for the duration of
+/// its children's build. Paired with [`pop_container`].
+pub(super) fn push_container(sig: Signal<f32>) {
+    CONTAINER_STACK.with(|s| s.borrow_mut().push(sig));
+}
+
+/// Pop the most recently pushed containment context. Paired with
+/// [`push_container`].
+pub(super) fn pop_container() {
+    CONTAINER_STACK.with(|s| {
+        s.borrow_mut().pop();
+    });
+}
+
+/// The nearest ancestor containment context's inline-size signal at the
+/// current point in the build walk, or `None` when outside any
+/// `.container()`. Read at `attach_style` time and captured into the
+/// node's style Effect (which reads `.get()` to subscribe).
+pub(super) fn nearest_container() -> Option<Signal<f32>> {
+    CONTAINER_STACK.with(|s| s.borrow().last().copied())
+}
+
 /// RAII wrapper that calls `Backend::on_node_unstyled` when dropped.
 /// Captured by the styled effect's closure so backend per-node state
 /// (e.g. the web backend's dynamic CSS class slot) gets cleaned up
@@ -113,7 +153,12 @@ pub(super) fn register_static_cohort_batch<B: Backend + 'static>(
     let members_for_cohort = members_rc.clone();
     let cohort_id = theme_cohort_register(Box::new(move || {
         for (node, app) in members_for_cohort.iter() {
-            apply_one(&backend_for_cohort, node, app, handles_states_natively);
+            // Batched-Repeat rows don't carry a container ancestor of
+            // their own (the batch fast path is for flat, simple rows),
+            // so container overlays — if any — resolve at width 0 (inert).
+            // A row that needs container queries falls out of the batch
+            // path into the per-node Effect anyway.
+            apply_one(&backend_for_cohort, node, app, handles_states_natively, 0.0);
         }
     }));
 
@@ -235,10 +280,31 @@ fn attach_style_static<B: Backend + 'static>(
 
     let handles_states_natively = backend.borrow().handles_states_natively();
 
+    // Native container-query divert: a static sheet that declares
+    // `container` overlays AND sits inside a containment context can't
+    // ride the shared theme cohort — the cohort re-applies via global
+    // signals, but each node's container width is position-specific. Give
+    // it its own per-node Effect that subscribes to the captured
+    // container signal (plus tokens + breakpoint) instead. Web keeps the
+    // cohort: it emits `@container` CSS and the browser tracks size, so
+    // no per-node signal is needed there.
+    if !handles_states_natively && !app.sheet.container_axes().is_empty() {
+        if let Some(container_sig) = nearest_container() {
+            return attach_style_static_container(
+                backend,
+                node,
+                app,
+                handles_states_natively,
+                container_sig,
+            );
+        }
+    }
+
     // Inline first apply. Identical work to what the reactive
     // path's Effect would do on its first run — just without
-    // wrapping it in an Effect closure.
-    apply_one(backend, node, &app, handles_states_natively);
+    // wrapping it in an Effect closure. No container ancestor here, so
+    // container overlays (if any) resolve at width 0 (inert).
+    apply_one(backend, node, &app, handles_states_natively, 0.0);
 
     // Register the node with the theme cohort. We wrap the
     // `StyleApplication` in an `Rc` so the cohort closure pays
@@ -263,7 +329,15 @@ fn attach_style_static<B: Backend + 'static>(
     let node_for_cohort = node_rc.clone();
     let app_for_cohort = Rc::new(app);
     let cohort_id = theme_cohort_register(Box::new(move || {
-        apply_one(&backend_for_cohort, &node_for_cohort, &app_for_cohort, handles_states_natively);
+        // Non-diverted static nodes have no container ancestor (the
+        // divert above handles those), so container width is 0 (inert).
+        apply_one(
+            &backend_for_cohort,
+            &node_for_cohort,
+            &app_for_cohort,
+            handles_states_natively,
+            0.0,
+        );
     }));
 
     // Attach the cleanup guard directly to the active scope —
@@ -299,6 +373,71 @@ fn attach_style_static<B: Backend + 'static>(
     //
     // TODO: revisit when adding native iOS/Android backends. The
     // static path may need to keep a Signal<StateBits> after all.
+    Rc::new(|_, _| {})
+}
+
+/// Native divert for a static-styled node that declares `container`
+/// overlays and sits inside a containment context. Instead of the shared
+/// theme cohort (which re-applies via global signals), this gives the
+/// node its own Effect subscribing to:
+///
+/// - the captured nearest-container inline-size `Signal<f32>` (so a
+///   container resize that crosses a threshold re-applies),
+/// - all token signals (so theme changes still re-apply — the cohort
+///   normally owns this for static nodes), and
+/// - `current_breakpoint()` (read transitively by `apply_one` ->
+///   `merge_active_breakpoints`, so viewport breakpoints still work
+///   alongside container queries).
+///
+/// Convergence: the re-apply may change layout (e.g. `flex_direction`),
+/// triggering a relayout; the new layout feeds the container's
+/// inline-size signal again, but under the inline-size containment
+/// invariant that width is unchanged, so the change-guarded signal does
+/// not re-fire and the system settles. See [`crate::container_query`].
+fn attach_style_static_container<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    node: &B::Node,
+    app: StyleApplication,
+    handles_states_natively: bool,
+    container_sig: Signal<f32>,
+) -> Rc<dyn Fn(StateBits, bool)> {
+    let backend_for_effect = backend.clone();
+    let node_for_effect = node.clone();
+    let app_rc = Rc::new(app);
+
+    // The active Scope owns the Effect's slot (its handle drop is a
+    // no-op), so the Effect lives until the node's scope tears down —
+    // same RAII model as `attach_style_reactive`.
+    let _e = Effect::new(move || {
+        // Subscribe to theme/token changes — the cohort would normally
+        // do this for a static node, but this node is out of the cohort.
+        crate::style::subscribe_to_all_token_signals();
+        // Reading the signal subscribes this Effect; a container width
+        // change re-fires it. `apply_one` reads `current_breakpoint()`
+        // internally, so viewport breakpoints re-fire it too.
+        let width = container_sig.get();
+        apply_one(
+            &backend_for_effect,
+            &node_for_effect,
+            &app_rc,
+            handles_states_natively,
+            width,
+        );
+    });
+
+    // Per-node cleanup so the backend drops any per-node state on
+    // unmount. No cohort entry to release (cohort_id = None).
+    let cleanup_handle = StyleHandle {
+        backend: backend.clone(),
+        node: Rc::new(node.clone()),
+        cohort_id: None,
+    };
+    let adopted = reactive::adopt_guard_into_active_scope(cleanup_handle);
+    debug_assert!(
+        adopted,
+        "attach_style_static_container cleanup handle not adopted into a Scope"
+    );
+
     Rc::new(|_, _| {})
 }
 
@@ -436,6 +575,7 @@ pub(super) fn apply_one<B: Backend + 'static>(
     node: &B::Node,
     app: &StyleApplication,
     handles_states_natively: bool,
+    container_width: f32,
 ) {
     {
         let backend_for_register = backend.clone();
@@ -492,10 +632,18 @@ pub(super) fn apply_one<B: Backend + 'static>(
         let base = resolve_style(app);
         let state_overlays = resolve_state_overlays(app);
         let bp_overlays = resolve_breakpoint_overlays(app);
+        // Web emits container overlays as `@container` CSS (the browser
+        // resolves them against the nearest `container-type` ancestor),
+        // so `container_width` is unused on this path.
+        let cq_overlays = resolve_container_overlays(app);
         warn_if_orphan_system_font(&base);
-        backend
-            .borrow_mut()
-            .apply_styled_variants(node, &base, &state_overlays, &bp_overlays);
+        backend.borrow_mut().apply_styled_variants(
+            node,
+            &base,
+            &state_overlays,
+            &bp_overlays,
+            &cq_overlays,
+        );
     } else {
         // Native backends: fold the active breakpoint bucket's overlay
         // into the resolved rules and apply through the regular path.
@@ -506,6 +654,15 @@ pub(super) fn apply_one<B: Backend + 'static>(
         let base = resolve_style(app);
         let bp_overlays = resolve_breakpoint_overlays(app);
         let resolved = merge_active_breakpoints(base, &bp_overlays);
+        // Container overlays fold on top of the breakpoint cascade,
+        // keyed on the nearest container's resolved inline-size passed by
+        // the caller (`0.0` when this node has no container ancestor, in
+        // which case no container overlay activates). Container-bearing
+        // static nodes with a real container ancestor are diverted out of
+        // the cohort into a per-node Effect (see `attach_style_static`)
+        // so this width is the up-to-date signal value.
+        let cq_overlays = resolve_container_overlays(app);
+        let resolved = merge_active_containers(resolved, &cq_overlays, container_width);
         warn_if_orphan_system_font(&resolved);
         backend.borrow_mut().apply_style(node, &resolved);
     }
@@ -634,6 +791,13 @@ fn attach_style_reactive<B: Backend + 'static>(
     // but the variable itself is load-bearing.
     let mut _pinned_sheet: Option<Rc<StyleSheet>> = None;
 
+    // Capture the nearest ancestor containment context at build time (the
+    // build-time stack is empty by the time the Effect re-fires). The
+    // Effect reads `.get()` inside its body so a container width change
+    // re-fires it; nodes whose sheet declares no `container` blocks never
+    // call `.get()` and so never subscribe. Cheap `Copy` handle.
+    let container_sig = nearest_container();
+
     let _e = Effect::new(move || {
         #[cfg(feature = "debug-stats")]
         let _t_first_run_start = debug::now_micros();
@@ -741,6 +905,7 @@ fn attach_style_reactive<B: Backend + 'static>(
             let _t_overlays_start = debug::now_micros();
             let overlays = resolve_state_overlays(&app);
             let bp_overlays = resolve_breakpoint_overlays(&app);
+            let cq_overlays = resolve_container_overlays(&app);
             #[cfg(feature = "debug-stats")]
             debug::record_apply_phase(
                 "attach_style_resolve_overlays",
@@ -760,9 +925,13 @@ fn attach_style_reactive<B: Backend + 'static>(
             // NOT read `current_breakpoint()` — the browser does the
             // bucket switching, and the style effect should only re-fire
             // on theme/variant/override changes, not on resize.
-            backend_for_effect
-                .borrow_mut()
-                .apply_styled_variants(&handle.node, &base, &overlays, &bp_overlays);
+            backend_for_effect.borrow_mut().apply_styled_variants(
+                &handle.node,
+                &base,
+                &overlays,
+                &bp_overlays,
+                &cq_overlays,
+            );
             #[cfg(feature = "debug-stats")]
             debug::record_apply_phase(
                 "attach_style_apply_call",
@@ -793,6 +962,21 @@ fn attach_style_reactive<B: Backend + 'static>(
             let base = resolve_style(&app);
             let bp_overlays = resolve_breakpoint_overlays(&app);
             let resolved = merge_active_breakpoints(base, &bp_overlays);
+            // Container overlays fold on top of the breakpoint cascade.
+            // Reading `container_sig.get()` inside this Effect subscribes
+            // it, so a container resize that crosses a threshold re-fires
+            // and re-applies — the native analog of the browser
+            // re-evaluating `@container` on a container resize. Costs
+            // nothing when the sheet declares no `container` blocks
+            // (`cq_overlays` empty → `merge_active_containers` returns
+            // `resolved` untouched and we never read the signal).
+            let cq_overlays = resolve_container_overlays(&app);
+            let resolved = if cq_overlays.is_empty() {
+                resolved
+            } else {
+                let width = container_sig.map(|s| s.get()).unwrap_or(0.0);
+                merge_active_containers(resolved, &cq_overlays, width)
+            };
             #[cfg(feature = "debug-stats")]
             debug::record_apply_phase(
                 "attach_style_resolve",
@@ -972,6 +1156,79 @@ fn merge_active_breakpoints(
     }
 }
 
+/// Container-query analog of [`resolve_breakpoint_overlays`]. Resolves
+/// each declared `__cq_minw_*` overlay axis against the application's
+/// variants + theme, returning `(threshold_px, Rc<StyleRules>)` pairs
+/// **sorted ascending by threshold**.
+///
+/// Each entry is the fully resolved rules for that overlay (base merged
+/// with the single container overlay), so two consumers reproduce the
+/// mobile-first min-width cascade by stacking them in order:
+///
+/// - **Web** emits each as `@container (min-width: <threshold>px) {
+///   .ui-x { … } }`; the browser layers all matching container queries
+///   by source order, higher thresholds winning, against the nearest
+///   `container-type` ancestor.
+/// - **Native** ([`merge_active_containers`]) folds the overlays whose
+///   threshold is `<=` the nearest container's resolved inline-size onto
+///   the base in the same ascending order.
+///
+/// Returns an empty Vec (no allocation past the slice check) for the
+/// common case of a sheet with no `container` blocks.
+pub(super) fn resolve_container_overlays(app: &StyleApplication) -> Vec<(f32, Rc<StyleRules>)> {
+    let cq_axes = app.sheet.container_axes();
+    if cq_axes.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<(f32, Rc<StyleRules>)> = Vec::with_capacity(cq_axes.len());
+    for (threshold, axis) in cq_axes {
+        let mut cq_app = app.clone();
+        cq_app = cq_app.with(axis.clone(), "on");
+        let resolved = resolve_style(&cq_app);
+        out.push((*threshold, resolved));
+    }
+    // Ascending by threshold so the mobile-first cascade (lower
+    // threshold first, higher wins) is just an in-order fold. Thresholds
+    // come from compile-time literals, so NaN can't occur.
+    out.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// For backends that don't handle container queries natively (everything
+/// but web), fold the overlays whose `min_width` threshold is `<=` the
+/// nearest container's resolved inline-size onto the base, lowest
+/// threshold first so higher thresholds win — the same mobile-first
+/// min-width cascade the web backend gets from stacked `@container`
+/// rules.
+///
+/// `container_width` is the nearest ancestor containment context's
+/// resolved inline-size (`0.0` when there is no container ancestor,
+/// activating no overlay). The caller reads it from the build-time
+/// container stack's signal *inside the style Effect*, so the Effect
+/// re-subscribes and re-fires when the container's width crosses a
+/// threshold. Returns the original `base` Rc untouched when no overlay
+/// is active, so the common cases allocate no new `StyleRules`.
+pub(super) fn merge_active_containers(
+    base: Rc<StyleRules>,
+    overlays: &[(f32, Rc<StyleRules>)],
+    container_width: f32,
+) -> Rc<StyleRules> {
+    if overlays.is_empty() {
+        return base;
+    }
+    let mut merged: Option<StyleRules> = None;
+    for (threshold, overlay) in overlays {
+        if *threshold <= container_width {
+            let acc = merged.take().unwrap_or_else(|| (*base).clone());
+            merged = Some(acc.merge(overlay));
+        }
+    }
+    match merged {
+        Some(rules) => Rc::new(rules),
+        None => base,
+    }
+}
+
 /// Reactive disabled-state wiring. Runs the user's closure inside an
 /// `Effect` so the result tracks any signals it reads. On each
 /// firing: (1) calls `Backend::set_disabled` so the native widget
@@ -1077,5 +1334,114 @@ mod breakpoint_tests {
         set_viewport_size(ViewportSize::new(1100.0, 800.0));
         let merged = merge_active_breakpoints(base.clone(), &overlays);
         assert_eq!(width_of(&merged), Length::Px(900.0));
+    }
+}
+
+#[cfg(test)]
+mod container_tests {
+    use super::*;
+    use crate::container_query::container_axis_name;
+    use crate::style::StyleSheet;
+    use crate::{Length, Tokenized};
+
+    fn px(p: f32) -> Option<Tokenized<Length>> {
+        Some(Tokenized::Literal(Length::Px(p)))
+    }
+
+    fn width_of(rules: &StyleRules) -> Length {
+        *rules.width.as_ref().expect("width is set in these fixtures").value()
+    }
+
+    /// A sheet: base `width: 100`, `container (min_width: 600) { width: 900 }`,
+    /// `container (min_width: 300) { width: 500 }` — declared with the
+    /// larger threshold FIRST to prove `resolve_container_overlays` sorts
+    /// ascending by threshold, not by declaration order.
+    fn container_app() -> StyleApplication {
+        let sheet = Rc::new(
+            StyleSheet::new(|_vs| StyleRules { width: px(100.0), ..Default::default() })
+                .variant(container_axis_name(600.0), "on", |_vs| StyleRules {
+                    width: px(900.0),
+                    ..Default::default()
+                })
+                .variant(container_axis_name(300.0), "on", |_vs| StyleRules {
+                    width: px(500.0),
+                    ..Default::default()
+                }),
+        );
+        StyleApplication::new(sheet)
+    }
+
+    #[test]
+    fn resolve_container_overlays_sorts_ascending_and_resolves_each() {
+        let app = container_app();
+        let overlays = resolve_container_overlays(&app);
+        assert_eq!(overlays.len(), 2, "two container overlays declared");
+        // Ascending by threshold regardless of declaration order.
+        assert_eq!(overlays[0].0, 300.0);
+        assert_eq!(overlays[1].0, 600.0);
+        // Each overlay is the FULLY resolved rules (base merged with the
+        // overlay), so consumers can stack them mobile-first.
+        assert_eq!(width_of(&overlays[0].1), Length::Px(500.0));
+        assert_eq!(width_of(&overlays[1].1), Length::Px(900.0));
+    }
+
+    #[test]
+    fn resolve_container_overlays_empty_without_container_blocks() {
+        let sheet =
+            Rc::new(StyleSheet::new(|_vs| StyleRules { width: px(100.0), ..Default::default() }));
+        let app = StyleApplication::new(sheet);
+        assert!(resolve_container_overlays(&app).is_empty());
+    }
+
+    #[test]
+    fn merge_active_containers_layers_mobile_first_by_container_width() {
+        let app = container_app();
+        let base = resolve_style(&app);
+        let overlays = resolve_container_overlays(&app);
+
+        // Container narrower than the smallest threshold → no overlay, and
+        // the SAME Rc is returned (no needless allocation).
+        let merged = merge_active_containers(base.clone(), &overlays, 200.0);
+        assert_eq!(width_of(&merged), Length::Px(100.0));
+        assert!(Rc::ptr_eq(&merged, &base), "no active overlay must reuse the base Rc");
+
+        // Between 300 and 600: only the 300 overlay is active → width 500.
+        let merged = merge_active_containers(base.clone(), &overlays, 450.0);
+        assert_eq!(width_of(&merged), Length::Px(500.0));
+
+        // At/above 600: both active (min-width cumulative), the higher
+        // threshold wins on the conflicting `width` → width 900.
+        let merged = merge_active_containers(base.clone(), &overlays, 700.0);
+        assert_eq!(width_of(&merged), Length::Px(900.0));
+
+        // Exactly at a threshold is inclusive (min-width semantics).
+        let merged = merge_active_containers(base.clone(), &overlays, 300.0);
+        assert_eq!(width_of(&merged), Length::Px(500.0));
+    }
+
+    /// Container width 0 (no container ancestor / unwired backend)
+    /// activates nothing — the node renders at its mobile-first base.
+    #[test]
+    fn merge_active_containers_zero_width_is_base() {
+        let app = container_app();
+        let base = resolve_style(&app);
+        let overlays = resolve_container_overlays(&app);
+        let merged = merge_active_containers(base.clone(), &overlays, 0.0);
+        assert!(Rc::ptr_eq(&merged, &base));
+    }
+
+    /// Convergence property: merging at the SAME width twice yields
+    /// byte-identical rules. The native feedback loop relies on this —
+    /// after a restyle, the container's width is unchanged (inline-size
+    /// containment), so re-resolving produces the same result and the
+    /// change-guarded signal never re-fires.
+    #[test]
+    fn merge_active_containers_is_idempotent_at_fixed_width() {
+        let app = container_app();
+        let base = resolve_style(&app);
+        let overlays = resolve_container_overlays(&app);
+        let a = merge_active_containers(base.clone(), &overlays, 700.0);
+        let b = merge_active_containers(base.clone(), &overlays, 700.0);
+        assert_eq!(width_of(&a), width_of(&b));
     }
 }

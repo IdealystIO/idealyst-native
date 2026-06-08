@@ -589,6 +589,11 @@ pub fn start_on_port(port: u16) -> std::io::Result<(BridgeHandle, u16)> {
     Ok((BridgeHandle { rx }, bound_port))
 }
 
+/// How often a *subscribed* connection wakes to check the robot revision and
+/// push a live-update notification. 50ms ≈ live without spamming the socket;
+/// bursts coalesce into one push (we only send when the rev actually moved).
+const PUSH_POLL_MS: u64 = 50;
+
 fn handle_connection(stream: TcpStream, tx: mpsc::Sender<BridgeCommand>) {
     let mut writer = match stream.try_clone() {
         Ok(s) => s,
@@ -596,58 +601,122 @@ fn handle_connection(stream: TcpStream, tx: mpsc::Sender<BridgeCommand>) {
     };
     let reader = BufReader::new(stream);
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let parsed: serde_json::Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
-            Err(e) => {
-                let err = format!("{{\"id\":0,\"err\":\"parse error: {}\"}}\n", e);
-                let _ = writer.write_all(err.as_bytes());
-                let _ = writer.flush();
-                continue;
+    // Reader thread: blocking line reads → channel. Splitting reads off keeps
+    // the main loop free to ALSO write unsolicited live-update pushes — and
+    // since ONLY the main loop writes (the reader never does), no lock is
+    // needed around the socket writer.
+    let (line_tx, line_rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in reader.lines() {
+            match line {
+                Ok(l) => {
+                    if line_tx.send(l).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
             }
-        };
+        }
+        // EOF / read error: dropping `line_tx` makes the main loop's
+        // `recv_timeout` return `Disconnected`, so it tears down.
+    });
 
-        let id = parsed["id"].as_u64().unwrap_or(0);
-        let cmd = parsed["cmd"].as_str().unwrap_or("").to_string();
-        let args = parsed.get("args").cloned().unwrap_or(serde_json::Value::Null);
+    // Live-update subscription state, per connection. A client opts in by
+    // sending `subscribe`; thereafter this loop pushes a
+    // `{"event":"changed","rev":N}` whenever the robot's change-revision
+    // advances. Non-subscribing clients (MCP server, E2E harness) never set
+    // this, so they keep the plain request/response behavior.
+    let mut subscribed = false;
+    let mut last_pushed_rev = super::current_revision();
 
-        let (reply_tx, reply_rx) = mpsc::channel();
-        let command = BridgeCommand { id, cmd, args, reply: reply_tx };
+    loop {
+        match line_rx.recv_timeout(Duration::from_millis(PUSH_POLL_MS)) {
+            Ok(line) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let parsed: serde_json::Value = match serde_json::from_str(trimmed) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let err = format!("{{\"id\":0,\"err\":\"parse error: {}\"}}\n", e);
+                        if writer.write_all(err.as_bytes()).is_err() {
+                            break;
+                        }
+                        let _ = writer.flush();
+                        continue;
+                    }
+                };
 
-        if tx.send(command).is_err() {
-            break;
+                let id = parsed["id"].as_u64().unwrap_or(0);
+                let cmd = parsed["cmd"].as_str().unwrap_or("").to_string();
+                let args = parsed.get("args").cloned().unwrap_or(serde_json::Value::Null);
+
+                // `subscribe` is handled HERE (connection-local), not on the UI
+                // thread: it flips this connection into push mode and arms the
+                // revision baseline. Everything else is the usual round-trip.
+                if cmd == "subscribe" {
+                    subscribed = true;
+                    last_pushed_rev = super::current_revision();
+                    let reply = format!("{{\"id\":{},\"ok\":\"subscribed\"}}\n", id);
+                    if writer.write_all(reply.as_bytes()).is_err() {
+                        break;
+                    }
+                    if writer.flush().is_err() {
+                        break;
+                    }
+                    continue;
+                }
+
+                let (reply_tx, reply_rx) = mpsc::channel();
+                let command = BridgeCommand { id, cmd, args, reply: reply_tx };
+                if tx.send(command).is_err() {
+                    break;
+                }
+
+                // Block waiting for the UI thread to execute and reply.
+                // Timeout indicates the polling timer isn't running.
+                match reply_rx.recv_timeout(Duration::from_secs(5)) {
+                    Ok(response) => {
+                        let line = format!("{}\n", response);
+                        if writer.write_all(line.as_bytes()).is_err() {
+                            break;
+                        }
+                        if writer.flush().is_err() {
+                            break;
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        let err = format!(
+                            "{{\"id\":{},\"err\":\"timeout: UI thread polling not running\"}}\n",
+                            id
+                        );
+                        let _ = writer.write_all(err.as_bytes());
+                        let _ = writer.flush();
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            // No request this slice — fall through to the push check.
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            // Reader thread ended (client closed the socket).
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        // Block waiting for the UI thread to execute and reply.
-        // Timeout indicates the polling timer isn't running.
-        match reply_rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(response) => {
-                let line = format!("{}\n", response);
-                if writer.write_all(line.as_bytes()).is_err() {
+        // Push a live-update notification when subscribed and the robot's
+        // observable state changed since the last push (coalesced).
+        if subscribed {
+            let rev = super::current_revision();
+            if rev != last_pushed_rev {
+                last_pushed_rev = rev;
+                let push = format!("{{\"event\":\"changed\",\"rev\":{}}}\n", rev);
+                if writer.write_all(push.as_bytes()).is_err() {
                     break;
                 }
                 if writer.flush().is_err() {
                     break;
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let err = format!(
-                    "{{\"id\":{},\"err\":\"timeout: UI thread polling not running\"}}\n",
-                    id
-                );
-                let _ = writer.write_all(err.as_bytes());
-                let _ = writer.flush();
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 }
@@ -1125,6 +1194,44 @@ mod tests {
     //! `bridge_registration_json` produces.
 
     use super::*;
+
+    /// End-to-end live-update push: a `subscribe`d connection receives a
+    /// `{"event":"changed"}` when the robot revision advances. Exercises the
+    /// connection-local subscribe handling + the push loop over real TCP — no
+    /// UI poll needed, since subscribe + push are driven by the atomic
+    /// revision, not the command channel.
+    #[test]
+    fn subscribe_pushes_on_revision_change() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        let (_handle, port) = start_on_port(0).expect("bind ephemeral");
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+        // Subscribe and read the confirmation (so the push baseline is armed
+        // BEFORE we bump).
+        stream
+            .write_all(b"{\"id\":1,\"cmd\":\"subscribe\",\"args\":{}}\n")
+            .unwrap();
+        stream.flush().unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.contains("\"ok\":\"subscribed\""), "subscribe reply: {line}");
+
+        // A mutation advances the revision → a push lands within the poll slice.
+        crate::robot::bump_revision();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert!(
+            line.contains("\"event\":\"changed\""),
+            "expected a live-update push, got: {line}"
+        );
+    }
 
     #[test]
     fn registration_json_carries_port_pid_name_and_optionals() {

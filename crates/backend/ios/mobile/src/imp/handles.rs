@@ -15,9 +15,37 @@ use std::any::Any;
 use runtime_core::primitives::portal::ViewportRect;
 use runtime_core::primitives::text_area::TextAreaOps;
 use runtime_core::primitives::text_input::TextInputOps;
-use runtime_core::{ButtonOps, PressableOps, ViewOps};
+use runtime_core::{ButtonOps, LayoutSubscription, PressableOps, ViewOps};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::imp::IosNode;
+
+thread_local! {
+    /// Per-view `on_layout` callbacks, keyed by the UIView pointer (the
+    /// same `usize` key as `view_to_layout`). Fired from `apply_frames`
+    /// after a view's frame changes — the UIKit analog of the web
+    /// `ResizeObserver`, which is how a `.container()` view's inline-size
+    /// signal gets fed on iOS. Main-thread only, so a thread-local is safe.
+    static LAYOUT_SUBS: RefCell<Vec<(usize, Rc<dyn Fn(f32, f32)>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Fire every `on_layout` callback registered for `view_key` with the
+/// view's resolved inline-size (`w`) and block-size (`h`). The callbacks
+/// change-guard, so re-firing at an unchanged size is a no-op.
+pub(crate) fn fire_layout_for_view(view_key: usize, w: f32, h: f32) {
+    let cbs: Vec<Rc<dyn Fn(f32, f32)>> = LAYOUT_SUBS.with(|m| {
+        m.borrow()
+            .iter()
+            .filter(|(k, _)| *k == view_key)
+            .map(|(_, c)| c.clone())
+            .collect()
+    });
+    for c in cbs {
+        c(w, h);
+    }
+}
 
 /// Read the viewport-relative rect of an iOS node. Walks
 /// `convertRect:toView:nil` to get window-coordinate bounds. Returns
@@ -88,6 +116,27 @@ pub(crate) static IOS_PRESSABLE_OPS: IosPressableOps = IosPressableOps;
 
 pub(crate) struct IosViewOps;
 impl ViewOps for IosViewOps {
+    fn subscribe_layout(
+        &self,
+        node: &dyn Any,
+        callback: Box<dyn Fn(f32, f32)>,
+    ) -> LayoutSubscription {
+        let Some(ios_node) = node.downcast_ref::<IosNode>() else {
+            return LayoutSubscription::noop();
+        };
+        // Same key derivation as `view_to_layout` / `IosNode::view_key`.
+        let key = ios_node.as_view() as *const UIView as usize;
+        let cb: Rc<dyn Fn(f32, f32)> = Rc::from(callback);
+        let cb_id = Rc::as_ptr(&cb) as *const () as usize;
+        LAYOUT_SUBS.with(|m| m.borrow_mut().push((key, cb)));
+        LayoutSubscription::new(move || {
+            LAYOUT_SUBS.with(|m| {
+                m.borrow_mut()
+                    .retain(|(k, c)| !(*k == key && Rc::as_ptr(c) as *const () as usize == cb_id))
+            });
+        })
+    }
+
     fn rect(&self, node: &dyn Any) -> ViewportRect {
         rect_of_node(node)
     }

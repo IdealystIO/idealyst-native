@@ -14,8 +14,9 @@
 //! per-backend dpr wiring.
 
 use canvas_core::{
-    paint_scene, CanvasProps, Color as CanvasColor, DrawOp, FillRule, GradientStop, LineCap,
-    LineJoin, Paint, PaintKind, Path, PathSeg, Scene as CanvasScene, Stroke as CanvasStroke,
+    paint_scene, BlendMode as CanvasBlend, CanvasProps, Color as CanvasColor, DrawOp, FillRule,
+    GradientStop, ImageSource as CanvasImage, LineCap, LineJoin, Paint, PaintKind, Path, PathSeg,
+    Scene as CanvasScene, Stroke as CanvasStroke,
 };
 use crate::native_capture::{LayerCompositor, NativeCapture};
 use canvas_core::TextureLayer;
@@ -25,11 +26,15 @@ use runtime_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
 use runtime_core::{Backend, Effect, RegisterExternal};
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
-use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Stroke as KurboStroke};
+use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Shape, Stroke as KurboStroke};
 use vello::peniko::color::DynamicColor;
-use vello::peniko::{Brush, Color, ColorStop, Fill, Gradient, Mix};
+use vello::peniko::{
+    BlendMode, Blob, Brush, Color, ColorStop, Compose, Fill, Gradient, ImageAlphaType, ImageBrush,
+    ImageData, ImageFormat, Mix,
+};
 use vello::{AaConfig, AaSupport, Renderer, RendererOptions, RenderParams, Scene as VelloScene};
 
 /// vello renders into a storage texture of this format; the blitter copies
@@ -395,7 +400,7 @@ impl RenderState {
         // Base transform = device scale: the author's Scene is in LOGICAL
         // coordinates; scaling by the dpr makes it fill the physical-pixel
         // surface (no retina under-fill). `1.0` → identity (physical scale).
-        encode_scene(canvas_scene, &mut self.scene, Affine::scale(self.scale));
+        encode_scene(canvas_scene.ops(), &mut self.scene, Affine::scale(self.scale));
 
         let params = RenderParams {
             base_color: Color::from_rgba8(0, 0, 0, 0),
@@ -598,16 +603,18 @@ fn retry_first_frame(
 // Scene → vello translation
 // ============================================================================
 
-/// Walk the canvas op list into `vs`, maintaining a transform stack
-/// (Save/Restore + Transform) and clip layers (Clip → push_layer).
-fn encode_scene(canvas: &CanvasScene, vs: &mut VelloScene, base: Affine) {
+/// Walk a canvas op list into `vs`, maintaining a transform stack
+/// (Save/Restore + Transform) and clip layers (Clip → push_layer). Takes a
+/// raw op slice (not a `Scene`) so persistent-layer nested ops can recurse
+/// through the same encoder.
+fn encode_scene(ops: &[DrawOp], vs: &mut VelloScene, base: Affine) {
     let mut cur = base;
     // (saved transform, number of clip layers pushed inside this save scope)
     let mut stack: Vec<(Affine, u32)> = Vec::new();
     // Clips pushed outside any save scope (popped at the end).
     let mut root_clips: u32 = 0;
 
-    for op in canvas.ops() {
+    for op in ops {
         match op {
             DrawOp::Save => stack.push((cur, 0)),
             DrawOp::Restore => {
@@ -634,12 +641,98 @@ fn encode_scene(canvas: &CanvasScene, vs: &mut VelloScene, base: Affine) {
             DrawOp::Fill { path, paint, fill_rule } => {
                 let shape = bez_of(path);
                 let brush = brush_of(paint);
-                vs.fill(fill_of(*fill_rule), cur, &brush, None, &shape);
+                match peniko_blend(paint.blend) {
+                    None => vs.fill(fill_of(*fill_rule), cur, &brush, None, &shape),
+                    // Vello has no per-draw blend: wrap the fill in a layer
+                    // whose pop composites it onto the backdrop with `blend`.
+                    // Clip the layer to the shape's bounds so nothing outside
+                    // is touched (critical for DestinationOut — it must only
+                    // erase under the eraser shape).
+                    Some(blend) => {
+                        let bounds = shape.bounding_box();
+                        vs.push_layer(Fill::NonZero, blend, 1.0, cur, &bounds);
+                        vs.fill(fill_of(*fill_rule), cur, &brush, None, &shape);
+                        vs.pop_layer();
+                    }
+                }
             }
             DrawOp::Stroke { path, paint, stroke } => {
                 let shape = bez_of(path);
                 let brush = brush_of(paint);
-                vs.stroke(&kurbo_stroke(stroke), cur, &brush, None, &shape);
+                match peniko_blend(paint.blend) {
+                    None => vs.stroke(&kurbo_stroke(stroke), cur, &brush, None, &shape),
+                    Some(blend) => {
+                        // Inflate the clip bounds by the stroke half-width (plus
+                        // a small margin) so the stroked outline isn't clipped.
+                        let m = (stroke.width as f64) * 0.5 + 1.0;
+                        let bounds = shape.bounding_box().inflate(m, m);
+                        vs.push_layer(Fill::NonZero, blend, 1.0, cur, &bounds);
+                        vs.stroke(&kurbo_stroke(stroke), cur, &brush, None, &shape);
+                        vs.pop_layer();
+                    }
+                }
+            }
+            DrawOp::Image { image, dst, alpha, blend } => {
+                if !image.is_valid() || image.width == 0 || image.height == 0 {
+                    continue;
+                }
+                let data = image_data_cached(image);
+                // Map the image's natural [0,0,w,h] space onto `dst`, under the
+                // current transform. Non-uniform scale stretches to fit.
+                let t = cur
+                    * Affine::translate((dst.x as f64, dst.y as f64))
+                    * Affine::scale_non_uniform(
+                        dst.w as f64 / image.width as f64,
+                        dst.h as f64 / image.height as f64,
+                    );
+                let brush = ImageBrush::new(data).with_alpha(*alpha);
+                match peniko_blend(*blend) {
+                    None => vs.draw_image(&brush, t),
+                    Some(b) => {
+                        // Clip the blend layer to the destination rect (in `cur`
+                        // space) so only `dst` participates in the composite.
+                        let clip = Rect::new(
+                            dst.x as f64,
+                            dst.y as f64,
+                            (dst.x + dst.w) as f64,
+                            (dst.y + dst.h) as f64,
+                        );
+                        vs.push_layer(Fill::NonZero, b, 1.0, cur, &clip);
+                        vs.draw_image(&brush, t);
+                        vs.pop_layer();
+                    }
+                }
+            }
+            DrawOp::Layer { id, clear, ops: nested, alpha, blend } => {
+                // Persistent layer = a retained vello op-log kept across frames.
+                // We append this frame's `nested` ops to it (or reset on
+                // `clear`), then composite the whole retained log into `vs`.
+                // The mechanism differs from the CPU backends' raster bake, but
+                // the output converges: accumulation and DestinationOut erase
+                // both replay correctly each frame (CLAUDE.md §7).
+                LAYER_SCENES.with(|m| {
+                    let mut map = m.borrow_mut();
+                    let layer = map.entry(*id).or_insert_with(VelloScene::new);
+                    if *clear {
+                        layer.reset();
+                    }
+                    // Encode nested ops at identity — the layer holds content in
+                    // canvas-logical coords; `cur` (incl. dpr) is applied at
+                    // composite time via `append`.
+                    encode_scene(nested, layer, Affine::IDENTITY);
+
+                    // Always composite the layer as an ISOLATED group, even at
+                    // alpha 1 / Normal blend: an eraser (DestinationOut) inside
+                    // the layer must only cut the layer's own pixels, never punch
+                    // through to content drawn into `vs` before this op. The
+                    // isolated layer is then laid onto `vs` with `blend`.
+                    let b = peniko_blend(*blend)
+                        .unwrap_or(BlendMode::new(Mix::Normal, Compose::SrcOver));
+                    let clip = Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6);
+                    vs.push_layer(Fill::NonZero, b, *alpha, cur, &clip);
+                    vs.append(layer, Some(cur));
+                    vs.pop_layer();
+                });
             }
             _ => {}
         }
@@ -679,6 +772,60 @@ fn pt(x: f32, y: f32) -> Point {
 fn affine_of(t: &canvas_core::Transform) -> Affine {
     // Canvas Transform (a,b,c,d,e,f) maps to kurbo's [a,b,c,d,e,f] coeffs.
     Affine::new([t.a as f64, t.b as f64, t.c as f64, t.d as f64, t.e as f64, t.f as f64])
+}
+
+thread_local! {
+    /// Per-render-thread persistent layer scenes ([`DrawOp::Layer`]) keyed by
+    /// layer id. Each is a retained vello op-log that accumulates across
+    /// frames (`clear: false`) and is reset on `clear: true`. Grows with the
+    /// total ops drawn since the last clear — the same bound as the author's
+    /// own vector model would carry; documented on `DrawOp::Layer`.
+    static LAYER_SCENES: RefCell<HashMap<u32, VelloScene>> = RefCell::new(HashMap::new());
+}
+
+thread_local! {
+    /// Per-render-thread cache of uploaded [`ImageData`] keyed by
+    /// [`CanvasImage::id`]. `ImageData` holds a refcounted [`Blob`], so vello
+    /// dedupes the GPU upload across frames as long as we hand it the *same*
+    /// Blob — rebuilding it each frame would defeat that. Authors emit the
+    /// same `id` every frame for a static image; we build the Blob once.
+    ///
+    /// Note: this never evicts. Canvas authors use a small, stable set of
+    /// image ids (a placed photo, a stamp), so unbounded growth isn't a
+    /// concern in practice; if that changes, add an LRU keyed on frame use.
+    static IMAGE_CACHE: RefCell<HashMap<u64, ImageData>> = RefCell::new(HashMap::new());
+}
+
+/// Get-or-build the cached [`ImageData`] for a canvas image. Caller has
+/// already checked `is_valid()`.
+fn image_data_cached(src: &CanvasImage) -> ImageData {
+    IMAGE_CACHE.with(|c| {
+        c.borrow_mut()
+            .entry(src.id)
+            .or_insert_with(|| ImageData {
+                data: Blob::from(src.rgba.clone()),
+                format: ImageFormat::Rgba8,
+                alpha_type: ImageAlphaType::Alpha,
+                width: src.width,
+                height: src.height,
+            })
+            .clone()
+    })
+}
+
+/// Map the canvas [`CanvasBlend`] to a peniko [`BlendMode`], or `None` for
+/// `Normal` (drawn directly, no layer). DestinationOut is a Porter-Duff
+/// *compose* mode (the eraser); Multiply/Screen are separable *mix* modes
+/// composited source-over.
+fn peniko_blend(blend: CanvasBlend) -> Option<BlendMode> {
+    match blend {
+        CanvasBlend::Normal => None,
+        CanvasBlend::DestinationOut => Some(BlendMode::new(Mix::Normal, Compose::DestOut)),
+        CanvasBlend::Multiply => Some(BlendMode::new(Mix::Multiply, Compose::SrcOver)),
+        CanvasBlend::Screen => Some(BlendMode::new(Mix::Screen, Compose::SrcOver)),
+        // `#[non_exhaustive]`; unknown modes draw normally.
+        _ => None,
+    }
 }
 
 fn fill_of(rule: FillRule) -> Fill {
@@ -729,4 +876,209 @@ fn kurbo_stroke(s: &CanvasStroke) -> KurboStroke {
             LineJoin::Bevel => Join::Bevel,
         })
         .with_miter_limit(s.miter_limit as f64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use canvas_core::{ImageSource, Paint, Path, Rect as CanvasRect, Scene as CanvasScene};
+
+    #[test]
+    fn peniko_blend_maps_each_mode() {
+        // Normal is drawn directly (no layer wrap).
+        assert!(peniko_blend(CanvasBlend::Normal).is_none());
+        // DestinationOut is the eraser — a Porter-Duff *compose* mode.
+        let d = peniko_blend(CanvasBlend::DestinationOut).expect("blend");
+        assert_eq!(d.compose, Compose::DestOut);
+        assert_eq!(d.mix, Mix::Normal);
+        // Multiply / Screen are separable *mix* modes, composited source-over.
+        assert_eq!(peniko_blend(CanvasBlend::Multiply).expect("blend").mix, Mix::Multiply);
+        assert_eq!(peniko_blend(CanvasBlend::Screen).expect("blend").mix, Mix::Screen);
+    }
+
+    /// Render a canvas scene to an `S×S` RGBA8 buffer on a real GPU and
+    /// return the pixels. Returns `None` when the host has no usable GPU
+    /// adapter / device / vello-capable GPU, so the callers skip (don't
+    /// fail) on CI without a GPU.
+    fn render_to_rgba(cs: &CanvasScene, s: u32) -> Option<Vec<u8>> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            flags: wgpu::InstanceFlags::default(),
+            memory_budget_thresholds: Default::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            display: None,
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: false,
+            compatible_surface: None,
+        }))
+        .ok()?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("canvas-test"),
+            ..Default::default()
+        }))
+        .ok()?;
+        let mut renderer = Renderer::new(
+            &device,
+            RendererOptions {
+                use_cpu: false,
+                antialiasing_support: AaSupport::area_only(),
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .ok()?;
+
+        let mut vs = VelloScene::new();
+        encode_scene(cs.ops(), &mut vs, Affine::scale(1.0));
+        let (target, target_view) = make_target(&device, s, s);
+        let params = RenderParams {
+            base_color: Color::from_rgba8(0, 0, 0, 0),
+            width: s,
+            height: s,
+            antialiasing_method: AaConfig::Area,
+        };
+        renderer
+            .render_to_texture(&device, &queue, &vs, &target_view, &params)
+            .ok()?;
+
+        // bytes_per_row must be 256-aligned; pick `s` so s*4 % 256 == 0 (s=64).
+        let bpr = s * 4;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: (bpr * s) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bpr),
+                    rows_per_image: Some(s),
+                },
+            },
+            wgpu::Extent3d { width: s, height: s, depth_or_array_layers: 1 },
+        );
+        queue.submit([enc.finish()]);
+        buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let data = buffer.slice(..).get_mapped_range();
+        Some(data.to_vec())
+    }
+
+    /// Index helper for an `S`-wide RGBA8 buffer.
+    fn px(buf: &[u8], s: u32, x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * s + x) * 4) as usize;
+        [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
+    }
+
+    /// End-to-end GPU proof of the eraser: fill the whole target red, then
+    /// fill the center with `BlendMode::DestinationOut`. The covered pixels
+    /// must become fully transparent while pixels outside stay opaque red.
+    /// A renderer that dropped the `push_layer(..DestOut..)` wrap (drawing
+    /// the eraser as an opaque fill instead) would leave the center opaque
+    /// and fail here.
+    #[test]
+    fn destination_out_erases_a_hole_on_the_gpu() {
+        const S: u32 = 64;
+        let mut cs = CanvasScene::new();
+        cs.path().add_path(Path::rect(0.0, 0.0, S as f32, S as f32));
+        cs.fill(Paint::solid(CanvasColor::new(255, 0, 0, 255)));
+        cs.path().add_path(Path::rect(24.0, 24.0, 16.0, 16.0));
+        cs.fill(Paint::eraser());
+
+        let Some(buf) = render_to_rgba(&cs, S) else {
+            eprintln!("skip: no GPU");
+            return;
+        };
+        let center = px(&buf, S, 32, 32);
+        assert!(center[3] < 8, "center should be erased (alpha ~0), got {center:?}");
+        let corner = px(&buf, S, 2, 2);
+        assert!(
+            corner[0] > 200 && corner[3] > 200,
+            "corner should stay opaque red, got {corner:?}"
+        );
+    }
+
+    /// End-to-end GPU proof of the persistent layer: frame 1 bakes a red
+    /// rect into a layer; frame 2 emits ONLY an eraser hole (`clear: false`).
+    /// The red must persist from frame 1 (it is *not* re-emitted in frame 2),
+    /// and the eraser must cut a permanent hole in the baked content. A
+    /// renderer that didn't retain the layer across frames would show an empty
+    /// surface in frame 2 and fail.
+    #[test]
+    fn persistent_layer_accumulates_and_erases_across_frames() {
+        const S: u32 = 64;
+        // Unique id so the thread-local retained scene can't collide with
+        // another test sharing the render thread.
+        const ID: u32 = 0xB0_0B;
+
+        // Frame 1: bake an opaque red rect into the layer (clear to start clean).
+        let mut f1 = CanvasScene::new();
+        f1.layer(ID, true, |l| {
+            l.path().add_path(Path::rect(0.0, 0.0, S as f32, S as f32));
+            l.fill(Paint::solid(CanvasColor::new(255, 0, 0, 255)));
+        });
+        if render_to_rgba(&f1, S).is_none() {
+            eprintln!("skip: no GPU");
+            return;
+        }
+
+        // Frame 2: emit ONLY an eraser hole, accumulating onto frame 1's bake.
+        let mut f2 = CanvasScene::new();
+        f2.layer(ID, false, |l| {
+            l.path().add_path(Path::rect(24.0, 24.0, 16.0, 16.0));
+            l.fill(Paint::eraser());
+        });
+        let buf = render_to_rgba(&f2, S).expect("frame 2 render");
+
+        // Center: erased by frame 2's eraser → transparent.
+        let center = px(&buf, S, 32, 32);
+        assert!(center[3] < 8, "center should be erased, got {center:?}");
+        // Corner: red baked in frame 1 must still be there in frame 2.
+        let corner = px(&buf, S, 2, 2);
+        assert!(
+            corner[0] > 200 && corner[3] > 200,
+            "frame-1 red must persist into frame 2, got {corner:?}"
+        );
+    }
+
+    /// End-to-end GPU proof of the image blit: a 2×2 image (green top-left,
+    /// red bottom-right) blitted to fill the whole target. The renderer must
+    /// upload the pixels and scale them to `dst` — a no-op `_ => {}` arm
+    /// would leave the surface transparent and fail here.
+    #[test]
+    fn image_blit_paints_scaled_pixels_on_the_gpu() {
+        const S: u32 = 64;
+        // 2×2 straight-RGBA8: TL green, TR blue, BL blue, BR red.
+        let rgba = vec![
+            0, 255, 0, 255, // (0,0) green
+            0, 0, 255, 255, // (1,0) blue
+            0, 0, 255, 255, // (0,1) blue
+            255, 0, 0, 255, // (1,1) red
+        ];
+        let img = ImageSource::from_rgba8(1001, 2, 2, rgba);
+        let mut cs = CanvasScene::new();
+        cs.draw_image(img, CanvasRect::new(0.0, 0.0, S as f32, S as f32));
+
+        let Some(buf) = render_to_rgba(&cs, S) else {
+            eprintln!("skip: no GPU");
+            return;
+        };
+        // Top-left quadrant samples the green texel; bottom-right the red one.
+        let tl = px(&buf, S, 8, 8);
+        assert!(tl[1] > 200 && tl[0] < 60 && tl[3] > 200, "top-left should be green, got {tl:?}");
+        let br = px(&buf, S, 56, 56);
+        assert!(br[0] > 200 && br[1] < 60 && br[3] > 200, "bottom-right should be red, got {br:?}");
+    }
 }

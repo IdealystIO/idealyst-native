@@ -187,9 +187,12 @@ pub const BOX_SIZING_RESET: &str = "*, *::before, *::after { box-sizing: border-
 
 /// `<button>` element reset. `:where(button)` is specificity 0 so author
 /// `apply_style` classes win; this just strips the browser's chunky
-/// default chrome and restores a pointer cursor + flex centering.
+/// default chrome and restores flex centering. Cursor is intentionally
+/// NOT set here — it's an author/component style property
+/// (`StyleRules::cursor`) now, so the framework imposes no default
+/// pointer; component libraries opt their buttons into `Cursor::Pointer`.
 pub const BUTTON_RESET: &str = ":where(button) { all: unset; box-sizing: border-box; \
-    cursor: pointer; font: inherit; color: inherit; display: inline-flex; \
+    font: inherit; color: inherit; display: inline-flex; \
     align-items: center; justify-content: center; }";
 
 /// Form-control font reset. The browser UA stylesheet gives `<textarea>`
@@ -231,11 +234,6 @@ pub const BUTTON_CONTENT_STYLE: &str = "display:inline-flex;align-items:center;g
 
 /// Default inline style for an `Icon`'s inline element.
 pub const ICON_INLINE_STYLE: &str = "display:inline-block;vertical-align:middle;";
-
-/// Default inline style for a `Pressable` (bare clickable `<div>`): a
-/// hand cursor. `cursor` isn't in the framework's styled-property model,
-/// so it's set inline at create time on both backends.
-pub const PRESSABLE_CURSOR_STYLE: &str = "cursor: pointer;";
 
 /// Inline style for a reactive `when`/`switch`/`each` anchor placeholder:
 /// `display: contents` makes it **layout-transparent** so the branch's
@@ -308,6 +306,7 @@ pub fn variant_class_key(
     base_key: &str,
     overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
     breakpoint_overlays: &[(runtime_core::Breakpoint, std::rc::Rc<StyleRules>)],
+    container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
 ) -> String {
     let mut key = String::with_capacity(base_key.len() + 64);
     key.push_str(base_key);
@@ -321,6 +320,16 @@ pub fn variant_class_key(
         key.push(';');
         key.push('@');
         key.push_str(bp.axis_name().unwrap_or("__bp_xs"));
+        key.push(':');
+        key.push_str(&overlay.content_key());
+    }
+    // Container overlays carry their px threshold in the key (via the
+    // `__cq_minw_<bits>` axis name) so two sheets that differ only in a
+    // `container (min_width: …)` block mint distinct classes.
+    for (threshold, overlay) in container_overlays {
+        key.push(';');
+        key.push('@');
+        key.push_str(&runtime_core::container_axis_name(*threshold));
         key.push(':');
         key.push_str(&overlay.content_key());
     }
@@ -370,6 +379,37 @@ pub fn breakpoint_media_query(bp: runtime_core::Breakpoint) -> Option<String> {
 pub fn breakpoint_media_rule(class_name: &str, bp: runtime_core::Breakpoint, body: &str) -> Option<String> {
     let query = breakpoint_media_query(bp)?;
     Some(format!("{query} {{ .{class_name} {{ {body} }} }}"))
+}
+
+/// Shared class name that marks a node as a container-query containment
+/// context (`container-type: inline-size`). Used by both the web backend
+/// (live stylesheet) and SSR (`<head>`) so the rule is byte-identical and
+/// hydration reuses the server's class. Set by `Backend::mark_container`
+/// in response to the `.container()` modifier.
+pub const CONTAINER_TYPE_CLASS: &str = "ui-cq-container";
+
+/// The CSS body for [`CONTAINER_TYPE_CLASS`]. `inline-size` containment
+/// is the only mode v1 supports — descendants may query the container's
+/// width only, which is what makes the query non-cyclic.
+pub const CONTAINER_TYPE_BODY: &str = "container-type: inline-size";
+
+/// A full container-query overlay rule:
+/// `@container (min-width: <threshold>px) { .<class_name> { <body> } }`.
+/// The browser resolves it against the nearest ancestor carrying
+/// `container-type: inline-size` (set by [`runtime_core`]'s `.container()`
+/// modifier via `Backend::mark_container`), so the overlay activates on
+/// the *container's* width, not the viewport's. `body` is the overlay's
+/// [`rules_to_css`] output.
+///
+/// Single source of truth shared by the web backend (live stylesheet
+/// insert) and SSR (`<head>` emit), so a `container (min_width: N) { … }`
+/// block produces a byte-identical rule on both — the SSR first paint
+/// already carries the container-responsive layout.
+pub fn container_query_rule(class_name: &str, threshold_px: f32, body: &str) -> String {
+    format!(
+        "@container (min-width: {}) {{ .{class_name} {{ {body} }} }}",
+        px_value(threshold_px)
+    )
 }
 
 /// Format a `min-width` threshold (always carried as `f32` dp) as a CSS
@@ -737,6 +777,40 @@ pub fn overflow_css(v: runtime_core::Overflow) -> &'static str {
     }
 }
 
+/// CSS `cursor` keyword for a [`runtime_core::Cursor`].
+pub fn cursor_css(v: runtime_core::Cursor) -> &'static str {
+    use runtime_core::Cursor;
+    match v {
+        Cursor::Auto => "auto",
+        Cursor::Default => "default",
+        Cursor::Pointer => "pointer",
+        Cursor::Text => "text",
+        Cursor::Wait => "wait",
+        Cursor::Progress => "progress",
+        Cursor::Help => "help",
+        Cursor::NotAllowed => "not-allowed",
+        Cursor::Move => "move",
+        Cursor::Grab => "grab",
+        Cursor::Grabbing => "grabbing",
+        Cursor::Crosshair => "crosshair",
+        Cursor::ColResize => "col-resize",
+        Cursor::RowResize => "row-resize",
+        Cursor::EwResize => "ew-resize",
+        Cursor::NsResize => "ns-resize",
+    }
+}
+
+/// CSS `user-select` keyword for a [`runtime_core::UserSelect`].
+pub fn user_select_css(v: runtime_core::UserSelect) -> &'static str {
+    use runtime_core::UserSelect;
+    match v {
+        UserSelect::Auto => "auto",
+        UserSelect::None => "none",
+        UserSelect::Text => "text",
+        UserSelect::All => "all",
+    }
+}
+
 pub fn transform_css(t: &runtime_core::Transform) -> String {
     use runtime_core::Transform;
     match t {
@@ -933,6 +1007,17 @@ pub fn rules_to_css(rules: &StyleRules) -> String {
         ));
     }
 
+    // Interaction. `user-select` is emitted with the `-webkit-` prefix so
+    // Safari (which still needs it) honors it; both share one keyword.
+    if let Some(c) = rules.cursor {
+        parts.push(format!("cursor: {}", cursor_css(c)));
+    }
+    if let Some(u) = rules.user_select {
+        let v = user_select_css(u);
+        parts.push(format!("-webkit-user-select: {v}"));
+        parts.push(format!("user-select: {v}"));
+    }
+
     // Transitions: a single CSS `transition` listing every active
     // per-property transition. The browser interpolates on value change.
     let transitions = collect_transitions(rules);
@@ -1022,6 +1107,43 @@ mod tests {
         assert_eq!(tokens_to_root_css(&[]), "");
     }
 
+    // `cursor` emits the CSS keyword; `user-select` emits BOTH the prefixed
+    // `-webkit-` form (Safari still needs it) and the unprefixed form, sharing
+    // one keyword. This is what makes "buttons use a pointer + their label
+    // can't be drag-selected" real on web.
+    #[test]
+    fn rules_to_css_emits_cursor_and_user_select() {
+        use runtime_core::{Cursor, StyleRules, UserSelect};
+        let css = rules_to_css(&StyleRules {
+            cursor: Some(Cursor::Pointer),
+            user_select: Some(UserSelect::None),
+            ..Default::default()
+        });
+        assert!(css.contains("cursor: pointer"), "got: {css}");
+        assert!(css.contains("-webkit-user-select: none"), "got: {css}");
+        assert!(css.contains("user-select: none"), "got: {css}");
+    }
+
+    // The hyphenated CSS keywords must match the spec spelling (snake_case
+    // enum → kebab-case CSS), or the browser silently ignores the declaration.
+    #[test]
+    fn cursor_css_uses_spec_keywords() {
+        use runtime_core::Cursor;
+        assert_eq!(cursor_css(Cursor::NotAllowed), "not-allowed");
+        assert_eq!(cursor_css(Cursor::ColResize), "col-resize");
+        assert_eq!(cursor_css(Cursor::Grabbing), "grabbing");
+    }
+
+    // An unset cursor/user_select emits nothing — the framework imposes no
+    // default, so a bare styled node carries no cursor/selection declaration.
+    #[test]
+    fn rules_to_css_omits_unset_interaction_props() {
+        use runtime_core::StyleRules;
+        let css = rules_to_css(&StyleRules::default());
+        assert!(!css.contains("cursor"), "got: {css}");
+        assert!(!css.contains("user-select"), "got: {css}");
+    }
+
     // Regression: a framework `<textarea>` rendered in the browser's UA
     // monospace face because nothing reset the form-control font. The base
     // reset (seeded on web at index 2, emitted by SSR in <head>) must carry
@@ -1088,7 +1210,7 @@ mod tests {
         // State overlays use the shared `;<tag>:` form — NOT SSR's old
         // `|<bits>:` form. `;h:` for HOVERED specifically.
         let with_hover =
-            variant_class_key(base_key, &[(StateBits::HOVERED, overlay.clone())], &[]);
+            variant_class_key(base_key, &[(StateBits::HOVERED, overlay.clone())], &[], &[]);
         assert!(
             with_hover.starts_with(base_key),
             "key must begin with the base content key, got {with_hover}"
@@ -1105,17 +1227,17 @@ mod tests {
         // Deterministic: same inputs → same key (so the hash matches
         // across the SSR render and the web rebuild).
         let again =
-            variant_class_key(base_key, &[(StateBits::HOVERED, overlay.clone())], &[]);
+            variant_class_key(base_key, &[(StateBits::HOVERED, overlay.clone())], &[], &[]);
         assert_eq!(with_hover, again);
 
         // Distinct state bits → distinct keys (so a base shared across
         // hover vs focus styling still gets distinct classes).
         let with_focus =
-            variant_class_key(base_key, &[(StateBits::FOCUSED, overlay.clone())], &[]);
+            variant_class_key(base_key, &[(StateBits::FOCUSED, overlay.clone())], &[], &[]);
         assert_ne!(with_hover, with_focus);
 
         // Breakpoint overlays append the `;@<axis>:` form.
-        let with_bp = variant_class_key(base_key, &[], &[(Breakpoint::Md, overlay.clone())]);
+        let with_bp = variant_class_key(base_key, &[], &[(Breakpoint::Md, overlay.clone())], &[]);
         assert!(
             with_bp.contains(";@"),
             "breakpoint overlay must use the `;@<axis>:` form, got {with_bp}"

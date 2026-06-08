@@ -1566,6 +1566,12 @@ impl AndroidBackend {
                     continue;
                 }
                 let key = Self::node_key(view);
+                // Feed any `on_layout` subscribers (a `.container()` view's
+                // inline-size signal) with this view's resolved size in dp.
+                // The callbacks change-guard, so re-firing at an unchanged
+                // width is a no-op — which keeps the container-query
+                // restyle→relayout loop convergent.
+                fire_layout_for_view(key, frame.width, frame.height);
                 if let Some(state) = self.anim_state.get(&key) {
                     {
                         let _t = phase_timer::PhaseTimer::start("transform_pct");
@@ -1670,8 +1676,56 @@ impl AndroidBackend {
 // impls below are the place to wire them.
 // ---------------------------------------------------------------------------
 
+thread_local! {
+    /// Per-view `on_layout` callbacks, keyed by the JObject pointer (the
+    /// same `node_key` the animation state + `view_to_layout` use). Fired
+    /// from `run_layout_pass` after each view's frame is applied — the
+    /// Android analog of the web `ResizeObserver`, which is how a
+    /// `.container()` view's inline-size signal gets fed. The UI thread is
+    /// single-threaded, so a thread-local registry is safe.
+    static LAYOUT_SUBS: std::cell::RefCell<Vec<(usize, Rc<dyn Fn(f32, f32)>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Fire every `on_layout` callback registered for `view_key` with the
+/// view's resolved inline-size (`w`) and block-size (`h`) in dp. The
+/// callbacks change-guard, so re-firing at an unchanged size is a no-op.
+pub(crate) fn fire_layout_for_view(view_key: usize, w: f32, h: f32) {
+    let cbs: Vec<Rc<dyn Fn(f32, f32)>> = LAYOUT_SUBS.with(|m| {
+        m.borrow()
+            .iter()
+            .filter(|(k, _)| *k == view_key)
+            .map(|(_, c)| c.clone())
+            .collect()
+    });
+    for c in cbs {
+        c(w, h);
+    }
+}
+
 pub(crate) struct AndroidViewOps;
 impl runtime_core::ViewOps for AndroidViewOps {
+    fn subscribe_layout(
+        &self,
+        node: &dyn std::any::Any,
+        callback: Box<dyn Fn(f32, f32)>,
+    ) -> runtime_core::LayoutSubscription {
+        let Some(view) = node.downcast_ref::<GlobalRef>() else {
+            return runtime_core::LayoutSubscription::noop();
+        };
+        // Same key derivation as `node_key` / `view_to_layout`.
+        let key = view.as_obj().as_raw() as usize;
+        let cb: Rc<dyn Fn(f32, f32)> = Rc::from(callback);
+        let cb_id = Rc::as_ptr(&cb) as *const () as usize;
+        LAYOUT_SUBS.with(|m| m.borrow_mut().push((key, cb)));
+        runtime_core::LayoutSubscription::new(move || {
+            LAYOUT_SUBS.with(|m| {
+                m.borrow_mut()
+                    .retain(|(k, c)| !(*k == key && Rc::as_ptr(c) as *const () as usize == cb_id))
+            });
+        })
+    }
+
     /// Node's rect in its parent's coordinate system, in dp. Mirrors
     /// `IosViewOps::frame` so author-level code reading
     /// `Ref<ViewHandle>::frame()` gets equivalent behavior on both

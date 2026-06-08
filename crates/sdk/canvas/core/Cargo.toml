@@ -24,3 +24,17 @@ serde_json = "1"
 # as a `MediaStream`. Thin, GPU-free, no cargo `links` (only a `#[link]` to the
 # always-present CoreFoundation on Apple) — not a renderer/backend dep.
 media-stream = { workspace = true }
+# OPTIONAL (off by default): decode encoded image bytes (PNG/JPEG) to straight
+# RGBA8 for `ImageSource::decode`. The core image-blit contract is raw RGBA;
+# this is just an author convenience and pulls the `image` crate only when the
+# `decode` feature is on. Already in the workspace lock (transitive), so no new
+# unique dependency for a default build.
+image = { version = "0.25", optional = true, default-features = false, features = [
+    "png",
+    "jpeg",
+] }
+
+[features]
+# Decode encoded image containers (PNG/JPEG) into `ImageSource` via the
+# `image` crate. Off by default — renderers only ever consume raw RGBA.
+decode = ["dep:image"]

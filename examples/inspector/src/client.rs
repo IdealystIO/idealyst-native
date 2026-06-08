@@ -57,10 +57,18 @@ pub struct Snapshot {
     pub logs: Vec<Value>,
 }
 
-/// A handle to a connected target. Dropping it stops the background thread.
+/// What wakes the main session loop: a queued action to send, or a request
+/// to refresh now (raised by the push listener when the target reports a
+/// change). Both ride one channel so either wakes the loop immediately.
+enum ClientMsg {
+    Action(String, Value),
+    Refresh,
+}
+
+/// A handle to a connected target. Dropping it stops the background threads.
 pub struct BridgeClient {
     shared: Arc<Mutex<Snapshot>>,
-    actions: mpsc::Sender<(String, Value)>,
+    msgs: mpsc::Sender<ClientMsg>,
     stop: Arc<AtomicBool>,
 }
 
@@ -72,18 +80,40 @@ impl Drop for BridgeClient {
 
 impl BridgeClient {
     /// Connect to `addr` (e.g. `127.0.0.1:9718`) and start the background
-    /// refresh/action loop. Returns immediately; the first snapshot fills
-    /// in once the thread connects.
+    /// loops. Returns immediately; the first snapshot fills in once the main
+    /// loop connects.
+    ///
+    /// Two threads:
+    /// - **main loop** — request/response: sends actions and runs the full
+    ///   refresh. Waits on a channel, so an action or a push-triggered refresh
+    ///   wakes it immediately (no fixed poll latency), with a slow fallback
+    ///   refresh for state that doesn't bump the revision (signals/arena/perf).
+    /// - **push listener** — a SECOND connection that `subscribe`s and reads
+    ///   the bridge's `{"event":"changed"}` pushes, raising `Refresh` so the
+    ///   tree/logs update live (~tens of ms) instead of on the poll cadence.
+    ///   A separate connection keeps the main one a clean request/response
+    ///   channel (no demuxing pushes from replies).
     pub fn connect(addr: String) -> Self {
         let shared = Arc::new(Mutex::new(Snapshot::default()));
-        let (atx, arx) = mpsc::channel::<(String, Value)>();
+        let (tx, rx) = mpsc::channel::<ClientMsg>();
         let stop = Arc::new(AtomicBool::new(false));
+        // Coalesces pushes: at most one `Refresh` is in flight until the main
+        // loop services it, so a burst of pushes is one refresh.
+        let refresh_pending = Arc::new(AtomicBool::new(false));
         {
             let shared = shared.clone();
             let stop = stop.clone();
-            std::thread::spawn(move || run_loop(addr, shared, arx, stop));
+            let refresh_pending = refresh_pending.clone();
+            let addr = addr.clone();
+            std::thread::spawn(move || run_loop(addr, shared, rx, stop, refresh_pending));
         }
-        Self { shared, actions: atx, stop }
+        {
+            let stop = stop.clone();
+            let tx = tx.clone();
+            let refresh_pending = refresh_pending.clone();
+            std::thread::spawn(move || push_listener(addr, tx, stop, refresh_pending));
+        }
+        Self { shared, msgs: tx, stop }
     }
 
     /// A clone of the latest state. Cheap enough to call every UI poll.
@@ -95,7 +125,82 @@ impl BridgeClient {
     /// Besides raw bridge verbs, the pseudo-verb `click_test_id`
     /// (`{"test_id": "..."}`) resolves the element then clicks it.
     pub fn action(&self, cmd: &str, args: Value) {
-        let _ = self.actions.send((cmd.to_string(), args));
+        let _ = self.msgs.send(ClientMsg::Action(cmd.to_string(), args));
+    }
+}
+
+/// Push-listener: a dedicated connection that subscribes and turns each
+/// `{"event":"changed"}` push into a coalesced `Refresh` on the main loop.
+fn push_listener(
+    addr: String,
+    msgs: mpsc::Sender<ClientMsg>,
+    stop: Arc<AtomicBool>,
+    refresh_pending: Arc<AtomicBool>,
+) {
+    while !stop.load(Ordering::Relaxed) {
+        let stream = match TcpStream::connect(&addr) {
+            Ok(s) => s,
+            Err(_) => {
+                std::thread::sleep(RECONNECT_BACKOFF);
+                continue;
+            }
+        };
+        // A finite read timeout lets us notice `stop` between pushes (read_line
+        // would otherwise block until a push or EOF). Partial bytes survive a
+        // timeout in the BufReader, so a fragmented push still reassembles.
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(1000)));
+        let mut writer = match stream.try_clone() {
+            Ok(w) => w,
+            Err(_) => continue,
+        };
+        let mut reader = BufReader::new(stream);
+        if writer
+            .write_all(b"{\"id\":1,\"cmd\":\"subscribe\",\"args\":{}}\n")
+            .and_then(|_| writer.flush())
+            .is_err()
+        {
+            continue;
+        }
+
+        let mut line = String::new();
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break, // EOF → reconnect
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+                        if v.get("event").and_then(|e| e.as_str()) == Some("changed") {
+                            // Coalesce: only enqueue a Refresh if one isn't
+                            // already pending (the main loop clears it).
+                            if !refresh_pending.swap(true, Ordering::AcqRel) {
+                                if msgs.send(ClientMsg::Refresh).is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(ref e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    // Timeout — loop to re-check `stop`. `read_line` keeps any
+                    // partial bytes buffered, so reassembly survives.
+                    continue;
+                }
+                Err(_) => break, // real error → reconnect
+            }
+        }
+        std::thread::sleep(RECONNECT_BACKOFF);
     }
 }
 
@@ -145,8 +250,9 @@ fn call(
 fn run_loop(
     addr: String,
     shared: Arc<Mutex<Snapshot>>,
-    actions: mpsc::Receiver<(String, Value)>,
+    msgs: mpsc::Receiver<ClientMsg>,
     stop: Arc<AtomicBool>,
+    refresh_pending: Arc<AtomicBool>,
 ) {
     let mut next_id: u64 = 1;
     while !stop.load(Ordering::Relaxed) {
@@ -177,22 +283,18 @@ fn run_loop(
         let mut writer = writer;
         let mut reader = BufReader::new(stream);
 
-        // Session loop: drain actions, refresh state, repeat until an IO
-        // error drops us back to reconnect.
-        loop {
+        // Session loop: refresh state, then block on the message channel
+        // until something wakes us — an action to send, a push-driven
+        // `Refresh`, or the fallback timeout — then loop to refresh again.
+        //
+        // Blocking on the channel (vs a fixed `sleep`) means an action is
+        // sent the instant it's queued, and a `{"event":"changed"}` push from
+        // the listener triggers a refresh in ~tens of ms. The fallback timeout
+        // still refreshes periodically for state that doesn't bump the
+        // revision (signal values, arena/perf counters).
+        'session: loop {
             if stop.load(Ordering::Relaxed) {
                 return;
-            }
-            // Pending actions first, so a tap feels responsive.
-            let mut io_failed = false;
-            while let Ok((cmd, args)) = actions.try_recv() {
-                if let Err(_) = run_action(&mut writer, &mut reader, &mut next_id, &cmd, args) {
-                    io_failed = true;
-                    break;
-                }
-            }
-            if io_failed {
-                break;
             }
 
             match refresh(&mut writer, &mut reader, &mut next_id) {
@@ -206,7 +308,30 @@ fn run_loop(
                     break; // reconnect
                 }
             }
-            std::thread::sleep(Duration::from_millis(REFRESH_MS));
+
+            // Service messages until a refresh is triggered.
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                match msgs.recv_timeout(Duration::from_millis(REFRESH_MS)) {
+                    Ok(ClientMsg::Action(cmd, args)) => {
+                        if run_action(&mut writer, &mut reader, &mut next_id, &cmd, args).is_err() {
+                            break 'session; // IO error → reconnect
+                        }
+                        // loop for the next message
+                    }
+                    Ok(ClientMsg::Refresh) => {
+                        // A push arrived — clear the coalescing flag and
+                        // refresh now.
+                        refresh_pending.store(false, Ordering::Release);
+                        break;
+                    }
+                    // Fallback cadence — refresh state the revision doesn't track.
+                    Err(mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
         }
     }
 }

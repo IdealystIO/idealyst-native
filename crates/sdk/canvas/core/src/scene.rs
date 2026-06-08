@@ -196,11 +196,47 @@ impl Path {
 // Paint
 // ============================================================================
 
-/// How a fill or stroke is colored: a flat color or a gradient.
+/// How a fill or stroke is colored: a flat color or a gradient, plus how
+/// it composites against what's already on the canvas.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Paint {
     /// The paint source.
     pub kind: PaintKind,
+    /// How this paint composites against existing canvas content.
+    /// Defaults to [`BlendMode::Normal`] (source-over). `#[serde(default)]`
+    /// keeps older wire scenes (recorded before blend existed) decoding —
+    /// a missing field deserializes to `Normal`.
+    #[serde(default)]
+    pub blend: BlendMode,
+}
+
+/// How a paint (or image blit) composites against the pixels already on
+/// the canvas. The canvas surface is transparent, so the composite is
+/// against the strokes drawn earlier *in the same frame* (or, for a
+/// persistent layer, earlier frames too).
+///
+/// `#[non_exhaustive]` so more Porter-Duff / separable blend modes can be
+/// added without breaking renderer match arms — a renderer that doesn't
+/// recognize a mode falls back to [`Normal`](BlendMode::Normal).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BlendMode {
+    /// Source-over — the Canvas2D default. Paint is laid over the
+    /// destination with straight alpha.
+    #[default]
+    Normal,
+    /// Destination-out — the paint's *coverage* erases the destination,
+    /// leaving transparency (`result = dst · (1 − src_alpha)`). This is
+    /// the basis for a pixel eraser: stroke with any opaque color and the
+    /// coverage punches a hole through everything drawn before it,
+    /// revealing whatever sits behind the transparent canvas. The color
+    /// channels are ignored; only the alpha matters.
+    DestinationOut,
+    /// Multiply the source and destination colors — darkens. Useful for
+    /// highlighter-style ink that tints what it crosses.
+    Multiply,
+    /// Screen blend — lightens (inverse-multiply of the inverses).
+    Screen,
 }
 
 /// The paint source variants. `#[non_exhaustive]` so image/pattern
@@ -220,17 +256,39 @@ pub enum PaintKind {
 impl Paint {
     /// A flat-color paint.
     pub fn solid(c: impl Into<Color>) -> Self {
-        Self { kind: PaintKind::Solid(c.into()) }
+        Self { kind: PaintKind::Solid(c.into()), blend: BlendMode::Normal }
     }
 
     /// A linear-gradient paint from `(x0, y0)` to `(x1, y1)`.
     pub fn linear(x0: f32, y0: f32, x1: f32, y1: f32, stops: Vec<GradientStop>) -> Self {
-        Self { kind: PaintKind::Linear(LinearGradient { x0, y0, x1, y1, stops }) }
+        Self {
+            kind: PaintKind::Linear(LinearGradient { x0, y0, x1, y1, stops }),
+            blend: BlendMode::Normal,
+        }
     }
 
     /// A radial-gradient paint centered at `(cx, cy)` with radius `r`.
     pub fn radial(cx: f32, cy: f32, r: f32, stops: Vec<GradientStop>) -> Self {
-        Self { kind: PaintKind::Radial(RadialGradient { cx, cy, r, stops }) }
+        Self {
+            kind: PaintKind::Radial(RadialGradient { cx, cy, r, stops }),
+            blend: BlendMode::Normal,
+        }
+    }
+
+    /// Set the [`BlendMode`] for this paint. Chains onto any constructor:
+    /// `Paint::solid(c).blend(BlendMode::DestinationOut)` makes an
+    /// eraser stroke.
+    pub fn blend(mut self, blend: BlendMode) -> Self {
+        self.blend = blend;
+        self
+    }
+
+    /// An eraser paint — opaque coverage in [`BlendMode::DestinationOut`].
+    /// The color is irrelevant (only alpha drives the erase); opaque white
+    /// gives full erase. Stroke a path with this to cut a hole through
+    /// everything drawn before it this frame.
+    pub fn eraser() -> Self {
+        Paint::solid(Color::new(255, 255, 255, 255)).blend(BlendMode::DestinationOut)
     }
 }
 
@@ -432,6 +490,86 @@ impl Default for Transform {
 }
 
 // ============================================================================
+// Images
+// ============================================================================
+
+/// An axis-aligned rectangle in logical pixels. Used as the destination of
+/// an image blit ([`DrawOp::Image`]).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Rect {
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+    /// Width.
+    pub w: f32,
+    /// Height.
+    pub h: f32,
+}
+
+impl Rect {
+    /// A rectangle at `(x, y)` of size `w × h`.
+    pub fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
+        Self { x, y, w, h }
+    }
+}
+
+/// Decoded image pixels for a [`DrawOp::Image`] blit: straight
+/// (non-premultiplied) RGBA8, row-major, exactly `width * height * 4`
+/// bytes.
+///
+/// **Why raw RGBA, not encoded bytes.** Every renderer (Canvas2D,
+/// CoreGraphics, `android.graphics`, vello) can upload raw RGBA
+/// synchronously; encoded-container decoding is async on the web and
+/// pulls a decoder dep on native. Decoding to RGBA once, in author code
+/// (see [`ImageSource::decode`] behind the `decode` feature), keeps the
+/// renderer contract uniform and the per-frame replay allocation-free past
+/// the first upload.
+///
+/// **`id` is a decode-cache key.** Renderers cache the uploaded native
+/// image (a `CGImage`, `Bitmap`, `<canvas>`, or `peniko::Image`) keyed by
+/// `id`, so re-emitting the same image every frame doesn't re-upload. Two
+/// `ImageSource`s that share an `id` MUST have identical pixels.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImageSource {
+    /// Stable identity for renderer-side upload caching.
+    pub id: u64,
+    /// Pixel width.
+    pub width: u32,
+    /// Pixel height.
+    pub height: u32,
+    /// `width * height * 4` bytes of straight RGBA8, row-major.
+    pub rgba: Vec<u8>,
+}
+
+impl ImageSource {
+    /// Build an image from raw straight-RGBA8 pixels. `rgba.len()` must be
+    /// `width * height * 4`; a mismatch is the caller's bug (renderers may
+    /// draw nothing rather than read out of bounds).
+    pub fn from_rgba8(id: u64, width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        Self { id, width, height, rgba }
+    }
+
+    /// `true` if the pixel buffer length matches `width * height * 4`.
+    /// Renderers check this before uploading.
+    pub fn is_valid(&self) -> bool {
+        self.rgba.len() == (self.width as usize) * (self.height as usize) * 4
+    }
+
+    /// Decode encoded image bytes (PNG/JPEG/…) into straight RGBA8. The
+    /// container format is auto-detected. Requires the `decode` feature.
+    ///
+    /// `id` should be stable for identical bytes (e.g. a hash) so renderers
+    /// can cache the upload across frames.
+    #[cfg(feature = "decode")]
+    pub fn decode(id: u64, bytes: &[u8]) -> Result<Self, image::ImageError> {
+        let img = image::load_from_memory(bytes)?.into_rgba8();
+        let (width, height) = img.dimensions();
+        Ok(Self { id, width, height, rgba: img.into_raw() })
+    }
+}
+
+// ============================================================================
 // Draw ops + Scene
 // ============================================================================
 
@@ -473,6 +611,53 @@ pub enum DrawOp {
         /// Winding rule for the clip.
         fill_rule: FillRule,
     },
+    /// Blit `image` into the `dst` rectangle (scaled to fit), at `alpha`
+    /// opacity and composited with `blend`. The renderer caches the
+    /// uploaded native image by [`ImageSource::id`]. This is the
+    /// "place an image, then draw over it" primitive — author a transparent
+    /// canvas above it and the strokes land on top.
+    Image {
+        /// Source pixels (+ decode-cache id).
+        image: ImageSource,
+        /// Destination rectangle in logical pixels.
+        dst: Rect,
+        /// Opacity, `0.0..=1.0`.
+        alpha: f32,
+        /// Composite mode against existing canvas content.
+        blend: BlendMode,
+    },
+    /// Draw `ops` into a **persistent** raster layer identified by `id`,
+    /// then composite that layer into the current target at `alpha` opacity
+    /// with `blend`.
+    ///
+    /// The layer's contents survive across frames — the renderer keeps a
+    /// surface (an offscreen raster on the CPU backends, a retained op-log on
+    /// the GPU backend) alive between flushes. This is the "bake" primitive:
+    ///
+    /// - **`clear: false`** — `ops` *accumulate* onto whatever the layer
+    ///   already held. Emit only the newly-drawn shapes each frame and the
+    ///   layer keeps the rest, so a 10k-stroke drawing doesn't replay 10k ops
+    ///   every frame. An eraser stroke ([`BlendMode::DestinationOut`]) inside
+    ///   `ops` removes baked pixels *permanently* (a true pixel eraser, not a
+    ///   within-frame one).
+    /// - **`clear: true`** — wipe the layer to transparent before replaying
+    ///   `ops` (a full repaint of the layer's content this frame).
+    ///
+    /// Renderers diverge in mechanism but converge in output (CLAUDE.md §7):
+    /// the observable pixels — accumulation and persistent erase — are
+    /// identical on every backend.
+    Layer {
+        /// Stable identity of the persistent layer surface.
+        id: u32,
+        /// Wipe the layer before replaying `ops`.
+        clear: bool,
+        /// Ops drawn into the layer this frame.
+        ops: Vec<DrawOp>,
+        /// Opacity of the whole layer when composited, `0.0..=1.0`.
+        alpha: f32,
+        /// Composite mode of the layer against the current target.
+        blend: BlendMode,
+    },
 }
 
 /// A retained list of draw operations — the renderer-agnostic unit a
@@ -488,6 +673,20 @@ pub struct Scene {
     /// by the time a scene crosses the wire.
     #[serde(skip)]
     current: Path,
+    /// `true` once the current path has been consumed by a draw
+    /// (`fill`/`stroke`/`clip`). The next call that *adds* geometry
+    /// (`move_to`, `add_path`, …) auto-begins a fresh path so accumulated
+    /// segments don't bleed into a new shape.
+    ///
+    /// This is the fix for the classic footgun: a loop that draws many
+    /// shapes but forgets `path()` between them would otherwise keep
+    /// appending to one ever-growing path, and each `fill`/`stroke` would
+    /// repaint *every* prior shape with the latest paint. The flag keeps
+    /// the legitimate fill-then-stroke reuse (no geometry added between the
+    /// two draws → no auto-reset) while making the forgot-`path()` case Just
+    /// Work. See [`tests::forgotten_path_does_not_accumulate`].
+    #[serde(skip)]
+    current_consumed: bool,
 }
 
 impl Scene {
@@ -511,23 +710,37 @@ impl Scene {
     /// [`stroke`](Self::stroke) to consume it.
     pub fn path(&mut self) -> &mut Self {
         self.current = Path::new();
+        self.current_consumed = false;
         self
+    }
+
+    /// If the current path was already consumed by a draw, begin a fresh
+    /// one before adding new geometry. Called by every geometry-adding
+    /// method so a forgotten [`path`](Self::path) can't accumulate shapes.
+    fn begin_if_consumed(&mut self) {
+        if self.current_consumed {
+            self.current = Path::new();
+            self.current_consumed = false;
+        }
     }
 
     /// Move the path cursor to `(x, y)`, starting a new subpath.
     pub fn move_to(&mut self, x: f32, y: f32) -> &mut Self {
+        self.begin_if_consumed();
         self.current.segs.push(PathSeg::MoveTo { x, y });
         self
     }
 
     /// Line from the cursor to `(x, y)`.
     pub fn line_to(&mut self, x: f32, y: f32) -> &mut Self {
+        self.begin_if_consumed();
         self.current.segs.push(PathSeg::LineTo { x, y });
         self
     }
 
     /// Quadratic Bézier from the cursor to `(x, y)` via `(cx, cy)`.
     pub fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) -> &mut Self {
+        self.begin_if_consumed();
         self.current.segs.push(PathSeg::QuadTo { cx, cy, x, y });
         self
     }
@@ -542,12 +755,14 @@ impl Scene {
         x: f32,
         y: f32,
     ) -> &mut Self {
+        self.begin_if_consumed();
         self.current.segs.push(PathSeg::CubicTo { c1x, c1y, c2x, c2y, x, y });
         self
     }
 
     /// Close the current subpath.
     pub fn close(&mut self) -> &mut Self {
+        self.begin_if_consumed();
         self.current.segs.push(PathSeg::Close);
         self
     }
@@ -555,6 +770,7 @@ impl Scene {
     /// Replace the current path with a prebuilt [`Path`] (e.g. from
     /// [`Path::rect`]).
     pub fn add_path(&mut self, path: Path) -> &mut Self {
+        self.begin_if_consumed();
         self.current.segs.extend(path.segs);
         self
     }
@@ -566,18 +782,21 @@ impl Scene {
             paint: paint.into(),
             fill_rule: FillRule::NonZero,
         });
+        self.current_consumed = true;
         self
     }
 
     /// Fill the current path with an explicit winding rule.
     pub fn fill_rule(&mut self, paint: impl Into<Paint>, fill_rule: FillRule) -> &mut Self {
         self.ops.push(DrawOp::Fill { path: self.current.clone(), paint: paint.into(), fill_rule });
+        self.current_consumed = true;
         self
     }
 
     /// Stroke the current path's outline.
     pub fn stroke(&mut self, paint: impl Into<Paint>, stroke: Stroke) -> &mut Self {
         self.ops.push(DrawOp::Stroke { path: self.current.clone(), paint: paint.into(), stroke });
+        self.current_consumed = true;
         self
     }
 
@@ -631,12 +850,62 @@ impl Scene {
         self.transform(Transform::rotate(radians))
     }
 
+    /// Blit `image` into the `dst` rectangle (scaled to fit), fully opaque,
+    /// source-over. Does not touch the current path.
+    pub fn draw_image(&mut self, image: ImageSource, dst: Rect) -> &mut Self {
+        self.draw_image_with(image, dst, 1.0, BlendMode::Normal)
+    }
+
+    /// Blit `image` into `dst` at `alpha` opacity with an explicit
+    /// [`BlendMode`]. Does not touch the current path.
+    pub fn draw_image_with(
+        &mut self,
+        image: ImageSource,
+        dst: Rect,
+        alpha: f32,
+        blend: BlendMode,
+    ) -> &mut Self {
+        self.ops.push(DrawOp::Image { image, dst, alpha: alpha.clamp(0.0, 1.0), blend });
+        self
+    }
+
+    /// Draw into the persistent layer `id` via the builder `f`, then
+    /// composite it fully opaque, source-over. `clear` wipes the layer first;
+    /// `clear = false` accumulates onto prior frames' content. See
+    /// [`DrawOp::Layer`].
+    pub fn layer(&mut self, id: u32, clear: bool, f: impl FnOnce(&mut Scene)) -> &mut Self {
+        self.layer_with(id, clear, 1.0, BlendMode::Normal, f)
+    }
+
+    /// [`layer`](Self::layer) with explicit composite `alpha` and `blend` for
+    /// the whole layer.
+    pub fn layer_with(
+        &mut self,
+        id: u32,
+        clear: bool,
+        alpha: f32,
+        blend: BlendMode,
+        f: impl FnOnce(&mut Scene),
+    ) -> &mut Self {
+        let mut sub = Scene::new();
+        f(&mut sub);
+        self.ops.push(DrawOp::Layer {
+            id,
+            clear,
+            ops: sub.ops,
+            alpha: alpha.clamp(0.0, 1.0),
+            blend,
+        });
+        self
+    }
+
     /// Intersect the clip region with the current path.
     pub fn clip(&mut self) -> &mut Self {
         self.ops.push(DrawOp::Clip {
             path: self.current.clone(),
             fill_rule: FillRule::NonZero,
         });
+        self.current_consumed = true;
         self
     }
 }
@@ -696,6 +965,113 @@ mod tests {
     }
 
     #[test]
+    fn forgotten_path_does_not_accumulate() {
+        // Two shapes drawn in a row WITHOUT a `path()` between them — the
+        // classic footgun. The second fill must carry only its own geometry,
+        // not the first shape's segments too.
+        let mut s = Scene::new();
+        s.move_to(0.0, 0.0).line_to(10.0, 0.0).line_to(10.0, 10.0).close();
+        s.fill(Color::new(255, 0, 0, 255));
+        // Author forgot `path()`: starts a brand-new shape directly.
+        s.move_to(50.0, 50.0).line_to(60.0, 50.0);
+        s.fill(Color::new(0, 0, 255, 255));
+
+        assert_eq!(s.ops().len(), 2);
+        let segs = |op: &DrawOp| match op {
+            DrawOp::Fill { path, .. } => path.segs.len(),
+            _ => 0,
+        };
+        assert_eq!(segs(&s.ops()[0]), 4, "first shape: move+line+line+close");
+        assert_eq!(
+            segs(&s.ops()[1]),
+            2,
+            "second shape must NOT include the first's 4 segments"
+        );
+    }
+
+    #[test]
+    fn explicit_path_after_draw_still_resets() {
+        // The explicit, correct form keeps working unchanged.
+        let mut s = Scene::new();
+        s.path().add_path(Path::rect(0.0, 0.0, 5.0, 5.0));
+        s.fill(Color::new(1, 2, 3, 255));
+        s.path().add_path(Path::circle(20.0, 20.0, 4.0));
+        s.fill(Color::new(4, 5, 6, 255));
+        let segs = |op: &DrawOp| match op {
+            DrawOp::Fill { path, .. } => path.segs.len(),
+            _ => 0,
+        };
+        // circle = 6 segs (move + 4 cubics + close); critically NOT rect(5) + circle(6).
+        assert_eq!(segs(&s.ops()[1]), 6);
+    }
+
+    #[test]
+    fn draw_image_records_blit_op_and_clamps_alpha() {
+        let img = ImageSource::from_rgba8(7, 2, 2, vec![255; 16]);
+        assert!(img.is_valid());
+        let mut s = Scene::new();
+        s.draw_image_with(img.clone(), Rect::new(10.0, 20.0, 30.0, 40.0), 2.0, BlendMode::Multiply);
+        match &s.ops()[0] {
+            DrawOp::Image { image, dst, alpha, blend } => {
+                assert_eq!(image.id, 7);
+                assert_eq!(*dst, Rect::new(10.0, 20.0, 30.0, 40.0));
+                assert_eq!(*alpha, 1.0, "alpha must be clamped to 1.0");
+                assert_eq!(*blend, BlendMode::Multiply);
+            }
+            other => panic!("expected Image, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn image_op_survives_scene_round_trip() {
+        let img = ImageSource::from_rgba8(42, 1, 1, vec![1, 2, 3, 4]);
+        let mut s = Scene::new();
+        s.draw_image(img, Rect::new(0.0, 0.0, 1.0, 1.0));
+        let bytes = serde_json::to_vec(&s).expect("serialize");
+        let back: Scene = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(s.ops(), back.ops());
+    }
+
+    #[test]
+    fn layer_builder_captures_nested_ops() {
+        let mut s = Scene::new();
+        s.layer_with(3, false, 0.5, BlendMode::DestinationOut, |l| {
+            l.path().add_path(Path::rect(0.0, 0.0, 4.0, 4.0));
+            l.fill(Color::new(255, 0, 0, 255));
+        });
+        match &s.ops()[0] {
+            DrawOp::Layer { id, clear, ops, alpha, blend } => {
+                assert_eq!(*id, 3);
+                assert!(!*clear);
+                assert_eq!(*alpha, 0.5);
+                assert_eq!(*blend, BlendMode::DestinationOut);
+                assert_eq!(ops.len(), 1, "nested fill recorded");
+                assert!(matches!(ops[0], DrawOp::Fill { .. }));
+            }
+            other => panic!("expected Layer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn layer_op_survives_scene_round_trip() {
+        let mut s = Scene::new();
+        s.layer(1, true, |l| {
+            l.path().add_path(Path::circle(5.0, 5.0, 3.0));
+            l.stroke(Paint::eraser(), Stroke::width(2.0));
+        });
+        let bytes = serde_json::to_vec(&s).expect("serialize");
+        let back: Scene = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(s.ops(), back.ops());
+    }
+
+    #[test]
+    fn invalid_image_buffer_is_flagged() {
+        // 2×2 needs 16 bytes; give it 8.
+        let bad = ImageSource::from_rgba8(1, 2, 2, vec![0; 8]);
+        assert!(!bad.is_valid());
+    }
+
+    #[test]
     fn color_into_paint_coercion() {
         let mut s = Scene::new();
         s.path().add_path(Path::circle(5.0, 5.0, 5.0)).fill(Color::new(1, 2, 3, 4));
@@ -734,6 +1110,45 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         let back: Paint = serde_json::from_str(&json).unwrap();
         assert_eq!(back.kind, PaintKind::Solid(c));
+    }
+
+    #[test]
+    fn blend_builder_and_eraser_helper() {
+        let p = Paint::solid(Color::new(10, 20, 30, 255)).blend(BlendMode::Multiply);
+        assert_eq!(p.blend, BlendMode::Multiply);
+
+        let e = Paint::eraser();
+        assert_eq!(e.blend, BlendMode::DestinationOut);
+        // Default constructors are Normal.
+        assert_eq!(Paint::solid(Color::BLACK).blend, BlendMode::Normal);
+        assert_eq!(
+            Paint::radial(0.0, 0.0, 1.0, vec![]).blend,
+            BlendMode::Normal
+        );
+    }
+
+    #[test]
+    fn eraser_blend_survives_scene_round_trip() {
+        let mut s = Scene::new();
+        s.path().add_path(Path::circle(5.0, 5.0, 3.0));
+        s.stroke(Paint::eraser(), Stroke::width(4.0));
+        let bytes = serde_json::to_vec(&s).expect("serialize");
+        let back: Scene = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(s.ops(), back.ops());
+        match &back.ops()[0] {
+            DrawOp::Stroke { paint, .. } => assert_eq!(paint.blend, BlendMode::DestinationOut),
+            other => panic!("expected Stroke, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn paint_without_blend_field_deserializes_to_normal() {
+        // Wire back-compat: a scene recorded before `blend` existed has no
+        // `blend` key. `#[serde(default)]` must fill it with `Normal`.
+        let legacy = r#"{"kind":{"Solid":305419896}}"#;
+        let p: Paint = serde_json::from_str(legacy).expect("legacy paint deserializes");
+        assert_eq!(p.blend, BlendMode::Normal);
+        assert_eq!(p.kind, PaintKind::Solid(Color::from_argb_u32(0x12345678)));
     }
 
     #[test]

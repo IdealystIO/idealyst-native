@@ -113,6 +113,14 @@ pub enum Element {
         /// [`crate::touch`] for the event model and the claim
         /// protocol.
         on_touch: Option<crate::TouchHandler>,
+        /// Container-query containment context opt-in (`.container()`).
+        /// When `true`, descendant `container (min_width: N)` style
+        /// overlays resolve against *this* view's resolved inline-size
+        /// rather than the global viewport. Web sets
+        /// `container-type: inline-size`; native wires the view's
+        /// resolved width into a signal the descendants' style effects
+        /// subscribe to. Default `false`. See [`crate::container_query`].
+        is_container: bool,
         /// Accessibility prop bag — label, role override, traits,
         /// hint, etc. Default is `AccessibilityProps::default()` which
         /// tells the backend "infer everything from the primitive type."

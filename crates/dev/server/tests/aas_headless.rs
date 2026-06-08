@@ -73,6 +73,7 @@ fn sample_tree() -> (Element, runtime_core::Signal<i32>) {
         ref_fill: None,
         safe_area_sides: SafeAreaSides::NONE,
         on_touch: None,
+        is_container: false,
         accessibility: Default::default(),
         test_id: None,
     };
@@ -540,6 +541,7 @@ fn reset_log_and_scene_does_not_collide_minted_ids_with_cached_identities() {
             ref_fill: None,
             safe_area_sides: SafeAreaSides::NONE,
             on_touch: None,
+            is_container: false,
             accessibility: Default::default(),
             test_id: Some("root"),
         }

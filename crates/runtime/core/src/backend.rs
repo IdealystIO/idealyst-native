@@ -1531,15 +1531,45 @@ pub trait Backend {
     /// receiving breakpoint overlays through the walker's reactive merge
     /// (driven by [`crate::current_breakpoint`]) into the regular
     /// `apply_style` path instead.
+    /// `container_overlays` are each the fully resolved rules for a
+    /// `container (min_width: N)` block (base merged with the
+    /// `__cq_minw_*` overlay), paired with the threshold in px and sorted
+    /// ascending. Web emits each as
+    /// `@container (min-width: <threshold>px) { .ui-x { … } }`, resolved
+    /// against the nearest `container-type` ancestor (see
+    /// [`Backend::mark_container`]); the browser does the size tracking
+    /// and cascade. Native backends never reach this path — they receive
+    /// container overlays through the walker's reactive merge against the
+    /// nearest container's resolved inline-size signal. See
+    /// `walker::resolve_container_overlays`.
     fn apply_styled_variants(
         &mut self,
         node: &Self::Node,
         base: &Rc<StyleRules>,
         state_overlays: &[(StateBits, Rc<StyleRules>)],
         #[allow(unused_variables)] breakpoint_overlays: &[(crate::Breakpoint, Rc<StyleRules>)],
+        #[allow(unused_variables)] container_overlays: &[(f32, Rc<StyleRules>)],
     ) {
         self.apply_styled_states(node, base, state_overlays);
     }
+
+    /// Mark `node` as a **containment context** for container queries:
+    /// descendant `container (min_width: N)` overlays resolve against
+    /// this node's resolved inline-size rather than the global viewport.
+    /// Triggered by the `.container()` builder modifier.
+    ///
+    /// Web overrides this to set `container-type: inline-size` on the
+    /// node, so the browser scopes descendant `@container` rules to it.
+    /// Native backends rely on the framework's build-time container stack
+    /// + inline-size signal instead (the walker wires that up directly
+    /// from `.container()`), so the default impl is a no-op.
+    ///
+    /// The contract for authors is the **inline-size containment
+    /// invariant**: a container's width must be determinate from its
+    /// parent (explicit / percentage / flex track), never shrink-to-fit
+    /// from the descendants that query it. See [`crate::container_query`].
+    #[allow(unused_variables)]
+    fn mark_container(&mut self, node: &Self::Node) {}
 
     /// Backend capability flag. `true` means the backend wants to
     /// receive state overlays declaratively via `apply_styled_states`

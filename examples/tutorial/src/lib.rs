@@ -51,7 +51,8 @@ mod styles;
 use routes::{
     A11Y_DEFAULTS_ROUTE, A11Y_MODEL_ROUTE, ADV_BACKENDS_ROUTE, ADV_CLI_ROUTE, ADV_EMBEDDED_ROUTE,
     ARCH_BACKENDS_ROUTE, ARCH_CATALOG_ROUTE, ARCH_OVERVIEW_ROUTE, ARCH_SDKS_ROUTE, CORE_ENGINE_ROUTE,
-    CORE_PERF_ROUTE, HOME_ROUTE, MQ_BREAKPOINTS_ROUTE, MQ_MOBILE_FIRST_ROUTE, MQ_SIGNAL_ROUTE,
+    CORE_PERF_ROUTE, HOME_ROUTE, MQ_BREAKPOINTS_ROUTE, MQ_CONTAINER_ROUTE, MQ_MOBILE_FIRST_ROUTE,
+    MQ_SIGNAL_ROUTE,
     RX_BATCHING_ROUTE, RX_DERIVED_ROUTE, RX_EFFECTS_ROUTE, RX_SIGNALS_ROUTE, ST_STYLESHEETS_ROUTE,
     ST_TOKENS_ROUTE, ST_VARIANTS_ROUTE,
 };
@@ -96,6 +97,7 @@ pub fn app() -> Element {
         .screen(MQ_BREAKPOINTS_ROUTE, move |_| titled(&MQ_BREAKPOINTS_ROUTE, lessons::media_queries::breakpoints()))
         .screen(MQ_MOBILE_FIRST_ROUTE, move |_| titled(&MQ_MOBILE_FIRST_ROUTE, lessons::media_queries::mobile_first()))
         .screen(MQ_SIGNAL_ROUTE, move |_| titled(&MQ_SIGNAL_ROUTE, lessons::media_queries::signal_escape()))
+        .screen(MQ_CONTAINER_ROUTE, move |_| titled(&MQ_CONTAINER_ROUTE, lessons::media_queries::container_queries()))
         // Accessibility
         .screen(A11Y_DEFAULTS_ROUTE, move |_| titled(&A11Y_DEFAULTS_ROUTE, lessons::accessibility::defaults()))
         .screen(A11Y_MODEL_ROUTE, move |_| titled(&A11Y_MODEL_ROUTE, lessons::accessibility::model()))

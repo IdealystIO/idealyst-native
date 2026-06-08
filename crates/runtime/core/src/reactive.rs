@@ -123,6 +123,32 @@ thread_local! {
     /// [`is_reactive_busy`] and skip the offending invocation, re-arming
     /// on the next frame instead. See `crates/runtime/core/src/scheduling.rs`.
     static REACTIVE_BUSY: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+
+    /// Backend-installed callback fired each time the OUTERMOST reactive
+    /// mutation window closes (`REACTIVE_BUSY` → 0). A backend uses it to
+    /// flush a coalesced layout pass synchronously, before the run loop
+    /// paints — so views inserted by a reactive update (any trigger: event,
+    /// timer, async, hot-reload) are positioned before they're displayed,
+    /// instead of flashing at their default (0,0) frame and snapping into
+    /// place a frame later. `None` until a backend installs one.
+    static ON_REACTIVE_IDLE: std::cell::RefCell<Option<std::rc::Rc<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+
+    /// Re-entrancy guard for [`ON_REACTIVE_IDLE`]: set while the idle hook
+    /// runs, so a signal mutation the hook itself performs (closing another
+    /// reactive window at depth 0) doesn't recursively re-fire it.
+    static IN_REACTIVE_IDLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Register a callback to run when the outermost reactive mutation window
+/// closes. The macOS backend installs one that flushes its pending layout
+/// pass synchronously (see `backend_macos`), turning the deferred
+/// "insert → paint-at-(0,0) → next-turn-reposition" flicker into
+/// "insert → layout → paint" within the same turn. Idempotent: a later call
+/// replaces the hook. Backends that apply frames synchronously in `finish`
+/// (web) don't need it.
+pub fn install_reactive_idle_hook(f: std::rc::Rc<dyn Fn()>) {
+    ON_REACTIVE_IDLE.with(|h| *h.borrow_mut() = Some(f));
 }
 
 /// `true` when a mutating reactive operation (an effect body or a
@@ -148,7 +174,24 @@ impl ReactiveBusyGuard {
 
 impl Drop for ReactiveBusyGuard {
     fn drop(&mut self) {
-        REACTIVE_BUSY.with(|c| c.set(c.get().saturating_sub(1)));
+        let depth = REACTIVE_BUSY.with(|c| {
+            let n = c.get().saturating_sub(1);
+            c.set(n);
+            n
+        });
+        // Outermost window just closed: the mutation is fully applied and no
+        // arena borrow is held, so it's safe to run the backend's idle hook
+        // (a synchronous layout flush) here, before control returns to the
+        // run loop / paint. Guarded so a mutation the hook performs doesn't
+        // recurse. Cheap when nothing changed — the hook itself no-ops if no
+        // layout pass is pending.
+        if depth == 0 && !IN_REACTIVE_IDLE.with(|f| f.replace(true)) {
+            let hook = ON_REACTIVE_IDLE.with(|h| h.borrow().clone());
+            if let Some(hook) = hook {
+                hook();
+            }
+            IN_REACTIVE_IDLE.with(|f| f.set(false));
+        }
     }
 }
 

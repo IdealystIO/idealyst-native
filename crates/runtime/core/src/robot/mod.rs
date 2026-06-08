@@ -866,8 +866,33 @@ impl Robot {
 /// Register a newly-mounted element. Called by the walker when
 /// building primitives. Returns the element ID so the walker can
 /// track parent/child relationships and deregister on scope drop.
+/// Monotonic change-revision for the live-update push channel. Any
+/// robot-observable mutation — element register/deregister, log append,
+/// navigator dispatch — bumps it via [`bump_revision`]. The bridge's
+/// subscribed connections watch it and push a `{"event":"changed","rev":N}`
+/// notification when it advances, so debug clients (the Inspector, an MCP
+/// server) get live updates instead of polling. A relaxed `AtomicU64` so the
+/// bump is cheap on the UI thread and the bridge's connection threads can
+/// read it without a lock.
+pub(crate) static ROBOT_REVISION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Bump the change-revision. Cheap (one relaxed add); the bridge coalesces
+/// bursts (it only pushes when the rev differs from what it last sent), so
+/// calling this on every mutation is fine.
+pub(crate) fn bump_revision() {
+    ROBOT_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The current change-revision (read by the bridge's subscribed connections).
+pub(crate) fn current_revision() -> u64 {
+    ROBOT_REVISION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) fn register(entry: RegistryEntry) -> ElementId {
-    REGISTRY.with(|r| r.borrow_mut().insert(entry))
+    let id = REGISTRY.with(|r| r.borrow_mut().insert(entry));
+    bump_revision(); // tree grew → live-update subscribers should refresh
+    id
 }
 
 /// Attach frame-reading closures to an already-registered element.
@@ -899,6 +924,7 @@ pub(crate) fn attach_frame_actions(
 /// `regression_when_branch_swap_disposes_old_branch_from_robot_registry`.
 pub(crate) fn deregister(id: ElementId) {
     REGISTRY.with(|r| r.borrow_mut().remove(id));
+    bump_revision(); // tree shrank → live-update subscribers should refresh
 }
 
 /// Peek the current parent from the stack.

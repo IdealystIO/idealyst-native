@@ -114,6 +114,14 @@ pub struct StyleSheetDecl {
     /// backends merge the active bucket reactively. `Xs` is the
     /// mobile-first base and is therefore not a valid block name.
     breakpoints: Vec<BreakpointArm>,
+    /// Container-query overlays (`container (min_width: N) { … }`).
+    /// Stored as overlays under reserved `__cq_minw_*` axes (one per
+    /// distinct threshold) — same machinery as breakpoints, but keyed on
+    /// an arbitrary px length rather than a named bucket. Web realizes
+    /// them as `@container (min-width: N) { … }` CSS against the nearest
+    /// `container-type` ancestor; native merges the active overlays
+    /// reactively against the nearest container's resolved inline-size.
+    containers: Vec<ContainerArm>,
 }
 
 /// One `state name(theme) { ... }` block. The name must be one of
@@ -133,6 +141,18 @@ struct StateArm {
 /// write a base-shadowing overlay.
 struct BreakpointArm {
     name: Ident,
+    #[allow(dead_code)]
+    theme_binding: Ident,
+    rules: RulesBlock,
+}
+
+/// One `container (min_width: N)(theme) { ... }` block. `min_width` is
+/// the only comparison supported in v1 (mobile-first cascade);
+/// `threshold` is the px length parsed from the literal. Stored under a
+/// `__cq_minw_<bits>` axis whose name encodes the threshold losslessly.
+struct ContainerArm {
+    /// The `min_width` threshold in px.
+    threshold: f32,
     #[allow(dead_code)]
     theme_binding: Ident,
     rules: RulesBlock,
@@ -214,6 +234,7 @@ impl Parse for StyleSheetDecl {
         let mut transitions = Vec::new();
         let mut states = Vec::new();
         let mut breakpoints = Vec::new();
+        let mut containers = Vec::new();
         while !body.is_empty() {
             // `override` is a reserved Rust keyword, so we can't parse
             // it as an Ident. Detect it specifically via Token![override]
@@ -291,11 +312,39 @@ impl Parse for StyleSheetDecl {
                     let rules = parse_rules_block(&body)?;
                     breakpoints.push(BreakpointArm { name, theme_binding, rules });
                 }
+                "container" => {
+                    // Grammar: `container (min_width: 400px)(theme) { … }`.
+                    // The first paren group is the query; v1 supports only
+                    // `min_width: <length>` (mobile-first cascade). The
+                    // second is the (vestigial) theme binding, kept for
+                    // consistency with `base`/`breakpoint`/`state`.
+                    let query;
+                    parenthesized!(query in body);
+                    let cmp: Ident = query.parse()?;
+                    if cmp != "min_width" {
+                        return Err(syn::Error::new(
+                            cmp.span(),
+                            format!(
+                                "unknown container query `{}`; v1 supports only `min_width` \
+                                 (max_width / ranges are a planned extension)",
+                                cmp
+                            ),
+                        ));
+                    }
+                    let _colon: Token![:] = query.parse()?;
+                    let threshold = parse_px_length(&query)?;
+                    let theme_args;
+                    parenthesized!(theme_args in body);
+                    let theme_binding: Ident = theme_args.parse()?;
+                    let rules = parse_rules_block(&body)?;
+                    containers.push(ContainerArm { threshold, theme_binding, rules });
+                }
                 other => {
                     return Err(syn::Error::new(
                         kw.span(),
                         format!(
-                            "expected `variant`, `override`, `transitions`, `state`, or `breakpoint`, got `{}`",
+                            "expected `variant`, `override`, `transitions`, `state`, \
+                             `breakpoint`, or `container`, got `{}`",
                             other
                         ),
                     ));
@@ -313,7 +362,42 @@ impl Parse for StyleSheetDecl {
             transitions,
             states,
             breakpoints,
+            containers,
         })
+    }
+}
+
+/// Parse a px length literal for a container query: an integer (with an
+/// optional `px` suffix, e.g. `400px` or `400`) or a float (`400.5`),
+/// returned as `f32`. Rejects other unit suffixes so `400rem` is a clear
+/// error rather than a silently-wrong threshold.
+fn parse_px_length(input: ParseStream) -> syn::Result<f32> {
+    let lit: syn::Lit = input.parse()?;
+    match lit {
+        syn::Lit::Int(i) => {
+            let suffix = i.suffix();
+            if !suffix.is_empty() && suffix != "px" {
+                return Err(syn::Error::new(
+                    i.span(),
+                    format!("container `min_width` must be a px length; got suffix `{}`", suffix),
+                ));
+            }
+            i.base10_parse::<f32>()
+        }
+        syn::Lit::Float(f) => {
+            let suffix = f.suffix();
+            if !suffix.is_empty() && suffix != "px" {
+                return Err(syn::Error::new(
+                    f.span(),
+                    format!("container `min_width` must be a px length; got suffix `{}`", suffix),
+                ));
+            }
+            f.base10_parse::<f32>()
+        }
+        other => Err(syn::Error::new(
+            other.span(),
+            "container `min_width` must be a numeric px length, e.g. `400px`",
+        )),
     }
 }
 
@@ -458,6 +542,9 @@ fn check_no_theme_refs(decl: &StyleSheetDecl) -> syn::Result<()> {
     for arm in &decl.breakpoints {
         add(&mut bindings, &arm.theme_binding);
     }
+    for arm in &decl.containers {
+        add(&mut bindings, &arm.theme_binding);
+    }
 
     struct Finder<'a> {
         bindings: &'a [String],
@@ -494,6 +581,9 @@ fn check_no_theme_refs(decl: &StyleSheetDecl) -> syn::Result<()> {
         blocks.push(&arm.rules);
     }
     for arm in &decl.breakpoints {
+        blocks.push(&arm.rules);
+    }
+    for arm in &decl.containers {
         blocks.push(&arm.rules);
     }
     for block in blocks {
@@ -595,6 +685,21 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
         }
     });
 
+    // Container overlays: each `container (min_width: N) { … }` block is a
+    // variant overlay under a `__cq_minw_<bits>` axis (single "on" value).
+    // The threshold is encoded as the lossless 8-char hex of its `f32`
+    // bit pattern — the SAME encoding `runtime_core::container_axis_name`
+    // produces, so the runtime decodes the px value back via
+    // `container_axis_threshold`. The framework realizes the namespace
+    // per-backend (CSS `@container` on web, reactive merge on native).
+    let container_chain = decl.containers.iter().map(|arm| {
+        let axis = format!("__cq_minw_{:08x}", arm.threshold.to_bits());
+        let rules = emit_rules_struct(&arm.rules);
+        quote! {
+            .variant(#axis, "on", |_vs: &::runtime_core::VariantSet| #rules)
+        }
+    });
+
     quote! {
         #vis fn #fn_name() -> ::std::rc::Rc<::runtime_core::StyleSheet> {
             ::std::thread_local! {
@@ -606,6 +711,7 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
                             #(#variant_chain)*
                             #(#state_chain)*
                             #(#breakpoint_chain)*
+                            #(#container_chain)*
                     );
             }
             SHEET.with(|s| ::std::clone::Clone::clone(s))

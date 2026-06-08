@@ -37,9 +37,37 @@ use std::rc::Rc;
 
 use runtime_core::{
     primitives, AssetId, AssetSource, AssetTag, BackendBatch, Backend, BatchOp, ButtonHandle,
-    ButtonOps, Color, PressableHandle, PressableOps, StyleRules, SystemFallback, TextHandle,
-    TextOps, TypefaceFace, TypefaceId, ViewHandle, ViewOps, ViewportRect,
+    ButtonOps, Color, LayoutSubscription, PressableHandle, PressableOps, StyleRules,
+    SystemFallback, TextHandle, TextOps, TypefaceFace, TypefaceId, ViewHandle, ViewOps,
+    ViewportRect,
 };
+
+thread_local! {
+    /// Per-node `on_layout` callbacks registered through
+    /// [`MockViewOps::subscribe_layout`]. A test drives a container's
+    /// resolved inline-size via [`fire_all_layouts`], standing in for the
+    /// post-layout width feed a real native backend would push.
+    static LAYOUT_SUBS: RefCell<Vec<(NodeId, Rc<dyn Fn(f32, f32)>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Test helper: simulate a layout pass that resolves every layout-subscribed
+/// node to inline-size `w` (height `h`), firing each `on_layout` callback.
+/// Only `.container()` views subscribe, so in container-query tests this
+/// feeds the container's inline-size signal.
+pub fn fire_all_layouts(w: f32, h: f32) {
+    let subs: Vec<Rc<dyn Fn(f32, f32)>> =
+        LAYOUT_SUBS.with(|m| m.borrow().iter().map(|(_, cb)| cb.clone()).collect());
+    for cb in subs {
+        cb(w, h);
+    }
+}
+
+/// Test helper: drop all registered layout subscriptions between tests so
+/// state doesn't leak across the shared thread-local.
+pub fn reset_layout_subs() {
+    LAYOUT_SUBS.with(|m| m.borrow_mut().clear());
+}
 
 // =============================================================================
 // NodeId — the backend's `Node` type
@@ -449,7 +477,23 @@ impl PressableOps for MockPressableOps {
 }
 
 struct MockViewOps;
-impl ViewOps for MockViewOps {}
+impl ViewOps for MockViewOps {
+    fn subscribe_layout(
+        &self,
+        node: &dyn Any,
+        callback: Box<dyn Fn(f32, f32)>,
+    ) -> LayoutSubscription {
+        // Record the callback keyed by node id so `fire_all_layouts` can
+        // drive it. The returned subscription is a no-op on drop — these
+        // tests don't exercise unsubscribe; `reset_layout_subs` clears
+        // state between tests instead.
+        if let Some(id) = node.downcast_ref::<NodeId>() {
+            let cb: Rc<dyn Fn(f32, f32)> = Rc::from(callback);
+            LAYOUT_SUBS.with(|m| m.borrow_mut().push((*id, cb)));
+        }
+        LayoutSubscription::noop()
+    }
+}
 
 struct MockTextOps;
 impl TextOps for MockTextOps {}

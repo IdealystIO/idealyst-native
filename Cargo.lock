@@ -1279,6 +1279,7 @@ dependencies = [
 name = "canvas-core"
 version = "0.0.1"
 dependencies = [
+ "image",
  "media-stream",
  "runtime-core",
  "serde",

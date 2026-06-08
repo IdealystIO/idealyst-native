@@ -31,9 +31,10 @@
 
 use backend_android::{with_jni_env, AndroidBackend};
 use canvas_core::{
-    CanvasProps, Color, DrawOp, FillRule, GradientStop, LineCap, LineJoin, Paint, PaintKind, Path,
-    PathSeg, Scene, TextureLayer,
+    BlendMode, CanvasProps, Color, DrawOp, FillRule, GradientStop, ImageSource, LineCap, LineJoin,
+    Paint, PaintKind, Path, PathSeg, Scene, TextureLayer,
 };
+use std::collections::HashMap;
 use runtime_core::{after_ms_scoped, Effect};
 
 use jni::objects::{GlobalRef, JObject, JValue};
@@ -395,6 +396,20 @@ fn composite_layer(env: &mut JNIEnv, canvas: &JObject, layer: &TextureLayer) {
 /// `MediaStream` frame layout, so `copyPixelsFromBuffer` is a straight copy. A
 /// direct `ByteBuffer` wraps the Rust slice (no intermediate Java array); the
 /// copy is synchronous, so the slice need only outlive this call.
+thread_local! {
+    /// Per-thread cache of uploaded image `Bitmap`s (as `GlobalRef`s) keyed
+    /// by [`ImageSource::id`], so a static image isn't re-uploaded to the JVM
+    /// every frame. Never evicts — canvas authors use a small, stable set of
+    /// image ids; the held global refs free at process exit.
+    static BITMAP_CACHE: RefCell<HashMap<u64, GlobalRef>> = RefCell::new(HashMap::new());
+
+    /// Persistent [`DrawOp::Layer`] surfaces — a `Bitmap` (`GlobalRef`) plus
+    /// its `w × h` per layer id, retained across frames so baked strokes
+    /// survive and accumulate. A size change rebuilds the bitmap.
+    static LAYER_BITMAPS: RefCell<HashMap<u32, (GlobalRef, i32, i32)>> =
+        RefCell::new(HashMap::new());
+}
+
 fn rgba_bitmap<'env>(
     env: &mut JNIEnv<'env>,
     w: i32,
@@ -554,6 +569,7 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
                 self.reset_paint();
                 self.set_style(true);
                 self.apply_paint_source(paint);
+                self.set_blend(paint.blend);
                 self.draw_path(&jpath);
             }
             DrawOp::Stroke { path, paint, stroke } => {
@@ -576,6 +592,7 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
                 self.set_stroke_cap(stroke.cap);
                 self.set_stroke_join(stroke.join);
                 self.apply_paint_source(paint);
+                self.set_blend(paint.blend);
                 self.draw_path(&jpath);
             }
             DrawOp::Clip { path, fill_rule } => {
@@ -601,9 +618,186 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
                 // both of which honor clip+transform. Tracked, not silent
                 // (CLAUDE.md §7).
             }
+            DrawOp::Layer { id, clear, ops: nested, alpha, blend } => {
+                self.draw_layer(*id, *clear, nested, *alpha, *blend);
+            }
+            DrawOp::Image { image, dst, alpha, blend } => {
+                let Some(bmp) = self.cached_bitmap(image) else { return };
+                self.reset_paint();
+                let p = self.paint.clone();
+                let a = (alpha.clamp(0.0, 1.0) * 255.0).round() as i32;
+                let _ = self.env.call_method(p.as_obj(), "setAlpha", "(I)V", &[JValue::Int(a)]);
+                // Bilinear filtering for the scale to `dst`.
+                let _ = self.env.call_method(
+                    p.as_obj(),
+                    "setFilterBitmap",
+                    "(Z)V",
+                    &[JValue::Bool(1)],
+                );
+                self.set_blend(*blend);
+                if let (Some(src), Some(dr)) = (
+                    int_rect(&mut self.env, 0.0, 0.0, image.width as f32, image.height as f32),
+                    rect_f(&mut self.env, dst.x, dst.y, dst.w, dst.h),
+                ) {
+                    let _ = self.env.call_method(
+                        self.canvas,
+                        "drawBitmap",
+                        "(Landroid/graphics/Bitmap;Landroid/graphics/Rect;Landroid/graphics/RectF;Landroid/graphics/Paint;)V",
+                        &[
+                            JValue::Object(bmp.as_obj()),
+                            JValue::Object(&src),
+                            JValue::Object(&dr),
+                            JValue::Object(p.as_obj()),
+                        ],
+                    );
+                }
+            }
             // `DrawOp` is `#[non_exhaustive]`; future ops no-op until wired.
             _ => {}
         }
+    }
+
+    /// Replay `nested` into the persistent layer `id`'s offscreen `Bitmap`
+    /// (wiping first if `clear`), then composite it into the main canvas at
+    /// `alpha`/`blend`. The CPU-raster counterpart of the vello retained
+    /// op-log layer — same observable pixels (CLAUDE.md §7).
+    ///
+    /// Only the `Bitmap` is cached (its pixels persist); a fresh `Canvas`
+    /// wrapping it is made each frame (cheap — no pixel copy) and the main
+    /// canvas's current `Matrix` is mirrored onto it, so nested logical ops
+    /// land at the same device pixels. The composite is a 1:1 device blit
+    /// (main matrix reset to identity).
+    fn draw_layer(
+        &mut self,
+        id: u32,
+        clear: bool,
+        nested: &[DrawOp],
+        alpha: f32,
+        blend: BlendMode,
+    ) {
+        let w = self
+            .env
+            .call_method(self.canvas, "getWidth", "()I", &[])
+            .ok()
+            .and_then(|v| v.i().ok())
+            .unwrap_or(0);
+        let h = self
+            .env
+            .call_method(self.canvas, "getHeight", "()I", &[])
+            .ok()
+            .and_then(|v| v.i().ok())
+            .unwrap_or(0);
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let Some(bitmap) = self.layer_bitmap(id, w, h) else { return };
+        if clear {
+            let _ = self.env.call_method(bitmap.as_obj(), "eraseColor", "(I)V", &[JValue::Int(0)]);
+        }
+
+        // Fresh local Canvas over the persistent bitmap; mirror the main
+        // canvas transform so nested logical ops align with device pixels.
+        let Ok(canvas_class) = self.env.find_class("android/graphics/Canvas") else { return };
+        let Ok(layer_canvas) = self.env.new_object(
+            &canvas_class,
+            "(Landroid/graphics/Bitmap;)V",
+            &[JValue::Object(bitmap.as_obj())],
+        ) else {
+            return;
+        };
+        if let Ok(m) = self
+            .env
+            .call_method(self.canvas, "getMatrix", "()Landroid/graphics/Matrix;", &[])
+            .and_then(|v| v.l())
+        {
+            let _ = self.env.call_method(
+                &layer_canvas,
+                "setMatrix",
+                "(Landroid/graphics/Matrix;)V",
+                &[JValue::Object(&m)],
+            );
+        }
+        // Replay nested ops into the layer canvas with a sub-painter.
+        if let Some(mut sub) = CanvasPainter::new(&mut *self.env, &layer_canvas) {
+            for op in nested {
+                sub.apply(op);
+            }
+        }
+
+        // Composite the bitmap into the main canvas at identity (device 1:1).
+        self.reset_paint();
+        let p = self.paint.clone();
+        let a = (alpha.clamp(0.0, 1.0) * 255.0).round() as i32;
+        let _ = self.env.call_method(p.as_obj(), "setAlpha", "(I)V", &[JValue::Int(a)]);
+        self.set_blend(blend);
+        let _ = self.env.call_method(self.canvas, "save", "()I", &[]);
+        if let Ok(idm) = self.env.new_object("android/graphics/Matrix", "()V", &[]) {
+            let _ = self.env.call_method(
+                self.canvas,
+                "setMatrix",
+                "(Landroid/graphics/Matrix;)V",
+                &[JValue::Object(&idm)],
+            );
+        }
+        let _ = self.env.call_method(
+            self.canvas,
+            "drawBitmap",
+            "(Landroid/graphics/Bitmap;FFLandroid/graphics/Paint;)V",
+            &[
+                JValue::Object(bitmap.as_obj()),
+                JValue::Float(0.0),
+                JValue::Float(0.0),
+                JValue::Object(p.as_obj()),
+            ],
+        );
+        let _ = self.env.call_method(self.canvas, "restore", "()V", &[]);
+    }
+
+    /// Get-or-build the persistent layer `Bitmap` (as a `GlobalRef`) for `id`
+    /// at `w × h`. A size change rebuilds (and thus clears) it.
+    fn layer_bitmap(&mut self, id: u32, w: i32, h: i32) -> Option<GlobalRef> {
+        if let Some((g, cw, ch)) =
+            LAYER_BITMAPS.with(|c| c.borrow().get(&id).map(|(g, w, h)| (g.clone(), *w, *h)))
+        {
+            if cw == w && ch == h {
+                return Some(g);
+            }
+        }
+        let config = argb_8888_config(&mut self.env)?;
+        let bitmap_class = self.env.find_class("android/graphics/Bitmap").ok()?;
+        let bitmap = self
+            .env
+            .call_static_method(
+                &bitmap_class,
+                "createBitmap",
+                "(IILandroid/graphics/Bitmap$Config;)Landroid/graphics/Bitmap;",
+                &[JValue::Int(w), JValue::Int(h), JValue::Object(&config)],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        let global = self.env.new_global_ref(&bitmap).ok()?;
+        LAYER_BITMAPS.with(|c| c.borrow_mut().insert(id, (global.clone(), w, h)));
+        Some(global)
+    }
+
+    /// Get-or-build a cached `Bitmap` (as a `GlobalRef`) for `src`, keyed by
+    /// [`ImageSource::id`]. Building once and caching avoids re-uploading a
+    /// static image every frame. Returns `None` for an invalid/empty image.
+    fn cached_bitmap(&mut self, src: &ImageSource) -> Option<GlobalRef> {
+        if !src.is_valid() || src.width == 0 || src.height == 0 {
+            return None;
+        }
+        if let Some(g) = BITMAP_CACHE.with(|c| c.borrow().get(&src.id).cloned()) {
+            return Some(g);
+        }
+        // `rgba_bitmap` needs a mutable buffer for the direct ByteBuffer; clone
+        // once (cached thereafter).
+        let mut bytes = src.rgba.clone();
+        let bmp = rgba_bitmap(&mut self.env, src.width as i32, src.height as i32, &mut bytes)?;
+        let global = self.env.new_global_ref(&bmp).ok()?;
+        BITMAP_CACHE.with(|c| c.borrow_mut().insert(src.id, global.clone()));
+        Some(global)
     }
 
     fn build_path(&mut self, path: &Path, rule: FillRule) -> GlobalRef {
@@ -704,6 +898,48 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
             }
             _ => self.set_color(Color::TRANSPARENT),
         }
+    }
+
+    /// Install a `PorterDuffXfermode` on the reusable paint for a blended
+    /// op. `Normal` is a no-op: [`reset_paint`](Self::reset_paint) already
+    /// cleared any prior xfermode (the default = SrcOver), so each op starts
+    /// clean and only blended ops touch the xfermode.
+    fn set_blend(&mut self, blend: BlendMode) {
+        let mode_field = match blend {
+            BlendMode::Normal => return,
+            BlendMode::DestinationOut => "DST_OUT",
+            BlendMode::Multiply => "MULTIPLY",
+            BlendMode::Screen => "SCREEN",
+            // `#[non_exhaustive]`; unknown modes stay SrcOver.
+            _ => return,
+        };
+        let Ok(mode_class) = self.env.find_class("android/graphics/PorterDuff$Mode") else {
+            return;
+        };
+        let Ok(mode) = self
+            .env
+            .get_static_field(&mode_class, mode_field, "Landroid/graphics/PorterDuff$Mode;")
+            .and_then(|v| v.l())
+        else {
+            return;
+        };
+        let Ok(xfer_class) = self.env.find_class("android/graphics/PorterDuffXfermode") else {
+            return;
+        };
+        let Ok(xfer) = self.env.new_object(
+            &xfer_class,
+            "(Landroid/graphics/PorterDuff$Mode;)V",
+            &[JValue::Object(&mode)],
+        ) else {
+            return;
+        };
+        let p = self.paint.clone();
+        let _ = self.env.call_method(
+            p.as_obj(),
+            "setXfermode",
+            "(Landroid/graphics/Xfermode;)Landroid/graphics/Xfermode;",
+            &[JValue::Object(&xfer)],
+        );
     }
 
     fn set_color(&mut self, c: Color) {

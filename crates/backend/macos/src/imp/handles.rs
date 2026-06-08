@@ -10,15 +10,51 @@
 //! Mirrors the iOS handles in `backend-ios-mobile/src/imp/handles.rs`.
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::primitives::portal::ViewportRect;
-use runtime_core::{ViewOps, ViewHandle, TextHandle};
+use runtime_core::{LayoutSubscription, ViewOps, ViewHandle, TextHandle};
 use objc2::msg_send;
 use objc2_app_kit::NSView;
 use objc2_foundation::CGRect;
 
 use crate::imp::MacosNode;
+
+thread_local! {
+    /// Per-view `on_layout` callbacks, keyed by the NSView pointer.
+    /// Fired from `compute_and_apply_layout` after each view's frame is
+    /// resolved, which is how a `.container()` view's inline-size signal
+    /// gets fed on macOS (the AppKit analog of the web `ResizeObserver`).
+    /// macOS is single-threaded (main-thread `mtm`), so a thread-local
+    /// registry is safe.
+    static LAYOUT_SUBS: RefCell<Vec<(usize, Rc<dyn Fn(f32, f32)>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Stable pointer key for an `NSView`, shared by `subscribe_layout`
+/// (which stores `&NSView`) and the layout loop (which holds a
+/// `Retained<NSView>`). Both must derive the key the same way.
+pub(crate) fn view_key(view: &NSView) -> usize {
+    view as *const NSView as usize
+}
+
+/// Fire every `on_layout` callback registered for `view_key` with the
+/// view's resolved inline-size (`w`) and block-size (`h`). Called once
+/// per view per layout pass; the callbacks themselves change-guard, so
+/// re-firing at an unchanged size is a no-op.
+pub(crate) fn fire_layout_for_view(view_key: usize, w: f32, h: f32) {
+    let cbs: Vec<Rc<dyn Fn(f32, f32)>> = LAYOUT_SUBS.with(|m| {
+        m.borrow()
+            .iter()
+            .filter(|(k, _)| *k == view_key)
+            .map(|(_, c)| c.clone())
+            .collect()
+    });
+    for c in cbs {
+        c(w, h);
+    }
+}
 
 // =========================================================================
 // View ops
@@ -27,6 +63,28 @@ use crate::imp::MacosNode;
 pub(crate) struct MacosViewOps;
 
 impl ViewOps for MacosViewOps {
+    fn subscribe_layout(
+        &self,
+        node: &dyn Any,
+        callback: Box<dyn Fn(f32, f32)>,
+    ) -> LayoutSubscription {
+        let Some(macos_node) = node.downcast_ref::<MacosNode>() else {
+            return LayoutSubscription::noop();
+        };
+        let key = view_key(macos_node.as_view());
+        let cb: Rc<dyn Fn(f32, f32)> = Rc::from(callback);
+        let cb_id = Rc::as_ptr(&cb) as *const () as usize;
+        LAYOUT_SUBS.with(|m| m.borrow_mut().push((key, cb)));
+        // RAII: drop removes exactly this callback (matched by view key +
+        // Rc identity) so a container unmount tears its subscription down.
+        LayoutSubscription::new(move || {
+            LAYOUT_SUBS.with(|m| {
+                m.borrow_mut()
+                    .retain(|(k, c)| !(*k == key && Rc::as_ptr(c) as *const () as usize == cb_id))
+            });
+        })
+    }
+
     fn rect(&self, node: &dyn Any) -> ViewportRect {
         rect_of_node(node).unwrap_or(ViewportRect {
             x: 0.0,

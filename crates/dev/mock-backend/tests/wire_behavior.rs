@@ -67,6 +67,7 @@ fn view(children: Vec<Element>) -> Element {
         ref_fill: None,
         safe_area_sides: SafeAreaSides::NONE,
         on_touch: None,
+        is_container: false,
         accessibility: Default::default(),
         test_id: None,
     }

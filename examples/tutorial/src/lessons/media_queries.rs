@@ -5,7 +5,9 @@ use runtime_core::{ui, Element};
 use idea_ui::{typography_kind, Typography};
 
 use crate::common::{Callout, CodePanel, DocsLink, LessonPage};
-use crate::routes::{MQ_BREAKPOINTS_ROUTE, MQ_MOBILE_FIRST_ROUTE, MQ_SIGNAL_ROUTE};
+use crate::routes::{
+    MQ_BREAKPOINTS_ROUTE, MQ_CONTAINER_ROUTE, MQ_MOBILE_FIRST_ROUTE, MQ_SIGNAL_ROUTE,
+};
 use crate::shell;
 
 pub fn breakpoints() -> Element {
@@ -157,6 +159,76 @@ let _e = Effect::new(|| {
                 summary = "viewport_size, the memo, and which backends are wired.".to_string(),
                 link_label = "Breakpoint module".to_string(),
                 doc_file = "../crates/runtime/core/src/breakpoint.rs".to_string(),
+            )
+        }
+    })
+}
+
+pub fn container_queries() -> Element {
+    shell::layout(ui! {
+        LessonPage(
+            current = MQ_CONTAINER_ROUTE.name(),
+            title = "Container queries".to_string(),
+            lead = "Respond to the box you're in, not the window you're in.".to_string(),
+        ) {
+            Typography(
+                content = "Breakpoints key off the whole viewport. A container query keys off the \
+                    nearest ANCESTOR you mark as a container \u{2014} so the same card lays itself \
+                    out one way in a narrow sidebar and another way in a wide main column, with \
+                    one stylesheet. Thresholds are arbitrary lengths, not the named viewport \
+                    buckets: a 360 dp sidebar can have its own 300 dp switch.".to_string()
+            )
+            CodePanel(src = r##"use runtime_core::{stylesheet, ui, FlexDirection};
+
+stylesheet! {
+    pub Card<()> {
+        base(_t) {                              // narrow: stacked
+            flex_direction: FlexDirection::Column,
+            padding: 12.0,
+        }
+        container (min_width: 400px)(_t) {      // container >= 400 dp: side-by-side
+            flex_direction: FlexDirection::Row,
+            padding: 20.0,
+        }
+    }
+}
+
+// Mark the box the card should measure itself against:
+ui! {
+    view(style = sidebar).container() {         // establishes the context
+        Card()                                  // keys off `sidebar`'s width
+    }
+}"##.to_string())
+
+            Typography(
+                content = "The same two realizations as breakpoints".to_string(),
+                kind = typography_kind::H2,
+            )
+            Typography(
+                content = "On web the overlay becomes an @container (min-width: 400px) rule and \
+                    .container() sets container-type: inline-size \u{2014} the browser does the \
+                    rest, including the SSR first paint. On native, the container view feeds its \
+                    resolved width into a signal the card's style subscribes to, re-applying when \
+                    the width crosses a threshold. Same authored source, native output on every \
+                    backend.".to_string()
+            )
+
+            Callout(label = "The inline-size rule".to_string()) {
+                Typography(
+                    content = "A container's WIDTH must come from its parent \u{2014} an explicit \
+                        width, a percentage, or a flex track \u{2014} never shrink-to-fit from the \
+                        children that query it. Querying a content-sized width is a cycle (the \
+                        children would resize the thing they're measuring), so it's unsupported. \
+                        Children may query the inline (width) axis only; their restyling changes \
+                        the block (height) axis, which keeps the loop convergent.".to_string(),
+                    muted = true,
+                )
+            }
+
+            DocsLink(
+                summary = "the axis encoding, the cascade, and the native feedback loop.".to_string(),
+                link_label = "Container-query module".to_string(),
+                doc_file = "../crates/runtime/core/src/container_query.rs".to_string(),
             )
         }
     })

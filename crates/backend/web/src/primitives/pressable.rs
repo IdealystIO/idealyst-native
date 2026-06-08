@@ -20,9 +20,9 @@ use wasm_bindgen::JsCast;
 use web_sys::Node;
 
 pub(crate) fn create(b: &mut WebBackend, on_click: Rc<dyn Fn()>) -> Node {
-    // HYDRATION: adopt the SSR `<div role=button>` (role/tabindex/cursor
-    // already set by the SSR `create_pressable`); just wire the handlers
-    // below. Its children are adopted separately via cursor descent.
+    // HYDRATION: adopt the SSR `<div role=button>` (role/tabindex already
+    // set by the SSR `create_pressable`); just wire the handlers below.
+    // Its children are adopted separately via cursor descent.
     let adopted = b.hydrate_next("div");
     let el: web_sys::HtmlElement = match adopted {
         Some(el) => el.unchecked_into(),
@@ -33,11 +33,12 @@ pub(crate) fn create(b: &mut WebBackend, on_click: Rc<dyn Fn()>) -> Node {
                 .expect("create pressable")
                 .unchecked_into::<web_sys::HtmlElement>();
             // Accessibility: announce as a button + make it Tab-focusable.
+            // No inline `cursor` — that's now an author/component-driven
+            // style property (`StyleRules::cursor`), so a bare pressable
+            // takes the platform default and an author's `cursor` is never
+            // shadowed by an un-overridable inline rule.
             let _ = el.set_attribute("role", "button");
             let _ = el.set_attribute("tabindex", "0");
-            // Hand cursor — `cursor` isn't in the styled-property model, so
-            // set inline at create time (composes with class rules).
-            let _ = el.style().set_property("cursor", "pointer");
             el
         }
     };

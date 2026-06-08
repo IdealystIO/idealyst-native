@@ -5,6 +5,7 @@ pub mod animation;
 pub mod assets;
 mod backend;
 pub mod breakpoint;
+pub mod container_query;
 pub mod color;
 mod batch;
 mod builder;
@@ -236,10 +237,10 @@ pub use primitives::presence::{
     presence, PresenceAnim, PresenceHandle, PresenceOps, PresenceState,
 };
 pub use reactive::{
-    arena_stats, batch, inject, inject_or, install_drop_deferral, is_reactive_busy, memo,
-    memo_with, on, on_cleanup, on_defer, provide, reducer, register_signal_js_notifier,
-    signal_has_js_notifier, unregister_signal_js_notifier, untrack, with_inject, ArenaStats,
-    Effect, Ref, Signal, Trackable,
+    arena_stats, batch, inject, inject_or, install_drop_deferral, install_reactive_idle_hook,
+    is_reactive_busy, memo, memo_with, on, on_cleanup, on_defer, provide, reducer,
+    register_signal_js_notifier, signal_has_js_notifier, unregister_signal_js_notifier, untrack,
+    with_inject, ArenaStats, Effect, Ref, Signal, Trackable,
 };
 
 /// Run `f` with the reactive scope-ownership stack emptied: signals and
@@ -272,6 +273,9 @@ pub use viewport::{set_viewport_size, viewport_size, ViewportSize};
 pub use breakpoint::{
     breakpoints, current_breakpoint, install_breakpoints, Breakpoint, Breakpoints,
 };
+pub use container_query::{
+    container_axis_name, container_axis_threshold, CONTAINER_MIN_WIDTH_PREFIX,
+};
 pub use scheduling::{
     after_animation_frame, after_ms, after_ms_detached, after_ms_scoped, drain_buffered_microtasks,
     is_frame_active, raf_loop, raf_loop_scoped, schedule_microtask, set_frame_active, RafLoop,
@@ -283,10 +287,10 @@ pub use style::{
     derived, install_tokens, pregenerate, reset_for_ssg_render, resolve as resolve_style,
     set_app_background, set_app_key_handler, set_scrollbar_theme, take_pending_token_updates,
     update_tokens,
-    AlignContent, AlignItems, AlignSelf, Color, Derive, Easing, FlexDirection, FlexWrap,
+    AlignContent, AlignItems, AlignSelf, Color, Cursor, Derive, Easing, FlexDirection, FlexWrap,
     FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop,
     IntoOverrideSource, IntoVariantSource, JustifyContent, Length, RadialExtent, Overflow,
-    Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign, TextTransform,
+    Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign, TextTransform, UserSelect,
     TokenEntry, TokenValue, Tokenized, Transform, Transition, VariantAxis, VariantEnum,
     VariantSet, VariantValue,
 };

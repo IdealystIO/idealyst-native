@@ -55,6 +55,8 @@ pub fn push(source: impl Into<String>, text: impl Into<String>) {
             buf.pop_front();
         }
     }
+    // Live-update subscribers should see the new log line.
+    super::bump_revision();
 }
 
 /// Return the N most recent entries.

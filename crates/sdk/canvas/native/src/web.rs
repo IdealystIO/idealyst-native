@@ -16,17 +16,18 @@
 
 use backend_web::WebBackend;
 use canvas_core::{
-    paint_scene, CanvasProps, Color, DrawOp, FillRule, LineCap, LineJoin, LinearGradient, Paint,
-    PaintKind, Path, PathSeg, RadialGradient, Scene, TextureLayer,
+    paint_scene, BlendMode, CanvasProps, Color, DrawOp, FillRule, ImageSource, LineCap, LineJoin,
+    LinearGradient, Paint, PaintKind, Path, PathSeg, RadialGradient, Scene, TextureLayer,
 };
 use runtime_core::effect;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{Clamped, JsCast};
 use web_sys::{
     CanvasGradient, CanvasRenderingContext2d, CanvasWindingRule, Document, HtmlCanvasElement,
-    HtmlVideoElement, MediaStream, ResizeObserver,
+    HtmlVideoElement, ImageData, MediaStream, ResizeObserver,
 };
 
 /// Register the native canvas renderer against a `WebBackend`. One line
@@ -291,10 +292,12 @@ fn apply_op(ctx: &CanvasRenderingContext2d, op: &DrawOp) {
         DrawOp::Fill { path, paint, fill_rule } => {
             build_path(ctx, path);
             apply_fill_paint(ctx, paint);
+            apply_blend(ctx, paint.blend);
             match fill_rule {
                 FillRule::NonZero => ctx.fill(),
                 FillRule::EvenOdd => ctx.fill_with_canvas_winding_rule(CanvasWindingRule::Evenodd),
             }
+            clear_blend(ctx, paint.blend);
         }
         DrawOp::Stroke { path, paint, stroke } => {
             build_path(ctx, path);
@@ -311,7 +314,9 @@ fn apply_op(ctx: &CanvasRenderingContext2d, op: &DrawOp) {
                 LineJoin::Bevel => "bevel",
             });
             ctx.set_miter_limit(stroke.miter_limit as f64);
+            apply_blend(ctx, paint.blend);
             ctx.stroke();
+            clear_blend(ctx, paint.blend);
         }
         DrawOp::Clip { path, fill_rule } => {
             build_path(ctx, path);
@@ -320,8 +325,177 @@ fn apply_op(ctx: &CanvasRenderingContext2d, op: &DrawOp) {
                 FillRule::EvenOdd => CanvasWindingRule::Evenodd,
             });
         }
+        DrawOp::Layer { id, clear, ops: nested, alpha, blend } => {
+            draw_layer(ctx, *id, *clear, nested, *alpha, *blend);
+        }
+        DrawOp::Image { image, dst, alpha, blend } => {
+            if !image.is_valid() || image.width == 0 || image.height == 0 {
+                return;
+            }
+            if let Some(src_canvas) = image_canvas_cached(image) {
+                // save/restore brackets both globalAlpha and the composite op,
+                // so neither leaks into the next op.
+                ctx.save();
+                ctx.set_global_alpha(*alpha as f64);
+                apply_blend(ctx, *blend);
+                let _ = ctx.draw_image_with_html_canvas_element_and_dw_and_dh(
+                    &src_canvas,
+                    dst.x as f64,
+                    dst.y as f64,
+                    dst.w as f64,
+                    dst.h as f64,
+                );
+                ctx.restore();
+            }
+        }
         // `DrawOp` is `#[non_exhaustive]`; future ops no-op until wired.
         _ => {}
+    }
+}
+
+thread_local! {
+    /// Per-thread (the wasm main thread) cache of decoded image pixels as an
+    /// offscreen `<canvas>`, keyed by [`ImageSource::id`]. Building the
+    /// `ImageData` + `putImageData` once and reusing the canvas across frames
+    /// keeps the per-frame replay from re-uploading a static image. Never
+    /// evicts — canvas authors use a small, stable set of image ids.
+    static IMAGE_CANVAS_CACHE: RefCell<HashMap<u64, HtmlCanvasElement>> =
+        RefCell::new(HashMap::new());
+
+    /// Persistent `DrawOp::Layer` surfaces — an offscreen `<canvas>` per layer
+    /// id, retained across frames so baked strokes survive and accumulate.
+    static LAYER_CANVAS_CACHE: RefCell<HashMap<u32, HtmlCanvasElement>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Replay `nested` into the persistent layer `id`'s offscreen canvas (wiping
+/// first if `clear`), then composite it onto `ctx` at `alpha`/`blend`.
+///
+/// The layer canvas matches the main backing-store size and copies the main
+/// context's current transform, so nested logical-coordinate ops render at
+/// device resolution; the composite is then a 1:1 device-space blit. This is
+/// the CPU-raster counterpart of the vello retained-op-log layer — same
+/// observable pixels (CLAUDE.md §7).
+fn draw_layer(
+    ctx: &CanvasRenderingContext2d,
+    id: u32,
+    clear: bool,
+    nested: &[DrawOp],
+    alpha: f32,
+    blend: BlendMode,
+) {
+    let Some(main_canvas) = ctx.canvas() else { return };
+    let (bw, bh) = (main_canvas.width(), main_canvas.height());
+    if bw == 0 || bh == 0 {
+        return;
+    }
+    let Some(layer_canvas) = layer_canvas_cached(id, bw, bh) else { return };
+    let Ok(Some(obj)) = layer_canvas.get_context("2d") else { return };
+    let Ok(octx) = obj.dyn_into::<CanvasRenderingContext2d>() else { return };
+
+    if clear {
+        let _ = octx.reset_transform();
+        octx.clear_rect(0.0, 0.0, bw as f64, bh as f64);
+    }
+    // Mirror the main context's transform so nested ops (logical coords) land
+    // at the same device pixels they would in the main canvas.
+    if let Ok(m) = ctx.get_transform() {
+        let _ = octx.set_transform(m.a(), m.b(), m.c(), m.d(), m.e(), m.f());
+    }
+    for op in nested {
+        apply_op(&octx, op);
+    }
+
+    // Composite the layer device-for-device under alpha + blend.
+    ctx.save();
+    let _ = ctx.reset_transform();
+    ctx.set_global_alpha(alpha as f64);
+    apply_blend(ctx, blend);
+    let _ = ctx.draw_image_with_html_canvas_element(&layer_canvas, 0.0, 0.0);
+    ctx.restore();
+}
+
+/// Get-or-build the persistent offscreen `<canvas>` for layer `id`, sized to
+/// the main backing store. A backing-store size change resizes (and thereby
+/// clears) the layer — the canvas was about to be repainted at the new size
+/// anyway.
+fn layer_canvas_cached(id: u32, bw: u32, bh: u32) -> Option<HtmlCanvasElement> {
+    LAYER_CANVAS_CACHE.with(|c| {
+        if let Some(existing) = c.borrow().get(&id) {
+            if existing.width() != bw || existing.height() != bh {
+                existing.set_width(bw);
+                existing.set_height(bh);
+            }
+            return Some(existing.clone());
+        }
+        let document = web_sys::window()?.document()?;
+        let canvas: HtmlCanvasElement =
+            document.create_element("canvas").ok()?.dyn_into().ok()?;
+        canvas.set_width(bw);
+        canvas.set_height(bh);
+        c.borrow_mut().insert(id, canvas.clone());
+        Some(canvas)
+    })
+}
+
+/// Get-or-build the offscreen `<canvas>` holding `src`'s pixels.
+fn image_canvas_cached(src: &ImageSource) -> Option<HtmlCanvasElement> {
+    IMAGE_CANVAS_CACHE.with(|c| {
+        if let Some(existing) = c.borrow().get(&src.id) {
+            return Some(existing.clone());
+        }
+        let canvas = build_image_canvas(src)?;
+        c.borrow_mut().insert(src.id, canvas.clone());
+        Some(canvas)
+    })
+}
+
+/// Paint `src`'s raw RGBA into a fresh offscreen `<canvas>` via `ImageData`.
+fn build_image_canvas(src: &ImageSource) -> Option<HtmlCanvasElement> {
+    let document = web_sys::window()?.document()?;
+    let canvas: HtmlCanvasElement =
+        document.create_element("canvas").ok()?.dyn_into().ok()?;
+    canvas.set_width(src.width);
+    canvas.set_height(src.height);
+    let ctx: CanvasRenderingContext2d =
+        canvas.get_context("2d").ok()??.dyn_into().ok()?;
+    let data = ImageData::new_with_u8_clamped_array_and_sh(
+        Clamped(src.rgba.as_slice()),
+        src.width,
+        src.height,
+    )
+    .ok()?;
+    ctx.put_image_data(&data, 0.0, 0.0).ok()?;
+    Some(canvas)
+}
+
+/// Map a [`BlendMode`] to its Canvas2D `globalCompositeOperation` string.
+/// `Normal` maps to the implicit default, so callers skip touching the
+/// context for it.
+fn blend_css(blend: BlendMode) -> Option<&'static str> {
+    match blend {
+        BlendMode::Normal => None,
+        BlendMode::DestinationOut => Some("destination-out"),
+        BlendMode::Multiply => Some("multiply"),
+        BlendMode::Screen => Some("screen"),
+        // `BlendMode` is `#[non_exhaustive]`; unknown modes fall back to
+        // source-over (the default), matching the documented contract.
+        _ => None,
+    }
+}
+
+/// Set the composite op for a blended paint. No-op for `Normal`.
+fn apply_blend(ctx: &CanvasRenderingContext2d, blend: BlendMode) {
+    if let Some(css) = blend_css(blend) {
+        let _ = ctx.set_global_composite_operation(css);
+    }
+}
+
+/// Restore source-over after a blended paint, so the next op isn't
+/// silently affected. No-op when `apply_blend` did nothing.
+fn clear_blend(ctx: &CanvasRenderingContext2d, blend: BlendMode) {
+    if blend_css(blend).is_some() {
+        let _ = ctx.set_global_composite_operation("source-over");
     }
 }
 

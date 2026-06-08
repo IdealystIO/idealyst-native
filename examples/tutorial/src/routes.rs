@@ -35,6 +35,7 @@ pub const ST_VARIANTS_ROUTE: Route<()> = Route::<()>::new("st-variants", "/style
 pub const MQ_BREAKPOINTS_ROUTE: Route<()> = Route::<()>::new("mq-breakpoints", "/media/breakpoints");
 pub const MQ_MOBILE_FIRST_ROUTE: Route<()> = Route::<()>::new("mq-mobile-first", "/media/mobile-first");
 pub const MQ_SIGNAL_ROUTE: Route<()> = Route::<()>::new("mq-signal", "/media/breakpoint-signal");
+pub const MQ_CONTAINER_ROUTE: Route<()> = Route::<()>::new("mq-container", "/media/container-queries");
 
 // ---- Accessibility ----
 pub const A11Y_DEFAULTS_ROUTE: Route<()> = Route::<()>::new("a11y-defaults", "/accessibility/defaults");
@@ -101,6 +102,7 @@ pub const SECTIONS: &[IndexSection] = &[
             IndexEntry { route: &MQ_BREAKPOINTS_ROUTE, label: "Breakpoint overlays" },
             IndexEntry { route: &MQ_MOBILE_FIRST_ROUTE, label: "Mobile-first" },
             IndexEntry { route: &MQ_SIGNAL_ROUTE, label: "The breakpoint signal" },
+            IndexEntry { route: &MQ_CONTAINER_ROUTE, label: "Container queries" },
         ],
     },
     IndexSection {

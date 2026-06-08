@@ -443,6 +443,30 @@ mod tests {
         );
     }
 
+    // The framework imposes NO cursor/selection default on the bare
+    // `pressable` primitive (a raw pressable inherits the platform default).
+    // idea-ui's Button opts in via its sheet, so the rendered button resolves
+    // to a pointer cursor and non-selectable label text — the cross-platform
+    // realization of "buttons use the right pointer, and text in buttons isn't
+    // selectable" (web `cursor`/`user-select`, macOS `NSCursor`/`isSelectable`,
+    // touch backends no-op).
+    #[test]
+    fn button_opts_into_pointer_cursor_and_non_selectable_text() {
+        theme();
+        let (_, app) = pressable_parts(Button(&ButtonProps::default()));
+        let rules = resolve_style(&app);
+        assert_eq!(
+            rules.cursor,
+            Some(runtime_core::Cursor::Pointer),
+            "a button shows the pointer affordance"
+        );
+        assert_eq!(
+            rules.user_select,
+            Some(runtime_core::UserSelect::None),
+            "a button's label text can't be drag-selected"
+        );
+    }
+
     fn pressable_disabled(el: Element) -> Option<Box<dyn Fn() -> bool>> {
         match el {
             Element::Pressable { disabled, .. } => disabled,

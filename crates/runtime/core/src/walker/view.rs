@@ -30,9 +30,10 @@ pub(super) fn build<B: Backend + 'static>(
     ref_fill: Option<RefFill>,
     safe_area_sides: crate::SafeAreaSides,
     on_touch: Option<crate::TouchHandler>,
+    is_container: bool,
     a11y: AccessibilityProps,
 ) -> B::Node {
-    let n = build_view(backend, children, &a11y);
+    let n = build_view(backend, children, is_container, &a11y);
     if let Some(s) = style {
         attach_style(backend, &n, s);
     }
@@ -52,11 +53,92 @@ pub(super) fn build<B: Backend + 'static>(
 fn build_view<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     children: Vec<Element>,
+    is_container: bool,
     a11y: &AccessibilityProps,
 ) -> B::Node {
     let mut parent = time_backend_create(pkind!(View), || backend.borrow_mut().create_view(a11y));
+    // Establish the containment context BEFORE children build, so the
+    // build-time container stack is populated while descendants attach
+    // their styles (and capture this container's inline-size signal).
+    // The guard pops the stack once children are built.
+    let _container_guard = is_container.then(|| setup_container(backend, &parent));
     insert_children(backend, &mut parent, children);
+    drop(_container_guard);
     parent
+}
+
+/// Wire up a `.container()` containment context. On web, marks the node
+/// with `container-type: inline-size` and returns (the browser tracks
+/// size + resolves `@container` rules). On native, creates a
+/// change-guarded inline-size [`Signal`](crate::reactive::Signal) fed by
+/// the node's post-layout width, pushes it onto the build-time container
+/// stack for descendants to capture, and anchors the layout subscription
+/// to the active scope. The returned guard pops the stack on drop.
+///
+/// See [`crate::container_query`] for the inline-size containment
+/// invariant that makes the native feedback loop converge.
+fn setup_container<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    node: &B::Node,
+) -> ContainerGuard {
+    // Web handles container queries declaratively (CSS); native uses the
+    // resolved-inline-size signal + reactive merge.
+    let native = !backend.borrow().handles_states_natively();
+    // Web overrides `mark_container` to set `container-type`; native is a
+    // no-op there (harmless to call).
+    backend.borrow_mut().mark_container(node);
+    if !native {
+        return ContainerGuard { native: false };
+    }
+    // Native: a change-guarded inline-size signal, fed by the view's
+    // post-layout width, that descendant style effects subscribe to.
+    let sig = crate::reactive::Signal::new(0.0f32);
+    let handle = backend.borrow().make_view_handle(node);
+    let sub = handle.on_layout(move |w, _h| {
+        // The change-guard is load-bearing: `Signal::set` always
+        // notifies, and a descendant restyle can trigger relayout, so an
+        // unguarded set would re-fire descendants every layout pass and
+        // could loop. Under the inline-size containment invariant the
+        // width is stable across a descendant restyle, so the guarded set
+        // fires at most once per real width change and the loop settles.
+        if sig.get() != w {
+            // DEFER the write to a microtask. On native backends this
+            // callback fires from *inside* the layout pass, with the
+            // backend's `RefCell` borrowed mutably; a synchronous
+            // `sig.set` would re-enter the backend via the descendant's
+            // style Effect (`apply_style` → `borrow_mut`) and panic with
+            // "already borrowed". Deferring breaks the reentrancy —
+            // exactly how the backends defer `set_viewport_size`. The
+            // inner guard re-checks in case the width changed again before
+            // the microtask ran. (`Signal` is `Copy`, so it moves freely.)
+            crate::schedule_microtask(move || {
+                if sig.get() != w {
+                    sig.set(w);
+                }
+            });
+        }
+    });
+    // Anchor the subscription to the active scope so it lives as long as
+    // the node — a `LayoutSubscription` cancels its observer on drop, and
+    // without this it would drop at the end of `build`.
+    let _ = crate::reactive::adopt_guard_into_active_scope(sub);
+    super::style::push_container(sig);
+    ContainerGuard { native: true }
+}
+
+/// Build-time RAII guard that pops the container stack when a
+/// `.container()` view's children finish building. Web contexts carry
+/// `native: false` and pop nothing (they never pushed).
+struct ContainerGuard {
+    native: bool,
+}
+
+impl Drop for ContainerGuard {
+    fn drop(&mut self) {
+        if self.native {
+            super::style::pop_container();
+        }
+    }
 }
 
 /// Walk a children vec and append each child to `parent`. Expands

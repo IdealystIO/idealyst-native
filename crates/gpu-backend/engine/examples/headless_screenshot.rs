@@ -32,6 +32,7 @@ fn main() {
             ref_fill: None,
             safe_area_sides: SafeAreaSides::NONE,
             on_touch: None,
+            is_container: false,
             accessibility: Default::default(),
         }
     }

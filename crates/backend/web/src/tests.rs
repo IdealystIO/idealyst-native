@@ -389,7 +389,7 @@ fn apply_styled_variants_emits_media_rule_for_breakpoint_overlay() {
     let bp_overlays = vec![(Breakpoint::Md, md_overlay)];
 
     use runtime_core::Backend;
-    backend.apply_styled_variants(&node, &base, &[], &bp_overlays);
+    backend.apply_styled_variants(&node, &base, &[], &bp_overlays, &[]);
 
     // Read back every rule the backend inserted into its stylesheet.
     let sheet = backend.sheet();
@@ -411,6 +411,69 @@ fn apply_styled_variants_emits_media_rule_for_breakpoint_overlay() {
         all.contains("width: 500px"),
         "the md overlay's resolved properties must live inside the media rule; \
          stylesheet was:\n{all}",
+    );
+}
+
+/// `apply_styled_variants` emits an `@container (min-width: …)` rule per
+/// container overlay, and `mark_container` sets `container-type: inline-size`
+/// on the containment node — the web realization of `container (min_width: N)`.
+///
+/// Runs under `wasm-bindgen-test` in a headless browser (needs a live
+/// CSSOM stylesheet + a real element style object).
+#[wasm_bindgen_test]
+fn apply_styled_variants_emits_container_query_rule() {
+    use runtime_core::{Length, StyleRules, Tokenized};
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let container = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&container).unwrap();
+    let container_node: web_sys::Node = container.clone().unchecked_into();
+    let element = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&element).unwrap();
+    let node: web_sys::Node = element.unchecked_into();
+
+    use runtime_core::Backend;
+    backend.mark_container(&container_node);
+
+    let base = Rc::new(StyleRules {
+        width: Some(Tokenized::Literal(Length::Px(100.0))),
+        ..Default::default()
+    });
+    let overlay = Rc::new(StyleRules {
+        width: Some(Tokenized::Literal(Length::Px(500.0))),
+        ..Default::default()
+    });
+    backend.apply_styled_variants(&node, &base, &[], &[], &[(400.0, overlay)]);
+
+    let sheet = backend.sheet();
+    let rules = sheet.css_rules().expect("css_rules");
+    let mut all = String::new();
+    for i in 0..rules.length() {
+        if let Some(r) = rules.get(i) {
+            all.push_str(&r.css_text());
+            all.push('\n');
+        }
+    }
+
+    assert!(
+        all.contains("min-width: 400px"),
+        "must emit an @container (min-width: 400px) rule; stylesheet was:\n{all}",
+    );
+    assert!(
+        all.contains("width: 500px"),
+        "the container overlay's resolved properties must live inside the @container rule; \
+         stylesheet was:\n{all}",
+    );
+    // The containment context carries `container-type: inline-size` as an
+    // inline style (survives the className replace `queue_class_apply` does).
+    let style_attr = container.get_attribute("style").unwrap_or_default();
+    assert!(
+        style_attr.contains("container-type") && style_attr.contains("inline-size"),
+        "mark_container must set container-type: inline-size inline; got style=\"{style_attr}\"",
     );
 }
 
