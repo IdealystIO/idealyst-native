@@ -34,6 +34,13 @@ use super::{
     ButtonSizeRef, RefBuiltins, ResolutionCtx, ShapeRef, ToneRef, TypographyKindRef, VariantRef,
 };
 
+/// Resting → hover → press opacity for interactive controls (Button,
+/// IconButton). A subtle uniform dim that reads as interactive feedback
+/// without shifting the palette; the controls' `opacity_transition`
+/// animates between them. Shared so every clickable dims consistently.
+const HOVER_OPACITY: f32 = 0.92;
+const PRESSED_OPACITY: f32 = 0.85;
+
 // =============================================================================
 // Thread-local sheet stashes — one per component
 // =============================================================================
@@ -142,6 +149,13 @@ impl ButtonSheetBuilder {
             // component library opts in. Touch backends no-op both.
             cursor: Some(Cursor::Pointer),
             user_select: Some(UserSelect::None),
+            // Explicit resting opacity so the hover/press dim has a value to
+            // animate back TO. On native the state overlay is applied by
+            // re-resolving the style, and a backend leaves opacity untouched
+            // when it's unset — so without a base `1.0` the un-hover would
+            // never restore full opacity (the dim would stick). Web reverts
+            // via the cascade regardless; this keeps the two convergent.
+            opacity: Some(Tokenized::Literal(1.0)),
             background_transition: Some(Transition::new(150, Easing::EaseOut)),
             color_transition: Some(Transition::new(200, Easing::EaseOut)),
             opacity_transition: Some(Transition::new(200, Easing::EaseOut)),
@@ -208,6 +222,24 @@ impl ButtonSheetBuilder {
                 }
             });
         }
+
+        // Interaction-state overlays — a uniform opacity dim on hover and
+        // press (animated by the base `opacity_transition`). Registered under
+        // the reserved `__state_*` axes the framework recognizes: realized as
+        // CSS `:hover`/`:active` on web and event-driven on macOS
+        // (NSTrackingArea + mouseDown/Up via `attach_states`); touch backends
+        // with no hover no-op the hover arm. Disabled is intentionally NOT a
+        // state here — it's a variant-like concern handled by the pressable's
+        // disabled mechanism, not a hover-comparable overlay.
+        sheet = sheet
+            .variant("__state_hovered", "on", |_vs| StyleRules {
+                opacity: Some(Tokenized::Literal(HOVER_OPACITY)),
+                ..Default::default()
+            })
+            .variant("__state_pressed", "on", |_vs| StyleRules {
+                opacity: Some(Tokenized::Literal(PRESSED_OPACITY)),
+                ..Default::default()
+            });
 
         // Defaults so an unset axis applies the most common arm.
         sheet = sheet
@@ -717,11 +749,14 @@ impl IconButtonSheetBuilder {
             text_align: Some(TextAlign::Center),
             align_items: Some(AlignItems::Center),
             justify_content: Some(JustifyContent::Center),
-            // Pointer cursor + non-selectable glyph — see ButtonSheetBuilder.
+            // Pointer cursor + non-selectable glyph + resting opacity for the
+            // hover/press dim to animate back to — see ButtonSheetBuilder.
             cursor: Some(Cursor::Pointer),
             user_select: Some(UserSelect::None),
+            opacity: Some(Tokenized::Literal(1.0)),
             background_transition: Some(Transition::new(150, Easing::EaseOut)),
             color_transition: Some(Transition::new(200, Easing::EaseOut)),
+            opacity_transition: Some(Transition::new(200, Easing::EaseOut)),
             border_top_color_transition: Some(Transition::new(150, Easing::EaseOut)),
             border_right_color_transition: Some(Transition::new(150, Easing::EaseOut)),
             border_bottom_color_transition: Some(Transition::new(150, Easing::EaseOut)),
@@ -796,6 +831,17 @@ impl IconButtonSheetBuilder {
                 border_top_right_radius: Some(pill(999.0)),
                 border_bottom_left_radius: Some(pill(999.0)),
                 border_bottom_right_radius: Some(pill(999.0)),
+                ..Default::default()
+            });
+
+        // Hover / press dim — same convention as ButtonSheetBuilder.
+        sheet = sheet
+            .variant("__state_hovered", "on", |_vs| StyleRules {
+                opacity: Some(Tokenized::Literal(HOVER_OPACITY)),
+                ..Default::default()
+            })
+            .variant("__state_pressed", "on", |_vs| StyleRules {
+                opacity: Some(Tokenized::Literal(PRESSED_OPACITY)),
                 ..Default::default()
             });
 

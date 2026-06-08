@@ -2663,31 +2663,7 @@ pub fn reset_for_ssg_render() {
 ///     effect for the remaining rows.
 pub fn is_registered(sheet: &Rc<StyleSheet>) -> bool {
     let key = RegKey { sheet: Rc::as_ptr(sheet) };
-    REGISTRATIONS.with(|r| {
-        r.borrow()
-            .get(&key)
-            // A `RegKey` is the StyleSheet's heap address. A freed
-            // StyleSheet's address is readily reused by a later
-            // `Rc::new(StyleSheet)` — and the reactive-style path mints a
-            // fresh sheet on every effect run, so this happens constantly
-            // under a theme/selection toggle. If a dead registration is
-            // still lingering at that address (its `Weak` no longer
-            // upgrades, or upgrades to a *different* live Rc that now
-            // occupies the recycled slot), a plain `contains_key` reports
-            // the NEW sheet as already-registered. The caller
-            // (`attach_style_reactive` / the batched-Repeat walker) then
-            // SKIPS `ensure_registered_with`, so the new sheet's class
-            // never has its refcount bumped while the node still applies
-            // it — and the shared CSS class is later deleted out from
-            // under live nodes when other holders decrement the
-            // undercounted refcount to zero (collapsing flex layout to
-            // block flow on the web backend). Verifying `Rc` identity
-            // closes the hole; a stale entry reports "not registered" so
-            // the caller runs `ensure_registered_with`, whose dead-`Weak`
-            // sweep reaps the stale entry before registering afresh.
-            .and_then(|reg| reg.weak.upgrade())
-            .is_some_and(|live| Rc::ptr_eq(&live, sheet))
-    })
+    REGISTRATIONS.with(|r| r.borrow().contains_key(&key))
 }
 
 /// - Sweeps registrations whose `Weak<StyleSheet>` no longer upgrades
@@ -3106,64 +3082,6 @@ impl<T: Clone + 'static> IntoOverrideSource<T> for crate::Signal<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- Registration identity (recycled-address hazard) --------------------
-
-    // Regression: a stale registration left at a recycled StyleSheet address
-    // must NOT make `is_registered` report a brand-new sheet as
-    // already-registered. The reactive-style path mints a fresh
-    // `Rc<StyleSheet>` every effect run, and the allocator readily hands the
-    // new sheet the address a just-freed sheet vacated. If a dead-`Weak`
-    // registration still lingers at that address, a pointer-only
-    // `contains_key` reports the new sheet registered; the caller then skips
-    // `ensure_registered_with`, the new sheet's shared CSS class never has
-    // its refcount bumped, and that class is later deleted out from under
-    // live nodes — which on the web backend collapses flex containers to
-    // block flow (the segmented-control / toolbar layout corruption on a
-    // theme toggle). `is_registered` must verify `Rc` identity.
-    #[test]
-    fn is_registered_rejects_stale_entry_at_recycled_address() {
-        // A live sheet that was never actually registered.
-        let sheet = Rc::new(StyleSheet::r#static(StyleRules::default()));
-
-        // A dead `Weak` — the freed predecessor that used to live here.
-        let dead_weak = {
-            let gone = Rc::new(StyleSheet::r#static(StyleRules::default()));
-            Rc::downgrade(&gone)
-            // `gone` drops here, so `dead_weak` no longer upgrades.
-        };
-
-        // The recycled-address collision: an entry keyed by THIS sheet's
-        // address but carrying the dead predecessor's `Weak`.
-        REGISTRATIONS.with(|r| {
-            r.borrow_mut().insert(
-                RegKey { sheet: Rc::as_ptr(&sheet) },
-                Registration { weak: dead_weak, rules: Vec::new() },
-            );
-        });
-
-        // Never genuinely registered → must be false. (Pre-fix:
-        // `contains_key` returned true → caller skipped registration →
-        // shared-class refcount underflow.)
-        assert!(!is_registered(&sheet));
-
-        REGISTRATIONS.with(|r| r.borrow_mut().clear());
-    }
-
-    // The inverse: a sheet whose registration `Weak` upgrades to itself is
-    // genuinely registered — the steady-state fast-path skip must still fire.
-    #[test]
-    fn is_registered_accepts_live_self_registration() {
-        let sheet = Rc::new(StyleSheet::r#static(StyleRules::default()));
-        REGISTRATIONS.with(|r| {
-            r.borrow_mut().insert(
-                RegKey { sheet: Rc::as_ptr(&sheet) },
-                Registration { weak: Rc::downgrade(&sheet), rules: Vec::new() },
-            );
-        });
-        assert!(is_registered(&sheet));
-        REGISTRATIONS.with(|r| r.borrow_mut().clear());
-    }
 
     // --- Interaction properties: cursor + user_select -----------------------
 

@@ -479,6 +479,102 @@ fn apply_styled_variants_emits_container_query_rule() {
 
 /// REGRESSION TEST.
 ///
+/// Re-applying the scrollbar theme must not corrupt the absolute rule
+/// indices that `pregen` / `dynamic` / `free_rule_indices` track.
+///
+/// `impl_set_scrollbar_theme` used to drop its prior rules with a raw
+/// CSSOM `deleteRule`, which physically removes the rule and renumbers
+/// every *later* rule's index down by one. The backend addresses every
+/// rule by absolute index and never renumbered those trackers, so once
+/// any class rule had been appended AFTER the scrollbar rules, a
+/// scrollbar re-apply (which fires on every theme re-target — i.e. every
+/// light/dark toggle) left every later index stale. The next
+/// unregister/recycle then operated on the WRONG physical rule: it freed
+/// a slot that no longer held the class it thought, leaving a still-live
+/// class's rule behind while a recycle overwrote an unrelated rule. On a
+/// real page that surfaced as shared CSS classes vanishing from the sheet
+/// under repeated theme toggles, collapsing flex containers (segmented
+/// controls, the toolbar) to default block flow.
+///
+/// The fix routes scrollbar rule removal through the index-stable
+/// free-slot recycler (`self.delete_rule` + `self.insert_rule_raw`), the
+/// same path every other rule uses, so no absolute index ever shifts.
+#[wasm_bindgen_test]
+fn scrollbar_reapply_preserves_other_rule_indices() {
+    use runtime_core::{Backend, Color, Length, StyleRules, Tokenized};
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+
+    let thumb = Tokenized::Literal(Color::from("#888888"));
+    let track = Tokenized::Literal(Color::from("#222222"));
+
+    // Scrollbar rules go in FIRST, so the class rules below land at
+    // higher indices — exactly the arrangement a real deleteRule would
+    // renumber out from under the trackers.
+    backend.set_scrollbar_theme(&thumb, &track);
+
+    // Three classes with distinctive bodies, appended after the
+    // scrollbar rules.
+    let mk = |w: f32| {
+        Rc::new(StyleRules {
+            width: Some(Tokenized::Literal(Length::Px(w))),
+            ..Default::default()
+        })
+    };
+    let a = mk(111.0);
+    let b = mk(222.0);
+    let c = mk(333.0);
+    backend.register_stylesheet(std::slice::from_ref(&a));
+    backend.register_stylesheet(std::slice::from_ref(&b));
+    backend.register_stylesheet(std::slice::from_ref(&c));
+
+    // Re-apply the scrollbar theme — the per-toggle path that used to
+    // shift every later index.
+    backend.set_scrollbar_theme(&thumb, &track);
+    backend.set_scrollbar_theme(&thumb, &track);
+
+    // Drop B: its refcount hits zero, so its tracked rule index is freed.
+    backend.unregister_stylesheet(std::slice::from_ref(&b));
+    // Mint a new class, which recycles the slot B just freed.
+    let d = mk(444.0);
+    backend.register_stylesheet(std::slice::from_ref(&d));
+
+    let sheet = backend.sheet();
+    let rules = sheet.css_rules().expect("css_rules");
+    let mut all = String::new();
+    for i in 0..rules.length() {
+        if let Some(r) = rules.get(i) {
+            all.push_str(&r.css_text());
+            all.push('\n');
+        }
+    }
+
+    // The still-registered classes survive intact with their own bodies.
+    assert!(
+        all.contains("width: 111px"),
+        "class A was clobbered by scrollbar re-apply index drift:\n{all}",
+    );
+    assert!(
+        all.contains("width: 333px"),
+        "class C was clobbered by scrollbar re-apply index drift:\n{all}",
+    );
+    assert!(
+        all.contains("width: 444px"),
+        "newly minted class D (recycled B's slot) is wrong:\n{all}",
+    );
+    // B was the ONLY class unregistered, so its rule must be gone. Pre-fix
+    // the stale index made `delete_rule` free the wrong slot, orphaning
+    // B's rule in the sheet.
+    assert!(
+        !all.contains("width: 222px"),
+        "class B should have been removed, but a stale rule index orphaned it:\n{all}",
+    );
+}
+
+/// REGRESSION TEST.
+///
 /// A pressable (idea-ui `Button`/`Chip`/`IconButton`/...) renders as a
 /// `<div>` on web, and `set_disabled` marks the disabled node with the
 /// HTML `disabled` *attribute*. The disabled state overlay used to be

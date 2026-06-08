@@ -467,6 +467,43 @@ mod tests {
         );
     }
 
+    // Hover + press feedback: the installed Button sheet carries
+    // `__state_hovered` / `__state_pressed` overlays that dim opacity, plus an
+    // explicit resting `opacity: 1.0` so the dim animates back cleanly on
+    // native (where the overlay is applied by re-resolving the style — see the
+    // base-opacity rationale in idea-theme). Web realizes these as
+    // `:hover`/`:active`; macOS via `attach_states`. Disabled is deliberately
+    // NOT a state overlay here.
+    #[test]
+    fn button_has_hover_and_pressed_opacity_overlays() {
+        theme();
+        let sheet = installed_button_sheet();
+
+        let base = resolve_style(&StyleApplication::new(sheet.clone()));
+        assert_eq!(
+            base.opacity.as_ref().map(|t| t.resolve()),
+            Some(1.0),
+            "resting button is fully opaque so the hover/press dim has a value to animate back to"
+        );
+
+        let hovered = resolve_style(
+            &StyleApplication::new(sheet.clone()).with("__state_hovered", "on"),
+        );
+        assert_eq!(
+            hovered.opacity.as_ref().map(|t| t.resolve()),
+            Some(0.92),
+            "hover dims the button"
+        );
+
+        let pressed =
+            resolve_style(&StyleApplication::new(sheet).with("__state_pressed", "on"));
+        assert_eq!(
+            pressed.opacity.as_ref().map(|t| t.resolve()),
+            Some(0.85),
+            "press dims the button further"
+        );
+    }
+
     fn pressable_disabled(el: Element) -> Option<Box<dyn Fn() -> bool>> {
         match el {
             Element::Pressable { disabled, .. } => disabled,

@@ -361,21 +361,29 @@ impl WebBackend {
                 "::-webkit-scrollbar-thumb {{ background: {thumb_v}; border-radius: 5px; }}"
             ),
         ];
-        let sheet = self.sheet();
         // Drop any prior rules so re-targeting (different tokens) is
-        // clean. Indices are tracked in insertion order; delete back
-        // to front so each delete affects only the tail.
-        for idx in self.scrollbar_rule_indices.drain(..).rev() {
-            let _ = sheet.delete_rule(idx);
+        // clean. Use the free-slot recycler — NOT a raw CSSOM
+        // `deleteRule`. A real `deleteRule` physically removes the rule
+        // and renumbers every later rule's index down by one, but the
+        // absolute indices tracked in `pregen`, `dynamic`,
+        // `free_rule_indices`, `app_bg_rule_index`, and
+        // `theme_root_rule_index` are NOT updated to match. Because this
+        // re-runs on every theme re-apply (a token/literal scrollbar
+        // color change), a single toggle silently invalidates all of
+        // those indices, and the next `insert_rule` recycle then deletes
+        // the wrong physical rule — clobbering an unrelated, still-live
+        // class. That is the theme-toggle layout corruption: shared CSS
+        // classes vanish from the sheet while live nodes still reference
+        // their class, so flex containers (segmented controls, the
+        // toolbar) collapse to block flow. `self.delete_rule` records
+        // the slot for reuse without touching the CSSOM; `insert_rule_raw`
+        // recycles it in place (a net-zero `deleteRule`+`insertRule` at
+        // the same index), so every tracked index stays valid.
+        let prev: Vec<u32> = self.scrollbar_rule_indices.drain(..).collect();
+        for idx in prev {
+            self.delete_rule(idx);
         }
-        let mut indices = Vec::with_capacity(rules.len());
-        for rule in &rules {
-            let end = sheet.css_rules().map(|r| r.length()).unwrap_or(0);
-            let idx = sheet
-                .insert_rule_with_index(rule, end)
-                .expect("insert scrollbar rule (append)");
-            indices.push(idx);
-        }
+        let indices: Vec<u32> = rules.iter().map(|rule| self.insert_rule_raw(rule)).collect();
         self.scrollbar_rule_indices = indices;
     }
 

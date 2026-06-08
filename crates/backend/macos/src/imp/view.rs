@@ -28,14 +28,17 @@
 //! Taffy frames / the canvas Scene.
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
-use objc2_app_kit::{NSCursor, NSEvent, NSTextField, NSTextFieldCell, NSView};
+use objc2_app_kit::{
+    NSCursor, NSEvent, NSTextField, NSTextFieldCell, NSTrackingArea, NSTrackingAreaOptions, NSView,
+};
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSString};
 use std::cell::Cell as StdCell;
 
-use runtime_core::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
+use runtime_core::{StateBits, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
 
 /// Stable id for the single mouse pointer (macOS has no multitouch here).
 const MOUSE_TOUCH_ID: u64 = 1;
@@ -54,6 +57,17 @@ pub struct FlippedViewIvars {
     /// cursor rect over the view's bounds in `resetCursorRects`; AppKit
     /// rebuilds those rects when we invalidate or the geometry changes.
     cursor: RefCell<Option<Retained<NSCursor>>>,
+    /// Interaction-state setter installed by `Backend::attach_states` for
+    /// nodes whose stylesheet declares `hovered`/`pressed` overlays. `None`
+    /// for the many non-interactive views. We call it with
+    /// `(StateBits::HOVERED, on)` from the tracking area's enter/exit and
+    /// `(StateBits::PRESSED, on)` from mouseDown/Up; the framework
+    /// re-resolves + re-applies the node's style.
+    state_setter: RefCell<Option<Rc<dyn Fn(StateBits, bool)>>>,
+    /// The live hover-tracking area, retained so `updateTrackingAreas` can
+    /// remove the stale one before installing a fresh one. `None` until a
+    /// `state_setter` is attached (only interactive views track hover).
+    tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
 }
 
 declare_class!(
@@ -84,6 +98,10 @@ declare_class!(
 
         #[method(mouseDown:)]
         fn mouse_down(&self, event: &NSEvent) {
+            // Pressed-state feedback (no-op for views without a state setter).
+            // Independent of touch dispatch so a styled button dims on press
+            // whether or not it also carries an `on_touch` handler.
+            self.flip_state(StateBits::PRESSED, true);
             if !self.dispatch_mouse(event, TouchPhase::Began) {
                 let _: () = unsafe { msg_send![super(self), mouseDown: event] };
             }
@@ -98,9 +116,58 @@ declare_class!(
 
         #[method(mouseUp:)]
         fn mouse_up(&self, event: &NSEvent) {
+            self.flip_state(StateBits::PRESSED, false);
             if !self.dispatch_mouse(event, TouchPhase::Ended) {
                 let _: () = unsafe { msg_send![super(self), mouseUp: event] };
             }
+        }
+
+        // Hover enter/exit, delivered via the tracking area installed in
+        // `updateTrackingAreas`. Drives the `HOVERED` style state so a button
+        // dims on hover on macOS, matching web's `:hover`.
+        #[method(mouseEntered:)]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            self.flip_state(StateBits::HOVERED, true);
+        }
+
+        #[method(mouseExited:)]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            self.flip_state(StateBits::HOVERED, false);
+        }
+
+        // AppKit calls this when the view enters a window and on every
+        // geometry change. We (re)build the hover tracking area here so it
+        // always matches the current bounds. Only interactive views (those
+        // with a `state_setter`) get one; everything else tracks nothing.
+        #[method(updateTrackingAreas)]
+        fn update_tracking_areas(&self) {
+            let _: () = unsafe { msg_send![super(self), updateTrackingAreas] };
+            if let Some(old) = self.ivars().tracking_area.borrow_mut().take() {
+                let _: () = unsafe { msg_send![self, removeTrackingArea: &*old] };
+            }
+            if self.ivars().state_setter.borrow().is_none() {
+                return;
+            }
+            // `InVisibleRect` makes AppKit auto-size the area to the view's
+            // visible rect (the passed rect is ignored and it stays correct
+            // across resizes/scrolls); `ActiveInActiveApp` tracks while our
+            // app is frontmost; `MouseEnteredAndExited` delivers the two
+            // methods above. Owner is `self`, so they route here.
+            let opts = NSTrackingAreaOptions::MouseEnteredAndExited
+                | NSTrackingAreaOptions::ActiveInActiveApp
+                | NSTrackingAreaOptions::InVisibleRect;
+            let mtm = MainThreadMarker::from(self);
+            let area: Retained<NSTrackingArea> = unsafe {
+                msg_send_id![
+                    mtm.alloc::<NSTrackingArea>(),
+                    initWithRect: CGRect::ZERO,
+                    options: opts,
+                    owner: self,
+                    userInfo: std::ptr::null::<objc2::runtime::AnyObject>(),
+                ]
+            };
+            let _: () = unsafe { msg_send![self, addTrackingArea: &*area] };
+            *self.ivars().tracking_area.borrow_mut() = Some(area);
         }
 
         // AppKit calls this to (re)build the view's cursor rects whenever the
@@ -127,6 +194,8 @@ impl FlippedView {
             handler: RefCell::new(None),
             active: Cell::new(false),
             cursor: RefCell::new(None),
+            state_setter: RefCell::new(None),
+            tracking_area: RefCell::new(None),
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -144,6 +213,26 @@ impl FlippedView {
     /// macOS analogue of iOS's `IdealystTouchView::has_handler`.
     pub(crate) fn has_handler(&self) -> bool {
         self.ivars().handler.borrow().is_some()
+    }
+
+    /// Install the interaction-state setter (from `Backend::attach_states`)
+    /// and build the hover tracking area. Idempotent — replacing the setter
+    /// re-runs `updateTrackingAreas`, which swaps the area cleanly.
+    pub(crate) fn set_state_setter(&self, setter: Rc<dyn Fn(StateBits, bool)>) {
+        *self.ivars().state_setter.borrow_mut() = Some(setter);
+        // Build the area now; AppKit also calls `updateTrackingAreas` once the
+        // view is in a window and on later geometry changes.
+        let _: () = unsafe { msg_send![self, updateTrackingAreas] };
+    }
+
+    /// Flip one interaction-state bit through the installed setter, if any.
+    /// Snapshots the `Rc` first so the ivar borrow isn't held across the
+    /// callback (it re-enters the backend to re-resolve + re-apply style).
+    fn flip_state(&self, bit: StateBits, on: bool) {
+        let setter = self.ivars().state_setter.borrow().clone();
+        if let Some(s) = setter {
+            s(bit, on);
+        }
     }
 
     /// Set (or clear, with `None`) the hover cursor and ask the window to

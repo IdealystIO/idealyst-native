@@ -28,7 +28,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::{Backend, Color, StyleRules};
+use runtime_core::{Backend, Color, StateBits, StyleRules};
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id, ClassType};
@@ -3164,6 +3164,19 @@ impl Backend for MacosBackend {
             unsafe { msg_send![view, window] };
         if crate::layout_policy::reactive_change_needs_layout_pass(!host_window.is_null()) {
             schedule_layout_pass();
+        }
+    }
+
+    /// Wire native hover/press events to the framework's per-node state
+    /// machine. Only our `FlippedView` host (view / pressable / link) tracks
+    /// them — `set_state_setter` installs an `NSTrackingArea` for hover and
+    /// the view's `mouseDown`/`Up` drive press. Native controls (NSTextField,
+    /// NSSwitch, …) render their own system states, so they're skipped.
+    /// macOS has no touch, so this is the desktop analogue of web's CSS
+    /// `:hover`/`:active`.
+    fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
+        if let Some(fv) = as_flipped_view(node.as_view()) {
+            fv.set_state_setter(setter);
         }
     }
 
