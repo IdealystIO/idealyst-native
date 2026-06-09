@@ -428,6 +428,50 @@ pub fn sync_gradient_sublayer(view: &UIView) {
 /// to the view center (anchorPoint is the default 0.5,0.5) so the glyph
 /// sits centered no matter how flex sized the icon view. No-op for views
 /// with no icon sublayer or zero bounds (pre-layout).
+/// Natural (path-space) edge length the icon glyph is baked at by
+/// `create_icon` (mobile's `icon::DEFAULT_SIZE`). The layout pass scales the
+/// sublayer by `min(w,h)/ICON_NATURAL` so `Icon(size = N)` renders at N px.
+const ICON_NATURAL: CGFloat = 24.0;
+
+/// `CGAffineTransform` — CALayer's `affineTransform`/`setAffineTransform:`
+/// shape. Defined locally so the core crate stays independent of the mobile crate.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CGAffineTransform {
+    a: CGFloat,
+    b: CGFloat,
+    c: CGFloat,
+    d: CGFloat,
+    tx: CGFloat,
+    ty: CGFloat,
+}
+unsafe impl Encode for CGAffineTransform {
+    const ENCODING: Encoding = Encoding::Struct(
+        "CGAffineTransform",
+        &[
+            CGFloat::ENCODING,
+            CGFloat::ENCODING,
+            CGFloat::ENCODING,
+            CGFloat::ENCODING,
+            CGFloat::ENCODING,
+            CGFloat::ENCODING,
+        ],
+    );
+}
+
+/// Scale + center the icon's `idealyst_icon` CAShapeLayer to the view's
+/// laid-out box. A no-op unless the view owns that sublayer.
+///
+/// The path is baked at a fixed `ICON_NATURAL`×`ICON_NATURAL`; this applies a
+/// uniform layer transform of `min(w,h)/ICON_NATURAL` about the layer center so
+/// `Icon(size = N)` actually renders at N px — without it the glyph always
+/// painted at 24 px regardless of the requested size (the "icons are huge"
+/// bug). The whole mutation runs inside a `CATransaction` with implicit actions
+/// DISABLED, so the scale + recenter are INSTANT instead of a ~0.25 s
+/// animation on first render / re-render (the "icon animates a scale"
+/// artifact — CALayer animates transform/bounds/position changes inside the run
+/// loop by default). Mirrors macOS's `sync_icon_sublayer`; the two backends had
+/// diverged (iOS only recentered, never scaled or suppressed the animation).
 pub fn sync_icon_sublayer(view: &UIView) {
     unsafe {
         let bounds: CGRect = msg_send![view, bounds];
@@ -453,9 +497,32 @@ pub fn sync_icon_sublayer(view: &UIView) {
             if (&*name_ptr).to_string() != "idealyst_icon" {
                 continue;
             }
-            // Center the 24×24 path-space layer at the view's midpoint.
-            let center = CGPoint { x: w / 2.0, y: h / 2.0 };
-            let _: () = msg_send![sub_ptr, setPosition: center];
+            let scale = w.min(h) / ICON_NATURAL;
+            // Already correct? Bail — bounds/position depend only on the
+            // (constant) path size, so a matching scale means the layer is
+            // already placed. Keeps normal re-renders (color / sibling
+            // re-renders) from touching the layer, and avoids fighting an
+            // in-flight scale animation.
+            let current: CGAffineTransform = msg_send![sub_ptr, affineTransform];
+            if (current.a - scale).abs() < 1e-3 {
+                return;
+            }
+            let _: () = msg_send![objc2::class!(CATransaction), begin];
+            let _: () = msg_send![objc2::class!(CATransaction), setDisableActions: true];
+            // Keep the 24×24 path space; center it in the view and scale to fit.
+            let _: () = msg_send![sub_ptr, setAnchorPoint: CGPoint { x: 0.5, y: 0.5 }];
+            let _: () = msg_send![
+                sub_ptr,
+                setBounds: CGRect {
+                    origin: CGPoint { x: 0.0, y: 0.0 },
+                    size: CGSize { width: ICON_NATURAL, height: ICON_NATURAL },
+                }
+            ];
+            let _: () = msg_send![sub_ptr, setPosition: CGPoint { x: w / 2.0, y: h / 2.0 }];
+            let t = CGAffineTransform { a: scale, b: 0.0, c: 0.0, d: scale, tx: 0.0, ty: 0.0 };
+            let _: () = msg_send![sub_ptr, setAffineTransform: t];
+            let _: () = msg_send![objc2::class!(CATransaction), commit];
+            return;
         }
     }
 }
