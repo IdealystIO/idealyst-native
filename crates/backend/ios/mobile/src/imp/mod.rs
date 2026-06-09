@@ -1531,7 +1531,11 @@ impl Backend for IosBackend {
         secure: bool,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        let field = unsafe { UITextField::new(self.mtm) };
+        // `InsetTextField` (a UITextField subclass) so the field is fully
+        // style-driven: no native border decoration, and inner text padding
+        // comes from the style's `padding-*` (applied as a text-rect inset in
+        // `apply_style`), like every other view.
+        let field = callbacks::InsetTextField::new(self.mtm);
         let ns_val = NSString::from_str(initial_value);
         unsafe { field.setText(Some(&ns_val)) };
 
@@ -1545,7 +1549,9 @@ impl Backend for IosBackend {
             unsafe { field.setPlaceholder(Some(&ns_ph)) };
         }
 
-        let _: () = unsafe { msg_send![&field, setBorderStyle: 3isize] };
+        // No native border decoration (was `borderStyle = .roundedRect`): the
+        // border now comes from the style's `border-*` drawn on the layer, the
+        // same as any view. The default UITextField `borderStyle` is `.none`.
 
         let target = StringCallbackTarget::new(self.mtm, on_change);
         let sel = objc2::sel!(invoke:);
@@ -1565,7 +1571,7 @@ impl Backend for IosBackend {
             self.retain_target(&delegate);
         }
 
-        let node = IosNode::TextField(field);
+        let node = IosNode::TextField(Retained::into_super(field));
         // Create-time theme default: even before any `apply_style`, a bare
         // `text_input` resolves its background→color-surface + text→color-text
         // (the `None`/no-explicit path) instead of UIKit's dark-in-dark-mode
@@ -3008,6 +3014,27 @@ impl Backend for IosBackend {
                 // explicit color-surface/color-text actually paints. See
                 // `backend_ios_core::style::apply_editable_text_control_style`.
                 backend_ios_core::style::apply_editable_text_control_style(view, style);
+                // Inner text padding is style-driven: push the style's
+                // `padding-*` to the `InsetTextField` as its text/placeholder
+                // rect inset. `setIdealystInsets:` is a no-op selector on any
+                // non-InsetTextField view, so the dispatch stays safe.
+                {
+                    let pad = |t: Option<&runtime_core::Tokenized<runtime_core::Length>>| {
+                        t.map(|t| backend_ios_core::style::length_to_px(&t.resolve()))
+                            .unwrap_or(0.0)
+                    };
+                    let insets = callbacks::UIEdgeInsets {
+                        top: pad(style.padding_top.as_ref()),
+                        left: pad(style.padding_left.as_ref()),
+                        bottom: pad(style.padding_bottom.as_ref()),
+                        right: pad(style.padding_right.as_ref()),
+                    };
+                    let sel = objc2::sel!(setIdealystInsets:);
+                    let responds: bool = unsafe { msg_send![field, respondsToSelector: sel] };
+                    if responds {
+                        let _: () = unsafe { msg_send![field, setIdealystInsets: insets] };
+                    }
+                }
                 // Caret color → UIKit `tintColor`. On a UITextField the
                 // caret + selection handles both follow tintColor, so a
                 // single setter covers them. Mirrors the web `caret-color`

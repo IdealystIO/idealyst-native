@@ -2,7 +2,9 @@ use runtime_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
-use objc2_foundation::{CGFloat, MainThreadMarker, NSObject, NSRange, NSString};
+use objc2_foundation::{
+    CGFloat, CGPoint, CGSize, MainThreadMarker, NSObject, NSRange, NSString,
+};
 use objc2_ui_kit::{UIScrollView, UITextField, UITextView, UIView, UIWindow};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -1244,5 +1246,88 @@ mod tests {
         // spuriously fail the inclusive (`>=`) boundary it's meant to assert.
         let (allow, _) = tap_gate_decision(0.0, TAP_GATE_SETTLE_SECS);
         assert!(allow, "boundary is inclusive (>=)");
+    }
+}
+
+// =========================================================================
+// InsetTextField — a UITextField subclass whose text / placeholder rects are
+// inset by a per-side padding supplied by the framework style. The native
+// `UITextField` otherwise has no concept of content padding (its only inset
+// comes from `borderStyle = .roundedRect`); by removing that native border
+// (set at creation) and insetting here instead, a text field becomes fully
+// style-driven — its border comes from the style's `border-*` (drawn on the
+// layer like any view) and its inner padding from the style's `padding-*`.
+// A "bare" style (no border, no padding) yields a chrome-less input, so a
+// wrapper can own the box. `setIdealystInsets:` is pushed from `apply_style`;
+// it's a no-op selector on every other view, so dispatch stays safe.
+// =========================================================================
+
+pub(crate) struct InsetTextFieldIvars {
+    insets: std::cell::Cell<UIEdgeInsets>,
+}
+
+declare_class!(
+    pub(crate) struct InsetTextField;
+
+    unsafe impl ClassType for InsetTextField {
+        type Super = UITextField;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystInsetTextField";
+    }
+
+    impl DeclaredClass for InsetTextField {
+        type Ivars = InsetTextFieldIvars;
+    }
+
+    unsafe impl InsetTextField {
+        #[method(setIdealystInsets:)]
+        fn set_idealyst_insets(&self, insets: UIEdgeInsets) {
+            self.ivars().insets.set(insets);
+            // Re-derive the text rect on the next layout pass.
+            let _: () = unsafe { msg_send![self, setNeedsLayout] };
+        }
+
+        #[method(textRectForBounds:)]
+        fn text_rect_for_bounds(&self, bounds: CGRect) -> CGRect {
+            let base: CGRect = unsafe { msg_send![super(self), textRectForBounds: bounds] };
+            inset_rect(base, self.ivars().insets.get())
+        }
+
+        #[method(editingRectForBounds:)]
+        fn editing_rect_for_bounds(&self, bounds: CGRect) -> CGRect {
+            let base: CGRect = unsafe { msg_send![super(self), editingRectForBounds: bounds] };
+            inset_rect(base, self.ivars().insets.get())
+        }
+
+        #[method(placeholderRectForBounds:)]
+        fn placeholder_rect_for_bounds(&self, bounds: CGRect) -> CGRect {
+            let base: CGRect =
+                unsafe { msg_send![super(self), placeholderRectForBounds: bounds] };
+            inset_rect(base, self.ivars().insets.get())
+        }
+    }
+);
+
+impl InsetTextField {
+    pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(InsetTextFieldIvars {
+            insets: std::cell::Cell::new(UIEdgeInsets::default()),
+        });
+        unsafe { msg_send_id![super(this), init] }
+    }
+}
+
+/// `rect` shrunk by the per-side insets (never to a negative size).
+fn inset_rect(r: CGRect, i: UIEdgeInsets) -> CGRect {
+    CGRect {
+        origin: CGPoint {
+            x: r.origin.x + i.left,
+            y: r.origin.y + i.top,
+        },
+        size: CGSize {
+            width: (r.size.width - i.left - i.right).max(0.0),
+            height: (r.size.height - i.top - i.bottom).max(0.0),
+        },
     }
 }
