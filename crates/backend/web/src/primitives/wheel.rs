@@ -66,6 +66,10 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: WheelHandler) {
             window_position: TouchPoint::new(ev.client_x() as f32, ev.client_y() as f32),
             timestamp_ns: (ev.time_stamp() * 1_000_000.0) as u64,
         };
+        // Batching is automatic via the core `on_wheel` cycle wrapper (see
+        // `runtime_core::cycle`): a wheel pan/zoom writes pan_x, pan_y, zoom, + a
+        // repaint tick, all coalesced into one reactive flush so web's rAF renders
+        // one consistent frame, not the last stray write.
         let response = (handler)(&we);
         if response.consumed {
             // Stop the page from also scrolling / browser-zooming. Must be a

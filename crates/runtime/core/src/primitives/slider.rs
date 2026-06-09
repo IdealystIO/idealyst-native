@@ -39,7 +39,8 @@ pub fn slider<F: Fn(f32) + 'static>(
 ) -> Bound<SliderHandle> {
     Bound::new(Element::Slider {
         value,
-        on_change: Rc::new(on_change),
+        // Born batched — see `reactive::cycle`.
+        on_change: Rc::new(move |v: f32| crate::cycle(|| on_change(v))),
         min: 0.0,
         max: 1.0,
         step: None,

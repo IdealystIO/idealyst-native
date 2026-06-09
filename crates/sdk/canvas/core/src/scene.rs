@@ -531,11 +531,23 @@ impl Rect {
 /// **`id` is a decode-cache key.** Renderers cache the uploaded native
 /// image (a `CGImage`, `Bitmap`, `<canvas>`, or `peniko::Image`) keyed by
 /// `id`, so re-emitting the same image every frame doesn't re-upload. Two
-/// `ImageSource`s that share an `id` MUST have identical pixels.
+/// `ImageSource`s that share an `id` **and [`generation`](Self::generation)**
+/// MUST have identical pixels.
+///
+/// For an **animated** source under one stable `id` (a video frame pumped into
+/// a placed frame), bump [`generation`](Self::generation) when the pixels
+/// change: the renderer re-uploads and OVERWRITES the cached slot for that `id`
+/// (so the cache stays bounded — one texture per id, not one per frame).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ImageSource {
     /// Stable identity for renderer-side upload caching.
     pub id: u64,
+    /// Content generation under `id`. `0` for a static image (uploaded once).
+    /// Bump it when the pixels change under the same `id` (video) to force a
+    /// re-upload that overwrites the cached texture. Not part of the pixel data,
+    /// but part of cache identity.
+    #[serde(default)]
+    pub generation: u64,
     /// Pixel width.
     pub width: u32,
     /// Pixel height.
@@ -547,9 +559,18 @@ pub struct ImageSource {
 impl ImageSource {
     /// Build an image from raw straight-RGBA8 pixels. `rgba.len()` must be
     /// `width * height * 4`; a mismatch is the caller's bug (renderers may
-    /// draw nothing rather than read out of bounds).
+    /// draw nothing rather than read out of bounds). `generation` is `0`; use
+    /// [`with_generation`](Self::with_generation) for an animated source.
     pub fn from_rgba8(id: u64, width: u32, height: u32, rgba: Vec<u8>) -> Self {
-        Self { id, width, height, rgba }
+        Self { id, generation: 0, width, height, rgba }
+    }
+
+    /// Set the content [`generation`](Self::generation) — bump it per frame for
+    /// an animated source (video) sharing one stable `id`, so renderers re-upload
+    /// the changed pixels instead of serving the cached first frame.
+    pub fn with_generation(mut self, generation: u64) -> Self {
+        self.generation = generation;
+        self
     }
 
     /// `true` if the pixel buffer length matches `width * height * 4`.
@@ -567,7 +588,7 @@ impl ImageSource {
     pub fn decode(id: u64, bytes: &[u8]) -> Result<Self, image::ImageError> {
         let img = image::load_from_memory(bytes)?.into_rgba8();
         let (width, height) = img.dimensions();
-        Ok(Self { id, width, height, rgba: img.into_raw() })
+        Ok(Self { id, generation: 0, width, height, rgba: img.into_raw() })
     }
 }
 

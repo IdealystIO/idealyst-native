@@ -54,6 +54,23 @@ use crate::framework_source;
 /// repeated calls don't invalidate cargo's fingerprints and trigger
 /// needless rebuilds.
 pub fn generate(project_root: &Path) -> Result<PathBuf> {
+    generate_with(project_root, "catalog", "catalog", "dump_catalog_json")
+}
+
+/// Parameterized core of [`generate`]. Builds an ephemeral wrapper that
+/// links the project (+ force-links its component-library deps) with
+/// `runtime-core/catalog` on, exposing a `<bin_name>` binary whose
+/// `main()` calls `runtime_core::__mcp::<dump_call>()`.
+///
+/// `subdir` names the staging dir under `target/idealyst/<project>/`, so
+/// distinct extractors (the MCP catalog vs. the external-export manifest)
+/// don't clobber each other's build fingerprints.
+pub fn generate_with(
+    project_root: &Path,
+    subdir: &str,
+    bin_name: &str,
+    dump_call: &str,
+) -> Result<PathBuf> {
     // Absolute project path — the wrapper lives elsewhere on disk and
     // references the project by path, so a relative `.` / cwd would
     // resolve against the wrapper dir, not here.
@@ -67,7 +84,7 @@ pub fn generate(project_root: &Path) -> Result<PathBuf> {
     let wrapper_dir = source
         .wrapper_root(&project_root)
         .join(&manifest.name)
-        .join("catalog");
+        .join(subdir);
     fs::create_dir_all(wrapper_dir.join("src"))
         .with_context(|| format!("create {}", wrapper_dir.join("src").display()))?;
 
@@ -113,13 +130,13 @@ pub fn generate(project_root: &Path) -> Result<PathBuf> {
 [workspace]
 
 [package]
-name = "{name}-catalog-wrapper"
+name = "{name}-{subdir}-wrapper"
 version = "0.0.1"
 edition = "2021"
 publish = false
 
 [[bin]]
-name = "catalog"
+name = "{bin_name}"
 path = "src/main.rs"
 
 [dependencies]
@@ -127,6 +144,8 @@ runtime-core = {fcore_dep}
 {user_name} = {{ path = "{user_path}" }}
 {forced_dep_lines}{patch_block}"#,
         name = manifest.name,
+        subdir = subdir,
+        bin_name = bin_name,
         fcore_dep = fcore_dep,
         user_name = manifest.name,
         user_path = project_root.display(),
@@ -148,11 +167,12 @@ runtime-core = {fcore_dep}
 use {lib} as _;
 {forced_use_lines}
 fn main() {{
-    runtime_core::__mcp::dump_catalog_json();
+    runtime_core::__mcp::{dump_call}();
 }}
 "#,
         lib = manifest.lib_name,
         forced_use_lines = forced_use_lines,
+        dump_call = dump_call,
     );
 
     // Share the project/workspace target dir so common dependencies stay

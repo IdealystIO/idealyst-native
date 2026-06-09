@@ -994,6 +994,21 @@ impl WebBackend {
             .query_selector(mount_selector)
             .expect("query failed")
             .expect("mount element not found");
+        Self::new_in(mount)
+    }
+
+    /// Boot against an explicit mount element instead of a document
+    /// selector. Equivalent to [`new`](Self::new) but skips the
+    /// document-scoped `querySelector` — which can't reach a shadow
+    /// root or an element that foreign code owns.
+    ///
+    /// This is the basis for the "external export" Web Component
+    /// bridge: each custom-element instance mounts its own Idealyst
+    /// tree into its own host node, so multiple independent trees can
+    /// coexist on a page the framework doesn't own.
+    pub fn new_in(mount: web_sys::Element) -> Self {
+        let window = web_sys::window().expect("no window");
+        let doc = window.document().expect("no document");
         let mut backend = Self {
             doc,
             mount,

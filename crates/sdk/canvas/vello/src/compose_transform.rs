@@ -42,7 +42,7 @@ struct Params {
     lin: vec4<f32>,
     // (e, f, layer_w, layer_h): translate + the layer's LOGICAL size.
     trans_size: vec4<f32>,
-    // (viewport_w, viewport_h, alpha, _pad): device viewport + layer opacity.
+    // (viewport_w, viewport_h, alpha, overscan_frac): viewport + opacity + margin.
     vp_alpha: vec4<f32>,
 };
 
@@ -62,10 +62,15 @@ fn vs(@builtin(vertex_index) i: u32) -> VsOut {
     let m = params.lin;
     let e = params.trans_size.x;
     let f = params.trans_size.y;
-    let size = params.trans_size.zw;       // logical layer size
+    let size = params.trans_size.zw;       // logical VIEWPORT size
     let vp = params.vp_alpha.xy;           // device viewport
-    // Quad corner in LOGICAL coords, then map to device via the combined affine.
-    let corner = uv * size;
+    let frac = params.vp_alpha.w;          // overscan margin per side (fraction of vp)
+    // The cached texture is overscanned: it spans the logical region
+    // [-frac, 1+frac]·viewport (so a pan up to `frac`·vp composites with no black
+    // edge). Map the unit quad across that full region and sample uv 0..1 over it.
+    // `frac == 0` collapses to the original viewport-sized quad (`uv · size`).
+    let over = size * (1.0 + 2.0 * frac);
+    let corner = uv * over - size * frac;
     let dev = vec2<f32>(
         m.x * corner.x + m.z * corner.y + e,
         m.y * corner.x + m.w * corner.y + f,
@@ -213,6 +218,7 @@ impl TransformCompositor {
         alpha: f32,
         vp_w: u32,
         vp_h: u32,
+        over_frac: f32,
     ) {
         // Combined device affine M = scale · transform (each component ×scale):
         // device = scale · (transform · logical).
@@ -224,7 +230,7 @@ impl TransformCompositor {
         let params = Params {
             lin: [s * a, s * b, s * c, s * d],
             trans_size: [s * e, s * f, lw, lh],
-            vp_alpha: [vw, vh, alpha.clamp(0.0, 1.0), 0.0],
+            vp_alpha: [vw, vh, alpha.clamp(0.0, 1.0), over_frac.max(0.0)],
         };
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("cached-layer-compose-uniform"),

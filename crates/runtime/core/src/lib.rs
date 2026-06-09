@@ -240,7 +240,7 @@ pub use primitives::presence::{
     presence, PresenceAnim, PresenceHandle, PresenceOps, PresenceState,
 };
 pub use reactive::{
-    arena_stats, batch, inject, inject_or, install_drop_deferral, install_reactive_idle_hook,
+    arena_stats, batch, cycle, inject, inject_or, install_drop_deferral, install_reactive_idle_hook,
     is_reactive_busy, memo, memo_with, on, on_cleanup, on_defer, provide, reducer,
     register_signal_js_notifier, signal_has_js_notifier, unregister_signal_js_notifier, untrack,
     with_inject, ArenaStats, Effect, Ref, Signal, Trackable,

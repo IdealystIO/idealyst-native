@@ -39,7 +39,8 @@ pub fn toggle<F: Fn(bool) + 'static>(
 ) -> Bound<ToggleHandle> {
     Bound::new(Element::Toggle {
         value,
-        on_change: Rc::new(on_change),
+        // Born batched — see `reactive::cycle`.
+        on_change: Rc::new(move |v: bool| crate::cycle(|| on_change(v))),
         style: None,
         ref_fill: None,
         accessibility: crate::accessibility::AccessibilityProps::default(),

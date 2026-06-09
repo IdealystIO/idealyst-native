@@ -155,17 +155,20 @@ impl<I: 'static, T: Clone + 'static, E: Clone + 'static> Mutation<I, T, E> {
                 // A newer trigger has superseded this one.
                 return;
             }
-            state.update(|s| {
-                s.loading = false;
-                match result {
-                    Ok(d) => {
-                        s.data = Some(d);
-                        s.error = None;
+            // Async completion is one reactive cycle — see `reactive::cycle`.
+            crate::cycle(|| {
+                state.update(|s| {
+                    s.loading = false;
+                    match result {
+                        Ok(d) => {
+                            s.data = Some(d);
+                            s.error = None;
+                        }
+                        Err(e) => {
+                            s.error = Some(e);
+                        }
                     }
-                    Err(e) => {
-                        s.error = Some(e);
-                    }
-                }
+                });
             });
         });
     }

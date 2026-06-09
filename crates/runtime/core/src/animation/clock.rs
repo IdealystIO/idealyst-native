@@ -158,7 +158,13 @@ fn ensure_loop_running() {
     }
     let handle = raf_loop(|| {
         let dt = read_dt();
-        drive_one_tick(dt.min(MAX_TICK_DT));
+        // One reactive cycle per animation frame: every AnimatedValue /
+        // listener write this frame coalesces into a single subscriber
+        // fan-out + layout pass, instead of one per animated value. See
+        // `reactive::cycle`.
+        crate::cycle(|| {
+            drive_one_tick(dt.min(MAX_TICK_DT));
+        });
     });
     CLOCK.with(|c| {
         c.borrow_mut().raf_handle = Some(handle);

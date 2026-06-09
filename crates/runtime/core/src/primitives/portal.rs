@@ -251,7 +251,8 @@ impl Bound<PortalHandle> {
     /// `pressable()` child with its own `on_click`).
     pub fn on_dismiss<F: Fn() + 'static>(mut self, f: F) -> Self {
         if let Element::Portal { on_dismiss, .. } = &mut self.primitive {
-            *on_dismiss = Some(Rc::new(f));
+            // Born batched — see `reactive::cycle`.
+            *on_dismiss = Some(Rc::new(move || crate::cycle(|| f())));
         }
         self
     }

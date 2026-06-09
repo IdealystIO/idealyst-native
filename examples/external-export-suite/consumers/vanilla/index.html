@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vanilla JS consumer — Idealyst external export</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 40rem; }
+      section { margin: 1.5rem 0; padding: 1rem; border: 1px solid #ddd; border-radius: 8px; }
+      h2 { margin-top: 0; }
+    </style>
+  </head>
+  <body>
+    <h1>Vanilla JS consumer</h1>
+    <p>No build step, no framework — the exported components are Web Components.</p>
+
+    <section>
+      <h2>&lt;idl-greeter&gt;</h2>
+      <div id="greeter-host"></div>
+      <p>greet events: <strong id="greets">0</strong></p>
+    </section>
+
+    <section>
+      <h2>&lt;idl-stepper&gt; (controlled)</h2>
+      <div id="stepper-host"></div>
+      <p>value held in JS: <strong id="val">0</strong></p>
+    </section>
+
+    <script type="module">
+      // The generated imperative helpers (the bare elements work too).
+      import { createGreeter } from "../../dist/external/vanilla/Greeter.js";
+      import { createStepper } from "../../dist/external/vanilla/Stepper.js";
+
+      // Greeter: string prop + void callback.
+      let greets = 0;
+      const greeter = createGreeter({
+        name: "World",
+        onGreet: () => { document.getElementById("greets").textContent = ++greets; },
+      });
+      document.getElementById("greeter-host").append(greeter);
+
+      // Stepper: the host owns `value`. The component asks for the next
+      // value via onStep; we set it back — a fully controlled component.
+      let value = 0;
+      const valEl = document.getElementById("val");
+      const stepper = createStepper({
+        label: "Count",
+        value,
+        onStep: (next) => { value = next; stepper.value = value; valEl.textContent = value; },
+      });
+      document.getElementById("stepper-host").append(stepper);
+    </script>
+  </body>
+</html>

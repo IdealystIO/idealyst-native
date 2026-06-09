@@ -2479,6 +2479,13 @@ pub fn set_scrollbar_theme(thumb: Tokenized<Color>, track: Tokenized<Color>) {
 /// The handler sees EVERY key (including typing into a focused input), so act
 /// only on the keys you care about and return `KeyOutcome::Default` otherwise.
 pub fn set_app_key_handler(handler: Option<crate::primitives::key::KeyDownHandler>) {
+    // Born batched — every key the backend delivers runs the handler as one
+    // reactive cycle, so signal writes inside it coalesce. See `reactive::cycle`.
+    let handler = handler.map(|h| {
+        std::rc::Rc::new(move |e: &crate::primitives::key::KeyEvent| {
+            crate::cycle(|| h(e))
+        }) as crate::primitives::key::KeyDownHandler
+    });
     PENDING_APP_KEY_HANDLER.with(|p| *p.borrow_mut() = Some(handler));
 }
 

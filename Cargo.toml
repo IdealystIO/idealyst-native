@@ -106,6 +106,7 @@ members = [
     "crates/sdk/camera",
     "crates/sdk/media-stream",
     "crates/sdk/media-writer",
+    "crates/sdk/video-decode",
     "crates/sdk/file-export",
     "crates/sdk/file-picker",
     "crates/sdk/credentials",
@@ -171,6 +172,8 @@ members = [
     "examples/docs-macro",
     "examples/animation-test",
     "examples/welcome",
+    "examples/external-export-demo",
+    "examples/external-export-suite",
     "examples/stack-demo",
     "examples/screenshot-demo",
     "examples/robot-e2e-demo",
@@ -331,6 +334,7 @@ microphone = { path = "crates/sdk/microphone" }
 camera = { path = "crates/sdk/camera" }
 media-stream = { path = "crates/sdk/media-stream" }
 media-writer = { path = "crates/sdk/media-writer" }
+video-decode = { path = "crates/sdk/video-decode" }
 file-export = { path = "crates/sdk/file-export" }
 file-picker = { path = "crates/sdk/file-picker" }
 credentials = { path = "crates/sdk/credentials" }

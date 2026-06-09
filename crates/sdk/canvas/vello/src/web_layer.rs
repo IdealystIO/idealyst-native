@@ -316,6 +316,15 @@ impl WebLayerCompositor {
             if cam_w < 1 || cam_h < 1 {
                 continue; // first frames not decoded yet
             }
+            // A video element keeps its dimensions (metadata) even when its CURRENT
+            // frame has no GPU-importable backing — e.g. the brief window after the
+            // stream is (re)attached while toggling the camera off/on. Importing it
+            // then fails ("video element that doesn't have back resource") and wgpu
+            // `unwrap()`s that into a panic, so skip until a frame is decodable.
+            // `readyState >= HAVE_CURRENT_DATA (2)` means a current frame exists.
+            if slot.video.ready_state() < 2 {
+                continue;
+            }
             slot.ensure_tex(device, bind_layout, sampler, uniforms, cam_w, cam_h);
             let Some((texture, _view, bind_group, _)) = slot.tex.as_ref() else { continue };
 

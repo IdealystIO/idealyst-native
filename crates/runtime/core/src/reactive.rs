@@ -72,16 +72,25 @@ thread_local! {
     /// so unwinding through a user-code panic still restores it.
     static EFFECT_DEPTH: RefCell<u32> = const { RefCell::new(0) };
 
-    /// When `Some`, signal writes append their subscriber ids to this
-    /// queue instead of running them inline. Drained at the end of the
-    /// outermost `batch(..)` call. `None` outside any batch — writes
-    /// fan out synchronously as before.
+    /// When `Some`, signal writes record their *dirtied signal* in this
+    /// window instead of fanning out to subscribers inline. The fan-out
+    /// (and, for `set_if_changed`, the change-detection decision) is
+    /// deferred until the outermost `batch(..)` call returns. `None`
+    /// outside any batch — writes fan out synchronously as before.
     ///
-    /// Nested `batch(..)` calls reuse the outer queue: only the
+    /// We track dirty *signals* rather than pre-collected subscriber
+    /// `EffectId`s so that net-zero windows can be elided: a signal set
+    /// to `B` then back to `A` within one batch nets to no change, and
+    /// its subscribers are never woken (see `DirtyWindow` /
+    /// `Signal::set_if_changed`). Collecting subscribers eagerly per
+    /// write — the previous model — made that net comparison impossible
+    /// because by flush time only a flattened effect list remained.
+    ///
+    /// Nested `batch(..)` calls reuse the outer window: only the
     /// outermost batch flushes. This keeps "set a, then set b" inside a
     /// nested batch from running effects between the two writes when
     /// the outer batch hasn't completed yet.
-    static BATCH_PENDING: RefCell<Option<Vec<EffectId>>> = const { RefCell::new(None) };
+    static BATCH_PENDING: RefCell<Option<DirtyWindow>> = const { RefCell::new(None) };
 
     /// Nesting depth of in-progress `memo` compute closures. Incremented
     /// before invoking the user's `f()` in `memo_with` and decremented
@@ -760,13 +769,18 @@ where
 {
     let state = Signal::new(initial);
     let dispatch = move |action: A| {
-        // Untracked read so a `dispatch` call from inside an effect
-        // doesn't subscribe that effect to `state` (it's the
-        // dispatcher's job to *cause* state changes, not to react
-        // to them).
-        let current = untrack(|| state.get());
-        let next = f(&current, action);
-        state.set(next);
+        // A dispatch is one reactive cycle — uniform with the other entry
+        // points and coalescing if a reducer ever writes sibling signals.
+        // Nesting inside an event handler's cycle is a harmless no-op.
+        cycle(|| {
+            // Untracked read so a `dispatch` call from inside an effect
+            // doesn't subscribe that effect to `state` (it's the
+            // dispatcher's job to *cause* state changes, not to react
+            // to them).
+            let current = untrack(|| state.get());
+            let next = f(&current, action);
+            state.set(next);
+        });
     };
     (state, dispatch)
 }
@@ -1206,14 +1220,17 @@ impl<T: Clone + 'static> Signal<T> {
         {
             return;
         }
-        // Subscriber lists are kept tight on the cleanup side (effect
-        // drop / effect re-run), so no pruning pass needed here.
-        let to_run = collect_subscribers(self.id);
-        notify_or_queue(&to_run);
-        // Fire any JS-side notifier registered for this signal.
-        // No-op when no notifier exists (the common case) — single
-        // HashMap lookup, ~10 ns.
-        notify_js_subscriber(self.id);
+        // `set` is the always-notify primitive. Inside a batch, mark the
+        // signal dirty with `force` so the flush wakes its subscribers
+        // unconditionally (and taints any `set_if_changed` sharing the
+        // window). Outside a batch, fan out now.
+        if is_batching() {
+            window_record(self.id, true, None);
+        } else {
+            // Subscriber lists are kept tight on the cleanup side (effect
+            // drop / effect re-run), so no pruning pass needed here.
+            fan_out_now(self.id);
+        }
     }
 
     pub fn update<F: FnOnce(&mut T)>(&self, f: F) {
@@ -1226,9 +1243,110 @@ impl<T: Clone + 'static> Signal<T> {
         {
             return;
         }
-        let to_run = collect_subscribers(self.id);
-        notify_or_queue(&to_run);
-        notify_js_subscriber(self.id);
+        if is_batching() {
+            window_record(self.id, true, None);
+        } else {
+            fan_out_now(self.id);
+        }
+    }
+}
+
+impl<T: PartialEq + 'static> Signal<T> {
+    /// Like [`set`](Signal::set), but skips the subscriber fan-out when
+    /// the write leaves the value **equal** to what it held — eliminating
+    /// needless effect re-runs / re-renders when app code re-sets a signal
+    /// to a value it already has (re-applying derived state, syncing
+    /// props, "set on every event" handlers).
+    ///
+    /// Inside a [`batch`], the comparison is against the **window-initial**
+    /// value, not each intermediate: a signal set `A → B → A` within one
+    /// batch nets to no change and never wakes its subscribers — strictly
+    /// stronger than a per-write compare, which would see two real changes.
+    /// Pairs with the way `when`/`memo` already memoize downstream, closing
+    /// the no-op-rerender class app-wide.
+    ///
+    /// Compares in place — no `Clone` of the new value. `NaN` is never
+    /// equal to itself, so a `NaN`-valued set always notifies (acceptable).
+    pub fn set_if_changed(&self, value: T) {
+        assert_not_in_memo_compute();
+        if is_batching() {
+            // Defer to the flush. Write the new value, capturing the OLD
+            // value by move (free — it's being overwritten anyway). On the
+            // signal's FIRST dirty this window, stash a closure that
+            // compares that window-initial original against the final
+            // value at flush time.
+            let first = !BATCH_PENDING.with(|b| {
+                b.borrow().as_ref().map(|w| w.entries.contains_key(&self.id)).unwrap_or(false)
+            });
+            let old = with_signal_mut::<T, _>(self.id, self.gen, |inner| {
+                std::mem::replace(&mut inner.value, value)
+            });
+            let Some(old) = old else { return }; // stale → no-op
+            if first {
+                let check: Box<dyn FnOnce(&dyn Any) -> bool> = Box::new(move |cur: &dyn Any| {
+                    // `cur` is this signal's live `SignalInner<T>`; changed
+                    // iff its current value differs from the original.
+                    cur.downcast_ref::<SignalInner<T>>()
+                        .map(|si| si.value != old)
+                        .unwrap_or(true)
+                });
+                window_record(self.id, false, Some(check));
+            }
+            return;
+        }
+        // Non-batched: compare-then-write inside one guard (no read-then-
+        // write lock gap), fan out only on a real change.
+        let changed = with_signal_mut::<T, _>(self.id, self.gen, |inner| {
+            if inner.value == value {
+                false
+            } else {
+                inner.value = value;
+                true
+            }
+        });
+        if changed == Some(true) {
+            fan_out_now(self.id);
+        }
+    }
+}
+
+impl<T: PartialEq + Clone + 'static> Signal<T> {
+    /// Like [`update`](Signal::update), but skips the fan-out when `f`
+    /// leaves the value unchanged. Needs `Clone` to snapshot the original
+    /// for comparison (`update` mutates in place); use
+    /// [`set_if_changed`](Signal::set_if_changed) when you have the new
+    /// value directly. Batch semantics match `set_if_changed` — the
+    /// comparison is against the window-initial value.
+    pub fn update_if_changed<F: FnOnce(&mut T)>(&self, f: F) {
+        assert_not_in_memo_compute();
+        if is_batching() {
+            let first = !BATCH_PENDING.with(|b| {
+                b.borrow().as_ref().map(|w| w.entries.contains_key(&self.id)).unwrap_or(false)
+            });
+            let old = with_signal_mut::<T, _>(self.id, self.gen, |inner| {
+                let old = inner.value.clone();
+                f(&mut inner.value);
+                old
+            });
+            let Some(old) = old else { return };
+            if first {
+                let check: Box<dyn FnOnce(&dyn Any) -> bool> = Box::new(move |cur: &dyn Any| {
+                    cur.downcast_ref::<SignalInner<T>>()
+                        .map(|si| si.value != old)
+                        .unwrap_or(true)
+                });
+                window_record(self.id, false, Some(check));
+            }
+            return;
+        }
+        let changed = with_signal_mut::<T, _>(self.id, self.gen, |inner| {
+            let old = inner.value.clone();
+            f(&mut inner.value);
+            inner.value != old
+        });
+        if changed == Some(true) {
+            fan_out_now(self.id);
+        }
     }
 }
 
@@ -1342,24 +1460,82 @@ fn assert_not_in_memo_compute() {
     }
 }
 
-/// Either runs the listed effects immediately (no batch active) or
-/// appends them to the current batch's pending queue (batch active —
-/// outermost batch drains and runs them when it returns). Called from
-/// `Signal::set` / `Signal::update` instead of `run_effects` directly so
-/// every signal write participates in batching automatically.
-fn notify_or_queue(ids: &[EffectId]) {
-    let batched = BATCH_PENDING.with(|b| {
+/// A signal dirtied during an open `batch(..)`. The fan-out decision is
+/// deferred to the flush: `force` short-circuits to "always notify"
+/// (a plain `set`/`update`, or a `set_if_changed` that ran in a window
+/// already tainted by a force-write); otherwise `check` — captured by
+/// the *first* `set_if_changed` of the window — compares the
+/// window-initial value against the final one and notifies only on a
+/// real net change.
+struct DirtyEntry {
+    /// Any always-notify write (`set`/`update`) seen this window taints
+    /// the entry: at flush we notify regardless of `check`.
+    force: bool,
+    /// `Some` once the first `set_if_changed` of the window captured the
+    /// pre-window value. Called once at flush with the signal's *current*
+    /// `SignalInner<T>` (type-erased); returns `true` iff the value
+    /// changed. Carries the typed original by move, so it needs no
+    /// `PartialEq` bound at this erased call site — the bound lives on
+    /// `set_if_changed`, which built the closure.
+    check: Option<Box<dyn FnOnce(&dyn Any) -> bool>>,
+}
+
+/// The set of signals dirtied since the outermost `batch(..)` opened,
+/// in first-dirty order. `order` drives a deterministic flush (signals
+/// written earliest wake their effects first); `entries` holds the
+/// per-signal change-detection state.
+#[derive(Default)]
+struct DirtyWindow {
+    order: Vec<SignalId>,
+    entries: HashMap<SignalId, DirtyEntry>,
+}
+
+/// `true` while an outermost `batch(..)` window is open on this thread.
+fn is_batching() -> bool {
+    BATCH_PENDING.with(|b| b.borrow().is_some())
+}
+
+/// Record `sid` as dirtied in the open batch window. `force` ORs into
+/// the entry's force flag; `check` is installed only on the signal's
+/// *first* appearance this window (so the captured original is the
+/// window-initial value, never a later intermediate). Caller guarantees
+/// a window is open.
+fn window_record(sid: SignalId, force: bool, check: Option<Box<dyn FnOnce(&dyn Any) -> bool>>) {
+    BATCH_PENDING.with(|b| {
         let mut b = b.borrow_mut();
-        if let Some(pending) = b.as_mut() {
-            pending.extend_from_slice(ids);
-            true
+        let w = b.as_mut().expect("window_record called with no open batch");
+        if let Some(e) = w.entries.get_mut(&sid) {
+            e.force |= force;
+            // Keep the first-dirty `check`; a later write's snapshot
+            // would be of an intermediate value, not the window start.
         } else {
-            false
+            w.order.push(sid);
+            w.entries.insert(sid, DirtyEntry { force, check });
         }
     });
-    if !batched {
-        run_effects(ids);
-    }
+}
+
+/// Type-erased read of a signal's `SignalInner<T>` box as `&dyn Any`,
+/// for the flush-time `check`. `None` if the slot is absent (freed). We
+/// don't generation-check here: a synchronous batch can't free a slot
+/// between writes and flush (no user code runs in between), and a freed
+/// slot has no subscribers to wake anyway.
+fn with_signal_any<R>(sid: SignalId, f: impl FnOnce(&dyn Any) -> R) -> Option<R> {
+    ARENA.with(|a| {
+        let a = a.borrow();
+        a.signals
+            .get(sid.0 as usize)
+            .and_then(|o| o.as_ref())
+            .map(|boxed| f(&**boxed))
+    })
+}
+
+/// Immediate (non-batched) fan-out for one signal write: wake its
+/// subscribers, then fire its JS notifier. Matches the historical
+/// ordering (effects before JS notify).
+fn fan_out_now(sid: SignalId) {
+    run_effects(&collect_subscribers(sid));
+    notify_js_subscriber(sid);
 }
 
 /// Runs `f` with effect fan-out deferred until `f` returns. Multiple
@@ -1387,14 +1563,14 @@ fn notify_or_queue(ids: &[EffectId]) {
 /// });
 /// ```
 pub fn batch<R>(f: impl FnOnce() -> R) -> R {
-    // Only the outermost batch owns the queue. Nested batches see
+    // Only the outermost batch owns the window. Nested batches see
     // `Some(_)` already in place and skip the install — when the outer
-    // returns, it drains everything written across all nested batches
+    // returns, it flushes everything written across all nested batches
     // in one pass.
     let is_outer = BATCH_PENDING.with(|b| {
         let mut b = b.borrow_mut();
         if b.is_none() {
-            *b = Some(Vec::new());
+            *b = Some(DirtyWindow::default());
             true
         } else {
             false
@@ -1404,31 +1580,83 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     let result = f();
 
     if is_outer {
-        // Take the queue out and clear the slot *before* running
+        // Take the window out and clear the slot *before* running
         // effects. An effect's body can call set() — that write should
         // see `BATCH_PENDING = None` (the batch is over) and fan out
-        // synchronously, not append to a queue we're already draining.
-        let mut pending = BATCH_PENDING
-            .with(|b| b.borrow_mut().take())
-            .unwrap_or_default();
+        // synchronously, not record into a window we're already flushing.
+        let window = BATCH_PENDING.with(|b| b.borrow_mut().take()).unwrap_or_default();
 
-        if !pending.is_empty() {
-            // Dedupe while preserving first-seen order so the user can
-            // reason about ordering (writes earliest in the batch run
-            // their effects first). For typical batch sizes (a handful
-            // of writes), the linear `contains` is cheaper than
-            // allocating a HashSet.
-            let mut ordered: Vec<EffectId> = Vec::with_capacity(pending.len());
-            for eid in pending.drain(..) {
-                if !ordered.contains(&eid) {
-                    ordered.push(eid);
+        let DirtyWindow { order, mut entries } = window;
+        // Resolve each dirty signal's change decision in first-dirty
+        // order, collecting the subscribers to wake (deduped, first-seen
+        // order preserved) and the signals whose JS notifiers should
+        // fire. A net-zero `set_if_changed` window contributes neither.
+        let mut ordered: Vec<EffectId> = Vec::new();
+        let mut changed_sids: Vec<SignalId> = Vec::with_capacity(order.len());
+        for sid in order {
+            let entry = entries.remove(&sid).expect("dirty order/entries out of sync");
+            let changed = entry.force
+                || match entry.check {
+                    // Compare window-initial vs current. Missing slot →
+                    // not changed (no subscribers to wake regardless).
+                    Some(check) => with_signal_any(sid, check).unwrap_or(false),
+                    // No force and no snapshot can't happen (force-writes
+                    // set `force`, `set_if_changed` sets `check`); treat
+                    // defensively as changed.
+                    None => true,
+                };
+            if changed {
+                changed_sids.push(sid);
+                for eid in collect_subscribers(sid) {
+                    // For typical batch sizes (a handful of writes) the
+                    // linear `contains` beats allocating a HashSet.
+                    if !ordered.contains(&eid) {
+                        ordered.push(eid);
+                    }
                 }
             }
+        }
+
+        if !ordered.is_empty() {
             run_effects(&ordered);
+        }
+        // JS notifiers fire after the Rust fan-out, matching the
+        // non-batched path, and once per net-changed signal.
+        for sid in changed_sids {
+            notify_js_subscriber(sid);
         }
     }
 
     result
+}
+
+/// Run `f` as one **reactive cycle** (a "turn"): every signal write it
+/// performs is queued and the subscriber fan-out + coalesced layout pass
+/// happen **once**, at the end, instead of synchronously per write.
+///
+/// This is the framework's turn boundary. The runtime wraps every
+/// *cycle entry point* in it automatically — input event handlers (at
+/// the point a handler is attached, so every backend inherits it without
+/// per-platform code), async task completions, timer/animation-frame
+/// callbacks, and reducer dispatch — so author code never has to think
+/// about batching: a handler that writes five signals re-renders its
+/// subscribers once, not five times.
+///
+/// Mechanically identical to [`batch`] (it *is* `batch`); the separate
+/// name documents intent at the framework's automatic call sites and
+/// keeps them greppable. `batch` remains the name author code uses to
+/// group writes manually. Nesting composes — an inner `cycle`/`batch`
+/// joins the outer window and only the outermost flushes — so wrapping a
+/// handler that a backend *also* happens to wrap is a harmless no-op.
+///
+/// Note: the value cell is still written synchronously (a `get()` on the
+/// next line sees the new value); only the *notification* is queued. The
+/// flush runs before paint within the same synchronous turn, so there is
+/// no added frame latency — this is end-of-turn coalescing, not async
+/// deferral.
+#[inline]
+pub fn cycle<R>(f: impl FnOnce() -> R) -> R {
+    batch(f)
 }
 
 /// Snapshot the current subscribers of `sid` into a `Vec` so we can
@@ -2739,6 +2967,229 @@ mod tests {
     fn batch_returns_inner_result() {
         let value = batch(|| 42);
         assert_eq!(value, 42);
+    }
+
+    // -----------------------------------------------------------------
+    // Change-detection (dedup) on set_if_changed / update_if_changed
+    // -----------------------------------------------------------------
+
+    /// Build an effect that reads `sig` and counts its runs.
+    fn watch<T: Clone + 'static>(sig: Signal<T>) -> (Effect, std::rc::Rc<std::cell::Cell<u32>>) {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let runs = Rc::new(Cell::new(0));
+        let r = runs.clone();
+        let e = Effect::new(move || {
+            let _ = sig.get();
+            r.set(r.get() + 1);
+        });
+        (e, runs)
+    }
+
+    #[test]
+    fn set_if_changed_skips_when_value_unchanged() {
+        let a = Signal::new(7i32);
+        let (_e, runs) = watch(a);
+        assert_eq!(runs.get(), 1, "initial effect run");
+        a.set_if_changed(7); // same value
+        assert_eq!(runs.get(), 1, "no re-run on no-op set");
+        a.set_if_changed(8); // real change
+        assert_eq!(runs.get(), 2, "re-run on real change");
+    }
+
+    #[test]
+    fn set_still_notifies_when_value_unchanged() {
+        // The always-notify primitive must keep firing — monotonic
+        // counters etc. rely on it.
+        let a = Signal::new(7i32);
+        let (_e, runs) = watch(a);
+        assert_eq!(runs.get(), 1);
+        a.set(7); // same value, but `set` always notifies
+        assert_eq!(runs.get(), 2);
+    }
+
+    #[test]
+    fn set_if_changed_net_zero_batch_skips_fanout() {
+        // The headline case: A -> B -> A within one batch nets to no
+        // change, so the subscriber must NOT wake — even though each
+        // individual step was a real change a per-write compare would
+        // have notified on.
+        let a = Signal::new(1i32);
+        let (_e, runs) = watch(a);
+        assert_eq!(runs.get(), 1);
+        batch(|| {
+            a.set_if_changed(2);
+            a.set_if_changed(1); // back to the window-initial value
+        });
+        assert_eq!(runs.get(), 1, "net-zero window must not fan out");
+    }
+
+    #[test]
+    fn set_if_changed_net_change_batch_fires_once() {
+        let a = Signal::new(1i32);
+        let (_e, runs) = watch(a);
+        assert_eq!(runs.get(), 1);
+        batch(|| {
+            a.set_if_changed(2);
+            a.set_if_changed(3); // net change 1 -> 3
+        });
+        assert_eq!(runs.get(), 2, "net change fans out exactly once");
+    }
+
+    #[test]
+    fn plain_set_taints_batch_window_forcing_notify() {
+        // A plain `set` anywhere in the window forces notification even
+        // if the net value is unchanged and a `set_if_changed` also ran.
+        let a = Signal::new(1i32);
+        let (_e, runs) = watch(a);
+        assert_eq!(runs.get(), 1);
+        batch(|| {
+            a.set_if_changed(1); // no-op on its own...
+            a.set(1); // ...but a force-write taints the window
+        });
+        assert_eq!(runs.get(), 2, "force-write notifies despite net-zero");
+    }
+
+    #[test]
+    fn set_if_changed_nan_always_notifies() {
+        // NaN != NaN, so a NaN-valued set is never "unchanged".
+        let a = Signal::new(0.0f64);
+        let (_e, runs) = watch(a);
+        assert_eq!(runs.get(), 1);
+        a.set_if_changed(f64::NAN);
+        assert_eq!(runs.get(), 2, "0.0 -> NaN is a change");
+        a.set_if_changed(f64::NAN);
+        assert_eq!(runs.get(), 3, "NaN -> NaN still notifies (NaN != NaN)");
+    }
+
+    #[test]
+    fn update_if_changed_dedups() {
+        let a = Signal::new(5i32);
+        let (_e, runs) = watch(a);
+        assert_eq!(runs.get(), 1);
+        a.update_if_changed(|v| *v = 5); // no change
+        assert_eq!(runs.get(), 1, "no-op update skips fan-out");
+        a.update_if_changed(|v| *v += 1); // real change
+        assert_eq!(runs.get(), 2);
+    }
+
+    #[test]
+    fn set_if_changed_stale_handle_is_noop() {
+        // A write through a handle whose slot was freed/recycled must
+        // stay a no-op, not touch the new occupant — both inline and
+        // when deferred inside a batch.
+        let mut scope = Scope::new();
+        let stale: Signal<i32> = with_scope(&mut scope, || Signal::new(1));
+        drop(scope); // frees the slot, advancing its generation
+
+        let fresh: Signal<u64> = Signal::new(7);
+        assert_eq!(fresh.id(), stale.id(), "fresh reuses the freed slot");
+
+        stale.set_if_changed(2); // must not panic / clobber
+        batch(|| stale.set_if_changed(3)); // deferred path: also a no-op
+        assert_eq!(fresh.get(), 7, "stale write must not touch the recycled signal");
+    }
+
+    // -----------------------------------------------------------------
+    // Automatic cycle batching (queue effect fan-out to the turn boundary)
+    // -----------------------------------------------------------------
+
+    /// An effect reading all of `a`, `b`, `c`, counting its runs.
+    fn watch3(
+        a: Signal<i32>,
+        b: Signal<i32>,
+        c: Signal<i32>,
+    ) -> (Effect, std::rc::Rc<std::cell::Cell<u32>>) {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let runs = Rc::new(Cell::new(0));
+        let r = runs.clone();
+        let e = Effect::new(move || {
+            let _ = (a.get(), b.get(), c.get());
+            r.set(r.get() + 1);
+        });
+        (e, runs)
+    }
+
+    #[test]
+    fn cycle_coalesces_multiple_writes_to_one_fanout() {
+        // The core property the whole auto-batching architecture rests on:
+        // N writes inside one cycle wake a shared subscriber exactly once.
+        let a = Signal::new(0i32);
+        let b = Signal::new(0i32);
+        let c = Signal::new(0i32);
+        let (_e, runs) = watch3(a, b, c);
+        assert_eq!(runs.get(), 1, "initial run");
+        cycle(|| {
+            a.set(1);
+            b.set(1);
+            c.set(1);
+        });
+        assert_eq!(runs.get(), 2, "three writes in one cycle => one re-run");
+    }
+
+    #[test]
+    fn unbatched_writes_fan_out_per_write() {
+        // Contrast: WITHOUT a cycle, the same three writes wake the
+        // subscriber three times. This is what the auto-cycle eliminates.
+        let a = Signal::new(0i32);
+        let b = Signal::new(0i32);
+        let c = Signal::new(0i32);
+        let (_e, runs) = watch3(a, b, c);
+        assert_eq!(runs.get(), 1);
+        a.set(1);
+        b.set(1);
+        c.set(1);
+        assert_eq!(runs.get(), 4, "three separate fan-outs (1 initial + 3)");
+    }
+
+    #[test]
+    fn pressable_handler_is_born_batched() {
+        // The architecture's payoff: a handler attached through a core
+        // builder (here `pressable`) auto-batches at the point the backend
+        // invokes it — no per-backend `batch()` needed. Two writes in the
+        // handler wake a shared subscriber once, not twice.
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let a = Signal::new(0i32);
+        let b = Signal::new(0i32);
+        let runs = Rc::new(Cell::new(0));
+        let r = runs.clone();
+        let _e = Effect::new(move || {
+            let _ = (a.get(), b.get());
+            r.set(r.get() + 1);
+        });
+        assert_eq!(runs.get(), 1);
+
+        let pressable = crate::pressable(Vec::new(), move || {
+            a.set(1);
+            b.set(2);
+        });
+        let crate::Element::Pressable { on_click, .. } = pressable.primitive else {
+            panic!("pressable did not build a Pressable element");
+        };
+        // Simulate the backend firing the stored handler on a tap.
+        on_click();
+        assert_eq!(runs.get(), 2, "born-batched handler => one re-run for two writes");
+    }
+
+    #[test]
+    fn nested_cycle_joins_outer_window() {
+        // A handler that a backend ALSO wraps (nested cycle) must still
+        // flush once — the inner cycle joins the outer window.
+        let a = Signal::new(0i32);
+        let b = Signal::new(0i32);
+        let c = Signal::new(0i32);
+        let (_e, runs) = watch3(a, b, c);
+        assert_eq!(runs.get(), 1);
+        cycle(|| {
+            a.set(1);
+            cycle(|| {
+                b.set(1);
+                c.set(1);
+            });
+        });
+        assert_eq!(runs.get(), 2, "nested cycles flush once at the outermost");
     }
 
     // -----------------------------------------------------------------

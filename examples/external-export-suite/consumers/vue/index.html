@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vue consumer — Idealyst external export</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 40rem; }
+      section { margin: 1.5rem 0; padding: 1rem; border: 1px solid #ddd; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>Vue 3 consumer</h1>
+    <p>Vue loaded from a CDN; the generated Vue wrappers are plain ESM (no build step).</p>
+    <div id="app"></div>
+
+    <script type="module">
+      import { createApp, ref, h } from "https://esm.sh/vue@3";
+      // Generated Vue wrappers (plain .js — usable without a bundler).
+      import { Greeter } from "../../dist/external/vue/Greeter.js";
+      import { Stepper } from "../../dist/external/vue/Stepper.js";
+
+      createApp({
+        setup() {
+          const greets = ref(0);
+          const value = ref(0);
+          return () =>
+            h("div", [
+              h("section", [
+                h("h2", "<Greeter>"),
+                h(Greeter, { name: "World", onGreet: () => (greets.value += 1) }),
+                h("p", `greet events: ${greets.value}`),
+              ]),
+              h("section", [
+                h("h2", "<Stepper> (controlled)"),
+                h(Stepper, {
+                  label: "Count",
+                  value: value.value,
+                  onStep: (next) => (value.value = next),
+                }),
+                h("p", `value: ${value.value}`),
+              ]),
+            ]);
+        },
+      }).mount("#app");
+    </script>
+  </body>
+</html>

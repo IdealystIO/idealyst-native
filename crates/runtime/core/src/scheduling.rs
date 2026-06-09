@@ -452,7 +452,9 @@ pub fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
         if crate::reactive::is_reactive_busy() {
             return;
         }
-        crate::reactive::with_reactive_ctx(&ctx, f);
+        // One reactive cycle per timer fire: writes inside `f` coalesce
+        // into a single fan-out. See `reactive::cycle`.
+        crate::reactive::with_reactive_ctx(&ctx, || crate::cycle(f));
     });
     crate::reactive::on_cleanup(move || {
         cancelled.set(true);
@@ -499,7 +501,9 @@ pub fn raf_loop_scoped<F: FnMut() + 'static>(mut f: F) {
         if crate::reactive::is_reactive_busy() {
             return;
         }
-        crate::reactive::with_reactive_ctx(&ctx, || f());
+        // One reactive cycle per frame: all writes this frame coalesce
+        // into a single fan-out. See `reactive::cycle`.
+        crate::reactive::with_reactive_ctx(&ctx, || crate::cycle(|| f()));
     });
     crate::reactive::on_cleanup(move || {
         cancelled.set(true);

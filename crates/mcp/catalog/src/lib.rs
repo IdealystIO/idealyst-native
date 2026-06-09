@@ -125,7 +125,33 @@ pub struct ComponentEntry {
     pub params: &'static [ParamSpec],
 }
 
+/// A `#[component]` the author tagged `external` — i.e. it should be
+/// emitted as a framework-agnostic Web Component by `idealyst export`.
+///
+/// Registered only when the `catalog` feature is on (the export
+/// pipeline builds the project with that feature, exactly like
+/// `idealyst docs` / `idealyst mcp`). The prop *fields* themselves are
+/// NOT duplicated here — they come from the component's props struct
+/// via [`PropsSchemaEntry`] (which `#[derive(IdealystSchema)]` emits);
+/// join on [`props_short_name`](Self::props_short_name).
+#[derive(Debug)]
+pub struct ExternalEntry {
+    /// The component function's bare identifier — e.g. `"Greeter"`.
+    pub name: &'static str,
+    /// `module_path!()` at the registration site.
+    pub module_path: &'static str,
+    /// Short name of the component's props struct (`"GreeterProps"`) —
+    /// the join key to [`PropsSchemaEntry`]/[`TypeEntry`] for the prop
+    /// fields. Empty for a zero-prop component.
+    pub props_short_name: &'static str,
+    /// The custom-element tag the export emits, e.g. `"idl-greeter"`.
+    /// Defaults to `idl-<kebab(name)>`; overridable via
+    /// `#[component(external(tag = "..."))]`.
+    pub tag: &'static str,
+}
+
 inventory::collect!(ComponentEntry);
+inventory::collect!(ExternalEntry);
 inventory::collect!(PropsSchemaEntry);
 inventory::collect!(ToolEntry);
 inventory::collect!(PrimitiveEntry);
@@ -735,6 +761,61 @@ pub fn lookup_schema(short_name: &str) -> Option<&'static PropsSchemaEntry> {
 /// `(module_path, name)`.
 pub fn entries() -> impl Iterator<Item = &'static ComponentEntry> {
     inventory::iter::<ComponentEntry>()
+}
+
+/// Iterate every `#[component(external)]` the build registered.
+pub fn externals() -> impl Iterator<Item = &'static ExternalEntry> {
+    inventory::iter::<ExternalEntry>()
+}
+
+/// Build the export manifest: every `external` component joined to its
+/// prop schema. This is the single source `idealyst export` reads — the
+/// join lives here (not in the CLI) because this crate already owns the
+/// `ExternalEntry` ⇄ `PropsSchemaEntry` relationship.
+///
+/// Each prop carries its `name`, raw `type_str` (the codegen classifies
+/// it into a TS type + a JS conversion), `doc`, and `constraint`. A
+/// tagged component whose props struct lacks `#[derive(IdealystSchema)]`
+/// surfaces with an empty `props` array — the CLI warns on that.
+pub fn external_components_json() -> serde_json::Value {
+    let mut components: Vec<serde_json::Value> = externals()
+        .map(|e| {
+            let props: Vec<serde_json::Value> = lookup_schema(e.props_short_name)
+                .map(|s| {
+                    s.fields
+                        .iter()
+                        .map(|f| {
+                            serde_json::json!({
+                                "name": f.name,
+                                "type_str": f.type_str,
+                                "doc": f.doc,
+                                "constraint": f.constraint,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            serde_json::json!({
+                "name": e.name,
+                "module_path": e.module_path,
+                "props_struct": e.props_short_name,
+                "tag": e.tag,
+                "props": props,
+            })
+        })
+        .collect();
+    // Stable order so generated output diffs minimally.
+    components.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    serde_json::json!({ "external_components": components })
+}
+
+/// Print the export manifest as pretty JSON on stdout — the entry
+/// point the ephemeral export wrapper invokes.
+pub fn dump_external_components_json() {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&external_components_json()).unwrap()
+    );
 }
 
 /// Iterate every [`PrimitiveEntry`] in the framework table.

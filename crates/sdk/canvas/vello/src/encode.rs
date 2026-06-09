@@ -269,26 +269,36 @@ thread_local! {
     /// Blob — rebuilding it each frame would defeat that. Authors emit the
     /// same `id` every frame for a static image; we build the Blob once.
     ///
-    /// Note: this never evicts. Canvas authors use a small, stable set of
-    /// image ids (a placed photo, a stamp), so unbounded growth isn't a
-    /// concern in practice; if that changes, add an LRU keyed on frame use.
-    static IMAGE_CACHE: RefCell<HashMap<u64, ImageData>> = RefCell::new(HashMap::new());
+    /// Note: this keeps ONE entry per image id — it OVERWRITES the slot on a
+    /// content `generation` change rather than growing. A static image bumps no
+    /// generation, so its Blob is built once; an animated source (video frames
+    /// under one stable id) re-uploads in place. Canvas authors use a small,
+    /// stable set of image ids, so unbounded growth isn't a concern; if that
+    /// changes, add an LRU keyed on frame use.
+    static IMAGE_CACHE: RefCell<HashMap<u64, (u64, ImageData)>> = RefCell::new(HashMap::new());
 }
 
-/// Get-or-build the cached [`ImageData`] for a canvas image. Caller has
-/// already checked `is_valid()`.
+/// Get-or-build the cached [`ImageData`] for a canvas image. Caller has already
+/// checked `is_valid()`. Re-uploads (overwriting the id's slot) when the image's
+/// `generation` changed, so a video frame pumped under one stable id animates
+/// instead of serving the cached first frame.
 fn image_data_cached(src: &CanvasImage) -> ImageData {
     IMAGE_CACHE.with(|c| {
-        c.borrow_mut()
-            .entry(src.id)
-            .or_insert_with(|| ImageData {
-                data: Blob::from(src.rgba.clone()),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: src.width,
-                height: src.height,
-            })
-            .clone()
+        let mut c = c.borrow_mut();
+        if let Some((gen, data)) = c.get(&src.id) {
+            if *gen == src.generation {
+                return data.clone();
+            }
+        }
+        let data = ImageData {
+            data: Blob::from(src.rgba.clone()),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: src.width,
+            height: src.height,
+        };
+        c.insert(src.id, (src.generation, data.clone()));
+        data
     })
 }
 

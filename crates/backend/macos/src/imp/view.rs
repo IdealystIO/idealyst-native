@@ -339,7 +339,36 @@ impl FlippedView {
             timestamp_ns: (ts * 1_000_000_000.0) as u64,
             force: None,
         };
+        // Auto-batch: run the handler inside a reactive `batch` so every signal
+        // write it makes (a camera move writes pan_x, pan_y, zoom, + a repaint
+        // tick) fans out its effects ONCE, after the handler returns, instead of
+        // synchronously per write. Without this the canvas repaint effect runs
+        // mid-update and presents inconsistent intermediate frames (pan moved,
+        // zoom not yet) → visible flicker/jitter. Batching collapses the burst to
+        // a single consistent render per input event — the native analogue of the
+        // web renderer's rAF coalescing, and it lets app code drop manual
+        // `batch(..)` around camera mutations.
+        // Batching is automatic: the `on_touch` handler is wrapped in a
+        // reactive cycle at attach time (see `runtime_core::cycle`), so a
+        // burst of camera signal writes coalesces into one consistent render
+        // per input event — no backend-side `batch()` needed. (Previously a
+        // local `batch(..)` here; centralized so every backend gets it.)
+        let __in = std::time::Instant::now();
         let response = (handler)(&ev);
+        if matches!(phase, TouchPhase::Moved) {
+            thread_local! {
+                static MP_LAST_IN: std::cell::Cell<Option<std::time::Instant>> =
+                    const { std::cell::Cell::new(None) };
+            }
+            let dur = __in.elapsed().as_micros();
+            let gap = MP_LAST_IN.with(|c| {
+                let prev = c.replace(Some(__in));
+                prev.map(|p| __in.duration_since(p).as_micros()).unwrap_or(0)
+            });
+            if gap > 18000 || dur > 5000 {
+                eprintln!("MOUSEPROF entry_gap_us={gap} handler_dur_us={dur}");
+            }
+        }
 
         match phase {
             TouchPhase::Began => {
@@ -410,6 +439,9 @@ impl FlippedView {
             window_position: TouchPoint::new(win_tl.x as f32, win_tl.y as f32),
             timestamp_ns: (ts * 1_000_000_000.0) as u64,
         };
+        // Batching is automatic via the core `on_wheel` cycle wrapper (see
+        // `dispatch_mouse` and `runtime_core::cycle`) — wheel pan/zoom writes to
+        // several camera signals coalesce into one render per event.
         (handler)(&we).consumed
     }
 }

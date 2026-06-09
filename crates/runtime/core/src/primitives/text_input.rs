@@ -87,7 +87,8 @@ pub fn text_input<F: Fn(String) + 'static>(
 ) -> Bound<TextInputHandle> {
     Bound::new(Element::TextInput {
         value,
-        on_change: Rc::new(on_change),
+        // Born batched — see `reactive::cycle`.
+        on_change: Rc::new(move |s: String| crate::cycle(|| on_change(s))),
         on_key_down: None,
         placeholder: None,
         secure: false,
@@ -137,7 +138,9 @@ impl Bound<TextInputHandle> {
         F: Fn(&KeyEvent) -> KeyOutcome + 'static,
     {
         if let Element::TextInput { on_key_down, .. } = &mut self.primitive {
-            *on_key_down = Some(Rc::new(handler));
+            // Born batched — see `reactive::cycle`. Return value (preventDefault)
+            // is preserved through the cycle flush.
+            *on_key_down = Some(Rc::new(move |e: &KeyEvent| crate::cycle(|| handler(e))));
         }
         self
     }

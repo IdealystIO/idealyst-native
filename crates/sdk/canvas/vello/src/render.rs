@@ -126,9 +126,29 @@ fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node
         let scene_cell = scene_cell.clone();
         let state_cell = state_cell.clone();
         move || {
+            let __ps0 = std::time::Instant::now();
             *scene_cell.borrow_mut() = paint_scene(&props);
+            let __ps = __ps0.elapsed();
+            thread_local! {
+                static EFF_LAST: std::cell::Cell<Option<std::time::Instant>> =
+                    const { std::cell::Cell::new(None) };
+            }
+            let __gap = EFF_LAST.with(|c| {
+                let now = std::time::Instant::now();
+                let prev = c.replace(Some(now));
+                prev.map(|p| now.duration_since(p).as_micros()).unwrap_or(0)
+            });
             if let Some(state) = state_cell.borrow_mut().as_mut() {
                 state.render(&scene_cell.borrow());
+            }
+            let __body = __ps0.elapsed();
+            if __ps.as_micros() > 1000 || __gap > 20000 {
+                eprintln!(
+                    "PAINTPROF paint_us={} effect_gap_us={} body_us={}",
+                    __ps.as_micros(),
+                    __gap,
+                    __body.as_micros(),
+                );
             }
         }
     });
@@ -196,6 +216,15 @@ struct RenderState {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     renderer: Renderer,
+    /// A SECOND vello renderer used ONLY to bake cached layers that contain
+    /// images. vello keeps one persistent image atlas per `Renderer`, resized to
+    /// fit each baked scene's images — so baking an image-less layer (grid, ink)
+    /// through the same renderer shrinks the atlas to 1×1 and a later image bake
+    /// resizes it back WITHOUT re-uploading the (cached) image → the image renders
+    /// blank ("media vanishes when you pan/zoom/draw"). Keeping image layers on
+    /// their own renderer means their atlas is never shrunk, so the cache stays
+    /// valid. Lazily built on the first image bake (it compiles vello's shaders).
+    image_renderer: Option<Renderer>,
     scene: VelloScene,
     /// Intermediate Rgba8Unorm storage texture vello renders into (the
     /// surface itself can't be a compute storage target). Blitted to the
@@ -221,6 +250,13 @@ struct RenderState {
     /// CPU read-back, no swizzle. `None` only when the canvas has no `capture`
     /// sink. The CPU `capture_frame` path is the fallback when this is idle.
     native_capture: Option<NativeCapture>,
+    /// The next scheduled capture time — throttles recording capture to
+    /// `CAPTURE_INTERVAL` (~60fps) independent of the (faster) on-screen render
+    /// rate, so a 120fps screen records a capped 60fps video and pays the
+    /// capture-blit cost only ~60×/sec. Advanced by a fixed interval per capture
+    /// (a phase accumulator) so the AVERAGE rate stays 60fps even when render
+    /// timing is uneven. `None` until the first captured frame.
+    next_capture: Option<std::time::Instant>,
     /// Texture layers (camera, screen share, …) composited over the scene each
     /// frame (macOS), so the strokes + layers are one image — on-screen and in
     /// the recording. Empty when the canvas has no `layers`.
@@ -244,9 +280,52 @@ struct RenderState {
     /// transform every frame (the infinite pan/zoom fast path). Cleared on
     /// resize (stale-size); the app re-bakes on the resize repaint.
     cached_layers: HashMap<u32, (wgpu::Texture, wgpu::TextureView)>,
+    /// Last DIRTY ops baked per cached layer. `layer_cached(dirty=false)` carries
+    /// EMPTY ops (the renderer is meant to reuse the retained texture); but if the
+    /// texture was dropped (resize) and a `dirty=false` frame must bake the now-
+    /// missing layer, baking those empty ops yields a transparent (black) layer.
+    /// Retaining the ops lets us re-bake the real content instead. Keyed by id.
+    cached_ops: HashMap<u32, Vec<DrawOp>>,
     /// Transformed-quad compositor for `cached_layers`, built lazily the first
     /// time a cached-layer scene is rendered. See [`TransformCompositor`].
     transform_compositor: Option<TransformCompositor>,
+}
+
+/// Overscan margin as a fraction of the viewport, per side, for cached layers —
+/// read once from `OVERSCAN_FRAC` (default `0.0` = no overscan, the original
+/// viewport-sized behavior). When `> 0`, cached layers bake into a texture that
+/// extends `frac`·viewport beyond each edge so a pan up to that margin composites
+/// (O(1)) with no black edge. Must exceed the app's `far` recenter threshold
+/// (0.4) so the re-bake fires before the margin is exhausted. Clamped to [0, 1].
+pub(crate) fn overscan_frac() -> f32 {
+    thread_local! {
+        static FRAC: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+    }
+    FRAC.with(|c| match c.get() {
+        Some(v) => v,
+        None => {
+            let v = std::env::var("OVERSCAN_FRAC")
+                .ok()
+                .and_then(|s| s.parse::<f32>().ok())
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0);
+            c.set(Some(v));
+            v
+        }
+    })
+}
+
+/// The overscanned device dimensions for a `(w, h)` viewport: `(1 + 2·frac)` on
+/// each axis (rounded). `frac == 0` returns `(w, h)` unchanged.
+pub(crate) fn overscan_dims(w: u32, h: u32, frac: f32) -> (u32, u32) {
+    if frac <= 0.0 {
+        return (w, h);
+    }
+    let scale = 1.0 + 2.0 * frac;
+    (
+        ((w as f32) * scale).round() as u32,
+        ((h as f32) * scale).round() as u32,
+    )
 }
 
 fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
@@ -382,6 +461,7 @@ impl RenderState {
             surface,
             config,
             renderer,
+            image_renderer: None,
             scene: VelloScene::new(),
             target,
             target_view,
@@ -391,6 +471,7 @@ impl RenderState {
             // backingScaleFactor) makes the logical scene fill the surface.
             scale: if scale > 0.0 { scale as f64 } else { 1.0 },
             native_capture: capture.clone().map(NativeCapture::new),
+            next_capture: None,
             layer_compositor,
             layers,
             capture,
@@ -399,6 +480,7 @@ impl RenderState {
             overlay: None,
             overlay_compositor: None,
             cached_layers: HashMap::new(),
+            cached_ops: HashMap::new(),
             transform_compositor: None,
         })
     }
@@ -427,28 +509,79 @@ impl RenderState {
     /// does nothing, so per-frame cost is the composite, not the raster.
     fn bake_cached_layers(&mut self, layers: &[CachedRef]) {
         let (w, h) = (self.config.width, self.config.height);
+        // Overscan: bake each cached layer into a texture larger than the viewport
+        // by `frac` on every side, so a pan up to `frac`·viewport composites the
+        // retained texture under a transform (O(1)) with no black edge — re-baking
+        // only when the pan runs past the margin (the app's `far` recenter). `0.0`
+        // (the default) is exactly the old viewport-sized behavior. Device size is
+        // `(1 + 2·frac)·viewport`; content is rendered offset by `frac·viewport`
+        // (logical) so the texture's top-left maps to screen `-frac·viewport`.
+        let frac = overscan_frac();
+        let (ow, oh) = overscan_dims(w, h, frac);
+        let margin = (
+            frac as f64 * (w as f64) / self.scale,
+            frac as f64 * (h as f64) / self.scale,
+        );
         for layer in layers {
             let missing = !self.cached_layers.contains_key(&layer.id);
             if !(layer.dirty || missing) {
                 continue;
             }
-            if missing {
-                self.cached_layers.insert(layer.id, make_target(&self.device, w, h));
+            // `layer_cached(dirty=false)` carries EMPTY ops (reuse the retained
+            // texture). After a resize drops the texture (`missing`), a non-dirty
+            // frame would bake those empty ops → a transparent (black) layer — the
+            // "canvas goes black until I draw" bug. So retain the last DIRTY ops
+            // and re-bake from them when we must bake a missing layer. Move them
+            // out for encoding (so `cached_ops` isn't borrowed while `scene`/the
+            // renderer are), then put them back.
+            if layer.dirty {
+                self.cached_ops.insert(layer.id, layer.ops.to_vec());
             }
-            // Encode the layer's ops at the dpr base into a fresh vello scene,
-            // then compute-render into the layer texture (transparent base).
+            let Some(ops) = self.cached_ops.remove(&layer.id) else {
+                continue; // never baked dirty yet → nothing to re-bake
+            };
+            if missing {
+                self.cached_layers.insert(layer.id, make_target(&self.device, ow, oh));
+            }
+            // Encode the ops at the dpr base (+ overscan offset) into a fresh vello
+            // scene, then compute-render into the layer texture.
             self.scene.reset();
-            encode_scene(layer.ops, &mut self.scene, Affine::scale(self.scale));
+            encode_scene(
+                &ops,
+                &mut self.scene,
+                Affine::scale(self.scale) * Affine::translate(margin),
+            );
             let params = RenderParams {
                 base_color: Color::from_rgba8(0, 0, 0, 0),
-                width: w,
-                height: h,
+                width: ow,
+                height: oh,
                 antialiasing_method: AaConfig::Area,
             };
+            // Bake image layers on the dedicated `image_renderer` so the grid/ink
+            // bakes (which run on `self.renderer`) can't shrink the image atlas out
+            // from under them (see the `image_renderer` field). Image-less layers
+            // stay on the main renderer.
+            let has_image = ops.iter().any(|op| matches!(op, DrawOp::Image { .. }));
+            if has_image && self.image_renderer.is_none() {
+                self.image_renderer = Renderer::new(
+                    &self.device,
+                    RendererOptions {
+                        use_cpu: false,
+                        antialiasing_support: AaSupport::area_only(),
+                        num_init_threads: None,
+                        pipeline_cache: None,
+                    },
+                )
+                .ok();
+            }
             let view = &self.cached_layers.get(&layer.id).unwrap().1;
-            let _ = self
-                .renderer
-                .render_to_texture(&self.device, &self.queue, &self.scene, view, &params);
+            let renderer = match (has_image, self.image_renderer.as_mut()) {
+                (true, Some(r)) => r,
+                _ => &mut self.renderer,
+            };
+            let _ =
+                renderer.render_to_texture(&self.device, &self.queue, &self.scene, view, &params);
+            self.cached_ops.insert(layer.id, ops);
         }
     }
 
@@ -465,6 +598,8 @@ impl RenderState {
         // instances those and composites vello's content over them; anything else
         // is plain vello. All three converge on the same pixels (CLAUDE.md §7).
         let plan = plan_scene(canvas_scene.ops());
+        let __t0 = std::time::Instant::now();
+        let __is_cached = matches!(plan, ScenePlan::Cached { .. });
 
         // vello renders its content (the whole scene for `Vello`, only `rest` for
         // `Hybrid`) over a transparent base. `Vello` targets the main `target`;
@@ -480,16 +615,34 @@ impl RenderState {
                 (Some(rest), true)
             }
             ScenePlan::Shapes(_) => (None, false),
-            ScenePlan::Cached { rest, .. } => {
+            ScenePlan::Cached { rest, layers } => {
                 // Cached layers form the backdrop (composited from their textures
                 // below); the live ink (`rest`) renders through vello into the
                 // overlay so the backdrop survives underneath, exactly like Hybrid.
-                if rest.is_empty() {
+                //
+                // A `Cached` frame must carry SOME vello `render_to_texture` submit
+                // or it won't present (the surface stays on the last submitted
+                // frame — the "pan doesn't update until you draw" freeze). A bake
+                // (a dirty/first-seen layer) is such a submit; live `rest` is too.
+                // So we only force an EMPTY `rest` through vello when NEITHER
+                // happens — a pure composite-only reuse frame (a pan that re-uses
+                // every cached texture). When a layer bakes (e.g. drawing re-bakes
+                // the ink layer every point), forcing an empty `rest` would add a
+                // WASTED full-viewport vello pass per frame — a real cost on the
+                // recorder's drawing path. The empty overlay is never composited
+                // below (guarded by `!rest.is_empty()`).
+                let any_bake = layers
+                    .iter()
+                    .any(|l| l.dirty || !self.cached_layers.contains_key(&l.id));
+                if rest.is_empty() && any_bake {
                     (None, false)
                 } else {
                     if self.overlay.is_none() {
-                        self.overlay =
-                            Some(make_target(&self.device, self.config.width, self.config.height));
+                        self.overlay = Some(make_target(
+                            &self.device,
+                            self.config.width,
+                            self.config.height,
+                        ));
                     }
                     (Some(rest), true)
                 }
@@ -515,8 +668,31 @@ impl RenderState {
                 antialiasing_method: AaConfig::Area,
             };
             let view = if to_overlay { &self.overlay.as_ref().unwrap().1 } else { &self.target_view };
-            if self
-                .renderer
+            // Route image-bearing content (a live-dragged media item lives in
+            // `rest`) to the dedicated `image_renderer`. The main renderer's vello
+            // image atlas is shrunk to 1×1 by image-less bakes (grid/ink); a later
+            // image render resizes it back WITHOUT re-uploading the cached image →
+            // the live image renders blank ("media disappears while dragging").
+            // `image_renderer` only ever renders image content, so its atlas keeps
+            // the upload (same protection as the cached image-layer bakes).
+            let has_image = ops.iter().any(|op| matches!(op, DrawOp::Image { .. }));
+            if has_image && self.image_renderer.is_none() {
+                self.image_renderer = Renderer::new(
+                    &self.device,
+                    RendererOptions {
+                        use_cpu: false,
+                        antialiasing_support: AaSupport::area_only(),
+                        num_init_threads: None,
+                        pipeline_cache: None,
+                    },
+                )
+                .ok();
+            }
+            let renderer = match (has_image, self.image_renderer.as_mut()) {
+                (true, Some(r)) => r,
+                _ => &mut self.renderer,
+            };
+            if renderer
                 .render_to_texture(&self.device, &self.queue, &self.scene, view, &params)
                 .is_err()
             {
@@ -524,12 +700,16 @@ impl RenderState {
             }
         }
 
+        let __t_content = __t0.elapsed();
+        let __acq0 = std::time::Instant::now();
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             // Skip the frame on timeout/occluded/outdated/lost/validation.
             _ => return false,
         };
+        let __t_acq = __acq0.elapsed();
+        let __enc0 = std::time::Instant::now();
         let surface_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -591,6 +771,8 @@ impl RenderState {
                 let target_view = &self.target_view;
                 let (cw, ch) = (self.config.width, self.config.height);
                 let s = self.scale as f32;
+                let frac = overscan_frac();
+                let (ow, oh) = overscan_dims(cw, ch, frac);
                 // Clear, then composite each cached layer (in order) under its
                 // camera transform — one transformed quad each, no per-op work.
                 crate::compose_transform::clear_to_transparent(&mut encoder, target_view);
@@ -598,12 +780,20 @@ impl RenderState {
                 for layer in layers {
                     if let Some((tex, view)) = self.cached_layers.get(&layer.id) {
                         // Skip a stale-size texture (resize race) — the app re-bakes.
-                        if tex.width() == cw && tex.height() == ch {
+                        // Compare against the OVERSCAN dims (what bake allocates).
+                        if tex.width() == ow && tex.height() == oh {
                             tc.composite(
                                 device, &mut encoder, view, target_view,
-                                layer.transform, s, layer.alpha, cw, ch,
+                                layer.transform, s, layer.alpha, cw, ch, frac,
+                            );
+                        } else {
+                            eprintln!(
+                                "CMPSKIP layer={} tex={}x{} want={}x{} (stale size)",
+                                layer.id, tex.width(), tex.height(), ow, oh
                             );
                         }
+                    } else {
+                        eprintln!("CMPSKIP layer={} MISSING from cache", layer.id);
                     }
                 }
                 // Live ink (`rest`, rendered into overlay) over the backdrop.
@@ -635,30 +825,90 @@ impl RenderState {
 
         self.blitter.copy(&self.device, &mut encoder, &self.target_view, &surface_view);
 
+        // Throttle recording capture to a fixed ~60fps, DECOUPLED from the
+        // on-screen render rate (which is input-driven and can run faster). The
+        // screen presents every frame above; only ~60×/sec do we also pay the
+        // capture blit, so a fast screen doesn't inflate the recorded fps or its
+        // GPU cost. A phase accumulator (advance by a fixed interval per capture)
+        // keeps the AVERAGE at 60fps even when render timing is uneven; we resync
+        // if we fall a whole interval behind (e.g. after a stall).
+        // TODO: make CAPTURE_INTERVAL user-configurable (capture-rate setting).
+        const CAPTURE_INTERVAL: std::time::Duration = std::time::Duration::from_micros(16_667);
+        let capture_now = {
+            let wants = self.native_capture.as_ref().is_some_and(|nc| nc.wants())
+                || self.capture.as_ref().is_some_and(|w| w.wants_cpu_frames());
+            if !wants {
+                self.next_capture = None;
+                false
+            } else {
+                let now = std::time::Instant::now();
+                let due = self.next_capture.map_or(true, |t| now >= t);
+                if due {
+                    let base = self.next_capture.unwrap_or(now);
+                    let next = base + CAPTURE_INTERVAL;
+                    self.next_capture = Some(if next <= now { now + CAPTURE_INTERVAL } else { next });
+                }
+                due
+            }
+        };
+
         // Zero-copy capture (macOS): blit the same target into the next ring
         // IOSurface in THIS encoder, so it's submitted with the frame. Disjoint
         // field borrows (device/target_view vs. native_capture) — bind the
-        // shared ones first.
+        // shared ones first. Gated by `capture_now` (the 60fps throttle).
         let native_publish = {
             let device = &self.device;
             let target_view = &self.target_view;
             let (cw, ch) = (self.config.width, self.config.height);
             match self.native_capture.as_mut() {
-                Some(nc) if nc.wants() => {
+                Some(nc) if nc.wants() && capture_now => {
                     nc.blit_into(device, &mut encoder, target_view, cw, ch)
                 }
                 _ => None,
             }
         };
 
+        let __rec = native_publish.is_some();
+        let __t_enc = __enc0.elapsed();
+        let __sub0 = std::time::Instant::now();
         self.queue.submit([encoder.finish()]);
+        let __t_submit = __sub0.elapsed();
+        let __pres0 = std::time::Instant::now();
         frame.present();
+        let __t_present = __pres0.elapsed();
 
         // Publish the just-blitted IOSurface AFTER submit (the ring guarantees
         // it isn't reused until POOL frames later, so the in-flight GPU blit
         // finishes long before then — no fence needed at this cadence).
+        let __pub0 = std::time::Instant::now();
         if let Some(idx) = native_publish {
             self.native_capture.as_ref().unwrap().publish(idx);
+        }
+        let __t_pub = __pub0.elapsed();
+        if __is_cached {
+            thread_local! {
+                static LAST_RENDER: std::cell::Cell<Option<std::time::Instant>> =
+                    const { std::cell::Cell::new(None) };
+            }
+            let __interval = LAST_RENDER.with(|c| {
+                let now = std::time::Instant::now();
+                let prev = c.replace(Some(now));
+                prev.map(|p| now.duration_since(p).as_micros()).unwrap_or(0)
+            });
+            eprintln!(
+                "RENDERPROF rec={} interval={}us content={}us acquire={}us encode={}us submit={}us present={}us publish={}us total={}us surf={}x{}",
+                __rec as u8,
+                __interval,
+                __t_content.as_micros(),
+                __t_acq.as_micros(),
+                __t_enc.as_micros(),
+                __t_submit.as_micros(),
+                __t_present.as_micros(),
+                __t_pub.as_micros(),
+                __t0.elapsed().as_micros(),
+                self.config.width,
+                self.config.height,
+            );
         }
 
         // CPU read-back fallback only when the zero-copy path ISN'T carrying the
@@ -680,7 +930,7 @@ impl RenderState {
                 );
             }
         }
-        if !native_active {
+        if !native_active && capture_now {
             self.capture_frame();
         }
         true
@@ -704,6 +954,7 @@ impl RenderState {
         if w == 0 || h == 0 {
             return;
         }
+        let __cap0 = std::time::Instant::now();
 
         let unpadded_bpr = w * 4;
         let padded_bpr = unpadded_bpr.div_ceil(256) * 256;
@@ -745,9 +996,12 @@ impl RenderState {
         self.queue.submit([encoder.finish()]);
 
         // Map + block until the GPU finishes (v1 readback; main-thread).
+        let __copy_us = __cap0.elapsed().as_micros();
+        let __poll0 = std::time::Instant::now();
         let slice = buffer.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        let __poll_us = __poll0.elapsed().as_micros();
 
         // Strip row padding into a tightly-packed RGBA frame.
         let data = slice.get_mapped_range();
@@ -761,7 +1015,17 @@ impl RenderState {
 
         // vello target is Rgba8Unorm, top-down, straight alpha — exactly the
         // FrameWriter contract.
+        let __write0 = std::time::Instant::now();
         writer.write_rgba8(w, h, &frame);
+        eprintln!(
+            "CAPPROF copy_submit={}us poll_block={}us strip+write={}us total={}us surf={}x{}",
+            __copy_us,
+            __poll_us,
+            __write0.elapsed().as_micros(),
+            __cap0.elapsed().as_micros(),
+            w,
+            h,
+        );
     }
 }
 

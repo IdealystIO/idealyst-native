@@ -226,16 +226,18 @@ where
 }
 
 impl Bound<GraphicsHandle> {
-    pub fn on_resize<F: FnMut(OnResizeEvent) + 'static>(mut self, f: F) -> Self {
+    pub fn on_resize<F: FnMut(OnResizeEvent) + 'static>(mut self, mut f: F) -> Self {
         if let Element::Graphics { on_resize, .. } = &mut self.primitive {
-            *on_resize = Box::new(f);
+            // Born batched — see `reactive::cycle`.
+            *on_resize = Box::new(move |e: OnResizeEvent| crate::cycle(|| f(e)));
         }
         self
     }
 
-    pub fn on_lost<F: FnMut() + 'static>(mut self, f: F) -> Self {
+    pub fn on_lost<F: FnMut() + 'static>(mut self, mut f: F) -> Self {
         if let Element::Graphics { on_lost, .. } = &mut self.primitive {
-            *on_lost = Box::new(f);
+            // Born batched — see `reactive::cycle`.
+            *on_lost = Box::new(move || crate::cycle(|| f()));
         }
         self
     }

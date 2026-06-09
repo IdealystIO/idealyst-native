@@ -6,6 +6,8 @@ pub mod clean;
 pub mod dev;
 pub mod docs;
 pub mod doctor;
+pub mod export;
+pub mod export_codegen;
 pub mod icon;
 pub mod init;
 pub mod mcp;

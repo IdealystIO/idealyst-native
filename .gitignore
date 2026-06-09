@@ -16,3 +16,6 @@ pkg-*/
 /benchmark/runner/node_modules
 .idealyst/
 /crates/tools/dynlink/bgtarget
+/examples/external-export-suite/consumers/react/node_modules
+node_modules/
+dist/

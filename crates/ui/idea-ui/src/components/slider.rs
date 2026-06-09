@@ -29,7 +29,7 @@ use std::rc::Rc;
 
 use runtime_core::{
     component, AlignItems, Cursor, Element, FlexDirection, IdealystSchema, IntoElement,
-    JustifyContent, Length, Position, Signal, StyleApplication, StyleRules, StyleSheet, Tokenized,
+    JustifyContent, Length, Position, Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized,
     TouchPhase, TouchResponse, VariantSet,
 };
 
@@ -47,11 +47,23 @@ fn thumb_diameter(size: ControlSize) -> f32 {
     }
 }
 
+/// Normalized `0..1` position of `v` within `[min, max]`.
+fn norm_pos(v: f32, min: f32, max: f32) -> f32 {
+    if max <= min {
+        0.0
+    } else {
+        ((v - min) / (max - min)).clamp(0.0, 1.0)
+    }
+}
+
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct SliderProps {
-    /// Controlled value. The host owns the signal and sets it in `on_change`.
-    pub value: Signal<f32>,
+    /// The current value. `Reactive<f32>` — a `Signal<f32>` the host owns, a
+    /// static literal, or a model-derived `rx!(...)` getter (so the Slider works
+    /// when the value lives in a document/model, read through a closure, not just
+    /// a standalone signal). The host applies edits in `on_change`.
+    pub value: Reactive<f32>,
     /// Fires with the new value while the user drags.
     pub on_change: Rc<dyn Fn(f32)>,
     /// Lower bound. Default `0.0`.
@@ -77,7 +89,7 @@ pub struct SliderProps {
 impl Default for SliderProps {
     fn default() -> Self {
         Self {
-            value: Signal::new(0.0),
+            value: Reactive::Static(0.0),
             on_change: Rc::new(|_| {}),
             min: 0.0,
             max: 1.0,
@@ -94,7 +106,7 @@ impl Default for SliderProps {
 /// A horizontal draggable value slider — see the module docs.
 #[component]
 pub fn Slider(props: &SliderProps) -> Element {
-    let value = props.value;
+    let value = props.value.clone();
     let on_change = props.on_change.clone();
     let (min, max, step) = (props.min, props.max, props.step);
     let w = props.width;
@@ -106,22 +118,14 @@ pub fn Slider(props: &SliderProps) -> Element {
     let size_key = size.as_variant_str().to_string();
     let sheets = installed_slider_sheets();
 
-    // Normalized `0..1` position of the current value.
-    let norm = move || {
-        if max <= min {
-            0.0
-        } else {
-            ((value.get() - min) / (max - min)).clamp(0.0, 1.0)
-        }
-    };
-
     // --- fill: width tracks the value%, cached per whole percent ---
     let fill = {
         let fill_sheet = sheets.fill_sheet.clone();
         let app = appearance.clone();
+        let value = value.clone();
         runtime_core::view(Vec::new())
             .with_style(move || {
-                let pct = norm() * 100.0;
+                let pct = norm_pos(value.get(), min, max) * 100.0;
                 StyleApplication::new(fill_sheet.clone())
                     .with("appearance", app.clone())
                     .with_computed(format!("slider-fill-{}", pct.round() as i32), move || {
@@ -150,9 +154,10 @@ pub fn Slider(props: &SliderProps) -> Element {
         let thumb_sheet = sheets.thumb_sheet.clone();
         let app = appearance.clone();
         let size_key = size_key.clone();
+        let value = value.clone();
         runtime_core::view(Vec::new())
             .with_style(move || {
-                let left = norm() * w - dia / 2.0;
+                let left = norm_pos(value.get(), min, max) * w - dia / 2.0;
                 StyleApplication::new(thumb_sheet.clone())
                     .with("appearance", app.clone())
                     .with("size", size_key.clone())

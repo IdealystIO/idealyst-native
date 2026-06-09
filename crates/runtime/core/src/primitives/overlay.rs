@@ -94,7 +94,9 @@ impl OverlayBuilder {
     }
 
     pub fn on_dismiss<F: Fn() + 'static>(mut self, f: F) -> Self {
-        self.on_dismiss = Some(Rc::new(f));
+        // Born batched — see `reactive::cycle`. Covers the backdrop-tap path too
+        // (it clones this stored closure into the backdrop's on_click).
+        self.on_dismiss = Some(Rc::new(move || crate::cycle(|| f())));
         self
     }
 
@@ -229,7 +231,9 @@ impl AnchoredOverlayBuilder {
     }
 
     pub fn on_dismiss<F: Fn() + 'static>(mut self, f: F) -> Self {
-        self.on_dismiss = Some(Rc::new(f));
+        // Born batched — see `reactive::cycle`. Covers the backdrop-tap path too
+        // (it clones this stored closure into the backdrop's on_click).
+        self.on_dismiss = Some(Rc::new(move || crate::cycle(|| f())));
         self
     }
 

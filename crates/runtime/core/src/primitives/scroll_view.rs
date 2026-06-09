@@ -95,7 +95,8 @@ impl Bound<ScrollViewHandle> {
     /// scroll-spy / sticky-header / parallax patterns.
     pub fn on_scroll<F: Fn(f32, f32) + 'static>(mut self, cb: F) -> Self {
         if let Element::ScrollView { on_scroll, .. } = &mut self.primitive {
-            *on_scroll = Some(Rc::new(cb));
+            // Born batched — see `reactive::cycle`.
+            *on_scroll = Some(Rc::new(move |x: f32, y: f32| crate::cycle(|| cb(x, y))));
         }
         self
     }

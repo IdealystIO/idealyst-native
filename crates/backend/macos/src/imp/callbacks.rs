@@ -553,7 +553,15 @@ declare_class!(
                 });
             }
             if reaction.schedule_pass {
+                // Run the pass SYNCHRONOUSLY, in this same `setFrameSize:` turn,
+                // rather than only deferring it. The host view has ALREADY resized;
+                // a deferred-only pass re-centers the stage a frame later, so the
+                // canvas "sticks to the top, then jumps down" on resize. `schedule`
+                // queues it (and arms the deferred fallback); `flush` runs it now
+                // against the just-updated viewport + restyled frame, so the resize
+                // and the re-centering land together. No-op if nothing's queued.
                 crate::imp::schedule_layout_pass();
+                crate::imp::flush_pending_layout_pass();
             }
         }
     }

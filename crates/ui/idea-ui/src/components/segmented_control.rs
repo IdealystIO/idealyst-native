@@ -84,11 +84,13 @@ impl SegmentOption {
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct SegmentedControlProps {
-    /// Controlled selected value — the `id` of the chosen
-    /// [`SegmentOption`]. The host owns the signal; tapping a segment sets
-    /// it via `on_change`. The segment whose `id` equals this paints
-    /// selected.
-    pub value: Signal<String>,
+    /// Controlled selected value — the `id` of the chosen [`SegmentOption`].
+    /// `Reactive<String>` — a `Signal<String>` the host owns, or a model-derived
+    /// `rx!(...)` that maps a typed enum/bool to the matching option `id` (so the
+    /// control fits state that isn't a standalone string signal). Tapping a
+    /// segment reports the new `id` via `on_change`; the segment whose `id`
+    /// equals this paints selected.
+    pub value: Reactive<String>,
     /// Fires with the chosen segment's `id` when the user taps a segment.
     /// Default is a no-op so an unwired control doesn't silently mutate —
     /// pass `move |id| value.set(id)` to make taps switch segments.
@@ -102,7 +104,7 @@ impl Default for SegmentedControlProps {
     // `Default`. Mirrors `SelectProps` / `TabsProps`.
     fn default() -> Self {
         Self {
-            value: Signal::new(String::new()),
+            value: Reactive::Static(String::new()),
             on_change: Rc::new(|_| {}),
             options: Vec::new(),
         }
@@ -116,7 +118,7 @@ impl Default for SegmentedControlProps {
 #[component]
 pub fn SegmentedControl(props: SegmentedControlProps) -> Element {
     let options = props.options;
-    let value = props.value;
+    let value = props.value; // Reactive<String> — cloned into each segment's style closure
     let on_change = props.on_change;
 
     let container_style = TabBar();
@@ -139,8 +141,9 @@ pub fn SegmentedControl(props: SegmentedControlProps) -> Element {
         // Reactive style: re-runs whenever `value` fires, flipping the
         // `active` axis between `on` (this segment is selected) and `off`.
         let id_for_style = id.clone();
+        let value_style = value.clone();
         let seg_style = move || {
-            let active = if value.get() == id_for_style { "on" } else { "off" };
+            let active = if value_style.get() == id_for_style { "on" } else { "off" };
             StyleApplication::new(TabButton::sheet()).with("active", active.to_string())
         };
 
@@ -153,8 +156,9 @@ pub fn SegmentedControl(props: SegmentedControlProps) -> Element {
         // never flips on selection AND never follows a light/dark swap. Mirrors
         // `Tabs`.
         let id_for_label = id.clone();
+        let value_label = value.clone();
         let label_style = move || {
-            let on = value.get() == id_for_label;
+            let on = value_label.get() == id_for_label;
             let variant = if on { "on" } else { "off" };
             let app = StyleApplication::new(TabButton::sheet()).with("active", variant.to_string());
             let color = resolve_style(&app).color.clone();
@@ -241,7 +245,7 @@ mod tests {
         install_idea_theme(light_theme());
         let el = SegmentedControl(SegmentedControlProps {
             options: vec![SegmentOption::new("a", "A"), SegmentOption::new("b", "B")],
-            value: Signal::new("a".to_string()),
+            value: Signal::new("a".to_string()).into(),
             ..Default::default()
         });
         let children = match &el {

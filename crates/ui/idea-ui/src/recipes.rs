@@ -255,24 +255,26 @@ recipe!(
 
 recipe!(
     Tabs,
-    /// A clickable tab strip. Tabs is pure UI: the host owns the active
-    /// index (`Signal<usize>`) and renders the active tab's content
-    /// itself (e.g. with a `match` on `active.get()`). Position in the
-    /// `tabs` vec is each tab's index.
+    /// A clickable tab strip. Tabs is pure UI: the host owns the active tab's
+    /// `id` (a `Signal<String>`) and renders that tab's content itself (e.g. a
+    /// `match` on `active.get()`). `tabs` is a `Signal<Vec<Tab>>` (a reactive,
+    /// id-keyed list — wrap a fixed set in `signal!`); each `Tab::new(id, label)`
+    /// carries its own identity.
     pub fn tabs_controlled() -> ::runtime_core::Element {
         use crate::{Tab, Tabs};
         use ::runtime_core::{signal, ui};
         use ::std::rc::Rc;
 
-        let active = signal!(0_usize);
-        let on_change: Rc<dyn Fn(usize)> = Rc::new(move |idx| active.set(idx));
+        let active = signal!("overview".to_string());
+        let tabs = signal!(vec![
+            Tab::new("overview", "Overview"),
+            Tab::new("activity", "Activity"),
+            Tab::new("settings", "Settings"),
+        ]);
+        let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| active.set(id));
         ui! {
             Tabs(
-                tabs = vec![
-                    Tab::new("Overview"),
-                    Tab::new("Activity"),
-                    Tab::new("Settings"),
-                ],
+                tabs = tabs,
                 active = active,
                 on_change = on_change,
             )

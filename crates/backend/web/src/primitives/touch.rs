@@ -78,6 +78,14 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 timestamp_ns: timestamp_ns(&ev),
                 force: pressure_to_force(ev.pressure()),
             };
+            // Batching is automatic: the `on_touch` handler is wrapped in a
+            // reactive cycle at attach time (see `runtime_core::cycle`), so every
+            // signal write it makes (a camera pan writes pan_x, pan_y, + a repaint
+            // tick) fans out ONCE after the handler returns. Without it each write
+            // triggers the reactive repaint effect separately; web coalesces those
+            // to one rAF render and keeps only the LAST — which can be a no-op
+            // (composite-at-origin) frame, so a pan appears frozen until the next
+            // bake. Centralized in core so every backend gets it uniformly.
             let response = (handler)(&te);
             if response.consumed {
                 // Honor the responder model: whichever ancestor consumes
@@ -122,6 +130,14 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 timestamp_ns: timestamp_ns(&ev),
                 force: pressure_to_force(ev.pressure()),
             };
+            // Batching is automatic: the `on_touch` handler is wrapped in a
+            // reactive cycle at attach time (see `runtime_core::cycle`), so every
+            // signal write it makes (a camera pan writes pan_x, pan_y, + a repaint
+            // tick) fans out ONCE after the handler returns. Without it each write
+            // triggers the reactive repaint effect separately; web coalesces those
+            // to one rAF render and keeps only the LAST — which can be a no-op
+            // (composite-at-origin) frame, so a pan appears frozen until the next
+            // bake. Centralized in core so every backend gets it uniformly.
             let response = (handler)(&te);
             if response.consumed {
                 ev.stop_propagation();
@@ -159,6 +175,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 timestamp_ns: timestamp_ns(&ev),
                 force: pressure_to_force(ev.pressure()),
             };
+            // Born batched via the core `on_touch` cycle wrapper.
             if (handler)(&te).consumed {
                 ev.stop_propagation();
             }
@@ -192,6 +209,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 timestamp_ns: timestamp_ns(&ev),
                 force: pressure_to_force(ev.pressure()),
             };
+            // Born batched via the core `on_touch` cycle wrapper.
             if (handler)(&te).consumed {
                 ev.stop_propagation();
             }

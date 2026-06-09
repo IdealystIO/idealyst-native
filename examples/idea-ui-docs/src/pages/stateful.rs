@@ -13,22 +13,22 @@ use crate::shell::{
 };
 
 pub fn tabs() -> Element {
-    let active = signal!(0usize);
-    let on_change: Rc<dyn Fn(usize)> = Rc::new(move |idx| active.set(idx));
+    let active = signal!("overview".to_string());
+    let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| active.set(id));
 
     let panel = runtime_core::switch(
         move || active.get(),
-        |idx: &usize| match idx {
-            0 => ui! {
+        |id: &String| match id.as_str() {
+            "overview" => ui! {
                 Stack(gap = StackGap::Sm) {
                     Typography(content = "Overview".to_string(), kind = typography_kind::H3)
-                    Typography(content = "The Overview tab is mounted whenever the active \
-                                      index is 0; switching tabs disposes this subtree and \
+                    Typography(content = "The Overview tab is mounted whenever its id is \
+                                      active; switching tabs disposes this subtree and \
                                       mounts a fresh one for the newly-active panel.".to_string(),
                          muted = true)
                 }
             },
-            1 => ui! {
+            "activity" => ui! {
                 Stack(gap = StackGap::Sm) {
                     Typography(content = "Activity".to_string(), kind = typography_kind::H3)
                     Typography(content = "Because the panel is rebuilt from scratch on every \
@@ -60,11 +60,11 @@ pub fn tabs() -> Element {
                 Tabs(
                     active = active,
                     on_change = on_change,
-                    tabs = vec![
-                        Tab::new("Overview"),
-                        Tab::new("Activity"),
-                        Tab::new("Settings"),
-                    ]
+                    tabs = signal!(vec![
+                        Tab::new("overview", "Overview"),
+                        Tab::new("activity", "Activity"),
+                        Tab::new("settings", "Settings"),
+                    ])
                 )
                 panel
             }
@@ -79,27 +79,28 @@ pub fn tabs() -> Element {
             }
 
             Section(title = "Recipe".to_string()) {
-                CodePanel(src = r##"let active = signal!(0_usize);
-let on_change: Rc<dyn Fn(usize)> = Rc::new(move |idx| active.set(idx));
+                CodePanel(src = r##"let active = signal!("overview".to_string());
+let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| active.set(id));
 
 let panel = runtime_core::switch(
     move || active.get(),
-    |idx: &usize| match idx {
-        0 => ui! { /* Overview content */ },
-        1 => ui! { /* Activity content */ },
+    |id: &String| match id.as_str() {
+        "overview" => ui! { /* Overview content */ },
+        "activity" => ui! { /* Activity content */ },
         _ => ui! { /* Settings content */ },
     },
 );
 
 ui! {
     Tabs(
-        active = active,
-        on_change = on_change,
-        tabs = vec![
-            Tab::new("Overview"),
-            Tab::new("Activity"),
-            Tab::new("Settings"),
-        ],
+        active = active,                     // active tab's id (Reactive<String>)
+        on_change = on_change,               // Fn(String) — the tapped id
+        // a reactive, id-keyed list (wrap a fixed set in signal!)
+        tabs = signal!(vec![
+            Tab::new("overview", "Overview"),
+            Tab::new("activity", "Activity"),
+            Tab::new("settings", "Settings"),
+        ]),
     )
     panel
 }"##.to_string())
@@ -107,9 +108,9 @@ ui! {
 
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
-                    Prop { name: "tabs",      ty: "Vec<Tab>",         desc: "Tabs in left-to-right order. Position in the vec is the tab's index." },
-                    Prop { name: "active",    ty: "Signal<usize>",    desc: "Currently-active tab index. Drives the strip highlight and is also the caller's source of truth for panel swap." },
-                    Prop { name: "on_change", ty: "Rc<dyn Fn(usize)>",desc: "Fires when the user taps a tab; receives the new index." },
+                    Prop { name: "tabs",      ty: "Signal<Vec<Tab>>",  desc: "Reactive, id-keyed list. Tab::new(id, label); tabs reconcile by id so a surviving tab keeps its state. Wrap a fixed set in signal!." },
+                    Prop { name: "active",    ty: "Reactive<String>",  desc: "The active tab's id. Drives the strip highlight and is the caller's source of truth for panel swap." },
+                    Prop { name: "on_change", ty: "Rc<dyn Fn(String)>",desc: "Fires when the user taps a tab; receives the tapped tab's id." },
                 ])
             }
 

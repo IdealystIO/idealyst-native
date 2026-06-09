@@ -315,6 +315,13 @@ struct GpuState {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     renderer: Renderer,
+    /// Second vello renderer used ONLY to bake cached layers containing images.
+    /// vello keeps one persistent image atlas per `Renderer`, resized to fit each
+    /// baked scene's images; baking an image-less layer (grid/ink) through the
+    /// same renderer shrinks the atlas to 1×1, and a later image bake resizes it
+    /// back WITHOUT re-uploading the cached image → the image renders blank.
+    /// Image layers on their own renderer keep their atlas intact. Lazily built.
+    image_renderer: Option<Renderer>,
     scene: VelloScene,
     /// Intermediate Rgba8Unorm storage texture vello renders into (the surface
     /// can't be a compute storage target); blitted to the surface each frame.
@@ -346,6 +353,9 @@ struct GpuState {
     /// Canvas2D is only the no-WebGPU fallback). Re-rendered on a `dirty` bake,
     /// composited under the camera transform every frame. Cleared on resize.
     cached_layers: HashMap<u32, (wgpu::Texture, wgpu::TextureView)>,
+    /// Last DIRTY ops per cached layer, to re-bake a missing layer on a non-dirty
+    /// frame instead of baking empty (transparent) ops. See the native renderer.
+    cached_ops: HashMap<u32, Vec<DrawOp>>,
     transform_compositor: Option<TransformCompositor>,
 }
 
@@ -440,6 +450,7 @@ impl GpuState {
                 return None;
             }
         };
+        let image_renderer = None;
 
         // --- Commit: this is the only step that binds the canvas to webgpu. ---
         let surface = match instance.create_surface(ev.surface) {
@@ -483,6 +494,7 @@ impl GpuState {
             surface,
             config,
             renderer,
+            image_renderer,
             scene: VelloScene::new(),
             target,
             target_view,
@@ -494,6 +506,7 @@ impl GpuState {
             overlay: None,
             overlay_compositor: None,
             cached_layers: HashMap::new(),
+            cached_ops: HashMap::new(),
             transform_compositor: None,
             fps: (0, 0, 0, 0),
         })
@@ -512,26 +525,69 @@ impl GpuState {
     /// pan/zoom win lands (Canvas2D is only the no-WebGPU fallback).
     fn bake_cached_layers(&mut self, layers: &[CachedRef]) {
         let (w, h) = (self.config.width, self.config.height);
+        // Overscan (see the native `render::bake_cached_layers` for the rationale):
+        // bake into a texture `frac`·viewport larger per side so a pan within the
+        // margin composites with no black edge. `0.0` (default) = viewport-sized.
+        let frac = overscan_frac();
+        let (ow, oh) = overscan_dims(w, h, frac);
+        let margin = (
+            frac as f64 * (w as f64) / self.scale,
+            frac as f64 * (h as f64) / self.scale,
+        );
         for layer in layers {
             let missing = !self.cached_layers.contains_key(&layer.id);
             if !(layer.dirty || missing) {
                 continue;
             }
+            // Retain the last DIRTY ops and re-bake from them when a missing layer
+            // must bake on a non-dirty frame — otherwise the empty `dirty=false`
+            // ops bake a transparent (black) layer (the "canvas black until I draw"
+            // bug, e.g. after an aspect/viewport resize). See the native renderer.
+            if layer.dirty {
+                self.cached_ops.insert(layer.id, layer.ops.to_vec());
+            }
+            let Some(ops) = self.cached_ops.remove(&layer.id) else {
+                continue;
+            };
             if missing {
-                self.cached_layers.insert(layer.id, make_target(&self.device, w, h));
+                self.cached_layers.insert(layer.id, make_target(&self.device, ow, oh));
             }
             self.scene.reset();
-            encode_scene(layer.ops, &mut self.scene, Affine::scale(self.scale));
+            encode_scene(
+                &ops,
+                &mut self.scene,
+                Affine::scale(self.scale) * Affine::translate(margin),
+            );
             let params = RenderParams {
                 base_color: Color::from_rgba8(0, 0, 0, 0),
-                width: w,
-                height: h,
+                width: ow,
+                height: oh,
                 antialiasing_method: AaConfig::Area,
             };
+            // Image layers bake on the dedicated `image_renderer` so the grid/ink
+            // bakes can't shrink the image atlas out from under them (see the
+            // `image_renderer` field). Image-less layers stay on the main renderer.
+            let has_image = ops.iter().any(|op| matches!(op, DrawOp::Image { .. }));
+            if has_image && self.image_renderer.is_none() {
+                self.image_renderer = Renderer::new(
+                    &self.device,
+                    RendererOptions {
+                        use_cpu: false,
+                        antialiasing_support: AaSupport::area_only(),
+                        num_init_threads: None,
+                        pipeline_cache: None,
+                    },
+                )
+                .ok();
+            }
             let view = &self.cached_layers.get(&layer.id).unwrap().1;
-            let _ = self
-                .renderer
-                .render_to_texture(&self.device, &self.queue, &self.scene, view, &params);
+            let renderer = match (has_image, self.image_renderer.as_mut()) {
+                (true, Some(r)) => r,
+                _ => &mut self.renderer,
+            };
+            let _ =
+                renderer.render_to_texture(&self.device, &self.queue, &self.scene, view, &params);
+            self.cached_ops.insert(layer.id, ops);
         }
     }
 
@@ -594,6 +650,31 @@ impl GpuState {
         // `Vello` → `target`; only `rest` for `Hybrid` → the separate `overlay`)
         // over a transparent base; `Shapes` skips vello entirely.
         let plan = plan_scene(canvas_scene.ops());
+        // TEMP PROBE (remove after debugging the frozen-pan bug): log every render
+        // so we can see whether render() runs during a pan and with what transform.
+        {
+            let desc = match &plan {
+                ScenePlan::Cached { layers, rest } => {
+                    let dirty: Vec<bool> = layers.iter().map(|l| l.dirty).collect();
+                    let (e, f) = layers
+                        .first()
+                        .map(|l| (l.transform.e, l.transform.f))
+                        .unwrap_or((0.0, 0.0));
+                    format!(
+                        "RENDER Cached layers={} dirty={:?} t=({:.1},{:.1}) rest={}",
+                        layers.len(),
+                        dirty,
+                        e,
+                        f,
+                        rest.len()
+                    )
+                }
+                ScenePlan::Vello => "RENDER Vello".to_string(),
+                ScenePlan::Hybrid { rest, .. } => format!("RENDER Hybrid rest={}", rest.len()),
+                ScenePlan::Shapes(b) => format!("RENDER Shapes batches={}", b.len()),
+            };
+            marker(&desc);
+        }
         let (content_ops, to_overlay): (Option<&[DrawOp]>, bool) = match &plan {
             ScenePlan::Vello => (Some(canvas_scene.ops()), false),
             ScenePlan::Hybrid { rest, .. } => {
@@ -604,16 +685,27 @@ impl GpuState {
                 (Some(rest), true)
             }
             ScenePlan::Shapes(_) => (None, false),
-            ScenePlan::Cached { rest, .. } => {
-                // Cached layers form the backdrop (composited from their textures
-                // below); the live ink (`rest`) goes through vello into the overlay
-                // so the backdrop survives underneath — exactly like Hybrid.
-                if rest.is_empty() {
+            ScenePlan::Cached { rest, layers } => {
+                // A `Cached` frame must carry SOME vello submit or it won't present
+                // (the "pan doesn't update until you draw" freeze). A bake (dirty /
+                // first-seen layer) is such a submit; live `rest` is too. Force an
+                // EMPTY `rest` through vello ONLY when neither happens — a pure
+                // composite-only reuse frame. When a layer bakes (drawing re-bakes
+                // the ink layer every point), an empty `rest` would be a WASTED
+                // full-viewport vello pass per frame. Empty overlay isn't composited
+                // (guarded by `!rest.is_empty()`).
+                let any_bake = layers
+                    .iter()
+                    .any(|l| l.dirty || !self.cached_layers.contains_key(&l.id));
+                if rest.is_empty() && any_bake {
                     (None, false)
                 } else {
                     if self.overlay.is_none() {
-                        self.overlay =
-                            Some(make_target(&self.device, self.config.width, self.config.height));
+                        self.overlay = Some(make_target(
+                            &self.device,
+                            self.config.width,
+                            self.config.height,
+                        ));
                     }
                     (Some(rest), true)
                 }
@@ -636,8 +728,28 @@ impl GpuState {
                 antialiasing_method: AaConfig::Area,
             };
             let view = if to_overlay { &self.overlay.as_ref().unwrap().1 } else { &self.target_view };
-            if self
-                .renderer
+            // Route image-bearing content (a live-dragged media item in `rest`) to
+            // the dedicated `image_renderer` — the main renderer's atlas is shrunk
+            // by image-less bakes, blanking a later live image (media vanishes
+            // mid-drag). Mirror of the native `render` fix + the layer-bake routing.
+            let has_image = ops.iter().any(|op| matches!(op, DrawOp::Image { .. }));
+            if has_image && self.image_renderer.is_none() {
+                self.image_renderer = Renderer::new(
+                    &self.device,
+                    RendererOptions {
+                        use_cpu: false,
+                        antialiasing_support: AaSupport::area_only(),
+                        num_init_threads: None,
+                        pipeline_cache: None,
+                    },
+                )
+                .ok();
+            }
+            let renderer = match (has_image, self.image_renderer.as_mut()) {
+                (true, Some(r)) => r,
+                _ => &mut self.renderer,
+            };
+            if renderer
                 .render_to_texture(&self.device, &self.queue, &self.scene, view, &params)
                 .is_err()
             {
@@ -708,16 +820,19 @@ impl GpuState {
                 let target_view = &self.target_view;
                 let (cw, ch) = (self.config.width, self.config.height);
                 let s = self.scale as f32;
+                let frac = overscan_frac();
+                let (ow, oh) = overscan_dims(cw, ch, frac);
                 // Clear, then composite each cached layer (in order) under its
                 // camera transform — one transformed quad each, no per-op work.
                 crate::compose_transform::clear_to_transparent(&mut encoder, target_view);
                 let tc = self.transform_compositor.as_ref().unwrap();
                 for layer in layers {
                     if let Some((tex, view)) = self.cached_layers.get(&layer.id) {
-                        if tex.width() == cw && tex.height() == ch {
+                        // Compare against the OVERSCAN dims (what bake allocates).
+                        if tex.width() == ow && tex.height() == oh {
                             tc.composite(
                                 device, &mut encoder, view, target_view,
-                                layer.transform, s, layer.alpha, cw, ch,
+                                layer.transform, s, layer.alpha, cw, ch, frac,
                             );
                         }
                     }
@@ -762,6 +877,36 @@ impl GpuState {
 /// [`OverlayCompositor`], and the [`WebLayerCompositor`] can draw into it; also
 /// the secondary `overlay` target (vello content for a hybrid scene). No
 /// COPY_SRC — web has no GPU readback (capture uses captureStream).
+/// Overscan margin per side (fraction of viewport) for cached layers, from
+/// `OVERSCAN_FRAC` (default `0.0`). Mirror of `render::overscan_frac` (the two
+/// render paths are cfg-exclusive, so the helper is duplicated rather than shared).
+fn overscan_frac() -> f32 {
+    thread_local! {
+        static FRAC: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+    }
+    FRAC.with(|c| match c.get() {
+        Some(v) => v,
+        None => {
+            let v = std::env::var("OVERSCAN_FRAC")
+                .ok()
+                .and_then(|s| s.parse::<f32>().ok())
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0);
+            c.set(Some(v));
+            v
+        }
+    })
+}
+
+/// Overscanned device dims for a `(w, h)` viewport. `frac == 0` → `(w, h)`.
+fn overscan_dims(w: u32, h: u32, frac: f32) -> (u32, u32) {
+    if frac <= 0.0 {
+        return (w, h);
+    }
+    let scale = 1.0 + 2.0 * frac;
+    (((w as f32) * scale).round() as u32, ((h as f32) * scale).round() as u32)
+}
+
 fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("canvas-vello-web-target"),

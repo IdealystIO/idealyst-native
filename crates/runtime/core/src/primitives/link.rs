@@ -274,17 +274,21 @@ pub(crate) fn make_on_activate(
     make_params: Rc<dyn Fn() -> Box<dyn Any>>,
 ) -> Rc<dyn Fn()> {
     Rc::new(move || {
-        let Some(control) = target.as_ref() else { return };
-        let url = url.clone();
-        let params = make_params();
-        let cmd = match kind {
-            NavKind::Default => control.build_link_command(route, url, params),
-            NavKind::Push => NavCommand::Push { name: route, url, params, state: None },
-            NavKind::Replace => NavCommand::Replace { name: route, url, params, state: None },
-            NavKind::Reset => NavCommand::Reset { name: route, url, params, state: None },
-            NavKind::Select => NavCommand::Select { name: route, url, params, state: None },
-        };
-        control.dispatch(cmd);
+        // Born batched — a nav dispatch writes several router signals; coalesce
+        // them into one cycle. See `reactive::cycle`.
+        crate::cycle(|| {
+            let Some(control) = target.as_ref() else { return };
+            let url = url.clone();
+            let params = make_params();
+            let cmd = match kind {
+                NavKind::Default => control.build_link_command(route, url, params),
+                NavKind::Push => NavCommand::Push { name: route, url, params, state: None },
+                NavKind::Replace => NavCommand::Replace { name: route, url, params, state: None },
+                NavKind::Reset => NavCommand::Reset { name: route, url, params, state: None },
+                NavKind::Select => NavCommand::Select { name: route, url, params, state: None },
+            };
+            control.dispatch(cmd);
+        })
     })
 }
 

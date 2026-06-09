@@ -1,0 +1,21 @@
+[package]
+name = "external-export-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A project with a `#[component(external)]`, exported to React/Vue/vanilla as a wasm-backed Web Component via `idealyst export`."
+
+# Pure rlib — the component is platform-agnostic. `idealyst export`
+# generates the wasm bridge in a separate ephemeral crate; the author
+# writes no `#[wasm_bindgen]` code here.
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "External Export Demo"
+bundle_id = "ai.truday.idealyst.external_export_demo"
+version   = "0.0.1"
+targets   = ["web"]

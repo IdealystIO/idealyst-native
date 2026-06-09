@@ -50,6 +50,10 @@ enum Command {
     Serve(cmd::serve::Args),
     /// Build for one or more platforms.
     Build(cmd::build::Args),
+    /// Export `#[component(external)]`s as a framework-agnostic Web
+    /// Component suite (wasm custom elements + .d.ts + React/Vue wrappers)
+    /// into `dist/external/`.
+    Export(cmd::export::Args),
     /// Build and launch on a simulator or device.
     Run(cmd::run::Args),
     /// Build a distribution-signed app and (optionally) ship it. iOS → App
@@ -124,6 +128,7 @@ fn main() -> anyhow::Result<()> {
         Command::Docs(args) => cmd::docs::run(args),
         Command::Serve(args) => cmd::serve::run(args),
         Command::Build(args) => cmd::build::run(args),
+        Command::Export(args) => cmd::export::run(args),
         Command::Run(args) => cmd::run::run(args),
         Command::Publish(args) => cmd::publish::run(args),
         Command::Check(args) => cmd::check::run(args),

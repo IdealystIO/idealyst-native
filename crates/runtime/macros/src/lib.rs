@@ -29,6 +29,8 @@ mod invocation_macro;
 mod jsx;
 mod lazy;
 #[cfg(feature = "catalog")]
+mod external_emit;
+#[cfg(feature = "catalog")]
 mod mcp_emit;
 #[cfg(feature = "catalog")]
 mod schema_emit;
@@ -304,6 +306,20 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
         proc_macro2::TokenStream::new()
     };
 
+    // `#[component(external)]` → an `ExternalEntry` for `idealyst export`.
+    // Like `mcp_registration` this is catalog-gated and computed before
+    // the hot-reload split below rewrites `item_fn` into a token stream.
+    #[cfg(feature = "catalog")]
+    let external_registration = match &attr.external {
+        Some(spec) => external_emit::emit(&item_fn, spec),
+        None => proc_macro2::TokenStream::new(),
+    };
+    #[cfg(not(feature = "catalog"))]
+    let external_registration = {
+        let _ = &attr.external;
+        proc_macro2::TokenStream::new()
+    };
+
     // When the `hot-reload` feature is on, split the function into
     // an inner `__<Name>_hot_impl` containing the rewritten body and
     // an outer `<Name>` that dispatches through
@@ -324,6 +340,7 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
         #item_fn
         #invocation
         #mcp_registration
+        #external_registration
     })
 }
 

@@ -1,0 +1,100 @@
+[package]
+name = "video-decode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform video-FILE decoder → a pair of live streams + a transport.
+#
+# The sibling of `camera`/`screen-recorder`: where those open a *capture*
+# source, this opens a *file/URL* clip, decodes it on the platform's own media
+# stack, and hands you the SAME currency the capture SDKs produce —
+#   - a `media_stream::MediaStream` of tightly-packed RGBA8 video frames, and
+#   - an optional `media_stream::AudioStream` of interleaved-f32 PCM —
+# plus a `Transport` to play/pause/seek/mute and read position/duration.
+#
+# This is the seam that lets a placed video be composited INTO a GPU canvas
+# scene (the frames stream feeds the canvas as an animated image / texture, so
+# ink draws over it and a surface-capture recorder sees it) AND have its audio
+# muxed into a recording (the audio stream feeds `media-writer`) — neither of
+# which the native `video` player primitive (an OS overlay view) can do.
+#
+#   - web (wasm32):     a hidden <video> + an offscreen <canvas> frame pump,
+#                       WebAudio MediaElementSource → ScriptProcessor PCM tap.
+#   - iOS / macOS:      AVPlayer + AVPlayerItemVideoOutput (frames) +
+#                       MTAudioProcessingTap on the item's audio mix (PCM).
+#   - Android:          MediaExtractor + MediaCodec via a Kotlin shim.
+#   - desktop Linux/Win: not yet implemented (returns Unsupported).
+#
+# The platform-agnostic shell (VideoDecoder / DecodeConfig / DecodedVideo /
+# Transport / VideoDecodeError) lives in this crate's top-level module. Each
+# cfg-gated backend module supplies one decoder.
+
+[dependencies]
+thiserror = "1"
+# The platform-agnostic live-source abstractions this crate PRODUCES — shared
+# with `camera`/`screen-recorder` (other producers) and `video`/canvas (the
+# consumers). We push decoded frames through `FrameWriter` and decoded PCM
+# through `AudioWriter`.
+media-stream = { workspace = true }
+runtime-core = { workspace = true }
+
+# iOS / macOS: AVFoundation (AVPlayer/AVPlayerItemVideoOutput) + an
+# MTAudioProcessingTap, driven through the Obj-C runtime (objc2 msg_send), the
+# same posture as the `camera`/`video` SDKs. We link AVFoundation/CoreMedia/
+# CoreVideo/AudioToolbox and call their C surface for pixels + PCM.
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString"] }
+block2 = "0.5"
+
+[package.metadata.idealyst.ios]
+frameworks = ["AVFoundation", "CoreMedia", "CoreVideo", "MediaToolbox", "CoreFoundation"]
+
+# Web (wasm): a hidden <video> for decode/transport, an offscreen <canvas> to
+# pull RGBA per frame, and WebAudio to tap the PCM for recording.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Node",
+    "Element",
+    "HtmlElement",
+    "EventTarget",
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
+    "HtmlVideoElement",
+    "HtmlCanvasElement",
+    "HtmlMediaElement",
+    "CanvasRenderingContext2d",
+    "ImageData",
+    "AudioContext",
+    "AudioContextState",
+    "AudioNode",
+    "AudioParam",
+    "AudioDestinationNode",
+    "MediaElementAudioSourceNode",
+    "ScriptProcessorNode",
+    "AudioBuffer",
+    "AudioProcessingEvent",
+    "GainNode",
+    "Event",
+    "TimeRanges",
+] }
+
+# Android: MediaExtractor + MediaCodec decode driven by a Kotlin shim that
+# trampolines frames/PCM back through JNI, mirroring the `camera` SDK.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+futures-channel = "0.3"
+
+[package.metadata.idealyst.android]
+runtime_kotlin = ["runtime/kotlin/io/idealyst/videodecode/RustVideoDecoder.kt"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

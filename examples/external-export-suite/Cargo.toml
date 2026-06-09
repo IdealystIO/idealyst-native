@@ -1,0 +1,18 @@
+[package]
+name = "external-export-suite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Two `#[component(external)]` components exported to every supported front-end framework, with a standalone consumer app per framework under `consumers/`."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "External Export Suite"
+bundle_id = "ai.truday.idealyst.external_export_suite"
+version   = "0.0.1"
+targets   = ["web"]

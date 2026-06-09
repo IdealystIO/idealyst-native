@@ -229,7 +229,13 @@ impl Bound<ViewHandle> {
         F: Fn(&crate::TouchEvent) -> crate::TouchResponse + 'static,
     {
         if let Element::View { on_touch, .. } = &mut self.primitive {
-            *on_touch = Some(std::rc::Rc::new(handler));
+            // Born batched: every backend invocation of this handler runs
+            // as one reactive cycle, so signal writes inside it coalesce.
+            // See `reactive::cycle`. (A backend that also wraps the call in
+            // `cycle`/`batch` just nests harmlessly.)
+            *on_touch = Some(std::rc::Rc::new(move |e: &crate::TouchEvent| {
+                crate::cycle(|| handler(e))
+            }));
         }
         self
     }
@@ -250,7 +256,10 @@ impl Bound<ViewHandle> {
         F: Fn(&crate::WheelEvent) -> crate::TouchResponse + 'static,
     {
         if let Element::View { on_wheel, .. } = &mut self.primitive {
-            *on_wheel = Some(std::rc::Rc::new(handler));
+            // Born batched — see `on_touch` / `reactive::cycle`.
+            *on_wheel = Some(std::rc::Rc::new(move |e: &crate::WheelEvent| {
+                crate::cycle(|| handler(e))
+            }));
         }
         self
     }
@@ -478,7 +487,8 @@ pub fn pressable<F: Fn() + 'static>(
 ) -> Bound<PressableHandle> {
     Bound::new(Element::Pressable {
         children,
-        on_click: Rc::new(on_click),
+        // Born batched — see `Bound::on_touch` / `reactive::cycle`.
+        on_click: Rc::new(move || crate::cycle(|| on_click())),
         style: None,
         ref_fill: None,
         disabled: None,

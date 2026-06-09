@@ -922,6 +922,12 @@ impl MacosBackend {
             .filter(|(_, (_, n))| subtree.contains(n))
             .map(|(k, (_, n))| (*k, *n))
             .collect();
+        // Suppress implicit CALayer actions for the apply-frames pass (see the
+        // host-tree pass in `compute_and_apply_layout` for the rationale).
+        unsafe {
+            let _: () = msg_send![objc2::class!(CATransaction), begin];
+            let _: () = msg_send![objc2::class!(CATransaction), setDisableActions: true];
+        }
         for (key, layout_node) in snapshot {
             let frame = self.layout.frame_of(layout_node);
             let Some((view, _)) = self.view_to_layout.get(&key) else {
@@ -937,6 +943,9 @@ impl MacosBackend {
             let _: () = unsafe { msg_send![&**view, setFrame: rect] };
             gradient::sync_gradient_sublayer(view);
             icon::sync_icon_sublayer(view, frame.width as f64, frame.height as f64);
+        }
+        unsafe {
+            let _: () = msg_send![objc2::class!(CATransaction), commit];
         }
     }
 
@@ -1596,6 +1605,16 @@ impl MacosBackend {
             .iter()
             .map(|(k, (_, n))| (*k, *n))
             .collect();
+        // Disable Core Animation's implicit actions for the whole apply-frames
+        // pass: a layout-driven `setFrame:` on a layer-backed view otherwise
+        // eases to its new origin over ~0.25s, gliding a beat behind sibling
+        // GPU content (e.g. the media selection ring lagging the dragged image).
+        // Explicit animations (the animation system's `addAnimation`) are
+        // unaffected — this only suppresses the default implicit ones.
+        unsafe {
+            let _: () = msg_send![objc2::class!(CATransaction), begin];
+            let _: () = msg_send![objc2::class!(CATransaction), setDisableActions: true];
+        }
         for (key, layout_node) in snapshot {
             let frame = self.layout.frame_of(layout_node);
             // The map's retained NSView is the source of truth for
@@ -1660,6 +1679,9 @@ impl MacosBackend {
                 frame.width,
                 frame.height,
             );
+        }
+        unsafe {
+            let _: () = msg_send![objc2::class!(CATransaction), commit];
         }
 
         // (Scroll documentView sizing is deferred to the END of this method — it
@@ -2985,6 +3007,156 @@ impl Backend for MacosBackend {
         // of inserts in one batch produces exactly ONE pass that lands before
         // any paint: no per-insert O(N) re-layout (the lag), and no
         // paint-at-(0,0)-then-reposition (the flicker).
+        let host_window: *mut objc2_app_kit::NSWindow =
+            unsafe { msg_send![&native_target, window] };
+        if crate::layout_policy::insert_needs_layout_pass(!host_window.is_null()) {
+            schedule_layout_pass();
+        }
+    }
+
+    /// Opt into ANCHORLESS reactive regions (the runtime-decided control-flow
+    /// lowering). With this on, a style-less `when`/`for` in a children list
+    /// splices its branch/rows DIRECTLY into the real parent via `insert_at` /
+    /// `remove_child` — no `create_reactive_anchor` wrapper view.
+    ///
+    /// Why macOS needs it (it was the last backend on the anchored path): a
+    /// wrapper view is a real box that AUTO-sizes to its IN-FLOW children, so a
+    /// `when` whose active branch is `position: Absolute` (every popover/overlay
+    /// — Settings, camera panel, media inspector) collapses the wrapper to 0×0.
+    /// AppKit still PAINTS the absolute child (NSView doesn't clip subviews to
+    /// bounds), but `hitTest:` won't descend into a subview unless the click is
+    /// inside the 0×0 wrapper's frame — so the popover rendered fine yet
+    /// swallowed every click. Splicing gives the absolute branch the real parent
+    /// as its containing block (matching web's `display: contents` anchor), so it
+    /// both paints AND hit-tests. Mirrors iOS/Android, which already opt in.
+    fn supports_child_splice(&self) -> bool {
+        true
+    }
+
+    /// Remove a SPECIFIC `child` from `parent` — the removal half of an
+    /// anchorless region's per-toggle rebuild. Detaches the native view AND the
+    /// parallel Taffy edge, then marks the parent dirty (Taffy doesn't
+    /// auto-invalidate a parent's cached size on a child-set change) and reflows
+    /// so a content-sized ancestor shrinks to fit the now-shorter child set.
+    /// Mirror of the per-child teardown `clear_children` does. Mirrors iOS.
+    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
+        let parent_view = parent.as_view();
+        let child_view = child.as_view();
+        let child_key = child.view_key();
+
+        // Portal / detached-window roots aren't real children of `parent` (their
+        // `insert` was skipped): a portal mounts itself into the host window, a
+        // detached root (screen_recorder private layer) lives in its own
+        // borderless window. `removeFromSuperview` here would yank them out of
+        // their host window, and their Taffy node isn't `parent`'s child. Their
+        // teardown runs via the scope-tied release paths. Symmetric with the
+        // `insert` skips; mirrors iOS.
+        if self.portal_roots.contains(&child_key)
+            || self.detached_window_roots.contains_key(&child_key)
+        {
+            return;
+        }
+
+        // Detach the Taffy edge BEFORE removeFromSuperview (mirror
+        // `clear_children`) so a stale child-set + cached parent size can't drive
+        // a ghost layout on the next pass. `mark_dirty` recomputes the parent's
+        // measured size.
+        if let (Some(p_layout), Some(c_layout)) =
+            (self.layout_of(parent_view), self.layout_of(child_view))
+        {
+            self.layout.remove_child(p_layout, c_layout);
+            self.layout.mark_dirty(p_layout);
+        }
+        // Drop any pending color transition keyed on this view pointer so a
+        // recycled NSView can't inherit a stale `from` color.
+        transitions::forget_view(child_view);
+        let _: () = unsafe { msg_send![child_view, removeFromSuperview] };
+
+        // Reflow after the removal — symmetric with `insert` / `insert_at`. The
+        // coalesced pass runs before this turn's Core Animation commit, so the
+        // shrink lands in the same frame with no flicker; a mid-build removal on
+        // a floating parent no-ops here and defers to `finish()`.
+        let host_window: *mut objc2_app_kit::NSWindow =
+            unsafe { msg_send![parent_view, window] };
+        if crate::layout_policy::insert_needs_layout_pass(!host_window.is_null()) {
+            schedule_layout_pass();
+        }
+    }
+
+    /// Insert `child` into `parent` at child-array `index` — companion to
+    /// `remove_child`. This is `insert` (above) with one difference: it lands the
+    /// child at the region's stable `base_index` (so a region with trailing
+    /// static siblings rebuilds in the right place / z-order) instead of always
+    /// appending. Preserves every special case `insert` has: the portal /
+    /// detached-window-root skips, the scroll-view `documentView` routing, and
+    /// the window-attached layout-pass gate. Mirrors iOS.
+    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
+        let parent_view = parent.as_view();
+        let child_view = child.as_view();
+        let child_key = child.view_key();
+
+        // Portal / detached-window roots mount themselves into the host window;
+        // skip the parent-tree splice the walker tries for them. (Mirror of
+        // `insert`.)
+        if self.portal_roots.contains(&child_key)
+            || self.detached_window_roots.contains_key(&child_key)
+        {
+            return;
+        }
+
+        // ScrollView routing: children mount inside the inner documentView so
+        // they participate in the scroll machinery, while the Taffy parent stays
+        // the scroll view itself. (Mirror of `insert`.)
+        let is_scroll = is_scroll_view(parent_view);
+        let native_target: Retained<NSView> = if is_scroll {
+            let doc_ptr: *mut NSView = unsafe { msg_send![parent_view, documentView] };
+            if doc_ptr.is_null() {
+                unsafe { Retained::retain(parent_view as *const NSView as *mut NSView) }.unwrap()
+            } else {
+                unsafe { Retained::retain(doc_ptr) }.expect("NSScrollView documentView retain")
+            }
+        } else {
+            unsafe { Retained::retain(parent_view as *const NSView as *mut NSView) }.unwrap()
+        };
+
+        // AppKit has no `insertSubview:atIndex:`. Subviews are ordered
+        // back-to-front, so to land `child` at array index `index` we insert it
+        // BELOW the sibling currently at that index (which shifts to `index+1`).
+        // At or past the end there's no such sibling — append on top, matching
+        // `insert`'s plain `addSubview:`. The Taffy `add_child_at_index` below
+        // clamps `index` identically.
+        let subviews_arr: *mut NSObject = unsafe { msg_send![&*native_target, subviews] };
+        let count: usize = if subviews_arr.is_null() {
+            0
+        } else {
+            unsafe { msg_send![subviews_arr, count] }
+        };
+        if index >= count {
+            unsafe { native_target.addSubview(child_view) };
+        } else {
+            let sibling: *mut NSView = unsafe { msg_send![subviews_arr, objectAtIndex: index] };
+            let _: () = unsafe {
+                msg_send![
+                    &*native_target,
+                    addSubview: child_view,
+                    positioned: objc2_app_kit::NSWindowOrderingMode::NSWindowBelow,
+                    relativeTo: sibling,
+                ]
+            };
+        }
+
+        // Mirror the parenting in Taffy against the framework's LOGICAL parent
+        // (the scroll view itself, NOT its documentView — same as `insert`), at
+        // the matching index so flex order tracks the native subview order.
+        let parent_layout = self.layout_for_view(parent_view);
+        let child_layout = self.layout_for_view(child_view);
+        self.layout.add_child_at_index(parent_layout, child_layout, index);
+        self.layout.mark_dirty(parent_layout);
+
+        // Same window-attached layout-pass gate as `insert`: a splice into a
+        // live parent (the post-mount `when`/`for` toggle) kicks a coalesced
+        // pass so the new branch is sized + painted in the same frame; a
+        // mid-build splice into a floating parent defers to `finish()`.
         let host_window: *mut objc2_app_kit::NSWindow =
             unsafe { msg_send![&native_target, window] };
         if crate::layout_policy::insert_needs_layout_pass(!host_window.is_null()) {

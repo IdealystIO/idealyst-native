@@ -125,7 +125,8 @@ impl LazyBuilder {
     where
         F: Fn(LazyState) + 'static,
     {
-        self.on_state = Some(Rc::new(f));
+        // Born batched — see `reactive::cycle`.
+        self.on_state = Some(Rc::new(move |s: LazyState| crate::cycle(|| f(s))));
         self
     }
 

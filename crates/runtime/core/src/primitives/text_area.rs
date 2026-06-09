@@ -89,7 +89,8 @@ pub fn text_area<F: Fn(String) + 'static>(
 ) -> Bound<TextAreaHandle> {
     Bound::new(Element::TextArea {
         value,
-        on_change: Rc::new(on_change),
+        // Born batched — see `reactive::cycle`.
+        on_change: Rc::new(move |s: String| crate::cycle(|| on_change(s))),
         on_key_down: None,
         placeholder: None,
         // Standard textarea default: soft-wrap on. The code-editor
@@ -148,7 +149,8 @@ impl Bound<TextAreaHandle> {
         F: Fn(&KeyEvent) -> KeyOutcome + 'static,
     {
         if let Element::TextArea { on_key_down, .. } = &mut self.primitive {
-            *on_key_down = Some(Rc::new(handler));
+            // Born batched — see `reactive::cycle`.
+            *on_key_down = Some(Rc::new(move |e: &KeyEvent| crate::cycle(|| handler(e))));
         }
         self
     }

@@ -340,17 +340,22 @@ where
                 return;
             }
 
-            state_for_spawn.update(|s| {
-                s.loading = false;
-                match result {
-                    Ok(d) => {
-                        s.data = Some(d);
-                        s.error = None;
+            // Async completion is one reactive cycle (see `reactive::cycle`):
+            // uniform with `async_reducer`, and coalesces with any sibling
+            // writes a future's continuation makes.
+            crate::cycle(|| {
+                state_for_spawn.update(|s| {
+                    s.loading = false;
+                    match result {
+                        Ok(d) => {
+                            s.data = Some(d);
+                            s.error = None;
+                        }
+                        Err(e) => {
+                            s.error = Some(e);
+                        }
                     }
-                    Err(e) => {
-                        s.error = Some(e);
-                    }
-                }
+                });
             });
         });
     });

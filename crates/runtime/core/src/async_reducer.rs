@@ -244,7 +244,9 @@ where
                     };
                 }
 
-                match result {
+                // One reactive cycle: the success arm writes both `state`
+                // and `status`, so coalesce their fan-out. See `reactive::cycle`.
+                crate::cycle(|| match result {
                     Ok(r) => {
                         state.update(|s| apply_for_task(s, r));
                         status.set(AsyncStatus::Idle);
@@ -255,7 +257,7 @@ where
                         status.set(AsyncStatus::Error(e));
                         Err(e_clone)
                     }
-                }
+                })
             }) as Pin<Box<dyn Future<Output = Result<(), E>>>>
         })
     };

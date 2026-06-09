@@ -4,17 +4,29 @@
 //!   `default(field = expr, field = expr, ...)` — per-field defaults
 //!   `children`                                  — opt in to children-aware
 //!                                                  treatment in future tooling
+//!   `external` / `external(tag = "...")`        — mark for `idealyst export`
+//!                                                  (Web Component generation)
 //! Empty input is valid.
 
 use proc_macro2::TokenStream as TokenStream2;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Expr, Ident, Token};
+use syn::{Expr, Ident, LitStr, Token};
 
 /// One `field = expr` pair declared in `#[component(default(...))]`.
 pub(crate) struct DefaultEntry {
     pub(crate) name: Ident,
     pub(crate) expr: Expr,
+}
+
+/// The `external` marker — opt this component into `idealyst export`.
+/// An optional `tag = "..."` overrides the default custom-element tag
+/// (`idl-<kebab(name)>`).
+pub(crate) struct ExternalSpec {
+    // Read only under the `catalog` feature (by `external_emit`); allow it
+    // to sit unread in non-catalog builds without a dead-code warning.
+    #[allow(dead_code)]
+    pub(crate) tag: Option<String>,
 }
 
 /// Parsed `#[component(...)]` attribute arguments.
@@ -25,11 +37,14 @@ pub(crate) struct ComponentAttr {
     /// invocation macro is unchanged whether the flag is set or not.
     #[allow(dead_code)]
     pub(crate) has_children: bool,
+    /// `Some` when the component is tagged for external (Web Component)
+    /// export. Drives the `ExternalEntry` catalog registration.
+    pub(crate) external: Option<ExternalSpec>,
 }
 
 pub(crate) fn parse_component_attr(input: TokenStream2) -> syn::Result<ComponentAttr> {
     if input.is_empty() {
-        return Ok(ComponentAttr { defaults: Vec::new(), has_children: false });
+        return Ok(ComponentAttr { defaults: Vec::new(), has_children: false, external: None });
     }
     syn::parse2::<ComponentAttr>(input)
 }
@@ -38,6 +53,7 @@ impl Parse for ComponentAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut defaults = Vec::new();
         let mut has_children = false;
+        let mut external = None;
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
             match ident.to_string().as_str() {
@@ -53,11 +69,39 @@ impl Parse for ComponentAttr {
                 "children" => {
                     has_children = true;
                 }
+                "external" => {
+                    // Bare `external`, or `external(tag = "...")`.
+                    let mut tag = None;
+                    if input.peek(syn::token::Paren) {
+                        let content;
+                        syn::parenthesized!(content in input);
+                        while !content.is_empty() {
+                            let key: Ident = content.parse()?;
+                            if key != "tag" {
+                                return Err(syn::Error::new(
+                                    key.span(),
+                                    format!(
+                                        "unexpected `external` argument `{}`; only `tag = \"...\"` is supported",
+                                        key
+                                    ),
+                                ));
+                            }
+                            let _: Token![=] = content.parse()?;
+                            let lit: LitStr = content.parse()?;
+                            tag = Some(lit.value());
+                            if content.is_empty() {
+                                break;
+                            }
+                            let _: Token![,] = content.parse()?;
+                        }
+                    }
+                    external = Some(ExternalSpec { tag });
+                }
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unexpected argument `{}`; only `default(...)` and `children` are supported",
+                            "unexpected argument `{}`; only `default(...)`, `children`, and `external` are supported",
                             other
                         ),
                     ));
@@ -68,7 +112,7 @@ impl Parse for ComponentAttr {
             }
             let _: Token![,] = input.parse()?;
         }
-        Ok(ComponentAttr { defaults, has_children })
+        Ok(ComponentAttr { defaults, has_children, external })
     }
 }
 
@@ -136,5 +180,38 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.to_string().contains("unknown"));
+    }
+
+    #[test]
+    fn parses_bare_external() {
+        let a = parse_component_attr(quote! { external }).unwrap();
+        let ext = a.external.expect("external flag set");
+        assert!(ext.tag.is_none());
+    }
+
+    #[test]
+    fn parses_external_with_tag() {
+        let a = parse_component_attr(quote! { external(tag = "x-greeter") }).unwrap();
+        let ext = a.external.expect("external flag set");
+        assert_eq!(ext.tag.as_deref(), Some("x-greeter"));
+    }
+
+    #[test]
+    fn parses_external_combined_with_default() {
+        let a = parse_component_attr(quote! { external, default(step = 1) }).unwrap();
+        assert!(a.external.is_some());
+        assert_eq!(a.defaults.len(), 1);
+    }
+
+    #[test]
+    fn rejects_unknown_external_argument() {
+        let err = parse_component_attr(quote! { external(name = "x") }).unwrap_err();
+        assert!(err.to_string().contains("external"));
+    }
+
+    #[test]
+    fn no_external_by_default() {
+        let a = parse_component_attr(quote! { children }).unwrap();
+        assert!(a.external.is_none());
     }
 }
