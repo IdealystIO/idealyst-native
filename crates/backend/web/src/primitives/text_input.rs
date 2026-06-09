@@ -63,6 +63,32 @@ pub(crate) fn create(
     input.unchecked_into::<Node>()
 }
 
+/// Wire the standard focus callbacks to the DOM `focus` / `blur` events.
+/// Works on any focusable node (`<input>` / `<textarea>`). Closures are
+/// stashed under the node's id in `state_listeners` so they live as long
+/// as the node, exactly like the `input` / `keydown` listeners above.
+pub(crate) fn attach_focus_handlers(
+    b: &mut WebBackend,
+    node: &Node,
+    on_focus: Option<Rc<dyn Fn()>>,
+    on_blur: Option<Rc<dyn Fn()>>,
+) {
+    let target: &web_sys::EventTarget = node.unchecked_ref();
+    let id = b.node_id(node);
+    if let Some(cb) = on_focus {
+        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| cb());
+        let _ =
+            target.add_event_listener_with_callback("focus", closure.as_ref().unchecked_ref());
+        b.state_listeners.entry(id).or_default().push(closure);
+    }
+    if let Some(cb) = on_blur {
+        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| cb());
+        let _ =
+            target.add_event_listener_with_callback("blur", closure.as_ref().unchecked_ref());
+        b.state_listeners.entry(id).or_default().push(closure);
+    }
+}
+
 /// Wire a DOM `keydown` listener that calls the Rust `KeyDownHandler`
 /// with the same `KeyEvent` shape used by every other backend, and
 /// calls `event.preventDefault()` when the handler returns

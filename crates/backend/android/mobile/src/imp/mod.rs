@@ -3685,6 +3685,35 @@ impl Backend for AndroidBackend {
         entry.state_callback_ptr = ptr;
     }
 
+    /// Standard focus callbacks. Reuses the `attach_states` machinery
+    /// (`RustStateListener` → `nativeStateEvent`): we install a state
+    /// setter that dispatches the `FOCUSED` bit to the app callbacks.
+    /// `RustStateListener.onTouch` returns `false`, so tap-to-focus on the
+    /// `EditText` is unaffected; the `PRESSED` bit is simply ignored here.
+    /// (A text input uses either the state path — `__state_focused`
+    /// overlays — or these callbacks, never both, so the single
+    /// `OnFocusChangeListener` slot is never contended.)
+    fn attach_focus_handlers(
+        &mut self,
+        node: &Self::Node,
+        on_focus: Option<Rc<dyn Fn()>>,
+        on_blur: Option<Rc<dyn Fn()>>,
+    ) {
+        let setter: Rc<dyn Fn(runtime_core::StateBits, bool)> =
+            Rc::new(move |bits: runtime_core::StateBits, on: bool| {
+                if bits.contains(runtime_core::StateBits::FOCUSED) {
+                    if on {
+                        if let Some(f) = on_focus.as_ref() {
+                            f();
+                        }
+                    } else if let Some(f) = on_blur.as_ref() {
+                        f();
+                    }
+                }
+            });
+        self.attach_states(node, setter);
+    }
+
     // =================================================================
     // Accessibility
     // =================================================================

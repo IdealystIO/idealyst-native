@@ -276,6 +276,12 @@ pub enum Element {
         /// cross-platform contract.
         on_key_down: Option<Rc<dyn Fn(&crate::primitives::key::KeyEvent) -> crate::primitives::key::KeyOutcome>>,
         placeholder: Option<String>,
+        /// Fires when the input gains keyboard focus (begins editing).
+        /// Standard focus callback — one of the primitive's interaction
+        /// hooks (alongside `on_change`/`on_key_down`/`on_blur`).
+        on_focus: Option<Rc<dyn Fn()>>,
+        /// Fires when the input loses keyboard focus (ends editing).
+        on_blur: Option<Rc<dyn Fn()>>,
         /// Mask the entered text (password entry). Each backend maps this to
         /// its native secure-entry mode — web `type="password"`, UIKit
         /// `isSecureTextEntry`, Android `TYPE_TEXT_VARIATION_PASSWORD`, AppKit

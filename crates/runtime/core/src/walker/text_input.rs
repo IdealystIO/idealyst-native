@@ -20,6 +20,8 @@ pub(super) fn build_text_input<B: Backend + 'static>(
     value: Signal<String>,
     on_change: Rc<dyn Fn(String)>,
     on_key_down: Option<Rc<dyn Fn(&KeyEvent) -> KeyOutcome>>,
+    on_focus: Option<Rc<dyn Fn()>>,
+    on_blur: Option<Rc<dyn Fn()>>,
     placeholder: Option<String>,
     secure: bool,
     style: Option<StyleSource>,
@@ -37,6 +39,12 @@ pub(super) fn build_text_input<B: Backend + 'static>(
             &a11y,
         )
     });
+    // Standard focus callbacks. Routed through a dedicated backend hook
+    // (default no-op) so backends opt in without widening every
+    // `create_text_input` signature; mirrors the `attach_states` pattern.
+    if on_focus.is_some() || on_blur.is_some() {
+        backend.borrow_mut().attach_focus_handlers(&n, on_focus, on_blur);
+    }
     if let Some(s) = style {
         attach_style(backend, &n, s);
     }

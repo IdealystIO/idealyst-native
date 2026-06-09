@@ -293,6 +293,12 @@ impl IosNode {
     }
 }
 
+/// `UIControlEvents` bitmasks for a `UITextField`'s begin/end editing —
+/// i.e. keyboard focus in/out. `UIControlEventEditingDidBegin = 1 << 16`,
+/// `UIControlEventEditingDidEnd = 1 << 18`.
+const EDITING_DID_BEGIN: u64 = 1 << 16;
+const EDITING_DID_END: u64 = 1 << 18;
+
 // =========================================================================
 // Global self-handle — lets navigator/drawer dispatch closures schedule
 // a layout pass after they mount new screens. The framework's render
@@ -1594,6 +1600,71 @@ impl Backend for IosBackend {
                 unsafe { field.setText(Some(&ns)) };
             }
         }
+    }
+
+    /// Standard focus callbacks. `UITextField` is a `UIControl`, so begin/end
+    /// editing surface as the `EditingDidBegin` / `EditingDidEnd` control
+    /// events — wired with the same `CallbackTarget`/`invoke` machinery as
+    /// `on_change`. (A `TextArea`/`UITextView` is not a `UIControl`; its focus
+    /// would come through `UITextViewDelegate` — a follow-up.)
+    fn attach_focus_handlers(
+        &mut self,
+        node: &Self::Node,
+        on_focus: Option<Rc<dyn Fn()>>,
+        on_blur: Option<Rc<dyn Fn()>>,
+    ) {
+        let IosNode::TextField(field) = node else { return };
+        let sel = objc2::sel!(invoke);
+        if let Some(cb) = on_focus {
+            let target = CallbackTarget::new(self.mtm, cb);
+            let _: () = unsafe {
+                msg_send![field, addTarget: &*target, action: sel, forControlEvents: EDITING_DID_BEGIN]
+            };
+            self.retain_target(&target);
+        }
+        if let Some(cb) = on_blur {
+            let target = CallbackTarget::new(self.mtm, cb);
+            let _: () = unsafe {
+                msg_send![field, addTarget: &*target, action: sel, forControlEvents: EDITING_DID_END]
+            };
+            self.retain_target(&target);
+        }
+    }
+
+    /// Wire focus → `FOCUSED` so stylesheet `__state_focused` overlays (e.g.
+    /// idea-ui `Field`'s focus ring) activate on iOS, matching web (CSS
+    /// `:focus`) and Android (`OnFocusChangeListener`). Scoped to text fields;
+    /// other node types/states are left unhandled (a no-op, as before iOS
+    /// implemented this method).
+    fn attach_states(
+        &mut self,
+        node: &Self::Node,
+        setter: Rc<dyn Fn(runtime_core::StateBits, bool)>,
+    ) {
+        let IosNode::TextField(field) = node else { return };
+        let sel = objc2::sel!(invoke);
+        let begin = {
+            let setter = setter.clone();
+            CallbackTarget::new(
+                self.mtm,
+                Rc::new(move || setter(runtime_core::StateBits::FOCUSED, true)),
+            )
+        };
+        let _: () = unsafe {
+            msg_send![field, addTarget: &*begin, action: sel, forControlEvents: EDITING_DID_BEGIN]
+        };
+        self.retain_target(&begin);
+        let end = {
+            let setter = setter.clone();
+            CallbackTarget::new(
+                self.mtm,
+                Rc::new(move || setter(runtime_core::StateBits::FOCUSED, false)),
+            )
+        };
+        let _: () = unsafe {
+            msg_send![field, addTarget: &*end, action: sel, forControlEvents: EDITING_DID_END]
+        };
+        self.retain_target(&end);
     }
 
     fn create_text_area(

@@ -1960,6 +1960,23 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Wire the standard focus callbacks for a text input/area: `on_focus`
+    /// fires when the widget gains keyboard focus (begins editing),
+    /// `on_blur` when it loses it. Called by the build path only when at
+    /// least one is set. Default is a no-op for backends without a native
+    /// focus/begin-editing event; backends opt in by overriding (web
+    /// `focus`/`blur` listeners, iOS `EditingDidBegin`/`DidEnd`
+    /// target-actions, Android `OnFocusChangeListener`).
+    #[allow(unused_variables)]
+    fn attach_focus_handlers(
+        &mut self,
+        node: &Self::Node,
+        on_focus: Option<Rc<dyn Fn()>>,
+        on_blur: Option<Rc<dyn Fn()>>,
+    ) {
+        // default: no-op
+    }
+
     /// Mark the native widget as disabled or enabled. Distinct from
     /// the `DISABLED` style-state bit (which controls overlay
     /// styling) — this one is about the widget being inert: web's

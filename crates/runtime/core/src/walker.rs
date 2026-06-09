@@ -614,9 +614,9 @@ fn dispatch_icon<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) 
 
 #[inline(never)]
 fn dispatch_text_input<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
-    let Element::TextInput { value, on_change, on_key_down, placeholder, secure, style, ref_fill, accessibility, .. } = node
+    let Element::TextInput { value, on_change, on_key_down, on_focus, on_blur, placeholder, secure, style, ref_fill, accessibility, .. } = node
     else { unreachable!() };
-    text_input::build_text_input(backend, value, on_change, on_key_down, placeholder, secure, style, ref_fill, accessibility)
+    text_input::build_text_input(backend, value, on_change, on_key_down, on_focus, on_blur, placeholder, secure, style, ref_fill, accessibility)
 }
 
 #[inline(never)]

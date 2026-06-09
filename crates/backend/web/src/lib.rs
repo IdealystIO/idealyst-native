@@ -2408,6 +2408,15 @@ impl Backend for WebBackend {
         primitives::text_input::update_value(node, value)
     }
 
+    fn attach_focus_handlers(
+        &mut self,
+        node: &Self::Node,
+        on_focus: Option<Rc<dyn Fn()>>,
+        on_blur: Option<Rc<dyn Fn()>>,
+    ) {
+        primitives::text_input::attach_focus_handlers(self, node, on_focus, on_blur);
+    }
+
     fn create_text_area(
         &mut self,
         initial_value: &str,

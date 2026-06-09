@@ -89,6 +89,8 @@ pub fn text_input<F: Fn(String) + 'static>(
         value,
         on_change: Rc::new(on_change),
         on_key_down: None,
+        on_focus: None,
+        on_blur: None,
         placeholder: None,
         secure: false,
         style: None,
@@ -138,6 +140,25 @@ impl Bound<TextInputHandle> {
     {
         if let Element::TextInput { on_key_down, .. } = &mut self.primitive {
             *on_key_down = Some(Rc::new(handler));
+        }
+        self
+    }
+
+    /// Attach a handler that fires when the input gains keyboard focus
+    /// (begins editing). A standard interaction callback — every backend
+    /// that has a native focus/begin-editing event wires it.
+    pub fn on_focus<F: Fn() + 'static>(mut self, handler: F) -> Self {
+        if let Element::TextInput { on_focus, .. } = &mut self.primitive {
+            *on_focus = Some(Rc::new(handler));
+        }
+        self
+    }
+
+    /// Attach a handler that fires when the input loses keyboard focus
+    /// (ends editing).
+    pub fn on_blur<F: Fn() + 'static>(mut self, handler: F) -> Self {
+        if let Element::TextInput { on_blur, .. } = &mut self.primitive {
+            *on_blur = Some(Rc::new(handler));
         }
         self
     }
