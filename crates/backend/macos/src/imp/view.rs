@@ -353,22 +353,7 @@ impl FlippedView {
         // burst of camera signal writes coalesces into one consistent render
         // per input event — no backend-side `batch()` needed. (Previously a
         // local `batch(..)` here; centralized so every backend gets it.)
-        let __in = std::time::Instant::now();
         let response = (handler)(&ev);
-        if matches!(phase, TouchPhase::Moved) {
-            thread_local! {
-                static MP_LAST_IN: std::cell::Cell<Option<std::time::Instant>> =
-                    const { std::cell::Cell::new(None) };
-            }
-            let dur = __in.elapsed().as_micros();
-            let gap = MP_LAST_IN.with(|c| {
-                let prev = c.replace(Some(__in));
-                prev.map(|p| __in.duration_since(p).as_micros()).unwrap_or(0)
-            });
-            if gap > 18000 || dur > 5000 {
-                eprintln!("MOUSEPROF entry_gap_us={gap} handler_dur_us={dur}");
-            }
-        }
 
         match phase {
             TouchPhase::Began => {

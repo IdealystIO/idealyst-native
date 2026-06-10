@@ -126,29 +126,9 @@ fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node
         let scene_cell = scene_cell.clone();
         let state_cell = state_cell.clone();
         move || {
-            let __ps0 = std::time::Instant::now();
             *scene_cell.borrow_mut() = paint_scene(&props);
-            let __ps = __ps0.elapsed();
-            thread_local! {
-                static EFF_LAST: std::cell::Cell<Option<std::time::Instant>> =
-                    const { std::cell::Cell::new(None) };
-            }
-            let __gap = EFF_LAST.with(|c| {
-                let now = std::time::Instant::now();
-                let prev = c.replace(Some(now));
-                prev.map(|p| now.duration_since(p).as_micros()).unwrap_or(0)
-            });
             if let Some(state) = state_cell.borrow_mut().as_mut() {
                 state.render(&scene_cell.borrow());
-            }
-            let __body = __ps0.elapsed();
-            if __ps.as_micros() > 1000 || __gap > 20000 {
-                eprintln!(
-                    "PAINTPROF paint_us={} effect_gap_us={} body_us={}",
-                    __ps.as_micros(),
-                    __gap,
-                    __body.as_micros(),
-                );
             }
         }
     });
@@ -598,8 +578,6 @@ impl RenderState {
         // instances those and composites vello's content over them; anything else
         // is plain vello. All three converge on the same pixels (CLAUDE.md §7).
         let plan = plan_scene(canvas_scene.ops());
-        let __t0 = std::time::Instant::now();
-        let __is_cached = matches!(plan, ScenePlan::Cached { .. });
 
         // vello renders its content (the whole scene for `Vello`, only `rest` for
         // `Hybrid`) over a transparent base. `Vello` targets the main `target`;
@@ -700,16 +678,12 @@ impl RenderState {
             }
         }
 
-        let __t_content = __t0.elapsed();
-        let __acq0 = std::time::Instant::now();
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             // Skip the frame on timeout/occluded/outdated/lost/validation.
             _ => return false,
         };
-        let __t_acq = __acq0.elapsed();
-        let __enc0 = std::time::Instant::now();
         let surface_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -786,14 +760,7 @@ impl RenderState {
                                 device, &mut encoder, view, target_view,
                                 layer.transform, s, layer.alpha, cw, ch, frac,
                             );
-                        } else {
-                            eprintln!(
-                                "CMPSKIP layer={} tex={}x{} want={}x{} (stale size)",
-                                layer.id, tex.width(), tex.height(), ow, oh
-                            );
                         }
-                    } else {
-                        eprintln!("CMPSKIP layer={} MISSING from cache", layer.id);
                     }
                 }
                 // Live ink (`rest`, rendered into overlay) over the backdrop.
@@ -868,47 +835,14 @@ impl RenderState {
             }
         };
 
-        let __rec = native_publish.is_some();
-        let __t_enc = __enc0.elapsed();
-        let __sub0 = std::time::Instant::now();
         self.queue.submit([encoder.finish()]);
-        let __t_submit = __sub0.elapsed();
-        let __pres0 = std::time::Instant::now();
         frame.present();
-        let __t_present = __pres0.elapsed();
 
         // Publish the just-blitted IOSurface AFTER submit (the ring guarantees
         // it isn't reused until POOL frames later, so the in-flight GPU blit
         // finishes long before then — no fence needed at this cadence).
-        let __pub0 = std::time::Instant::now();
         if let Some(idx) = native_publish {
             self.native_capture.as_ref().unwrap().publish(idx);
-        }
-        let __t_pub = __pub0.elapsed();
-        if __is_cached {
-            thread_local! {
-                static LAST_RENDER: std::cell::Cell<Option<std::time::Instant>> =
-                    const { std::cell::Cell::new(None) };
-            }
-            let __interval = LAST_RENDER.with(|c| {
-                let now = std::time::Instant::now();
-                let prev = c.replace(Some(now));
-                prev.map(|p| now.duration_since(p).as_micros()).unwrap_or(0)
-            });
-            eprintln!(
-                "RENDERPROF rec={} interval={}us content={}us acquire={}us encode={}us submit={}us present={}us publish={}us total={}us surf={}x{}",
-                __rec as u8,
-                __interval,
-                __t_content.as_micros(),
-                __t_acq.as_micros(),
-                __t_enc.as_micros(),
-                __t_submit.as_micros(),
-                __t_present.as_micros(),
-                __t_pub.as_micros(),
-                __t0.elapsed().as_micros(),
-                self.config.width,
-                self.config.height,
-            );
         }
 
         // CPU read-back fallback only when the zero-copy path ISN'T carrying the
@@ -954,7 +888,6 @@ impl RenderState {
         if w == 0 || h == 0 {
             return;
         }
-        let __cap0 = std::time::Instant::now();
 
         let unpadded_bpr = w * 4;
         let padded_bpr = unpadded_bpr.div_ceil(256) * 256;
@@ -996,12 +929,9 @@ impl RenderState {
         self.queue.submit([encoder.finish()]);
 
         // Map + block until the GPU finishes (v1 readback; main-thread).
-        let __copy_us = __cap0.elapsed().as_micros();
-        let __poll0 = std::time::Instant::now();
         let slice = buffer.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-        let __poll_us = __poll0.elapsed().as_micros();
 
         // Strip row padding into a tightly-packed RGBA frame.
         let data = slice.get_mapped_range();
@@ -1015,17 +945,7 @@ impl RenderState {
 
         // vello target is Rgba8Unorm, top-down, straight alpha — exactly the
         // FrameWriter contract.
-        let __write0 = std::time::Instant::now();
         writer.write_rgba8(w, h, &frame);
-        eprintln!(
-            "CAPPROF copy_submit={}us poll_block={}us strip+write={}us total={}us surf={}x{}",
-            __copy_us,
-            __poll_us,
-            __write0.elapsed().as_micros(),
-            __cap0.elapsed().as_micros(),
-            w,
-            h,
-        );
     }
 }
 

@@ -273,9 +273,18 @@ async fn build_render_fn(ev: OnReadyEvent, props: Rc<CanvasProps>) -> RenderFn {
         if let Some(gpu) = GpuState::try_new(ev, canvas.clone(), props.layers.clone()).await {
             // Self-capture works on a webgpu-context canvas via captureStream —
             // and the camera is composited INTO the canvas, so it's in the recording.
-            canvas_native::publish_capture_stream(&canvas, &props);
+            // Manual capture mode: `tick()` the driver after each present, because
+            // a WebGPU swapchain present doesn't reliably trigger the browser's
+            // auto-capture timer (choppy recordings). See `publish_capture_stream`.
+            let capture = canvas_native::publish_capture_stream(&canvas, &props);
             marker("canvas-vello: web GPU (WebGPU)");
-            return gpu.into_render_fn();
+            let mut render = gpu.into_render_fn();
+            return Box::new(move |scene: &CanvasScene| {
+                render(scene);
+                if let Some(c) = &capture {
+                    c.tick();
+                }
+            });
         }
     }
 
@@ -335,11 +344,6 @@ struct GpuState {
     /// [`WebLayerCompositor`]. Empty when the canvas has no layers.
     layers: Vec<TextureLayer>,
     layer_compositor: Option<WebLayerCompositor>,
-    /// TEMP frame-rate meter (remove after benchmarking): frames this window,
-    /// window-start µs, last-frame µs, worst inter-frame gap µs. Logs canvas FPS +
-    /// worst frame gap to the console once a second WHILE rendering (so the number
-    /// reflects interaction — pan/zoom — not idle, when `render` isn't called).
-    fps: (u32, u64, u64, u64),
     /// Instanced analytic-shape pass for a leading shape backdrop (the hybrid
     /// path), built lazily the first time a shape-led scene is rendered.
     shape_pass: Option<ShapePass>,
@@ -508,7 +512,6 @@ impl GpuState {
             cached_layers: HashMap::new(),
             cached_ops: HashMap::new(),
             transform_compositor: None,
-            fps: (0, 0, 0, 0),
         })
     }
 
@@ -592,36 +595,6 @@ impl GpuState {
     }
 
     fn render(&mut self, canvas_scene: &CanvasScene) {
-        // TEMP FPS meter (remove after benchmarking). Inter-frame interval → FPS +
-        // worst gap, logged once a second. `render` only runs on repaint, so this
-        // measures the rate DURING interaction (pan/zoom) — a steady ~60 with a
-        // small worst-gap is smooth; a low FPS or a big worst-gap is the stutter.
-        {
-            let now = runtime_core::time::now_micros();
-            let (frames, win, last, maxgap) = &mut self.fps;
-            if *last != 0 {
-                *maxgap = (*maxgap).max(now.saturating_sub(*last));
-            }
-            *last = now;
-            if *win == 0 {
-                *win = now;
-            }
-            *frames += 1;
-            let elapsed = now.saturating_sub(*win);
-            if elapsed >= 1_000_000 {
-                let fps = *frames as f64 * 1_000_000.0 / elapsed as f64;
-                let worst_ms = *maxgap as f64 / 1000.0;
-                marker(&format!(
-                    "canvas-vello fps: {fps:.0} ({} frames in {:.2}s), worst frame gap {worst_ms:.1}ms",
-                    *frames,
-                    elapsed as f64 / 1_000_000.0
-                ));
-                *frames = 0;
-                *win = now;
-                *maxgap = 0;
-            }
-        }
-
         // Refresh the device-pixel ratio each frame (it can change when the window
         // moves between monitors or the page zooms); the backing-store size below
         // tracks it via the graphics primitive, and the base transform uses it.
@@ -650,31 +623,6 @@ impl GpuState {
         // `Vello` → `target`; only `rest` for `Hybrid` → the separate `overlay`)
         // over a transparent base; `Shapes` skips vello entirely.
         let plan = plan_scene(canvas_scene.ops());
-        // TEMP PROBE (remove after debugging the frozen-pan bug): log every render
-        // so we can see whether render() runs during a pan and with what transform.
-        {
-            let desc = match &plan {
-                ScenePlan::Cached { layers, rest } => {
-                    let dirty: Vec<bool> = layers.iter().map(|l| l.dirty).collect();
-                    let (e, f) = layers
-                        .first()
-                        .map(|l| (l.transform.e, l.transform.f))
-                        .unwrap_or((0.0, 0.0));
-                    format!(
-                        "RENDER Cached layers={} dirty={:?} t=({:.1},{:.1}) rest={}",
-                        layers.len(),
-                        dirty,
-                        e,
-                        f,
-                        rest.len()
-                    )
-                }
-                ScenePlan::Vello => "RENDER Vello".to_string(),
-                ScenePlan::Hybrid { rest, .. } => format!("RENDER Hybrid rest={}", rest.len()),
-                ScenePlan::Shapes(b) => format!("RENDER Shapes batches={}", b.len()),
-            };
-            marker(&desc);
-        }
         let (content_ops, to_overlay): (Option<&[DrawOp]>, bool) = match &plan {
             ScenePlan::Vello => (Some(canvas_scene.ops()), false),
             ScenePlan::Hybrid { rest, .. } => {

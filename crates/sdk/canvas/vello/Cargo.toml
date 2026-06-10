@@ -80,6 +80,8 @@ web-sys = { version = "0.3", features = [
     "HtmlVideoElement",
     "HtmlMediaElement",
     "MediaStream",
+    # TEMP: present-rate instrumentation (`performance.now()`).
+    "Performance",
 ] }
 
 # Deterministic gate-logic test (`js_truthy_prop`), run via `wasm-pack test`.

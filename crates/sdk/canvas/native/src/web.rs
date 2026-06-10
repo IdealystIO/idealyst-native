@@ -26,8 +26,8 @@ use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{Clamped, JsCast};
 use web_sys::{
-    CanvasGradient, CanvasRenderingContext2d, CanvasWindingRule, Document, HtmlCanvasElement,
-    HtmlVideoElement, ImageData, MediaStream, ResizeObserver,
+    CanvasCaptureMediaStreamTrack, CanvasGradient, CanvasRenderingContext2d, CanvasWindingRule,
+    Document, HtmlCanvasElement, HtmlVideoElement, ImageData, MediaStream, ResizeObserver,
 };
 
 /// Register the native canvas renderer against a `WebBackend`. One line
@@ -137,19 +137,23 @@ pub fn make_2d_rasterizer(
     let layers = props.layers.clone();
     let layer_videos: Rc<RefCell<Vec<LayerVideo>>> = Rc::new(RefCell::new(Vec::new()));
 
-    publish_capture_stream(&canvas, props);
+    let capture = publish_capture_stream(&canvas, props);
 
     Box::new(move |scene: &Scene| {
         render_scene(&canvas, &ctx, scene);
         if !layers.is_empty() {
             draw_layers(&document, &ctx, &layers, &layer_videos);
         }
+        // Manual capture: grab the just-rendered frame (paced to CAPTURE_FPS).
+        if let Some(c) = &capture {
+            c.tick();
+        }
     })
 }
 
 /// Publish `canvas` as a `captureStream()` [`MediaStream`] into `props.capture`
-/// (web self-capture). No-op when the canvas has no `capture` sink. The recorder
-/// records the canvas directly — no readback.
+/// (web self-capture). No-op (returns `None`) when the canvas has no `capture`
+/// sink. The recorder records the canvas directly — no readback.
 ///
 /// Shared by the 2D rasterizer and `canvas-vello`'s web **GPU** path:
 /// `captureStream` works on any canvas regardless of context type, so the vello
@@ -157,16 +161,53 @@ pub fn make_2d_rasterizer(
 /// `map`+`poll` is illegal on the wasm main thread). (The app must keep the
 /// canvas re-rendering, e.g. a `version` raf, while recording, or the captured
 /// stream is a frozen frame.)
-pub fn publish_capture_stream(canvas: &HtmlCanvasElement, props: &CanvasProps) {
-    if let Some(capture) = &props.capture {
-        if let Ok(stream) = canvas.capture_stream_with_frame_request_rate(CAPTURE_FPS) {
-            capture.publish_native_source(Rc::new(stream));
+///
+/// Capture runs in **manual mode** (`frameRequestRate = 0`): a frame is produced
+/// only when we call [`CanvasCaptureFrameDriver::tick`] after a render. A fixed
+/// auto rate is unreliable on a **WebGPU** canvas — a swapchain *present* doesn't
+/// dependably mark the canvas dirty for the browser's capture timer, so the track
+/// under-delivers and the recording is choppy even while the canvas itself renders
+/// at full speed. Driving `requestFrame()` per present pins one captured frame to
+/// each render (paced by [`CaptureFrameDriver`]). The returned driver is `None`
+/// when there's no capture sink; otherwise the caller MUST `tick()` it each frame.
+#[must_use]
+pub fn publish_capture_stream(
+    canvas: &HtmlCanvasElement,
+    props: &CanvasProps,
+) -> Option<CaptureFrameDriver> {
+    let capture = props.capture.as_ref()?;
+    let stream = canvas.capture_stream_with_frame_request_rate(0.0).ok()?;
+    let track: CanvasCaptureMediaStreamTrack =
+        stream.get_video_tracks().get(0).dyn_into().ok()?;
+    capture.publish_native_source(Rc::new(stream));
+    Some(CaptureFrameDriver { track, last_ms: std::cell::Cell::new(f64::NEG_INFINITY) })
+}
+
+/// Drives manual `captureStream` frames: call [`tick`](Self::tick) right after
+/// each render/present and it issues a `requestFrame()`, throttled to
+/// [`CAPTURE_FPS`] so a 120 Hz render loop doesn't over-encode.
+pub struct CaptureFrameDriver {
+    track: CanvasCaptureMediaStreamTrack,
+    last_ms: std::cell::Cell<f64>,
+}
+
+impl CaptureFrameDriver {
+    /// Capture the just-presented frame, unless less than one [`CAPTURE_FPS`]
+    /// interval has elapsed since the last capture.
+    pub fn tick(&self) {
+        let now = web_sys::window().and_then(|w| w.performance()).map_or(0.0, |p| p.now());
+        if now - self.last_ms.get() < CAPTURE_MIN_INTERVAL_MS {
+            return;
         }
+        self.last_ms.set(now);
+        self.track.request_frame();
     }
 }
 
-/// Frame rate for the web self-capture `captureStream()`.
-const CAPTURE_FPS: f64 = 30.0;
+/// Target frame rate for the web self-capture `captureStream()`. The render loop
+/// runs faster (display refresh, often 120 Hz); we pace captured frames to this.
+const CAPTURE_FPS: f64 = 60.0;
+const CAPTURE_MIN_INTERVAL_MS: f64 = 1000.0 / CAPTURE_FPS;
 
 /// A hidden `<video>` element playing one layer's stream, reused across frames
 /// (creating + attaching a stream per frame would stutter).

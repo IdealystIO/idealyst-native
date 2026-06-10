@@ -40,8 +40,13 @@ web-sys = { version = "0.3", features = [
     "CanvasWindingRule",
     "ResizeObserver",
     # Self-capture: `HtmlCanvasElement::capture_stream_with_frame_request_rate`
-    # → `MediaStream`, published as the canvas stream's native source.
+    # → `MediaStream`, published as the canvas stream's native source. Capture
+    # runs in MANUAL mode (rate 0) and we drive `requestFrame()` per render via
+    # the `CanvasCaptureMediaStreamTrack`, paced by `performance.now()`.
     "MediaStream",
+    "MediaStreamTrack",
+    "CanvasCaptureMediaStreamTrack",
+    "Performance",
     # Texture layers (camera): a hidden <video> per layer is drawImage'd into the
     # canvas so captureStream records it (web parity for camera-in-canvas).
     "HtmlVideoElement",
