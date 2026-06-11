@@ -122,13 +122,35 @@ fn force_canvas2d() -> bool {
     }
 }
 
-/// Device-pixel ratio from `window.devicePixelRatio`. The web graphics primitive
-/// sizes the canvas backing store to css × dpr but reports `OnReadyEvent.scale ==
-/// 1.0` ("size is physical, no separate scale"), so the GPU renderer derives the
-/// real dpr here — matching the Canvas2D path — to scale the logical author scene
-/// up to the physical surface. Without it the scene fills only the top-left 1/dpr.
+/// Desktop devices top out at dpr 2.0 (Retina); above that we're on a high-dpi
+/// mobile device, where the physical backing store — and every full-viewport
+/// render pass over it — is 6–12× a dpr-1 surface, so the canvas goes
+/// fill-rate-bound on the mobile GPU. Cap the mobile dpr to trade a little
+/// sharpness for a large pixel-count cut; desktops (≤ 2.0) keep their full dpr.
+///
+/// MUST stay identical to the backing-store clamp in the web backend's graphics
+/// primitive (`backend/web/.../graphics.rs::effective_dpr`) — this scales the
+/// author scene, that sizes the surface; if they disagree the scene under-/
+/// over-fills the surface (the retina mis-fill the doc below warns about).
+const DPR_DESKTOP_MAX: f64 = 2.0;
+const DPR_MOBILE_CAP: f64 = 1.5;
+
+/// Device-pixel ratio from `window.devicePixelRatio`, clamped on mobile (see
+/// [`DPR_DESKTOP_MAX`]). The web graphics primitive sizes the canvas backing
+/// store to css × dpr but reports `OnReadyEvent.scale == 1.0` ("size is
+/// physical, no separate scale"), so the GPU renderer derives the dpr here —
+/// matching the Canvas2D path — to scale the logical author scene up to the
+/// physical surface. Without it the scene fills only the top-left 1/dpr.
 fn web_dpr() -> f64 {
-    web_sys::window().map(|w| w.device_pixel_ratio()).filter(|d| *d > 0.0).unwrap_or(1.0)
+    let raw = web_sys::window()
+        .map(|w| w.device_pixel_ratio())
+        .filter(|d| *d > 0.0)
+        .unwrap_or(1.0);
+    if raw > DPR_DESKTOP_MAX {
+        DPR_MOBILE_CAP
+    } else {
+        raw
+    }
 }
 
 fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node {
@@ -482,7 +504,12 @@ impl GpuState {
             width: w,
             height: h,
             present_mode: wgpu::PresentMode::AutoVsync,
-            desired_maximum_frame_latency: 2,
+            // 1, not 2: this is a direct-manipulation surface (draw / pan / pinch
+            // track a finger), where input-to-photon LATENCY matters far more than
+            // pipelining throughput. A 2-frame queue adds a whole extra frame of lag
+            // (~22ms at 45fps) on top of the render time, which on mobile reads as
+            // the canvas "rubber-banding" / lagging behind the finger on a reversal.
+            desired_maximum_frame_latency: 1,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
         };

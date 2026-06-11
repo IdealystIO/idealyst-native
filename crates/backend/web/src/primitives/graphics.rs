@@ -215,6 +215,27 @@ pub(crate) fn create(
 // fire_ready — run after first rAF, sizes canvas + invokes on_ready
 // ---------------------------------------------------------------------------
 
+/// Desktop devices top out at dpr 2.0 (Retina); above that we're on a high-dpi
+/// mobile device, where sizing the canvas backing store to css × dpr makes it
+/// (and every full-viewport render pass over it) 6–12× a dpr-1 surface, so the
+/// canvas goes fill-rate-bound on the mobile GPU. Cap the mobile dpr to trade a
+/// little sharpness for a large pixel-count cut; desktops (≤ 2.0) are untouched.
+///
+/// MUST stay identical to the scene-scale clamp in `canvas-vello`'s
+/// `render_web::web_dpr` — this sizes the surface, that scales the author scene;
+/// if they disagree the scene under-/over-fills the surface (retina mis-fill).
+const DPR_DESKTOP_MAX: f64 = 2.0;
+const DPR_MOBILE_CAP: f64 = 1.5;
+
+fn effective_dpr() -> f64 {
+    let raw = web_sys::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
+    if raw > DPR_DESKTOP_MAX {
+        DPR_MOBILE_CAP
+    } else {
+        raw
+    }
+}
+
 fn fire_ready(instance: &Rc<RefCell<GraphicsInstance>>) {
     if instance.borrow().released {
         return;
@@ -222,9 +243,7 @@ fn fire_ready(instance: &Rc<RefCell<GraphicsInstance>>) {
 
     let (canvas, size) = {
         let inst = instance.borrow();
-        let dpr = web_sys::window()
-            .map(|w| w.device_pixel_ratio())
-            .unwrap_or(1.0);
+        let dpr = effective_dpr();
         let cw = inst.provider.canvas.client_width();
         let ch = inst.provider.canvas.client_height();
         // Fallback: if the canvas hasn't been laid out yet (e.g.
@@ -288,9 +307,7 @@ fn fire_resize(instance: &Rc<RefCell<GraphicsInstance>>) {
         if inst.released || !inst.ready_fired {
             return;
         }
-        let dpr = web_sys::window()
-            .map(|w| w.device_pixel_ratio())
-            .unwrap_or(1.0);
+        let dpr = effective_dpr();
         let cw = inst.provider.canvas.client_width();
         let ch = inst.provider.canvas.client_height();
         if cw <= 0 || ch <= 0 {

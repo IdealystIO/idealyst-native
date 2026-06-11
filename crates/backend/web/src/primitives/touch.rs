@@ -18,7 +18,10 @@
 //! the web-side implementation of the claim protocol.
 
 use crate::WebBackend;
-use runtime_core::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
+use runtime_core::{
+    set_pointer_modifiers, PointerModifiers, TouchEvent, TouchHandler, TouchId, TouchPhase,
+    TouchPoint,
+};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -68,6 +71,20 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
         let captured = captured.clone();
         let element_for_capture = element.clone();
         let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
+            // Only the PRIMARY button begins a gesture. A secondary/middle press
+            // (notably macOS Ctrl-click → right-click, `button == 2`) must NOT
+            // start a touch: the browser's context menu can swallow the matching
+            // `pointerup`, leaving the gesture stuck (a dragged element follows the
+            // cursor forever). `button` is 0 for touch + pen contact + primary mouse.
+            if ev.button() != 0 {
+                return;
+            }
+            set_pointer_modifiers(PointerModifiers {
+                shift: ev.shift_key(),
+                ctrl: ev.ctrl_key(),
+                alt: ev.alt_key(),
+                meta: ev.meta_key(),
+            });
             let local = local_position(&ev);
             let touch_id = TouchId(ev.pointer_id() as u64);
             let te = TouchEvent {
@@ -120,6 +137,12 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
             if !active.borrow().contains(&pid) {
                 return;
             }
+            set_pointer_modifiers(PointerModifiers {
+                shift: ev.shift_key(),
+                ctrl: ev.ctrl_key(),
+                alt: ev.alt_key(),
+                meta: ev.meta_key(),
+            });
             let local = local_position(&ev);
             let touch_id = TouchId(pid as u64);
             let te = TouchEvent {

@@ -176,3 +176,45 @@ impl TouchResponse {
 /// these per subscribed node and invokes it for every event delivered
 /// to that node (after responder-chain resolution).
 pub type TouchHandler = Rc<dyn Fn(&TouchEvent) -> TouchResponse>;
+
+/// Keyboard modifier state that was active when the current pointer/touch event
+/// was delivered. [`TouchEvent`] is `Copy` and constructed in many backends, so
+/// rather than widen it we expose the modifiers out-of-band: a backend calls
+/// [`set_pointer_modifiers`] immediately before invoking the touch handler, and
+/// the handler reads them via [`pointer_modifiers`]. Plain touch / pen input
+/// reports all-`false`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PointerModifiers {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    /// Cmd on macOS, Win/Super elsewhere.
+    pub meta: bool,
+}
+
+impl PointerModifiers {
+    /// Whether the conventional **add-to-selection** modifier is held — Shift or
+    /// the platform command key (Cmd/Meta). Deliberately NOT Ctrl: on macOS
+    /// Ctrl-click is a right-click, so it's reserved.
+    pub fn extends_selection(self) -> bool {
+        self.shift || self.meta
+    }
+}
+
+thread_local! {
+    static POINTER_MODIFIERS: std::cell::Cell<PointerModifiers> =
+        const { std::cell::Cell::new(PointerModifiers { shift: false, ctrl: false, alt: false, meta: false }) };
+}
+
+/// Record the modifier state for the touch/pointer event about to be dispatched.
+/// **Backend-facing** — call right before invoking the [`TouchHandler`] so a
+/// handler reading [`pointer_modifiers`] sees the state for THIS event.
+pub fn set_pointer_modifiers(m: PointerModifiers) {
+    POINTER_MODIFIERS.with(|c| c.set(m));
+}
+
+/// The modifier state recorded for the in-flight pointer/touch event. Valid only
+/// while a touch handler is running (read it synchronously inside `on_touch`).
+pub fn pointer_modifiers() -> PointerModifiers {
+    POINTER_MODIFIERS.with(|c| c.get())
+}

@@ -203,7 +203,10 @@ pub use sources::{
     signal_class, IntoStyleSource, IntoTextSource, JsBindingSpec, SignalClassSpec, StyleSource,
     TextSource,
 };
-pub use touch::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, TouchResponse};
+pub use touch::{
+    pointer_modifiers, set_pointer_modifiers, PointerModifiers, TouchEvent, TouchHandler, TouchId,
+    TouchPhase, TouchPoint, TouchResponse,
+};
 pub use wheel::{WheelEvent, WheelHandler, WheelKind};
 pub use touch::recognizers::{
     long_press, pan, pinch, tap, LongPressRecognizer, PanEvent, PanRecognizer, PinchEvent,

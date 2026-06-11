@@ -308,6 +308,22 @@ pub(crate) fn overscan_dims(w: u32, h: u32, frac: f32) -> (u32, u32) {
     )
 }
 
+/// Build a vello `Renderer` with the canvas's standard options (area AA, GPU).
+/// Shared by the main renderer, the eager `image_renderer`, and the lazy
+/// fallbacks so all three stay configured identically.
+fn new_vello_renderer(device: &wgpu::Device) -> Option<Renderer> {
+    Renderer::new(
+        device,
+        RendererOptions {
+            use_cpu: false,
+            antialiasing_support: AaSupport::area_only(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        },
+    )
+    .ok()
+}
+
 fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("canvas-vello-target"),
@@ -417,16 +433,16 @@ impl RenderState {
         };
         surface.configure(&device, &config);
 
-        let renderer = Renderer::new(
-            &device,
-            RendererOptions {
-                use_cpu: false,
-                antialiasing_support: AaSupport::area_only(),
-                num_init_threads: None,
-                pipeline_cache: None,
-            },
-        )
-        .ok()?;
+        let renderer = new_vello_renderer(&device)?;
+        // Build the dedicated image renderer up front, not lazily on the first
+        // image bake. Its first `render_to_texture` would otherwise run on a
+        // just-created renderer (shaders/pipelines compiling) on the same frame
+        // an image is first placed — a one-shot, timing-sensitive path that
+        // intermittently left freshly-placed media blank until the next
+        // interaction. Created eagerly here it's always warm by first use. A
+        // `None` (transient build failure) is non-fatal: the lazy sites below
+        // retry, and an image-less canvas simply never touches it.
+        let image_renderer = new_vello_renderer(&device);
 
         let (target, target_view) = make_target(&device, w, h);
         let blitter = wgpu::util::TextureBlitter::new(&device, format);
@@ -441,7 +457,7 @@ impl RenderState {
             surface,
             config,
             renderer,
-            image_renderer: None,
+            image_renderer,
             scene: VelloScene::new(),
             target,
             target_view,
@@ -542,17 +558,10 @@ impl RenderState {
             // from under them (see the `image_renderer` field). Image-less layers
             // stay on the main renderer.
             let has_image = ops.iter().any(|op| matches!(op, DrawOp::Image { .. }));
+            // Normally built eagerly in the constructor; retry here only if that
+            // transiently failed.
             if has_image && self.image_renderer.is_none() {
-                self.image_renderer = Renderer::new(
-                    &self.device,
-                    RendererOptions {
-                        use_cpu: false,
-                        antialiasing_support: AaSupport::area_only(),
-                        num_init_threads: None,
-                        pipeline_cache: None,
-                    },
-                )
-                .ok();
+                self.image_renderer = new_vello_renderer(&self.device);
             }
             let view = &self.cached_layers.get(&layer.id).unwrap().1;
             let renderer = match (has_image, self.image_renderer.as_mut()) {
@@ -654,17 +663,10 @@ impl RenderState {
             // `image_renderer` only ever renders image content, so its atlas keeps
             // the upload (same protection as the cached image-layer bakes).
             let has_image = ops.iter().any(|op| matches!(op, DrawOp::Image { .. }));
+            // Normally built eagerly in the constructor; retry here only if that
+            // transiently failed.
             if has_image && self.image_renderer.is_none() {
-                self.image_renderer = Renderer::new(
-                    &self.device,
-                    RendererOptions {
-                        use_cpu: false,
-                        antialiasing_support: AaSupport::area_only(),
-                        num_init_threads: None,
-                        pipeline_cache: None,
-                    },
-                )
-                .ok();
+                self.image_renderer = new_vello_renderer(&self.device);
             }
             let renderer = match (has_image, self.image_renderer.as_mut()) {
                 (true, Some(r)) => r,

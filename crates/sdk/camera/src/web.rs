@@ -102,7 +102,22 @@ pub(crate) async fn open(
         .dyn_into()
         .map_err(|_| CameraError::Backend("element is not a canvas".into()))?;
     let ctx: CanvasRenderingContext2d = canvas
-        .get_context("2d")
+        .get_context_with_context_options(
+            "2d",
+            // These 2D contexts read pixels back every frame via `get_image_data`;
+            // `willReadFrequently` keeps the backing store CPU-side (avoids a per-
+            // readback GPU→CPU stall) and silences the browser's "Multiple readback
+            // operations" warning.
+            &{
+                let o = js_sys::Object::new();
+                let _ = js_sys::Reflect::set(
+                    &o,
+                    &wasm_bindgen::JsValue::from_str("willReadFrequently"),
+                    &wasm_bindgen::JsValue::TRUE,
+                );
+                wasm_bindgen::JsValue::from(o)
+            },
+        )
         .map_err(|e| CameraError::Backend(format!("get 2d context: {}", err_string(&e))))?
         .ok_or_else(|| CameraError::Backend("no 2d context".into()))?
         .dyn_into()

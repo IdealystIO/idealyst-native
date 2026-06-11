@@ -897,7 +897,7 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
         let _ = self.env.call_method(
             &conj,
             "preConcat",
-            "(Landroid/graphics/Matrix;)V",
+            "(Landroid/graphics/Matrix;)Z",
             &[JValue::Object(&c)],
         );
         // inv = M⁻¹; conj.preConcat(inv) ⇒ M·T·M⁻¹.
@@ -911,7 +911,7 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
         let _ = self.env.call_method(
             &conj,
             "preConcat",
-            "(Landroid/graphics/Matrix;)V",
+            "(Landroid/graphics/Matrix;)Z",
             &[JValue::Object(&inv)],
         );
         Some(conj)

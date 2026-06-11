@@ -89,6 +89,17 @@ fn build_when_closure<B: Backend + 'static>(
     let branch_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> = Rc::new(RefCell::new(None));
     let branch_scope_for_effect = branch_scope.clone();
 
+    // Last boolean the branch was built for. Rebuild ONLY when `cond()`
+    // actually flips — mirroring `build_switch_closure`'s `last_key` dedup.
+    // The Effect re-runs on every signal `cond` reads, but a predicate may
+    // read extra signals beyond the boolean (e.g. a `version` tick used to
+    // re-flip the icon after a toggle). Without this guard such a tick would
+    // tear down + rebuild the branch while the boolean is unchanged —
+    // recreating the subtree's gesture nodes and dropping any in-flight
+    // press. `None` = not yet built (first fire always proceeds).
+    let last_active: Rc<RefCell<Option<bool>>> = Rc::new(RefCell::new(None));
+    let last_active_for_effect = last_active.clone();
+
     // Capture the ambient navigator context ONCE, synchronously, while
     // the screen's `AmbientNavGuard`/`ScreenStateGuard`/`ScreenRouteGuard`
     // are still on the stack. Re-established around every rebuild below so
@@ -102,6 +113,13 @@ fn build_when_closure<B: Backend + 'static>(
     let compute = cond.compute.clone();
     let _e = Effect::new(move || {
         let active = (compute)();
+        // Dep changed but the boolean didn't → the active branch is already
+        // mounted and correct; skip the teardown/rebuild. (First fire: `None`
+        // → proceeds and seeds the cache.)
+        if *last_active_for_effect.borrow() == Some(active) {
+            return;
+        }
+        *last_active_for_effect.borrow_mut() = Some(active);
         let hydrating = backend_for_effect.borrow().is_hydrating();
 
         // Drop the previous branch's scope before building the new one,
@@ -187,6 +205,14 @@ pub(super) fn build_when_spliced<B: Backend + 'static>(
     let branch_scope_for_effect = branch_scope.clone();
     let current_node_for_effect = current_node.clone();
 
+    // Rebuild ONLY when `cond()` actually flips — see `build_when_closure`
+    // for the full rationale. A predicate that reads extra signals (e.g. a
+    // `version` tick) must not re-splice the branch while the boolean is
+    // unchanged: that recreates the branch's gesture nodes mid-press and
+    // drops the click. `None` = not yet built (first fire always proceeds).
+    let last_active: Rc<RefCell<Option<bool>>> = Rc::new(RefCell::new(None));
+    let last_active_for_effect = last_active.clone();
+
     // Capture the ambient navigator context ONCE (guards still on the
     // stack); re-establish it around each rebuild so a `link` inside a
     // reactively-remounted branch keeps its navigator. See
@@ -196,6 +222,13 @@ pub(super) fn build_when_spliced<B: Backend + 'static>(
     let compute = cond.compute.clone();
     let _e = Effect::new(move || {
         let active = (compute)();
+        // Dep changed but the boolean didn't → the spliced branch is already
+        // mounted and correct; skip the re-splice. (First fire: `None` →
+        // proceeds and seeds the cache.)
+        if *last_active_for_effect.borrow() == Some(active) {
+            return;
+        }
+        *last_active_for_effect.borrow_mut() = Some(active);
 
         // Unmount the prior branch: remove its node from the parent, then
         // drop its scope. Order matters — remove the native view before

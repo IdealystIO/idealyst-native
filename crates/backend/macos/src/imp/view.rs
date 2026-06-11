@@ -39,8 +39,8 @@ use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSString};
 use std::cell::Cell as StdCell;
 
 use runtime_core::{
-    StateBits, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, WheelEvent, WheelHandler,
-    WheelKind,
+    set_pointer_modifiers, PointerModifiers, StateBits, TouchEvent, TouchHandler, TouchId,
+    TouchPhase, TouchPoint, WheelEvent, WheelHandler, WheelKind,
 };
 
 /// Stable id for the single mouse pointer (macOS has no multitouch here).
@@ -105,6 +105,20 @@ declare_class!(
 
         #[method(mouseDown:)]
         fn mouse_down(&self, event: &NSEvent) {
+            // macOS Ctrl-click is the system "secondary click". It can be
+            // delivered as a left `mouseDown:` carrying the Control modifier while
+            // the matching release arrives as `rightMouseUp:` (which we don't
+            // observe) — so a touch begun here would never get its `Ended`, leaving
+            // a dragged element stuck to the cursor. Treat Ctrl-click as a
+            // secondary press: don't begin a touch (let super show any context
+            // menu). `Began` is the only gate; the unaccepted state means the
+            // following drag/up events are ignored too.
+            const FLAG_CONTROL: usize = 1 << 18;
+            let flags: usize = unsafe { msg_send![event, modifierFlags] };
+            if flags & FLAG_CONTROL != 0 {
+                let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+                return;
+            }
             // Pressed-state feedback (no-op for views without a state setter).
             // Independent of touch dispatch so a styled button dims on press
             // whether or not it also carries an `on_touch` handler.
@@ -339,6 +353,22 @@ impl FlippedView {
             timestamp_ns: (ts * 1_000_000_000.0) as u64,
             force: None,
         };
+        // Surface the keyboard modifiers for this event so a handler can read them
+        // via `runtime_core::pointer_modifiers()` (e.g. Cmd/Shift-click to extend a
+        // selection). Same `NSEventModifierFlags` bits the keyboard path uses.
+        {
+            const FLAG_SHIFT: usize = 1 << 17;
+            const FLAG_CONTROL: usize = 1 << 18;
+            const FLAG_OPTION: usize = 1 << 19;
+            const FLAG_COMMAND: usize = 1 << 20;
+            let flags: usize = unsafe { msg_send![event, modifierFlags] };
+            set_pointer_modifiers(PointerModifiers {
+                shift: flags & FLAG_SHIFT != 0,
+                ctrl: flags & FLAG_CONTROL != 0,
+                alt: flags & FLAG_OPTION != 0,
+                meta: flags & FLAG_COMMAND != 0,
+            });
+        }
         // Auto-batch: run the handler inside a reactive `batch` so every signal
         // write it makes (a camera move writes pan_x, pan_y, zoom, + a repaint
         // tick) fans out its effects ONCE, after the handler returns, instead of
