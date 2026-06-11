@@ -2019,10 +2019,19 @@ impl Backend for MacosBackend {
     }
 
     /// A `Presence` placeholder is a `PresencePlaceholderView` (not the plain
-    /// `FlippedView` `create_view` mints): its `hitTest:` descends into the
-    /// inserted subtree even when the placeholder lays out 0×0 (the usual case,
-    /// since presence children are `position: Absolute`). Without it the child
-    /// paints but swallows every click — the macOS analogue of the
+    /// `FlippedView` `create_view` mints), pinned to FILL its parent
+    /// (`position: absolute; inset: 0`). Both choices fix the same problem:
+    /// presence children are `position: Absolute`, so they contribute no
+    /// in-flow size and a default placeholder collapses (e.g. 1024×0). A
+    /// collapsed NSView ancestor breaks every AppKit interaction subsystem that
+    /// clips to geometry — hit-testing, cursor rects, and `InVisibleRect` hover
+    /// tracking — so the child paints but is dead to clicks, shows no pointer
+    /// cursor, and never hovers. Filling the parent gives the child a real,
+    /// non-collapsed containing view so cursor + hover work NATIVELY (no
+    /// per-subsystem override). The `PresencePlaceholderView`'s `hitTest:` then
+    /// only has to make the now-full-size, transparent placeholder a passthrough
+    /// — returning its deepest hit subview, or `nil` (declining) over empty
+    /// space so the click reaches the canvas beneath. macOS analogue of the
     /// `supports_child_splice` fix for `when`/`for`. See the trait default.
     fn create_presence_placeholder(
         &mut self,
@@ -2030,7 +2039,18 @@ impl Backend for MacosBackend {
     ) -> Self::Node {
         let view = callbacks::PresencePlaceholderView::new(self.mtm);
         let view: Retained<NSView> = Retained::into_super(view);
-        let _ = self.layout_for_view(&view);
+        let layout_node = self.layout_for_view(&view);
+        // Pin the placeholder to fill its parent so it (and the absolute child
+        // it hosts) has real, non-collapsed geometry — see the doc comment.
+        let fill = StyleRules {
+            position: Some(runtime_core::Position::Absolute),
+            top: Some(0.0.into()),
+            left: Some(0.0.into()),
+            right: Some(0.0.into()),
+            bottom: Some(0.0.into()),
+            ..Default::default()
+        };
+        self.layout.set_style(layout_node, &fill);
         let node = MacosNode::View(view);
         a11y::apply(
             &node,

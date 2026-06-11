@@ -220,63 +220,10 @@ declare_class!(
         // rect correct across resizes.
         #[method(resetCursorRects)]
         fn reset_cursor_rects(&self) {
-            let has_cursor = self.ivars().cursor.borrow().is_some();
-            if has_cursor {
-                let bounds: CGRect = unsafe { msg_send![self, bounds] };
-                let vr: CGRect = unsafe { msg_send![self, visibleRect] };
-                eprintln!(
-                    "[CURSOR] resetCursorRects bounds=({:.0},{:.0},{:.0}x{:.0}) visibleRect=({:.0},{:.0},{:.0}x{:.0})",
-                    bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height,
-                    vr.origin.x, vr.origin.y, vr.size.width, vr.size.height
-                );
-            }
             if let Some(cursor) = self.ivars().cursor.borrow().as_ref() {
                 let bounds: CGRect = unsafe { msg_send![self, bounds] };
                 let _: () = unsafe { msg_send![self, addCursorRect: bounds, cursor: &**cursor] };
             }
-        }
-
-        // AppKit clips BOTH cursor rects (`resetCursorRects` above) AND
-        // `NSTrackingInVisibleRect` hover areas (`updateTrackingAreas` above) to
-        // a view's `visibleRect`. The default `visibleRect` is the bounds minus
-        // whatever superviews clip away — and a zero-size ANCESTOR (a 0-height
-        // `on_tap` wrapper, a Presence placeholder collapsed by its absolute-only
-        // children) clips us to EMPTY. The view still PAINTS and hit-tests
-        // (absolute positioning escapes the parent's box, and we special-case
-        // hit-testing in `PresencePlaceholderView`), but an empty `visibleRect`
-        // silently kills the pointer cursor and the hover state. Report our real
-        // bounds in that collapsed case so both subsystems track the area we
-        // actually occupy on screen.
-        #[method(visibleRect)]
-        fn visible_rect(&self) -> CGRect {
-            let r: CGRect = unsafe { msg_send![super(self), visibleRect] };
-            // Genuinely visible → use AppKit's answer unchanged.
-            if r.size.width > 0.0 && r.size.height > 0.0 {
-                return r;
-            }
-            // Nothing to rescue if we're truly zero-size ourselves.
-            let bounds: CGRect = unsafe { msg_send![self, bounds] };
-            if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
-                return r;
-            }
-            // Inside a scroll view an empty `visibleRect` legitimately means
-            // "scrolled out of the clip view" — don't override there, or we'd
-            // give off-screen rows cursor rects + hover tracking.
-            let mut cur: *mut NSView = unsafe { msg_send![self, superview] };
-            while !cur.is_null() {
-                let v: &NSView = unsafe { &*cur };
-                if super::is_scroll_view(v) {
-                    return r;
-                }
-                cur = unsafe { msg_send![v, superview] };
-            }
-            if self.ivars().cursor.borrow().is_some() {
-                eprintln!(
-                    "[CURSOR] visibleRect RESCUE → bounds=({:.0},{:.0},{:.0}x{:.0})",
-                    bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height
-                );
-            }
-            bounds
         }
     }
 );
