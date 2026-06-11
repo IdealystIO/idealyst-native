@@ -62,6 +62,10 @@ enum Command {
     Publish(cmd::publish::Args),
     /// Type-check across configured platforms.
     Check(cmd::check::Args),
+    /// Lint source for idealyst idiom drift (raw reactive primitives,
+    /// hand-built elements, non-PascalCase components). Use
+    /// `--format json` as a rust-analyzer `check.overrideCommand`.
+    Lint(cmd::lint::Args),
     /// Remove build artifacts.
     Clean(cmd::clean::Args),
     /// Diagnose the local toolchain (Rust, web, iOS, Android; Roku pending).
@@ -132,6 +136,7 @@ fn main() -> anyhow::Result<()> {
         Command::Run(args) => cmd::run::run(args),
         Command::Publish(args) => cmd::publish::run(args),
         Command::Check(args) => cmd::check::run(args),
+        Command::Lint(args) => cmd::lint::run(args),
         Command::Clean(args) => cmd::clean::run(args),
         Command::Doctor(args) => cmd::doctor::run(args),
         Command::Sync(args) => cmd::sync::run(args),

@@ -68,24 +68,36 @@ idealyst export path/to/project --release
 idealyst export --frameworks react,svelte   # subset; default is all
 ```
 
-Output lands in `<project>/dist/external/`:
+Output lands in `<project>/dist/external/`. **Each framework gets its own
+self-contained folder** — its own copy of the wasm `pkg/` and the custom
+elements, so a consumer pulls in exactly one folder and nothing reaches
+across them. The universal (vanilla / any-framework) layer lives in `web/`;
+`web` is reserved for it and never mixed with the framework wrappers:
 
 ```
 dist/external/
-├── pkg/                          # shared wasm + wasm-bindgen JS glue
-├── idl-greeter.js                # the custom element (self-registers on import)
-├── idl-greeter.d.ts              # TypeScript declarations
-├── vanilla/Greeter.js            # imperative create*/bind* helpers
-├── react/Greeter.tsx             # typed React wrapper
-├── vue/Greeter.js                # Vue wrapper
-├── svelte/Greeter.svelte         # Svelte wrapper
-├── angular/greeter.component.ts  # standalone Angular component
-├── index.js                      # barrel — imports every element
-├── index.d.ts                    # barrel types
-├── package.json                  # dist/external is an installable npm package
-├── index.html                    # a vanilla demo page
-└── README.md                     # usage for every framework
+├── package.json                  # umbrella package (main → web/index.js)
+├── README.md                     # usage for every framework
+├── web/                          # universal layer — works in any framework
+│   ├── pkg/                      #   wasm + wasm-bindgen JS glue
+│   ├── idl-greeter.js            #   the custom element (self-registers on import)
+│   ├── idl-greeter.d.ts          #   TypeScript declarations
+│   ├── Greeter.js                #   imperative create*/bind* helpers
+│   ├── index.js                  #   barrel — imports every element
+│   ├── index.d.ts                #   barrel types
+│   └── index.html                #   a vanilla demo page
+├── react/                        # self-contained React package
+│   ├── pkg/                      #   its own copy of the wasm
+│   ├── idl-greeter.js            #   its own custom element
+│   ├── idl-greeter.d.ts
+│   └── Greeter.tsx               #   typed React wrapper (imports ./idl-greeter.js)
+├── vue/      pkg/ · idl-greeter.js · Greeter.js
+├── svelte/   pkg/ · idl-greeter.js · Greeter.svelte
+└── angular/  pkg/ · idl-greeter.js · greeter.component.ts
 ```
+
+Because each folder is independent, the wasm is duplicated across them — the
+trade-off that buys "drop one folder into a foreign project" portability.
 
 ## 3. Consume it
 
@@ -95,7 +107,7 @@ folders are typed convenience wrappers on top.
 **Vanilla / any framework that renders DOM:**
 
 ```html
-<script type="module" src="./dist/external/index.js"></script>
+<script type="module" src="./dist/external/web/index.js"></script>
 <idl-greeter name="World"></idl-greeter>
 <script type="module">
   const el = document.querySelector("idl-greeter");

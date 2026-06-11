@@ -503,6 +503,7 @@ pub(super) fn build_inner<B: Backend + 'static>(
                  on its own. Wrap it in a View / ScrollView / fragment."
             );
         }
+        Element::Fragment { .. } => dispatch_fragment::<B>,
         // Unwrapped at the top of `build_inner` (early return); never reaches
         // dispatch. Arm exists only for match exhaustiveness.
         #[cfg(feature = "robot")]
@@ -689,6 +690,20 @@ fn dispatch_switch<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element
 fn dispatch_each<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::Each { snapshot, style } = node else { unreachable!() };
     each::build(backend, snapshot, style)
+}
+
+#[inline(never)]
+fn dispatch_fragment<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
+    let Element::Fragment { children } = node else { unreachable!() };
+    // Standalone fragment — returned from a `when`/`switch`/`presence`
+    // branch or used as a mount root, where there's no parent children
+    // list to splice into. Host the children under a layout-transparent
+    // reactive anchor (`display:contents` on web) so they still render as
+    // a flat group without a layout box. In a children list the fragment
+    // never reaches here: `insert_children` splices it inline with no node.
+    let mut anchor = backend.borrow_mut().create_reactive_anchor();
+    view::insert_children(backend, &mut anchor, children);
+    anchor
 }
 
 #[inline(never)]

@@ -28,15 +28,18 @@ with their own toolchain.
 ## Two integration paths
 
 1. **The bare custom element** — works in *every* framework with no build
-   step. Import [`../dist/external/index.js`](../dist/external) (registers
-   the elements) and use `<idl-greeter>` / `<idl-stepper>` directly. The
-   `vanilla/` and `vue/` consumers take this path.
+   step. Import [`../dist/external/web/index.js`](../dist/external/web)
+   (the universal layer; registers the elements) and use `<idl-greeter>` /
+   `<idl-stepper>` directly. The `vanilla/` and `vue/` consumers take this
+   path.
 2. **The typed wrapper** — import the framework-specific wrapper for
    ergonomic, typed props/events. The `react/`, `svelte/`, and `angular/`
    consumers take this path, resolving the wrappers from the
    `external-export-suite-components` package (a `file:` dependency on
    `dist/external`, which `idealyst export` emits as an installable
-   package — `package.json` + `index.d.ts` included).
+   package — `package.json` + `web/index.d.ts` included). Each framework
+   folder under `dist/external/` is self-contained (its own `pkg/` + custom
+   elements), so the `web/` universal layer never mixes with the wrappers.
 
 ## The two components
 

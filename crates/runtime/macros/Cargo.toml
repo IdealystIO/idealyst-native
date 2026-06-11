@@ -48,6 +48,14 @@ mcp = ["catalog"]
 # `runtime-core/strict-docs`. Off by default; opt in per build.
 strict-docs = []
 
+# Compile-time naming enforcement. When on, `#[component]` errors if the
+# component fn name isn't PascalCase — the convention `ui!`/`jsx!` rely on
+# to tell a component tag (`Button`) from a primitive (`view`). This is the
+# hard-stop sibling of the `component-pascal-case` lint rule (`idealyst
+# lint`): the lint warns during editing, the feature fails the build.
+# Forwarded from `runtime-core/strict-naming`. Off by default.
+strict-naming = []
+
 [dependencies]
 syn = { version = "2", features = ["full", "visit", "visit-mut", "extra-traits"] }
 quote = "1"

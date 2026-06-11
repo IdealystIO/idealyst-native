@@ -520,6 +520,33 @@ where
     }
 }
 
+/// A **fragment** — a layout-transparent group of sibling elements
+/// that render as flat children of the surrounding parent, with no
+/// wrapper view.
+///
+/// Use it when a function (typically a `#[component]`) conceptually
+/// produces *several siblings* but must return a single [`Element`]:
+/// instead of returning `Vec<Element>` (which `#[component]` can't) or
+/// wrapping the children in a `view(...)` (which would introduce a
+/// layout box and break absolutely-positioned overlays / `flex: 1`
+/// children), return `fragment(children)`. In a children list the
+/// walker splices the children directly into the parent — the exact
+/// same result as if the caller had spread the `Vec` inline.
+///
+/// ```ignore
+/// #[component]
+/// pub fn Chrome(props: &ChromeProps) -> Element {
+///     fragment(vec![brand_bar(...), toolbar(...), status_pill(...)])
+/// }
+/// ```
+///
+/// Built once, never reconciled. For a reactive child set use
+/// [`switch`]/`when`/`for`; for a count-based loop use the `ui!` `for`
+/// lowering. See [`Element::Fragment`].
+pub fn fragment(children: Vec<Element>) -> Element {
+    Element::Fragment { children }
+}
+
 /// Reactive multi-way conditional. `scrutinee` reads one or more
 /// signals and returns a value of any `PartialEq + 'static` type
 /// (typically an enum or a small key). `branches` is a function that

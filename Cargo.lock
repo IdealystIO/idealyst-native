@@ -3885,6 +3885,7 @@ dependencies = [
  "dotenvy",
  "icon-gen",
  "libc",
+ "lint",
  "mcp-catalog",
  "mcp-server",
  "pathdiff",
@@ -4348,6 +4349,19 @@ name = "linebender_resource_handle"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4"
+
+[[package]]
+name = "lint"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "proc-macro2",
+ "serde",
+ "serde_json",
+ "syn",
+ "tempfile",
+ "toml 0.8.23",
+]
 
 [[package]]
 name = "linux-raw-sys"

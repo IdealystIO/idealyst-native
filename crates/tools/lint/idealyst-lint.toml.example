@@ -1,0 +1,18 @@
+# Example idealyst-lint.toml — drop this (renamed, without `.example`) at
+# your project root. `idealyst lint` discovers it by walking up from the
+# linted path. Every rule takes "off" | "warn" | "error"; omit a rule to
+# keep its default (shown in `idealyst lint --rules`).
+
+[rules]
+# Naming is load-bearing for ui!/jsx! tag dispatch — keep it an error.
+component-pascal-case = "error"
+
+# Reactive primitives: warn by default. Bump to "error" once your codebase
+# is clean, or "off" in a crate that legitimately holds raw handles.
+prefer-signal-macro = "warn"
+prefer-effect-macro = "warn"
+prefer-memo-macro   = "warn"
+
+# Element construction. Set "off" for a crate that intentionally builds
+# elements by hand (e.g. a low-level backend test harness).
+prefer-ui-macro = "warn"

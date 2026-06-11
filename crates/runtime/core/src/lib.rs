@@ -188,8 +188,8 @@ pub use handles::{
     StateBits, TextHandle, TextOps, ViewHandle, ViewOps,
 };
 pub use builder::{
-    button, each_keyed, one_or_view, pressable, switch, text, view, when, Bindable, Bound,
-    BuildElement, ChildList, IntoDisabledSource, IntoElement, ReactiveCond, ReactiveForEach,
+    button, each_keyed, fragment, one_or_view, pressable, switch, text, view, when, Bindable,
+    Bound, BuildElement, ChildList, IntoDisabledSource, IntoElement, ReactiveCond, ReactiveForEach,
     ReactiveListKeyed, StaticCond, StaticForEach,
 };
 pub use derive::{Action, Derived, IntoAction, IntoDerived};

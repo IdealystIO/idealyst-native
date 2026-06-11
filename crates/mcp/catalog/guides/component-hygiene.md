@@ -122,5 +122,29 @@ call site, or grows variants, promote it to a `#[component]` so call
 sites use struct-literal syntax (`Phones(variant = …)`) instead of
 positional arguments. Don't grow positional helper signatures.
 
+## Catch drift automatically: `idealyst lint`
+
+Several of the rules above are machine-checkable, and the `idealyst lint`
+command checks them over your source:
+
+- `prefer-signal-macro` / `prefer-effect-macro` / `prefer-memo-macro` —
+  flags raw `Signal::new` / `Effect::new` / `memo(…)` where the
+  `signal!` / `effect!` / `memo!` macro is intended (the macro anchors the
+  handle to the owning scope; the raw call is the "my signal stopped
+  updating" footgun).
+- `prefer-ui-macro` — flags elements built by hand (`builder::…`,
+  `BuildElement::build`, `Element::View { … }`) instead of `ui!` / `jsx!`.
+- `component-pascal-case` — flags a `#[component]` fn that isn't
+  PascalCase.
+
+Every rule is individually configurable (`off` / `warn` / `error`) in
+`idealyst-lint.toml` and suppressible inline with
+`// idealyst-lint-disable-next-line <rule>`. Run `idealyst lint --rules`
+to list them. The same engine drives a rust-analyzer
+`check.overrideCommand` so the findings appear as inline editor squiggles
+— see `crates/tools/lint/README.md`. For a build that must never compile a
+misnamed component, the `strict-naming` Cargo feature turns
+`component-pascal-case` into a hard `compile_error!`.
+
 See [[components]] for the component model and [[reactivity]] for the
 state and effect APIs the rules above lean on.

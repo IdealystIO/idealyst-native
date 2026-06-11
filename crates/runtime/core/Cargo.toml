@@ -67,6 +67,14 @@ mcp = ["catalog"]
 # Off by default. See `docs/mcp-catalog-spec.md`.
 strict-docs = ["runtime-macros/strict-docs"]
 
+# Compile-time component-naming enforcement. When on, the compiler rejects
+# any `#[component]` whose fn name isn't PascalCase — the convention
+# `ui!`/`jsx!` use to route a tag to component dispatch vs. a primitive.
+# The build-failing counterpart to the `component-pascal-case` lint rule.
+# Independent of the other gates; forwards to `runtime-macros/strict-naming`.
+# Off by default.
+strict-naming = ["runtime-macros/strict-naming"]
+
 # Programmatic introspection and control of the running UI. When
 # enabled, the render walker registers every mounted primitive into a
 # thread-local registry that can be queried and controlled via the

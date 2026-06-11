@@ -459,6 +459,27 @@ pub trait Backend {
 
     fn create_view(&mut self, a11y: &crate::accessibility::AccessibilityProps) -> Self::Node;
 
+    /// Create the mount point a [`Presence`](crate::primitives::presence)
+    /// subtree is inserted into (see [`crate::walker::presence`]). Most
+    /// presence children are `position: Absolute`, so they contribute nothing
+    /// to the placeholder's in-flow size and it lays out at 0×0 — the same
+    /// shape that drove the `when`/`for` anchorless-splice work
+    /// ([`supports_child_splice`](Self::supports_child_splice)).
+    ///
+    /// The default is a plain [`create_view`](Self::create_view), which is
+    /// correct on web (DOM hit-testing follows the painted child regardless of
+    /// the wrapper's size) and on the mobile backends. macOS overrides this: a
+    /// default `NSView.hitTest:` rejects any click outside its own (0×0) frame
+    /// before ever consulting subviews, so an absolute presence child paints
+    /// but swallows every click; the override returns a placeholder whose
+    /// `hitTest:` descends into its subviews directly.
+    fn create_presence_placeholder(
+        &mut self,
+        a11y: &crate::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        self.create_view(a11y)
+    }
+
     /// Create a structural element with an explicit HTML-ish tag (e.g.
     /// `"pre"`, `"code"`, `"ul"`). Lets a third-party `Element::External`
     /// handler build real DOM structure cross-backend *through the

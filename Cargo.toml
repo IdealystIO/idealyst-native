@@ -134,6 +134,8 @@ members = [
 
     # Tools — CLI + per-platform build/run + source porters.
     "crates/tools/cli",
+    # Source linter engine — `idealyst lint` + rust-analyzer overrideCommand.
+    "crates/tools/lint",
     # wasm-split toolchain (vendored from DioxusLabs/dioxus alpha-0.8.0
     # — we own the snapshot, fix bugs as they fire on our codebase).
     # See `crates/tools/wasm-split/README.md`.
@@ -267,6 +269,7 @@ run-macos = { path = "crates/tools/run/macos" }
 build-terminal = { path = "crates/tools/build/terminal" }
 run-terminal = { path = "crates/tools/run/terminal" }
 dev-tui = { path = "crates/tools/dev-tui" }
+lint = { path = "crates/tools/lint" }
 icon-gen = { path = "crates/tools/icon-gen" }
 backend-apple-core = { path = "crates/backend/apple/core" }
 backend-macos = { path = "crates/backend/macos" }

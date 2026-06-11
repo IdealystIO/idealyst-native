@@ -65,6 +65,10 @@ pub(super) fn debug_kind_of(node: &Element) -> debug::PrimitiveKind {
         // subtree, so this arm is dead in practice. Tag as View
         // to keep the debug timing breakdown defined.
         Element::Repeat { .. } => PrimitiveKind::View,
+        // Fragment splices inline via `insert_children` (no node); a
+        // standalone fragment builds a transparent anchor. Tag as View to
+        // keep the debug timing breakdown defined, same as Repeat.
+        Element::Fragment { .. } => PrimitiveKind::View,
         // Robot wrapper — unwrapped before the walker times anything; tag as
         // View for completeness (never actually timed).
         #[cfg(feature = "robot")]

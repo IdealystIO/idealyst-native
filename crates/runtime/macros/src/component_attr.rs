@@ -14,6 +14,7 @@ use syn::punctuated::Punctuated;
 use syn::{Expr, Ident, LitStr, Token};
 
 /// One `field = expr` pair declared in `#[component(default(...))]`.
+#[derive(Debug)]
 pub(crate) struct DefaultEntry {
     pub(crate) name: Ident,
     pub(crate) expr: Expr,
@@ -22,6 +23,7 @@ pub(crate) struct DefaultEntry {
 /// The `external` marker — opt this component into `idealyst export`.
 /// An optional `tag = "..."` overrides the default custom-element tag
 /// (`idl-<kebab(name)>`).
+#[derive(Debug)]
 pub(crate) struct ExternalSpec {
     // Read only under the `catalog` feature (by `external_emit`); allow it
     // to sit unread in non-catalog builds without a dead-code warning.
@@ -30,6 +32,7 @@ pub(crate) struct ExternalSpec {
 }
 
 /// Parsed `#[component(...)]` attribute arguments.
+#[derive(Debug)]
 pub(crate) struct ComponentAttr {
     pub(crate) defaults: Vec<DefaultEntry>,
     /// Recorded for future use: an eventual children-aware shape check or

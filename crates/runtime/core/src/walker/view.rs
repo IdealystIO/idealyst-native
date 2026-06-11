@@ -163,10 +163,24 @@ pub(super) fn insert_children<B: Backend + 'static>(
 ) {
     // Running count of backend nodes inserted into `parent` so far. A
     // normal child contributes 1, a `Repeat` contributes `count`, a
-    // spliced `Each` contributes its current row count. Anchorless
-    // regions capture this as their `base_index` so they splice at the
-    // right position relative to preceding (static) siblings.
+    // spliced `Each` contributes its current row count, a `Fragment`
+    // contributes however many its (recursively spliced) children do.
+    // Anchorless regions capture this as their `base_index` so they
+    // splice at the right position relative to preceding siblings.
     let mut inserted: usize = 0;
+    splice_children(backend, parent, children, &mut inserted);
+}
+
+/// The core child-splice loop, shared by [`insert_children`] and the
+/// `Element::Fragment` arm. `inserted` is threaded (never reset) so a
+/// fragment's children — and any anchorless reactive region following a
+/// fragment — capture the correct ABSOLUTE `base_index` within `parent`.
+fn splice_children<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    parent: &mut B::Node,
+    children: Vec<Element>,
+    inserted: &mut usize,
+) {
     for (slot_idx, child) in children.into_iter().enumerate() {
         let slot = slot_idx as u32;
         match child {
@@ -212,7 +226,7 @@ pub(super) fn insert_children<B: Backend + 'static>(
                     rows.push(row_node);
                 }
                 backend.borrow_mut().insert_many(parent, rows);
-                inserted += count;
+                *inserted += count;
             }
             // Anchorless reactive region: when the backend supports child
             // splicing, a (style-less) `Each` in a children list splices
@@ -223,7 +237,7 @@ pub(super) fn insert_children<B: Backend + 'static>(
             Element::Each { snapshot, style }
                 if style.is_none() && backend.borrow().supports_child_splice() =>
             {
-                inserted += super::each::build_spliced(backend, parent, inserted, snapshot);
+                *inserted += super::each::build_spliced(backend, parent, *inserted, snapshot);
             }
             // Anchorless reactive conditional: a (style-less) `When` whose
             // backend supports child splicing mounts the active branch's
@@ -237,14 +251,29 @@ pub(super) fn insert_children<B: Backend + 'static>(
             Element::When { cond, then, otherwise, style }
                 if style.is_none() && backend.borrow().supports_child_splice() =>
             {
-                inserted += super::when_switch::build_when_spliced(
-                    backend, parent, inserted, cond, then, otherwise,
+                *inserted += super::when_switch::build_when_spliced(
+                    backend, parent, *inserted, cond, then, otherwise,
                 );
+            }
+            // Layout-transparent fragment: splice its children DIRECTLY into
+            // `parent` as flat siblings — no wrapper node — recursing through
+            // this same loop so nested Repeat/Each/When/Fragment keep their
+            // splice semantics. Identity nests under this slot so the
+            // children's positional slots don't collide with the parent's own,
+            // and `inserted` is shared so a nested anchorless region captures
+            // the correct absolute base index.
+            Element::Fragment { children } => {
+                let frag_id = crate::Identity::node(crate::current_identity(), slot, None, None);
+                let parent_ref = &mut *parent;
+                let inserted_ref = &mut *inserted;
+                crate::with_current_identity(frag_id, move || {
+                    splice_children(backend, parent_ref, children, inserted_ref);
+                });
             }
             other => {
                 let child_node = super::build(backend, slot, other);
                 backend.borrow_mut().insert(parent, child_node);
-                inserted += 1;
+                *inserted += 1;
             }
         }
     }

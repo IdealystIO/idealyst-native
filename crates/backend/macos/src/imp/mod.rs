@@ -2018,6 +2018,30 @@ impl Backend for MacosBackend {
         node
     }
 
+    /// A `Presence` placeholder is a `PresencePlaceholderView` (not the plain
+    /// `FlippedView` `create_view` mints): its `hitTest:` descends into the
+    /// inserted subtree even when the placeholder lays out 0×0 (the usual case,
+    /// since presence children are `position: Absolute`). Without it the child
+    /// paints but swallows every click — the macOS analogue of the
+    /// `supports_child_splice` fix for `when`/`for`. See the trait default.
+    fn create_presence_placeholder(
+        &mut self,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let view = callbacks::PresencePlaceholderView::new(self.mtm);
+        let view: Retained<NSView> = Retained::into_super(view);
+        let _ = self.layout_for_view(&view);
+        let node = MacosNode::View(view);
+        a11y::apply(
+            &node,
+            a11y,
+            runtime_core::accessibility::default_role(
+                runtime_core::accessibility::PrimitiveKind::View,
+            ),
+        );
+        node
+    }
+
     fn install_touch_handler(
         &mut self,
         node: &Self::Node,

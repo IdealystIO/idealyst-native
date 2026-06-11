@@ -466,11 +466,12 @@ pub fn primitive_kind(p: &crate::Element) -> Option<PrimitiveKind> {
         Element::External { .. } => Some(PrimitiveKind::External),
         Element::Navigator { .. } => Some(PrimitiveKind::Navigator),
         Element::Lazy { .. } => Some(PrimitiveKind::Lazy),
-        // Control flow — transparent.
+        // Control flow + fragment — layout-transparent, no node of their own.
         Element::When { .. }
         | Element::Switch { .. }
         | Element::Each { .. }
-        | Element::Repeat { .. } => None,
+        | Element::Repeat { .. }
+        | Element::Fragment { .. } => None,
         // Robot wrapper — transparent; unwrapped before this is consulted.
         #[cfg(feature = "robot")]
         Element::Component { .. } => None,

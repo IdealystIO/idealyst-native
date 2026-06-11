@@ -25,6 +25,10 @@ mod component_attr;
 // when the feature is off.
 #[cfg_attr(not(feature = "strict-docs"), allow(dead_code))]
 mod doc_check;
+// Like `doc_check`: always compiled so its unit tests run, but its helper
+// is only called under `strict-naming` — suppress dead-code when off.
+#[cfg_attr(not(feature = "strict-naming"), allow(dead_code))]
+mod naming_check;
 mod invocation_macro;
 mod jsx;
 mod lazy;
@@ -267,6 +271,14 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     let strict_doc_err = doc_check::require_component_doc(&item_fn);
     #[cfg(not(feature = "strict-docs"))]
     let strict_doc_err = proc_macro2::TokenStream::new();
+    // `strict-naming`: require the component fn name be PascalCase — the
+    // convention `ui!`/`jsx!` use to route a tag to component dispatch.
+    // Computed before any rewrite so the error points at the fn name.
+    // Empty when the feature is off (zero generated tokens).
+    #[cfg(feature = "strict-naming")]
+    let strict_naming_err = naming_check::require_component_pascal_case(&item_fn);
+    #[cfg(not(feature = "strict-naming"))]
+    let strict_naming_err = proc_macro2::TokenStream::new();
     // Components read as PascalCase at the `ui!` call site. Authors who
     // also name the fn itself PascalCase — the "true `fn` component"
     // style — would otherwise trip Rust's `non_snake_case` lint. Inject
@@ -336,6 +348,7 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     TokenStream::from(quote! {
         #strict_doc_err
+        #strict_naming_err
         #methods_extra
         #item_fn
         #invocation

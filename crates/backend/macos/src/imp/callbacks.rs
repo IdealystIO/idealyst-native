@@ -484,6 +484,137 @@ impl PrivateLayerPassthroughView {
 }
 
 // =========================================================================
+// PresencePlaceholderView — the mount point a `Presence` subtree is inserted
+// into (see `runtime_core::walker::presence`). The runtime builds the child in
+// a fresh scope and `insert`s it into this placeholder, which is itself a
+// child of the real parent. Almost every presence child — a settings popover,
+// a media inspector, the chrome restore button — is `position: Absolute`, so
+// it contributes NOTHING to the placeholder's in-flow size: the placeholder
+// (and any style-less wrapper inside it) lays out collapsed, e.g. 1024×0 (full
+// cross-axis width, zero main-axis height) at the origin.
+//
+// AppKit's default `NSView.hitTest:` first checks the point against `self`'s
+// frame and returns `nil` if it misses — it never consults subviews. Every
+// collapsed view in the chain therefore rejects clicks, even though AppKit
+// PAINTS the absolutely-positioned leaf (NSView doesn't clip subviews to
+// bounds): the presence content renders fine yet swallows every click. Same
+// failure the `when`/`for` anchorless splice (`supports_child_splice`) fixed
+// for those primitives — but `Presence` keeps a stable placeholder (it has to
+// survive the exit animation), so it can't take that path and needs its own
+// hit-test fix.
+//
+// We override `hitTest:` with a GEOMETRIC deep descent
+// ([`presence_deep_hit`]): find the deepest subview whose frame actually
+// contains the point, DESCENDING THROUGH zero-size wrappers (a plain
+// `subview.hitTest:` can't — it bounds-rejects at the first collapsed view).
+// AppKit then delivers `mouseDown` to that leaf, which bubbles up the responder
+// chain to whichever ancestor carries the `on_touch` handler — exactly how
+// nested buttons already dispatch. A miss returns `nil` so the click falls
+// through to the canvas beneath. iOS/Android reach the same end via the runtime
+// splice; this is the macOS analogue, scoped to the placeholder subtree so no
+// other view's clipping or hit-testing changes.
+// =========================================================================
+
+/// Deepest subview of `view` whose frame contains `point` (given in `view`'s
+/// flipped, top-left local coordinates), searched front-to-back (last subview
+/// = topmost). Descends through zero-area wrappers even though the point lies
+/// outside their collapsed frame, so an absolutely-positioned leaf nested under
+/// a 1024×0 `on_tap` wrapper is still reachable. Returns `None` if nothing under
+/// the point — the placeholder then declines the click (passthrough). Assumes
+/// plain Taffy frames (no transform / `bounds` offset), matching
+/// `private_layer_hit_nodes`.
+fn presence_deep_hit(view: &NSView, point: CGPoint) -> Option<Retained<NSView>> {
+    let subviews: Retained<NSArray<NSView>> = unsafe { msg_send_id![view, subviews] };
+    let subs: Vec<_> = subviews.iter().collect();
+    for sub in subs.iter().rev() {
+        let hidden: bool = unsafe { msg_send![&**sub, isHidden] };
+        if hidden {
+            continue;
+        }
+        let f: CGRect = unsafe { msg_send![&**sub, frame] };
+        // Point in the subview's local space (flipped, no transform → a plain
+        // origin subtraction).
+        let local = CGPoint {
+            x: point.x - f.origin.x,
+            y: point.y - f.origin.y,
+        };
+        let inside = point.x >= f.origin.x
+            && point.x < f.origin.x + f.size.width
+            && point.y >= f.origin.y
+            && point.y < f.origin.y + f.size.height;
+        if inside {
+            // Prefer a deeper hit; otherwise this subview itself is the target.
+            return presence_deep_hit(sub, local).or_else(|| {
+                unsafe { Retained::retain(&**sub as *const NSView as *mut NSView) }
+            });
+        }
+        // Collapsed wrapper (zero area): the point can't be "inside" it, but its
+        // absolutely-positioned descendants may still contain the point — so
+        // descend past its bounds.
+        if f.size.width == 0.0 || f.size.height == 0.0 {
+            if let Some(hit) = presence_deep_hit(sub, local) {
+                return Some(hit);
+            }
+        }
+    }
+    None
+}
+
+declare_class!(
+    pub(crate) struct PresencePlaceholderView;
+
+    unsafe impl ClassType for PresencePlaceholderView {
+        type Super = NSView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystMacosPresencePlaceholderView";
+    }
+
+    impl DeclaredClass for PresencePlaceholderView {
+        type Ivars = ();
+    }
+
+    unsafe impl PresencePlaceholderView {
+        // Top-left origin so the local coordinate space matches Taffy frames —
+        // same reason `FlippedView` / the private-layer view are flipped.
+        #[method(isFlipped)]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[method_id(hitTest:)]
+        fn hit_test(&self, point: CGPoint) -> Option<Retained<NSView>> {
+            // `point` is in the SUPERVIEW's space (AppKit's `hitTest:`
+            // contract). Convert to our local space before delegating to
+            // subviews, whose own `hitTest:` expects a point in THIS view's
+            // coordinates. No superview yet (mid-attach) → already local.
+            let this: &NSView = unsafe { &*(self as *const Self as *const NSView) };
+            let superview: *mut NSView = unsafe { msg_send![this, superview] };
+            let local: CGPoint = if superview.is_null() {
+                point
+            } else {
+                unsafe { msg_send![this, convertPoint: point, fromView: superview] }
+            };
+
+            // Geometric deep descent: find the deepest subview whose frame
+            // actually contains the point, DESCENDING THROUGH zero-size wrappers
+            // (`on_tap` wraps its target in a style-less view that lays out
+            // 1024×0; the real button is its absolute grandchild). A `nil`
+            // result declines so the click falls through to the canvas. See
+            // `presence_deep_hit`.
+            presence_deep_hit(this, local)
+        }
+    }
+);
+
+impl PresencePlaceholderView {
+    pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(());
+        unsafe { msg_send_id![super(this), init] }
+    }
+}
+
+// =========================================================================
 // LayoutObserverView — re-runs the Taffy layout pass on window resize.
 //
 // `Backend::finish` lays the tree out ONCE, against the host content view's

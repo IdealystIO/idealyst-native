@@ -1,0 +1,32 @@
+[package]
+name = "lint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Idealyst source linter — flags idiom drift (raw reactive primitives, hand-built elements, non-PascalCase components) over the un-expanded AST"
+
+[lib]
+# Plain library: both `idealyst lint` (the CLI subcommand) and the
+# rust-analyzer `overrideCommand` integration call into this engine.
+# Nothing here is a proc-macro — it parses the user's source with `syn`
+# and walks the *un-expanded* tree, which is the only place idiom
+# choices (did you write `signal!` or `Signal::new`?) are still visible.
+name = "lint"
+path = "src/lib.rs"
+
+[dependencies]
+# `full` for item/expr parsing, `visit` for the AST walk, `extra-traits`
+# so spans/idents compare cleanly in tests.
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+# `span-locations` makes `Span::start()/end()` return real line/column
+# when proc-macro2 runs in its fallback (non-proc-macro) backend — which
+# is exactly the case here, a normal binary parsing strings. Without it
+# every span collapses to line 0 and the diagnostics point nowhere.
+proc-macro2 = { version = "1", features = ["span-locations"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"

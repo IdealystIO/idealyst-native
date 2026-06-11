@@ -560,6 +560,31 @@ pub enum Element {
         count: usize,
         row_builder: Box<dyn Fn(usize) -> Element>,
     },
+    /// Static, layout-transparent group of sibling children — a
+    /// **fragment**. Lowered from the [`fragment`](crate::fragment)
+    /// constructor.
+    ///
+    /// Like [`Repeat`](Element::Repeat) it stands for *N sibling nodes*,
+    /// not a single node: in a children list `insert_children` splices its
+    /// `children` DIRECTLY into the surrounding parent as flat siblings,
+    /// with NO wrapper view — so an absolutely-positioned child resolves
+    /// its containing block against the real parent, exactly as the
+    /// equivalent `Vec<Element>` splice would. This lets a component that
+    /// conceptually yields several sibling overlays still satisfy the
+    /// `-> Element` contract (e.g. a `#[component]` chrome layer).
+    ///
+    /// The set is fixed at construction (built once, never reconciled).
+    /// For a *reactive* child set use [`Each`](Element::Each); for a
+    /// count-based static loop use [`Repeat`](Element::Repeat).
+    ///
+    /// Unlike `Repeat`, a `Fragment` CAN be a standalone `build()` root:
+    /// there it falls back to a layout-transparent
+    /// [`create_reactive_anchor`](crate::Backend::create_reactive_anchor)
+    /// hosting the children (`display:contents` on web), so it's safe to
+    /// return from `when`/`switch`/`presence` branches too.
+    Fragment {
+        children: Vec<Element>,
+    },
     /// Declarative navigation. Wraps content; activation dispatches
     /// a `NavCommand` against an ambient navigator captured at
     /// construction time. See [`primitives::link`] for the surface
@@ -841,6 +866,12 @@ impl Element {
                 // No-op (we ignore the style) so the surrounding
                 // `.with_style(...)` builder pattern doesn't panic
                 // when a macro emits it unconditionally.
+            }
+            Element::Fragment { .. } => {
+                // Fragment is a layout-transparent children-list
+                // primitive — there is no node to carry a style. Style
+                // the individual children (or a wrapping View) instead.
+                // No-op, same rationale as `Repeat`.
             }
             Element::Presence { .. } => {
                 // Presence is a wrapper that handles mount/unmount

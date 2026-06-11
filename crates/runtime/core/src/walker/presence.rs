@@ -65,8 +65,9 @@ fn build_presence<B: Backend + 'static>(
 ) -> B::Node {
     use primitives::presence::PresenceState;
 
-    let placeholder =
-        time_backend_create(pkind!(Presence), || backend.borrow_mut().create_view(a11y));
+    let placeholder = time_backend_create(pkind!(Presence), || {
+        backend.borrow_mut().create_presence_placeholder(a11y)
+    });
 
     // Shared state across the effect + scheduled tasks. `Rc<RefCell>`
     // so the outer Effect and the timer closures all reach the same
