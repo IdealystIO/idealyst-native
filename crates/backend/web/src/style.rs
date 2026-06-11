@@ -17,11 +17,29 @@
 
 use crate::phase_timer::PhaseTimer;
 use crate::{DynamicPtrEntry, DynamicRule, DynamicSlot, PregenEntry, WebBackend};
-use runtime_core::StyleRules;
+use runtime_core::{Easing, StyleRules};
 // CSS conversion lives in the shared, platform-neutral `css` crate so
 // the web backend and the SSR backend emit byte-identical declarations.
 use css::{hash_class_name, rules_to_css};
 use wasm_bindgen::JsCast;
+
+/// Map a framework [`Easing`] to its CSS `transition-timing-function`
+/// keyword. Shared by the transition, presence, and icon-animation
+/// paths so they can't drift.
+///
+/// `CubicBezier` has no `&'static str` form yet — it falls back to the
+/// nearest stock keyword. (When custom cubic-beziers are needed, return
+/// a `String` here and have callers own it.)
+pub(crate) fn easing_to_css(e: Easing) -> &'static str {
+    match e {
+        Easing::Linear => "linear",
+        Easing::Ease => "ease",
+        Easing::EaseIn => "ease-in",
+        Easing::EaseOut => "ease-out",
+        Easing::EaseInOut => "ease-in-out",
+        Easing::CubicBezier(_, _, _, _) => "ease",
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Stylesheet rule-index management — split out of `impl WebBackend`.

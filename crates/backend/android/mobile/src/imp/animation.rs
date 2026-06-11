@@ -285,16 +285,17 @@ fn configure_and_start(
 /// `PathInterpolator`, while `EaseInOut` uses the symmetric
 /// `AccelerateDecelerateInterpolator` (which is closer to CSS
 /// `ease-in-out` than to `ease`).
-pub(crate) fn build_interpolator(env: &mut JNIEnv, easing: Easing) -> Option<JObject<'static>> {
-    // Helper: instantiate `class` with `()V` constructor. The
-    // returned JObject is local; we promote to a GlobalRef so the
-    // caller can hold it across JNI calls. Returning a local would
-    // expire at the next JNI frame.
+pub(crate) fn build_interpolator<'local>(
+    env: &mut JNIEnv<'local>,
+    easing: Easing,
+) -> Option<JObject<'local>> {
+    // Helper: instantiate `class` with its `()V` constructor, returning
+    // the JNI *local* ref.
     fn new_instance<'a>(env: &mut JNIEnv<'a>, class_name: &str) -> Option<JObject<'a>> {
         let class = env.find_class(class_name).ok()?;
         env.new_object(&class, "()V", &[]).ok()
     }
-    let interp_local: JObject = match easing {
+    let interp_local: JObject<'local> = match easing {
         Easing::Linear => new_instance(env, "android/view/animation/LinearInterpolator")?,
         Easing::EaseIn => new_instance(env, "android/view/animation/AccelerateInterpolator")?,
         Easing::EaseOut => new_instance(env, "android/view/animation/DecelerateInterpolator")?,
@@ -304,18 +305,15 @@ pub(crate) fn build_interpolator(env: &mut JNIEnv, easing: Easing) -> Option<JOb
         Easing::Ease => build_cubic_bezier(env, 0.25, 0.1, 0.25, 1.0)?,
         Easing::CubicBezier(a, b, c, d) => build_cubic_bezier(env, a, b, c, d)?,
     };
-    // Promote to global so callers can hand it across JNI calls
-    // without it being invalidated at frame boundaries.
-    let g = env.new_global_ref(&interp_local).ok()?;
-    // SAFETY-ish: we leak the global by `forget`-ing it and return
-    // a raw JObject wrapping the same handle. The JVM will GC the
-    // underlying interpolator when the animator that referenced it
-    // is collected. For interpolators reused across animators this
-    // is a minor leak; in practice each call site uses the
-    // interpolator once per animator construction.
-    let raw = g.as_obj().as_raw();
-    std::mem::forget(g);
-    Some(unsafe { JObject::from_raw(raw) })
+    // Return the *local* ref. Every caller (`start_*_animator`) consumes
+    // the interpolator immediately within the same JNI frame — it is
+    // passed straight into the `Animators.*` static call before the frame
+    // pops — so a local is sufficient and the JVM reclaims it with the
+    // frame. The previous code promoted to a GlobalRef and `mem::forget`'d
+    // it, leaking one global ref per animation start; the JVM global-ref
+    // table caps near 51k and would eventually abort an animation-heavy,
+    // long-lived screen (and it violated the no-`forget` rule).
+    Some(interp_local)
 }
 
 /// `PathInterpolator`-via-reflection for cubic-bezier. Available on

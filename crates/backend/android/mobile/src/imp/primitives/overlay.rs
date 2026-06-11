@@ -456,53 +456,17 @@ fn compute_popup_position(
     align: ElementAlign,
     offset: f32,
 ) -> (i32, i32) {
-    // Without a measured popup size we treat ow/oh as 0; the
-    // alignment math collapses to "align to the trigger's
-    // start/center/end edge."
-    let (ow, oh) = (0.0_f32, 0.0_f32);
-    let (top, left) = match side {
-        ElementSide::Below => {
-            let top = trigger.y + trigger.height + offset;
-            let left = align_horizontal(trigger, align, ow);
-            (top, left)
-        }
-        ElementSide::Above => {
-            // Without a known popup height we can't subtract oh from
-            // the trigger top; the popup will overlap the trigger
-            // until the post-mount measure pass exists. Conservative
-            // fallback: place just above the trigger top.
-            let top = trigger.y - offset - oh;
-            let left = align_horizontal(trigger, align, ow);
-            (top, left)
-        }
-        ElementSide::Start => {
-            let top = align_vertical(trigger, align, oh);
-            let left = trigger.x - offset - ow;
-            (top, left)
-        }
-        ElementSide::End => {
-            let top = align_vertical(trigger, align, oh);
-            let left = trigger.x + trigger.width + offset;
-            (top, left)
-        }
-    };
+    // Unmeasured initial placement: pass content size (0, 0) to the shared
+    // measured-placement helper in runtime_core. With zero size the align
+    // math collapses to "align to the trigger's start/center/end edge" —
+    // exactly the prior behavior — but the align/side geometry now lives in
+    // one place across web/iOS/Android (CLAUDE.md §7). A future measured
+    // re-position pass can graduate to the full `resolve_anchored_placement`
+    // (collision flip + viewport clamp) like web.
+    let (top, left) = runtime_core::primitives::portal::anchor_top_left(
+        *trigger, side, align, offset, (0.0, 0.0),
+    );
     (left.round() as i32, top.round() as i32)
-}
-
-fn align_horizontal(trigger: &ViewportRect, align: ElementAlign, ow: f32) -> f32 {
-    match align {
-        ElementAlign::Start => trigger.x,
-        ElementAlign::Center => trigger.x + trigger.width / 2.0 - ow / 2.0,
-        ElementAlign::End => trigger.x + trigger.width - ow,
-    }
-}
-
-fn align_vertical(trigger: &ViewportRect, align: ElementAlign, oh: f32) -> f32 {
-    match align {
-        ElementAlign::Start => trigger.y,
-        ElementAlign::Center => trigger.y + trigger.height / 2.0 - oh / 2.0,
-        ElementAlign::End => trigger.y + trigger.height - oh,
-    }
 }
 
 // ---------------------------------------------------------------------------

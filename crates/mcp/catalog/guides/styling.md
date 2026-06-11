@@ -26,7 +26,7 @@ stylesheet! {
             background_color: 200ms EaseOut,
         }
         state pressed(theme) {
-            background_color: darken(theme.colors.primary, 0.1),
+            background_color: "#0a53be", // a darker primary for the pressed state
         }
         state disabled(theme) {
             opacity: 0.5,
@@ -61,10 +61,10 @@ The `style` prop accepts a stylesheet value (or any [[StyleSource]]). Per [[nati
 
 ## Helpers
 
-- [[parse_color]] — parse `#abc` / `rgba(…)` / named colors.
-- [[lighten]], [[darken]] — adjust luminosity for hover/press overlays.
+- [[parse]] — parse `#abc` / `rgba(…)` / named colors into `Rgba`.
+- [[color_scheme]] — the platform light/dark default.
 - [[current_breakpoint]] — read the active responsive breakpoint.
-- [[active_theme]] — full theme handle.
+- [[safe_area_insets]] — reactive per-side safe-area insets.
 
 ## Per-platform notes
 

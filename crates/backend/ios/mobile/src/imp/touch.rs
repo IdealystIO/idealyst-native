@@ -142,6 +142,16 @@ impl IdealystTouchView {
     /// effects since concurrent touches landing on one view in the
     /// same frame is uncommon.
     fn dispatch_touches(&self, touches: &NSSet<UITouch>, phase: TouchPhase) -> bool {
+        // ObjC-dispatched via touchesBegan/Moved/Ended/Cancelled, whose
+        // `declare_class!` IMPs are plain `extern "C"`. Guard the body so
+        // a panic in author `on_touch` code aborts loudly instead of
+        // unwinding across the boundary into UIKit (UB).
+        crate::imp::ffi_guard::guard_ffi("IdealystTouchView::dispatch_touches", || {
+            self.dispatch_touches_inner(touches, phase)
+        })
+    }
+
+    fn dispatch_touches_inner(&self, touches: &NSSet<UITouch>, phase: TouchPhase) -> bool {
         // Snapshot the handler ref so we don't hold the borrow
         // across the closure invocation (the closure may call back
         // into the framework which could re-enter ivars).

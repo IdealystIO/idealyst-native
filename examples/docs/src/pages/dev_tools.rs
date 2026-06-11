@@ -241,8 +241,8 @@ docs! {
             ["Reverse channel for callbacks. Click handlers, text changes, and other input events go from client to dev-host on the same WebSocket. The dev-host resolves them to in-process closures and fires them."],
         ),
         p("The Architecture section of the Overview points at the supporting \
-           crates: ", code("framework-wire"), " for the protocol, ",
-          code("framework-dev-client"), " for the app-side replayer, ",
+           crates: ", code("wire"), " for the protocol, ",
+          code("dev-client"), " for the app-side replayer, ",
           code("runtime-server-shell-native"), " for the desktop client side."),
     },
 
@@ -328,7 +328,7 @@ docs! {
         list(
             ["Robot — the tools the bridge exposes, in detail."],
             ["Backends — what the runtime-server thin clients are doing on each platform."],
-            ["Architecture in more depth (on the Overview) — where ", code("dev-hot"), ", ", code("framework-wire"), ", and ", code("framework-dev-client"), " sit."],
+            ["Architecture in more depth (on the Overview) — where ", code("dev-hot"), ", ", code("wire"), ", and ", code("dev-client"), " sit."],
             ["Hot reload internals — identity hashing, diff strategy, what survives a patch in detail."],
             ["The wire protocol — the ", code("Command"), " enum and id namespaces, for anyone building their own wire consumer."],
         ),

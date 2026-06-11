@@ -25,6 +25,7 @@ pub mod session;
 pub mod time;
 mod sources;
 mod style;
+pub mod text_defaults;
 mod touch;
 pub mod wheel;
 mod walker;
@@ -299,6 +300,10 @@ pub use style::{
     Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign, TextTransform, UserSelect,
     TokenEntry, TokenValue, Tokenized, Transform, Transition, VariantAxis, VariantEnum,
     VariantSet, VariantValue,
+};
+
+pub use text_defaults::{
+    effective_text_color, THEME_TEXT_COLOR_FALLBACK, THEME_TEXT_COLOR_TOKEN,
 };
 
 pub use runtime_macros::{

@@ -291,8 +291,8 @@ dev-host's arena, not in any client.
   closures and fires them.
 
 The [Architecture](#architecture-in-more-depth) section of the
-Overview points at the supporting crates: `framework-wire` for
-the protocol, `framework-dev-client` for the app-side replayer,
+Overview points at the supporting crates: `wire` for
+the protocol, `dev-client` for the app-side replayer,
 `aas-shell-native` for the desktop client side.
 
 ## The MCP server — Claude Desktop and Robot
@@ -396,8 +396,8 @@ it.
 - [Backends](#) — what the runtime-server thin clients are doing on each
   platform.
 - [Architecture in more depth](#architecture-in-more-depth) (on
-  the Overview) — where `dev-hot`, `framework-wire`, and
-  `framework-dev-client` sit.
+  the Overview) — where `dev-hot`, `wire`, and
+  `dev-client` sit.
 - [Hot reload internals](#) — identity hashing, diff strategy,
   what survives a patch in detail.
 - [The wire protocol](#) — the `Command` enum and id namespaces,

@@ -106,17 +106,5 @@ pub(crate) fn apply(
 }
 
 fn easing_css(e: Easing) -> &'static str {
-    // Duplicates the function in style.rs (private). Small enough
-    // that the dup costs less than making the original pub(crate).
-    match e {
-        Easing::Linear => "linear",
-        Easing::Ease => "ease",
-        Easing::EaseIn => "ease-in",
-        Easing::EaseOut => "ease-out",
-        Easing::EaseInOut => "ease-in-out",
-        // CubicBezier isn't a `&'static str` — fall back to the
-        // nearest stock easing. (Custom cubic-beziers for presence
-        // can be added later by returning a String here.)
-        Easing::CubicBezier(_, _, _, _) => "ease",
-    }
+    crate::style::easing_to_css(e)
 }

@@ -87,10 +87,14 @@ declare_class!(
     unsafe impl CallbackTarget {
         #[method(invoke)]
         fn invoke(&self) {
-            let ivars = self.ivars();
-            if let Some(cb) = ivars.callback.borrow().as_ref() {
-                cb();
-            }
+            // ObjC action target (extern "C" IMP). Guard author callback
+            // code: a panic must abort, not unwind into UIKit dispatch.
+            crate::imp::ffi_guard::guard_ffi("CallbackTarget::invoke", || {
+                let ivars = self.ivars();
+                if let Some(cb) = ivars.callback.borrow().as_ref() {
+                    cb();
+                }
+            })
         }
 
         /// `UIGestureRecognizerDelegate.gestureRecognizerShouldBegin:`.
@@ -174,11 +178,13 @@ declare_class!(
     unsafe impl BoolCallbackTarget {
         #[method(invoke:)]
         fn invoke(&self, sender: &NSObject) {
-            let ivars = self.ivars();
-            if let Some(cb) = ivars.callback.borrow().as_ref() {
-                let is_on: bool = unsafe { msg_send![sender, isOn] };
-                cb(is_on);
-            }
+            crate::imp::ffi_guard::guard_ffi("BoolCallbackTarget::invoke", || {
+                let ivars = self.ivars();
+                if let Some(cb) = ivars.callback.borrow().as_ref() {
+                    let is_on: bool = unsafe { msg_send![sender, isOn] };
+                    cb(is_on);
+                }
+            })
         }
     }
 );
@@ -217,11 +223,13 @@ declare_class!(
     unsafe impl FloatCallbackTarget {
         #[method(invoke:)]
         fn invoke(&self, sender: &NSObject) {
-            let ivars = self.ivars();
-            if let Some(cb) = ivars.callback.borrow().as_ref() {
-                let value: f32 = unsafe { msg_send![sender, value] };
-                cb(value);
-            }
+            crate::imp::ffi_guard::guard_ffi("FloatCallbackTarget::invoke", || {
+                let ivars = self.ivars();
+                if let Some(cb) = ivars.callback.borrow().as_ref() {
+                    let value: f32 = unsafe { msg_send![sender, value] };
+                    cb(value);
+                }
+            })
         }
     }
 );
@@ -260,12 +268,14 @@ declare_class!(
     unsafe impl StringCallbackTarget {
         #[method(invoke:)]
         fn invoke(&self, sender: &NSObject) {
-            let ivars = self.ivars();
-            if let Some(cb) = ivars.callback.borrow().as_ref() {
-                let text: Option<Retained<NSString>> = unsafe { msg_send_id![sender, text] };
-                let s = text.map(|ns| ns.to_string()).unwrap_or_default();
-                cb(s);
-            }
+            crate::imp::ffi_guard::guard_ffi("StringCallbackTarget::invoke", || {
+                let ivars = self.ivars();
+                if let Some(cb) = ivars.callback.borrow().as_ref() {
+                    let text: Option<Retained<NSString>> = unsafe { msg_send_id![sender, text] };
+                    let s = text.map(|ns| ns.to_string()).unwrap_or_default();
+                    cb(s);
+                }
+            })
         }
     }
 );

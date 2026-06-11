@@ -114,7 +114,19 @@ use serde::{Deserialize, Serialize};
 /// backend over the wire. New `DevToApp` variant: a sender on an older
 /// client simply never receives it (the server only emits it when a
 /// `get_device_frame` Robot call is made).
-pub const PROTOCOL_VERSION: u32 = 12;
+///
+/// (Versions 9 and 11 were skipped numerically — bumps landed in even
+/// steps while batched changes were in flight; no v9/v11 wire shape ever
+/// shipped.)
+///
+/// Bumped to 13 to add host-surface / document-chrome commands:
+/// [`Command::SetAppBackground`], [`Command::SetScrollbarTheme`],
+/// [`Command::SetPageMetadata`], [`Command::RegisterRawCss`]. These mirror
+/// the same-named `Backend` methods, which the recorder previously dropped
+/// on the floor — so a runtime-server client never themed its host surface
+/// / scrollbar, set its document title, or received navigator raw CSS. All
+/// four are additive variants; an older client just never receives them.
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -157,7 +169,13 @@ macro_rules! define_id {
 define_id!(NodeId, "Backend node identity. Minted by the dev side; opaque on the app side.");
 define_id!(HandlerId, "Closure identity. Used for events and ops dispatching.");
 define_id!(StyleId, "Pre-registered style identity.");
-define_id!(StylesheetId, "Stylesheet identity for grouped registration.");
+define_id!(
+    StylesheetId,
+    "Stylesheet identity for grouped registration. **Reserved / not yet \
+     wired** — `register_stylesheet` currently interns each rule as an \
+     individual `RegisterStyle`; no `Command` references this id today. \
+     Kept for a future grouped-registration command."
+);
 define_id!(ScopeId, "Per-screen / per-item framework scope. Minted by dev; used by app to request release.");
 define_id!(AssetId, "Static asset identity (font / image / audio / video / blob).");
 define_id!(TypefaceId, "Static typeface identity (a font family + a weight/style table).");
@@ -1039,6 +1057,58 @@ pub enum Command {
         msg: String,
         priority: WireLiveRegionPriority,
     },
+
+    // --- Host surface / document chrome ---
+    //
+    // These mirror `Backend` methods that theme the surface *around* the
+    // rendered tree (or the host document) rather than a node. The
+    // recorder resolves any `Tokenized<Color>` to a concrete literal
+    // dev-side (the wire only carries literals); the theme SDK re-emits on
+    // theme swap so the client re-themes. Each is persisted as latest in
+    // the `SceneModel` and replayed in a late-joining client's snapshot.
+    /// Theme the host surface behind the rendered tree — web `<html>`/
+    /// `<body>`, iOS `UIWindow`, Android decor view, the wgpu clear color.
+    /// Mirrors `Backend::set_app_background`.
+    SetAppBackground {
+        color: WireColor,
+    },
+
+    /// Theme the platform scrollbar where the backend supports it.
+    /// Mirrors `Backend::set_scrollbar_theme`. Both colors resolved
+    /// dev-side.
+    SetScrollbarTheme {
+        thumb: WireColor,
+        track: WireColor,
+    },
+
+    /// Declare page-level metadata (title / description / OG image /
+    /// canonical URL) for the screen just built. Mirrors
+    /// `Backend::set_page_metadata`.
+    SetPageMetadata {
+        meta: WirePageMetadata,
+    },
+
+    /// Register a raw CSS stylesheet to ship once (navigator chrome,
+    /// `Element::External` handlers). Mirrors `Backend::register_raw_css`;
+    /// backends may dedupe identical sheets.
+    RegisterRawCss {
+        css: String,
+    },
+}
+
+/// Wire mirror of [`runtime_core::PageMetadata`] — external-representation
+/// hints for the screen just built. All fields optional; unset fields emit
+/// no tag on the client.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WirePageMetadata {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub og_image: Option<String>,
+    #[serde(default)]
+    pub canonical_url: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1873,6 +1943,62 @@ mod tests {
         // against the strongly-typed schema as well.
         let _: T = codec::decode(&bytes).expect("decode strong-typed");
         decoded
+    }
+
+    #[test]
+    fn host_chrome_commands_roundtrip() {
+        let bytes = codec::encode(&Command::SetAppBackground {
+            color: WireColor("#101418".into()),
+        })
+        .expect("encode");
+        match codec::decode::<Command>(&bytes).expect("decode") {
+            Command::SetAppBackground { color } => assert_eq!(color.0, "#101418"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        let bytes = codec::encode(&Command::SetScrollbarTheme {
+            thumb: WireColor("#888".into()),
+            track: WireColor("#222".into()),
+        })
+        .expect("encode");
+        match codec::decode::<Command>(&bytes).expect("decode") {
+            Command::SetScrollbarTheme { thumb, track } => {
+                assert_eq!(thumb.0, "#888");
+                assert_eq!(track.0, "#222");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        let bytes = codec::encode(&Command::RegisterRawCss {
+            css: ".x{color:red}".into(),
+        })
+        .expect("encode");
+        match codec::decode::<Command>(&bytes).expect("decode") {
+            Command::RegisterRawCss { css } => assert_eq!(css, ".x{color:red}"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn page_metadata_command_roundtrips() {
+        let cmd = Command::SetPageMetadata {
+            meta: WirePageMetadata {
+                title: Some("Home".into()),
+                description: Some("desc".into()),
+                og_image: None,
+                canonical_url: Some("https://example/".into()),
+            },
+        };
+        let bytes = codec::encode(&cmd).expect("encode");
+        match codec::decode::<Command>(&bytes).expect("decode") {
+            Command::SetPageMetadata { meta } => {
+                assert_eq!(meta.title.as_deref(), Some("Home"));
+                assert_eq!(meta.description.as_deref(), Some("desc"));
+                assert_eq!(meta.og_image, None);
+                assert_eq!(meta.canonical_url.as_deref(), Some("https://example/"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]

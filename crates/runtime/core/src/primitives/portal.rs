@@ -178,6 +178,209 @@ impl Default for ElementAlign {
 }
 
 // =============================================================================
+// Anchored-placement resolver (shared by every backend)
+// =============================================================================
+
+/// The resolved placement of an anchored overlay: the side actually used
+/// (which may differ from the requested side after a collision flip) and
+/// the overlay's visual top-left in viewport coordinates.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct AnchorPlacement {
+    /// The side the overlay was actually placed on. Equal to the requested
+    /// side unless [`resolve_anchored_placement`] flipped it to fit.
+    pub side: ElementSide,
+    /// Visual top-left x (left edge) in viewport pixels.
+    pub x: f32,
+    /// Visual top-left y (top edge) in viewport pixels.
+    pub y: f32,
+}
+
+/// Resolve where an anchored overlay's top-left should sit, given the
+/// measured sizes. This is the ONE placement algorithm every backend
+/// shares — web, iOS, and Android each used to carry their own copy of
+/// this geometry, and they had drifted (the same author intent producing
+/// subtly different placement per platform, violating CLAUDE.md §7). The
+/// pure math lives here; backends supply the measured rects and apply the
+/// result with their native positioning API.
+///
+/// Inputs are all in viewport pixels (origin = top-left of the viewport):
+/// - `trigger` — the anchor element's rect.
+/// - `content` — the overlay's measured `(width, height)`.
+/// - `viewport` — the viewport's `(width, height)`.
+/// - `requested_side` / `align` / `offset` — the author's intent.
+/// - `edge_gap` — minimum gutter kept between the overlay and every
+///   viewport edge when clamping.
+///
+/// The algorithm: (1) flip `requested_side` to its opposite if it doesn't
+/// fit and the opposite has more room; (2) compute the visual top-left for
+/// the chosen side + align using the measured content size; (3) clamp the
+/// top-left so the whole content rect stays inside the viewport minus
+/// `edge_gap`.
+pub fn resolve_anchored_placement(
+    trigger: ViewportRect,
+    content: (f32, f32),
+    viewport: (f32, f32),
+    requested_side: ElementSide,
+    align: ElementAlign,
+    offset: f32,
+    edge_gap: f32,
+) -> AnchorPlacement {
+    let side = pick_anchor_side(requested_side, trigger, content, viewport, offset);
+    let (y, x) = anchor_top_left(trigger, side, align, offset, content);
+    let (y, x) = clamp_into_viewport(y, x, content, viewport, edge_gap);
+    AnchorPlacement { side, x, y }
+}
+
+/// The overlay's visual top-left `(top, left)` for a given side + align +
+/// offset and measured `content` size — the measured align/side geometry
+/// WITHOUT any collision flip or viewport clamp.
+///
+/// This is the shared piece every backend's anchored-overlay placement is
+/// built on. [`resolve_anchored_placement`] composes it with flip + clamp;
+/// backends that don't (yet) do a measured flip/clamp pass — the iOS
+/// display-link tracker, the Android popup (which passes `content = (0,0)`
+/// for its unmeasured initial placement) — call this directly so the
+/// align/side math is defined in exactly one place (CLAUDE.md §7).
+pub fn anchor_top_left(
+    rect: ViewportRect,
+    side: ElementSide,
+    align: ElementAlign,
+    offset: f32,
+    content: (f32, f32),
+) -> (f32, f32) {
+    let (ow, oh) = content;
+    let cross_h = |align: ElementAlign| match align {
+        ElementAlign::Start => rect.x,
+        ElementAlign::Center => rect.x + rect.width / 2.0 - ow / 2.0,
+        ElementAlign::End => rect.x + rect.width - ow,
+    };
+    let cross_v = |align: ElementAlign| match align {
+        ElementAlign::Start => rect.y,
+        ElementAlign::Center => rect.y + rect.height / 2.0 - oh / 2.0,
+        ElementAlign::End => rect.y + rect.height - oh,
+    };
+    match side {
+        ElementSide::Below => (rect.y + rect.height + offset, cross_h(align)),
+        ElementSide::Above => (rect.y - offset - oh, cross_h(align)),
+        ElementSide::Start => (cross_v(align), rect.x - offset - ow),
+        ElementSide::End => (cross_v(align), rect.x + rect.width + offset),
+    }
+}
+
+/// Pick the side the overlay anchors on. If the requested side lacks room
+/// for the measured content, flip to the opposite — unless the opposite is
+/// even tighter (then keep the original and let it overflow, matching what
+/// most popover libraries do).
+fn pick_anchor_side(
+    requested: ElementSide,
+    trigger: ViewportRect,
+    content: (f32, f32),
+    viewport: (f32, f32),
+    offset: f32,
+) -> ElementSide {
+    let (ow, oh) = content;
+    let (vw, vh) = viewport;
+    let needed = match requested {
+        ElementSide::Above | ElementSide::Below => oh + offset,
+        ElementSide::Start | ElementSide::End => ow + offset,
+    };
+    let (have, opposite_have, opposite) = match requested {
+        ElementSide::Below => (vh - (trigger.y + trigger.height), trigger.y, ElementSide::Above),
+        ElementSide::Above => (trigger.y, vh - (trigger.y + trigger.height), ElementSide::Below),
+        ElementSide::Start => (trigger.x, vw - (trigger.x + trigger.width), ElementSide::End),
+        ElementSide::End => (vw - (trigger.x + trigger.width), trigger.x, ElementSide::Start),
+    };
+    if have < needed && opposite_have > have {
+        opposite
+    } else {
+        requested
+    }
+}
+
+/// Clamp the overlay's `(top, left)` so its full content rect stays inside
+/// the viewport with an `edge_gap` gutter on every side.
+fn clamp_into_viewport(
+    top: f32,
+    left: f32,
+    content: (f32, f32),
+    viewport: (f32, f32),
+    edge_gap: f32,
+) -> (f32, f32) {
+    let (ow, oh) = content;
+    let (vw, vh) = viewport;
+    let max_left = (vw - edge_gap - ow).max(edge_gap);
+    let max_top = (vh - edge_gap - oh).max(edge_gap);
+    (top.clamp(edge_gap, max_top), left.clamp(edge_gap, max_left))
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+
+    const VP: (f32, f32) = (1000.0, 800.0);
+    const GAP: f32 = 8.0;
+
+    fn trigger() -> ViewportRect {
+        ViewportRect { x: 400.0, y: 300.0, width: 100.0, height: 40.0 }
+    }
+
+    #[test]
+    fn below_start_sits_under_the_trigger() {
+        let p = resolve_anchored_placement(
+            trigger(), (120.0, 60.0), VP, ElementSide::Below, ElementAlign::Start, 4.0, GAP,
+        );
+        assert_eq!(p.side, ElementSide::Below);
+        assert_eq!(p.y, 300.0 + 40.0 + 4.0); // below the trigger + offset
+        assert_eq!(p.x, 400.0); // start-aligned to trigger left
+    }
+
+    #[test]
+    fn center_align_centers_content_on_trigger() {
+        let p = resolve_anchored_placement(
+            trigger(), (120.0, 60.0), VP, ElementSide::Below, ElementAlign::Center, 0.0, GAP,
+        );
+        // trigger center x = 450; content half-width 60 → left 390.
+        assert_eq!(p.x, 390.0);
+    }
+
+    #[test]
+    fn below_flips_to_above_when_it_does_not_fit() {
+        // Trigger near the bottom: not enough room below for a tall overlay,
+        // but plenty above → flip to Above.
+        let low = ViewportRect { x: 400.0, y: 760.0, width: 100.0, height: 30.0 };
+        let p = resolve_anchored_placement(
+            low, (120.0, 200.0), VP, ElementSide::Below, ElementAlign::Start, 0.0, GAP,
+        );
+        assert_eq!(p.side, ElementSide::Above);
+        assert_eq!(p.y, 760.0 - 200.0); // above: trigger.y - offset - content height
+    }
+
+    #[test]
+    fn keeps_requested_side_when_opposite_is_tighter() {
+        // Trigger near the top with a very tall overlay: Below doesn't quite
+        // fit (750 < 760 needed) but Above is far tighter (only 20) → keep
+        // the requested Below and let it overflow.
+        let near_top = ViewportRect { x: 10.0, y: 20.0, width: 100.0, height: 30.0 };
+        let p = resolve_anchored_placement(
+            near_top, (120.0, 760.0), VP, ElementSide::Below, ElementAlign::Start, 0.0, GAP,
+        );
+        assert_eq!(p.side, ElementSide::Below);
+    }
+
+    #[test]
+    fn clamps_into_viewport_with_gap() {
+        // End-aligned far-right trigger would push content off-screen; clamp.
+        let right = ViewportRect { x: 980.0, y: 300.0, width: 15.0, height: 40.0 };
+        let p = resolve_anchored_placement(
+            right, (200.0, 60.0), VP, ElementSide::Below, ElementAlign::Start, 0.0, GAP,
+        );
+        // max_left = 1000 - 8 - 200 = 792; content can't exceed it.
+        assert_eq!(p.x, 792.0);
+        assert!(p.x >= GAP && p.y >= GAP);
+    }
+}
+
+// =============================================================================
 // Target
 // =============================================================================
 

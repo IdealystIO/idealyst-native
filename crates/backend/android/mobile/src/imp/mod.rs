@@ -2888,7 +2888,7 @@ impl Backend for AndroidBackend {
         type_name: &'static str,
         presentation: Rc<dyn std::any::Any>,
         host: runtime_core::NavigatorHost<Self::Node>,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let factory = self
             .navigator_handlers
@@ -2903,6 +2903,10 @@ impl Backend for AndroidBackend {
             });
         let mut handler = factory();
         let node = handler.init(self, host, presentation);
+        // Apply author-set accessibility props to the navigator root,
+        // matching every other create_* path and the macOS/wgpu backends
+        // — otherwise navigator a11y silently vanishes on Android.
+        a11y::apply(&node, a11y, None);
         // Stash the handler keyed by the container's node key so
         // subsequent dispatch routes through the SDK handler instead
         // of through a kind switch. The handler internally retains

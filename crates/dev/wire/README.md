@@ -67,7 +67,7 @@ This crate is data-only. The pieces that move bytes:
 
 - **App-side replay engine**: [`../dev-client`](../dev-client). Wraps any
   `runtime_core::Backend` and feeds it `Command`s.
-- **App-side native transport**: [`../../backend/aas-shell-native`](../../backend/aas-shell-native).
+- **App-side native transport**: [`../runtime-server-shell`](../runtime-server-shell).
   Sync WebSocket + mDNS discovery. Used on iOS / Android / desktop.
 - **App-side web transport**: `backend-web`'s `dev_transport` module.
   `web_sys::WebSocket` + rAF outbound pump.

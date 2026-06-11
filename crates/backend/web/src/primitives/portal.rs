@@ -452,14 +452,16 @@ fn install_anchor_reposition(
         };
         let viewport = viewport_size();
         let portal_size = measure_portal_size(&portal_html);
-        let chosen_side = pick_side(side, trigger, portal_size, viewport, offset);
-        let (top, left) =
-            measured_position(trigger, chosen_side, align, offset, portal_size);
-        let (top, left) = clamp_measured(top, left, portal_size, viewport);
+        // Shared, host-tested placement resolver (side-flip + measured
+        // position + viewport clamp). Lives in runtime_core so web/iOS/
+        // Android can't drift (CLAUDE.md §7).
+        let placement = runtime_core::primitives::portal::resolve_anchored_placement(
+            trigger, portal_size, viewport, side, align, offset, EDGE_GAP,
+        );
         let style = portal_html.style();
         let _ = style.remove_property("transform");
-        let _ = style.set_property("top", &format!("{}px", top));
-        let _ = style.set_property("left", &format!("{}px", left));
+        let _ = style.set_property("top", &format!("{}px", placement.y));
+        let _ = style.set_property("left", &format!("{}px", placement.x));
     });
 
     let reposition_scroll = reposition.clone();
@@ -494,102 +496,6 @@ fn install_anchor_reposition(
     });
 
     (Some(scroll_closure), Some(resize_closure), Some(initial_measure_task))
-}
-
-/// Pick the side the portal should anchor on, given the rendered
-/// size. If the requested side doesn't fit, flip to the opposite —
-/// *unless* the opposite is even tighter (then keep the original and
-/// let it overflow, matching what most popover libs do).
-fn pick_side(
-    requested: ElementSide,
-    trigger: ViewportRect,
-    portal_size: (f32, f32),
-    viewport: (f32, f32),
-    offset: f32,
-) -> ElementSide {
-    let (ow, oh) = portal_size;
-    let (vw, vh) = viewport;
-    let needed = match requested {
-        ElementSide::Above | ElementSide::Below => oh + offset,
-        ElementSide::Start | ElementSide::End => ow + offset,
-    };
-    let (have, opposite_have, opposite) = match requested {
-        ElementSide::Below => (vh - (trigger.y + trigger.height), trigger.y, ElementSide::Above),
-        ElementSide::Above => (trigger.y, vh - (trigger.y + trigger.height), ElementSide::Below),
-        ElementSide::Start => (trigger.x, vw - (trigger.x + trigger.width), ElementSide::End),
-        ElementSide::End => (vw - (trigger.x + trigger.width), trigger.x, ElementSide::Start),
-    };
-    if have < needed && opposite_have > have {
-        opposite
-    } else {
-        requested
-    }
-}
-
-/// Compute the portal's *visual top-left* from the trigger rect, side,
-/// align, and the measured portal size. No transform translate needed
-/// — we shift the box ourselves using the known dimensions.
-fn measured_position(
-    rect: ViewportRect,
-    side: ElementSide,
-    align: ElementAlign,
-    offset: f32,
-    portal_size: (f32, f32),
-) -> (f32, f32) {
-    let (ow, oh) = portal_size;
-    match side {
-        ElementSide::Below => {
-            let top = rect.y + rect.height + offset;
-            let left = match align {
-                ElementAlign::Start => rect.x,
-                ElementAlign::Center => rect.x + rect.width / 2.0 - ow / 2.0,
-                ElementAlign::End => rect.x + rect.width - ow,
-            };
-            (top, left)
-        }
-        ElementSide::Above => {
-            let top = rect.y - offset - oh;
-            let left = match align {
-                ElementAlign::Start => rect.x,
-                ElementAlign::Center => rect.x + rect.width / 2.0 - ow / 2.0,
-                ElementAlign::End => rect.x + rect.width - ow,
-            };
-            (top, left)
-        }
-        ElementSide::Start => {
-            let left = rect.x - offset - ow;
-            let top = match align {
-                ElementAlign::Start => rect.y,
-                ElementAlign::Center => rect.y + rect.height / 2.0 - oh / 2.0,
-                ElementAlign::End => rect.y + rect.height - oh,
-            };
-            (top, left)
-        }
-        ElementSide::End => {
-            let left = rect.x + rect.width + offset;
-            let top = match align {
-                ElementAlign::Start => rect.y,
-                ElementAlign::Center => rect.y + rect.height / 2.0 - oh / 2.0,
-                ElementAlign::End => rect.y + rect.height - oh,
-            };
-            (top, left)
-        }
-    }
-}
-
-/// Clamp the portal's *visual* top-left so its full measured rect
-/// stays inside the viewport with an `EDGE_GAP` gutter on every side.
-fn clamp_measured(
-    top: f32,
-    left: f32,
-    portal_size: (f32, f32),
-    viewport: (f32, f32),
-) -> (f32, f32) {
-    let (ow, oh) = portal_size;
-    let (vw, vh) = viewport;
-    let max_left = (vw - EDGE_GAP - ow).max(EDGE_GAP);
-    let max_top = (vh - EDGE_GAP - oh).max(EDGE_GAP);
-    (top.clamp(EDGE_GAP, max_top), left.clamp(EDGE_GAP, max_left))
 }
 
 /// Read the portal content's rendered `(width, height)` from the

@@ -731,20 +731,31 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustListAdapter_nativeMou
     else {
         return std::ptr::null_mut();
     };
-    let class = env
-        .find_class("io/idealyst/runtime/RustListAdapter$MountResult")
-        .unwrap();
-    let result = env
-        .new_object(
-            &class,
-            "(Landroid/view/View;J)V",
-            &[
-                JValue::Object(&view.as_obj()),
-                JValue::Long(scope_id as jlong),
-            ],
-        )
-        .unwrap();
-    result.into_raw()
+    // Build the MountResult fail-closed: `find_class`/`new_object` can
+    // fail (missing class on a stale staged runtime, or a pending JVM
+    // exception). Don't `.unwrap()` here — that panics across the JNI
+    // boundary (UB). Clear any pending exception and return null so the
+    // Kotlin side falls back gracefully, matching the keyboard/a11y
+    // exception handling elsewhere in this crate.
+    let Ok(class) = env.find_class("io/idealyst/runtime/RustListAdapter$MountResult") else {
+        let _ = env.exception_clear();
+        return std::ptr::null_mut();
+    };
+    let result = env.new_object(
+        &class,
+        "(Landroid/view/View;J)V",
+        &[
+            JValue::Object(&view.as_obj()),
+            JValue::Long(scope_id as jlong),
+        ],
+    );
+    match result {
+        Ok(obj) => obj.into_raw(),
+        Err(_) => {
+            let _ = env.exception_clear();
+            std::ptr::null_mut()
+        }
+    }
 }
 
 #[no_mangle]

@@ -244,8 +244,23 @@ where
                     };
                 }
 
-                // One reactive cycle: the success arm writes both `state`
-                // and `status`, so coalesce their fan-out. See `reactive::cycle`.
+                // One reactive cycle around the apply. This is LOAD-BEARING,
+                // not just an optimization:
+                //  - Coalescing: the success arm writes both `state` and
+                //    `status`, so their fan-out runs once.
+                //  - Re-entrancy safety: `state.update(..)` runs the user's
+                //    apply inside `with_signal_mut`'s take/run/restore window,
+                //    where `state`'s box is moved out of the arena. If apply
+                //    writes ANOTHER signal (e.g. navigates by `route.set(..)`),
+                //    a synchronous (non-batched) fan-out would re-run effects
+                //    that read `state` while its box is taken → "RefCell
+                //    already mutably borrowed". Batching defers every fan-out
+                //    until apply returns and the box is restored, so the
+                //    natural "mutate state and navigate in one reducer" pattern
+                //    just works. Removing this wrap reintroduces that panic
+                //    (see `async_reducer_apply_may_write_other_signals_*`).
+                // (Writing `state` itself re-entrantly is still unsupported —
+                // batching can't rescue the moved-out box; see `with_signal_mut`.)
                 crate::cycle(|| match result {
                     Ok(r) => {
                         state.update(|s| apply_for_task(s, r));
@@ -396,6 +411,79 @@ mod tests {
         // Status is shared too.
         assert_eq!(a.status_now(), AsyncStatus::Idle);
         assert_eq!(b.status_now(), AsyncStatus::Idle);
+    }
+
+    #[test]
+    fn async_reducer_apply_may_write_other_signals_without_reentrancy_panic() {
+        // Regression for the "navigate / set a derived signal from a reducer
+        // apply" pattern. The apply closure runs as the body of
+        // `state.update(...)`, i.e. INSIDE `with_signal_mut`'s take/run/restore
+        // window where `state`'s storage is moved out of the arena. If the
+        // apply writes ANOTHER signal (`route`) and that write fanned out
+        // synchronously, an effect subscribed to `route` that READS `state`
+        // would re-enter the arena while `state`'s box is taken — the
+        // "RefCell already mutably borrowed" panic at the signal-read path.
+        //
+        // The fix is the `crate::cycle(...)` wrap around the apply in
+        // `async_reducer`: every write during apply records into the dirty
+        // window and the fan-out flushes ONCE, after apply returns and the
+        // target box is restored. This test fails (panics) if that wrap is
+        // ever removed.
+        let state: Signal<Vec<i32>> = Signal::new(Vec::new());
+        let route: Signal<i32> = Signal::new(0);
+
+        // Effect subscribed to `route` that reads `state` — this is the
+        // subtree-rebuild that re-enters the arena on route's fan-out.
+        let observed_len = Rc::new(Cell::new(usize::MAX));
+        let observed_for_effect = observed_len.clone();
+        let _e = Effect::new(move || {
+            let _ = route.get();
+            observed_for_effect.set(state.get().len());
+        });
+        assert_eq!(observed_len.get(), 0, "effect ran once at creation");
+
+        let r: AsyncReducer<i32, &'static str> = async_reducer(
+            state,
+            |x| ImmediateOk(Some(x)),
+            move |slot, v| {
+                // The "navigate" write: a DIFFERENT signal, from inside apply.
+                route.set(1);
+                slot.push(v);
+            },
+        );
+        r.trigger(7);
+
+        assert_eq!(state.get(), vec![7], "apply mutated the target state");
+        assert_eq!(route.get(), 1, "apply's cross-signal write committed");
+        // The route-subscribed effect re-ran after the cycle flushed and
+        // observed the already-committed state (not a half-applied view).
+        assert_eq!(observed_len.get(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "re-entrant mutation of signal")]
+    fn async_reducer_apply_writing_its_own_target_panics_with_guidance() {
+        // The genuinely-unsupported case: the apply writes the SAME signal it
+        // targets (e.g. `enter_session()` calling `user.set(...)` from a
+        // reducer over `user`). `with_signal_mut` has moved that signal's box
+        // out of the arena for the duration of apply, so a re-entrant write to
+        // it cannot find its storage. `cycle`/`batch` does NOT rescue this —
+        // the take/run/restore happens regardless of batching — so it stays a
+        // hard error. We assert it panics with the actionable message rather
+        // than the opaque "RefCell already mutably borrowed", so authors are
+        // pointed at the fix (mutate only `&mut S`; do other writes from an
+        // effect).
+        let state: Signal<Vec<i32>> = Signal::new(Vec::new());
+        let r: AsyncReducer<i32, &'static str> = async_reducer(
+            state,
+            |x| ImmediateOk(Some(x)),
+            move |slot, v| {
+                slot.push(v);
+                // Re-entrant write to the target signal itself — unsupported.
+                state.set(vec![99]);
+            },
+        );
+        r.trigger(1);
     }
 
     #[test]

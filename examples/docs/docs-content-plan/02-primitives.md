@@ -48,7 +48,7 @@ ui! {
 ```
 
 Children are a flat list of primitives, laid out by the platform's
-flex engine (via [framework-runtime-layout](#) on native backends, via
+flex engine (via [runtime-layout](#) on native backends, via
 the browser on web). A View has no behavior of its own — no press
 target, no scrolling, no clipping unless its style says so.
 

@@ -19,9 +19,21 @@ use super::IosNode;
 
 /// raw_window_handle bridge for wgpu.
 struct IosSurfaceProvider {
+    /// Non-owning pointer to the backing `UIView` (a `MetalView`). The
+    /// owning `Retained<UIView>` lives on the returned `IosNode` (and is
+    /// also captured by the ready callback), which is kept alive for at
+    /// least as long as the `GraphicsSurface` built from this provider —
+    /// so the pointer never dangles while wgpu holds the surface.
     view: *mut std::ffi::c_void,
 }
 
+// SAFETY: wgpu may read the surface provider from another thread when
+// creating/recreating the surface, but all this type exposes is the raw
+// `UIView` pointer for `raw-window-handle`; it never mutates the UIView
+// or sends ObjC messages off the main thread. The pointer's validity is
+// guaranteed by the owning `Retained<UIView>` outliving the surface (see
+// the field doc above). UIKit object *construction* and mutation stay on
+// the main thread in `create_graphics`.
 unsafe impl Send for IosSurfaceProvider {}
 unsafe impl Sync for IosSurfaceProvider {}
 

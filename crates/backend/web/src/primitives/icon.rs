@@ -186,12 +186,5 @@ pub(crate) fn animate_stroke(
 }
 
 fn easing_to_css(easing: Easing) -> &'static str {
-    match easing {
-        Easing::Linear => "linear",
-        Easing::Ease => "ease",
-        Easing::EaseIn => "ease-in",
-        Easing::EaseOut => "ease-out",
-        Easing::EaseInOut => "ease-in-out",
-        Easing::CubicBezier(_, _, _, _) => "ease", // TODO: format cubic-bezier()
-    }
+    crate::style::easing_to_css(easing)
 }

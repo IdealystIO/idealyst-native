@@ -336,7 +336,7 @@ docs! {
              code("Virtualizer"), " primitive entry and the rest of the primitive list."],
             [link("Reactivity", to = "reactivity"), " — per-item scopes and the cleanup model."],
             [link("Backends", to = "backends"), " — what each backend does to implement virtualization."],
-            [link("Hot reload", to = "hot-reload"), " — what happens to mounted items when the source code changes (spoiler: identity-keyed nodes survive)."],
+            [link("Hot reload", to = "dev-tools"), " — what happens to mounted items when the source code changes (spoiler: identity-keyed nodes survive)."],
         ),
     },
 }

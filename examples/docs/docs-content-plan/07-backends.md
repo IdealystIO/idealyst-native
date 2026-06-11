@@ -214,5 +214,5 @@ gets called when. This page is intentionally just the map.
   worked example.
 - [Dev tools](#) — runtime-server in depth, the wire protocol, hot reload.
 - [Architecture in more depth](#) (on the Overview) — where
-  backends sit relative to `framework-wire`, `dev-hot`, and
-  `framework-runtime-layout`.
+  backends sit relative to `wire`, `dev-hot`, and
+  `runtime-layout`.

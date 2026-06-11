@@ -19,3 +19,7 @@ pkg-*/
 /examples/external-export-suite/consumers/react/node_modules
 node_modules/
 dist/
+# Local environment files (may contain account IDs / secrets). Commit
+# a `.env.example` with empty values instead.
+.env
+**/.env

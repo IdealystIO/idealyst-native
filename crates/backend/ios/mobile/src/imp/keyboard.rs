@@ -109,13 +109,19 @@ declare_class!(
                     let Some(ev) = (unsafe { key_event_from_press(press) }) else {
                         continue;
                     };
-                    let outcome = {
-                        let h = self.ivars().handler.borrow();
-                        match h.as_ref() {
-                            Some(handler) => handler(&ev),
-                            None => KeyOutcome::Default,
-                        }
-                    };
+                    // Guard the author key handler: pressesBegan: is an
+                    // extern "C" IMP, so a panic here would unwind into
+                    // UIKit's press routing (UB) — abort loudly instead.
+                    let outcome = crate::imp::ffi_guard::guard_ffi(
+                        "IdealystKeyResponder::pressesBegan",
+                        || {
+                            let h = self.ivars().handler.borrow();
+                            match h.as_ref() {
+                                Some(handler) => handler(&ev),
+                                None => KeyOutcome::Default,
+                            }
+                        },
+                    );
                     if matches!(outcome, KeyOutcome::PreventDefault) {
                         consumed = true;
                     }

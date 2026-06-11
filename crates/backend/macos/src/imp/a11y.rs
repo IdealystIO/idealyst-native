@@ -237,6 +237,8 @@ fn role_to_ns_accessibility_role(role: Role) -> Option<&'static NSString> {
             Role::Dialog | Role::AlertDialog => NSAccessibilityWindowRole,
             Role::Drawer => NSAccessibilityDrawerRole,
             Role::Popover | Role::Tooltip => NSAccessibilityPopoverRole,
+            // `Role` is `#[non_exhaustive]`; a future variant with no
+            // mapped NS role falls back to no role (caller writes nil).
             _ => return None,
         }
     })
@@ -266,6 +268,8 @@ fn role_to_ns_accessibility_subrole(role: Role) -> Option<&'static NSString> {
             // still announces the label, just without the "heading"
             // framing.
             Role::AlertDialog => NSAccessibilitySystemDialogSubrole,
+            // `Role` is `#[non_exhaustive]`; a future variant with no
+            // mapped subrole falls back to no subrole (caller writes nil).
             _ => return None,
         }
     })
@@ -443,4 +447,95 @@ fn sel_set_accessibility_value() -> objc2::runtime::Sel {
 }
 fn sel_set_accessibility_identifier() -> objc2::runtime::Sel {
     objc2::sel!(setAccessibilityIdentifier:)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Pure role/state-mapping coverage for the AppKit a11y translation.
+    //! Mirrors the Android a11y role-mapping tests and wgpu's
+    //! `a11y_tests` module — guards against a `Role`/`AccessibilityTraits`
+    //! variant silently losing its NSAccessibility mapping. These assert
+    //! the pure mapping helpers only (no NSView / running NSApp needed).
+    use super::*;
+    use objc2_app_kit::{
+        NSAccessibilityButtonRole, NSAccessibilityCheckBoxRole, NSAccessibilityImageRole,
+        NSAccessibilityLinkRole, NSAccessibilityStaticTextRole, NSAccessibilitySwitchSubrole,
+        NSAccessibilityTabButtonSubrole,
+    };
+
+    /// `&'static NSString` constants are stable process-lifetime pointers,
+    /// so identity comparison is the right equality for "did this role map
+    /// to that exact AppKit constant".
+    fn same(a: Option<&'static NSString>, b: &'static NSString) -> bool {
+        a.map_or(false, |a| std::ptr::eq(a, b))
+    }
+
+    #[test]
+    fn role_maps_to_expected_ns_role() {
+        assert!(same(
+            role_to_ns_accessibility_role(Role::Button),
+            unsafe { NSAccessibilityButtonRole }
+        ));
+        assert!(same(
+            role_to_ns_accessibility_role(Role::Link),
+            unsafe { NSAccessibilityLinkRole }
+        ));
+        assert!(same(
+            role_to_ns_accessibility_role(Role::Image),
+            unsafe { NSAccessibilityImageRole }
+        ));
+        assert!(same(
+            role_to_ns_accessibility_role(Role::Text),
+            unsafe { NSAccessibilityStaticTextRole }
+        ));
+        // Switch and Header both ride a base role + a subrole (below).
+        assert!(same(
+            role_to_ns_accessibility_role(Role::Switch),
+            unsafe { NSAccessibilityCheckBoxRole }
+        ));
+        assert!(same(
+            role_to_ns_accessibility_role(Role::Header),
+            unsafe { NSAccessibilityStaticTextRole }
+        ));
+    }
+
+    #[test]
+    fn subrole_only_set_for_flavored_roles() {
+        // Switch / Tab need a subrole on top of their base role.
+        assert!(same(
+            role_to_ns_accessibility_subrole(Role::Switch),
+            unsafe { NSAccessibilitySwitchSubrole }
+        ));
+        assert!(same(
+            role_to_ns_accessibility_subrole(Role::Tab),
+            unsafe { NSAccessibilityTabButtonSubrole }
+        ));
+        // A plain role needs no subrole — caller writes nil.
+        assert!(role_to_ns_accessibility_subrole(Role::Button).is_none());
+        assert!(role_to_ns_accessibility_subrole(Role::Text).is_none());
+    }
+
+    #[test]
+    fn accessibility_value_reflects_state_traits() {
+        assert_eq!(
+            derive_accessibility_value(AccessibilityTraits::CHECKED),
+            Some("1")
+        );
+        assert_eq!(
+            derive_accessibility_value(AccessibilityTraits::EXPANDED),
+            Some("expanded")
+        );
+        assert_eq!(
+            derive_accessibility_value(AccessibilityTraits::COLLAPSED),
+            Some("collapsed")
+        );
+        assert_eq!(derive_accessibility_value(AccessibilityTraits::empty()), None);
+        // MIXED wins over CHECKED (the precedence in the helper).
+        assert_eq!(
+            derive_accessibility_value(
+                AccessibilityTraits::MIXED | AccessibilityTraits::CHECKED
+            ),
+            Some("mixed")
+        );
+    }
 }

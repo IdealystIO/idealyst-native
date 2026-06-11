@@ -109,7 +109,10 @@ pub enum ColorScheme {
 /// menu-bar items on `MacOs`.
 ///
 /// Whether the backend is a simulator/emulator rather than a real
-/// device is orthogonal — query [`Backend::is_simulator`] for that.
+/// device is deliberately *not* a public predicate — "sim vs device"
+/// has no consistent cross-backend meaning. A backend that wants to
+/// surface it folds it into its `Platform` identity instead (e.g.
+/// `Custom("Sim")`), so author code reads one thing.
 ///
 /// `Custom("")` is the trait default — "backend hasn't declared an
 /// identity at all" (test mocks, early stubs). Author code should

@@ -27,6 +27,9 @@ use jni::JNIEnv;
 /// the view is left with its constructor-default LayoutParams. The
 /// affected view will still mount; it may render at the wrong size
 /// until the layout pass corrects it.
+///
+/// Caller must invoke this on the Android main/UI thread — it mutates a
+/// `View`. Off-main mutation raises `CalledFromWrongThreadException`.
 pub fn apply_default_layout_params(env: &mut JNIEnv, view: &JObject) {
     // `MarginLayoutParams`, not the bare `ViewGroup.LayoutParams`,
     // because `ScrollView.measureChildWithMargins` (and every other
@@ -69,6 +72,9 @@ pub fn apply_default_layout_params(env: &mut JNIEnv, view: &JObject) {
 /// exception, OOM allocating the Java String, Java-side method throw)
 /// are logged and the call is a no-op — the text widget stays at its
 /// previous content. Never panics across the JNI boundary.
+///
+/// Caller must invoke this on the Android main/UI thread — it mutates a
+/// `View`.
 pub fn set_text(env: &mut JNIEnv, view: &JObject, content: &str) {
     let java_str = match env.new_string(content) {
         Ok(s) => s,

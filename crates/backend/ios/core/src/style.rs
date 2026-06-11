@@ -76,7 +76,26 @@ pub fn animate(transition: &runtime_core::Transition, changes: Rc<dyn Fn()>) {
     let duration = transition.duration_ms as CGFloat / 1000.0;
     let options = easing_to_options(&transition.easing);
     let block = ConcreteBlock::new(move || {
-        changes();
+        // `changes` is author/style-supplied work that runs synchronously
+        // inside `+[UIView animateWithDuration:…animations:]` — an ObjC
+        // frame. A panic propagating out of this block is UB on the FFI
+        // boundary. catch_unwind + abort (crash-loud, mirroring
+        // `render_loop.rs`) so the panic surfaces at its real site
+        // instead of corrupting the UIKit animation machinery.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            changes();
+        }));
+        if let Err(payload) = result {
+            let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+                (*s).to_string()
+            } else {
+                "<non-string panic payload>".to_string()
+            };
+            eprintln!("[backend-ios-core] panic in UIView animation block: {msg}");
+            std::process::abort();
+        }
     });
     let block = block.copy();
     let nil: *const NSObject = std::ptr::null();
@@ -1074,8 +1093,17 @@ fn install_border_side(
     _parent_bounds: CGRect,
 ) {
     let _t = phase_record::scope("install_border_side");
-    // apply_style runs on the main thread per framework contract.
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    // This creates a UIView and mutates the view hierarchy — both are
+    // main-thread-only. apply_style runs on the main thread per the
+    // framework contract, but *verify* it (`new()` returns the marker
+    // only when actually on the main thread) instead of fabricating one
+    // with `new_unchecked`: a future off-main caller then fails loudly
+    // (and skips the border) rather than risking UB.
+    let Some(mtm) = MainThreadMarker::new() else {
+        debug_assert!(false, "install_border_side called off the main thread");
+        eprintln!("[backend-ios-core] install_border_side off main thread; skipping border");
+        return;
+    };
     let bar = unsafe { UIView::new(mtm) };
     let ui_color = color_to_uicolor(color);
     bar.setBackgroundColor(Some(&ui_color));

@@ -412,6 +412,29 @@ pub struct IconSearchRequest {
     pub limit: Option<usize>,
 }
 
+/// Args for `lint_project` — run the idealyst source linter over a
+/// project's un-expanded Rust source.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct LintRequest {
+    /// File or directory to lint (walked recursively, skipping
+    /// `target/`, `.git/`, `node_modules/`). Relative paths resolve
+    /// against the server's working directory. Omit to lint the live
+    /// app's project root when exactly one app is running, else the
+    /// current directory.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Treat warnings as failures: when true, the result's `failed`
+    /// flag is set if any warning fires (CI strict mode), not only on
+    /// errors / parse failures. Default false.
+    #[serde(default)]
+    pub deny_warnings: Option<bool>,
+    /// Max diagnostics to return in the `diagnostics` array. The summary
+    /// counts (`error_count`, `warn_count`, `total_diagnostics`) always
+    /// reflect the full run. Default 200, capped at 1000.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 #[tool_router]
 impl CatalogService {
     /// Default constructor: Robot discovery on (scans
@@ -1907,6 +1930,107 @@ impl CatalogService {
             serde_json::to_string_pretty(&json).unwrap(),
         )]))
     }
+
+    #[tool(description = "Run the idealyst source linter over a project and return its findings as JSON. Same engine and rules as the `idealyst lint` CLI: it flags idiom drift in un-expanded Rust source — raw reactive primitives that should be macros (`Signal::new`→`signal!`, `Effect::new`→`effect!`, `memo(…)`→`memo!`), hand-built elements instead of `ui!`/`jsx!` (`builder::…`, `BuildElement::build`, `Element::Variant {…}`), and non-PascalCase `#[component]` functions. Respects `idealyst-lint.toml` (rule levels) and inline `// idealyst-lint-disable` directives discovered from the target path. Pass `path` to lint a specific file/dir; omit it to lint the single live app's project root, else the server's working directory. Returns { path, files_scanned, error_count, warn_count, total_diagnostics, failed, truncated, parse_errors, diagnostics[] } where each diagnostic is { rule, severity, message, help, file, line, column, end_line, end_column, source_line }.")]
+    async fn lint_project(
+        &self,
+        Parameters(req): Parameters<LintRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        use std::path::PathBuf;
+
+        // Resolve the target. Explicit `path` wins; otherwise lint the
+        // single live app's project root, falling back to the server's
+        // working directory (mirrors the CLI's `.` default).
+        let path: PathBuf = match req.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(p) => PathBuf::from(p),
+            None => {
+                let live = self.discovery.snapshot();
+                if live.len() == 1 {
+                    live[0]
+                        .project_root
+                        .as_deref()
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from("."))
+                } else {
+                    PathBuf::from(".")
+                }
+            }
+        };
+
+        if !path.exists() {
+            return Err(McpError::invalid_params(
+                format!("lint path {:?} does not exist", path.display()),
+                None,
+            ));
+        }
+
+        let deny_warnings = req.deny_warnings.unwrap_or(false);
+        let limit = req.limit.unwrap_or(200).min(1000);
+
+        // The lint engine is synchronous and walks the filesystem; keep it
+        // off the async reactor.
+        let path_for_task = path.clone();
+        let run = tokio::task::spawn_blocking(move || {
+            // Discover `idealyst-lint.toml` from the target, else defaults.
+            let config = lint::Config::discover(&path_for_task)
+                .map(|loaded| loaded.config)
+                .unwrap_or_default();
+            lint::lint_path(&path_for_task, &config)
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("lint task panicked: {e}"), None))?;
+
+        let error_count = run.error_count();
+        let warn_count = run.warn_count();
+        let failed = run.failed() || (deny_warnings && warn_count > 0);
+        let total = run.diagnostics.len();
+
+        let diagnostics: Vec<serde_json::Value> = run
+            .diagnostics
+            .iter()
+            .take(limit)
+            .map(|d| {
+                let severity = match d.severity {
+                    lint::Severity::Warn => "warn",
+                    lint::Severity::Error => "error",
+                };
+                json!({
+                    "rule": d.rule,
+                    "severity": severity,
+                    "message": d.message,
+                    "help": d.help,
+                    "file": d.file.display().to_string(),
+                    "line": d.line_start,
+                    "column": d.col_start,
+                    "end_line": d.line_end,
+                    "end_column": d.col_end,
+                    "source_line": d.source_line,
+                })
+            })
+            .collect();
+
+        let parse_errors: Vec<serde_json::Value> = run
+            .parse_errors
+            .iter()
+            .map(|(p, err)| json!({ "file": p.display().to_string(), "error": err }))
+            .collect();
+
+        let result = json!({
+            "path": path.display().to_string(),
+            "files_scanned": run.files_scanned,
+            "error_count": error_count,
+            "warn_count": warn_count,
+            "total_diagnostics": total,
+            "failed": failed,
+            "truncated": total > diagnostics.len(),
+            "parse_errors": parse_errors,
+            "diagnostics": diagnostics,
+        });
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&result).unwrap(),
+        )]))
+    }
 }
 
 /// Which of `terms` appear (case-insensitively) in any of `fields` or in
@@ -3159,5 +3283,61 @@ mod tests {
             .unwrap();
         let cv: serde_json::Value = serde_json::from_str(&text(&dc)).unwrap();
         assert_eq!(cv["scope"], "auth", "got {cv}");
+    }
+
+    /// `lint_project` runs the source linter and surfaces idiom-drift
+    /// findings as structured JSON: a non-PascalCase `#[component]`
+    /// (error) and a raw `Signal::new` (warn) in one file must both
+    /// appear, and the error must flip the run's `failed` flag.
+    #[tokio::test]
+    async fn lint_project_reports_idiom_drift() {
+        use std::io::Write;
+
+        // A unique temp dir so concurrent test runs don't collide.
+        let dir = std::env::temp_dir()
+            .join(format!("idealyst-lint-tool-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.rs");
+        {
+            let mut f = std::fs::File::create(&file).unwrap();
+            // `icon_button` → component-pascal-case (error);
+            // `Signal::new(0)` → prefer-signal-macro (warn).
+            write!(
+                f,
+                "#[component]\nfn icon_button() -> Element {{\n    let s = Signal::new(0);\n    todo!()\n}}\n"
+            )
+            .unwrap();
+        }
+
+        let svc = CatalogService::new();
+        let result = svc
+            .lint_project(Parameters(LintRequest {
+                path: Some(file.display().to_string()),
+                ..Default::default()
+            }))
+            .await
+            .expect("lint_project tool call succeeds");
+
+        let v: serde_json::Value = serde_json::from_str(&text(&result)).unwrap();
+        let rules: Vec<String> = v["diagnostics"]
+            .as_array()
+            .expect("diagnostics array")
+            .iter()
+            .filter_map(|d| d["rule"].as_str().map(str::to_string))
+            .collect();
+
+        assert!(
+            rules.contains(&"component-pascal-case".to_string()),
+            "expected component-pascal-case; got {rules:?}"
+        );
+        assert!(
+            rules.contains(&"prefer-signal-macro".to_string()),
+            "expected prefer-signal-macro; got {rules:?}"
+        );
+        assert_eq!(v["files_scanned"], 1);
+        assert!(v["error_count"].as_u64().unwrap() >= 1, "got {v}");
+        assert_eq!(v["failed"], true, "an error-level diagnostic must fail the run");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

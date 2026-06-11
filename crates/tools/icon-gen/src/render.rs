@@ -304,6 +304,23 @@ fn paint_background(canvas: &mut Pixmap, bg: &Background, size: u32) -> Result<(
                 paint.shader = shader;
             }
         },
+        Background::Image(path) => {
+            // Rasterize the backdrop image (SVG/PNG/JPEG) to fill the canvas,
+            // then draw it in — reusing the same loader/rasterizer as the
+            // foreground. A square source fills exactly; non-square is
+            // uniformly scaled + centered.
+            let src = load_standalone(path)?;
+            let bg_pixmap = rasterize_standalone(&src, size)?;
+            canvas.draw_pixmap(
+                0,
+                0,
+                bg_pixmap.as_ref(),
+                &resvg::tiny_skia::PixmapPaint::default(),
+                Transform::identity(),
+                None,
+            );
+            return Ok(());
+        }
     }
     canvas.fill_rect(rect, &paint, Transform::identity(), None);
     Ok(())

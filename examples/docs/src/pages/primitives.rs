@@ -66,7 +66,7 @@ docs! {
             }
         "##),
         p("Children are a flat list of primitives, laid out by the platform's \
-           flex engine (via framework-runtime-layout on native backends, via the \
+           flex engine (via runtime-layout on native backends, via the \
            browser on web). A View has no behavior of its own — no press target, \
            no scrolling, no clipping unless its style says so."),
         p("Optional ", code("safe_area_sides"), " opts the view into per-side \
@@ -192,7 +192,7 @@ docs! {
         code(rust, r##"
             ui! {
                 view {
-                    { webview::web_view(webview::WebViewProps {
+                    { webview::WebView(webview::WebViewProps {
                         url: webview::url("https://example.com"),
                         ..Default::default()
                     }) }

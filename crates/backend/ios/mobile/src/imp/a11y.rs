@@ -457,3 +457,54 @@ fn sel_set_accessibility_value() -> objc2::runtime::Sel {
 fn sel_set_accessibility_identifier() -> objc2::runtime::Sel {
     objc2::sel!(setAccessibilityIdentifier:)
 }
+
+#[cfg(test)]
+mod tests {
+    //! Pure trait/state-mapping coverage. Mirrors the macOS/web/Android
+    //! a11y role tests — guards a `Role`/`AccessibilityTraits` variant
+    //! silently losing its UIKit mapping. These helpers touch no UIKit,
+    //! but the crate only links against iOS, so this runs under an iOS
+    //! test runner (sim/device), not host `cargo test`.
+    use super::*;
+
+    #[test]
+    fn role_maps_to_expected_trait_bits() {
+        // Bit positions are the documented UIAccessibilityTrait* values.
+        assert_eq!(role_to_traits_bits(Role::Button), 1 << 0);
+        assert_eq!(role_to_traits_bits(Role::Link), 1 << 1);
+        assert_eq!(role_to_traits_bits(Role::Image), 1 << 2);
+        assert_eq!(role_to_traits_bits(Role::Slider), 1 << 4); // adjustable
+        assert_eq!(role_to_traits_bits(Role::Header), 1 << 28);
+        assert_eq!(role_to_traits_bits(Role::Switch), 1 << 37); // toggle button
+        // Roles with no first-class UIKit trait map to 0.
+        assert_eq!(role_to_traits_bits(Role::Group), 0);
+    }
+
+    #[test]
+    fn forces_accessibility_element_for_focusable_roles() {
+        assert!(role_forces_accessibility_element(Role::Button));
+        assert!(role_forces_accessibility_element(Role::Slider));
+        assert!(!role_forces_accessibility_element(Role::Group));
+        assert!(!role_forces_accessibility_element(Role::Text));
+    }
+
+    #[test]
+    fn accessibility_value_reflects_state_traits() {
+        assert_eq!(
+            derive_accessibility_value(AccessibilityTraits::CHECKED),
+            Some("1")
+        );
+        assert_eq!(
+            derive_accessibility_value(AccessibilityTraits::EXPANDED),
+            Some("expanded")
+        );
+        assert_eq!(derive_accessibility_value(AccessibilityTraits::empty()), None);
+        // MIXED wins over CHECKED (the precedence in the helper).
+        assert_eq!(
+            derive_accessibility_value(
+                AccessibilityTraits::MIXED | AccessibilityTraits::CHECKED
+            ),
+            Some("mixed")
+        );
+    }
+}

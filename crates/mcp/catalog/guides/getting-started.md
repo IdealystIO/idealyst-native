@@ -49,7 +49,7 @@ Beyond the UI core, capabilities like networking, persistence, and a full compon
 The MCP server (running automatically when you launch the project in Claude Code) exposes the entire framework surface:
 
 - `list_primitives` → every framework primitive
-- `list_utilities` → free helpers like [[platform]], [[parse_color]], [[now_micros]]
+- `list_utilities` → free helpers like [[platform]], [[parse]], [[now_micros]]
 - `list_states` → interaction state names you can use in `stylesheet!`
 - `list_guides` → these documents
 - `describe_*` for any individual entry

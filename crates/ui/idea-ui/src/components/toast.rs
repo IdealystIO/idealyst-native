@@ -60,8 +60,14 @@ pub struct ToastEntry {
     /// Surface skeleton (Filled/Soft/…) for the surface styling.
     pub variant: VariantRef,
     /// Flips to `true` when the toast begins its exit animation. The
-    /// card's `presence` reads it via `present()`.
-    pub leaving: Signal<bool>,
+    /// card's `presence` reads it by looking the entry up in the queue.
+    ///
+    /// This is a plain `bool` carried inside the queue's `Signal<Vec<_>>`
+    /// — NOT a per-entry `Signal` — so it costs no arena slot and is
+    /// reclaimed with the entry when [`remove_toast`] drops it. (A
+    /// per-toast `unscope`d signal would leak one arena slot per toast
+    /// shown, since there is no public `Signal::dispose` reachable here.)
+    pub leaving: bool,
 }
 
 impl Default for ToastEntry {
@@ -71,7 +77,7 @@ impl Default for ToastEntry {
             message: String::new(),
             tone: ToneRef::default(),
             variant: VariantRef::default(),
-            leaving: Signal::default(),
+            leaving: false,
         }
     }
 }
@@ -114,13 +120,12 @@ pub fn push_toast_with(
     variant: impl Into<VariantRef>,
 ) -> u64 {
     let id = next_id();
-    let leaving = unscope(|| Signal::new(false));
     let entry = ToastEntry {
         id,
         message: message.into(),
         tone: tone.into(),
         variant: variant.into(),
-        leaving,
+        leaving: false,
     };
     queue().update(|v| v.push(entry));
 
@@ -128,7 +133,7 @@ pub fn push_toast_with(
     // animation completes. These are imperative, off-scope timers (push
     // is called from anywhere, not inside a component body), so they're
     // detached: the runtime owns them, they fire once, then sweep away.
-    after_ms_detached(TOAST_SHOW_MS, move || leaving.set(true));
+    after_ms_detached(TOAST_SHOW_MS, move || begin_leaving(id));
     after_ms_detached(TOAST_SHOW_MS + TOAST_ANIM_MS as i32, move || remove_toast(id));
     id
 }
@@ -136,16 +141,20 @@ pub fn push_toast_with(
 /// Begin dismissing a toast immediately (e.g. on a close click). The
 /// card animates out, then removes itself.
 pub fn dismiss_toast(id: u64) {
-    // `leaving` inside the cloned entries is the same `Signal` (Copy),
-    // so flipping it here drives the real card's exit.
-    let mut found = false;
-    if let Some(e) = queue().get().iter().find(|e| e.id == id) {
-        e.leaving.set(true);
-        found = true;
-    }
-    if found {
+    if queue().get().iter().any(|e| e.id == id) {
+        begin_leaving(id);
         after_ms_detached(TOAST_ANIM_MS as i32, move || remove_toast(id));
     }
+}
+
+/// Flip an entry's `leaving` flag through the queue signal so every
+/// `ToastCard` reading the queue re-evaluates its `present()`.
+fn begin_leaving(id: u64) {
+    queue().update(|v| {
+        if let Some(e) = v.iter_mut().find(|e| e.id == id) {
+            e.leaving = true;
+        }
+    });
 }
 
 fn remove_toast(id: u64) {
@@ -177,7 +186,7 @@ impl Default for ToastCardProps {
 #[component]
 pub fn ToastCard(props: &ToastCardProps) -> Element {
     let entry = props.entry.clone();
-    let leaving = entry.leaving;
+    let id = entry.id;
     let appearance = format!("{}_{}", entry.tone.key(), entry.variant.key());
     let message = entry.message;
 
@@ -194,7 +203,15 @@ pub fn ToastCard(props: &ToastCardProps) -> Element {
     };
 
     presence(surface)
-        .present(move || !leaving.get())
+        // Reactively read this entry's `leaving` flag from the queue. If
+        // the entry is already gone, it's leaving (present = false).
+        .present(move || {
+            queue()
+                .get()
+                .iter()
+                .find(|e| e.id == id)
+                .map_or(false, |e| !e.leaving)
+        })
         .enter(PresenceAnim::new(
             PresenceState::default().opacity(0.0).translate_y(-TOAST_SLIDE_PX),
             TOAST_ANIM_MS,
@@ -264,4 +281,36 @@ pub fn ToastHost(props: &ToastHostProps) -> Element {
         .backdrop(BackdropMode::None)
         .trap_focus(false)
         .into_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_core::arena_stats;
+
+    /// Regression: a toast must not leak an arena signal slot. Previously
+    /// each toast stored a per-entry `unscope`d `Signal<bool>` that was
+    /// never disposed (no public `Signal::dispose` exists), so every toast
+    /// shown permanently consumed one slot. The `leaving` flag now rides as
+    /// a plain `bool` inside the queue's `Signal<Vec<_>>`.
+    #[test]
+    fn pushing_toasts_does_not_leak_signal_slots() {
+        // Materialize the one global queue signal so it's part of the
+        // baseline (it persists for the process — that's expected).
+        let _ = queue();
+        let baseline = arena_stats().signals_in_use;
+
+        // With no scheduler installed (unit test), `after_ms` runs its
+        // synchronous fallback, so each push fully cycles inline
+        // (push → begin_leaving → remove). 64 toasts come and go.
+        for i in 0..64 {
+            push_toast_with(format!("toast {i}"), ToneRef::default(), VariantRef::default());
+        }
+
+        assert_eq!(
+            arena_stats().signals_in_use,
+            baseline,
+            "toasts must not leak signal slots"
+        );
+    }
 }

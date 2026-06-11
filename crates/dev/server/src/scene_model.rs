@@ -129,6 +129,18 @@ pub struct SceneModel {
     /// (the opt-in is idempotent and resolved client-side). See
     /// `project_aas_state_snapshot`.
     node_safe_area: HashMap<NodeId, Command>,
+    /// Latest host-surface background (`SetAppBackground`), scrollbar theme
+    /// (`SetScrollbarTheme`), and page metadata (`SetPageMetadata`) — each
+    /// single-latest (the theme SDK re-emits on swap). Replayed in the
+    /// snapshot so a late-joining client themes its host surface / scrollbar
+    /// and sets its document title instead of leaving them at the default.
+    host_background: Option<Command>,
+    scrollbar_theme: Option<Command>,
+    page_metadata: Option<Command>,
+    /// Registered raw CSS sheets (`RegisterRawCss`) in registration order,
+    /// deduped by content (navigator chrome registers the same layout sheet
+    /// on every navigator).
+    raw_css: Vec<String>,
 }
 
 /// One entry in a navigator's mounted-screen stack.
@@ -578,6 +590,25 @@ impl SceneModel {
             // data-changed is skipped (a fresh client doesn't need to
             // re-hear past announcements).
             Command::AnnounceForAccessibility { .. } => {}
+
+            // -- Host surface / document chrome. Single-latest each (the
+            //    theme SDK re-emits on swap); raw CSS accumulates, deduped
+            //    by content. Replayed in the snapshot so a fresh client
+            //    themes its host surface and sets its document metadata.
+            Command::SetAppBackground { .. } => {
+                self.host_background = Some(cmd.clone());
+            }
+            Command::SetScrollbarTheme { .. } => {
+                self.scrollbar_theme = Some(cmd.clone());
+            }
+            Command::SetPageMetadata { .. } => {
+                self.page_metadata = Some(cmd.clone());
+            }
+            Command::RegisterRawCss { css } => {
+                if !self.raw_css.iter().any(|existing| existing == css) {
+                    self.raw_css.push(css.clone());
+                }
+            }
         }
     }
 
@@ -665,6 +696,23 @@ impl SceneModel {
         // panics on the first device-side token resolve → blank screen.
         if let Some(tokens) = &self.theme_tokens {
             out.push(tokens.clone());
+        }
+
+        // Host surface / document chrome — independent of the node tree, so
+        // emit early. A late-joining client themes its host surface and
+        // scrollbar, sets its document metadata, and registers any raw CSS
+        // before the tree replays, instead of leaving them at the default.
+        if let Some(bg) = &self.host_background {
+            out.push(bg.clone());
+        }
+        if let Some(scrollbar) = &self.scrollbar_theme {
+            out.push(scrollbar.clone());
+        }
+        if let Some(meta) = &self.page_metadata {
+            out.push(meta.clone());
+        }
+        for css in &self.raw_css {
+            out.push(Command::RegisterRawCss { css: css.clone() });
         }
 
         // 0. Assets, then typefaces. Snapshot order matters: each
@@ -1180,5 +1228,47 @@ mod tests {
             .filter(|c| matches!(c, Command::RegisterStyle { id, .. } if *id == wire::StyleId(42)))
             .collect();
         assert_eq!(regs.len(), 1, "exactly one RegisterStyle(42) in the snapshot");
+    }
+
+    #[test]
+    fn host_chrome_persists_in_snapshot() {
+        let mut model = SceneModel::new();
+        model.apply(&Command::SetAppBackground {
+            color: wire::WireColor("#0b0d10".into()),
+        });
+        model.apply(&Command::SetScrollbarTheme {
+            thumb: wire::WireColor("#888".into()),
+            track: wire::WireColor("#222".into()),
+        });
+        model.apply(&Command::SetPageMetadata {
+            meta: wire::WirePageMetadata {
+                title: Some("Docs".into()),
+                ..Default::default()
+            },
+        });
+        // The same sheet registered twice (navigator chrome on two
+        // navigators) must dedupe to a single entry in the snapshot.
+        model.apply(&Command::RegisterRawCss {
+            css: ".nav{display:flex}".into(),
+        });
+        model.apply(&Command::RegisterRawCss {
+            css: ".nav{display:flex}".into(),
+        });
+
+        let snap = model.snapshot_commands();
+        assert!(
+            snap.iter().any(|c| matches!(c, Command::SetAppBackground { color } if color.0 == "#0b0d10")),
+            "host background must replay in the snapshot",
+        );
+        assert!(snap.iter().any(|c| matches!(c, Command::SetScrollbarTheme { .. })));
+        assert!(
+            snap.iter().any(|c| matches!(c, Command::SetPageMetadata { meta } if meta.title.as_deref() == Some("Docs"))),
+            "page metadata must replay in the snapshot",
+        );
+        let css_count = snap
+            .iter()
+            .filter(|c| matches!(c, Command::RegisterRawCss { .. }))
+            .count();
+        assert_eq!(css_count, 1, "duplicate raw CSS must dedupe in the snapshot");
     }
 }

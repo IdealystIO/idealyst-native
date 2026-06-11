@@ -1185,6 +1185,37 @@ impl<T: Clone + 'static> Signal<T> {
         // stale *write*, which `set`/`update` below turn into no-ops.
         let value = with_signal::<T, _>(sid, self.gen, |inner| inner.value.clone())
             .unwrap_or_else(|| {
+                // `with_signal` returns `None` for two distinct situations
+                // that need different diagnostics:
+                //  - generation MISMATCH: the slot was freed (scope unmounted,
+                //    `signal_gen` bumped) and possibly recycled — a genuine
+                //    use-after-scope.
+                //  - generation MATCHES but the slot is momentarily empty: the
+                //    signal's box has been moved out of the arena by an
+                //    in-progress `set`/`update` (or `async_reducer`/`reducer`
+                //    apply) on THIS same signal, and we're reading it
+                //    re-entrantly from inside that window — typically an effect
+                //    woken by a synchronous fan-out the mutation kicked off.
+                //    The slot isn't dropped, it's *taken* (a freed slot would
+                //    have failed the generation check), so the "scope dropped"
+                //    message would point authors at the wrong bug.
+                let gen_still_live = ARENA.with(|a| {
+                    a.borrow().signal_gen.get(sid.0 as usize).copied() == Some(self.gen)
+                });
+                if gen_still_live {
+                    panic!(
+                        "signal {:?} read re-entrantly while it was \
+                         mid-mutation: its storage is moved out of the arena \
+                         for the duration of its own `set`/`update`/reducer- \
+                         apply closure, so a read reaching it from inside that \
+                         window (e.g. an effect woken by a write the closure \
+                         performed) finds it empty. Wrap the writes in \
+                         `batch`/`cycle` so the fan-out defers until the \
+                         closure returns, or move the dependent write into a \
+                         separate `effect!`.",
+                        sid
+                    )
+                }
                 panic!("signal used after its scope was dropped (id {:?})", sid)
             });
         // Record subscription if an effect is currently running. The
@@ -1740,7 +1771,24 @@ fn with_signal_mut<T: 'static, R>(
             .get_mut(id.0 as usize)
             .and_then(|o| o.take())
             .unwrap_or_else(|| {
-                panic!("re-entrant mutation of signal {:?} inside its own update", id)
+                // Actionable diagnostic for the one genuinely-unsupported
+                // re-entrancy case. Without this the read of the taken slot
+                // surfaces downstream as the opaque "RefCell already mutably
+                // borrowed", which gives no hint that a `set`/`update`/reducer
+                // apply touching its own signal is the culprit. `batch`/`cycle`
+                // can't rescue this — the box is moved out regardless of
+                // batching — so the fix is to restructure, not to wrap.
+                panic!(
+                    "re-entrant mutation of signal {:?}: it was written from \
+                     inside its own `set`/`update` closure (or an \
+                     `async_reducer`/`reducer` apply that targets this same \
+                     signal). The signal's storage is moved out of the arena \
+                     for the duration of the closure, so it cannot be touched \
+                     re-entrantly. Fix: mutate only the `&mut` value the \
+                     closure is given; perform any other write to THIS signal \
+                     from a separate `effect!` that reacts to it.",
+                    id
+                )
             })
     });
     let inner = boxed
@@ -2967,6 +3015,33 @@ mod tests {
     fn batch_returns_inner_result() {
         let value = batch(|| 42);
         assert_eq!(value, 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "read re-entrantly while it was mid-mutation")]
+    fn read_during_own_mutation_reports_reentrancy_not_scope_drop() {
+        // A non-batched `update` whose closure writes ANOTHER signal whose
+        // synchronous fan-out wakes an effect that reads the target while the
+        // target's box is moved out. `with_signal` returns `None` (slot taken,
+        // generation still matches), and `get()` must report the re-entrancy —
+        // NOT the misleading "signal used after its scope was dropped", which
+        // is the genuinely-freed (generation-mismatch) case. This is the same
+        // re-entrancy class the `async_reducer` `cycle` wrap defers; here it's
+        // reached through a plain unbatched `update` to show the diagnostic
+        // fires regardless of the trigger.
+        let a = Signal::new(0i32);
+        let b = Signal::new(0i32);
+        // Effect subscribed to `b` that reads `a`.
+        let _e = Effect::new(move || {
+            let _ = b.get();
+            let _ = a.get();
+        });
+        // `a`'s box is taken for this closure; `b.set(1)` fans out
+        // synchronously (no batch) and wakes the effect, which reads `a`.
+        a.update(|x| {
+            *x += 1;
+            b.set(1);
+        });
     }
 
     // -----------------------------------------------------------------

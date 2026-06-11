@@ -1059,23 +1059,20 @@ pub(crate) fn style_color_rgba(color: &Color) -> [f32; 4] {
     [r as f32, g as f32, b as f32, a as f32]
 }
 
-/// Well-known theme token for body text color. The framework theme crate
-/// (`idea-theme`) installs `color-text` in every variant's token table
-/// (`#1a1a1f` light / `#e8eaf0` dark), and idea-ui's `Typography` resolves the
-/// same token for its `color`. Using this name here means an UNSTYLED `text()`
+/// Well-known theme token for body text color — sourced from the shared
+/// framework decision (`runtime_core::text_defaults`) so macOS stays
+/// byte-identical with web/iOS/Android (CLAUDE.md §7). An UNSTYLED `text()`
 /// resolves to the *theme's* text color through the identical
-/// `Tokenized<Color>::resolve()` path a styled token goes through — uniform with
-/// web/iOS/Android, NOT the OS system label color.
-pub(crate) const THEME_TEXT_TOKEN: &str = "color-text";
+/// `Tokenized<Color>::resolve()` path a styled token goes through, NOT the
+/// OS system label color.
+pub(crate) const THEME_TEXT_TOKEN: &str = runtime_core::THEME_TEXT_COLOR_TOKEN;
 
-/// Fallback used when the `color-text` token isn't installed yet (theme not
-/// installed, or an external placeholder rendered before mount). It is the
-/// framework light theme's text color — a near-black that's legible on the
-/// default light surface. CRUCIAL that this is a real dark color and NOT a
-/// system-appearance color: the whole point of defaulting raw `text()` to the
-/// theme is that a light-theme app must not render white text just because the
-/// user's macOS is in dark mode.
-const THEME_TEXT_FALLBACK: &str = "#1a1a1f";
+/// Fallback when the `color-text` token isn't installed yet — the framework
+/// light theme's text color, a concrete dark value (never a
+/// system-appearance color, or a light-theme app would render white text in
+/// macOS dark mode). Sourced from `runtime_core::text_defaults` so all
+/// backends share one value.
+const THEME_TEXT_FALLBACK: &str = runtime_core::THEME_TEXT_COLOR_FALLBACK;
 
 /// Resolve the editable text control's effective BACKGROUND `Color` through the
 /// shared, host-tested `backend_apple_core::text_control_style` decision and the

@@ -51,7 +51,7 @@ stylesheet! {
             background_color: theme.colors.primary,
         }
         state pressed(theme) {
-            background_color: darken(theme.colors.primary, 0.1),
+            background_color: "#0a53be", // a darker primary for the pressed state
         }
     }
 }

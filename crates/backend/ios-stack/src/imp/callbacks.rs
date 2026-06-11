@@ -5,6 +5,22 @@ use objc2_ui_kit::UIView;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Panic firewall for the ObjC action-target IMPs below. `declare_class!`
+/// lowers each `#[method]` to a plain `extern "C"` IMP, so a panic in an
+/// author callback would unwind into UIKit's dispatch frame — UB. Catch
+/// the unwind, log, and abort (project policy: crash-loud).
+fn guard_ffi(label: &'static str, f: impl FnOnce()) {
+    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        let msg = payload
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| payload.downcast_ref::<&'static str>().copied())
+            .unwrap_or("<non-string panic payload>");
+        eprintln!("[backend-ios-stack] panic crossing ObjC boundary in {label}: {msg}");
+        std::process::abort();
+    }
+}
+
 // =========================================================================
 // CallbackTarget — ObjC action target that calls a Rust closure
 // =========================================================================
@@ -29,10 +45,12 @@ declare_class!(
     unsafe impl CallbackTarget {
         #[method(invoke)]
         fn invoke(&self) {
-            let ivars = self.ivars();
-            if let Some(cb) = ivars.callback.borrow().as_ref() {
-                cb();
-            }
+            guard_ffi("CallbackTarget::invoke", || {
+                let ivars = self.ivars();
+                if let Some(cb) = ivars.callback.borrow().as_ref() {
+                    cb();
+                }
+            });
         }
     }
 );
@@ -71,11 +89,13 @@ declare_class!(
     unsafe impl BoolCallbackTarget {
         #[method(invoke:)]
         fn invoke(&self, sender: &NSObject) {
-            let ivars = self.ivars();
-            if let Some(cb) = ivars.callback.borrow().as_ref() {
-                let is_on: bool = unsafe { msg_send![sender, isOn] };
-                cb(is_on);
-            }
+            guard_ffi("BoolCallbackTarget::invoke", || {
+                let ivars = self.ivars();
+                if let Some(cb) = ivars.callback.borrow().as_ref() {
+                    let is_on: bool = unsafe { msg_send![sender, isOn] };
+                    cb(is_on);
+                }
+            });
         }
     }
 );
@@ -114,11 +134,13 @@ declare_class!(
     unsafe impl FloatCallbackTarget {
         #[method(invoke:)]
         fn invoke(&self, sender: &NSObject) {
-            let ivars = self.ivars();
-            if let Some(cb) = ivars.callback.borrow().as_ref() {
-                let value: f32 = unsafe { msg_send![sender, value] };
-                cb(value);
-            }
+            guard_ffi("FloatCallbackTarget::invoke", || {
+                let ivars = self.ivars();
+                if let Some(cb) = ivars.callback.borrow().as_ref() {
+                    let value: f32 = unsafe { msg_send![sender, value] };
+                    cb(value);
+                }
+            });
         }
     }
 );
@@ -157,12 +179,14 @@ declare_class!(
     unsafe impl StringCallbackTarget {
         #[method(invoke:)]
         fn invoke(&self, sender: &NSObject) {
-            let ivars = self.ivars();
-            if let Some(cb) = ivars.callback.borrow().as_ref() {
-                let text: Option<Retained<NSString>> = unsafe { msg_send_id![sender, text] };
-                let s = text.map(|ns| ns.to_string()).unwrap_or_default();
-                cb(s);
-            }
+            guard_ffi("StringCallbackTarget::invoke", || {
+                let ivars = self.ivars();
+                if let Some(cb) = ivars.callback.borrow().as_ref() {
+                    let text: Option<Retained<NSString>> = unsafe { msg_send_id![sender, text] };
+                    let s = text.map(|ns| ns.to_string()).unwrap_or_default();
+                    cb(s);
+                }
+            });
         }
     }
 );

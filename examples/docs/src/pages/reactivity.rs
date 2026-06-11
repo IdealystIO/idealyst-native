@@ -296,7 +296,7 @@ docs! {
             use runtime_core::{signal, memo};
 
             let items = signal!(vec![1, 2, 3, 4, 5]);
-            let total = memo(move || items.with(|v| v.iter().sum::<i32>()));
+            let total = memo(move || items.get().iter().sum::<i32>());
 
             // Many readers — all subscribe to `total`, not to `items`.
             text(move || format!("Sum: {}", total.get()))

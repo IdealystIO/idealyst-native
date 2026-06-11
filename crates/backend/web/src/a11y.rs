@@ -121,6 +121,31 @@ fn role_to_aria(role: Role) -> &'static str {
     }
 }
 
+#[cfg(test)]
+mod role_tests {
+    //! Pure ARIA role-mapping coverage. Mirrors the Android/macOS a11y
+    //! role tests — guards a `Role` variant silently losing its ARIA
+    //! mapping. `role_to_aria` touches no `web_sys`, so it runs on host.
+    use super::*;
+
+    #[test]
+    fn role_to_aria_maps_load_bearing_roles() {
+        assert_eq!(role_to_aria(Role::Button), "button");
+        assert_eq!(role_to_aria(Role::Link), "link");
+        assert_eq!(role_to_aria(Role::Switch), "switch");
+        assert_eq!(role_to_aria(Role::Checkbox), "checkbox");
+        assert_eq!(role_to_aria(Role::TabList), "tablist");
+        assert_eq!(role_to_aria(Role::Dialog), "dialog");
+        assert_eq!(role_to_aria(Role::AlertDialog), "alertdialog");
+        assert_eq!(role_to_aria(Role::ProgressBar), "progressbar");
+        // Spinner is an indeterminate progressbar in ARIA.
+        assert_eq!(role_to_aria(Role::Spinner), "progressbar");
+        // `Text` has no first-class ARIA role → empty (dropped by
+        // `set_or_remove`).
+        assert_eq!(role_to_aria(Role::Text), "");
+    }
+}
+
 fn live_region_attr(p: LiveRegionPriority) -> &'static str {
     match p {
         LiveRegionPriority::Polite => "polite",

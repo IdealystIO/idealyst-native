@@ -103,25 +103,31 @@ pub fn dark() -> Theme {
 /// in sync.
 impl ThemeTokens for Theme {
     fn tokens(&self) -> Vec<TokenEntry> {
-        fn entry(t: &Tokenized<Color>) -> TokenEntry {
-            // Tokenized::Token always — we never construct literals
-            // for theme fields above, but guard against it anyway:
-            // unwrap to the fallback if a literal slipped in.
-            let name = t.name().expect("theme fields must be Tokenized::Token");
-            TokenEntry {
+        fn entry(t: &Tokenized<Color>) -> Option<TokenEntry> {
+            // Tokenized::Token always — we never construct literals for
+            // theme fields above. If a literal ever slipped in there is
+            // no token name to install, so skip it gracefully. A panic
+            // here would unwind across the wasm→JS boundary and abort
+            // the whole bench instance, which is never worth it for a
+            // missing theme variable.
+            let name = t.name()?;
+            Some(TokenEntry {
                 name,
                 value: TokenValue::Color(t.value().clone()),
-            }
+            })
         }
-        vec![
-            entry(&self.background),
-            entry(&self.surface),
-            entry(&self.surface_alt),
-            entry(&self.text),
-            entry(&self.border),
-            entry(&self.primary),
-            entry(&self.primary_text),
+        [
+            &self.background,
+            &self.surface,
+            &self.surface_alt,
+            &self.text,
+            &self.border,
+            &self.primary,
+            &self.primary_text,
         ]
+        .into_iter()
+        .filter_map(entry)
+        .collect()
     }
 }
 

@@ -162,7 +162,11 @@ declare_class!(
             let Some(cb) = cb_opt.as_ref() else {
                 return 0;
             };
-            (cb.item_count)() as NSInteger
+            // Guard the framework callback — this is an extern "C" IMP.
+            crate::imp::ffi_guard::guard_ffi(
+                "VirtualizerDataSource::numberOfItems",
+                || (cb.item_count)(),
+            ) as NSInteger
         }
 
         #[method_id(collectionView:cellForItemAtIndexPath:)]
@@ -175,7 +179,15 @@ declare_class!(
             // single tail expression (the macro's IdReturnValue
             // shim doesn't gracefully handle early `return`s in a
             // body that produces a `Retained<_>`).
-            self.cell_for_item_impl(cv, index_path)
+            //
+            // Guard the mount path: cellForItem is an extern "C" IMP and
+            // mounting runs the full framework build (Taffy, reactive
+            // scope, RefCell borrows) — the most panic-prone callback
+            // here. A panic must abort, not unwind into UICollectionView.
+            crate::imp::ffi_guard::guard_ffi(
+                "VirtualizerDataSource::cellForItem",
+                || self.cell_for_item_impl(cv, index_path),
+            )
         }
     }
 
@@ -207,7 +219,11 @@ declare_class!(
                 };
                 unsafe { prev.child.removeFromSuperview() };
                 if let Some(release) = release_fn {
-                    (release)(prev.scope_id);
+                    // Guard the framework teardown callback (extern "C" IMP).
+                    crate::imp::ffi_guard::guard_ffi(
+                        "VirtualizerDataSource::didEndDisplaying",
+                        || (release)(prev.scope_id),
+                    );
                 }
             }
         }
@@ -231,7 +247,11 @@ declare_class!(
             };
             let row: NSInteger = unsafe { msg_send![index_path, row] };
             let idx = if row < 0 { 0usize } else { row as usize };
-            let size_f = (cb.item_size)(idx) as CGFloat;
+            // Guard the framework size callback (extern "C" IMP).
+            let size_f = crate::imp::ffi_guard::guard_ffi(
+                "VirtualizerDataSource::sizeForItem",
+                || (cb.item_size)(idx),
+            ) as CGFloat;
             // Read the collection view's bounds; subtract content
             // insets so cells don't get clipped under nav bars / safe
             // area when the user has set `contentInset`.

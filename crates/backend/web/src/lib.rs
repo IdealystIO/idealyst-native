@@ -2579,7 +2579,7 @@ impl Backend for WebBackend {
         type_name: &'static str,
         presentation: Rc<dyn std::any::Any>,
         host: runtime_core::NavigatorHost<Self::Node>,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Resolve the factory the SDK installed at app-bootstrap time.
         let factory = self
@@ -2595,6 +2595,11 @@ impl Backend for WebBackend {
             });
         let mut handler = factory();
         let node = handler.init(self, host, presentation);
+        // Apply author-set accessibility props (identifier/label/hidden/…)
+        // to the navigator root, matching every other create_* path and
+        // the macOS/wgpu backends — otherwise navigator a11y silently
+        // vanishes on web.
+        a11y::apply(&node, a11y, None);
         // Stash the handler under the nav id stamped on the container
         // so subsequent dispatch (attach_initial / release / make_handle
         // / apply_slot_style) can find it. The id is set by the SDK

@@ -75,6 +75,12 @@ sdk!(
     "Save a file to a user-chosen location through the platform's native save UI (no permission prompt)."
 );
 sdk!(
+    "file-picker",
+    SdkCategory::Data,
+    SdkKind::Api,
+    "Inverse of file-export: let the user pick local file(s) via the native picker. Yields a lazily-streamed `PickedFile` (path / open-chunk / copy_to) — never reads the whole file into RAM. Documents vs Media (dedicated mobile photo picker)."
+);
+sdk!(
     "i18n",
     SdkCategory::Data,
     SdkKind::Api,
@@ -126,6 +132,12 @@ sdk!(
     SdkCategory::Media,
     SdkKind::External,
     "Third-party `Video` playback primitive (`Element::External`)."
+);
+sdk!(
+    "video-decode",
+    SdkCategory::Media,
+    SdkKind::Api,
+    "Decode a video file into frames — the file-decoder peer of `camera` / `screen-recorder`."
 );
 
 // ---------------------------------------------------------------------
@@ -206,9 +218,44 @@ sdk!(
 );
 
 // ---------------------------------------------------------------------
-// Device
+// Navigation — render navigators (`Element::Navigator`)
 // ---------------------------------------------------------------------
 
+sdk!(
+    "drawer-navigator",
+    SdkCategory::Ui,
+    SdkKind::Api,
+    "Side-drawer navigator — a responsive sidebar/modal drawer over screens. Renders `Element::Navigator`."
+);
+sdk!(
+    "stack-navigator",
+    SdkCategory::Ui,
+    SdkKind::Api,
+    "Push/pop stack navigator with native screen transitions and a back stack."
+);
+sdk!(
+    "tab-navigator",
+    SdkCategory::Ui,
+    SdkKind::Api,
+    "Tab-bar navigator — top-level sibling screens selected by a tab bar."
+);
+
+// ---------------------------------------------------------------------
+// Device — input gestures + device capabilities
+// ---------------------------------------------------------------------
+
+sdk!(
+    "pan",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "Pan-gesture SDK — a reactive value handle tracking drag offset for author-level pan interactions."
+);
+sdk!(
+    "zoom",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "Zoom-gesture SDK — reactive scale from a pinch recognizer (touch) plus a wheel/magnify channel (web `wheel`+ctrlKey / macOS `magnify:`)."
+);
 sdk!(
     "biometrics",
     SdkCategory::Device,

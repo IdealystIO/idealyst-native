@@ -296,7 +296,13 @@ pub(crate) fn start_anchor_tracker(
             return;
         }
 
-        let (top, left) = compute_anchored_origin(side, align, offset, &trigger, pop_w, pop_h);
+        // Shared measured align/side geometry (runtime_core) — one
+        // definition across web/iOS/Android (CLAUDE.md §7). The tracker
+        // keeps its no-flip/no-clamp behavior (it just re-pins to the
+        // requested side); web layers flip+clamp on top of the same math.
+        let (top, left) = runtime_core::primitives::portal::anchor_top_left(
+            trigger, side, align, offset, (pop_w, pop_h),
+        );
         let cur_top = pop_frame.origin.y as f32;
         let cur_left = pop_frame.origin.x as f32;
         // Compare against the *live* frame rather than a stored "last
@@ -352,41 +358,6 @@ pub(crate) fn start_anchor_tracker(
 /// when the anchor isn't moving — both `cur_*` and the computed
 /// origin can drift by tiny amounts due to UIKit's geometry rounding.
 const ANCHOR_TRACKER_EPSILON: f32 = 0.5;
-
-/// Compute the popover's top-left origin in viewport coordinates,
-/// given the anchor's current rect and the popover's measured size.
-/// More accurate than the static `align_x_unmeasured` /
-/// `align_y_unmeasured` because it accounts for popover dimensions
-/// in `Center` / `End` alignment.
-fn compute_anchored_origin(
-    side: ElementSide,
-    align: ElementAlign,
-    offset: f32,
-    trigger: &ViewportRect,
-    pop_w: f32,
-    pop_h: f32,
-) -> (f32, f32) {
-    let tx = trigger.x;
-    let ty = trigger.y;
-    let tw = trigger.width;
-    let th = trigger.height;
-    let perp_x = match align {
-        ElementAlign::Start => tx,
-        ElementAlign::Center => tx + (tw - pop_w) / 2.0,
-        ElementAlign::End => tx + tw - pop_w,
-    };
-    let perp_y = match align {
-        ElementAlign::Start => ty,
-        ElementAlign::Center => ty + (th - pop_h) / 2.0,
-        ElementAlign::End => ty + th - pop_h,
-    };
-    match side {
-        ElementSide::Below => (ty + th + offset, perp_x),
-        ElementSide::Above => (ty - pop_h - offset, perp_x),
-        ElementSide::End => (perp_y, tx + tw + offset),
-        ElementSide::Start => (perp_y, tx - pop_w - offset),
-    }
-}
 
 /// Tear down a portal's UIKit state. Stops the anchor tracker (if
 /// any) first so a final tick can't fire into a half-torn-down

@@ -122,8 +122,8 @@ docs! {
               Hosts target different platforms — ", code("host-winit"),
               " for desktop windowing, ", code("host-appkit"), " for macOS, ",
               code("host-web"), " for browser, ", code("host-terminal"),
-              " for TTY, with ", code("host-uikit"), " and ",
-              code("host-android-native"), " planned so GPU-rendered apps \
+              " for TTY, with ", code("host-ios-mobile"), " and ",
+              code("host-android-mobile"), " planned so GPU-rendered apps \
               can target iOS and Android directly."],
             [code("Painter"), " — the primitive renderer. When the Backend \
               Interface receives ", code("create_button"), ", the Painter \

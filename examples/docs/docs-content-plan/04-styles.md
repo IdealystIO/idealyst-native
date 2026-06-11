@@ -43,7 +43,7 @@ framework knows what to install as runtime variables.
 
 ```rust
 use runtime_core::{Color, Length, Tokenized, TokenEntry, TokenValue};
-use framework_theme::ThemeTokens;
+use idea_theme::ThemeTokens;
 
 #[derive(Clone)]
 pub struct MyTheme {
@@ -102,7 +102,7 @@ Three things to notice:
 ### Installing a theme
 
 ```rust
-use framework_theme::{install_theme, set_theme};
+use idea_theme::{install_theme, set_theme};
 
 #[component]
 fn app() -> Element {

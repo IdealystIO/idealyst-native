@@ -174,6 +174,10 @@ pub enum TextAlign {
 /// a sprite-atlas lookup key.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WireIconData {
+    /// Opaque sprite-atlas lookup key. Derived from the static `paths`
+    /// slice address, so it is **process-local** (ASLR-dependent) and
+    /// only valid as a key within a single snapshot/run — do not persist
+    /// it or diff it across runs or a pre-baked atlas.
     pub cache_key: u64,
     pub viewport_width: f32,
     pub viewport_height: f32,

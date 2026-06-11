@@ -24,8 +24,8 @@ use runtime_core::{
 };
 use wire::{
     Command, EventArgs, HandlerId, NodeId, ScopeId, StyleId, WireColor, WireDrawerSide,
-    WireDrawerType, WireMountPolicy, WireScreenOptions, WireStateBit, WireTabPlacement,
-    WireTabRegistration,
+    WireDrawerType, WireMountPolicy, WirePageMetadata, WireScreenOptions, WireStateBit,
+    WireTabPlacement, WireTabRegistration,
 };
 
 pub mod convert_out;
@@ -1534,6 +1534,47 @@ impl Backend for WireRecordingBackend {
         state.emit(Command::UpdateIconColor {
             node: *node,
             color: WireColor(color.0.clone()),
+        });
+    }
+
+    fn set_app_background(&mut self, color: &runtime_core::Tokenized<Color>) {
+        let mut state = self.inner.borrow_mut();
+        // Resolve the token to a concrete literal dev-side (wire only
+        // carries literals); the theme SDK re-calls this on theme swap so
+        // the client re-themes its host surface.
+        state.emit(Command::SetAppBackground {
+            color: WireColor(color.resolve().0),
+        });
+    }
+
+    fn set_scrollbar_theme(
+        &mut self,
+        thumb: &runtime_core::Tokenized<Color>,
+        track: &runtime_core::Tokenized<Color>,
+    ) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::SetScrollbarTheme {
+            thumb: WireColor(thumb.resolve().0),
+            track: WireColor(track.resolve().0),
+        });
+    }
+
+    fn set_page_metadata(&mut self, meta: &runtime_core::PageMetadata) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::SetPageMetadata {
+            meta: WirePageMetadata {
+                title: meta.title.clone(),
+                description: meta.description.clone(),
+                og_image: meta.og_image.clone(),
+                canonical_url: meta.canonical_url.clone(),
+            },
+        });
+    }
+
+    fn register_raw_css(&mut self, css: &str) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::RegisterRawCss {
+            css: css.to_string(),
         });
     }
 

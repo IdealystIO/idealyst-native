@@ -237,8 +237,8 @@ docs! {
              " — runtime-server in depth, the wire protocol, hot reload."],
             [link("Architecture in more depth", to = "overview"),
              " (on the Overview) — where backends sit relative to ",
-             code("framework-wire"), ", ", code("dev-hot"), ", and ",
-             code("framework-runtime-layout"), "."],
+             code("wire"), ", ", code("dev-hot"), ", and ",
+             code("runtime-layout"), "."],
         ),
     },
 }

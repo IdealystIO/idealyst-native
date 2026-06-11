@@ -529,14 +529,14 @@ all hook in at one of these layers without reaching past it.
           ┌───────────────────┼───────────────────┐
           ▼                   ▼                   ▼
   ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐
-  │dev-hot │    │framework-wire│    │ framework-native-│
-  │ hot patches  │    │ dev protocol │    │     layout       │
-  │              │    │              │    │  (Taffy / flex)  │
+  │   dev-hot    │    │     wire     │    │  runtime-layout  │
+  │ hot patches  │    │ dev protocol │    │  (Taffy / flex)  │
+  │              │    │              │    │                  │
   └──────────────┘    └──────┬───────┘    └──────────────────┘
                              │
                              ▼
                   ┌────────────────────┐
-                  │framework-dev-client│
+                  │     dev-client     │
                   │ app-side replayer  │
                   └────────────────────┘
                              │
@@ -566,17 +566,17 @@ all hook in at one of these layers without reaching past it.
   `Element` trees by their identity hashes and produces the minimal
   sequence of backend operations to morph one into the other.
 
-- **framework-wire** — The wire protocol. Pure data: a `Command` enum
+- **wire** — The wire protocol. Pure data: a `Command` enum
   and three id namespaces (nodes, handlers, styles). No runtime-core
   dependency. Used by hot reload, app-as-server, and any future
   server-driven mode.
 
-- **framework-dev-client** — The app side of the wire. Receives
+- **dev-client** — The app side of the wire. Receives
   commands from the dev server and replays them against the local
   backend, so `idealyst dev` updates a running app without
   recompiling.
 
-- **framework-runtime-layout** — Wraps Taffy (flexbox + grid) for
+- **runtime-layout** — Wraps Taffy (flexbox + grid) for
   backends without a native layout engine. Web uses the browser's
   layout; iOS, Android, and Roku use this.
 
@@ -602,7 +602,7 @@ Each crate boundary is a place to plug something new in:
 - **The Backend trait.** Write a new platform — terminal, embedded
   display, game engine, anything you can drive from Rust. Implement
   a handful of methods; everything above the seam stays the same.
-- **framework-wire.** Write a new transport, a new viewer, or a
+- **wire.** Write a new transport, a new viewer, or a
   server-driven UI host. The protocol is pure data; nothing about it
   assumes "the dev server" specifically.
 - **dev-hot.** Substitute a different diff strategy, or

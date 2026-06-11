@@ -27,56 +27,14 @@
 
 use runtime_core::{Color, Length, StyleRules, Tokenized};
 
-/// The installed theme's text-color token name. This is the same token
-/// idea-ui / idea-theme bind their default text color to (`tok("color-text",
-/// …)` in `idea-theme/src/theme.rs`, and every `Tokenized::token("color-text",
-/// …)` in `idea-ui/src/stylesheets.rs`). Resolving an unstyled `text()`
-/// node's color through THIS token name (via the exact same
-/// `Tokenized<Color>::resolve()` machinery a styled `color:` token uses)
-/// is what makes the native backends converge on the theme's value
-/// instead of the OS system label color. See [`effective_text_color`].
-///
-/// The macOS / iOS / Android backends MUST all use this same name +
-/// fallback so the resolved value is byte-identical across platforms
-/// (CLAUDE.md §7).
-pub const THEME_TEXT_COLOR_TOKEN: &str = "color-text";
-
-/// Fallback used when no theme has installed `color-text` yet. Matches
-/// idea-theme's light-mode `color-text` default (`#1a1a1f`) so that a
-/// no-theme render still produces visible dark text on a light surface —
-/// the same value web's browser default approximates — rather than the
-/// OS system label color (white in dark mode → invisible on a light
-/// pill). Explicit author colors never reach this; see
-/// [`effective_text_color`].
-pub const THEME_TEXT_COLOR_FALLBACK: &str = "#1a1a1f";
-
-/// The effective text color for a text node, as a `Tokenized<Color>` that
-/// still flows through the *same* `resolve()` path a styled `color:` uses.
-///
-/// Decision (pure, host-testable — the bug this guards is that an
-/// unstyled `text()` rendered in the OS system label color, which is
-/// white in dark mode and therefore invisible over a light surface even
-/// when the app installed a light theme):
-///
-///   * explicit color present → pass it through unchanged (author wins);
-///   * no explicit color → resolve the installed theme's text color via
-///     the `color-text` token, NOT the OS/UIKit/Android default label
-///     color.
-///
-/// Returning a `Tokenized::Token` (rather than a pre-resolved `Color`)
-/// keeps the caller on the one true resolution path: the backend calls
-/// `.resolve()` on the result inside its `apply_style` effect, so a theme
-/// swap re-fires exactly as it does for an authored `color:` token, and
-/// the resolved bytes match web + macOS.
-pub fn effective_text_color(explicit: Option<&Tokenized<Color>>) -> Tokenized<Color> {
-    match explicit {
-        Some(c) => c.clone(),
-        None => Tokenized::token(
-            THEME_TEXT_COLOR_TOKEN,
-            Color(THEME_TEXT_COLOR_FALLBACK.to_string()),
-        ),
-    }
-}
+// The unstyled-`text()` color decision is shared by every native backend
+// and now lives once in `runtime_core::text_defaults` (CLAUDE.md §7 — the
+// resolved bytes must be byte-identical across iOS/Android/macOS/web).
+// Re-exported here under the historical names so this crate's call sites
+// (and `backend-ios-mobile`'s `apply_style`) are unchanged.
+pub use runtime_core::text_defaults::{
+    effective_text_color, THEME_TEXT_COLOR_FALLBACK, THEME_TEXT_COLOR_TOKEN,
+};
 
 /// The effective BACKGROUND for an editable text control (UITextField /
 /// UITextView) — explicit author background wins, else the theme's

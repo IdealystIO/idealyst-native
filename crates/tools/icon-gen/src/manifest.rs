@@ -112,6 +112,13 @@ pub enum Background {
     /// addition (held off because the rendering math is more
     /// involved and the user's first ask was specifically linear).
     Gradient(Gradient),
+    /// An image (SVG / PNG / JPEG) rasterized to fill the canvas as the
+    /// backdrop — e.g. a designed background layer for an Android adaptive
+    /// icon. Path is resolved + existence-checked against the project dir at
+    /// load time. A square source fills exactly; a non-square one is
+    /// uniformly scaled and centered (transparent letterbox), same as the
+    /// foreground rasterizer.
+    Image(PathBuf),
 }
 
 /// Geometric fill description. CSS-convention angle: `0` points up,
@@ -249,7 +256,11 @@ fn build_block(raw: &IconRaw, project_dir: &Path) -> Result<IconBlock> {
     Ok(IconBlock {
         source: resolve_path("source", raw.source.as_deref(), project_dir)?,
         foreground: resolve_path("foreground", raw.foreground.as_deref(), project_dir)?,
-        background: raw.background.clone().map(Into::into),
+        background: raw
+            .background
+            .as_ref()
+            .map(|b| build_background(b, project_dir))
+            .transpose()?,
         foreground_padding: raw.foreground_padding,
     })
 }
@@ -319,6 +330,11 @@ enum BackgroundTable {
         angle: Option<f32>,
         stops: Vec<StopRaw>,
     },
+    /// `background = { kind = "image", source = "path/to/bg.svg" }` — a
+    /// rasterized image backdrop (SVG/PNG/JPEG).
+    Image {
+        source: String,
+    },
 }
 
 #[derive(Deserialize, Clone)]
@@ -327,24 +343,30 @@ struct StopRaw {
     color: String,
 }
 
-impl From<BackgroundRaw> for Background {
-    fn from(raw: BackgroundRaw) -> Self {
-        match raw {
-            BackgroundRaw::Color(c) => Background::Color(c),
-            BackgroundRaw::Table(BackgroundTable::Linear { angle, stops }) => {
-                Background::Gradient(Gradient::Linear {
-                    angle_deg: angle.unwrap_or(180.0),
-                    stops: stops
-                        .into_iter()
-                        .map(|s| Stop {
-                            offset: s.offset,
-                            color: s.color,
-                        })
-                        .collect(),
-                })
-            }
+/// Build a [`Background`] from its raw TOML form, resolving + validating the
+/// image path (relative to `project_dir`) for the image variant. Color and
+/// gradient carry no path, so they pass through unchanged.
+fn build_background(raw: &BackgroundRaw, project_dir: &Path) -> Result<Background> {
+    Ok(match raw {
+        BackgroundRaw::Color(c) => Background::Color(c.clone()),
+        BackgroundRaw::Table(BackgroundTable::Linear { angle, stops }) => {
+            Background::Gradient(Gradient::Linear {
+                angle_deg: angle.unwrap_or(180.0),
+                stops: stops
+                    .iter()
+                    .map(|s| Stop {
+                        offset: s.offset,
+                        color: s.color.clone(),
+                    })
+                    .collect(),
+            })
         }
-    }
+        BackgroundRaw::Table(BackgroundTable::Image { source }) => {
+            let path = resolve_path("background.source", Some(source), project_dir)?
+                .expect("source is Some");
+            Background::Image(path)
+        }
+    })
 }
 
 #[cfg(test)]

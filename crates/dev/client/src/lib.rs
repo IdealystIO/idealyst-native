@@ -1384,6 +1384,37 @@ where
                 let priority = convert::wire_live_region_to_priority(priority);
                 self.backend.borrow_mut().announce_for_accessibility(&msg, priority);
             }
+
+            // Host surface / document chrome. Colors arrive pre-resolved
+            // (the recorder resolves tokens dev-side), so we hand the real
+            // backend a `Tokenized::Literal` — the client's backend then
+            // does its native thing (web sets the CSS var-free literal).
+            Command::SetAppBackground { color } => {
+                self.backend
+                    .borrow_mut()
+                    .set_app_background(&runtime_core::Tokenized::Literal(runtime_core::Color(
+                        color.0,
+                    )));
+            }
+            Command::SetScrollbarTheme { thumb, track } => {
+                self.backend.borrow_mut().set_scrollbar_theme(
+                    &runtime_core::Tokenized::Literal(runtime_core::Color(thumb.0)),
+                    &runtime_core::Tokenized::Literal(runtime_core::Color(track.0)),
+                );
+            }
+            Command::SetPageMetadata { meta } => {
+                self.backend
+                    .borrow_mut()
+                    .set_page_metadata(&runtime_core::PageMetadata {
+                        title: meta.title,
+                        description: meta.description,
+                        og_image: meta.og_image,
+                        canonical_url: meta.canonical_url,
+                    });
+            }
+            Command::RegisterRawCss { css } => {
+                self.backend.borrow_mut().register_raw_css(&css);
+            }
         }
         Ok(())
     }

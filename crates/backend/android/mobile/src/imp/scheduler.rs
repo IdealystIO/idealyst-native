@@ -83,6 +83,10 @@ pub(crate) fn post_async_poll_to_main(env: &mut JNIEnv, id: u64) {
 
 struct AndroidScheduler;
 
+// SAFETY: a unit struct with no fields, so the `Scheduler: Send + Sync`
+// bound is satisfied trivially. All scheduling marshals onto the main
+// looper; nothing here is touched off-main. (Mirrors the reasoning on
+// `AndroidAsyncExecutor` in `async_executor.rs`.)
 unsafe impl Send for AndroidScheduler {}
 unsafe impl Sync for AndroidScheduler {}
 

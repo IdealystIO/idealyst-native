@@ -11,6 +11,11 @@ description = "Stdio MCP server that surfaces the framework's component catalog.
 # expansions actually populate the inventory slice.
 mcp-catalog = { workspace = true }
 
+# The idealyst source linter — powers the `lint_project` tool, which
+# runs the same idiom-drift rules as the `idealyst lint` CLI over a
+# project's un-expanded Rust source.
+lint = { workspace = true }
+
 # rmcp 1.x — the official Rust MCP SDK. Features:
 # - `server` enables the ServerHandler + ServiceExt machinery
 # - `macros` enables `#[tool_router]` / `#[tool]` / `#[tool_handler]`

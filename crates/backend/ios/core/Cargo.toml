@@ -45,6 +45,9 @@ objc2-foundation = { version = "0.2", features = [
     "NSArray",
     "NSEnumerator",
     "NSObject",
+    # Enables the safe `MainThreadMarker::new()` (checked, returns Option)
+    # instead of the unchecked fabricator.
+    "NSThread",
 ] }
 objc2-ui-kit = { version = "0.2", features = [
     "UIResponder",
