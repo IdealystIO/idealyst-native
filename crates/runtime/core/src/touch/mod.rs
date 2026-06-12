@@ -56,6 +56,7 @@
 //! [`CONSUMED`]: TouchResponse::CONSUMED
 //! [`CLAIMED`]: TouchResponse::CLAIMED
 
+pub mod recognizer;
 pub mod recognizers;
 
 use std::rc::Rc;

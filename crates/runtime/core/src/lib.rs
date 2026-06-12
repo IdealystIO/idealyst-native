@@ -209,9 +209,12 @@ pub use touch::{
     TouchPhase, TouchPoint, TouchResponse,
 };
 pub use wheel::{WheelEvent, WheelHandler, WheelKind};
+pub use touch::recognizer::{
+    AsyncNotifier, GestureState, Recognizer, RecognizerCtx, RecognizerKind, RecognizerUpdate,
+};
 pub use touch::recognizers::{
-    long_press, pan, pinch, tap, LongPressRecognizer, PanEvent, PanRecognizer, PinchEvent,
-    PinchRecognizer, TapRecognizer,
+    long_press, pan, pinch, tap, LongPress, LongPressRecognizer, Pan, PanEvent, PanRecognizer,
+    Pinch, PinchEvent, PinchRecognizer, Tap, TapRecognizer,
 };
 pub use walker::{build_detached, mount, render, DetachedScope, Owner};
 pub use primitives::navigator::{

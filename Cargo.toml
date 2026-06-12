@@ -103,6 +103,7 @@ members = [
     "crates/sdk/storage",
     "crates/sdk/pan",
     "crates/sdk/zoom",
+    "crates/sdk/gesture",
     "crates/sdk/microphone",
     "crates/sdk/camera",
     "crates/sdk/media-stream",

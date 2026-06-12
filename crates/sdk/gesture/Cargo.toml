@@ -1,0 +1,28 @@
+[package]
+name = "gesture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform gesture arbitration SDK.
+#
+# `GestureGroup` owns a view's single `on_touch` slot and drives several
+# `runtime_core` `Recognizer`s against it at once, resolving the conflicts
+# a single slot can't: priority order, require-to-fail dependencies, and
+# simultaneous recognition. This is the `UIGestureRecognizer` +
+# `UIGestureRecognizerDelegate` coordination layer, in pure Rust on top of
+# the raw `TouchEvent` stream the framework already unifies across mouse,
+# touch, and pen.
+#
+# The recognizers themselves (tap / long-press / pan / pinch and any
+# third-party FSM) live in `runtime_core::touch`; this crate only
+# arbitrates between them. No backend code, no per-platform branching — it
+# installs one `TouchHandler` and fans events out in Rust, reusing the
+# existing claim protocol to preempt native scrollers.
+#
+# See docs/gesture-arbiter-plan.md for the design.
+#
+# No permissions required.
+
+[dependencies]
+runtime-core = { workspace = true }

@@ -1,28 +1,33 @@
 //! Stock gesture recognizers built on the raw [`TouchEvent`] stream.
 //!
-//! Each recognizer is a pure function from `(config, callback) →
-//! TouchHandler` — the returned handler is installed on a primitive
-//! via `Bound::<ViewHandle>::on_touch(...)` (or any future primitive
-//! with a touch slot). State lives inside the closure via
-//! `Rc<RefCell<…>>`, so multiple primitives can share the same
-//! recognizer factory without entangling state.
+//! Each recognizer is a finite-state machine implementing the
+//! [`Recognizer`](crate::touch::recognizer::Recognizer) trait: `Tap`,
+//! `LongPress`, `Pan`, `Pinch`. Two ways to use one:
 //!
-//! Recognizers consume the [`TouchPhase::Began`] event optimistically:
-//! once a finger lands inside a subscribed view, the touch is owned by
-//! the recognizer through `Ended` / `Cancelled`. This is the simplest
-//! model that works for v1; future iterations will introduce a
-//! requireToFail-style coordination layer so a tap recognizer can
-//! release the touch to a parent scroll container when the user pans
-//! instead of taps. See `docs/native-touch-plan.md`.
+//! - **Standalone** — the `tap` / `long_press` / `pan` / `pinch` factory
+//!   functions wrap a recognizer in a `TouchHandler` for a single view's
+//!   `on_touch` slot. State lives behind `Rc<RefCell<…>>`, so multiple
+//!   primitives can share a factory without entangling state. A standalone
+//!   recognizer is [`RecognizerCtx::UNGATED`] — it recognizes
+//!   optimistically: once a finger lands, the touch is owned through
+//!   `Ended` / `Cancelled`.
+//! - **Composed** — hand the `Recognizer` to the `gesture` SDK's
+//!   `GestureGroup`, which drives several against one slot and resolves
+//!   priority, require-to-fail, and simultaneous recognition. The gating
+//!   contract that makes that work lives on the trait; see its docs and
+//!   `docs/gesture-arbiter-plan.md`.
 //!
-//! Each recognizer matches a single concurrent finger. Multi-finger
-//! recognizers (pinch, rotate, two-finger pan) will live alongside
-//! these as their own factories.
+//! `Tap` / `LongPress` / `Pan` match a single concurrent finger; `Pinch`
+//! tracks a pair. Further multi-finger recognizers (rotate, two-finger
+//! pan) implement the same trait.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::scheduling::{after_ms, ScheduledTask};
+use crate::touch::recognizer::{
+    AsyncNotifier, GestureState, Recognizer, RecognizerCtx, RecognizerKind, RecognizerUpdate,
+};
 use crate::touch::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, TouchResponse};
 
 // ---------------------------------------------------------------------------
@@ -90,37 +95,68 @@ enum TapState {
     Rejected { id: TouchId },
 }
 
-/// Build a single-finger tap [`TouchHandler`].
+/// Single-finger tap recognizer ([`Recognizer`] impl).
 ///
-/// Fires `on_tap` once per qualifying touch: `Began` → `Ended` with
-/// total movement ≤ `slop_px` and duration ≤ `max_duration_ms`.
-/// Movement past slop or duration past timeout marks the interaction
-/// rejected; subsequent events still consume (the recognizer keeps
-/// ownership of the touch) but no callback fires.
-///
-/// ```ignore
-/// view(children!(...))
-///     .on_touch(tap(TapRecognizer::new(), || println!("tapped")))
-/// ```
-pub fn tap<F: Fn() + 'static>(config: TapRecognizer, on_tap: F) -> TouchHandler {
-    let state = Rc::new(RefCell::new(TapState::Idle));
-    Rc::new(move |ev: &TouchEvent| -> TouchResponse {
-        let mut s = state.borrow_mut();
-        match (ev.phase, *s) {
+/// Recognizes once per qualifying touch: `Began` → `Ended` with total
+/// movement ≤ `slop_px` and duration ≤ `max_duration_ms`. Movement past
+/// slop or duration past timeout marks the interaction failed; subsequent
+/// events still consume (the recognizer keeps ownership of the touch) but
+/// it never recognizes.
+pub struct Tap {
+    config: TapRecognizer,
+    on_tap: Box<dyn Fn()>,
+    state: TapState,
+}
+
+impl Tap {
+    /// Construct from config + callback. Prefer [`tap`] for the
+    /// standalone `on_touch` case; construct directly when handing the
+    /// recognizer to a `GestureGroup`.
+    pub fn new<F: Fn() + 'static>(config: TapRecognizer, on_tap: F) -> Self {
+        Self {
+            config,
+            on_tap: Box::new(on_tap),
+            state: TapState::Idle,
+        }
+    }
+}
+
+impl Recognizer for Tap {
+    fn name(&self) -> &'static str {
+        "tap"
+    }
+    fn kind(&self) -> RecognizerKind {
+        RecognizerKind::Discrete
+    }
+    fn state(&self) -> GestureState {
+        match self.state {
+            TapState::Idle | TapState::Tracking { .. } => GestureState::Possible,
+            TapState::Rejected { .. } => GestureState::Failed,
+        }
+    }
+    fn reset(&mut self, _cancelled: bool) {
+        // Tap is discrete and never `is_active`, so a cancel has no
+        // callback to surface — just return to resting.
+        self.state = TapState::Idle;
+    }
+    fn update(&mut self, ev: &TouchEvent, ctx: &RecognizerCtx) -> RecognizerUpdate {
+        use GestureState as G;
+        let config = self.config;
+        let (state, response): (GestureState, TouchResponse) = match (ev.phase, self.state) {
             // New touch begins while idle: start tracking.
             (TouchPhase::Began, TapState::Idle) => {
-                *s = TapState::Tracking {
+                self.state = TapState::Tracking {
                     id: ev.id,
                     start: ev.position,
                     start_ts_ns: ev.timestamp_ns,
                 };
-                TouchResponse::CONSUMED
+                (G::Possible, TouchResponse::CONSUMED)
             }
             // A second finger lands while we're tracking the first.
             // Single-finger recognizer ignores extras — return
             // unconsumed so an outer handler (or another recognizer
             // sibling) can pick them up.
-            (TouchPhase::Began, _) => TouchResponse::IGNORED,
+            (TouchPhase::Began, _) => (self.state(), TouchResponse::IGNORED),
 
             // Movement on the tracked finger: re-check slop / timeout.
             (TouchPhase::Moved, TapState::Tracking { id, start, start_ts_ns }) if id == ev.id => {
@@ -130,49 +166,74 @@ pub fn tap<F: Fn() + 'static>(config: TapRecognizer, on_tap: F) -> TouchHandler 
                 let exceeded_time = ev.timestamp_ns.saturating_sub(start_ts_ns)
                     > config.max_duration_ms * 1_000_000;
                 if exceeded_slop || exceeded_time {
-                    *s = TapState::Rejected { id };
+                    self.state = TapState::Rejected { id };
+                    (G::Failed, TouchResponse::CONSUMED)
+                } else {
+                    (G::Possible, TouchResponse::CONSUMED)
                 }
-                TouchResponse::CONSUMED
             }
             // Movement on the tracked finger after rejection: keep
             // ownership but no further state change.
             (TouchPhase::Moved, TapState::Rejected { id }) if id == ev.id => {
-                TouchResponse::CONSUMED
+                (G::Failed, TouchResponse::CONSUMED)
             }
             // Movement we don't care about (foreign id while tracking,
             // or events with no active state). Don't consume.
-            (TouchPhase::Moved, _) => TouchResponse::IGNORED,
+            (TouchPhase::Moved, _) => (self.state(), TouchResponse::IGNORED),
 
-            // Release on the tracked finger: fire if still tracking
-            // AND the final event also passes slop / timeout.
+            // Release on the tracked finger: recognize if still tracking
+            // AND the final event also passes slop / timeout AND the
+            // arbiter permits it (require-to-fail gate).
             (TouchPhase::Ended, TapState::Tracking { id, start, start_ts_ns }) if id == ev.id => {
                 let dx = ev.position.x - start.x;
                 let dy = ev.position.y - start.y;
                 let within_slop = (dx * dx + dy * dy) <= config.slop_px * config.slop_px;
                 let within_time = ev.timestamp_ns.saturating_sub(start_ts_ns)
                     <= config.max_duration_ms * 1_000_000;
-                *s = TapState::Idle;
-                if within_slop && within_time {
-                    on_tap();
+                self.state = TapState::Idle;
+                if within_slop && within_time && ctx.may_recognize {
+                    (self.on_tap)();
+                    (G::Recognized, TouchResponse::CONSUMED)
+                } else {
+                    // Out of bounds, or gated by a prerequisite that
+                    // recognized — this interaction never taps.
+                    (G::Failed, TouchResponse::CONSUMED)
                 }
-                TouchResponse::CONSUMED
             }
             (TouchPhase::Ended, TapState::Rejected { id }) if id == ev.id => {
-                *s = TapState::Idle;
-                TouchResponse::CONSUMED
+                self.state = TapState::Idle;
+                (G::Failed, TouchResponse::CONSUMED)
             }
-            (TouchPhase::Ended, _) => TouchResponse::IGNORED,
+            (TouchPhase::Ended, _) => (self.state(), TouchResponse::IGNORED),
 
-            // Cancellation: reset, never fire.
+            // Cancellation: reset, never recognize.
             (TouchPhase::Cancelled, TapState::Tracking { id, .. })
             | (TouchPhase::Cancelled, TapState::Rejected { id })
                 if id == ev.id =>
             {
-                *s = TapState::Idle;
-                TouchResponse::CONSUMED
+                self.state = TapState::Idle;
+                (G::Failed, TouchResponse::CONSUMED)
             }
-            (TouchPhase::Cancelled, _) => TouchResponse::IGNORED,
-        }
+            (TouchPhase::Cancelled, _) => (self.state(), TouchResponse::IGNORED),
+        };
+        RecognizerUpdate::new(state, response)
+    }
+}
+
+/// Build a single-finger tap [`TouchHandler`] for a view's `on_touch`
+/// slot. Wraps a [`Tap`] recognizer, ungated.
+///
+/// Fires `on_tap` once per qualifying touch: `Began` → `Ended` with
+/// total movement ≤ `slop_px` and duration ≤ `max_duration_ms`.
+///
+/// ```ignore
+/// view(children!(...))
+///     .on_touch(tap(TapRecognizer::new(), || println!("tapped")))
+/// ```
+pub fn tap<F: Fn() + 'static>(config: TapRecognizer, on_tap: F) -> TouchHandler {
+    let rec = Rc::new(RefCell::new(Tap::new(config, on_tap)));
+    Rc::new(move |ev: &TouchEvent| -> TouchResponse {
+        rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response
     })
 }
 
@@ -273,63 +334,94 @@ enum PanState {
     },
 }
 
-/// Build a single-finger pan [`TouchHandler`].
+/// Single-finger pan recognizer ([`Recognizer`] impl).
 ///
 /// State machine:
-/// - `TouchPhase::Began` → start tracking (no callback yet).
-/// - First `Moved` past `slop_px` → fire `PanEvent::Began` with
-///   the touch's current view-local position, then immediately
-///   fire a `Moved` with `delta = (0, 0)`.
-/// - Subsequent `Moved` → fire `PanEvent::Moved` with cumulative
-///   delta from `Began` + smoothed velocity.
-/// - `Ended` while active → fire `PanEvent::Ended { velocity }`.
-/// - `Cancelled` while active → fire `PanEvent::Cancelled`.
+/// - `Began` → start tracking (no callback yet).
+/// - First `Moved` past `slop_px` (and `ctx.may_recognize`) → fire
+///   `PanEvent::Began` then an immediate `Moved` with `delta = (0,0)`;
+///   transition to active.
+/// - Subsequent `Moved` → `PanEvent::Moved` with cumulative delta +
+///   smoothed velocity.
+/// - `Ended` while active → `PanEvent::Ended { velocity }`.
+/// - `Cancelled` / arbiter cancel while active → `PanEvent::Cancelled`.
 ///
-/// The handler returns:
-/// - `CONSUMED` while tracking (slop not exceeded) — owns the
-///   touch but hasn't preempted anything yet.
-/// - `CONSUMED | CLAIM` once active — tells the backend to
-///   suppress parent scroll containers via the claim protocol.
-///
-/// Single-finger only; secondary touches return `IGNORED` so an
-/// outer pinch recognizer (future work) can pick them up.
-pub fn pan<F: Fn(&PanEvent) + 'static>(config: PanRecognizer, on_pan: F) -> TouchHandler {
-    use std::cell::Cell;
-    let on_pan = Rc::new(on_pan);
-    let state: Rc<Cell<PanState>> = Rc::new(Cell::new(PanState::Idle));
-    Rc::new(move |ev: &TouchEvent| -> TouchResponse {
-        let current = state.get();
-        match (ev.phase, current) {
+/// Returns `CONSUMED` while tracking (owns the touch, hasn't preempted
+/// anything) and `CLAIMED` once active (suppress parent scroll containers
+/// via the backend claim protocol). Single-finger only; secondary touches
+/// return `IGNORED` so a pinch recognizer can pick them up.
+pub struct Pan {
+    config: PanRecognizer,
+    on_pan: Box<dyn Fn(&PanEvent)>,
+    state: PanState,
+}
+
+impl Pan {
+    pub fn new<F: Fn(&PanEvent) + 'static>(config: PanRecognizer, on_pan: F) -> Self {
+        Self {
+            config,
+            on_pan: Box::new(on_pan),
+            state: PanState::Idle,
+        }
+    }
+}
+
+impl Recognizer for Pan {
+    fn name(&self) -> &'static str {
+        "pan"
+    }
+    fn kind(&self) -> RecognizerKind {
+        RecognizerKind::Continuous
+    }
+    fn state(&self) -> GestureState {
+        match self.state {
+            PanState::Idle | PanState::Tracking { .. } => GestureState::Possible,
+            PanState::Active { .. } => GestureState::Changed,
+        }
+    }
+    fn reset(&mut self, cancelled: bool) {
+        if cancelled && matches!(self.state, PanState::Active { .. }) {
+            (self.on_pan)(&PanEvent::Cancelled);
+        }
+        self.state = PanState::Idle;
+    }
+    fn update(&mut self, ev: &TouchEvent, ctx: &RecognizerCtx) -> RecognizerUpdate {
+        use GestureState as G;
+        let config = self.config;
+        let (state, response): (GestureState, TouchResponse) = match (ev.phase, self.state) {
             (TouchPhase::Began, PanState::Idle) => {
-                state.set(PanState::Tracking {
+                self.state = PanState::Tracking {
                     id: ev.id,
                     start: ev.position,
-                });
-                TouchResponse::CONSUMED
+                };
+                (G::Possible, TouchResponse::CONSUMED)
             }
-            (TouchPhase::Began, _) => TouchResponse::IGNORED,
+            (TouchPhase::Began, _) => (self.state(), TouchResponse::IGNORED),
 
             (TouchPhase::Moved, PanState::Tracking { id, start }) if id == ev.id => {
                 let dx = ev.position.x - start.x;
                 let dy = ev.position.y - start.y;
                 let dist2 = dx * dx + dy * dy;
-                if dist2 > config.slop_px * config.slop_px {
-                    state.set(PanState::Active {
+                // Past slop AND permitted to begin: go active. If gated
+                // (a prerequisite hasn't failed yet), stay tracking and
+                // re-check next Moved — slop is cumulative, so we re-detect.
+                if dist2 > config.slop_px * config.slop_px && ctx.may_recognize {
+                    self.state = PanState::Active {
                         id: ev.id,
                         start,
                         last_position: ev.position,
                         last_ts_ns: ev.timestamp_ns,
                         velocity: TouchPoint::ZERO,
-                    });
-                    on_pan(&PanEvent::Began { position: ev.position });
-                    on_pan(&PanEvent::Moved {
+                    };
+                    (self.on_pan)(&PanEvent::Began { position: ev.position });
+                    (self.on_pan)(&PanEvent::Moved {
                         position: ev.position,
                         delta: TouchPoint::new(dx, dy),
                         velocity: TouchPoint::ZERO,
                     });
-                    TouchResponse::CLAIMED
+                    (G::Began, TouchResponse::CLAIMED)
                 } else {
-                    TouchResponse::CONSUMED
+                    (G::Possible, TouchResponse::CONSUMED)
                 }
             }
             (TouchPhase::Moved, PanState::Active {
@@ -359,45 +451,56 @@ pub fn pan<F: Fn(&PanEvent) + 'static>(config: PanRecognizer, on_pan: F) -> Touc
                     old_velocity.x * (1.0 - a) + raw_vx * a,
                     old_velocity.y * (1.0 - a) + raw_vy * a,
                 );
-                state.set(PanState::Active {
+                self.state = PanState::Active {
                     id: ev.id,
                     start,
                     last_position: ev.position,
                     last_ts_ns: ev.timestamp_ns,
                     velocity: new_velocity,
-                });
-                on_pan(&PanEvent::Moved {
+                };
+                (self.on_pan)(&PanEvent::Moved {
                     position: ev.position,
                     delta: TouchPoint::new(dx, dy),
                     velocity: new_velocity,
                 });
-                TouchResponse::CLAIMED
+                (G::Changed, TouchResponse::CLAIMED)
             }
-            (TouchPhase::Moved, _) => TouchResponse::IGNORED,
+            (TouchPhase::Moved, _) => (self.state(), TouchResponse::IGNORED),
 
             (TouchPhase::Ended, PanState::Tracking { id, .. }) if id == ev.id => {
-                // Never crossed slop — no Began fired, no Ended.
-                state.set(PanState::Idle);
-                TouchResponse::CONSUMED
+                // Never crossed slop — no Began fired, never recognized.
+                self.state = PanState::Idle;
+                (G::Failed, TouchResponse::CONSUMED)
             }
             (TouchPhase::Ended, PanState::Active { id, velocity, .. }) if id == ev.id => {
-                state.set(PanState::Idle);
-                on_pan(&PanEvent::Ended { velocity });
-                TouchResponse::CONSUMED
+                self.state = PanState::Idle;
+                (self.on_pan)(&PanEvent::Ended { velocity });
+                (G::Recognized, TouchResponse::CONSUMED)
             }
-            (TouchPhase::Ended, _) => TouchResponse::IGNORED,
+            (TouchPhase::Ended, _) => (self.state(), TouchResponse::IGNORED),
 
             (TouchPhase::Cancelled, PanState::Tracking { id, .. }) if id == ev.id => {
-                state.set(PanState::Idle);
-                TouchResponse::CONSUMED
+                self.state = PanState::Idle;
+                (G::Failed, TouchResponse::CONSUMED)
             }
             (TouchPhase::Cancelled, PanState::Active { id, .. }) if id == ev.id => {
-                state.set(PanState::Idle);
-                on_pan(&PanEvent::Cancelled);
-                TouchResponse::CONSUMED
+                self.state = PanState::Idle;
+                (self.on_pan)(&PanEvent::Cancelled);
+                (G::Cancelled, TouchResponse::CONSUMED)
             }
-            (TouchPhase::Cancelled, _) => TouchResponse::IGNORED,
-        }
+            (TouchPhase::Cancelled, _) => (self.state(), TouchResponse::IGNORED),
+        };
+        RecognizerUpdate::new(state, response)
+    }
+}
+
+/// Build a single-finger pan [`TouchHandler`] for a view's `on_touch`
+/// slot. Wraps a [`Pan`] recognizer, ungated. See [`Pan`] for the state
+/// machine and the `PanEvent` lifecycle.
+pub fn pan<F: Fn(&PanEvent) + 'static>(config: PanRecognizer, on_pan: F) -> TouchHandler {
+    let rec = Rc::new(RefCell::new(Pan::new(config, on_pan)));
+    Rc::new(move |ev: &TouchEvent| -> TouchResponse {
+        rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response
     })
 }
 
@@ -448,75 +551,160 @@ impl LongPressRecognizer {
 enum LongPressState {
     Idle,
     /// Finger down, timer armed. `timer` lives until either it
-    /// fires (which transitions us to `Fired`) or we cancel it on
+    /// fires (which transitions us to `PendingFire`) or we cancel it on
     /// release / slop-exceed / cancellation.
     Tracking {
         id: TouchId,
         start: TouchPoint,
         timer: ScheduledTask,
     },
-    /// Timer already fired; we've delivered `on_long_press`. Keep
-    /// ownership through `Ended` so the touch doesn't reflow into
-    /// the bubble dispatcher.
+    /// Timer elapsed off the touch stream. The recognizer wants to
+    /// recognize but has not yet — it waits for the driver to call
+    /// [`Recognizer::poll_async`], which fires the callback subject to
+    /// the require-to-fail gate. Standalone use polls immediately, so
+    /// this state is transient; under the arbiter it can persist while a
+    /// prerequisite is still resolving.
+    PendingFire { id: TouchId },
+    /// Recognized — `on_long_press` delivered. Keep ownership through
+    /// `Ended` so the touch doesn't reflow into the bubble dispatcher.
     Fired { id: TouchId },
-    /// Slop exceeded before timer fired — recognizer dropped the
+    /// Slop exceeded before the timer fired — recognizer dropped the
     /// gesture but keeps the finger to stay coherent.
     Rejected { id: TouchId },
 }
 
-/// Build a single-finger long-press [`TouchHandler`].
+/// Single-finger long-press recognizer ([`Recognizer`] impl).
 ///
-/// Fires `on_long_press` once per qualifying touch: the finger stays
-/// within `slop_px` of its `Began` position for at least
-/// `threshold_ms`. Movement past slop before the timer fires marks
-/// the gesture rejected; release before the timer fires cancels
-/// silently.
+/// Recognizes once per qualifying touch: the finger stays within
+/// `slop_px` of its `Began` position for at least `threshold_ms`.
+/// Movement past slop before the timer fires marks the gesture rejected;
+/// release before the timer fires cancels silently.
 ///
-/// The fire happens on a scheduler tick (via
-/// [`crate::scheduling::after_ms`]) on the same thread as the
-/// framework — handlers can mutate signals safely.
-pub fn long_press<F: Fn() + 'static>(
+/// Unlike the other stock recognizers this one recognizes **off the touch
+/// stream** (on a scheduler tick via [`crate::scheduling::after_ms`]).
+/// When the timer elapses it does not fire unilaterally — it enters
+/// [`LongPressState::PendingFire`] and calls its [`AsyncNotifier`], and
+/// the driver re-polls via [`Recognizer::poll_async`]. Standalone use
+/// ([`long_press`]) installs a notifier that polls immediately and
+/// ungated, so behaviour matches a direct fire; the arbiter installs one
+/// that re-runs arbitration so a long-press can be gated / cancelled by a
+/// competitor.
+pub struct LongPress {
     config: LongPressRecognizer,
-    on_long_press: F,
-) -> TouchHandler {
-    let on_long_press = Rc::new(on_long_press);
-    let state: Rc<RefCell<LongPressState>> = Rc::new(RefCell::new(LongPressState::Idle));
+    on_long_press: Rc<dyn Fn()>,
+    state: Rc<RefCell<LongPressState>>,
+    notifier: Rc<RefCell<Option<AsyncNotifier>>>,
+}
 
-    Rc::new(move |ev: &TouchEvent| -> TouchResponse {
-        let phase = ev.phase;
+impl LongPress {
+    pub fn new<F: Fn() + 'static>(config: LongPressRecognizer, on_long_press: F) -> Self {
+        Self {
+            config,
+            on_long_press: Rc::new(on_long_press),
+            state: Rc::new(RefCell::new(LongPressState::Idle)),
+            notifier: Rc::new(RefCell::new(None)),
+        }
+    }
+
+    fn map_state(s: &LongPressState) -> GestureState {
+        match s {
+            LongPressState::Idle
+            | LongPressState::Tracking { .. }
+            | LongPressState::PendingFire { .. } => GestureState::Possible,
+            LongPressState::Fired { .. } => GestureState::Recognized,
+            LongPressState::Rejected { .. } => GestureState::Failed,
+        }
+    }
+}
+
+impl Recognizer for LongPress {
+    fn name(&self) -> &'static str {
+        "long_press"
+    }
+    fn kind(&self) -> RecognizerKind {
+        RecognizerKind::Discrete
+    }
+    fn state(&self) -> GestureState {
+        Self::map_state(&self.state.borrow())
+    }
+    fn set_async_notifier(&mut self, notifier: AsyncNotifier) {
+        *self.notifier.borrow_mut() = Some(notifier);
+    }
+    fn reset(&mut self, _cancelled: bool) {
+        // Discrete and has no `Cancelled` callback; dropping a `Tracking`
+        // state drops (and thus cancels) any armed timer.
+        *self.state.borrow_mut() = LongPressState::Idle;
+    }
+    fn poll_async(&mut self, ctx: &RecognizerCtx) -> Option<RecognizerUpdate> {
+        let pending_id = match &*self.state.borrow() {
+            LongPressState::PendingFire { id } => Some(*id),
+            _ => None,
+        };
+        let id = pending_id?;
+        if ctx.may_recognize {
+            *self.state.borrow_mut() = LongPressState::Fired { id };
+            (self.on_long_press)();
+            Some(RecognizerUpdate::new(
+                GestureState::Recognized,
+                TouchResponse::CONSUMED,
+            ))
+        } else {
+            // Gated by an unresolved prerequisite: stay pending. A later
+            // re-arbitration (when the prerequisite fails) re-polls us.
+            Some(RecognizerUpdate::new(
+                GestureState::Possible,
+                TouchResponse::CONSUMED,
+            ))
+        }
+    }
+    fn update(&mut self, ev: &TouchEvent, _ctx: &RecognizerCtx) -> RecognizerUpdate {
         let ev_id = ev.id;
-
-        match phase {
+        let config = self.config;
+        let response = match ev.phase {
             TouchPhase::Began => {
                 // Single-finger: ignore extras while we're armed.
-                if !matches!(*state.borrow(), LongPressState::Idle) {
-                    return TouchResponse::IGNORED;
-                }
-                let timer = {
-                    let cb = on_long_press.clone();
-                    let state = state.clone();
-                    let id = ev_id;
-                    after_ms(config.threshold_ms as i32, move || {
-                        // If we're still tracking the same id, fire.
-                        let mut s = state.borrow_mut();
-                        if let LongPressState::Tracking { id: cur, .. } = *s {
-                            if cur == id {
-                                *s = LongPressState::Fired { id };
-                                drop(s);
-                                cb();
+                if !matches!(*self.state.borrow(), LongPressState::Idle) {
+                    TouchResponse::IGNORED
+                } else {
+                    let timer = {
+                        let state = self.state.clone();
+                        let notifier = self.notifier.clone();
+                        let id = ev_id;
+                        after_ms(config.threshold_ms as i32, move || {
+                            // Still tracking the same id → arm a pending
+                            // recognition and notify the driver. Release
+                            // the borrow before calling out.
+                            let notify = {
+                                let mut s = state.borrow_mut();
+                                if let LongPressState::Tracking { id: cur, .. } = *s {
+                                    if cur == id {
+                                        *s = LongPressState::PendingFire { id };
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            };
+                            if notify {
+                                let n = notifier.borrow().clone();
+                                if let Some(n) = n {
+                                    n();
+                                }
                             }
-                        }
-                    })
-                };
-                *state.borrow_mut() = LongPressState::Tracking {
-                    id: ev_id,
-                    start: ev.position,
-                    timer,
-                };
-                TouchResponse::CONSUMED
+                        })
+                    };
+                    *self.state.borrow_mut() = LongPressState::Tracking {
+                        id: ev_id,
+                        start: ev.position,
+                        timer,
+                    };
+                    TouchResponse::CONSUMED
+                }
             }
             TouchPhase::Moved => {
-                let mut s = state.borrow_mut();
+                let mut s = self.state.borrow_mut();
                 match &mut *s {
                     LongPressState::Tracking { id, start, timer } if *id == ev_id => {
                         let dx = ev.position.x - start.x;
@@ -528,28 +716,79 @@ pub fn long_press<F: Fn() + 'static>(
                         }
                         TouchResponse::CONSUMED
                     }
-                    LongPressState::Fired { id } | LongPressState::Rejected { id } if *id == ev_id => {
+                    LongPressState::PendingFire { id }
+                    | LongPressState::Fired { id }
+                    | LongPressState::Rejected { id }
+                        if *id == ev_id =>
+                    {
                         TouchResponse::CONSUMED
                     }
                     _ => TouchResponse::IGNORED,
                 }
             }
             TouchPhase::Ended | TouchPhase::Cancelled => {
-                let mut s = state.borrow_mut();
+                let mut s = self.state.borrow_mut();
                 match &mut *s {
                     LongPressState::Tracking { id, timer, .. } if *id == ev_id => {
                         timer.cancel();
                         *s = LongPressState::Idle;
-                        TouchResponse::CONSUMED
+                        // Released before the timer — never recognized.
+                        return RecognizerUpdate::new(
+                            GestureState::Failed,
+                            TouchResponse::CONSUMED,
+                        );
                     }
-                    LongPressState::Fired { id } | LongPressState::Rejected { id } if *id == ev_id => {
+                    LongPressState::PendingFire { id } if *id == ev_id => {
+                        // Timer elapsed but recognition was never granted
+                        // (gated, or no poll yet) and the finger lifted.
                         *s = LongPressState::Idle;
-                        TouchResponse::CONSUMED
+                        return RecognizerUpdate::new(
+                            GestureState::Failed,
+                            TouchResponse::CONSUMED,
+                        );
+                    }
+                    LongPressState::Fired { id } if *id == ev_id => {
+                        *s = LongPressState::Idle;
+                        return RecognizerUpdate::new(
+                            GestureState::Recognized,
+                            TouchResponse::CONSUMED,
+                        );
+                    }
+                    LongPressState::Rejected { id } if *id == ev_id => {
+                        *s = LongPressState::Idle;
+                        return RecognizerUpdate::new(
+                            GestureState::Failed,
+                            TouchResponse::CONSUMED,
+                        );
                     }
                     _ => TouchResponse::IGNORED,
                 }
             }
-        }
+        };
+        RecognizerUpdate::new(self.state(), response)
+    }
+}
+
+/// Build a single-finger long-press [`TouchHandler`] for a view's
+/// `on_touch` slot. Wraps a [`LongPress`] recognizer with a notifier that
+/// polls immediately and ungated, so the timer fires `on_long_press`
+/// directly on its scheduler tick — identical to the pre-trait behaviour.
+pub fn long_press<F: Fn() + 'static>(
+    config: LongPressRecognizer,
+    on_long_press: F,
+) -> TouchHandler {
+    let rec = Rc::new(RefCell::new(LongPress::new(config, on_long_press)));
+    // Weak so the notifier closure → recognizer → notifier cycle can't
+    // leak (see [[feedback_no_forget_in_library_code]]).
+    let weak = Rc::downgrade(&rec);
+    rec.borrow_mut()
+        .set_async_notifier(Rc::new(move || {
+            if let Some(r) = weak.upgrade() {
+                r.borrow_mut().poll_async(&RecognizerCtx::UNGATED);
+            }
+        }));
+    Rc::new(move |ev: &TouchEvent| -> TouchResponse {
+        rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response
     })
 }
 
@@ -659,45 +898,76 @@ fn pinch_midpoint(a: TouchPoint, b: TouchPoint) -> TouchPoint {
     TouchPoint::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
 }
 
-/// Build a two-finger pinch [`TouchHandler`].
+/// Two-finger pinch recognizer ([`Recognizer`] impl).
 ///
 /// State machine:
 /// - First finger down → track it but **return [`TouchResponse::IGNORED`]**,
 ///   so a single-finger tap / pan recognizer on the same responder chain
-///   still sees it. (Unlike [`pan`], pinch only cares about two fingers, so
+///   still sees it. (Unlike [`Pan`], pinch only cares about two fingers, so
 ///   it doesn't claim ownership of a lone touch.)
 /// - Second finger down → record the start distance; still inactive.
-/// - First `Moved` whose `|cur_dist - start_dist|` exceeds `slop_px` →
-///   fire [`PinchEvent::Began`] (with the midpoint) then an immediate
+/// - First `Moved` whose `|cur_dist - start_dist|` exceeds `slop_px` (and
+///   `ctx.may_recognize`) → fire [`PinchEvent::Began`] then an immediate
 ///   [`PinchEvent::Changed`], and switch to returning
-///   [`TouchResponse::CLAIMED`] to suppress parent scroll / sibling
-///   gestures.
+///   [`TouchResponse::CLAIMED`].
 /// - Subsequent `Moved` → [`PinchEvent::Changed`] with cumulative scale +
 ///   smoothed velocity.
 /// - Either finger lifts while active → [`PinchEvent::Ended`]; the other
 ///   finger stays tracked so a fresh second touch can start a new pinch.
-/// - `Cancelled` while active → [`PinchEvent::Cancelled`].
+/// - `Cancelled` / arbiter cancel while active → [`PinchEvent::Cancelled`].
 ///
-/// Single-handler-per-view note: a view's `on_touch` slot holds one handler,
-/// so install *either* a pan/tap recognizer *or* this — composing pan + pinch
-/// on the same node is a higher-level concern (see the zoom SDK, which pairs
-/// this with the wheel/magnify path rather than with pan).
-pub fn pinch<F: Fn(&PinchEvent) + 'static>(config: PinchRecognizer, on_pinch: F) -> TouchHandler {
-    use std::cell::Cell;
-    let on_pinch = Rc::new(on_pinch);
-    let state: Rc<Cell<PinchState>> = Rc::new(Cell::new(PinchState::Idle));
-    Rc::new(move |ev: &TouchEvent| -> TouchResponse {
-        let cur = state.get();
-        match ev.phase {
+/// Because pinch lets a lone finger bubble (`IGNORED`), it composes
+/// naturally with a single-finger [`Pan`] in a `GestureGroup` set
+/// `allow_simultaneous` — the photo-viewer pan+zoom case.
+pub struct Pinch {
+    config: PinchRecognizer,
+    on_pinch: Box<dyn Fn(&PinchEvent)>,
+    state: PinchState,
+}
+
+impl Pinch {
+    pub fn new<F: Fn(&PinchEvent) + 'static>(config: PinchRecognizer, on_pinch: F) -> Self {
+        Self {
+            config,
+            on_pinch: Box::new(on_pinch),
+            state: PinchState::Idle,
+        }
+    }
+}
+
+impl Recognizer for Pinch {
+    fn name(&self) -> &'static str {
+        "pinch"
+    }
+    fn kind(&self) -> RecognizerKind {
+        RecognizerKind::Continuous
+    }
+    fn state(&self) -> GestureState {
+        match self.state {
+            PinchState::Two { active: true, .. } => GestureState::Changed,
+            _ => GestureState::Possible,
+        }
+    }
+    fn reset(&mut self, cancelled: bool) {
+        if cancelled && matches!(self.state, PinchState::Two { active: true, .. }) {
+            (self.on_pinch)(&PinchEvent::Cancelled);
+        }
+        self.state = PinchState::Idle;
+    }
+    fn update(&mut self, ev: &TouchEvent, ctx: &RecognizerCtx) -> RecognizerUpdate {
+        use GestureState as G;
+        let config = self.config;
+        let cur = self.state;
+        let (state, response): (GestureState, TouchResponse) = match ev.phase {
             TouchPhase::Began => match cur {
                 PinchState::Idle => {
-                    state.set(PinchState::One {
+                    self.state = PinchState::One {
                         a: PinchFinger {
                             id: ev.id,
                             pos: ev.position,
                         },
-                    });
-                    TouchResponse::IGNORED
+                    };
+                    (G::Possible, TouchResponse::IGNORED)
                 }
                 PinchState::One { a } if a.id != ev.id => {
                     let b = PinchFinger {
@@ -707,7 +977,7 @@ pub fn pinch<F: Fn(&PinchEvent) + 'static>(config: PinchRecognizer, on_pinch: F)
                     // Floor start_dist so the scale division can never blow up
                     // if two pointers report the same coordinate on landing.
                     let start_dist = pinch_dist(a.pos, b.pos).max(0.0001);
-                    state.set(PinchState::Two {
+                    self.state = PinchState::Two {
                         a,
                         b,
                         start_dist,
@@ -715,19 +985,19 @@ pub fn pinch<F: Fn(&PinchEvent) + 'static>(config: PinchRecognizer, on_pinch: F)
                         last_scale: 1.0,
                         last_ts_ns: ev.timestamp_ns,
                         velocity: 0.0,
-                    });
-                    TouchResponse::IGNORED
+                    };
+                    (G::Possible, TouchResponse::IGNORED)
                 }
                 // A third finger, or a duplicate id — single-pair recognizer
                 // ignores extras.
-                _ => TouchResponse::IGNORED,
+                _ => (self.state(), TouchResponse::IGNORED),
             },
 
             TouchPhase::Moved => match cur {
                 PinchState::One { mut a } if a.id == ev.id => {
                     a.pos = ev.position;
-                    state.set(PinchState::One { a });
-                    TouchResponse::IGNORED
+                    self.state = PinchState::One { a };
+                    (G::Possible, TouchResponse::IGNORED)
                 }
                 PinchState::Two {
                     mut a,
@@ -744,14 +1014,17 @@ pub fn pinch<F: Fn(&PinchEvent) + 'static>(config: PinchRecognizer, on_pinch: F)
                         b.pos = ev.position;
                     } else {
                         // Movement from a third finger we're not tracking.
-                        return TouchResponse::IGNORED;
+                        return RecognizerUpdate::new(self.state(), TouchResponse::IGNORED);
                     }
                     let cur_dist = pinch_dist(a.pos, b.pos);
                     let scale = cur_dist / start_dist;
                     let focus = pinch_midpoint(a.pos, b.pos);
                     if !active {
-                        if (cur_dist - start_dist).abs() > config.slop_px {
-                            state.set(PinchState::Two {
+                        // Begin only when slop is crossed AND the arbiter
+                        // permits it. If gated, stay inactive and re-check
+                        // next Moved (the |dist - start| test is cumulative).
+                        if (cur_dist - start_dist).abs() > config.slop_px && ctx.may_recognize {
+                            self.state = PinchState::Two {
                                 a,
                                 b,
                                 start_dist,
@@ -759,16 +1032,16 @@ pub fn pinch<F: Fn(&PinchEvent) + 'static>(config: PinchRecognizer, on_pinch: F)
                                 last_scale: scale,
                                 last_ts_ns: ev.timestamp_ns,
                                 velocity: 0.0,
-                            });
-                            on_pinch(&PinchEvent::Began { focus });
-                            on_pinch(&PinchEvent::Changed {
+                            };
+                            (self.on_pinch)(&PinchEvent::Began { focus });
+                            (self.on_pinch)(&PinchEvent::Changed {
                                 focus,
                                 scale,
                                 velocity: 0.0,
                             });
-                            TouchResponse::CLAIMED
+                            (G::Began, TouchResponse::CLAIMED)
                         } else {
-                            state.set(PinchState::Two {
+                            self.state = PinchState::Two {
                                 a,
                                 b,
                                 start_dist,
@@ -776,8 +1049,8 @@ pub fn pinch<F: Fn(&PinchEvent) + 'static>(config: PinchRecognizer, on_pinch: F)
                                 last_scale: scale,
                                 last_ts_ns: ev.timestamp_ns,
                                 velocity,
-                            });
-                            TouchResponse::IGNORED
+                            };
+                            (G::Possible, TouchResponse::IGNORED)
                         }
                     } else {
                         let dt_sec = if ev.timestamp_ns > last_ts_ns {
@@ -789,7 +1062,7 @@ pub fn pinch<F: Fn(&PinchEvent) + 'static>(config: PinchRecognizer, on_pinch: F)
                         let raw_v = (scale - last_scale) / dt_sec;
                         let mix = PINCH_VELOCITY_SMOOTHING;
                         let new_velocity = velocity * (1.0 - mix) + raw_v * mix;
-                        state.set(PinchState::Two {
+                        self.state = PinchState::Two {
                             a,
                             b,
                             start_dist,
@@ -797,24 +1070,24 @@ pub fn pinch<F: Fn(&PinchEvent) + 'static>(config: PinchRecognizer, on_pinch: F)
                             last_scale: scale,
                             last_ts_ns: ev.timestamp_ns,
                             velocity: new_velocity,
-                        });
-                        on_pinch(&PinchEvent::Changed {
+                        };
+                        (self.on_pinch)(&PinchEvent::Changed {
                             focus,
                             scale,
                             velocity: new_velocity,
                         });
-                        TouchResponse::CLAIMED
+                        (G::Changed, TouchResponse::CLAIMED)
                     }
                 }
-                _ => TouchResponse::IGNORED,
+                _ => (self.state(), TouchResponse::IGNORED),
             },
 
             TouchPhase::Ended | TouchPhase::Cancelled => {
                 let is_cancel = matches!(ev.phase, TouchPhase::Cancelled);
                 match cur {
                     PinchState::One { a } if a.id == ev.id => {
-                        state.set(PinchState::Idle);
-                        TouchResponse::IGNORED
+                        self.state = PinchState::Idle;
+                        (G::Failed, TouchResponse::IGNORED)
                     }
                     PinchState::Two { a, b, active, velocity, .. }
                         if a.id == ev.id || b.id == ev.id =>
@@ -822,29 +1095,43 @@ pub fn pinch<F: Fn(&PinchEvent) + 'static>(config: PinchRecognizer, on_pinch: F)
                         let remaining = if a.id == ev.id { b } else { a };
                         if active {
                             if is_cancel {
-                                on_pinch(&PinchEvent::Cancelled);
+                                (self.on_pinch)(&PinchEvent::Cancelled);
                             } else {
-                                on_pinch(&PinchEvent::Ended { velocity });
+                                (self.on_pinch)(&PinchEvent::Ended { velocity });
                             }
                         }
                         // A real lift (Ended) leaves the other finger down →
                         // demote to One so a new second touch can re-pinch.
                         // A Cancelled tears the whole interaction down.
                         if is_cancel {
-                            state.set(PinchState::Idle);
+                            self.state = PinchState::Idle;
                         } else {
-                            state.set(PinchState::One { a: remaining });
+                            self.state = PinchState::One { a: remaining };
                         }
-                        if active {
-                            TouchResponse::CONSUMED
-                        } else {
-                            TouchResponse::IGNORED
+                        match (active, is_cancel) {
+                            (true, false) => (G::Recognized, TouchResponse::CONSUMED),
+                            (true, true) => (G::Cancelled, TouchResponse::CONSUMED),
+                            (false, _) => (G::Failed, TouchResponse::IGNORED),
                         }
                     }
-                    _ => TouchResponse::IGNORED,
+                    _ => (self.state(), TouchResponse::IGNORED),
                 }
             }
-        }
+        };
+        RecognizerUpdate::new(state, response)
+    }
+}
+
+/// Build a two-finger pinch [`TouchHandler`] for a view's `on_touch`
+/// slot. Wraps a [`Pinch`] recognizer, ungated.
+///
+/// Single-handler-per-view note: a view's `on_touch` slot holds one handler,
+/// so install *either* a pan/tap recognizer *or* this — composing pan + pinch
+/// on the same node is a `GestureGroup` (gesture SDK) concern.
+pub fn pinch<F: Fn(&PinchEvent) + 'static>(config: PinchRecognizer, on_pinch: F) -> TouchHandler {
+    let rec = Rc::new(RefCell::new(Pinch::new(config, on_pinch)));
+    Rc::new(move |ev: &TouchEvent| -> TouchResponse {
+        rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response
     })
 }
 

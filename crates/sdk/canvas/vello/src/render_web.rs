@@ -498,6 +498,18 @@ impl GpuState {
             .copied()
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
+        // The canvas surface must respect alpha: it composites over the app UI AND
+        // over sibling canvases (the whiteboard stacks a transparent selection-chrome
+        // overlay on top of the recordable stage), and a scene is transparent wherever
+        // the author didn't paint. An `Opaque` alpha mode makes the browser IGNORE
+        // that alpha and show the raw RGB — so an overlay's un-painted regions (RGB 0)
+        // render as solid BLACK and black out the canvas beneath it.
+        //
+        // wgpu's WebGPU backend currently reports only `Opaque` in `caps.alpha_modes`,
+        // but every `GPUCanvasContext` supports `premultiplied` per the WebGPU spec —
+        // so the caps list under-reports and we configure `PreMultiplied` directly.
+        // (vello writes premultiplied alpha, matching this mode.)
+        let alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -510,7 +522,7 @@ impl GpuState {
             // (~22ms at 45fps) on top of the render time, which on mobile reads as
             // the canvas "rubber-banding" / lagging behind the finger on a reversal.
             desired_maximum_frame_latency: 1,
-            alpha_mode: caps.alpha_modes[0],
+            alpha_mode,
             view_formats: vec![],
         };
         surface.configure(&device, &config);
