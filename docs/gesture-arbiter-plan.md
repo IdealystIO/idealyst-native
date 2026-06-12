@@ -348,7 +348,12 @@ tests to mirror):
   Reports cumulative radians about the finger-line midpoint, with `±π`-seam
   unwrapping and EMA angular velocity. Lets a lone finger bubble, so it composes
   with `Pan` and `Pinch` in a group (`allow_simultaneous`) for the standard
-  pan + zoom + rotate manipulation set.
+  pan + zoom + rotate manipulation set. Its **desktop counterpart** is
+  `WheelKind::Rotate` on the wheel channel (macOS `rotateWithEvent:` →
+  `WheelEvent::rotation`, radians, clockwise-positive to match the recognizer);
+  browsers expose no native trackpad rotation, so it is macOS-only — exactly
+  how `Pinch` pairs with `WheelKind::Zoom` (`magnify:`). See
+  [`crates/runtime/core/src/wheel.rs`](../crates/runtime/core/src/wheel.rs).
 
 ## SDK composition
 

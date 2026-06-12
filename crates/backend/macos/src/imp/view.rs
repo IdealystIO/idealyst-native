@@ -46,6 +46,18 @@ use runtime_core::{
 /// Stable id for the single mouse pointer (macOS has no multitouch here).
 const MOUSE_TOUCH_ID: u64 = 1;
 
+/// Which AppKit gesture event `dispatch_wheel` is translating into the
+/// framework's unified [`WheelEvent`] desktop channel.
+#[derive(Clone, Copy)]
+enum WheelSrc {
+    /// `magnifyWithEvent:` — trackpad pinch → [`WheelKind::Zoom`].
+    Zoom,
+    /// `rotateWithEvent:` — trackpad two-finger rotation → [`WheelKind::Rotate`].
+    Rotate,
+    /// `scrollWheel:` — trackpad scroll / mouse wheel → [`WheelKind::Scroll`].
+    Scroll,
+}
+
 pub struct FlippedViewIvars {
     /// Installed by `Backend::install_touch_handler`; `None` for the many
     /// views (containers, layout wrappers, native-control hosts) that carry
@@ -150,15 +162,27 @@ declare_class!(
         // magnifiable view still works.
         #[method(magnifyWithEvent:)]
         fn magnify_with_event(&self, event: &NSEvent) {
-            if !self.dispatch_wheel(event, true) {
+            if !self.dispatch_wheel(event, WheelSrc::Zoom) {
                 let _: () = unsafe { msg_send![super(self), magnifyWithEvent: event] };
+            }
+        }
+
+        // Trackpad two-finger rotation → `WheelKind::Rotate` — the desktop
+        // counterpart of the `rotate` touch recognizer (which can't fire here:
+        // macOS maps a single mouse pointer, never two fingers). AppKit's
+        // `rotateWithEvent:` carries `NSEvent.rotation`, the incremental angle
+        // in degrees. Bubble to super when unhandled.
+        #[method(rotateWithEvent:)]
+        fn rotate_with_event(&self, event: &NSEvent) {
+            if !self.dispatch_wheel(event, WheelSrc::Rotate) {
+                let _: () = unsafe { msg_send![super(self), rotateWithEvent: event] };
             }
         }
 
         // Two-finger trackpad scroll or mouse wheel → `WheelKind::Scroll`.
         #[method(scrollWheel:)]
         fn scroll_wheel(&self, event: &NSEvent) {
-            if !self.dispatch_wheel(event, false) {
+            if !self.dispatch_wheel(event, WheelSrc::Scroll) {
                 let _: () = unsafe { msg_send![super(self), scrollWheel: event] };
             }
         }
@@ -402,11 +426,11 @@ impl FlippedView {
     }
 
     /// Translate one AppKit `magnify:` / `scrollWheel:` event into a
-    /// [`WheelEvent`] and dispatch it. `is_zoom` selects the source: `true`
-    /// for `magnifyWithEvent:` (a trackpad pinch — `WheelKind::Zoom`), `false`
-    /// for `scrollWheel:` (`WheelKind::Scroll`). Returns `true` when the
-    /// handler consumed the event (caller does NOT bubble to `super`).
-    fn dispatch_wheel(&self, event: &NSEvent, is_zoom: bool) -> bool {
+    /// [`WheelEvent`] and dispatch it. [`WheelSrc`] selects which AppKit event
+    /// is being translated (`magnifyWithEvent:` → `Zoom`, `rotateWithEvent:` →
+    /// `Rotate`, `scrollWheel:` → `Scroll`). Returns `true` when the handler
+    /// consumed the event (caller does NOT bubble to `super`).
+    fn dispatch_wheel(&self, event: &NSEvent, src: WheelSrc) -> bool {
         let handler = match self.ivars().wheel_handler.borrow().as_ref() {
             Some(h) => h.clone(),
             None => return false,
@@ -432,17 +456,32 @@ impl FlippedView {
         };
         let ts: f64 = unsafe { msg_send![event, timestamp] };
 
-        let (kind, delta_x, delta_y, scale) = if is_zoom {
-            // `NSEvent.magnification` is the incremental zoom fraction for this
-            // event; `scale = 1 + magnification` is the per-event multiplier
-            // the framework's normalized `WheelEvent::scale` expects (web's
-            // ctrl+wheel maps onto the same scale via `exp()`).
-            let magnification: f64 = unsafe { msg_send![event, magnification] };
-            (WheelKind::Zoom, 0.0, 0.0, 1.0 + magnification as f32)
-        } else {
-            let dx: f64 = unsafe { msg_send![event, scrollingDeltaX] };
-            let dy: f64 = unsafe { msg_send![event, scrollingDeltaY] };
-            (WheelKind::Scroll, dx as f32, dy as f32, 1.0)
+        let (kind, delta_x, delta_y, scale, rotation) = match src {
+            WheelSrc::Zoom => {
+                // `NSEvent.magnification` is the incremental zoom fraction for
+                // this event; `scale = 1 + magnification` is the per-event
+                // multiplier the framework's normalized `WheelEvent::scale`
+                // expects (web's ctrl+wheel maps onto the same scale via
+                // `exp()`).
+                let magnification: f64 = unsafe { msg_send![event, magnification] };
+                (WheelKind::Zoom, 0.0, 0.0, 1.0 + magnification as f32, 0.0)
+            }
+            WheelSrc::Rotate => {
+                // `NSEvent.rotation` is the incremental rotation in DEGREES for
+                // this event, with AppKit's counter-clockwise-positive sign.
+                // The framework's `WheelEvent::rotation` is RADIANS and
+                // clockwise-positive (matching the `rotate` touch recognizer),
+                // so negate and convert — a consumer reads one consistent sign
+                // whether the rotation came from touch or trackpad.
+                let degrees: f64 = unsafe { msg_send![event, rotation] };
+                let radians = -(degrees as f32).to_radians();
+                (WheelKind::Rotate, 0.0, 0.0, 1.0, radians)
+            }
+            WheelSrc::Scroll => {
+                let dx: f64 = unsafe { msg_send![event, scrollingDeltaX] };
+                let dy: f64 = unsafe { msg_send![event, scrollingDeltaY] };
+                (WheelKind::Scroll, dx as f32, dy as f32, 1.0, 0.0)
+            }
         };
 
         let we = WheelEvent {
@@ -450,6 +489,7 @@ impl FlippedView {
             delta_x,
             delta_y,
             scale,
+            rotation,
             position: TouchPoint::new(local.x as f32, local.y as f32),
             window_position: TouchPoint::new(win_tl.x as f32, win_tl.y as f32),
             timestamp_ns: (ts * 1_000_000_000.0) as u64,

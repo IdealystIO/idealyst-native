@@ -62,6 +62,9 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: WheelHandler) {
             delta_x,
             delta_y,
             scale,
+            // Browsers expose no native trackpad rotation, so web never emits
+            // `WheelKind::Rotate`; rotation is always zero here.
+            rotation: 0.0,
             position: TouchPoint::new(local.0, local.1),
             window_position: TouchPoint::new(ev.client_x() as f32, ev.client_y() as f32),
             timestamp_ns: (ev.time_stamp() * 1_000_000.0) as u64,

@@ -1,29 +1,41 @@
 //! Wheel / magnify event pipeline — the desktop counterpart to the touch
 //! pipeline ([`crate::touch`]).
 //!
-//! Touch screens express zoom as a two-finger pinch, which rides the existing
-//! [`TouchEvent`](crate::TouchEvent) stream (see the `pinch` recognizer). The
-//! desktop equivalents — a trackpad pinch, a trackpad two-finger scroll, a
-//! mouse scroll-wheel — are **not** touches. They arrive through this separate
+//! Touch screens express zoom and rotation as two-finger gestures, which ride
+//! the existing [`TouchEvent`](crate::TouchEvent) stream (see the `pinch` /
+//! `rotate` recognizers). The desktop equivalents — a trackpad pinch, a
+//! trackpad two-finger rotation, a trackpad two-finger scroll, a mouse
+//! scroll-wheel — are **not** touches. They arrive through this separate
 //! channel: the backend installs a [`WheelHandler`] on a view via
 //! [`Backend::install_wheel_handler`](crate::Backend::install_wheel_handler)
 //! and fires it for every wheel / magnify event hitting that view.
 //!
 //! Only the desktop backends source these (web `wheel`, macOS `magnify:` /
-//! `scrollWheel:`). iOS / Android leave the trait method at its no-op default —
-//! they have no trackpad/wheel, and pinch covers them. This is genuine input
-//! availability, not a per-platform hack: an app that wants zoom installs
-//! *both* a `pinch` handler (works everywhere) and a wheel handler (fires on
-//! desktop), which the zoom SDK pairs for you.
+//! `rotateWithEvent:` / `scrollWheel:`). iOS / Android leave the trait method at
+//! its no-op default — they have no trackpad/wheel, and the pinch / rotate
+//! recognizers cover them. This is genuine input availability, not a
+//! per-platform hack: an app that wants zoom installs *both* a `pinch` handler
+//! (works everywhere) and a wheel handler (fires on desktop), which the zoom
+//! SDK pairs for you; rotation pairs a `rotate` handler the same way.
+//!
+//! Not every backend sources every kind: browsers expose no native trackpad
+//! rotation, so web emits only [`WheelKind::Scroll`] / [`WheelKind::Zoom`].
+//! [`WheelKind::Rotate`] is therefore macOS-only today — hence
+//! [`WheelKind`] is `#[non_exhaustive]`, so matching it must carry a `_` arm.
 
 use std::rc::Rc;
 
 use crate::touch::{TouchPoint, TouchResponse};
 
-/// What a [`WheelEvent`] represents. The two intents are sourced differently
-/// per platform but converge here: web folds them out of `WheelEvent.ctrlKey`,
-/// macOS out of `magnify:` vs `scrollWheel:`.
+/// What a [`WheelEvent`] represents. The intents are sourced differently per
+/// platform but converge here: web folds scroll/zoom out of `WheelEvent.ctrlKey`,
+/// macOS out of `magnify:` / `rotateWithEvent:` / `scrollWheel:`.
+///
+/// `#[non_exhaustive]`: not every backend sources every kind (web has no native
+/// trackpad rotation), and more desktop gesture intents may land later, so a
+/// `match` on this must include a `_` arm.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum WheelKind {
     /// A two-finger trackpad scroll or a mouse scroll-wheel notch. Carried by
     /// [`WheelEvent::delta_x`] / [`WheelEvent::delta_y`].
@@ -31,6 +43,11 @@ pub enum WheelKind {
     /// A zoom intent — a trackpad pinch (web `wheel` with `ctrlKey`, macOS
     /// `magnify:`). The amount is in [`WheelEvent::scale`].
     Zoom,
+    /// A rotation intent — a trackpad two-finger rotation (macOS
+    /// `rotateWithEvent:`). The amount is in [`WheelEvent::rotation`]. The
+    /// desktop counterpart of the `rotate` touch recognizer; no browser
+    /// sources it, so it is macOS-only today.
+    Rotate,
 }
 
 /// One wheel / magnify delivery to a subscribed handler.
@@ -53,8 +70,14 @@ pub struct WheelEvent {
     pub delta_y: f32,
     /// Incremental zoom multiplier for THIS event, normalized across
     /// platforms: `1.0` = no change, `> 1.0` = zoom in, `< 1.0` = zoom out.
-    /// `1.0` for [`WheelKind::Scroll`].
+    /// `1.0` for [`WheelKind::Scroll`] / [`WheelKind::Rotate`].
     pub scale: f32,
+    /// Incremental rotation for THIS event in **radians**, positive =
+    /// clockwise on screen — matching the `rotate` touch recognizer's
+    /// convention ([`RotateEvent`](crate::RotateEvent)) so a consumer reads the
+    /// same sign whether the rotation arrived via touch or trackpad. `0.0` for
+    /// every kind other than [`WheelKind::Rotate`].
+    pub rotation: f32,
     /// Cursor position in the subscribed view's local coordinates — the focal
     /// point to zoom about.
     pub position: TouchPoint,
