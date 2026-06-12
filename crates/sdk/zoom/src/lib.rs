@@ -199,6 +199,24 @@ impl Zoom {
     /// each [`PinchEvent::Changed`] writes `base * gesture_scale`; the fingers
     /// lifting fires [`Zoom::on_end`].
     pub fn pinch_handler(&self) -> TouchHandler {
+        pinch_recognizer(self.config, self.pinch_event_handler())
+    }
+
+    /// Build the underlying core [`runtime_core::Pinch`] recognizer wired
+    /// to this handle's scale + callbacks, for composing in a
+    /// `gesture::GestureGroup` alongside other recognizers (e.g. a pan, or
+    /// a rotate). Use [`Zoom::pinch_handler`] for the standalone
+    /// single-`on_touch` case; the two share no state, so use one per
+    /// handle. (The wheel path is separate — see [`Zoom::wheel_handler`].)
+    pub fn recognizer(&self) -> runtime_core::Pinch {
+        runtime_core::Pinch::new(self.config, self.pinch_event_handler())
+    }
+
+    /// The `PinchEvent` → scale/callback closure shared by
+    /// [`Zoom::pinch_handler`] and [`Zoom::pinch_recognizer`]. Each call
+    /// captures fresh clones, so the two construction paths stay
+    /// independent.
+    fn pinch_event_handler(&self) -> impl Fn(&PinchEvent) + 'static {
         let scale = self.scale.clone();
         let base = self.base.clone();
         let on_start = self.on_start.clone();
@@ -206,7 +224,7 @@ impl Zoom {
         let on_end = self.on_end.clone();
         let on_cancel = self.on_cancel.clone();
 
-        pinch_recognizer(self.config, move |ev| match ev {
+        move |ev: &PinchEvent| match ev {
             PinchEvent::Began { focus } => {
                 scale.cancel();
                 let b = scale.get();
@@ -250,7 +268,7 @@ impl Zoom {
                     cb();
                 }
             }
-        })
+        }
     }
 
     /// Produce the wheel handler for the **desktop** input (trackpad pinch /
@@ -344,6 +362,23 @@ mod tests {
         let h = zoom.pinch_handler();
         // Start 100 px apart, spread to 200 → 2x.
         pinch_spread(&h, 100.0, 200.0);
+        assert!((zoom.value() - 2.0).abs() < 1e-3, "got {}", zoom.value());
+    }
+
+    #[test]
+    fn recognizer_drives_the_same_managed_scale() {
+        // The `recognizer()` composition path (for GestureGroup) must wire
+        // the same scale as `pinch_handler()`. Drive it through the
+        // Recognizer trait directly.
+        use runtime_core::{Recognizer, RecognizerCtx};
+        let zoom = Zoom::new();
+        let mut rec = zoom.recognizer();
+        let ctx = RecognizerCtx::UNGATED;
+        let c = 200.0;
+        rec.update(&touch(TouchPhase::Began, 1, c - 50.0, 0.0, 0), &ctx);
+        rec.update(&touch(TouchPhase::Began, 2, c + 50.0, 0.0, 0), &ctx);
+        rec.update(&touch(TouchPhase::Moved, 1, c - 100.0, 0.0, 16_000_000), &ctx);
+        rec.update(&touch(TouchPhase::Moved, 2, c + 100.0, 0.0, 16_000_000), &ctx);
         assert!((zoom.value() - 2.0).abs() < 1e-3, "got {}", zoom.value());
     }
 

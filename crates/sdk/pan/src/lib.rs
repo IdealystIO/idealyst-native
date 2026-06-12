@@ -238,6 +238,23 @@ impl Pan {
     ///   the callback's job.
     /// - **Cancelled**: fire [`Pan::on_cancel`].
     pub fn handler(&self) -> TouchHandler {
+        pan_recognizer(self.config, self.event_handler())
+    }
+
+    /// Build the underlying core [`runtime_core::Pan`] recognizer wired to
+    /// this handle's offset + callbacks, for composing in a
+    /// `gesture::GestureGroup` alongside other recognizers (e.g. a pinch
+    /// zoom). Use [`Pan::handler`] for the standalone single-`on_touch`
+    /// case; the recognizer it returns and this one share no state, so use
+    /// one or the other per handle.
+    pub fn recognizer(&self) -> runtime_core::Pan {
+        runtime_core::Pan::new(self.config, self.event_handler())
+    }
+
+    /// The `PanEvent` → offset/callback closure shared by [`Pan::handler`]
+    /// and [`Pan::recognizer`]. Each call captures fresh clones of the
+    /// reactive handles, so the two construction paths stay independent.
+    fn event_handler(&self) -> impl Fn(&PanEvent) + 'static {
         let x = self.x.clone();
         let y = self.y.clone();
         let base = self.base.clone();
@@ -246,7 +263,7 @@ impl Pan {
         let on_end = self.on_end.clone();
         let on_cancel = self.on_cancel.clone();
 
-        pan_recognizer(self.config, move |ev| match ev {
+        move |ev: &PanEvent| match ev {
             PanEvent::Began { position } => {
                 // Take over from any running animation and snapshot where we
                 // are right now, so successive grabs accumulate.
@@ -295,7 +312,7 @@ impl Pan {
                     cb();
                 }
             }
-        })
+        }
     }
 }
 
@@ -341,6 +358,21 @@ mod tests {
         let (ox, oy) = pan.offset();
         assert_eq!(ox, 40.0, "x offset should equal the cumulative delta");
         assert_eq!(oy, 10.0, "y offset should equal the cumulative delta");
+    }
+
+    #[test]
+    fn recognizer_drives_the_same_managed_offset() {
+        // The `recognizer()` composition path (for GestureGroup) must wire
+        // the same offset as `handler()`. Drive it through the Recognizer
+        // trait directly.
+        use runtime_core::{Recognizer, RecognizerCtx};
+        let pan = Pan::new();
+        let mut rec = pan.recognizer();
+        let ctx = RecognizerCtx::UNGATED;
+        rec.update(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0), &ctx);
+        rec.update(&ev(TouchPhase::Moved, 1, 40.0, 10.0, 16_000_000), &ctx);
+        rec.update(&ev(TouchPhase::Ended, 1, 40.0, 10.0, 32_000_000), &ctx);
+        assert_eq!(pan.offset(), (40.0, 10.0));
     }
 
     #[test]

@@ -213,8 +213,9 @@ pub use touch::recognizer::{
     AsyncNotifier, GestureState, Recognizer, RecognizerCtx, RecognizerKind, RecognizerUpdate,
 };
 pub use touch::recognizers::{
-    long_press, pan, pinch, tap, LongPress, LongPressRecognizer, Pan, PanEvent, PanRecognizer,
-    Pinch, PinchEvent, PinchRecognizer, Tap, TapRecognizer,
+    long_press, pan, pinch, rotate, swipe, tap, LongPress, LongPressRecognizer, Pan, PanEvent,
+    PanRecognizer, Pinch, PinchEvent, PinchRecognizer, Rotate, RotateEvent, RotateRecognizer,
+    Swipe, SwipeDirection, SwipeDirs, SwipeRecognizer, Tap, TapRecognizer,
 };
 pub use walker::{build_detached, mount, render, DetachedScope, Owner};
 pub use primitives::navigator::{

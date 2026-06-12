@@ -1135,6 +1135,588 @@ pub fn pinch<F: Fn(&PinchEvent) + 'static>(config: PinchRecognizer, on_pinch: F)
     })
 }
 
+// ---------------------------------------------------------------------------
+// Swipe (single-finger directional fling)
+// ---------------------------------------------------------------------------
+
+/// Minimum travel (CSS pixels) along the dominant axis between `Began` and
+/// `Ended` for a flick to count as a swipe. Filters out a fast tap that
+/// barely moves.
+pub const DEFAULT_SWIPE_MIN_DISTANCE_PX: f32 = 24.0;
+
+/// Minimum release speed (CSS pixels / second) along the dominant axis for
+/// a swipe — this is what makes it a *flick* rather than a slow drag. A
+/// slow, deliberate drag that ends below this speed is not a swipe (use a
+/// [`Pan`] for that).
+pub const DEFAULT_SWIPE_MIN_VELOCITY_PX_S: f32 = 300.0;
+
+/// EMA mixing factor for swipe velocity — same constant the pan / pinch
+/// recognizers use.
+const SWIPE_VELOCITY_SMOOTHING: f32 = 0.6;
+
+/// The four cardinal swipe directions, reported to the [`swipe`] callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwipeDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// Which directions a [`SwipeRecognizer`] will recognize. A swipe whose
+/// dominant direction is not allowed *fails* (so, in a [`GestureGroup`], a
+/// horizontal-only swipe lets a vertical scroll through). Defaults to all
+/// four via [`SwipeDirs::ALL`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SwipeDirs {
+    pub left: bool,
+    pub right: bool,
+    pub up: bool,
+    pub down: bool,
+}
+
+impl SwipeDirs {
+    pub const ALL: Self = Self {
+        left: true,
+        right: true,
+        up: true,
+        down: true,
+    };
+    pub const HORIZONTAL: Self = Self {
+        left: true,
+        right: true,
+        up: false,
+        down: false,
+    };
+    pub const VERTICAL: Self = Self {
+        left: false,
+        right: false,
+        up: true,
+        down: true,
+    };
+    pub fn allows(self, dir: SwipeDirection) -> bool {
+        match dir {
+            SwipeDirection::Left => self.left,
+            SwipeDirection::Right => self.right,
+            SwipeDirection::Up => self.up,
+            SwipeDirection::Down => self.down,
+        }
+    }
+}
+
+/// Configuration for [`swipe`] / [`Swipe`].
+#[derive(Clone, Copy, Debug)]
+pub struct SwipeRecognizer {
+    pub min_distance_px: f32,
+    pub min_velocity_px_s: f32,
+    pub directions: SwipeDirs,
+}
+
+impl Default for SwipeRecognizer {
+    fn default() -> Self {
+        Self {
+            min_distance_px: DEFAULT_SWIPE_MIN_DISTANCE_PX,
+            min_velocity_px_s: DEFAULT_SWIPE_MIN_VELOCITY_PX_S,
+            directions: SwipeDirs::ALL,
+        }
+    }
+}
+
+impl SwipeRecognizer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn min_distance_px(mut self, v: f32) -> Self {
+        self.min_distance_px = v;
+        self
+    }
+    pub fn min_velocity_px_s(mut self, v: f32) -> Self {
+        self.min_velocity_px_s = v;
+        self
+    }
+    pub fn directions(mut self, v: SwipeDirs) -> Self {
+        self.directions = v;
+        self
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SwipeState {
+    Idle,
+    /// One finger down. We accumulate a smoothed velocity so the decision
+    /// at `Ended` reflects the *release* speed, not the whole-gesture
+    /// average.
+    Tracking {
+        id: TouchId,
+        start: TouchPoint,
+        last_position: TouchPoint,
+        last_ts_ns: u64,
+        velocity: TouchPoint,
+    },
+}
+
+/// Single-finger directional swipe (flick) recognizer ([`Recognizer`]
+/// impl). Discrete: recognizes once, on `Ended`, if the release speed and
+/// travel along the dominant axis clear the thresholds and the direction
+/// is allowed. Reports the [`SwipeDirection`].
+///
+/// Owns the touch while tracking (`CONSUMED`) but never claims — a swipe
+/// observes the gesture without preempting a native scroller, so "swipe to
+/// act" and scrolling coexist. Compose it with a scroll/pan in a
+/// [`GestureGroup`] when they must arbitrate.
+pub struct Swipe {
+    config: SwipeRecognizer,
+    on_swipe: Box<dyn Fn(SwipeDirection)>,
+    state: SwipeState,
+}
+
+impl Swipe {
+    pub fn new<F: Fn(SwipeDirection) + 'static>(config: SwipeRecognizer, on_swipe: F) -> Self {
+        Self {
+            config,
+            on_swipe: Box::new(on_swipe),
+            state: SwipeState::Idle,
+        }
+    }
+
+    /// Decide the swipe outcome from the release kinematics. `None` =
+    /// thresholds not met (the recognizer fails).
+    fn classify(&self, start: TouchPoint, end: TouchPoint, velocity: TouchPoint) -> Option<SwipeDirection> {
+        let horizontal = velocity.x.abs() >= velocity.y.abs();
+        let (dir, dist, speed) = if horizontal {
+            let dir = if velocity.x >= 0.0 {
+                SwipeDirection::Right
+            } else {
+                SwipeDirection::Left
+            };
+            (dir, (end.x - start.x).abs(), velocity.x.abs())
+        } else {
+            let dir = if velocity.y >= 0.0 {
+                SwipeDirection::Down
+            } else {
+                SwipeDirection::Up
+            };
+            (dir, (end.y - start.y).abs(), velocity.y.abs())
+        };
+        if dist >= self.config.min_distance_px
+            && speed >= self.config.min_velocity_px_s
+            && self.config.directions.allows(dir)
+        {
+            Some(dir)
+        } else {
+            None
+        }
+    }
+}
+
+impl Recognizer for Swipe {
+    fn name(&self) -> &'static str {
+        "swipe"
+    }
+    fn kind(&self) -> RecognizerKind {
+        RecognizerKind::Discrete
+    }
+    fn state(&self) -> GestureState {
+        GestureState::Possible
+    }
+    fn reset(&mut self, _cancelled: bool) {
+        self.state = SwipeState::Idle;
+    }
+    fn update(&mut self, ev: &TouchEvent, ctx: &RecognizerCtx) -> RecognizerUpdate {
+        use GestureState as G;
+        let (state, response): (GestureState, TouchResponse) = match (ev.phase, self.state) {
+            (TouchPhase::Began, SwipeState::Idle) => {
+                self.state = SwipeState::Tracking {
+                    id: ev.id,
+                    start: ev.position,
+                    last_position: ev.position,
+                    last_ts_ns: ev.timestamp_ns,
+                    velocity: TouchPoint::ZERO,
+                };
+                (G::Possible, TouchResponse::CONSUMED)
+            }
+            (TouchPhase::Began, _) => (G::Possible, TouchResponse::IGNORED),
+
+            (TouchPhase::Moved, SwipeState::Tracking {
+                id,
+                start,
+                last_position,
+                last_ts_ns,
+                velocity,
+            }) if id == ev.id => {
+                let frame_dx = ev.position.x - last_position.x;
+                let frame_dy = ev.position.y - last_position.y;
+                let dt_sec = if ev.timestamp_ns > last_ts_ns {
+                    ((ev.timestamp_ns - last_ts_ns) as f32) / 1_000_000_000.0
+                } else {
+                    1.0 / 60.0
+                }
+                .max(0.001);
+                let a = SWIPE_VELOCITY_SMOOTHING;
+                let new_velocity = TouchPoint::new(
+                    velocity.x * (1.0 - a) + (frame_dx / dt_sec) * a,
+                    velocity.y * (1.0 - a) + (frame_dy / dt_sec) * a,
+                );
+                self.state = SwipeState::Tracking {
+                    id,
+                    start,
+                    last_position: ev.position,
+                    last_ts_ns: ev.timestamp_ns,
+                    velocity: new_velocity,
+                };
+                (G::Possible, TouchResponse::CONSUMED)
+            }
+            (TouchPhase::Moved, _) => (G::Possible, TouchResponse::IGNORED),
+
+            (TouchPhase::Ended, SwipeState::Tracking { id, start, velocity, .. }) if id == ev.id => {
+                self.state = SwipeState::Idle;
+                match self.classify(start, ev.position, velocity) {
+                    Some(dir) if ctx.may_recognize => {
+                        (self.on_swipe)(dir);
+                        (G::Recognized, TouchResponse::CONSUMED)
+                    }
+                    _ => (G::Failed, TouchResponse::CONSUMED),
+                }
+            }
+            (TouchPhase::Ended, _) => (G::Possible, TouchResponse::IGNORED),
+
+            (TouchPhase::Cancelled, SwipeState::Tracking { id, .. }) if id == ev.id => {
+                self.state = SwipeState::Idle;
+                (G::Failed, TouchResponse::CONSUMED)
+            }
+            (TouchPhase::Cancelled, _) => (G::Possible, TouchResponse::IGNORED),
+        };
+        RecognizerUpdate::new(state, response)
+    }
+}
+
+/// Build a single-finger swipe [`TouchHandler`] for a view's `on_touch`
+/// slot. Wraps a [`Swipe`] recognizer, ungated.
+pub fn swipe<F: Fn(SwipeDirection) + 'static>(
+    config: SwipeRecognizer,
+    on_swipe: F,
+) -> TouchHandler {
+    let rec = Rc::new(RefCell::new(Swipe::new(config, on_swipe)));
+    Rc::new(move |ev: &TouchEvent| -> TouchResponse {
+        rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Rotate (two-finger continuous rotation)
+// ---------------------------------------------------------------------------
+
+/// Minimum absolute rotation (radians) of the two-finger line past the
+/// two-finger-down angle before the rotate becomes active and fires
+/// [`RotateEvent::Began`]. ~5°, enough to reject the incidental twist of a
+/// two-finger pan or pinch.
+pub const DEFAULT_ROTATE_SLOP_RAD: f32 = 0.087;
+
+/// EMA mixing factor for angular-velocity smoothing — same constant the
+/// pan / pinch recognizers use.
+const ROTATE_VELOCITY_SMOOTHING: f32 = 0.6;
+
+/// Configuration for [`rotate`] / [`Rotate`].
+#[derive(Clone, Copy, Debug)]
+pub struct RotateRecognizer {
+    pub slop_rad: f32,
+}
+
+impl Default for RotateRecognizer {
+    fn default() -> Self {
+        Self {
+            slop_rad: DEFAULT_ROTATE_SLOP_RAD,
+        }
+    }
+}
+
+impl RotateRecognizer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn slop_rad(mut self, v: f32) -> Self {
+        self.slop_rad = v;
+        self
+    }
+}
+
+/// Lifecycle events fired by [`rotate`]. `rotation` is **cumulative
+/// radians relative to the two-finger-down angle** (positive = clockwise
+/// in screen coordinates, since y grows down), mirroring how [`PinchEvent`]
+/// reports cumulative scale — handlers add it onto an angle snapshotted at
+/// [`RotateEvent::Began`].
+#[derive(Clone, Copy, Debug)]
+pub enum RotateEvent {
+    /// Two fingers down and the line between them has turned past slop.
+    /// `focus` is the midpoint — the natural point to rotate about.
+    Began { focus: TouchPoint },
+    /// Rotation in progress. `rotation` is cumulative radians; `velocity`
+    /// is radians/second, EMA-smoothed.
+    Changed {
+        focus: TouchPoint,
+        rotation: f32,
+        velocity: f32,
+    },
+    /// A finger lifted after the rotate was active. Final `velocity` lets
+    /// handlers fling the rotation to a momentum settle.
+    Ended { velocity: f32 },
+    /// Interrupted by the platform. Handlers reset / animate back to rest.
+    Cancelled,
+}
+
+#[derive(Clone, Copy)]
+enum RotateState {
+    Idle,
+    One {
+        a: PinchFinger,
+    },
+    /// Two fingers tracked. `rotation` accumulates the wrapped per-frame
+    /// angle delta since the pair formed; `active` flips once
+    /// `|rotation|` crosses slop.
+    Two {
+        a: PinchFinger,
+        b: PinchFinger,
+        last_angle: f32,
+        rotation: f32,
+        active: bool,
+        last_ts_ns: u64,
+        velocity: f32,
+    },
+}
+
+/// Angle (radians) of the directed line a→b. y grows down, so a positive
+/// increase is a clockwise turn on screen.
+fn two_finger_angle(a: TouchPoint, b: TouchPoint) -> f32 {
+    (b.y - a.y).atan2(b.x - a.x)
+}
+
+/// Wrap an angle delta into `[-π, π]` so a rotation that crosses the
+/// ±π seam accumulates continuously instead of jumping a full turn.
+fn wrap_angle(mut a: f32) -> f32 {
+    use std::f32::consts::PI;
+    while a > PI {
+        a -= 2.0 * PI;
+    }
+    while a < -PI {
+        a += 2.0 * PI;
+    }
+    a
+}
+
+/// Two-finger rotation recognizer ([`Recognizer`] impl). The angular peer
+/// of [`Pinch`]: same two-finger lifecycle, but measures the turn of the
+/// finger line rather than the change in their distance.
+///
+/// Like pinch, it lets a lone finger bubble (`IGNORED`), so it composes
+/// with a single-finger [`Pan`] — and with [`Pinch`] itself — in a
+/// [`GestureGroup`] via `allow_simultaneous` (the standard rotate+zoom+pan
+/// map/photo manipulation set).
+pub struct Rotate {
+    config: RotateRecognizer,
+    on_rotate: Box<dyn Fn(&RotateEvent)>,
+    state: RotateState,
+}
+
+impl Rotate {
+    pub fn new<F: Fn(&RotateEvent) + 'static>(config: RotateRecognizer, on_rotate: F) -> Self {
+        Self {
+            config,
+            on_rotate: Box::new(on_rotate),
+            state: RotateState::Idle,
+        }
+    }
+}
+
+impl Recognizer for Rotate {
+    fn name(&self) -> &'static str {
+        "rotate"
+    }
+    fn kind(&self) -> RecognizerKind {
+        RecognizerKind::Continuous
+    }
+    fn state(&self) -> GestureState {
+        match self.state {
+            RotateState::Two { active: true, .. } => GestureState::Changed,
+            _ => GestureState::Possible,
+        }
+    }
+    fn reset(&mut self, cancelled: bool) {
+        if cancelled && matches!(self.state, RotateState::Two { active: true, .. }) {
+            (self.on_rotate)(&RotateEvent::Cancelled);
+        }
+        self.state = RotateState::Idle;
+    }
+    fn update(&mut self, ev: &TouchEvent, ctx: &RecognizerCtx) -> RecognizerUpdate {
+        use GestureState as G;
+        let config = self.config;
+        let cur = self.state;
+        let (state, response): (GestureState, TouchResponse) = match ev.phase {
+            TouchPhase::Began => match cur {
+                RotateState::Idle => {
+                    self.state = RotateState::One {
+                        a: PinchFinger {
+                            id: ev.id,
+                            pos: ev.position,
+                        },
+                    };
+                    (G::Possible, TouchResponse::IGNORED)
+                }
+                RotateState::One { a } if a.id != ev.id => {
+                    let b = PinchFinger {
+                        id: ev.id,
+                        pos: ev.position,
+                    };
+                    self.state = RotateState::Two {
+                        a,
+                        b,
+                        last_angle: two_finger_angle(a.pos, b.pos),
+                        rotation: 0.0,
+                        active: false,
+                        last_ts_ns: ev.timestamp_ns,
+                        velocity: 0.0,
+                    };
+                    (G::Possible, TouchResponse::IGNORED)
+                }
+                _ => (self.state(), TouchResponse::IGNORED),
+            },
+
+            TouchPhase::Moved => match cur {
+                RotateState::One { mut a } if a.id == ev.id => {
+                    a.pos = ev.position;
+                    self.state = RotateState::One { a };
+                    (G::Possible, TouchResponse::IGNORED)
+                }
+                RotateState::Two {
+                    mut a,
+                    mut b,
+                    last_angle,
+                    rotation,
+                    active,
+                    last_ts_ns,
+                    velocity,
+                } => {
+                    if a.id == ev.id {
+                        a.pos = ev.position;
+                    } else if b.id == ev.id {
+                        b.pos = ev.position;
+                    } else {
+                        return RecognizerUpdate::new(self.state(), TouchResponse::IGNORED);
+                    }
+                    let cur_angle = two_finger_angle(a.pos, b.pos);
+                    let delta = wrap_angle(cur_angle - last_angle);
+                    let rotation = rotation + delta;
+                    let focus = pinch_midpoint(a.pos, b.pos);
+                    if !active {
+                        if rotation.abs() > config.slop_rad && ctx.may_recognize {
+                            self.state = RotateState::Two {
+                                a,
+                                b,
+                                last_angle: cur_angle,
+                                rotation,
+                                active: true,
+                                last_ts_ns: ev.timestamp_ns,
+                                velocity: 0.0,
+                            };
+                            (self.on_rotate)(&RotateEvent::Began { focus });
+                            (self.on_rotate)(&RotateEvent::Changed {
+                                focus,
+                                rotation,
+                                velocity: 0.0,
+                            });
+                            (G::Began, TouchResponse::CLAIMED)
+                        } else {
+                            self.state = RotateState::Two {
+                                a,
+                                b,
+                                last_angle: cur_angle,
+                                rotation,
+                                active: false,
+                                last_ts_ns: ev.timestamp_ns,
+                                velocity,
+                            };
+                            (G::Possible, TouchResponse::IGNORED)
+                        }
+                    } else {
+                        let dt_sec = if ev.timestamp_ns > last_ts_ns {
+                            ((ev.timestamp_ns - last_ts_ns) as f32) / 1_000_000_000.0
+                        } else {
+                            1.0 / 60.0
+                        }
+                        .max(0.001);
+                        let raw_v = delta / dt_sec;
+                        let mix = ROTATE_VELOCITY_SMOOTHING;
+                        let new_velocity = velocity * (1.0 - mix) + raw_v * mix;
+                        self.state = RotateState::Two {
+                            a,
+                            b,
+                            last_angle: cur_angle,
+                            rotation,
+                            active: true,
+                            last_ts_ns: ev.timestamp_ns,
+                            velocity: new_velocity,
+                        };
+                        (self.on_rotate)(&RotateEvent::Changed {
+                            focus,
+                            rotation,
+                            velocity: new_velocity,
+                        });
+                        (G::Changed, TouchResponse::CLAIMED)
+                    }
+                }
+                _ => (self.state(), TouchResponse::IGNORED),
+            },
+
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                let is_cancel = matches!(ev.phase, TouchPhase::Cancelled);
+                match cur {
+                    RotateState::One { a } if a.id == ev.id => {
+                        self.state = RotateState::Idle;
+                        (G::Failed, TouchResponse::IGNORED)
+                    }
+                    RotateState::Two { a, b, active, velocity, .. }
+                        if a.id == ev.id || b.id == ev.id =>
+                    {
+                        let remaining = if a.id == ev.id { b } else { a };
+                        if active {
+                            if is_cancel {
+                                (self.on_rotate)(&RotateEvent::Cancelled);
+                            } else {
+                                (self.on_rotate)(&RotateEvent::Ended { velocity });
+                            }
+                        }
+                        if is_cancel {
+                            self.state = RotateState::Idle;
+                        } else {
+                            self.state = RotateState::One { a: remaining };
+                        }
+                        match (active, is_cancel) {
+                            (true, false) => (G::Recognized, TouchResponse::CONSUMED),
+                            (true, true) => (G::Cancelled, TouchResponse::CONSUMED),
+                            (false, _) => (G::Failed, TouchResponse::IGNORED),
+                        }
+                    }
+                    _ => (self.state(), TouchResponse::IGNORED),
+                }
+            }
+        };
+        RecognizerUpdate::new(state, response)
+    }
+}
+
+/// Build a two-finger rotate [`TouchHandler`] for a view's `on_touch`
+/// slot. Wraps a [`Rotate`] recognizer, ungated. Like [`pinch`], a single
+/// `on_touch` slot holds one handler — compose rotate with pinch/pan in a
+/// `GestureGroup`.
+pub fn rotate<F: Fn(&RotateEvent) + 'static>(
+    config: RotateRecognizer,
+    on_rotate: F,
+) -> TouchHandler {
+    let rec = Rc::new(RefCell::new(Rotate::new(config, on_rotate)));
+    Rc::new(move |ev: &TouchEvent| -> TouchResponse {
+        rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1604,5 +2186,128 @@ mod tests {
             }
             other => panic!("expected Changed, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Swipe
+    // -----------------------------------------------------------------
+
+    fn swipe_collect(cfg: SwipeRecognizer) -> (TouchHandler, Rc<RefCell<Vec<SwipeDirection>>>) {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let sink = log.clone();
+        let h = swipe(cfg, move |d| sink.borrow_mut().push(d));
+        (h, log)
+    }
+
+    /// Drive a fast horizontal flick: four 40 px/16 ms frames → ~2300 px/s.
+    fn fast_flick_right(h: &TouchHandler) {
+        h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        h(&ev(TouchPhase::Moved, 1, 40.0, 0.0, 16_000_000));
+        h(&ev(TouchPhase::Moved, 1, 80.0, 0.0, 32_000_000));
+        h(&ev(TouchPhase::Moved, 1, 120.0, 0.0, 48_000_000));
+        h(&ev(TouchPhase::Ended, 1, 120.0, 0.0, 48_000_000));
+    }
+
+    #[test]
+    fn swipe_recognizes_fast_horizontal_flick() {
+        let (h, log) = swipe_collect(SwipeRecognizer::new());
+        fast_flick_right(&h);
+        assert_eq!(log.borrow().as_slice(), &[SwipeDirection::Right]);
+    }
+
+    #[test]
+    fn swipe_recognizes_vertical_direction() {
+        let (h, log) = swipe_collect(SwipeRecognizer::new());
+        h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        h(&ev(TouchPhase::Moved, 1, 0.0, -40.0, 16_000_000));
+        h(&ev(TouchPhase::Moved, 1, 0.0, -80.0, 32_000_000));
+        h(&ev(TouchPhase::Moved, 1, 0.0, -120.0, 48_000_000));
+        h(&ev(TouchPhase::Ended, 1, 0.0, -120.0, 48_000_000));
+        assert_eq!(log.borrow().as_slice(), &[SwipeDirection::Up]);
+    }
+
+    #[test]
+    fn swipe_fails_slow_drag() {
+        // 40 px over 500 ms → 80 px/s, well under the velocity threshold.
+        let (h, log) = swipe_collect(SwipeRecognizer::new());
+        h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        h(&ev(TouchPhase::Moved, 1, 40.0, 0.0, 500_000_000));
+        h(&ev(TouchPhase::Ended, 1, 40.0, 0.0, 500_000_000));
+        assert!(log.borrow().is_empty(), "slow drag is not a swipe");
+    }
+
+    #[test]
+    fn swipe_direction_filter_rejects_disallowed_axis() {
+        // Vertical-only recognizer sees a horizontal flick → no fire.
+        let (h, log) = swipe_collect(SwipeRecognizer::new().directions(SwipeDirs::VERTICAL));
+        fast_flick_right(&h);
+        assert!(log.borrow().is_empty(), "horizontal flick rejected by VERTICAL filter");
+    }
+
+    #[test]
+    fn swipe_gate_suppresses_recognition() {
+        // A gated Ended must not fire, mirroring how the arbiter holds a
+        // dependent until its prerequisite fails.
+        let fired = Rc::new(Cell::new(0u32));
+        let mut rec = {
+            let fired = fired.clone();
+            Swipe::new(SwipeRecognizer::new(), move |_d| fired.set(fired.get() + 1))
+        };
+        rec.update(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0), &RecognizerCtx::UNGATED);
+        rec.update(&ev(TouchPhase::Moved, 1, 60.0, 0.0, 16_000_000), &RecognizerCtx::UNGATED);
+        let gated = RecognizerCtx { may_recognize: false };
+        let upd = rec.update(&ev(TouchPhase::Ended, 1, 120.0, 0.0, 32_000_000), &gated);
+        assert_eq!(fired.get(), 0, "gated swipe does not fire");
+        assert_eq!(upd.state, GestureState::Failed);
+    }
+
+    // -----------------------------------------------------------------
+    // Rotate
+    // -----------------------------------------------------------------
+
+    fn rotate_collect() -> (TouchHandler, Rc<RefCell<Vec<RotateEvent>>>) {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let sink = log.clone();
+        let h = rotate(RotateRecognizer::new(), move |e| sink.borrow_mut().push(*e));
+        (h, log)
+    }
+
+    #[test]
+    fn rotate_recognizes_past_slop_with_cumulative_radians() {
+        use std::f32::consts::FRAC_PI_4;
+        let (h, log) = rotate_collect();
+        // Line a→b starts horizontal (angle 0); rotate b to +45°.
+        h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        h(&ev(TouchPhase::Began, 2, 100.0, 0.0, 0));
+        h(&ev(TouchPhase::Moved, 2, 70.0, 70.0, 16_000_000));
+        let events = log.borrow();
+        assert!(
+            matches!(events.first(), Some(RotateEvent::Began { .. })),
+            "first event is Began: {events:?}"
+        );
+        match events.last() {
+            Some(RotateEvent::Changed { rotation, .. }) => {
+                assert!((*rotation - FRAC_PI_4).abs() < 1e-2, "got {rotation}")
+            }
+            other => panic!("expected Changed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rotate_ignores_below_slop() {
+        let (h, log) = rotate_collect();
+        h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        h(&ev(TouchPhase::Began, 2, 100.0, 0.0, 0));
+        // atan2(2, 100) ≈ 0.02 rad, under the ~0.087 rad slop.
+        h(&ev(TouchPhase::Moved, 2, 100.0, 2.0, 16_000_000));
+        assert!(log.borrow().is_empty(), "tiny twist below slop fires nothing");
+    }
+
+    #[test]
+    fn rotate_lone_finger_bubbles() {
+        // One finger must IGNORE so a single-finger pan can coexist.
+        let (h, _log) = rotate_collect();
+        let r = h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        assert!(!r.consumed, "lone finger bubbles for a sibling pan");
     }
 }

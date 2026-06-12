@@ -9,9 +9,9 @@ Where it lives:
 
 - **`Recognizer` trait + `GestureState` / `RecognizerKind` / `RecognizerCtx` /
   `RecognizerUpdate`** — [`crates/runtime/core/src/touch/recognizer.rs`](../crates/runtime/core/src/touch/recognizer.rs).
-- **The four stock recognizers** (`Tap` / `LongPress` / `Pan` / `Pinch`),
-  each now an `impl Recognizer` with a thin factory wrapper preserving the old
-  `tap()/…` `TouchHandler` API — [`recognizers.rs`](../crates/runtime/core/src/touch/recognizers.rs).
+- **The stock recognizers** (`Tap` / `LongPress` / `Pan` / `Pinch` / `Swipe` /
+  `Rotate`), each an `impl Recognizer` with a thin factory wrapper preserving the
+  old `tap()/…` `TouchHandler` API — [`recognizers.rs`](../crates/runtime/core/src/touch/recognizers.rs).
 - **`GestureGroup` arbiter** — [`crates/sdk/gesture/`](../crates/sdk/gesture/).
 
 ## Motivation
@@ -335,14 +335,33 @@ tests to mirror):
    state/ctx/update types live in `runtime_core::touch::recognizer`; only the
    composable `GestureGroup` arbiter is in `crates/sdk/gesture`.
 
+## Stock recognizer set (all `impl Recognizer`)
+
+`Tap`, `LongPress`, `Pan`, `Pinch`, plus the two added after the arbiter landed:
+
+- **`Swipe`** — discrete single-finger directional flick. Decides on `Ended`
+  from the smoothed release velocity + travel along the dominant axis; reports a
+  `SwipeDirection` and filters by an allowed `SwipeDirs` set (so a horizontal-only
+  swipe *fails* on a vertical drag and lets a scroll through). Owns the touch
+  while tracking but never claims, so "swipe to act" coexists with native scroll.
+- **`Rotate`** — two-finger continuous rotation, the angular peer of `Pinch`.
+  Reports cumulative radians about the finger-line midpoint, with `±π`-seam
+  unwrapping and EMA angular velocity. Lets a lone finger bubble, so it composes
+  with `Pan` and `Pinch` in a group (`allow_simultaneous`) for the standard
+  pan + zoom + rotate manipulation set.
+
+## SDK composition
+
+The `pan` and `zoom` SDKs each expose a `recognizer()` (zoom: `recognizer()`
+returns the core `Pinch`; the wheel path stays separate) that returns the
+underlying core recognizer wired to the same reactive offset/scale + callbacks
+as their standalone `handler()`. Hand it to a `GestureGroup` to compose pan +
+zoom (+ rotate) under one `on_touch` slot. The standalone `handler()` /
+`pinch_handler()` APIs are unchanged; a handle's `handler()` and `recognizer()`
+share no state, so use one path per handle.
+
 ## Not yet built (clear next steps, not blockers)
 
-- **`swipe()` and `rotate()` stock recognizers.** Both implement the same
-  `Recognizer` trait; swipe is a discrete decision off pan velocity at `Ended`,
-  rotate is a two-finger continuous angle delta (peer of `Pinch`).
-- **A `GestureGroup`-based constructor on the `pan`/`zoom` SDKs** so they compose
-  in a group instead of owning the slot standalone. Their current standalone
-  APIs stay.
 - **Ergonomic sugar** for the common pairs (e.g. a `tap_or_pan(...)` helper that
   wires the `require_to_fail` edge), once real call sites tell us which pairings
   recur.

@@ -6,7 +6,8 @@ use super::*;
 use runtime_core::{
     scheduling::{install_scheduler, ScheduleHandle, Scheduler},
     LongPress, LongPressRecognizer, Pan, PanEvent, PanRecognizer, Pinch, PinchEvent,
-    PinchRecognizer, Tap, TapRecognizer, TouchId, TouchPoint,
+    PinchRecognizer, Rotate, RotateEvent, RotateRecognizer, Tap, TapRecognizer, TouchId,
+    TouchPoint,
 };
 use std::cell::{Cell, RefCell};
 
@@ -41,6 +42,18 @@ fn recording_pinch(log: Rc<RefCell<Vec<String>>>, tag: &'static str) -> Pinch {
             PinchEvent::Changed { .. } => "changed",
             PinchEvent::Ended { .. } => "ended",
             PinchEvent::Cancelled => "cancelled",
+        };
+        log.borrow_mut().push(format!("{tag}:{p}"));
+    })
+}
+
+fn recording_rotate(log: Rc<RefCell<Vec<String>>>, tag: &'static str) -> Rotate {
+    Rotate::new(RotateRecognizer::new(), move |e: &RotateEvent| {
+        let p = match e {
+            RotateEvent::Began { .. } => "began",
+            RotateEvent::Changed { .. } => "changed",
+            RotateEvent::Ended { .. } => "ended",
+            RotateEvent::Cancelled => "cancelled",
         };
         log.borrow_mut().push(format!("{tag}:{p}"));
     })
@@ -181,6 +194,32 @@ fn simultaneous_pan_and_pinch_both_recognize() {
     assert!(
         !l.contains(&"pan:cancelled".to_string()),
         "simultaneous pan not cancelled by pinch: {l:?}"
+    );
+}
+
+#[test]
+fn simultaneous_pinch_and_rotate_both_recognize() {
+    // The map / photo manipulation set: two fingers spread *and* twist →
+    // both the pinch and the rotate must begin off the same touch pair.
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let h = {
+        let mut g = GestureGroup::new();
+        let pinch = g.add(recording_pinch(log.clone(), "pinch"));
+        let rotate = g.add(recording_rotate(log.clone(), "rotate"));
+        g.allow_simultaneous(pinch, rotate);
+        g.handler()
+    };
+    h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+    h(&ev(TouchPhase::Began, 2, 100.0, 0.0, 0));
+    // Move finger 2 to (140,140): distance 100→~198 (pinch) and angle
+    // 0→45° (rotate) both cross slop.
+    h(&ev(TouchPhase::Moved, 2, 140.0, 140.0, 16_000_000));
+    let l = log.borrow();
+    assert!(l.contains(&"pinch:began".to_string()), "pinch began: {l:?}");
+    assert!(l.contains(&"rotate:began".to_string()), "rotate began: {l:?}");
+    assert!(
+        !l.iter().any(|s| s.ends_with(":cancelled")),
+        "neither simultaneous recognizer is cancelled: {l:?}"
     );
 }
 
