@@ -115,6 +115,14 @@ pub struct BuildOptions {
     /// `["dev-hot-reload"]` so the user crate compiles its
     /// hot-reload integration. Empty == default features.
     pub features: Vec<String>,
+    /// When `Some(dir)`, stage the **full** static bundle (index.html +
+    /// `pkg/` + fonts/icons) into `dir` each rebuild instead of only
+    /// copying `pkg/` into the project root. The full-stack dev path
+    /// uses this so a standalone server (which serves a complete
+    /// `dist/web` over `ServeDir`) gets a refreshed bundle on every save.
+    /// `None` keeps the default pkg-into-project behavior that the
+    /// `dev-http` static server and in-crate full-stack server rely on.
+    pub bundle_out_dir: Option<PathBuf>,
 }
 
 /// Run a single rebuild. Useful for callers that want one build
@@ -143,6 +151,7 @@ pub fn start(
         BuildOptions {
             source,
             features: Vec::new(),
+            bundle_out_dir: None,
         },
     )
 }
@@ -312,9 +321,11 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
             release: false,
             source: opts.source.clone(),
             user_features: opts.features.clone(),
-            // Dev loop never stages a deploy bundle — that's only for
-            // `idealyst build --web --gzip` / `--out-dir`.
-            bundle_out_dir: None,
+            // Full-stack standalone-server dev passes a `dist/web` here
+            // so the bundle the server serves is restaged each rebuild;
+            // the plain dev-http / in-crate paths leave it `None` and
+            // get the default pkg-into-project copy.
+            bundle_out_dir: opts.bundle_out_dir.clone(),
             gzip: false,
             // Dev keeps panic messages — stripping them is a
             // production-only `idealyst build --web --strip-panics` thing.

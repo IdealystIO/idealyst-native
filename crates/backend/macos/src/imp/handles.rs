@@ -206,3 +206,109 @@ fn rect_of_node(node: &dyn Any) -> Option<ViewportRect> {
         height: frame.size.height as f32,
     })
 }
+
+// =========================================================================
+// Text input / text area ops — programmatic focus / blur / select / insert.
+// =========================================================================
+//
+// macOS has no built-in bridge for the SDK's `TextInputHandle::focus()` etc.
+// (the framework falls back to `NoopTextInputOps`, which silently does
+// nothing — so a controlled editor can't put the caret in the field). These
+// impls dispatch through the AppKit responder chain: `focus()` makes the
+// widget the window's first responder (which is what shows the blinking
+// insertion point and starts key delivery). Mirrors the iOS handles.
+
+use objc2_foundation::NSString;
+use runtime_core::primitives::text_area::{TextAreaHandle, TextAreaOps};
+use runtime_core::primitives::text_input::{TextInputHandle, TextInputOps};
+
+/// Make `node`'s view the window's first responder — shows the caret and
+/// routes keystrokes to it. No-op until the view is in a window.
+fn make_first_responder(node: &dyn Any) {
+    let Some(n) = node.downcast_ref::<MacosNode>() else { return };
+    let view = n.as_view();
+    unsafe {
+        let window: *mut objc2::runtime::AnyObject = msg_send![view, window];
+        if !window.is_null() {
+            let _: bool = msg_send![window, makeFirstResponder: view];
+        }
+    }
+}
+
+/// Resign first responder (clears the caret), via the window.
+fn resign_first_responder(node: &dyn Any) {
+    let Some(n) = node.downcast_ref::<MacosNode>() else { return };
+    let view = n.as_view();
+    unsafe {
+        let window: *mut objc2::runtime::AnyObject = msg_send![view, window];
+        if !window.is_null() {
+            let nil: *mut objc2::runtime::AnyObject = std::ptr::null_mut();
+            let _: bool = msg_send![window, makeFirstResponder: nil];
+        }
+    }
+}
+
+/// Select the field's whole contents (`-[NSText selectAll:]`).
+fn select_all_text(node: &dyn Any) {
+    let Some(n) = node.downcast_ref::<MacosNode>() else { return };
+    let view = n.as_view();
+    let nil: *mut objc2::runtime::AnyObject = std::ptr::null_mut();
+    unsafe {
+        let _: () = msg_send![view, selectAll: nil];
+    }
+}
+
+/// Insert `text` at the caret (best-effort; the controlling `Signal` stays the
+/// source of truth via the widget's normal change notification).
+fn insert_text_into(node: &dyn Any, text: &str) {
+    let Some(n) = node.downcast_ref::<MacosNode>() else { return };
+    let view = n.as_view();
+    let s = NSString::from_str(text);
+    unsafe {
+        let _: () = msg_send![view, insertText: &*s];
+    }
+}
+
+pub(crate) struct MacosTextInputOps;
+impl TextInputOps for MacosTextInputOps {
+    fn focus(&self, node: &dyn Any) {
+        make_first_responder(node);
+    }
+    fn blur(&self, node: &dyn Any) {
+        resign_first_responder(node);
+    }
+    fn select_all(&self, node: &dyn Any) {
+        select_all_text(node);
+    }
+    fn insert_text(&self, node: &dyn Any, text: &str) {
+        insert_text_into(node, text);
+    }
+}
+pub(crate) static MACOS_TEXT_INPUT_OPS: MacosTextInputOps = MacosTextInputOps;
+
+pub(crate) struct MacosTextAreaOps;
+impl TextAreaOps for MacosTextAreaOps {
+    fn focus(&self, node: &dyn Any) {
+        make_first_responder(node);
+    }
+    fn blur(&self, node: &dyn Any) {
+        resign_first_responder(node);
+    }
+    fn select_all(&self, node: &dyn Any) {
+        select_all_text(node);
+    }
+    fn insert_text(&self, node: &dyn Any, text: &str) {
+        insert_text_into(node, text);
+    }
+}
+pub(crate) static MACOS_TEXT_AREA_OPS: MacosTextAreaOps = MacosTextAreaOps;
+
+/// Build a focus-capable handle for a `text_input` (`NSTextField`) node.
+pub(crate) fn make_text_input_handle(node: &MacosNode) -> TextInputHandle {
+    TextInputHandle::new(Rc::new(node.clone()), &MACOS_TEXT_INPUT_OPS)
+}
+
+/// Build a focus-capable handle for a `text_area` (`NSTextView`) node.
+pub(crate) fn make_text_area_handle(node: &MacosNode) -> TextAreaHandle {
+    TextAreaHandle::new(Rc::new(node.clone()), &MACOS_TEXT_AREA_OPS)
+}

@@ -96,8 +96,8 @@ pub use batch::{batch, BatchScope};
 pub use cancel::{with_cancel, with_cancel_token, WithCancel};
 #[cfg(not(feature = "server"))]
 pub use client::{
-    bearer, configure, credentials_from_fn, BearerCredentials, ClientConfig, CredentialProvider,
-    FnCredentials,
+    bearer, configure, credentials_from_fn, dev_base_url, BearerCredentials, ClientConfig,
+    CredentialProvider, FnCredentials,
 };
 
 // =============================================================================

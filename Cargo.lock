@@ -8450,6 +8450,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sync"
+version = "0.0.1"
+dependencies = [
+ "runtime-core",
+ "serde",
+ "serde_json",
+ "storage",
+ "tokio",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

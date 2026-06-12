@@ -206,7 +206,16 @@ pub const BUTTON_RESET: &str = ":where(button) { all: unset; box-sizing: border-
 /// any other author class still win; this only supplies a sane default for
 /// controls that don't set their own family. Author origin beats the UA
 /// origin regardless of specificity, so this defeats the UA monospace rule.
-pub const FORM_FONT_RESET: &str = ":where(input, textarea) { font-family: inherit; }";
+///
+/// Also resets the UA **focus outline**: framework primitives are unstyled
+/// leaves and components own their focus indication (idea-ui's Field draws its
+/// own border-color focus ring), so the browser's default focus outline is at
+/// best a redundant double-ring and at worst unwanted chrome on a bare,
+/// transparently-styled input (e.g. an in-canvas text editor). `:where(...)`
+/// is specificity 0, so a component that *does* want a UA outline can still
+/// opt back in via any author class; nothing in the framework currently does.
+pub const FORM_FONT_RESET: &str =
+    ":where(input, textarea) { font-family: inherit; outline: none; }";
 
 /// The full base reset stylesheet ([`BOX_SIZING_RESET`] + [`BUTTON_RESET`]
 /// + [`FORM_FONT_RESET`]). The SSR backend emits this once in `<head>`; the
@@ -1156,7 +1165,7 @@ mod tests {
     fn regression_textarea_does_not_default_to_monospace_font() {
         assert_eq!(
             FORM_FONT_RESET,
-            ":where(input, textarea) { font-family: inherit; }"
+            ":where(input, textarea) { font-family: inherit; outline: none; }"
         );
         let reset = base_reset_css();
         assert!(

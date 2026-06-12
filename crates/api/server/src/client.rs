@@ -40,6 +40,34 @@ impl ClientConfig {
     }
 }
 
+/// The dev backend URL the `idealyst` CLI advertised for this run, if any.
+///
+/// `idealyst dev` sets the `IDEALYST_SERVER_URL` env var on the native app
+/// processes it spawns (macOS / terminal / iOS-sim) when the project
+/// declares a server, so the client can point [`configure`] at the dev
+/// backend without hardcoding host/port:
+///
+/// ```ignore
+/// let base = server::dev_base_url().unwrap_or_else(|| "http://127.0.0.1:3000".into());
+/// server::configure(server::ClientConfig::new(base));
+/// ```
+///
+/// Returns `None` when unset — i.e. in production, and on web (the bundle
+/// is served same-origin there, so use the document's origin instead).
+/// Reads nothing on `wasm32`: the env var has no meaning in the browser.
+pub fn dev_base_url() -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var("IDEALYST_SERVER_URL")
+            .ok()
+            .filter(|s| !s.is_empty())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
+}
+
 /// Supplies authentication headers attached to every outgoing server-fn
 /// request. The SDK stays auth-scheme-agnostic — bearer / JWT / custom
 /// header schemes compose from this; cookie-based auth needs no provider

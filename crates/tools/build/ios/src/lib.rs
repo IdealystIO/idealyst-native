@@ -167,6 +167,18 @@ pub struct AppMetadata {
     ///
     /// [`server_bin`]: AppMetadata::server_bin
     pub server_manifest: Option<String>,
+    /// Port the project's server binds in dev / `run server`. The CLI
+    /// passes it through as the `PORT` env var when it spawns the server,
+    /// and advertises `http://<host>:<port>` to every client it launches
+    /// (web via a `window.IDEALYST_SERVER_URL` global, native via the
+    /// `IDEALYST_SERVER_URL` env var) so the app's `server::configure`
+    /// can point at the dev backend without hardcoding the port. Defaults
+    /// to `3000`. Set in TOML as:
+    /// ```toml
+    /// [package.metadata.idealyst.app]
+    /// server_port = 3000
+    /// ```
+    pub server_port: u16,
     /// Web-target-specific knobs. Always present — empty defaults if
     /// the user didn't declare a `[package.metadata.idealyst.app.web]`
     /// block.
@@ -506,6 +518,8 @@ struct RawAppMetadata {
     #[serde(default)]
     server_manifest: Option<String>,
     #[serde(default)]
+    server_port: Option<u16>,
+    #[serde(default)]
     web: Option<RawWebMetadata>,
     #[serde(default)]
     macos: Option<RawMacosMetadata>,
@@ -644,6 +658,7 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         targets,
         server_bin: app_raw.server_bin,
         server_manifest: app_raw.server_manifest,
+        server_port: app_raw.server_port.unwrap_or(3000),
         web,
         macos,
         permissions: app_raw.permissions.unwrap_or_default(),
@@ -942,6 +957,7 @@ mod regression_tests {
                 targets: Vec::new(),
                 server_bin: None,
                 server_manifest: None,
+                server_port: 3000,
                 web: WebMetadata::default(),
                 macos: Default::default(),
                 permissions: Default::default(),

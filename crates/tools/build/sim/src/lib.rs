@@ -399,6 +399,7 @@ mod regression_tests {
                 targets: Vec::new(),
                 server_bin: None,
                 server_manifest: None,
+                server_port: 3000,
                 web: Default::default(),
                 macos: Default::default(),
                 permissions: Default::default(),

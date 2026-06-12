@@ -101,6 +101,7 @@ members = [
     # SDK — utility (non-primitive) crates.
     "crates/sdk/net",
     "crates/sdk/storage",
+    "crates/sdk/sync",
     "crates/sdk/pan",
     "crates/sdk/zoom",
     "crates/sdk/gesture",
@@ -346,6 +347,7 @@ table = { path = "crates/sdk/table" }
 menu = { path = "crates/sdk/menu" }
 net = { path = "crates/sdk/net" }
 storage = { path = "crates/sdk/storage" }
+sync = { path = "crates/sdk/sync" }
 microphone = { path = "crates/sdk/microphone" }
 camera = { path = "crates/sdk/camera" }
 media-stream = { path = "crates/sdk/media-stream" }

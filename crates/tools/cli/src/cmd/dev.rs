@@ -85,6 +85,19 @@ fn dev_env_vars(
     if let Some(endpoint) = endpoint {
         out.push(("IDEALYST_DEV_ENDPOINT".to_string(), endpoint.to_string()));
     }
+    // Advertise the dev backend's URL to native clients that read it via
+    // the `server` SDK's `dev_base_url()` helper. Loopback is correct for
+    // macOS / terminal / iOS-sim (they share the host's network stack);
+    // the Android emulator reaches the host at `10.0.2.2`, so the app's
+    // own fallback handles that case.
+    if let Ok(m) = parse_manifest(project_dir) {
+        if m.app.server_bin.is_some() || m.app.server_manifest.is_some() {
+            out.push((
+                "IDEALYST_SERVER_URL".to_string(),
+                format!("http://127.0.0.1:{}", m.app.server_port),
+            ));
+        }
+    }
     out
 }
 
@@ -274,6 +287,16 @@ pub fn run(args: Args) -> Result<()> {
     let manifest = parse_manifest(&dir)?;
     let active_targets = resolve_targets(&args, &manifest.app.targets)?;
 
+    // Full-stack projects declare a server (`server_bin` / `server_manifest`).
+    let backend_declared =
+        manifest.app.server_bin.is_some() || manifest.app.server_manifest.is_some();
+    // When web is a target of a full-stack project, the project's own
+    // server serves the bundle + API and `launch_web` takes the full-stack
+    // path — so the runtime-server hot-reload host is never used. Skip
+    // building/spawning it (it's a few hundred crates) so `idealyst dev
+    // --web` on a full-stack app is as lean as `idealyst run server`.
+    let full_stack_web = backend_declared && active_targets.contains(&Target::Web);
+
     // Decide if the interactive panel should actually boot. The flag
     // is the user's request; we still gate on a real TTY (so piped
     // invocations and CI keep getting line-oriented output) and on
@@ -373,7 +396,7 @@ pub fn run(args: Args) -> Result<()> {
     // this fn to keep the CLI alive while the host serves — see the
     // wait loop after the worker join.
     let mut host_pid: Option<u32> = None;
-    let runtime_server_port: Option<u16> = if !args.local {
+    let runtime_server_port: Option<u16> = if !args.local && !full_stack_web {
         let host_binary = build_runtime_server_host(&dir)?;
         let port_file = runtime_server_port_file(&dir);
         // Clear any stale value from a previous session before
@@ -455,6 +478,30 @@ pub fn run(args: Args) -> Result<()> {
     } else {
         None
     };
+
+    // Backend server for native-only sessions: when the project declares
+    // a server but web isn't an active target, the web launcher (which
+    // otherwise owns the server's lifecycle, serving the bundle + API)
+    // never runs — so start the server here so native clients have an API
+    // to call. Tracked in `children` (Ctrl-C teardown) and registered as
+    // a session anchor below (its exit ends the dev session). Web-
+    // inclusive sessions skip this: the web launcher spawns + serves the
+    // server, and native clients reach it via `IDEALYST_SERVER_URL`.
+    let mut backend_pid: Option<u32> = None;
+    if backend_declared && !active_targets.contains(&Target::Web) {
+        match spawn_backend(&dir, &manifest, None) {
+            Ok(child) => {
+                let pid = child.id();
+                eprintln!(
+                    "[dev backend] server running (pid {pid}) on port {} for native clients",
+                    manifest.app.server_port,
+                );
+                children.lock().unwrap().push(child);
+                backend_pid = Some(pid);
+            }
+            Err(e) => eprintln!("[dev backend] failed to start server: {e:#}"),
+        }
+    }
 
     // Spawn one worker thread per active target. We pre-build the
     // per-target context outside the thread so a setup error
@@ -616,6 +663,11 @@ pub fn run(args: Args) -> Result<()> {
         watch_pids.push(pid);
     }
     if let Some(pid) = *macos_app_pid.lock().unwrap() {
+        watch_pids.push(pid);
+    }
+    // Native-only backend server (web-inclusive sessions run it inside
+    // the blocking web worker instead). Its exit ends the dev session.
+    if let Some(pid) = backend_pid {
         watch_pids.push(pid);
     }
     if !watch_pids.is_empty() {
@@ -860,15 +912,14 @@ fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
 
     let source = crate::framework_source::resolve(dir)?;
 
-    // Full-stack projects (those declaring `server_bin` in their
-    // manifest) bypass the built-in static-file dev server entirely —
-    // their own server binary serves both the wasm bundle AND the
-    // `/_srv/*` API. We build the wasm into `pkg/` first (one-shot, no
-    // hot-reload yet for this path) then cargo-run the bin with
-    // `--features server`. Watch + restart on save is a follow-up.
+    // Full-stack projects (those declaring a `server_bin` or a
+    // standalone `server_manifest`) bypass the built-in static-file dev
+    // server entirely — their own server serves both the wasm bundle AND
+    // the `/_srv/*` API same-origin. We build the bundle, watch + rebuild
+    // on save, and run the server (see `launch_web_with_backend`).
     let manifest = parse_manifest(dir)?;
-    if let Some(server_bin) = manifest.app.server_bin.clone() {
-        return launch_web_with_server_bin(dir, args, &source, &server_bin);
+    if manifest.app.server_bin.is_some() || manifest.app.server_manifest.is_some() {
+        return launch_web_with_backend(dir, args, &source, &manifest);
     }
 
     // `[package.metadata.idealyst.app.web].preload_fonts` from the
@@ -945,6 +996,7 @@ fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
                         "runtime-server".to_string(),
                         "runtime-core/hot-reload".to_string(),
                     ],
+                    bundle_out_dir: None,
                 },
             )
             .context("web build failed (runtime-server + runtime-core/hot-reload)")?;
@@ -1002,6 +1054,7 @@ fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
                 dev_reload::BuildOptions {
                     source: source.clone(),
                     features: vec!["runtime-core/dev".to_string()],
+                    bundle_out_dir: None,
                 },
             )?;
             std::mem::forget(handle);
@@ -1251,43 +1304,48 @@ fn launch_ssr(
     }
 }
 
-/// Full-stack web launcher. Used when the project's manifest sets
-/// `[package.metadata.idealyst.app].server_bin = "<bin>"`.
+/// Full-stack web launcher. Used when the project's manifest declares a
+/// server — either an in-crate `server_bin` or a standalone
+/// `server_manifest` workspace. The server serves both the API
+/// (`/_srv/*` via `server::router()`) AND the wasm UI at `/`, so the
+/// browser loads from the server's origin and server-fn calls + the
+/// session cookie are same-origin.
 ///
-/// The user's own binary serves both the API (`/_srv/*` via
-/// `server::router()`) AND the static wasm bundle at `/` (via
-/// `tower_http::services::ServeDir`). We:
+/// Two bundle shapes, picked by whether the server is standalone:
 ///
-/// 1. Build the wasm bundle into `pkg/` and `cargo run` the user's
-///    server bin against the project with `--features server`.
-/// 2. Use `dev_reload::start_with` to watch `src/` + `Cargo.toml`;
-///    every successful rebuild bumps a generation counter.
-/// 3. A polling loop on the main thread watches that counter and,
-///    on each bump, kills the cargo child and respawns it. Cargo
-///    sees its source changed and recompiles + reruns the server.
-///    Each rebuild = one full server restart (no hot reload — the
-///    server bin's process state is small enough that a kill-and-
-///    respawn is the right shape).
-fn launch_web_with_server_bin(
+/// - **In-crate** (`server_bin` only): the server serves `<project>/pkg`
+///   + a generated index, so we build the bundle the default way
+///   (`pkg/` copied into the project) and **restart the server** on each
+///   rebuild (cargo re-runs, picking up server-code changes too).
+/// - **Standalone** (`server_manifest`): the server is its own workspace
+///   serving a fully-staged `dist/web` (`WEB_DIST`) over `ServeDir`, so
+///   we stage the **full** bundle there each rebuild and leave the server
+///   running — it serves the files statically, so a browser refresh
+///   picks up the new wasm with no restart.
+fn launch_web_with_backend(
     dir: &Path,
     args: &Args,
     source: &build_ios::FrameworkSource,
-    server_bin: &str,
+    manifest: &build_ios::Manifest,
 ) -> Result<()> {
     use std::time::Duration;
 
-    let package = parse_manifest(dir)?.name;
+    let standalone = manifest.app.server_manifest.is_some();
+    let port = manifest.app.server_port;
+    // Standalone servers serve this staged bundle over `ServeDir`; we
+    // pass it as `WEB_DIST` and restage it on every rebuild.
+    let dist_web = dir.join("dist").join("web");
 
-    // Phase 1: initial wasm build + spawn the watcher. `start_with`
-    // also runs the build before returning, so by the time we move
-    // on, `pkg/` is populated and the watcher thread is live.
+    // Phase 1: initial bundle build + spawn the watcher. `start_with`
+    // runs the build before returning, so by the time we move on the
+    // bundle is populated and the watcher thread is live.
     let signal = dev_reload::ReloadSignal::new();
     if !args.no_build {
         crate::dlog!(
             "dev web",
-            "full-stack: starting watcher for {} (server_bin = {})",
+            "full-stack: starting watcher for {} (standalone = {})",
             dir.display(),
-            server_bin,
+            standalone,
         );
         let handle = dev_reload::start_with(
             dir,
@@ -1295,9 +1353,10 @@ fn launch_web_with_server_bin(
             dev_reload::BuildOptions {
                 source: source.clone(),
                 features: Vec::new(),
+                bundle_out_dir: standalone.then(|| dist_web.clone()),
             },
         )
-        .context("wasm initial build + watcher start failed")?;
+        .context("web bundle initial build + watcher start failed")?;
         // Hand the watcher thread to the runtime — it lives as long
         // as the dev session. Dropping the JoinHandle here would NOT
         // stop the thread (it's a detached child), but `mem::forget`
@@ -1305,14 +1364,16 @@ fn launch_web_with_server_bin(
         std::mem::forget(handle);
     }
 
-    // Phase 2: spawn the server bin. Captured so we can kill + respawn
-    // on each rebuild.
-    let mut child = spawn_server_bin(&package, server_bin)?;
+    // The server serves the UI same-origin, so its port is the only URL
+    // the user needs. Open the browser once it's accepting connections.
+    spawn_browser_opener("127.0.0.1", port);
+
+    // Phase 2: spawn the server. Captured so we can kill + respawn on
+    // each rebuild (in-crate path only).
+    let mut child = spawn_backend(dir, manifest, standalone.then_some(dist_web.as_path()))?;
     crate::dlog!(
         "dev web",
-        "full-stack: spawned `cargo run -p {} --bin {} --features server` (pid {})",
-        package,
-        server_bin,
+        "full-stack: server running (pid {}) on port {port}",
         child.id(),
     );
     let mut last_gen = signal.current();
@@ -1323,35 +1384,38 @@ fn launch_web_with_server_bin(
     // elapses, at which point we re-check whether the server child died.
     //
     // 500ms keepalive == upper bound on how long it takes us to notice a
-    // server-bin crash. Bumps wake us immediately.
+    // server crash. Bumps wake us immediately.
     loop {
         let cur = signal.wait_past(last_gen, Duration::from_millis(500));
         if cur != last_gen {
             last_gen = cur;
-            eprintln!(
-                "[dev web] source change → restarting server bin `{}`",
-                server_bin,
-            );
-            let _ = child.kill();
-            let _ = child.wait();
-            child = match spawn_server_bin(&package, server_bin) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("[dev web] server respawn failed: {e:#}");
-                    // Try again on the next gen bump rather than
-                    // tearing down the whole dev session.
-                    continue;
-                }
-            };
+            if standalone {
+                // The bundle was restaged into `dist/web`; the running
+                // server serves it statically. Nothing to restart —
+                // refresh the browser to pick up the new wasm.
+                eprintln!("[dev web] bundle rebuilt → refresh the browser");
+            } else {
+                eprintln!("[dev web] source change → restarting server");
+                let _ = child.kill();
+                let _ = child.wait();
+                child = match spawn_backend(dir, manifest, None) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("[dev web] server respawn failed: {e:#}");
+                        // Try again on the next gen bump rather than
+                        // tearing down the whole dev session.
+                        continue;
+                    }
+                };
+            }
             continue;
         }
 
-        // Did the server bin exit on its own (panic, port-in-use,
-        // ...)?  Surface the exit code and stop the dev session.
+        // Did the server exit on its own (panic, port-in-use, ...)?
+        // Surface the exit code and stop the dev session.
         if let Some(status) = child.try_wait().ok().flatten() {
             anyhow::bail!(
-                "server bin `{}` exited with {} — fix the issue and re-run `idealyst dev --web`",
-                server_bin,
+                "server exited with {} — fix the issue and re-run `idealyst dev --web`",
                 status
                     .code()
                     .map(|c| c.to_string())
@@ -1361,20 +1425,60 @@ fn launch_web_with_server_bin(
     }
 }
 
-/// Spawn `cargo run -p <pkg> --bin <bin> --features server`, inheriting
-/// stdio so the user sees the server's log lines in real time.
-/// Returns the child for kill-on-restart bookkeeping.
-fn spawn_server_bin(package: &str, server_bin: &str) -> Result<std::process::Child> {
-    std::process::Command::new("cargo")
-        .arg("run")
-        .arg("-p")
-        .arg(package)
-        .arg("--bin")
-        .arg(server_bin)
-        .arg("--features")
-        .arg("server")
-        .spawn()
-        .with_context(|| format!("spawn `cargo run -p {} --bin {}`", package, server_bin))
+/// Spawn the project's declared server with `cargo run`, inheriting stdio
+/// so the user sees its log lines in real time. Mirrors the dispatch in
+/// `idealyst run server`:
+///
+/// - `server_manifest` → `cargo run --manifest-path <it> [--bin <server_bin>]`
+///   (the standalone workspace already enables its server deps; no
+///   `--features server`).
+/// - `server_bin` alone → `cargo run -p <pkg> --bin <it> --features server`.
+///
+/// `PORT` is always set from `server_port`. `web_dist`, when given, is
+/// passed as `WEB_DIST` so a standalone full-stack server serves the
+/// freshly-staged bundle. Returns the child for kill-on-restart and
+/// Ctrl-C bookkeeping.
+fn spawn_backend(
+    dir: &Path,
+    manifest: &build_ios::Manifest,
+    web_dist: Option<&Path>,
+) -> Result<std::process::Child> {
+    let app = &manifest.app;
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.arg("run");
+    if let Some(rel) = &app.server_manifest {
+        let joined = dir.join(rel);
+        if !joined.is_file() {
+            anyhow::bail!(
+                "server_manifest points at {}, which doesn't exist (resolved \
+                 relative to the app crate dir {}). Fix \
+                 `[package.metadata.idealyst.app].server_manifest`.",
+                joined.display(),
+                dir.display(),
+            );
+        }
+        // Collapse `../..` for a clean `--manifest-path`; canonicalize
+        // can't fail — we just confirmed it's a file.
+        let manifest_path = std::fs::canonicalize(&joined).unwrap_or(joined);
+        cmd.arg("--manifest-path").arg(&manifest_path);
+        if let Some(bin) = &app.server_bin {
+            cmd.arg("--bin").arg(bin);
+        }
+    } else if let Some(bin) = &app.server_bin {
+        cmd.arg("-p")
+            .arg(&manifest.name)
+            .arg("--bin")
+            .arg(bin)
+            .arg("--features")
+            .arg("server");
+    } else {
+        anyhow::bail!("no server declared (set server_bin or server_manifest)");
+    }
+    cmd.env("PORT", app.server_port.to_string());
+    if let Some(d) = web_dist {
+        cmd.env("WEB_DIST", d);
+    }
+    cmd.spawn().context("spawn server (`cargo run`)")
 }
 
 /// Open the browser at the project's web URL once the server is

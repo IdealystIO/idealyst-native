@@ -1,0 +1,40 @@
+[package]
+name = "sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Offline-first cache + server synchronization.
+#
+# A client-side cache layer that synchronizes server artifacts with a
+# device: download a named slice ("partition") of server data, read and
+# mutate it offline, and replay/reconcile when connectivity returns.
+#
+# The SDK owns persistence (via the `storage` SDK), a durable per-partition
+# outbox, the sync engine, and a single wire protocol (`pull` + `push`).
+# The app owns its entity types, the server bodies of `pull`/`push`, and a
+# pluggable per-entity `Merge` policy. The SDK never depends on `server` —
+# the app wires its server fns in through the `Transport` trait (the
+# `sync_entity!` macro, when added, generates both halves).
+#
+# Correctness target (v1): no silent data loss, crash-safe across restarts,
+# conflicts surfaced to the app. NOT automatic multi-device convergence,
+# real-time push, or CRDTs — those layer on top of the same primitives.
+
+[features]
+# The reference server-side implementation of the protocol (an in-memory
+# `Authority<T>`). Off by default so client builds never compile it; turn
+# it on in a server crate or to run a fully in-process example.
+reference-server = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+storage = { workspace = true }
+# Reactive Signal + provide/inject + spawn_async for the per-partition
+# reactive binding. `async-driver` gives `spawn_async` (pollster fallback
+# on native, spawn_local on web).
+runtime-core = { workspace = true, features = ["async-driver"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

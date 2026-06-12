@@ -3363,10 +3363,20 @@ impl Backend for MacosBackend {
                 // selection, secure entry) is untouched — these are pure
                 // appearance setters. Shared decision with iOS (§7).
                 let bg = color_to_nscolor(&input_background_color(style.background.as_ref()));
-                let _: () = unsafe { msg_send![view, setDrawsBackground: true] };
+                // A fully-transparent author background means "no fill" — turn
+                // drawsBackground OFF so AppKit doesn't paint an opaque system
+                // surface under it (an in-canvas text editor wants the canvas to
+                // show through). Any visible alpha keeps the fill.
+                let draws_bg = style_color_rgba(&input_background_color(style.background.as_ref()))[3] > 0.001;
+                let _: () = unsafe { msg_send![view, setDrawsBackground: draws_bg] };
                 let _: () = unsafe { msg_send![view, setBackgroundColor: &*bg] };
                 let fg = color_to_nscolor(&input_text_color(style.color.as_ref()));
                 let _: () = unsafe { msg_send![view, setTextColor: &*fg] };
+                // Mirror the author's TYPOGRAPHY (font family/size/weight, alignment)
+                // onto the AppKit widget too — `apply_style_to_view` only does the
+                // CALayer-level props, so without this an NSTextField/NSTextView
+                // ignores `font_family`/`font_size` and renders in the system font.
+                text_style::apply_text_style(view, style, false, &self.font_registry);
             }
             MacosNode::View(_) => {
                 // NSScrollView + its NSClipView paint their background through
@@ -3535,6 +3545,20 @@ impl Backend for MacosBackend {
 
     fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
         handles::make_text_handle(node)
+    }
+
+    fn make_text_input_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::primitives::text_input::TextInputHandle {
+        handles::make_text_input_handle(node)
+    }
+
+    fn make_text_area_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::primitives::text_area::TextAreaHandle {
+        handles::make_text_area_handle(node)
     }
 
     fn create_virtualizer(
