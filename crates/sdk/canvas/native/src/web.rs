@@ -384,9 +384,22 @@ fn apply_op(ctx: &CanvasRenderingContext2d, op: &DrawOp) {
                 LineJoin::Bevel => "bevel",
             });
             ctx.set_miter_limit(stroke.miter_limit as f64);
+            // Dash pattern via setLineDash (a JS number array); reset after.
+            if !stroke.dash.is_empty() {
+                let arr = js_sys::Array::new();
+                for &d in &stroke.dash {
+                    arr.push(&wasm_bindgen::JsValue::from_f64(d as f64));
+                }
+                let _ = ctx.set_line_dash(&arr);
+                ctx.set_line_dash_offset(stroke.dash_offset as f64);
+            }
             apply_blend(ctx, paint.blend);
             ctx.stroke();
             clear_blend(ctx, paint.blend);
+            if !stroke.dash.is_empty() {
+                let _ = ctx.set_line_dash(&js_sys::Array::new());
+                ctx.set_line_dash_offset(0.0);
+            }
         }
         DrawOp::Clip { path, fill_rule } => {
             build_path(ctx, path);
@@ -427,6 +440,21 @@ fn apply_op(ctx: &CanvasRenderingContext2d, op: &DrawOp) {
                     dst.h as f64,
                 );
                 ctx.restore();
+            }
+        }
+        DrawOp::Glyphs { font, glyphs, paint } => {
+            // Canvas2D draws system fonts by family name, but a PDF's embedded
+            // font has no system name — outline each glyph and fill it, matching
+            // the GPU (vello) path's geometry (CLAUDE.md §7).
+            for op in crate::glyphs::expand_run(font, glyphs, paint) {
+                apply_op(ctx, &op);
+            }
+        }
+        DrawOp::MaskGroup { content, .. } => {
+            // No soft-mask primitive wired on Canvas2D yet: draw the content
+            // unmasked so it doesn't vanish (the GPU/vello path masks correctly).
+            for op in content {
+                apply_op(ctx, op);
             }
         }
         // `DrawOp` is `#[non_exhaustive]`; future ops no-op until wired.
@@ -653,6 +681,20 @@ fn blend_css(blend: BlendMode) -> Option<&'static str> {
         BlendMode::DestinationOut => Some("destination-out"),
         BlendMode::Multiply => Some("multiply"),
         BlendMode::Screen => Some("screen"),
+        // The CSS `mix-blend-mode` keywords (Canvas2D accepts the same set).
+        BlendMode::Overlay => Some("overlay"),
+        BlendMode::Darken => Some("darken"),
+        BlendMode::Lighten => Some("lighten"),
+        BlendMode::ColorDodge => Some("color-dodge"),
+        BlendMode::ColorBurn => Some("color-burn"),
+        BlendMode::HardLight => Some("hard-light"),
+        BlendMode::SoftLight => Some("soft-light"),
+        BlendMode::Difference => Some("difference"),
+        BlendMode::Exclusion => Some("exclusion"),
+        BlendMode::Hue => Some("hue"),
+        BlendMode::Saturation => Some("saturation"),
+        BlendMode::Color => Some("color"),
+        BlendMode::Luminosity => Some("luminosity"),
         // `BlendMode` is `#[non_exhaustive]`; unknown modes fall back to
         // source-over (the default), matching the documented contract.
         _ => None,

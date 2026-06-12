@@ -50,6 +50,27 @@ pixels are identical (CLAUDE.md §7), so the batch only ever changes *how fast* 
 draws, never *what*. The batch carries a solid color per shape; for gradient or
 stroked shapes, use individual `fill`/`stroke` calls.
 
+## Text (glyph runs)
+
+`Scene::glyphs(font, glyphs, paint)` draws a run of glyphs from a font
+([`FontResource`](core/) = raw sfnt/CFF bytes + a cache id) — each
+[`PositionedGlyph`](core/) is a glyph id plus the affine placing its
+**1000-units-per-em** outline in logical space. On `canvas-vello` the run drives
+vello's GPU glyph pipeline with one cached font upload; on `canvas-native` each
+glyph is outlined (skrifa) and filled, producing identical geometry. This is the
+primitive the [`pdf`](../pdf/) SDK builds text from — a rendered PDF page is a
+scene of glyph runs (text), fills/strokes (vectors), and image blits.
+
+## Blend modes & soft masks
+
+`Paint::blend(BlendMode)` covers the full W3C/PDF set — `Normal`, `Multiply`,
+`Screen`, `Overlay`, `Darken`, `Lighten`, `ColorDodge`/`ColorBurn`,
+`Hard`/`SoftLight`, `Difference`, `Exclusion`, `Hue`/`Saturation`/`Color`/
+`Luminosity`, plus `DestinationOut` (the eraser). `Stroke::dash(pattern, offset)`
+dashes a stroke. `DrawOp::MaskGroup` masks one op list by another's **luminance**
+(soft masks / watermarks): on `canvas-vello` it uses vello's luminance-mask
+layer; the [`pdf`](../pdf/) SDK builds these from PDF `/SMask`s.
+
 ## Renderers
 
 Pick **one** at bootstrap (the `Element::External` registry is `TypeId`-keyed,

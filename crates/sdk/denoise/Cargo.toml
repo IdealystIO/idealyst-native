@@ -1,0 +1,103 @@
+[package]
+name = "denoise"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Neural noise-suppression SDK — an AudioStream transformer.
+#
+# Takes an `AudioStream` in, returns an `AudioStream` out, with each chunk
+# run through DeepFilterNet 3 (real-time speech enhancement). Composes with
+# the rest of the media stack: `microphone` -> `denoise` -> `media-writer`,
+# camera audio, decoded files, anything that produces an `AudioStream`.
+#
+# The denoising is pure-Rust computation on f32 buffers (inference via
+# `tract`), so ONE implementation covers macOS / iOS / Android / desktop —
+# there is no per-OS native code. Only the *execution context* differs:
+#
+#   - native (macOS/iOS/Android/desktop): a background processing thread,
+#     fed by the input subscription over a channel (see native.rs).
+#   - web (wasm32): the same engine, run inline on the main thread inside
+#     the subscribe callback — wasm has no threads (see web.rs).
+#
+# Output is always 48 kHz mono (DeepFilterNet's native format).
+#
+# Model weights: EMBEDDED on native (`default-model`, so `Denoiser::new()` works
+# with no setup), but NOT embedded on web — bundling ~MBs of model into the wasm
+# binary would bloat first load. Web apps fetch the model tar.gz separately and
+# pass the bytes to `Denoiser::with_weights(..)`. See the split deep_filter dep
+# tables below.
+#
+# No `[package.metadata.idealyst]` capability: this SDK consumes an existing
+# stream and needs no OS permission of its own (the producer — e.g.
+# `microphone` — already owns the capture permission).
+
+[dependencies]
+thiserror = "1"
+
+# The platform-agnostic live-source abstraction. `denoise` both consumes an
+# `AudioStream` (subscribe) and produces one (AudioWriter) — a transformer.
+media-stream = { workspace = true }
+
+# `ndarray` must be the SAME 0.15 line `deep_filter` uses: the `ArrayView2`
+# we hand to `DfTract::process` is that crate's type, so a version mismatch
+# would be a different (incompatible) `ArrayView2`. Cargo unifies both to one
+# 0.15.x. See [[project ndarray interop]] note in the plan.
+ndarray = "0.15"
+
+# Pin tract to EXACTLY 0.19.16 — the version the v0.5.6 release tag of `libDF`
+# is locked to (its committed Cargo.lock). `libDF` declares a caret range, but
+# newer tract both renamed `Graph::symbol_table` -> `symbols` AND regressed this
+# model's codegen (a "duplicate name /convt3/Conv.bias" graph-compaction error
+# on 0.21.x). Cargo re-resolves a git dep's deps against OUR lockfile and
+# ignores theirs, so we must reproduce the pin here. These are
+# constraint-only deps (we never call tract directly); they force the whole
+# tract family to 0.19.16 so `deep_filter` compiles. Bump in lockstep with `rev`.
+tract-core = "=0.19.16"
+tract-onnx = "=0.19.16"
+tract-pulse = "=0.19.16"
+tract-hir = "=0.19.16"
+
+# DeepFilterNet 3 inference engine. The crates.io release (`deep_filter =
+# "0.2.5"`) is the OLD dataset/training library and has no `DfTract` runtime, no
+# `tract` feature, and no embedded model — those live only in the upstream
+# `libDF` crate (workspace member, unpublished). So we pin the v0.5.6 release tag
+# (this repo's first git dep — a deliberate, reviewed exception, since there is
+# no published path to DF3 in Rust). A release tag, not `main`: `main` is an
+# in-development `0.5.7-pre` that pulls a newer tract whose codegen rejects this
+# model (see the tract pin above).
+#
+# The dep is declared per-target so the model is embedded ONLY on native:
+#   features = tract        -> the tract runtime (DfTract/DfParams/RuntimeParams)
+#             default-model  -> embeds DeepFilterNet3_onnx (native only)
+#   default-features = false -> drops vorbis/flac/dataset (the last pulls hdf5, not wasm-safe)
+
+# Native: embed the model so `Denoiser::new()` works with zero setup.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.deep_filter]
+git = "https://github.com/Rikorose/DeepFilterNet"
+rev = "978576aa8400552a4ce9730838c635aa30db5e61" # v0.5.6
+default-features = false
+features = ["tract", "default-model"]
+
+# Native: a oneshot to await the worker thread's model-init result, so `process`
+# is async (non-blocking) yet still surfaces init failures (same dep `microphone`
+# uses).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+futures-channel = "0.3"
+
+# Web (wasm32): the SAME deep_filter, but WITHOUT `default-model` — the model is
+# not baked into the wasm binary. The app fetches it and calls `with_weights`.
+[target.'cfg(target_arch = "wasm32")'.dependencies.deep_filter]
+git = "https://github.com/Rikorose/DeepFilterNet"
+rev = "978576aa8400552a4ce9730838c635aa30db5e61" # v0.5.6
+default-features = false
+features = ["tract"]
+
+# Web (wasm32): tract's transitive `getrandom` needs its JS backend selected
+# explicitly, or the wasm build fails to link a randomness source.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+# Drives the async `process` in unit tests without pulling a full runtime.
+pollster = "0.3"

@@ -25,8 +25,13 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
+// FxHashMap/FxHashSet are SipHash-free HashMap/HashSet aliases using rustc's
+// FxHasher. Every collection here is keyed by an internal Signal/Effect integer
+// id (never attacker-controlled), so the default SipHash is pure overhead on the
+// framework's hottest path — see the crate's Cargo.toml note. Logic is identical;
+// this is a hasher swap only.
+use rustc_hash::{FxHashMap, FxHashSet};
 
 // =============================================================================
 // IDs and arena storage
@@ -58,7 +63,7 @@ thread_local! {
     /// same id. Different-id reentry (effect A's set fires effect B,
     /// which runs and reads other signals) is fine — only same-id
     /// reentry corrupts the dep set.
-    static RUNNING: RefCell<HashSet<EffectId>> = RefCell::new(HashSet::new());
+    static RUNNING: RefCell<FxHashSet<EffectId>> = RefCell::new(FxHashSet::default());
 
     /// Transitive depth of nested `run_effect` calls on the current
     /// thread. The same-id reentry guard (`RUNNING`) only catches the
@@ -268,7 +273,7 @@ struct Arena {
     /// Maintained as the inverse of `effect_dependencies`: an
     /// `(eid, sid)` link exists in `signal_subscribers[sid]` iff it
     /// exists in `effect_dependencies[eid]`.
-    signal_subscribers: Vec<HashSet<EffectId>>,
+    signal_subscribers: Vec<FxHashSet<EffectId>>,
 
     /// Per-effect dependency set, indexed parallel to `effects`. An
     /// entry `sid` here means "this effect's last run read signal
@@ -277,7 +282,7 @@ struct Arena {
     /// what every fine-grained reactivity lib does — Solid, Reactively,
     /// MobX). Drained on effect-free so dead `EffectId`s don't sit in
     /// any signal's subscriber set.
-    effect_dependencies: Vec<HashSet<SignalId>>,
+    effect_dependencies: Vec<FxHashSet<SignalId>>,
 
     /// Per-signal JS notifier callbacks. At most one notifier per
     /// signal. Fires AFTER the Rust subscriber fan-out on every
@@ -296,7 +301,7 @@ struct Arena {
     /// Cleanup: removed in `take_signals_batched` when the signal's
     /// slot is freed, so the notifier (which typically holds a
     /// `Weak<RefCell<Backend>>`) doesn't outlive its signal.
-    signal_js_notifiers: HashMap<u64, std::rc::Rc<dyn Fn()>>,
+    signal_js_notifiers: FxHashMap<u64, std::rc::Rc<dyn Fn()>>,
 
     /// Freelists for recycling nulled slot ids. Without these, the
     /// arena vectors grow monotonically with the number of slots
@@ -328,7 +333,7 @@ impl Arena {
             refs: Vec::new(),
             signal_subscribers: Vec::new(),
             effect_dependencies: Vec::new(),
-            signal_js_notifiers: HashMap::new(),
+            signal_js_notifiers: FxHashMap::default(),
             signal_free: Vec::new(),
             effect_free: Vec::new(),
             ref_free: Vec::new(),
@@ -352,7 +357,7 @@ impl Arena {
         } else {
             let id = SignalId(self.signals.len() as u32);
             self.signals.push(Some(Box::new(inner)));
-            self.signal_subscribers.push(HashSet::new());
+            self.signal_subscribers.push(FxHashSet::default());
             self.signal_gen.push(0);
             (id, 0)
         }
@@ -367,7 +372,7 @@ impl Arena {
         } else {
             let id = EffectId(self.effects.len() as u32);
             self.effects.push(Some(Box::new(inner)));
-            self.effect_dependencies.push(HashSet::new());
+            self.effect_dependencies.push(FxHashSet::default());
             id
         }
     }
@@ -426,8 +431,9 @@ impl Arena {
     fn take_effects_batched(&mut self, ids: &[EffectId]) -> Vec<Box<dyn Any>> {
         // 1) Drain each effect's dep set into a `dead` set, recording
         //    the union of signals affected.
-        let mut dead: HashSet<EffectId> = HashSet::with_capacity(ids.len());
-        let mut affected: HashSet<SignalId> = HashSet::new();
+        let mut dead: FxHashSet<EffectId> =
+            FxHashSet::with_capacity_and_hasher(ids.len(), Default::default());
+        let mut affected: FxHashSet<SignalId> = FxHashSet::default();
         for &eid in ids {
             if let Some(slot) = self.effect_dependencies.get_mut(eid.0 as usize) {
                 let deps = std::mem::take(slot);
@@ -1518,7 +1524,7 @@ struct DirtyEntry {
 #[derive(Default)]
 struct DirtyWindow {
     order: Vec<SignalId>,
-    entries: HashMap<SignalId, DirtyEntry>,
+    entries: FxHashMap<SignalId, DirtyEntry>,
 }
 
 /// `true` while an outermost `batch(..)` window is open on this thread.

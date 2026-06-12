@@ -421,6 +421,23 @@ impl RenderState {
             .copied()
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
+        // The canvas surface is NOT opaque — it composites over the app UI behind
+        // it, and a scene is transparent wherever the author didn't paint (a PDF
+        // page paints its content but leaves un-drawn regions clear). An `Opaque`
+        // alpha mode makes the window IGNORE that alpha and show the raw RGB —
+        // i.e. clear regions (RGB 0) render as solid BLACK instead of letting the
+        // background show through (the "PDF watermark is a black blob" bug). Pick
+        // an alpha-respecting mode; vello writes PREMULTIPLIED alpha, so prefer
+        // `PreMultiplied`, then `PostMultiplied`, falling back only if neither is
+        // offered.
+        use wgpu::CompositeAlphaMode::{PostMultiplied, PreMultiplied};
+        let alpha_mode = if caps.alpha_modes.contains(&PreMultiplied) {
+            PreMultiplied
+        } else if caps.alpha_modes.contains(&PostMultiplied) {
+            PostMultiplied
+        } else {
+            caps.alpha_modes[0]
+        };
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -428,7 +445,7 @@ impl RenderState {
             height: h,
             present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
+            alpha_mode,
             view_formats: vec![],
         };
         surface.configure(&device, &config);
@@ -667,6 +684,20 @@ impl RenderState {
             // transiently failed.
             if has_image && self.image_renderer.is_none() {
                 self.image_renderer = new_vello_renderer(&self.device);
+            }
+            // Image content MUST render on a renderer whose vello image atlas was
+            // never shrunk by an image-less frame, or the image renders blank/
+            // black (see the comment above). The dedicated `image_renderer` is
+            // that renderer. If it's unavailable, `self.renderer` may have been
+            // contaminated by image-less frames (e.g. a vector-only page shown
+            // before an image-bearing one) — so make `self.renderer` safe for
+            // images too by forcing the cached images to RE-UPLOAD this frame
+            // (bumping the encode cache's generation rebuilds their Blob, so vello
+            // can't reuse a stale/evicted atlas slot).
+            if has_image && self.image_renderer.is_none() {
+                crate::encode::force_image_reupload();
+                self.scene.reset();
+                encode_scene(ops, &mut self.scene, Affine::scale(self.scale));
             }
             let renderer = match (has_image, self.image_renderer.as_mut()) {
                 (true, Some(r)) => r,
@@ -1098,6 +1129,94 @@ mod tests {
         );
     }
 
+    /// End-to-end GPU proof of an extended blend mode: `Difference` of
+    /// (200,50,50) under (50,200,50) must give |200-50|,|50-200|,|50-50| =
+    /// (150,150,0). A wrong canvas→peniko Mix mapping (e.g. falling back to
+    /// Normal, or swapping a mode) produces different pixels and fails here.
+    #[test]
+    fn difference_blend_composites_on_the_gpu() {
+        const S: u32 = 64;
+        let mut cs = CanvasScene::new();
+        cs.path().add_path(Path::rect(0.0, 0.0, S as f32, S as f32));
+        cs.fill(Paint::solid(CanvasColor::new(200, 50, 50, 255)));
+        cs.path().add_path(Path::rect(0.0, 0.0, S as f32, S as f32));
+        cs.fill(Paint::solid(CanvasColor::new(50, 200, 50, 255)).blend(BlendMode::Difference));
+
+        let Some(buf) = render_to_rgba(&cs, S) else {
+            eprintln!("skip: no GPU");
+            return;
+        };
+        let c = px(&buf, S, 32, 32);
+        let near = |v: u8, t: i32| (v as i32 - t).abs() <= 6;
+        assert!(
+            near(c[0], 150) && near(c[1], 150) && near(c[2], 0) && c[3] > 200,
+            "Difference blend should give ~(150,150,0,255), got {c:?}"
+        );
+    }
+
+    /// End-to-end GPU proof of dashed strokes: an 8-on/8-off dashed horizontal
+    /// line must alternate opaque (dash) and transparent (gap) pixels along its
+    /// length. A renderer that ignored the dash would draw a solid line (all
+    /// opaque) and fail.
+    #[test]
+    fn dashed_stroke_has_gaps_on_the_gpu() {
+        use canvas_core::Stroke as CStroke;
+        const S: u32 = 64;
+        let mut cs = CanvasScene::new();
+        let line = Path::new().move_to(0.0, 32.0).line_to(64.0, 32.0);
+        cs.stroke_path(
+            line,
+            Paint::solid(CanvasColor::new(0, 0, 0, 255)),
+            CStroke::width(8.0).dash(vec![8.0, 8.0], 0.0),
+        );
+        let Some(buf) = render_to_rgba(&cs, S) else { eprintln!("skip: no GPU"); return; };
+        let (mut on, mut off) = (0u32, 0u32);
+        for x in 0..S {
+            if px(&buf, S, x, 32)[3] > 128 { on += 1 } else { off += 1 }
+        }
+        assert!(on > 4 && off > 4, "dashed line should alternate on/off, got on={on} off={off}");
+    }
+
+    /// End-to-end GPU proof of a soft mask: a full red rect (content) masked by
+    /// a left-half-white / right-half-absent luminance mask. The left half must
+    /// show (mask luminance 1 → opaque red); the right half must be hidden (mask
+    /// luminance 0 → transparent). A renderer that ignored the mask would show
+    /// red everywhere and fail.
+    #[test]
+    fn soft_mask_modulates_content_on_the_gpu() {
+        const S: u32 = 64;
+        let red = Paint::solid(CanvasColor::new(255, 0, 0, 255));
+        let white = Paint::solid(CanvasColor::new(255, 255, 255, 255));
+        let content = vec![canvas_core::DrawOp::Fill {
+            path: Path::rect(0.0, 0.0, S as f32, S as f32),
+            paint: red,
+            fill_rule: canvas_core::FillRule::NonZero,
+        }];
+        // Mask: left half white (luminance 1), right half undrawn (luminance 0).
+        let mask = vec![canvas_core::DrawOp::Fill {
+            path: Path::rect(0.0, 0.0, (S / 2) as f32, S as f32),
+            paint: white,
+            fill_rule: canvas_core::FillRule::NonZero,
+        }];
+        let mut cs = CanvasScene::new();
+        cs.push_op(canvas_core::DrawOp::MaskGroup {
+            content,
+            mask,
+            luminance: true,
+            alpha: 1.0,
+            blend: BlendMode::Normal,
+        });
+
+        let Some(buf) = render_to_rgba(&cs, S) else {
+            eprintln!("skip: no GPU");
+            return;
+        };
+        let left = px(&buf, S, 16, 32);
+        let right = px(&buf, S, 48, 32);
+        assert!(left[0] > 200 && left[3] > 200, "left half should be opaque red, got {left:?}");
+        assert!(right[3] < 40, "right half should be masked out (transparent), got {right:?}");
+    }
+
     /// End-to-end GPU proof of the persistent layer: frame 1 bakes a red
     /// rect into a layer; frame 2 emits ONLY an eraser hole (`clear: false`).
     /// The red must persist from frame 1 (it is *not* re-emitted in frame 2),
@@ -1514,6 +1633,10 @@ mod tests {
                             layer.alpha,
                             self.s,
                             self.s,
+                            // over_frac: no overscan in this fixed-camera test
+                            // composite (added to the signature in 9b19fdd; this
+                            // test call wasn't updated, breaking the test target).
+                            0.0,
                         );
                     }
                 }
@@ -1691,4 +1814,383 @@ mod tests {
             }
         }
     }
+
+    /// Load a real system font's bytes + face index, or `None` to skip.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_test_font() -> Option<(Vec<u8>, u32)> {
+        for path in [
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/System/Library/Fonts/Geneva.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ] {
+            if let Ok(bytes) = std::fs::read(path) {
+                return Some((bytes, 0));
+            }
+        }
+        None
+    }
+
+    /// A skrifa outline pen recording into a canvas `Path` at the requested em
+    /// (y-up font units — exactly the space `DrawOp::Glyphs` affines target).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[derive(Default)]
+    struct CanvasPen(canvas_core::Path);
+    #[cfg(not(target_arch = "wasm32"))]
+    impl skrifa::outline::OutlinePen for CanvasPen {
+        fn move_to(&mut self, x: f32, y: f32) {
+            self.0.segs.push(canvas_core::PathSeg::MoveTo { x, y });
+        }
+        fn line_to(&mut self, x: f32, y: f32) {
+            self.0.segs.push(canvas_core::PathSeg::LineTo { x, y });
+        }
+        fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+            self.0.segs.push(canvas_core::PathSeg::QuadTo { cx, cy, x, y });
+        }
+        fn curve_to(&mut self, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) {
+            self.0.segs.push(canvas_core::PathSeg::CubicTo { c1x, c1y, c2x, c2y, x, y });
+        }
+        fn close(&mut self) {
+            self.0.segs.push(canvas_core::PathSeg::Close);
+        }
+    }
+
+    /// End-to-end GPU proof of the glyph pipeline AND its orientation: render a
+    /// glyph via a `DrawOp::Glyphs` run and, independently, via its skrifa outline
+    /// as an ordinary `Fill` under the *same* transform. Both go through vello on
+    /// a real GPU and must produce near-identical pixels (CLAUDE.md §7).
+    ///
+    /// This is the regression guard for the **mirrored-text bug**: vello's glyph
+    /// pipeline applies an internal y-flip (`-font_size/upem`), so a `Glyphs` arm
+    /// that doesn't cancel it draws the glyph flipped relative to the outline
+    /// Fill. With an asymmetric glyph ('F', top-heavy) the flipped run diverges
+    /// from the outline on most of its ink and this fails; the no-op (pre-feature
+    /// `_ => {}`) arm leaves the run blank and also fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn glyph_run_matches_outline_on_the_gpu() {
+        use canvas_core::{FontResource, Paint as CPaint, Path as CPath, PositionedGlyph, Transform};
+        use skrifa::instance::{LocationRef, Size};
+        use skrifa::outline::DrawSettings;
+        use skrifa::{FontRef, GlyphId, MetadataProvider};
+
+        const S: u32 = 64;
+        const UPEM: f32 = 1000.0; // matches the Glyphs arm's GLYPH_UPEM
+
+        let Some((bytes, index)) = load_test_font() else {
+            eprintln!("skip: no system font");
+            return;
+        };
+        let font_ref = FontRef::from_index(&bytes, index).expect("parse font");
+        // 'F' — vertically asymmetric (bars at the top), so a flip is unmissable.
+        let Some(gid) = font_ref.charmap().map('F') else {
+            eprintln!("skip: font lacks 'F'");
+            return;
+        };
+
+        // upem-1000, y-up outline → y-down ~48px glyph: scale by 48/1000, flip y
+        // (d < 0, the page-flip a PDF carries), baseline near y≈52.
+        let em = 48.0 / UPEM;
+        let t = Transform { a: em, b: 0.0, c: 0.0, d: -em, e: 12.0, f: 52.0 };
+        let black = CPaint::solid(CanvasColor::new(0, 0, 0, 255));
+
+        // (1) The glyph run.
+        let mut cs_run = CanvasScene::new();
+        cs_run.glyphs(
+            FontResource::new(0xF0, index, bytes.clone()),
+            [PositionedGlyph::new(gid.to_u32(), t)],
+            black.clone(),
+        );
+
+        // (2) The same glyph as an outline Fill (skrifa at upem 1000, same `t`).
+        let mut pen = CanvasPen::default();
+        font_ref
+            .outline_glyphs()
+            .get(GlyphId::new(gid.to_u32()))
+            .expect("outline")
+            .draw(DrawSettings::unhinted(Size::new(UPEM), LocationRef::default()), &mut pen)
+            .expect("draw outline");
+        let outline: CPath = pen.0;
+        let mut cs_outline = CanvasScene::new();
+        cs_outline.save();
+        cs_outline.transform(t);
+        cs_outline.add_path(outline);
+        cs_outline.fill(black);
+        cs_outline.restore();
+
+        let (Some(run), Some(reference)) =
+            (render_to_rgba(&cs_run, S), render_to_rgba(&cs_outline, S))
+        else {
+            eprintln!("skip: no GPU");
+            return;
+        };
+
+        let inked = |p: [u8; 4]| p[3] > 128 && p[0] < 80 && p[1] < 80 && p[2] < 80;
+        let (mut ink_run, mut ink_ref, mut mismatch) = (0u32, 0u32, 0u32);
+        for y in 0..S {
+            for x in 0..S {
+                let (a, b) = (inked(px(&run, S, x, y)), inked(px(&reference, S, x, y)));
+                ink_run += a as u32;
+                ink_ref += b as u32;
+                mismatch += (a != b) as u32;
+            }
+        }
+        assert!(ink_run > 40, "glyph run drew no ink ({ink_run}) — Glyphs arm not rendering");
+        assert!(ink_ref > 40, "outline reference drew no ink ({ink_ref})");
+        // A correctly-oriented run overlaps the outline almost perfectly (only
+        // antialiased edges differ). A flipped run would mismatch on most ink.
+        assert!(
+            mismatch < ink_ref / 3,
+            "glyph run diverges from its outline (mismatch {mismatch} vs ink {ink_ref}) — \
+             likely mirrored (vello's internal y-flip not cancelled)"
+        );
+    }
+
+    /// GPU repro: a straight-RGBA image whose opaque pixels are light gray must
+    /// render light gray (not black). Guards the alpha-type / format handoff to
+    /// vello for partially-transparent images (a PDF's alpha-channel watermark).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn light_gray_alpha_image_renders_gray_on_gpu() {
+        use canvas_core::{ImageSource, Rect as CRect};
+        const S: u32 = 64;
+        // 32x32: top half opaque light gray (245), bottom half transparent white.
+        let (iw, ih) = (32u32, 32u32);
+        let mut rgba = Vec::with_capacity((iw * ih * 4) as usize);
+        for y in 0..ih {
+            for _ in 0..iw {
+                if y < ih / 2 { rgba.extend_from_slice(&[245, 246, 247, 255]); }
+                else { rgba.extend_from_slice(&[255, 255, 255, 0]); }
+            }
+        }
+        let img = ImageSource::from_rgba8(0xA1, iw, ih, rgba);
+        let mut cs = CanvasScene::new();
+        cs.draw_image(img, CRect::new(0.0, 0.0, S as f32, S as f32));
+        let Some(buf) = render_to_rgba(&cs, S) else { eprintln!("skip: no GPU"); return; };
+        // Sample the opaque (top) region.
+        let top = px(&buf, S, 32, 16);
+        eprintln!("TOP pixel (should be ~245 gray): {top:?}");
+        assert!(top[0] > 200 && top[1] > 200 && top[2] > 200 && top[3] > 200,
+            "opaque light-gray image rendered wrong: {top:?}");
+    }
+
+    /// GPU repro at the REAL size: a 2550×3300 light-gray image (a PDF's
+    /// full-page alpha watermark) downscaled into the frame. vello packs images
+    /// into a size-limited atlas; an oversized source can fail to black. If the
+    /// opaque region comes out dark here, that's the watermark-renders-black bug.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn large_light_gray_image_renders_gray_on_gpu() {
+        use canvas_core::{ImageSource, Rect as CRect};
+        const S: u32 = 64;
+        let (iw, ih) = (2550u32, 3300u32);
+        // Fully opaque light gray (the swoosh interior) — simplest worst case.
+        let rgba = vec![245u8; (iw * ih * 4) as usize];
+        let mut rgba = rgba;
+        for px in rgba.chunks_exact_mut(4) { px[3] = 255; }
+        let img = ImageSource::from_rgba8(0xB2, iw, ih, rgba);
+        let mut cs = CanvasScene::new();
+        cs.draw_image(img, CRect::new(0.0, 0.0, S as f32, S as f32));
+        let Some(buf) = render_to_rgba(&cs, S) else { eprintln!("skip: no GPU"); return; };
+        let mid = px(&buf, S, 32, 32);
+        eprintln!("LARGE image mid pixel (should be ~245 gray): {mid:?}");
+        assert!(mid[0] > 200 && mid[1] > 200 && mid[2] > 200,
+            "large light-gray image rendered dark: {mid:?}");
+    }
+
+    /// GPU repro of the REAL op structure: an image drawn INSIDE a clip layer
+    /// (Save · Clip · Save · Transform · Image · Restore · Restore) — exactly how
+    /// a PDF's crop-box-clipped page background is recorded. If the image goes
+    /// black here but not unclipped, the bug is image-inside-clip compositing.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn image_inside_clip_renders_gray_on_gpu() {
+        use canvas_core::{ImageSource, Path as CPath, Rect as CRect};
+        const S: u32 = 64;
+        let (iw, ih) = (256u32, 256u32);
+        let mut rgba = vec![245u8; (iw * ih * 4) as usize];
+        for px in rgba.chunks_exact_mut(4) { px[3] = 255; }
+        let img = ImageSource::from_rgba8(0xC3, iw, ih, rgba);
+
+        let mut cs = CanvasScene::new();
+        cs.save();
+        cs.add_path(CPath::rect(0.0, 0.0, S as f32, S as f32));
+        cs.clip();
+        cs.draw_image(img, CRect::new(0.0, 0.0, S as f32, S as f32));
+        cs.restore();
+
+        let Some(buf) = render_to_rgba(&cs, S) else { eprintln!("skip: no GPU"); return; };
+        let mid = px(&buf, S, 32, 32);
+        eprintln!("CLIPPED image mid pixel (should be ~245 gray): {mid:?}");
+        assert!(mid[0] > 200 && mid[1] > 200 && mid[2] > 200,
+            "image inside a clip rendered dark: {mid:?}");
+    }
+
+    /// A dense, representative one-page PDF: a grid of colored rects + ~60 lines
+    /// of Helvetica text (→ thousands of outline-fill path ops). 816×1056 pt.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn bench_pdf() -> Vec<u8> {
+        let mut content = String::new();
+        for i in 0..15 {
+            let (x, y) = (40 + (i % 5) * 150, 80 + (i / 5) * 300);
+            content += &format!(
+                "{:.2} {:.2} {:.2} rg {x} {y} 120 90 re f\n",
+                (i * 17 % 100) as f32 / 100.0,
+                (i * 31 % 100) as f32 / 100.0,
+                (i * 53 % 100) as f32 / 100.0,
+            );
+        }
+        for i in 0..60 {
+            let y = 1000 - i * 16;
+            content += &format!(
+                "BT /F1 11 Tf 0 0 0 rg 40 {y} Td \
+                 (The quick brown fox jumps over the lazy dog 0123456789 \\(line {i}\\)) Tj ET\n"
+            );
+        }
+        let objects: [String; 5] = [
+            "<< /Type /Catalog /Pages 2 0 R >>".into(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 816 1056] \
+             /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+                .into(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+        ];
+        let mut pdf = String::from("%PDF-1.7\n");
+        let mut offs = Vec::new();
+        for (i, b) in objects.iter().enumerate() {
+            offs.push(pdf.len());
+            pdf.push_str(&format!("{} 0 obj\n{b}\nendobj\n", i + 1));
+        }
+        let x = pdf.len();
+        pdf.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1));
+        for o in &offs {
+            pdf.push_str(&format!("{o:010} 00000 n \n"));
+        }
+        pdf.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF",
+            objects.len() + 1
+        ));
+        pdf.into_bytes()
+    }
+
+    /// min / median / mean of a sample (ms).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stats(mut v: Vec<f64>) -> (f64, f64, f64) {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let min = v[0];
+        let median = v[v.len() / 2];
+        let mean = v.iter().sum::<f64>() / v.len() as f64;
+        (min, median, mean)
+    }
+
+    /// CPU-vs-GPU rasterization benchmark: the SAME PDF-derived `Scene`, encoded
+    /// once, rasterized by vello on the GPU vs vello's CPU pipeline (`use_cpu`).
+    /// Identical encode + scene; only the compute backend differs.
+    ///
+    /// Run: `cargo test -p canvas-vello bench_cpu_vs_gpu -- --ignored --nocapture --release`
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore = "benchmark; run with --ignored --nocapture --release"]
+    fn bench_cpu_vs_gpu_rasterization() {
+        use std::time::Instant;
+
+        // 1. Interpret the PDF page → canvas Scene (CPU, shared cost).
+        let t = Instant::now();
+        let doc = pdf::Document::load(bench_pdf()).expect("load pdf");
+        let page = doc.render_page(0).expect("render page");
+        let t_interpret = t.elapsed().as_secs_f64() * 1000.0;
+        let scene = page.scene;
+        let n_ops = scene.ops().len();
+
+        // 2. Device.
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            flags: wgpu::InstanceFlags::default(),
+            memory_budget_thresholds: Default::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            display: None,
+        });
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: false,
+            compatible_surface: None,
+        })) else {
+            eprintln!("skip: no GPU adapter");
+            return;
+        };
+        let info = adapter.get_info();
+        let (device, queue) = pollster::block_on(
+            adapter.request_device(&wgpu::DeviceDescriptor { label: Some("bench"), ..Default::default() }),
+        )
+        .expect("device");
+
+        // 3. Two renderers — GPU (use_cpu:false) and CPU (use_cpu:true).
+        let opts = |use_cpu| RendererOptions {
+            use_cpu,
+            antialiasing_support: AaSupport::area_only(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        };
+        let mut gpu = Renderer::new(&device, opts(false)).expect("gpu renderer");
+        let mut cpu = Renderer::new(&device, opts(true)).expect("cpu renderer");
+
+        // 4. Encode ONCE (the CPU scene→vello step, shared by both renderers).
+        let dpr = 2.0_f64;
+        let (pw, ph) = (816u32, 1056u32);
+        let (w, h) = ((pw as f64 * dpr) as u32, (ph as f64 * dpr) as u32);
+        let t = Instant::now();
+        let mut vs = VelloScene::new();
+        encode_scene(scene.ops(), &mut vs, Affine::scale(dpr));
+        let t_encode = t.elapsed().as_secs_f64() * 1000.0;
+        let (_target, view) = make_target(&device, w, h);
+        let params = RenderParams {
+            base_color: Color::from_rgba8(255, 255, 255, 255),
+            width: w,
+            height: h,
+            antialiasing_method: AaConfig::Area,
+        };
+
+        // Render + block until complete (so the timing captures actual raster work).
+        let mut once = |r: &mut Renderer| {
+            r.render_to_texture(&device, &queue, &vs, &view, &params).expect("render");
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        };
+
+        // 5. Warmup, then time.
+        for _ in 0..3 {
+            once(&mut gpu);
+        }
+        for _ in 0..3 {
+            once(&mut cpu);
+        }
+        let timed = |r: &mut Renderer, n: u32, once: &mut dyn FnMut(&mut Renderer)| -> Vec<f64> {
+            (0..n)
+                .map(|_| {
+                    let t = Instant::now();
+                    once(r);
+                    t.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect()
+        };
+        let gpu_ms = timed(&mut gpu, 40, &mut once);
+        let cpu_ms = timed(&mut cpu, 10, &mut once);
+
+        let (g_min, g_med, g_mean) = stats(gpu_ms);
+        let (c_min, c_med, c_mean) = stats(cpu_ms);
+
+        eprintln!("\n=== PDF rasterization: CPU vs GPU (vello) ===");
+        eprintln!("adapter      : {:?} / {}", info.backend, info.name);
+        eprintln!("page         : {pw}x{ph} pt @ {dpr}x = {w}x{h} px");
+        eprintln!("scene        : {n_ops} ops");
+        eprintln!("interpret    : {t_interpret:7.2} ms  (PDF → Scene, one-time, CPU)");
+        eprintln!("encode       : {t_encode:7.2} ms  (Scene → vello, one-time, CPU)");
+        eprintln!("GPU raster   : min {g_min:6.2}  median {g_med:6.2}  mean {g_mean:6.2} ms/frame");
+        eprintln!("CPU raster   : min {c_min:6.2}  median {c_med:6.2}  mean {c_mean:6.2} ms/frame");
+        eprintln!("GPU speedup  : {:.1}x (median)\n", c_med / g_med);
+    }
 }
+
+
+
+

@@ -13,6 +13,18 @@
 //! [`Scene`]: canvas_core::Scene
 #![deny(missing_docs)]
 
+// Shared glyph-outline expansion for `DrawOp::Glyphs`, used by every CPU
+// backend (web / apple / android). Gated to those targets so the fallback
+// build (no native 2D engine) doesn't carry an unused skrifa dependency.
+#[cfg(any(
+    target_arch = "wasm32",
+    all(
+        any(target_os = "ios", target_os = "macos", target_os = "android"),
+        not(target_arch = "wasm32")
+    )
+))]
+mod glyphs;
+
 #[cfg(target_arch = "wasm32")]
 mod web;
 #[cfg(target_arch = "wasm32")]

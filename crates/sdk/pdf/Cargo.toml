@@ -1,0 +1,33 @@
+[package]
+name = "pdf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Render PDF pages onto a `canvas` Scene — pure-Rust, GPU when canvas-vello is
+# active, CPU fallback otherwise. PDF interpretation is `hayro`; the bridge
+# (`SceneDevice`) is a `hayro_interpret::Device` that records every drawing
+# instruction into a renderer-agnostic `canvas_core::Scene`. Text becomes
+# `DrawOp::Glyphs` runs (the GPU glyph pipeline), vectors `Fill`/`Stroke`,
+# images `Image`.
+
+[dependencies]
+runtime-core = { workspace = true }
+canvas-core = { workspace = true }
+
+# `embed-fonts` bundles the standard-14 fallback fonts so PDFs that reference
+# Helvetica/Times/Courier without embedding still render; `embed-cmaps` bundles
+# the 61 predefined CJK cmaps. Both match how the `hayro` reference renderer is
+# configured.
+hayro-syntax = "0.7"
+hayro-interpret = { version = "0.7", features = ["embed-fonts", "embed-cmaps"] }
+
+# Talk to hayro in its own geometry types. MUST match hayro-interpret's kurbo
+# (0.13); only used internally — the crate's public API speaks `canvas_core`.
+kurbo = "0.13"
+
+# Surface a load/parse failure to the dev (the element renders empty on error).
+log = "0.4"
+
+[dev-dependencies]
+serde_json = "1"

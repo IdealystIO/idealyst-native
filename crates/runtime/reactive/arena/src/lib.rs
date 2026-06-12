@@ -48,6 +48,10 @@
 //! - No raw pointers.
 //! - No `Rc`/`Arc` for handles — only `RefCell` for arena interior mutability.
 
+// Sibling prototype: a downcast-free, unsafe-free Copy-handle arena built on
+// leaked `&'static` typed slots. See `static_slab.rs`.
+pub mod static_slab;
+
 use std::any::Any;
 use std::cell::RefCell;
 use std::marker::PhantomData;

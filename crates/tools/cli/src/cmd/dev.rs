@@ -1052,73 +1052,106 @@ fn sync_dev_web_overlay(
     Option<dev_http::OverlayContext>,
     Option<dev_http::HeadInjectionContext>,
 )> {
-    let Some(config) = icon_gen::load_config_from_manifest(project_dir)? else {
-        return Ok((None, None));
-    };
-    let block = config.resolved_for(icon_gen::Target::Web);
     let overlay_dir = project_dir
         .join("target")
         .join("idealyst")
         .join("dev")
         .join("web");
-    if icon_gen::sync_web_icons(Some(&block), &overlay_dir)?.is_none() {
-        return Ok((None, None));
-    }
-    crate::dlog!(
-        "dev web",
-        "icon overlay → {} (favicon.ico + 192/512/180)",
-        overlay_dir.display()
-    );
+    let mut have_overlay = false;
+    let mut head: Option<dev_http::HeadInjectionContext> = None;
 
-    // Spawn the SVG watcher. The block carries already-canonical
-    // paths to the source/foreground SVGs; we hand them straight
-    // to the watcher and rerun the same sync on change. The
-    // closure rebuilds the resolved block fresh each time so a
-    // mid-session manifest edit (e.g. swapping `foreground` to a
-    // different file) is picked up too.
-    if let Some(signal) = reload_signal {
-        let mut watch_paths = Vec::new();
-        if let Some(p) = block.source.as_ref() {
-            watch_paths.push(p.clone());
+    // ── Icons (optional) — only when the project declares an icon block ──
+    if let Some(config) = icon_gen::load_config_from_manifest(project_dir)? {
+        let block = config.resolved_for(icon_gen::Target::Web);
+        if icon_gen::sync_web_icons(Some(&block), &overlay_dir)?.is_some() {
+            have_overlay = true;
+            head = Some(dev_http::HeadInjectionContext {
+                html: icon_gen::web_icon_link_tags(),
+            });
+            crate::dlog!(
+                "dev web",
+                "icon overlay → {} (favicon.ico + 192/512/180)",
+                overlay_dir.display()
+            );
+
+            // Spawn the SVG watcher. The block carries already-canonical
+            // paths to the source/foreground SVGs; rerun the same sync on
+            // change and rebuild the resolved block fresh each time.
+            if let Some(signal) = reload_signal {
+                let mut watch_paths = Vec::new();
+                if let Some(p) = block.source.as_ref() {
+                    watch_paths.push(p.clone());
+                }
+                if let Some(p) = block.foreground.as_ref() {
+                    watch_paths.push(p.clone());
+                }
+                watch_paths.push(project_dir.join("Cargo.toml"));
+                let project_owned = project_dir.to_path_buf();
+                let overlay_owned = overlay_dir.clone();
+                let handle = dev_reload::start_watch(watch_paths, signal, "icon", move || {
+                    let cfg = icon_gen::load_config_from_manifest(&project_owned)?;
+                    let Some(cfg) = cfg else {
+                        return Ok(());
+                    };
+                    let block = cfg.resolved_for(icon_gen::Target::Web);
+                    icon_gen::sync_web_icons(Some(&block), &overlay_owned)?;
+                    Ok(())
+                })?;
+                std::mem::forget(handle);
+            }
         }
-        if let Some(p) = block.foreground.as_ref() {
-            watch_paths.push(p.clone());
-        }
-        // Also watch Cargo.toml so manifest-level changes (gradient
-        // stops, padding, swapping the source path) trigger a
-        // regen. dev-reload's main watcher already covers
-        // Cargo.toml for code rebuilds, but it doesn't know to
-        // also bump icons.
-        watch_paths.push(project_dir.join("Cargo.toml"));
-        let project_owned = project_dir.to_path_buf();
-        let overlay_owned = overlay_dir.clone();
-        let handle = dev_reload::start_watch(
-            watch_paths,
-            signal,
-            "icon",
-            move || {
-                let cfg = icon_gen::load_config_from_manifest(&project_owned)?;
-                let Some(cfg) = cfg else {
-                    return Ok(());
-                };
-                let block = cfg.resolved_for(icon_gen::Target::Web);
-                icon_gen::sync_web_icons(Some(&block), &overlay_owned)?;
-                Ok(())
-            },
-        )?;
-        // Detach: the watcher lives for the lifetime of the dev
-        // server, same as dev-reload's main watcher handle.
-        std::mem::forget(handle);
     }
 
-    Ok((
-        Some(dev_http::OverlayContext {
-            roots: vec![overlay_dir],
-        }),
-        Some(dev_http::HeadInjectionContext {
-            html: icon_gen::web_icon_link_tags(),
-        }),
-    ))
+    // ── Fonts (optional) — stage `[web].font_dirs` into the overlay ──────
+    // Mirrors what `build-web` stages into the deployed bundle, so a library
+    // can own its typeface's font files and `idealyst dev` serves `/fonts/*`
+    // without a per-app copy or symlink. Each dir → `<overlay>/<final-name>/`.
+    let manifest = parse_manifest(project_dir)?;
+    for d in &manifest.app.web.font_dirs {
+        let src = project_dir.join(d);
+        if !src.is_dir() {
+            anyhow::bail!(
+                "[package.metadata.idealyst.app.web].font_dirs entry {:?} is not a directory \
+                 (resolved to {})",
+                d,
+                src.display(),
+            );
+        }
+        if let Some(name) = src.file_name() {
+            let dest = overlay_dir.join(name);
+            copy_dir_all(&src, &dest)?;
+            have_overlay = true;
+            crate::dlog!("dev web", "font overlay → {}", dest.display());
+        }
+    }
+
+    if have_overlay {
+        Ok((
+            Some(dev_http::OverlayContext {
+                roots: vec![overlay_dir],
+            }),
+            head,
+        ))
+    } else {
+        Ok((None, None))
+    }
+}
+
+/// Recursively copy `src` into `dst` (creating `dst`). Used to stage external
+/// `font_dirs` into the dev web overlay.
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&from, &to)?;
+        } else if entry.file_type()?.is_file() {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }
 
 /// SSR launcher — builds the wasm bundle (so the SSR server can serve

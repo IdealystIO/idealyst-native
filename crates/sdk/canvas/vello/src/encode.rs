@@ -10,7 +10,7 @@
 //! encoder here guarantees byte-identical output across targets (CLAUDE.md §7).
 
 use canvas_core::{
-    BlendMode as CanvasBlend, Color as CanvasColor, DrawOp, FillRule, GradientStop,
+    BlendMode as CanvasBlend, Color as CanvasColor, DrawOp, FillRule, FontResource, GradientStop,
     ImageSource as CanvasImage, LineCap, LineJoin, Paint, PaintKind, Path, PathSeg,
     Stroke as CanvasStroke,
 };
@@ -21,9 +21,10 @@ use std::collections::HashMap;
 use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Shape, Stroke as KurboStroke};
 use vello::peniko::color::DynamicColor;
 use vello::peniko::{
-    BlendMode, Blob, Brush, Color, ColorStop, Compose, Fill, Gradient, ImageAlphaType, ImageBrush,
-    ImageData, ImageFormat, Mix,
+    BlendMode, Blob, Brush, Color, ColorStop, Compose, Fill, FontData, Gradient, ImageAlphaType,
+    ImageBrush, ImageData, ImageFormat, Mix,
 };
+use vello::Glyph as VelloGlyph;
 use vello::Scene as VelloScene;
 
 /// Walk a canvas op list into `vs`, maintaining a transform stack
@@ -203,6 +204,72 @@ pub(crate) fn encode_scene(ops: &[DrawOp], vs: &mut VelloScene, base: Affine) {
                 let fills: Vec<DrawOp> = shapes.iter().map(|sh| sh.to_fill_op(*blend)).collect();
                 encode_scene(&fills, vs, cur);
             }
+            DrawOp::Glyphs { font, glyphs, paint } => {
+                if glyphs.is_empty() {
+                    continue;
+                }
+                // Build (and cache by font id) the vello font handle, then drive
+                // its glyph pipeline — this is what makes text on a rendered PDF
+                // hit the GPU's cached-outline path instead of being tessellated
+                // per glyph.
+                let fd = font_data_cached(font);
+                let brush = brush_of(paint);
+                // Vello has no per-draw blend; for a non-Normal text blend wrap the
+                // whole run in one blend layer (same pattern as the Fill arm). PDF
+                // text is almost always Normal, so this is the cold path.
+                let wrap = peniko_blend(paint.blend);
+                if let Some(b) = wrap {
+                    let clip = Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6);
+                    vs.push_layer(Fill::NonZero, b, 1.0, cur, &clip);
+                }
+                for pg in glyphs {
+                    // Each glyph carries its full affine mapping a 1000-upem
+                    // outline → logical space (see canvas_core::PositionedGlyph).
+                    // Rendering at font_size = GLYPH_UPEM makes vello scale the
+                    // font-unit outline to that same 1000-em (outline · 1000/upem),
+                    // so `gt` reproduces the outline-fallback Fill exactly
+                    // (CLAUDE.md §7). One draw per glyph: the affine is per-glyph,
+                    // but vello still caches the encoded outline by font + id.
+                    //
+                    // vello's glyph pipeline scales outlines by
+                    // `(font_size/upem, -font_size/upem)` — an INTERNAL y-flip,
+                    // because font outlines are y-up and the scene is y-down. But
+                    // `pg.transform` ALREADY carries the page's y-flip (a PDF's
+                    // `initial_transform`), so without undoing vello's flip the
+                    // glyph is flipped twice → mirrored text. The trailing
+                    // `scale(1, -1)` cancels vello's flip; the net is the same
+                    // upright `cur · pg.transform · outline_1000` the outline-Fill
+                    // fallback (and the CPU backends) produce (CLAUDE.md §7).
+                    let gt = cur * affine_of(&pg.transform) * Affine::scale_non_uniform(1.0, -1.0);
+                    vs.draw_glyphs(&fd)
+                        .font_size(GLYPH_UPEM)
+                        .transform(gt)
+                        .brush(&brush)
+                        .hint(false)
+                        .draw(Fill::NonZero, std::iter::once(VelloGlyph { id: pg.id, x: 0.0, y: 0.0 }));
+                }
+                if wrap.is_some() {
+                    vs.pop_layer();
+                }
+            }
+            DrawOp::MaskGroup { content, mask, luminance: _, alpha, blend } => {
+                // vello's luminance-mask model: draw the content into a layer,
+                // then push a luminance-mask sublayer and draw the mask — its
+                // luminance modulates the prior (content) alpha. The OUTER
+                // push_layer is required: it's the intermediate opaque-aware layer
+                // the mask needs (vello docs), and it composites the masked result
+                // with `blend`/`alpha`. (Alpha masks `luminance:false` reuse the
+                // luminance path — vello has no alpha-mask primitive in 0.9.)
+                let clip = Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6);
+                let b = peniko_blend(*blend)
+                    .unwrap_or(BlendMode::new(Mix::Normal, Compose::SrcOver));
+                vs.push_layer(Fill::NonZero, b, *alpha, cur, &clip);
+                encode_scene(content, vs, cur);
+                vs.push_luminance_mask_layer(Fill::NonZero, 1.0, cur, &clip);
+                encode_scene(mask, vs, cur);
+                vs.pop_layer(); // apply mask to the content
+                vs.pop_layer(); // close the group
+            }
             _ => {}
         }
     }
@@ -278,6 +345,44 @@ thread_local! {
     static IMAGE_CACHE: RefCell<HashMap<u64, (u64, ImageData)>> = RefCell::new(HashMap::new());
 }
 
+/// Nominal em a [`DrawOp::Glyphs`] run is rendered at. The op's contract is that
+/// each glyph's affine maps a **1000-units-per-em** outline into logical space
+/// (see `canvas_core::PositionedGlyph`), so vello must scale the font's own
+/// outline to that em — i.e. `font_size = 1000`. Diverging from 1000 here would
+/// silently shift every glyph's size relative to the outline-fallback path.
+const GLYPH_UPEM: f32 = 1000.0;
+
+thread_local! {
+    /// Per-render-thread cache of vello [`FontData`] handles keyed by
+    /// [`FontResource::id`]. `FontData` wraps a refcounted [`Blob`]; building it
+    /// once per font (not per run or per frame) lets vello dedupe the font upload
+    /// and reuse its glyph-outline cache. One entry per font id — a rendered PDF
+    /// references a small, stable set of embedded fonts, so this stays bounded.
+    static FONT_DATA: RefCell<HashMap<u64, FontData>> = RefCell::new(HashMap::new());
+}
+
+/// Clear the cached image uploads so the next [`encode_scene`] rebuilds each
+/// image's `Blob` (a fresh identity), forcing vello to re-upload it. Safety net
+/// for rendering image content on a renderer whose image atlas may have been
+/// shrunk by an earlier image-less frame — without a re-upload vello reuses a
+/// stale/evicted atlas slot and the image renders blank/black.
+pub(crate) fn force_image_reupload() {
+    IMAGE_CACHE.with(|c| c.borrow_mut().clear());
+}
+
+/// Get-or-build the cached vello [`FontData`] for a canvas font resource.
+fn font_data_cached(font: &FontResource) -> FontData {
+    FONT_DATA.with(|m| {
+        m.borrow_mut()
+            .entry(font.id)
+            .or_insert_with(|| {
+                let arc: std::sync::Arc<dyn AsRef<[u8]> + Send + Sync> = font.data.clone();
+                FontData::new(Blob::new(arc), font.index)
+            })
+            .clone()
+    })
+}
+
 /// Get-or-build the cached [`ImageData`] for a canvas image. Caller has already
 /// checked `is_valid()`. Re-uploads (overwriting the id's slot) when the image's
 /// `generation` changed, so a video frame pumped under one stable id animates
@@ -307,14 +412,31 @@ fn image_data_cached(src: &CanvasImage) -> ImageData {
 /// *compose* mode (the eraser); Multiply/Screen are separable *mix* modes
 /// composited source-over.
 fn peniko_blend(blend: CanvasBlend) -> Option<BlendMode> {
-    match blend {
-        CanvasBlend::Normal => None,
-        CanvasBlend::DestinationOut => Some(BlendMode::new(Mix::Normal, Compose::DestOut)),
-        CanvasBlend::Multiply => Some(BlendMode::new(Mix::Multiply, Compose::SrcOver)),
-        CanvasBlend::Screen => Some(BlendMode::new(Mix::Screen, Compose::SrcOver)),
+    // Each separable/non-separable mix is composited source-over; DestinationOut
+    // is the Porter-Duff *compose* eraser. `Normal` returns `None` (drawn
+    // directly, no wrapping layer).
+    let mix = match blend {
+        CanvasBlend::Normal => return None,
+        CanvasBlend::DestinationOut => return Some(BlendMode::new(Mix::Normal, Compose::DestOut)),
+        CanvasBlend::Multiply => Mix::Multiply,
+        CanvasBlend::Screen => Mix::Screen,
+        CanvasBlend::Overlay => Mix::Overlay,
+        CanvasBlend::Darken => Mix::Darken,
+        CanvasBlend::Lighten => Mix::Lighten,
+        CanvasBlend::ColorDodge => Mix::ColorDodge,
+        CanvasBlend::ColorBurn => Mix::ColorBurn,
+        CanvasBlend::HardLight => Mix::HardLight,
+        CanvasBlend::SoftLight => Mix::SoftLight,
+        CanvasBlend::Difference => Mix::Difference,
+        CanvasBlend::Exclusion => Mix::Exclusion,
+        CanvasBlend::Hue => Mix::Hue,
+        CanvasBlend::Saturation => Mix::Saturation,
+        CanvasBlend::Color => Mix::Color,
+        CanvasBlend::Luminosity => Mix::Luminosity,
         // `#[non_exhaustive]`; unknown modes draw normally.
-        _ => None,
-    }
+        _ => return None,
+    };
+    Some(BlendMode::new(mix, Compose::SrcOver))
 }
 
 fn fill_of(rule: FillRule) -> Fill {
@@ -353,7 +475,7 @@ fn stops_of(stops: &[GradientStop]) -> Vec<ColorStop> {
 }
 
 fn kurbo_stroke(s: &CanvasStroke) -> KurboStroke {
-    KurboStroke::new(s.width as f64)
+    let stroke = KurboStroke::new(s.width as f64)
         .with_caps(match s.cap {
             LineCap::Butt => Cap::Butt,
             LineCap::Round => Cap::Round,
@@ -364,7 +486,12 @@ fn kurbo_stroke(s: &CanvasStroke) -> KurboStroke {
             LineJoin::Round => Join::Round,
             LineJoin::Bevel => Join::Bevel,
         })
-        .with_miter_limit(s.miter_limit as f64)
+        .with_miter_limit(s.miter_limit as f64);
+    if s.dash.is_empty() {
+        stroke
+    } else {
+        stroke.with_dashes(s.dash_offset as f64, s.dash.iter().map(|&d| d as f64))
+    }
 }
 
 #[cfg(test)]

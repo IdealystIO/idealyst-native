@@ -239,6 +239,39 @@ pub enum BlendMode {
     Multiply,
     /// Screen blend — lightens (inverse-multiply of the inverses).
     Screen,
+    /// Overlay — Multiply or Screen depending on the backdrop (a soft contrast
+    /// boost). Combines [`Multiply`](Self::Multiply) on dark backdrops and
+    /// [`Screen`](Self::Screen) on light ones.
+    Overlay,
+    /// Darken — keep the darker of source and destination, per channel.
+    Darken,
+    /// Lighten — keep the lighter of source and destination, per channel.
+    Lighten,
+    /// Color-dodge — brighten the backdrop toward the source.
+    ColorDodge,
+    /// Color-burn — darken the backdrop toward the source.
+    ColorBurn,
+    /// Hard-light — like [`Overlay`](Self::Overlay) with source and backdrop
+    /// swapped (a harsh spotlight).
+    HardLight,
+    /// Soft-light — a gentle dodge/burn depending on the source.
+    SoftLight,
+    /// Difference — absolute per-channel difference (inverts where they differ).
+    Difference,
+    /// Exclusion — like [`Difference`](Self::Difference) but lower contrast.
+    Exclusion,
+    /// Hue (non-separable) — source hue with the backdrop's saturation +
+    /// luminosity.
+    Hue,
+    /// Saturation (non-separable) — source saturation with the backdrop's hue +
+    /// luminosity.
+    Saturation,
+    /// Color (non-separable) — source hue + saturation with the backdrop's
+    /// luminosity (tinting that preserves shading).
+    Color,
+    /// Luminosity (non-separable) — source luminosity with the backdrop's hue +
+    /// saturation (the inverse of [`Color`](Self::Color)).
+    Luminosity,
 }
 
 /// The paint source variants. `#[non_exhaustive]` so image/pattern
@@ -349,8 +382,9 @@ pub struct RadialGradient {
 // Stroke style
 // ============================================================================
 
-/// How a path's outline is stroked.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// How a path's outline is stroked. Not `Copy` — it carries a dash pattern
+/// (a `Vec`); clone it where a copy is needed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stroke {
     /// Line width in logical pixels.
     pub width: f32,
@@ -360,13 +394,36 @@ pub struct Stroke {
     pub join: LineJoin,
     /// Miter limit (ratio) before a miter join falls back to bevel.
     pub miter_limit: f32,
+    /// Dash pattern: alternating on/off segment lengths in logical pixels (a
+    /// single value `[n]` means `n` on, `n` off). Empty = a solid line.
+    /// `#[serde(default)]` keeps pre-dash wire scenes decoding (→ solid).
+    #[serde(default)]
+    pub dash: Vec<f32>,
+    /// Distance into the dash pattern at which the first subpath starts.
+    #[serde(default)]
+    pub dash_offset: f32,
 }
 
 impl Stroke {
-    /// A stroke of the given `width` with default butt caps / miter
+    /// A solid stroke of the given `width` with default butt caps / miter
     /// joins.
     pub fn width(width: f32) -> Self {
-        Self { width, cap: LineCap::Butt, join: LineJoin::Miter, miter_limit: 4.0 }
+        Self {
+            width,
+            cap: LineCap::Butt,
+            join: LineJoin::Miter,
+            miter_limit: 4.0,
+            dash: Vec::new(),
+            dash_offset: 0.0,
+        }
+    }
+
+    /// Set a dash pattern (alternating on/off lengths) and offset. An empty
+    /// pattern leaves the stroke solid.
+    pub fn dash(mut self, pattern: impl Into<Vec<f32>>, offset: f32) -> Self {
+        self.dash = pattern.into();
+        self.dash_offset = offset;
+        self
     }
 
     /// Set the end-cap style.
@@ -707,6 +764,69 @@ impl ShapeInstance {
 }
 
 // ============================================================================
+// Glyph runs
+// ============================================================================
+
+/// A font program backing a [`DrawOp::Glyphs`] run: the raw sfnt / OpenType /
+/// CFF bytes plus a stable `id` for renderer-side upload caching.
+///
+/// **`id` is an upload-cache key**, exactly like [`ImageSource::id`]. A renderer
+/// builds a native font handle from `data` *once* (a vello `FontData`, a
+/// CoreText `CTFont`, an Android `Typeface`, a web `FontFace`) and caches it by
+/// `id`, so re-emitting the same font every frame — or for every text run on a
+/// page — never re-parses the bytes. Two `FontResource`s sharing an `id` MUST
+/// carry identical `data`. For a rendered PDF this is the embedded font's
+/// content cache key.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FontResource {
+    /// Stable identity for renderer-side font-handle caching.
+    pub id: u64,
+    /// Face index within a font collection (`.ttc`); `0` for a single-face file.
+    pub index: u32,
+    /// Raw font bytes (TrueType / OpenType / CFF). `Arc` so cloning the op — or
+    /// the run that references this font every frame — is a refcount bump, not a
+    /// kilobyte-scale buffer clone. Renderers cache the parsed handle by `id` and
+    /// never touch the buffer on a cache hit.
+    pub data: Arc<Vec<u8>>,
+}
+
+impl FontResource {
+    /// A font from raw bytes with face `index` and upload-cache `id`.
+    pub fn new(id: u64, index: u32, data: impl Into<Arc<Vec<u8>>>) -> Self {
+        Self { id, index, data: data.into() }
+    }
+}
+
+/// One glyph in a [`DrawOp::Glyphs`] run: a glyph id into the run's font plus
+/// the affine that maps the glyph's **1000-units-per-em outline** into the
+/// canvas's logical coordinate space.
+///
+/// **Why a full affine, not an `(x, y)` pen position.** A PDF text run can carry
+/// an arbitrary per-glyph matrix — the text matrix composes rotation, shear,
+/// horizontal/vertical scaling, and the pen advance — so a scalar pen offset
+/// cannot express every placement. Carrying the resolved affine per glyph keeps
+/// the op correct for *any* transform without a renderer having to reconstruct
+/// font size / shear from a decomposed position. The outline is normalized to
+/// **upem = 1000** (the glyph-space convention the PDF producer emits against),
+/// so a renderer drives its glyph machinery at that nominal em — e.g. vello
+/// `font_size = 1000` — and lets `transform` carry the real on-page scale.
+/// See [`DrawOp::Glyphs`].
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PositionedGlyph {
+    /// Glyph id within the run's font.
+    pub id: u32,
+    /// Affine mapping the 1000-upem glyph outline into logical canvas space.
+    pub transform: Transform,
+}
+
+impl PositionedGlyph {
+    /// A glyph `id` placed by `transform` (1000-upem outline → logical space).
+    pub fn new(id: u32, transform: Transform) -> Self {
+        Self { id, transform }
+    }
+}
+
+// ============================================================================
 // Draw ops + Scene
 // ============================================================================
 
@@ -867,6 +987,59 @@ pub enum DrawOp {
         /// Composite mode of the batch against existing canvas content.
         blend: BlendMode,
     },
+    /// Fill a run of glyphs from a shared `font` with `paint`.
+    ///
+    /// Each [`PositionedGlyph`] carries its glyph id and the affine placing its
+    /// 1000-upem outline in logical space (see [`PositionedGlyph`]). Grouping a
+    /// whole text run under one op — rather than one [`Fill`](DrawOp::Fill) per
+    /// glyph with a pre-tessellated path — lets a GPU renderer drive its native,
+    /// outline-caching glyph pipeline once per run with a single font upload: the
+    /// throughput primitive for text-dense content (a rendered PDF page). The
+    /// font handle is cached by [`FontResource::id`] across frames and runs.
+    ///
+    /// Glyphs fill with non-zero winding (the font convention) and composite with
+    /// `paint.blend`. A renderer without a glyph pipeline outlines each glyph from
+    /// `font` and fills it — the observable pixels are identical (CLAUDE.md §7).
+    /// Stroked text and Type3 (drawing-instruction) glyphs are *not* expressed
+    /// here; the producer emits those as ordinary [`Fill`](DrawOp::Fill) /
+    /// [`Stroke`](DrawOp::Stroke) ops.
+    Glyphs {
+        /// The shared font program (+ upload-cache id).
+        font: FontResource,
+        /// The glyphs and their placements, in draw order.
+        glyphs: Vec<PositionedGlyph>,
+        /// Fill paint (color / gradient + blend) for every glyph in the run.
+        paint: Paint,
+    },
+    /// Draw `content`, modulated by a soft **mask** rendered from `mask`'s ops.
+    ///
+    /// The mask's coverage scales the content's alpha: where the mask is opaque
+    /// white (luminance 1) the content shows fully; where black/absent
+    /// (luminance 0) it's hidden; in between it fades. This is PDF's soft mask /
+    /// `SMask` (watermarks, vignettes, gradient fades) and SVG/CSS masking. The
+    /// whole masked result composites into the target at `alpha` with `blend`.
+    ///
+    /// `luminance`: `true` keys the mask on the rendered **luminance** (PDF
+    /// `/Luminosity`, the common case); `false` keys on the rendered **alpha**
+    /// (`/Alpha`). A renderer without an alpha-mask primitive may approximate the
+    /// alpha variant with luminance.
+    ///
+    /// Both `content` and `mask` are independent op lists in the same logical
+    /// space; the renderer rasterizes the mask once and applies it. A renderer
+    /// lacking a mask primitive should at minimum draw `content` (unmasked) so it
+    /// doesn't vanish (CLAUDE.md §7 — degrade, don't drop).
+    MaskGroup {
+        /// The content whose alpha the mask modulates.
+        content: Vec<DrawOp>,
+        /// Ops producing the mask image (luminance or alpha read per `luminance`).
+        mask: Vec<DrawOp>,
+        /// Key the mask on rendered luminance (`true`) vs rendered alpha (`false`).
+        luminance: bool,
+        /// Opacity of the whole masked result when composited, `0.0..=1.0`.
+        alpha: f32,
+        /// Composite mode of the masked result against existing content.
+        blend: BlendMode,
+    },
 }
 
 /// A retained list of draw operations — the renderer-agnostic unit a
@@ -930,6 +1103,22 @@ impl Scene {
     /// The recorded ops, for a renderer to replay.
     pub fn ops(&self) -> &[DrawOp] {
         &self.ops
+    }
+
+    /// Build a scene from a prebuilt op list, bypassing the current-path cursor.
+    /// The escape hatch for a producer that assembles a `Vec<DrawOp>` directly
+    /// (e.g. a PDF interpreter recording into a flat op stream) rather than
+    /// through the imperative builders. The ops are replayed verbatim.
+    pub fn from_ops(ops: Vec<DrawOp>) -> Self {
+        Self { ops, current: Path::new(), current_consumed: false }
+    }
+
+    /// Append a fully-formed op to the scene, bypassing the current-path cursor.
+    /// Pairs with [`from_ops`](Self::from_ops) for producers that build ops
+    /// directly.
+    pub fn push_op(&mut self, op: DrawOp) -> &mut Self {
+        self.ops.push(op);
+        self
     }
 
     /// `true` if nothing has been drawn yet.
@@ -1196,6 +1385,21 @@ impl Scene {
         blend: BlendMode,
     ) -> &mut Self {
         self.ops.push(DrawOp::Shapes { shapes: shapes.into_iter().collect(), blend });
+        self
+    }
+
+    /// Fill a run of `glyphs` from `font` with `paint` — the text primitive. A
+    /// GPU renderer draws the whole run through its glyph pipeline with a single
+    /// font upload; a CPU one outlines each glyph from the font and fills it (same
+    /// pixels). Does not touch the current path. See [`DrawOp::Glyphs`].
+    pub fn glyphs(
+        &mut self,
+        font: FontResource,
+        glyphs: impl IntoIterator<Item = PositionedGlyph>,
+        paint: impl Into<Paint>,
+    ) -> &mut Self {
+        self.ops
+            .push(DrawOp::Glyphs { font, glyphs: glyphs.into_iter().collect(), paint: paint.into() });
         self
     }
 
@@ -1622,5 +1826,83 @@ mod tests {
         let px = m.a * x + m.c * y + m.e;
         let py = m.b * x + m.d * y + m.f;
         assert_eq!((px, py), (22.0, 2.0));
+    }
+
+    #[test]
+    fn glyphs_records_run_with_font_and_placements() {
+        let font = FontResource::new(0xABCD, 0, vec![1u8, 2, 3, 4]);
+        let mut s = Scene::new();
+        s.glyphs(
+            font.clone(),
+            [
+                PositionedGlyph::new(10, Transform::scale(0.001, 0.001)),
+                PositionedGlyph::new(11, Transform::translate(500.0, 0.0)),
+            ],
+            Color::new(0, 0, 0, 255),
+        );
+        assert_eq!(s.ops().len(), 1);
+        match &s.ops()[0] {
+            DrawOp::Glyphs { font: f, glyphs, paint } => {
+                assert_eq!(f.id, 0xABCD);
+                assert_eq!(f.index, 0);
+                assert_eq!(&**f.data, &[1, 2, 3, 4]);
+                assert_eq!(glyphs.len(), 2);
+                assert_eq!(glyphs[0].id, 10);
+                assert_eq!(glyphs[1].id, 11);
+                // Pen advance lives in the per-glyph affine's translation.
+                assert_eq!(glyphs[1].transform.e, 500.0);
+                assert_eq!(paint.kind, PaintKind::Solid(Color::new(0, 0, 0, 255)));
+            }
+            other => panic!("expected Glyphs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mask_group_op_survives_scene_round_trip() {
+        // A MaskGroup carries two nested op lists; both must survive the wire.
+        let content = vec![DrawOp::Fill {
+            path: Path::rect(0.0, 0.0, 10.0, 10.0),
+            paint: Paint::solid(Color::new(0, 0, 0, 255)),
+            fill_rule: FillRule::NonZero,
+        }];
+        let mask = vec![DrawOp::Fill {
+            path: Path::rect(0.0, 0.0, 5.0, 10.0),
+            paint: Paint::solid(Color::new(255, 255, 255, 255)),
+            fill_rule: FillRule::NonZero,
+        }];
+        let scene = Scene::from_ops(vec![DrawOp::MaskGroup {
+            content,
+            mask,
+            luminance: true,
+            alpha: 1.0,
+            blend: BlendMode::Normal,
+        }]);
+        let bytes = serde_json::to_vec(&scene).expect("serialize");
+        let back: Scene = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(scene.ops(), back.ops());
+        match &back.ops()[0] {
+            DrawOp::MaskGroup { content, mask, luminance, .. } => {
+                assert_eq!(content.len(), 1);
+                assert_eq!(mask.len(), 1);
+                assert!(luminance);
+            }
+            other => panic!("expected MaskGroup, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn glyphs_op_survives_scene_round_trip() {
+        // The font bytes ride the wire (renderers cache the parsed handle by id),
+        // so a serialized scene reproduces the run byte-for-byte.
+        let font = FontResource::new(99, 1, vec![9u8, 8, 7, 6, 5]);
+        let mut s = Scene::new();
+        s.glyphs(
+            font,
+            [PositionedGlyph::new(3, Transform::IDENTITY)],
+            Paint::solid(Color::new(10, 20, 30, 255)).blend(BlendMode::Multiply),
+        );
+        let bytes = serde_json::to_vec(&s).expect("serialize");
+        let back: Scene = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(s.ops(), back.ops());
     }
 }

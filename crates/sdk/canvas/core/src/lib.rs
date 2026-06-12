@@ -427,8 +427,8 @@ pub fn ensure_wire_serde() {
 pub mod prelude {
     pub use super::{draw, Canvas, CanvasProps, Fit, TextureLayer};
     pub use crate::scene::{
-        color, Color, FillRule, GradientStop, LineCap, LineJoin, LinearGradient, Paint, PaintKind,
-        Path, PathSeg, RadialGradient, Scene, Stroke, Transform,
+        color, Color, FillRule, FontResource, GradientStop, LineCap, LineJoin, LinearGradient,
+        Paint, PaintKind, Path, PathSeg, PositionedGlyph, RadialGradient, Scene, Stroke, Transform,
     };
 }
 

@@ -1,0 +1,46 @@
+[package]
+name = "offload"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Run a CPU-heavy function OFF the main thread, with one platform-agnostic call
+# site:
+#
+#     #[offload::job]
+#     fn rasterize(req: Req) -> Out { /* heavy work */ }
+#
+#     let out = offload::run(offload::handle!(rasterize), &req).await?;
+#
+#   - web:    runs the job in a Web Worker (a real background thread) via the
+#             `wasmworker` crate — no SharedArrayBuffer, so NO cross-origin
+#             isolation (COOP/COEP) headers are required and embedding still
+#             works. The same app `--target web` wasm is reused; there is no
+#             second build artifact.
+#   - native: runs the job on a `std::thread`; the result is delivered back
+#             through a oneshot channel the `.await` polls.
+#
+# The public surface (`job`, `handle!`, `run`, `OffloadError`) is intentionally
+# backend-agnostic so the `wasmworker` dependency can be swapped for a
+# hand-rolled `web_sys::Worker` bridge later without touching consumers. Job
+# argument + return types must be `serde::Serialize + Deserialize` (the web
+# backend ships them across the worker boundary; native clones them).
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+
+# Web: the message-passing Web Worker pool. `macros` gives `#[webworker_fn]` +
+# `webworker!`; no SharedArrayBuffer required (its explicit design goal).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasmworker = { version = "0.4", features = ["macros"] }
+
+# Native: the no-op `#[job]` attribute + a oneshot to bridge the worker thread's
+# result back into the awaited future.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+offload-macro = { path = "../offload-macro" }
+futures-channel = "0.3"
+
+[dev-dependencies]
+# Block on the `run` future in native unit tests.
+pollster = "0.3"

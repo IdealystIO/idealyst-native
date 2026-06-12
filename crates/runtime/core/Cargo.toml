@@ -170,6 +170,12 @@ bitflags = "2"
 # (wgpu, glow, vello, softbuffer, …) on top. Tiny dep — a handful of
 # enums and traits, no platform code.
 raw-window-handle = "0.6"
+# Fast FxHash hasher for the reactive core's hot-path collections
+# (`signal_subscribers`, `effect_dependencies`, the RUNNING set, etc.).
+# Keys are internal Signal/Effect integer ids — never attacker-controlled —
+# so the default SipHash's cryptographic resistance is wasted cost on the
+# framework's hottest path (a HashSet insert per signal read inside an effect).
+rustc-hash = { workspace = true }
 # Runtime for `lazy! { ... }` — see the workspace dep declaration for
 # the alias rationale. Re-exported below as `__wasm_split` so the
 # `lazy!` macro's expansion in author crates can reach it.

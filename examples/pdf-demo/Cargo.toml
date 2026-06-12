@@ -1,0 +1,50 @@
+[package]
+name = "pdf-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PDF SDK demo — renders a PDF page on the GPU. The page is interpreted (hayro) into a renderer-agnostic canvas Scene (text → glyph runs, vectors → fills, images → blits) and drawn by canvas-vello (vello/Metal/Vulkan/WebGPU), falling back to canvas-native (CPU) where the GPU can't run."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper (wire
+# recording for `idealyst dev`).
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+# `async-driver`: file picking is async (`spawn_async`); without it the macOS
+# run loop would block on the await.
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+canvas = { workspace = true }
+canvas-native = { workspace = true }
+pdf = { workspace = true }
+file-picker = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+# The concrete backend each platform hands to `register_extensions`, plus the
+# GPU canvas renderer (vello). `canvas-vello::register` overrides canvas-native
+# (last-wins) where the GPU can run vello; self-gates off otherwise.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+canvas-vello = { workspace = true }
+
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }
+canvas-vello = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+canvas-vello = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+canvas-vello = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "PDF Demo"
+bundle_id = "ai.truday.idealyst.pdfdemo"
+version   = "0.0.1"
+targets   = ["macos", "web", "ios", "android"]

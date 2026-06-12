@@ -90,6 +90,21 @@ const CG_GRADIENT_DRAWS_EXTEND: u32 = 1 | 2;
 const CG_BLEND_NORMAL: i32 = 0;
 const CG_BLEND_MULTIPLY: i32 = 1;
 const CG_BLEND_SCREEN: i32 = 2;
+const CG_BLEND_OVERLAY: i32 = 3;
+const CG_BLEND_DARKEN: i32 = 4;
+const CG_BLEND_LIGHTEN: i32 = 5;
+const CG_BLEND_COLOR_DODGE: i32 = 6;
+const CG_BLEND_COLOR_BURN: i32 = 7;
+// NB: CoreGraphics orders SoftLight(8) BEFORE HardLight(9) — the reverse of
+// peniko/W3C — so these values are deliberately not symmetric with the enum.
+const CG_BLEND_SOFT_LIGHT: i32 = 8;
+const CG_BLEND_HARD_LIGHT: i32 = 9;
+const CG_BLEND_DIFFERENCE: i32 = 10;
+const CG_BLEND_EXCLUSION: i32 = 11;
+const CG_BLEND_HUE: i32 = 12;
+const CG_BLEND_SATURATION: i32 = 13;
+const CG_BLEND_COLOR: i32 = 14;
+const CG_BLEND_LUMINOSITY: i32 = 15;
 const CG_BLEND_DESTINATION_OUT: i32 = 23;
 
 extern "C" {
@@ -257,6 +272,18 @@ impl ApplePainter {
                     let _: () = msg_send![&bezier, setLineJoinStyle: cg_line_join(stroke.join)];
                 }
                 let _: () = unsafe { msg_send![&bezier, setMiterLimit: stroke.miter_limit as CGFloat] };
+                // Dash pattern: `setLineDash:count:phase:` on the bezier path.
+                if !stroke.dash.is_empty() {
+                    let pattern: Vec<CGFloat> = stroke.dash.iter().map(|&d| d as CGFloat).collect();
+                    unsafe {
+                        let _: () = msg_send![
+                            &bezier,
+                            setLineDash: pattern.as_ptr(),
+                            count: pattern.len() as isize,
+                            phase: stroke.dash_offset as CGFloat,
+                        ];
+                    }
+                }
                 // Gradient strokes are approximated by their first stop color
                 // (CoreGraphics has no direct gradient-stroke; clipping to a
                 // stroked outline needs CGPathCreateCopyByStrokingPath — a v2
@@ -312,6 +339,21 @@ impl ApplePainter {
                 // identical pixels (CLAUDE.md §7).
                 for sh in shapes {
                     self.apply_op(ctx, &sh.to_fill_op(*blend));
+                }
+            }
+            DrawOp::Glyphs { font, glyphs, paint } => {
+                // No glyph engine on CoreGraphics: outline each glyph and fill it,
+                // matching the GPU (vello) path's geometry (CLAUDE.md §7).
+                for op in crate::glyphs::expand_run(font, glyphs, paint) {
+                    self.apply_op(ctx, &op);
+                }
+            }
+            DrawOp::MaskGroup { content, .. } => {
+                // No soft-mask primitive wired on CoreGraphics yet: draw the
+                // content unmasked so it doesn't vanish (the GPU path masks
+                // correctly). canvas-native is the sim/emulator fallback.
+                for op in content {
+                    self.apply_op(ctx, op);
                 }
             }
             // `DrawOp` is `#[non_exhaustive]`; future ops no-op until wired.
@@ -749,6 +791,19 @@ fn cg_blend_mode(blend: BlendMode) -> i32 {
         BlendMode::DestinationOut => CG_BLEND_DESTINATION_OUT,
         BlendMode::Multiply => CG_BLEND_MULTIPLY,
         BlendMode::Screen => CG_BLEND_SCREEN,
+        BlendMode::Overlay => CG_BLEND_OVERLAY,
+        BlendMode::Darken => CG_BLEND_DARKEN,
+        BlendMode::Lighten => CG_BLEND_LIGHTEN,
+        BlendMode::ColorDodge => CG_BLEND_COLOR_DODGE,
+        BlendMode::ColorBurn => CG_BLEND_COLOR_BURN,
+        BlendMode::HardLight => CG_BLEND_HARD_LIGHT,
+        BlendMode::SoftLight => CG_BLEND_SOFT_LIGHT,
+        BlendMode::Difference => CG_BLEND_DIFFERENCE,
+        BlendMode::Exclusion => CG_BLEND_EXCLUSION,
+        BlendMode::Hue => CG_BLEND_HUE,
+        BlendMode::Saturation => CG_BLEND_SATURATION,
+        BlendMode::Color => CG_BLEND_COLOR,
+        BlendMode::Luminosity => CG_BLEND_LUMINOSITY,
         _ => CG_BLEND_NORMAL,
     }
 }

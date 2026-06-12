@@ -1,0 +1,16 @@
+[package]
+name = "offload-macro"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The `#[offload::job]` attribute on NATIVE targets. On web, `offload` re-exports
+# wasmworker's real `#[webworker_fn]` (which registers the function for the
+# worker); on native there is no worker, so the attribute is a no-op passthrough
+# and the job runs on a `std::thread`. This crate exists only to provide that
+# native no-op (attribute macros must be proc-macros).
+
+[lib]
+proc-macro = true
+
+[dependencies]

@@ -193,6 +193,12 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             &staged.join("index.html"),
             &manifest.app.web.preload_fonts,
         )?;
+        // Stage any EXTERNAL dirs the app links in (e.g. a component
+        // library's `fonts/`), copied under their final path component so
+        // `../whiteboard/fonts` → `<bundle>/fonts/`. Lets a library own the
+        // font files (native `include_bytes!`) while the app serves them on
+        // web — no per-app copy or symlink.
+        stage_external_dirs(&project_dir, &staged, &manifest.app.web.font_dirs)?;
         // Generate the favicon set into the staged bundle and inject
         // the corresponding `<link>` tags into `index.html`. Driven
         // by `[package.metadata.idealyst.app.icon].source`; no-op
@@ -348,6 +354,35 @@ pub fn stage_bundle(
     }
 
     fs::canonicalize(out_dir).with_context(|| format!("canonicalize {}", out_dir.display()))
+}
+
+/// Stage EXTERNAL directories (declared via
+/// `[package.metadata.idealyst.app.web].font_dirs`) into the bundle. Each entry
+/// is resolved relative to the app crate (and MAY contain `..`, unlike the
+/// in-crate `assets` allowlist) and copied to `<bundle>/<final-component>/`, so
+/// `../whiteboard/fonts` lands at `<bundle>/fonts/`. The motivating case: a
+/// component library owns its typeface's font files (native `include_bytes!`)
+/// and a consuming app serves the same files on web without a per-app copy or
+/// symlink.
+fn stage_external_dirs(project_dir: &Path, staged: &Path, dirs: &[String]) -> Result<()> {
+    for d in dirs {
+        let src = project_dir.join(d);
+        if !src.is_dir() {
+            anyhow::bail!(
+                "[package.metadata.idealyst.app.web].font_dirs entry {:?} is not a directory \
+                 (resolved to {})",
+                d,
+                src.display(),
+            );
+        }
+        let name = src.file_name().ok_or_else(|| {
+            anyhow::anyhow!("font_dirs entry {:?} has no final path component", d)
+        })?;
+        let dest = staged.join(name);
+        copy_dir(&src, &dest)
+            .with_context(|| format!("stage {} → {}", src.display(), dest.display()))?;
+    }
+    Ok(())
 }
 
 /// The default `index.html` a web bundle is served with when the project
@@ -764,6 +799,18 @@ lto = "off"
 panic = "abort"
 strip = "none"
 debug = "limited"
+
+# Dev builds default to `opt-level = 0`, which is catastrophic for compute-heavy
+# DEPENDENCY crates (e.g. a CPU rasterizer like `vello_cpu`/`hayro`): un-inlined
+# tiny-function inner loops + bounds checks run 10-40x slower, turning a sub-second
+# render into 10s+. Optimize all *dependencies* (the `"*"` glob — excludes this
+# wrapper + the app crate, so app iteration stays fast to compile) without
+# touching the size-tuned release profile above. SAFE for `#[wasm_split]` lazy
+# loading: split points are `#[no_mangle] extern "C"` FFI export/import edges the
+# optimizer can't inline across, and `lto` stays unset (not "fat"), so no bodies
+# relocate into `main`.
+[profile.dev.package."*"]
+opt-level = 3
 "#,
         wrapper_name = wrapper_name,
         lib_name = manifest.lib_name,
@@ -836,6 +883,16 @@ thread_local! {{
 // arbitrary as far as wasm-bindgen is concerned.
 #[wasm_bindgen(start)]
 pub fn main() {{
+    // This same wasm is also imported + initialized inside Web Workers (by the
+    // `offload` SDK / `wasmworker`) purely to make `#[offload::job]`-exported
+    // functions callable there. A Worker has no `Window` and no DOM, so the start
+    // function must NOT install the UI backend or mount — it just returns, leaving
+    // the module instantiated and the job exports reachable. Detect the Worker
+    // context (no `window`) and bail before any main-thread-only setup.
+    if web_sys::window().is_none() {{
+        return;
+    }}
+
     console_error_panic_hook::set_once();
 
     // Scheduler + time source + async executor + render loop -- every
@@ -1099,10 +1156,17 @@ fn cargo_build_wasm(
         cmd.arg("--features").arg(user_features.join(","));
     }
     let existing_rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
+    // `+simd128`: enable wasm SIMD so SIMD-centric deps (e.g. `vello_cpu`/
+    // `fearless_simd`, behind `hayro`'s PDF rasterization) take their vectorized
+    // path instead of the scalar fallback — a large speedup for CPU rasterization.
+    // No `SharedArrayBuffer` / cross-origin isolation involved (that's wasm
+    // *threads*); this is pure codegen and orthogonal to wasm-split. Supported by
+    // all evergreen browsers (Chrome/Firefox 2021+, Safari 16.4+).
+    let base_flags = "-C target-feature=+simd128 -C link-args=--emit-relocs";
     let combined = if existing_rustflags.is_empty() {
-        "-C link-args=--emit-relocs".to_string()
+        base_flags.to_string()
     } else {
-        format!("{existing_rustflags} -C link-args=--emit-relocs")
+        format!("{existing_rustflags} {base_flags}")
     };
     cmd.env("RUSTFLAGS", combined);
 

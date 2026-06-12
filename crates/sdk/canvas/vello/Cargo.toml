@@ -89,6 +89,17 @@ web-sys = { version = "0.3", features = [
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 
+# Native GPU glyph test (`glyph_run_rasterizes_on_the_gpu`) maps a character to
+# its glyph id with the same skrifa vello uses internally, so the id it hands
+# the `DrawOp::Glyphs` arm indexes the font the way vello expects.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+skrifa = "0.40"
+serde_json = "1"
+# CPU-vs-GPU rasterization benchmark (`bench_cpu_vs_gpu_rasterization`, #[ignore])
+# loads a real PDF page into a canvas Scene. `pdf` depends only on `canvas-core`
+# (no cycle back to `canvas-vello`).
+pdf = { workspace = true }
+
 # Zero-copy GPU capture on macOS: render vello into an IOSurface-backed Metal
 # texture (imported into the canvas wgpu device via `wgpu::Device::as_hal` +
 # `create_texture_from_hal`) and publish that IOSurface as the stream's native

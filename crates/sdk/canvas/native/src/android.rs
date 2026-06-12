@@ -598,6 +598,7 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
                 );
                 self.set_stroke_cap(stroke.cap);
                 self.set_stroke_join(stroke.join);
+                self.set_dash(&stroke.dash, stroke.dash_offset);
                 self.apply_paint_source(paint);
                 self.set_blend(paint.blend);
                 self.draw_path(&jpath);
@@ -668,6 +669,22 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
                             JValue::Object(p.as_obj()),
                         ],
                     );
+                }
+            }
+            DrawOp::Glyphs { font, glyphs, paint } => {
+                // No glyph engine here for embedded PDF fonts: outline each glyph
+                // and fill it, matching the GPU (vello) path's geometry
+                // (CLAUDE.md §7).
+                for op in crate::glyphs::expand_run(font, glyphs, paint) {
+                    self.apply(&op);
+                }
+            }
+            DrawOp::MaskGroup { content, .. } => {
+                // No soft-mask primitive wired on android.graphics yet: draw the
+                // content unmasked so it doesn't vanish (the GPU/vello path masks
+                // correctly). canvas-native is the emulator fallback.
+                for op in content {
+                    self.apply(op);
                 }
             }
             // `DrawOp` is `#[non_exhaustive]`; future ops no-op until wired.
@@ -1099,14 +1116,43 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
     /// cleared any prior xfermode (the default = SrcOver), so each op starts
     /// clean and only blended ops touch the xfermode.
     fn set_blend(&mut self, blend: BlendMode) {
-        let mode_field = match blend {
+        // `PorterDuff.Mode` covers the basics and works on every API level.
+        let porterduff = match blend {
             BlendMode::Normal => return,
-            BlendMode::DestinationOut => "DST_OUT",
-            BlendMode::Multiply => "MULTIPLY",
-            BlendMode::Screen => "SCREEN",
-            // `#[non_exhaustive]`; unknown modes stay SrcOver.
-            _ => return,
+            BlendMode::DestinationOut => Some("DST_OUT"),
+            BlendMode::Multiply => Some("MULTIPLY"),
+            BlendMode::Screen => Some("SCREEN"),
+            BlendMode::Overlay => Some("OVERLAY"),
+            BlendMode::Darken => Some("DARKEN"),
+            BlendMode::Lighten => Some("LIGHTEN"),
+            _ => None,
         };
+        match porterduff {
+            Some(field) => self.set_porterduff(field),
+            // The advanced W3C separable/non-separable modes aren't in
+            // `PorterDuff.Mode`; they need `android.graphics.BlendMode` (API 29+).
+            None => {
+                let bm = match blend {
+                    BlendMode::ColorDodge => "COLOR_DODGE",
+                    BlendMode::ColorBurn => "COLOR_BURN",
+                    BlendMode::HardLight => "HARD_LIGHT",
+                    BlendMode::SoftLight => "SOFT_LIGHT",
+                    BlendMode::Difference => "DIFFERENCE",
+                    BlendMode::Exclusion => "EXCLUSION",
+                    BlendMode::Hue => "HUE",
+                    BlendMode::Saturation => "SATURATION",
+                    BlendMode::Color => "COLOR",
+                    BlendMode::Luminosity => "LUMINOSITY",
+                    // `#[non_exhaustive]`; unknown modes stay SrcOver.
+                    _ => return,
+                };
+                self.set_android_blendmode(bm);
+            }
+        }
+    }
+
+    /// Install a `PorterDuffXfermode` for one of the `PorterDuff.Mode` blends.
+    fn set_porterduff(&mut self, mode_field: &str) {
         let Ok(mode_class) = self.env.find_class("android/graphics/PorterDuff$Mode") else {
             return;
         };
@@ -1133,6 +1179,71 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
             "setXfermode",
             "(Landroid/graphics/Xfermode;)Landroid/graphics/Xfermode;",
             &[JValue::Object(&xfer)],
+        );
+    }
+
+    /// Install (or clear) a dash pattern via `Paint.setPathEffect(DashPathEffect)`.
+    /// `DashPathEffect` requires an even-length interval array, so an odd PDF dash
+    /// array is duplicated (preserving the on/off alternation across the repeat).
+    fn set_dash(&mut self, dash: &[f32], offset: f32) {
+        let p = self.paint.clone();
+        if dash.is_empty() {
+            let _ = self.env.call_method(
+                p.as_obj(),
+                "setPathEffect",
+                "(Landroid/graphics/PathEffect;)Landroid/graphics/PathEffect;",
+                &[JValue::Object(&JObject::null())],
+            );
+            return;
+        }
+        let mut intervals = dash.to_vec();
+        if intervals.len() % 2 == 1 {
+            let dup = intervals.clone();
+            intervals.extend(dup);
+        }
+        let Ok(arr) = self.env.new_float_array(intervals.len() as i32) else { return };
+        if self.env.set_float_array_region(&arr, 0, &intervals).is_err() {
+            return;
+        }
+        let Ok(effect_class) = self.env.find_class("android/graphics/DashPathEffect") else {
+            return;
+        };
+        let Ok(effect) = self.env.new_object(
+            &effect_class,
+            "([FF)V",
+            &[JValue::Object(&arr), JValue::Float(offset)],
+        ) else {
+            return;
+        };
+        let _ = self.env.call_method(
+            p.as_obj(),
+            "setPathEffect",
+            "(Landroid/graphics/PathEffect;)Landroid/graphics/PathEffect;",
+            &[JValue::Object(&effect)],
+        );
+    }
+
+    /// Install an advanced blend via `Paint.setBlendMode(android.graphics.BlendMode)`
+    /// (API 29+). On older API levels the class lookup fails and the op stays
+    /// SrcOver — the documented degradation for the emulator-only CPU fallback
+    /// (real devices render through vello, which supports every mode).
+    fn set_android_blendmode(&mut self, mode_field: &str) {
+        let Ok(bm_class) = self.env.find_class("android/graphics/BlendMode") else {
+            return;
+        };
+        let Ok(mode) = self
+            .env
+            .get_static_field(&bm_class, mode_field, "Landroid/graphics/BlendMode;")
+            .and_then(|v| v.l())
+        else {
+            return;
+        };
+        let p = self.paint.clone();
+        let _ = self.env.call_method(
+            p.as_obj(),
+            "setBlendMode",
+            "(Landroid/graphics/BlendMode;)V",
+            &[JValue::Object(&mode)],
         );
     }
 

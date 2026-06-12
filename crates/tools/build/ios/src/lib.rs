@@ -241,6 +241,25 @@ pub struct WebMetadata {
     /// metadata. Leave empty to keep the auto-discover behavior; set it
     /// to lock the bundle down to a known surface.
     pub assets: Vec<String>,
+
+    /// EXTERNAL directories (outside this app crate) to stage into the
+    /// served bundle — each copied in under its own final path component.
+    /// Declared as:
+    /// ```toml
+    /// [package.metadata.idealyst.app.web]
+    /// font_dirs = ["../whiteboard/fonts"]
+    /// ```
+    /// The motivating case: a reusable component LIBRARY declares a
+    /// typeface (its `face!` `include_bytes!`s the bytes for native), and
+    /// a consuming app needs those same font FILES served on web (the web
+    /// backend links `@font-face` to `/fonts/<name>`). The library owns
+    /// the files (so it stays self-contained), and the app points here to
+    /// stage them — no per-app copy, no symlink. Paths are resolved
+    /// relative to the app crate and MAY contain `..` (unlike `assets`,
+    /// which is the in-crate allowlist). Each dir is copied to
+    /// `<bundle>/<dir-final-name>/` (so `../whiteboard/fonts` →
+    /// `<bundle>/fonts/`, matching the `/fonts/...` `@font-face` URLs).
+    pub font_dirs: Vec<String>,
 }
 
 impl AppMetadata {
@@ -479,6 +498,8 @@ struct RawWebMetadata {
     preload_fonts: Option<Vec<String>>,
     #[serde(default)]
     assets: Option<Vec<String>>,
+    #[serde(default)]
+    font_dirs: Option<Vec<String>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -571,6 +592,7 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
     let web = WebMetadata {
         preload_fonts: raw_web.preload_fonts.unwrap_or_default(),
         assets: raw_web.assets.unwrap_or_default(),
+        font_dirs: raw_web.font_dirs.unwrap_or_default(),
     };
 
     let raw_macos = app_raw.macos.unwrap_or_default();

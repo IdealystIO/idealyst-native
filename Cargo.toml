@@ -93,6 +93,7 @@ members = [
     "crates/sdk/canvas/native",
     "crates/sdk/canvas/vello",
     "crates/sdk/toolbar",
+    "crates/sdk/pdf",
     "crates/sdk/form",
     "crates/sdk/table",
     "crates/sdk/menu",
@@ -106,9 +107,12 @@ members = [
     "crates/sdk/camera",
     "crates/sdk/media-stream",
     "crates/sdk/media-writer",
+    "crates/sdk/denoise",
     "crates/sdk/video-decode",
     "crates/sdk/file-export",
     "crates/sdk/file-picker",
+    "crates/sdk/offload",
+    "crates/sdk/offload-macro",
     "crates/sdk/credentials",
     "crates/sdk/biometrics",
     "crates/sdk/screen-recorder",
@@ -183,11 +187,13 @@ members = [
     "examples/inspector",
     "examples/server-fn-demo",
     "examples/mic-demo",
+    "examples/denoise-demo",
     "examples/container-demo",
     "examples/screen-recorder-demo",
     "examples/camera-demo",
     "examples/camera-preview-demo",
     "examples/canvas-demo",
+    "examples/pdf-demo",
     "examples/markdown-demo",
     "examples/screenshare-preview-demo",
     "examples/media-sources-demo",
@@ -238,6 +244,11 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 runtime-core = { path = "crates/runtime/core" }
+# Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
+# reactive core's hot-path collections keyed by internal Signal/Effect ids,
+# which are never attacker-controlled — SipHash's DoS-resistance is pure
+# overhead there.
+rustc-hash = "2"
 css = { path = "crates/css" }
 dev-hot = { path = "crates/dev/hot" }
 runtime-macros = { path = "crates/runtime/macros" }
@@ -328,6 +339,7 @@ canvas-core = { path = "crates/sdk/canvas/core" }
 canvas-native = { path = "crates/sdk/canvas/native" }
 canvas-vello = { path = "crates/sdk/canvas/vello" }
 toolbar = { path = "crates/sdk/toolbar" }
+pdf = { path = "crates/sdk/pdf" }
 form = { path = "crates/sdk/form" }
 table = { path = "crates/sdk/table" }
 menu = { path = "crates/sdk/menu" }
@@ -337,6 +349,7 @@ microphone = { path = "crates/sdk/microphone" }
 camera = { path = "crates/sdk/camera" }
 media-stream = { path = "crates/sdk/media-stream" }
 media-writer = { path = "crates/sdk/media-writer" }
+denoise = { path = "crates/sdk/denoise" }
 video-decode = { path = "crates/sdk/video-decode" }
 file-export = { path = "crates/sdk/file-export" }
 file-picker = { path = "crates/sdk/file-picker" }

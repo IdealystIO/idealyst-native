@@ -1,0 +1,50 @@
+[package]
+name = "denoise-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Noise-suppression SDK demo — opens the mic, runs it through `denoise` (DeepFilterNet 3), and shows raw-input vs. denoised level meters side by side. Make background noise without speaking: the denoised bar drops while the raw bar stays up."
+
+# Pure `rlib` app crate — platform-agnostic. `microphone` and `denoise` are
+# both internally cfg-gated, so the app just calls them and the right backend
+# compiles per target (denoise's DSP is identical on every native target).
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+microphone = { workspace = true }
+denoise = { workspace = true }
+# Record each stream (raw + denoised) to an .m4a, and play them back in-app.
+# `video` self-registers its `Element::External` handler via inventory at
+# backend construction (we just depend on it + use `video::Video`).
+media-writer = { workspace = true }
+files = { workspace = true }
+video = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+# Web only: the DeepFilterNet model isn't bundled into the wasm binary (that's
+# the `denoise` SDK's small-bundle design). Instead it rides in a lazily-loaded
+# `wasm-split` chunk: `include_bytes!(model)` lives behind a `lazy_loader!`
+# function, so the splitter moves the 7.6 MB data segment into a separate
+# `chunk_N_split.wasm` that's fetched only on first denoiser use — the main
+# bundle stays small. Native uses the embedded `Denoiser::new()` (no chunk).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-split = { workspace = true }
+
+# The mic capability + its OS prompt reason. `denoise` declares no capability
+# of its own (it consumes an existing stream), so the only permission injected
+# is the microphone one, sourced from the `microphone` dependency.
+[package.metadata.idealyst.app]
+name      = "Denoise Demo"
+bundle_id = "ai.truday.idealyst.denoisedemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]
+
+[package.metadata.idealyst.app.permissions]
+microphone = "Denoise Demo cleans your microphone input with on-device noise suppression."
