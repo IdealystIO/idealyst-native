@@ -888,6 +888,7 @@ mod regression_tests {
                 },
                 targets: Vec::new(),
                 server_bin: None,
+                server_manifest: None,
                 web: Default::default(),
                 macos: Default::default(),
                 permissions: Default::default(),

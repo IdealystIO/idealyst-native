@@ -495,7 +495,11 @@ fn platform_category(p: Platform) -> Option<Category> {
         Platform::Ios => Some(Category::Ios),
         Platform::Android => Some(Category::Android),
         Platform::Roku => Some(Category::Roku),
-        Platform::Sim | Platform::Macos | Platform::Terminal | Platform::RuntimeServer => None,
+        Platform::Sim
+        | Platform::Macos
+        | Platform::Terminal
+        | Platform::RuntimeServer
+        | Platform::Server => None,
     }
 }
 

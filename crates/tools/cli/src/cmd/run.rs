@@ -115,6 +115,21 @@ pub struct Args {
     /// Sim only: chrome skin. Defaults to `ios`.
     #[arg(long, value_enum, default_value_t = SimPainter::Ios)]
     pub skin: SimPainter,
+
+    /// `run server` only: skip building the web bundle first. By
+    /// default `idealyst run server` runs `build --web` so `dist/web`
+    /// is fresh before launching (the server serves that directory);
+    /// pass this to run the server bin against whatever is already
+    /// staged.
+    #[arg(long)]
+    pub no_build: bool,
+
+    /// `run server` only: port for the server to bind, forwarded to the
+    /// server binary via the `PORT` environment variable. The server
+    /// must read `PORT` to honor it (the convention the server SDK
+    /// examples follow); the SDK default is 3000.
+    #[arg(long)]
+    pub port: Option<u16>,
 }
 
 fn loopback_endpoint(args: &Args) -> anyhow::Result<String> {
@@ -418,9 +433,240 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
             eprintln!("  binary: {}", artifact.binary.display());
             Ok(())
         }
+        Platform::Server => run_server(&args),
         _ => anyhow::bail!(
-            "run for {} is not implemented yet — only ios, android, roku, sim, macos, and terminal are wired today",
+            "run for {} is not implemented yet — only ios, android, roku, sim, macos, terminal, and server are wired today",
             args.platform,
         ),
+    }
+}
+
+/// `idealyst run server` — build the web bundle (unless `--no-build`),
+/// then foreground the project's `#[server]` backend.
+///
+/// Two project shapes are supported, both declared under
+/// `[package.metadata.idealyst.app]`:
+///
+/// - **Standalone server workspace** (`server_manifest = "…/Cargo.toml"`):
+///   the recommended shape for real apps. The server is its own
+///   `[workspace]` so its server-only deps never feature-unify into the
+///   client build. We `cargo run --manifest-path <server_manifest>`
+///   (adding `--bin <server_bin>` when set).
+/// - **In-crate bin** (`server_bin = "…"` only): the toy / single-crate
+///   shape used by `examples/server-fn-demo`. We `cargo run -p <pkg>
+///   --bin <server_bin> --features server`.
+///
+/// Either way the server serves the static `dist/web` bundle at `/`, so
+/// we stage that first (a missing `dist/web` is the classic
+/// 404-on-root trap). stdio is inherited and we block so Ctrl-C tears
+/// the server down.
+fn run_server(args: &Args) -> anyhow::Result<()> {
+    let manifest = build_ios::parse_manifest(&args.dir)
+        .with_context(|| format!("read manifest for {}", args.dir.display()))?;
+    let app = &manifest.app;
+
+    if app.server_manifest.is_none() && app.server_bin.is_none() {
+        anyhow::bail!(
+            "no server declared for this project. Pick one and add it to \
+             {}/Cargo.toml:\n\n\
+             \x20 # Standalone server workspace (recommended for real apps):\n\
+             \x20 [package.metadata.idealyst.app]\n\
+             \x20 server_manifest = \"../../server/Cargo.toml\"\n\
+             \x20 server_bin       = \"server\"   # optional: names the bin\n\n\
+             \x20 # …or an in-crate bin gated by the `server` feature:\n\
+             \x20 [package.metadata.idealyst.app]\n\
+             \x20 server_bin = \"server\"   # → src/bin/server.rs\n\n\
+             then re-run `idealyst run server`.",
+            args.dir.display(),
+        );
+    }
+
+    // Stage `dist/web` before launching so the server has assets to
+    // serve at `/`. Mirrors `idealyst build --web`'s output dir.
+    // `--no-build` skips this to run against an already-staged bundle.
+    if !args.no_build {
+        let source = crate::framework_source::resolve(&args.dir)?;
+        eprintln!("[idealyst run server] building web bundle → dist/web");
+        build_web::build(
+            &args.dir,
+            build_web::BuildOptions {
+                release: args.release,
+                source,
+                user_features: Vec::new(),
+                bundle_out_dir: Some(args.dir.join("dist").join("web")),
+                gzip: false,
+                strip_panics: false,
+                hydrate: false,
+                prune_dead_data_min: None,
+            },
+        )
+        .context("web bundle build for `run server` failed")?;
+    }
+
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.arg("run");
+    let how: String;
+    if let Some(rel) = &app.server_manifest {
+        // Standalone server workspace. Resolve the manifest path
+        // relative to the app crate dir, run it as its own package.
+        // No `--features server` here: the standalone workspace's own
+        // deps already enable server mode (that isolation is the whole
+        // point of it being a separate workspace).
+        let joined = args.dir.join(rel);
+        if !joined.is_file() {
+            anyhow::bail!(
+                "server_manifest points at {}, which doesn't exist. The path is \
+                 resolved relative to the app crate dir ({}); fix \
+                 `[package.metadata.idealyst.app].server_manifest`.",
+                joined.display(),
+                args.dir.display(),
+            );
+        }
+        // Collapse the `../..` segments for tidy logging + a clean
+        // `--manifest-path`. canonicalize can't fail — we just confirmed
+        // it's a file.
+        let manifest_path = std::fs::canonicalize(&joined).unwrap_or(joined);
+        cmd.arg("--manifest-path").arg(&manifest_path);
+        if let Some(bin) = &app.server_bin {
+            cmd.arg("--bin").arg(bin);
+        }
+        how = format!(
+            "--manifest-path {}{}",
+            manifest_path.display(),
+            app.server_bin
+                .as_ref()
+                .map(|b| format!(" --bin {b}"))
+                .unwrap_or_default(),
+        );
+    } else {
+        // In-crate bin gated by the `server` feature on the app package.
+        let bin = app.server_bin.as_ref().expect("checked above");
+        cmd.arg("-p")
+            .arg(&manifest.name)
+            .arg("--bin")
+            .arg(bin)
+            .arg("--features")
+            .arg("server");
+        how = format!("-p {} --bin {} --features server", manifest.name, bin);
+    }
+    if args.release {
+        cmd.arg("--release");
+    }
+    if let Some(port) = args.port {
+        cmd.env("PORT", port.to_string());
+    }
+
+    eprintln!(
+        "[idealyst run server] cargo run {how}{}",
+        if args.release { " --release" } else { "" },
+    );
+    let status = cmd
+        .status()
+        .with_context(|| format!("spawn `cargo run {how}`"))?;
+    if !status.success() {
+        anyhow::bail!(
+            "server exited with {}",
+            status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into()),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! `idealyst run server` runs the project's `#[server]` backend.
+    //! Two invariants worth pinning: the `server` value-enum variant
+    //! must keep parsing (a rename would silently break the documented
+    //! command), and a project without a declared `server_bin` must get
+    //! an actionable error that names the manifest key — not a raw
+    //! cargo failure or a panic.
+
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(subcommand)]
+        cmd: TestCmd,
+    }
+
+    #[derive(clap::Subcommand)]
+    enum TestCmd {
+        Run(Args),
+    }
+
+    fn parse(argv: &[&str]) -> Args {
+        match TestCli::parse_from(argv).cmd {
+            TestCmd::Run(a) => a,
+        }
+    }
+
+    #[test]
+    fn server_platform_parses_with_default_dir() {
+        let args = parse(&["idealyst", "run", "server"]);
+        assert_eq!(args.platform, Platform::Server);
+        assert_eq!(args.dir, PathBuf::from("."));
+        assert!(!args.no_build);
+        assert!(args.port.is_none());
+    }
+
+    #[test]
+    fn server_flags_parse() {
+        let args = parse(&["idealyst", "run", "server", "--no-build", "--port", "4000", "--release"]);
+        assert!(args.no_build);
+        assert_eq!(args.port, Some(4000));
+        assert!(args.release);
+    }
+
+    fn project_with(metadata: &str) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            format!("[package]\nname = \"demo-app\"\nversion = \"0.0.0\"\n{metadata}"),
+        )
+        .unwrap();
+        tmp
+    }
+
+    #[test]
+    fn run_server_errors_without_any_server_declaration() {
+        // A valid idealyst project manifest that declares neither a
+        // server_bin nor a server_manifest.
+        let tmp = project_with("");
+        let mut args = parse(&["idealyst", "run", "server"]);
+        // `--no-build` so the error path is reached without invoking a
+        // web build (which would need the full framework toolchain).
+        args.no_build = true;
+        args.dir = tmp.path().to_path_buf();
+
+        let err = run_server(&args).unwrap_err();
+        let msg = format!("{err:#}");
+        // The error must offer both shapes so the user isn't pushed
+        // toward the in-crate `--features server` bin when their real
+        // app needs the standalone-workspace `server_manifest`.
+        assert!(
+            msg.contains("server_manifest") && msg.contains("server_bin"),
+            "missing-server error should name both manifest keys, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn run_server_errors_when_server_manifest_path_missing() {
+        // server_manifest is declared but points nowhere — the error
+        // must name the resolved path and the relative-to-app-dir rule
+        // rather than handing cargo a bogus --manifest-path.
+        let tmp = project_with(
+            "[package.metadata.idealyst.app]\nserver_manifest = \"../nope/Cargo.toml\"\n",
+        );
+        let mut args = parse(&["idealyst", "run", "server"]);
+        args.no_build = true;
+        args.dir = tmp.path().to_path_buf();
+
+        let err = run_server(&args).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("server_manifest") && msg.contains("doesn't exist"),
+            "bad server_manifest path should be reported, got: {msg}",
+        );
     }
 }

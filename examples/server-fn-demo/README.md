@@ -10,7 +10,20 @@ Full-stack todo app demonstrating the `server` SDK:
 
 ## Run
 
-Two commands.
+One command:
+
+```sh
+idealyst run server examples/server-fn-demo
+```
+
+`idealyst run server` reads `server_bin` from the project manifest
+(`[package.metadata.idealyst.app].server_bin`), builds the wasm client
+into `dist/web` first, then foregrounds the server binary — the two
+manual steps below, rolled into one. Add `--release` for an optimized
+build, `--no-build` to skip the wasm build, or `--port <N>` to override
+the bind port.
+
+### Or, the two manual steps
 
 **1. Build the wasm client:**
 

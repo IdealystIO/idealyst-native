@@ -188,7 +188,7 @@ fn platform_to_target(p: Platform) -> Option<Target> {
         Platform::Macos => Some(Target::Macos),
         Platform::Terminal => Some(Target::Terminal),
         Platform::Roku => Some(Target::Roku),
-        Platform::Sim | Platform::RuntimeServer => None,
+        Platform::Sim | Platform::RuntimeServer | Platform::Server => None,
     }
 }
 

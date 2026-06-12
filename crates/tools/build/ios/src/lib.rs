@@ -137,7 +137,36 @@ pub struct AppMetadata {
     /// server_bin = "server"
     /// ```
     /// Leave unset for client-only projects.
+    ///
+    /// For non-trivial full-stack apps the server is usually a
+    /// *standalone* workspace (so enabling its `--features server`
+    /// deps can't leak into the client build via Cargo
+    /// feature-unification) — declare [`server_manifest`] instead, and
+    /// optionally keep `server_bin` to name which bin in that manifest
+    /// to run.
+    ///
+    /// [`server_manifest`]: AppMetadata::server_manifest
     pub server_bin: Option<String>,
+    /// Optional path to a *standalone* server workspace's `Cargo.toml`,
+    /// relative to this app crate's directory. When set, `idealyst run
+    /// server` builds the web bundle into `dist/web` and then
+    /// `cargo run --manifest-path <server_manifest>` (adding `--bin
+    /// <server_bin>` when that's also set) — instead of the in-crate
+    /// `cargo run -p <pkg> --features server` path that [`server_bin`]
+    /// alone selects.
+    ///
+    /// This is the recommended shape for real full-stack apps: the
+    /// server lives in its own `[workspace]` so its server-only deps
+    /// (axum/sqlx/the `server` feature) never feature-unify into the
+    /// client/wasm build. Set in TOML as:
+    /// ```toml
+    /// [package.metadata.idealyst.app]
+    /// server_manifest = "../../server/Cargo.toml"
+    /// server_bin       = "server"   # optional: names the bin to run
+    /// ```
+    ///
+    /// [`server_bin`]: AppMetadata::server_bin
+    pub server_manifest: Option<String>,
     /// Web-target-specific knobs. Always present — empty defaults if
     /// the user didn't declare a `[package.metadata.idealyst.app.web]`
     /// block.
@@ -475,6 +504,8 @@ struct RawAppMetadata {
     #[serde(default)]
     server_bin: Option<String>,
     #[serde(default)]
+    server_manifest: Option<String>,
+    #[serde(default)]
     web: Option<RawWebMetadata>,
     #[serde(default)]
     macos: Option<RawMacosMetadata>,
@@ -612,6 +643,7 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         splash,
         targets,
         server_bin: app_raw.server_bin,
+        server_manifest: app_raw.server_manifest,
         web,
         macos,
         permissions: app_raw.permissions.unwrap_or_default(),
@@ -909,6 +941,7 @@ mod regression_tests {
                 },
                 targets: Vec::new(),
                 server_bin: None,
+                server_manifest: None,
                 web: WebMetadata::default(),
                 macos: Default::default(),
                 permissions: Default::default(),

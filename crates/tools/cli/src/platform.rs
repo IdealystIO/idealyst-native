@@ -31,6 +31,12 @@ pub enum Platform {
     /// terminal. Supports `--runtime-server` like the other native
     /// targets.
     Terminal,
+    /// The project's own application server — the `#[server]` RPC /
+    /// API backend declared as
+    /// `[package.metadata.idealyst.app].server_bin`. Not a render
+    /// target: `idealyst run server` builds the web bundle and runs
+    /// that binary so it serves both `/_srv/*` and the static assets.
+    Server,
 }
 
 impl Platform {
@@ -44,6 +50,7 @@ impl Platform {
             Platform::Sim => "sim",
             Platform::Macos => "macos",
             Platform::Terminal => "terminal",
+            Platform::Server => "server",
         }
     }
 }
