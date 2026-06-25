@@ -46,7 +46,7 @@ use objc2_app_kit::NSView;
 use objc2_foundation::{
     CGFloat, CGRect, CGSize, MainThreadMarker, NSInteger, NSObject, NSString,
 };
-use runtime_core::VirtualizerCallbacks;
+use runtime_core::{VirtualizerCallbacks, VirtualLayout};
 
 use super::MacosNode;
 
@@ -84,9 +84,12 @@ pub(crate) struct VirtualizerDataSourceIvars {
     /// checks this and short-circuits — guards against AppKit
     /// events queued past teardown.
     alive: Rc<RefCell<bool>>,
-    /// `true` for horizontal scrolling; swaps the main / cross
-    /// axes in `sizeForItemAt`.
-    horizontal: bool,
+    /// Scroll axis + lane subdivision + gaps. `sizeForItemAt` reads
+    /// this to size each cell: a list (one lane) fills the cross axis,
+    /// a grid divides it into `lanes` columns. `AutoFit` resolves
+    /// against the live collection-view bounds, so a window resize
+    /// re-lanes the grid.
+    layout: VirtualLayout,
 }
 
 declare_class!(
@@ -182,10 +185,24 @@ declare_class!(
             let size_f = (cb.item_size)(idx) as CGFloat;
 
             let bounds: CGRect = unsafe { msg_send![cv, bounds] };
-            if self.ivars().horizontal {
-                CGSize::new(size_f, bounds.size.height.max(0.0))
+            let layout = self.ivars().layout;
+            // Cross-axis extent divided into `lanes` columns minus
+            // inter-lane gaps. One lane = list (cell fills cross axis).
+            let usable_cross = if layout.axis.is_horizontal() {
+                bounds.size.height.max(0.0)
             } else {
-                CGSize::new(bounds.size.width.max(0.0), size_f)
+                bounds.size.width.max(0.0)
+            };
+            let lanes = layout.lanes.resolve(usable_cross as f32, layout.cross_spacing) as CGFloat;
+            let lane_cross = if lanes >= 1.0 {
+                ((usable_cross - (lanes - 1.0) * layout.cross_spacing as CGFloat) / lanes).max(0.0)
+            } else {
+                usable_cross
+            };
+            if layout.axis.is_horizontal() {
+                CGSize::new(size_f, lane_cross)
+            } else {
+                CGSize::new(lane_cross, size_f)
             }
         }
     }
@@ -269,14 +286,14 @@ impl VirtualizerDataSource {
     fn new(
         mtm: MainThreadMarker,
         callbacks: VirtualizerCallbacks<MacosNode>,
-        horizontal: bool,
+        layout: VirtualLayout,
     ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(VirtualizerDataSourceIvars {
             callbacks: Rc::new(RefCell::new(Some(callbacks))),
             mounts: Rc::new(RefCell::new(HashMap::new())),
             alive: Rc::new(RefCell::new(true)),
-            horizontal,
+            layout,
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -348,7 +365,7 @@ pub(crate) fn create(
     instances: &mut HashMap<usize, VirtualizerInstance>,
     callbacks: VirtualizerCallbacks<MacosNode>,
     _overscan: f32,
-    horizontal: bool,
+    virt_layout: VirtualLayout,
 ) -> Retained<NSView> {
     // ── Flow layout ────────────────────────────────────────────────
     let layout_cls: &AnyClass = AnyClass::get("NSCollectionViewFlowLayout")
@@ -361,10 +378,16 @@ pub(crate) fn create(
     };
     // NSCollectionViewScrollDirection: 0 = vertical, 1 = horizontal.
     // Matches UIKit's UICollectionViewScrollDirection numeric values.
-    let scroll_direction: i64 = if horizontal { 1 } else { 0 };
+    let scroll_direction: i64 = if virt_layout.axis.is_horizontal() { 1 } else { 0 };
     let _: () = unsafe { msg_send![&layout, setScrollDirection: scroll_direction] };
-    let _: () = unsafe { msg_send![&layout, setMinimumLineSpacing: 0.0 as CGFloat] };
-    let _: () = unsafe { msg_send![&layout, setMinimumInteritemSpacing: 0.0 as CGFloat] };
+    // Line spacing = gap between grid-rows (main axis); interitem
+    // spacing = gap between lanes on a line (cross axis).
+    let _: () = unsafe {
+        msg_send![&layout, setMinimumLineSpacing: virt_layout.main_spacing as CGFloat]
+    };
+    let _: () = unsafe {
+        msg_send![&layout, setMinimumInteritemSpacing: virt_layout.cross_spacing as CGFloat]
+    };
 
     // ── Collection view ───────────────────────────────────────────
     let cv_cls: &AnyClass = AnyClass::get("NSCollectionView")
@@ -397,7 +420,7 @@ pub(crate) fn create(
     // Data source + delegate. NSCollectionView holds these weakly,
     // matching UIKit — we retain via the side-state `instances`
     // map until `release` fires.
-    let data_source = VirtualizerDataSource::new(mtm, callbacks, horizontal);
+    let data_source = VirtualizerDataSource::new(mtm, callbacks, virt_layout);
     let _: () = unsafe { msg_send![&cv, setDataSource: &*data_source] };
     let _: () = unsafe { msg_send![&cv, setDelegate: &*data_source] };
 
@@ -414,6 +437,7 @@ pub(crate) fn create(
         Retained::from_raw(inited.cast::<NSView>())
             .expect("NSScrollView init returned nil")
     };
+    let horizontal = virt_layout.axis.is_horizontal();
     let _: () = unsafe {
         msg_send![&scroll, setHasVerticalScroller: !horizontal]
     };

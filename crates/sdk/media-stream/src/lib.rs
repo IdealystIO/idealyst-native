@@ -545,6 +545,109 @@ impl MediaStream {
     pub fn generation(&self) -> u64 {
         self.inner.channel.generation.load(Ordering::Acquire)
     }
+
+    /// Capture a **single still frame** as CPU `RGBA8` — a one-shot screenshot of
+    /// whatever the stream is currently showing. Platform-agnostic for callers: a
+    /// thumbnail generator just `await`s it and gets pixels, with no per-platform
+    /// code of its own.
+    ///
+    /// - **Web:** reads the current frame off the canvas `captureStream()` (our
+    ///   `native_source`) via a `<video>` + 2D `getImageData`. Works on a WebGPU
+    ///   canvas (the capture stream taps the live surface — unlike `toBlob`, which
+    ///   reads the cleared post-present buffer). Self-contained: the stream is
+    ///   already live, so no repaint is needed.
+    /// - **Native:** `subscribe`s for one CPU frame. The GPU renderer reads back
+    ///   GPU→CPU only when a consumer `wants_cpu_frames` (which `subscribe` flips
+    ///   on) AND it renders. The renderer is repaint-on-demand, so **the caller
+    ///   must trigger a repaint** after calling this (e.g. `CoreCanvas::snapshot_png`
+    ///   bumps the canvas's repaint nonce) or the future won't resolve. The
+    ///   subscribe happens on first poll, before the caller's deferred repaint
+    ///   renders, so ordering is safe.
+    ///
+    /// `None` if no source is attached or the frame can't be read.
+    pub async fn screenshot(&self) -> Option<Screenshot> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.screenshot_web().await
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (tx, rx) = futures_channel::oneshot::channel::<(Vec<u8>, u32, u32)>();
+            let mut tx = Some(tx);
+            // Hold the subscription until a frame arrives; flipping `wants_cpu_frames`
+            // makes the renderer read back GPU→CPU on its next render.
+            let _sub = self.subscribe(move |f: &VideoFrame| {
+                if let Some(tx) = tx.take() {
+                    let _ = tx.send((f.data.to_vec(), f.width, f.height));
+                }
+            });
+            let (data, width, height) = rx.await.ok()?;
+            Some(Screenshot { data, width, height })
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn screenshot_web(&self) -> Option<Screenshot> {
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen_futures::JsFuture;
+
+        let stream = self
+            .native_source()?
+            .downcast::<web_sys::MediaStream>()
+            .ok()?;
+        let win = web_sys::window()?;
+        let doc = win.document()?;
+
+        // A detached <video> playing the capture stream is the readable surface.
+        let video: web_sys::HtmlVideoElement =
+            doc.create_element("video").ok()?.dyn_into().ok()?;
+        video.set_muted(true);
+        video.set_src_object(Some(&stream));
+        let _ = video.play();
+
+        // Wait (a few animation frames) for the first decoded frame to land.
+        for _ in 0..30 {
+            let p = js_sys::Promise::new(&mut |resolve, _| {
+                let _ = win.request_animation_frame(&resolve);
+            });
+            let _ = JsFuture::from(p).await;
+            // readyState >= HAVE_CURRENT_DATA (2) and real dimensions ⇒ drawable.
+            if video.video_width() > 0 && video.ready_state() >= 2 {
+                break;
+            }
+        }
+        let (w, h) = (video.video_width(), video.video_height());
+        if w == 0 || h == 0 {
+            return None;
+        }
+
+        let canvas: web_sys::HtmlCanvasElement =
+            doc.create_element("canvas").ok()?.dyn_into().ok()?;
+        canvas.set_width(w);
+        canvas.set_height(h);
+        let ctx = canvas
+            .get_context("2d")
+            .ok()??
+            .dyn_into::<web_sys::CanvasRenderingContext2d>()
+            .ok()?;
+        ctx.draw_image_with_html_video_element(&video, 0.0, 0.0).ok()?;
+        let img = ctx.get_image_data(0.0, 0.0, w as f64, h as f64).ok()?;
+
+        // Stop the <video> tapping the stream (the stream itself lives on).
+        video.set_src_object(None);
+        Some(Screenshot { data: img.data().0, width: w, height: h })
+    }
+}
+
+/// A one-shot CPU screenshot: tightly-packed top-down `RGBA8`, `width*height*4`
+/// bytes. Returned by [`MediaStream::screenshot`].
+pub struct Screenshot {
+    /// Tightly-packed top-down `RGBA8` pixels (`width * height * 4` bytes).
+    pub data: Vec<u8>,
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
 }
 
 /// Cancels a [`subscribe`](MediaStream::subscribe) when dropped. Hold it for

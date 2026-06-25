@@ -2519,10 +2519,10 @@ impl Backend for WebBackend {
         &mut self,
         callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
-        horizontal: bool,
+        layout: runtime_core::VirtualLayout,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        let node = primitives::virtualizer::create(self, callbacks, overscan, horizontal);
+        let node = primitives::virtualizer::create(self, callbacks, overscan, layout);
         a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::List));
         node
     }

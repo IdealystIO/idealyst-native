@@ -96,15 +96,18 @@ members = [
     "crates/sdk/pdf",
     "crates/sdk/form",
     "crates/sdk/table",
+    "crates/sdk/virtualized",
     "crates/sdk/menu",
 
     # SDK — utility (non-primitive) crates.
     "crates/sdk/net",
     "crates/sdk/storage",
     "crates/sdk/sync",
+    "crates/sdk/graphql",
     "crates/sdk/pan",
     "crates/sdk/zoom",
     "crates/sdk/gesture",
+    "crates/sdk/dnd",
     "crates/sdk/microphone",
     "crates/sdk/camera",
     "crates/sdk/media-stream",
@@ -214,6 +217,9 @@ members = [
     "examples/i18n-demo",
     "examples/whiteboard-demo",
     "examples/modal-demo",
+    "examples/todo-sync-demo",
+    "examples/graphql-demo",
+    "examples/dnd-demo",
     "benchmark",
     "benchmark/idealyst-native/wasm",
     "benchmark/idealyst-native-anim/wasm",
@@ -327,6 +333,7 @@ idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }
 icons-lucide = { path = "crates/ui/icons-lucide" }
 pan = { path = "crates/sdk/pan" }
 zoom = { path = "crates/sdk/zoom" }
+dnd = { path = "crates/sdk/dnd" }
 maps = { path = "crates/sdk/maps" }
 maps-core = { path = "crates/sdk/maps/core" }
 maps-web = { path = "crates/sdk/maps/web" }
@@ -344,10 +351,12 @@ toolbar = { path = "crates/sdk/toolbar" }
 pdf = { path = "crates/sdk/pdf" }
 form = { path = "crates/sdk/form" }
 table = { path = "crates/sdk/table" }
+virtualized = { path = "crates/sdk/virtualized" }
 menu = { path = "crates/sdk/menu" }
 net = { path = "crates/sdk/net" }
 storage = { path = "crates/sdk/storage" }
 sync = { path = "crates/sdk/sync" }
+graphql = { path = "crates/sdk/graphql" }
 microphone = { path = "crates/sdk/microphone" }
 camera = { path = "crates/sdk/camera" }
 media-stream = { path = "crates/sdk/media-stream" }

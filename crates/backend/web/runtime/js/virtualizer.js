@@ -8,13 +8,29 @@
 // an instance and hands it the Rust callbacks via wasm-bindgen-
 // wrapped closures.
 //
+// # Lanes / grid
+//
+// The engine is lane-based. A *list* is one lane: each item owns a
+// full cross-axis line. A *grid* is N lanes: item `i` lands in lane
+// `i % L` of grid-row `i / L`. Range math runs over grid-rows (a
+// prefix-sum of per-row main-axis extents), then expands the visible
+// grid-rows to the item indices `[rowStart*L, (rowEnd+1)*L)`. The
+// list path is exactly the grid path with `L === 1`, so there is no
+// separate code path and no list-vs-grid branch in the hot loop.
+//
+// `lanesFixed` (a column count, 1 = list) and `lanesMinCross` (a
+// responsive minimum lane size, CSS `auto-fill`-style) are mutually
+// exclusive; the Rust side sets exactly one. `mainSpacing` is the gap
+// between grid-rows along the scroll axis, `crossSpacing` the gap
+// between lanes.
+//
 // Type sketch (JSDoc — keeps editor type-aware without a TS build):
 //
 // /**
 //  * @typedef {Object} VirtualizerCallbacks
 //  * @property {() => number} itemCount
 //  * @property {(idx: number) => number} itemKey
-//  * @property {(idx: number) => number} itemSize
+//  * @property {(idx: number) => number} itemSize  Main-axis extent.
 //  * @property {(idx: number) => [Element, number]} mountItem
 //  *   Returns [DOM node, scopeId]. Scope id is opaque to JS.
 //  * @property {(scopeId: number) => void} releaseItem
@@ -23,6 +39,10 @@
 //  * @property {boolean} measureSizes
 //  * @property {number} overscan
 //  * @property {boolean} horizontal
+//  * @property {number} [lanesFixed]   Fixed lane count (>=1).
+//  * @property {number} [lanesMinCross] Responsive min lane cross size.
+//  * @property {number} [mainSpacing]
+//  * @property {number} [crossSpacing]
 //  */
 
 (function () {
@@ -38,6 +58,13 @@
             this.container = container;
             this.cb = cb;
             this.horizontal = !!cb.horizontal;
+            this.mainSpacing = +cb.mainSpacing || 0;
+            this.crossSpacing = +cb.crossSpacing || 0;
+            // Lane config: exactly one of the two is meaningful.
+            this.lanesFixed = cb.lanesFixed != null ? Math.max(1, cb.lanesFixed | 0) : null;
+            this.lanesMinCross = cb.lanesMinCross != null ? +cb.lanesMinCross : null;
+            // Resolved at layout time from the container cross extent.
+            this.lanes = this.lanesFixed || 1;
 
             // Outer scroller (the container) holds an inner spacer
             // sized to the total content extent so the scrollbar is
@@ -69,7 +96,12 @@
             this.lastStart = -1;
             this.lastEnd = -1;
             this.totalSize = 0;
-            this.prefixSize = []; // prefixSize[i] = cumulative size of items [0, i)
+            // prefixRow[r] = main-axis offset of grid-row r (cumulative
+            // row extents + inter-row spacing). Length = rowCount + 1.
+            this.prefixRow = [0];
+            this.rowCount = 0;
+            // Resolved cross-axis extent per lane, set in refresh().
+            this.laneCross = 0;
 
             // Store the scroll handler as a named property so
             // `release()` can detach it. An anonymous arrow would
@@ -80,11 +112,24 @@
             };
             container.addEventListener('scroll', this._scrollHandler, { passive: true });
             // Also re-update on container resize so viewport changes
-            // trigger a re-window.
+            // trigger a re-window. A resize can also change the
+            // resolved lane count (AutoFit) or lane width — if so we
+            // need a full `refresh()`, not just a range `update()`.
             if (typeof ResizeObserver !== 'undefined') {
                 this._containerObserver = new ResizeObserver(() => {
                     if (this._released) return;
-                    this.update();
+                    const prevLanes = this.lanes;
+                    const prevCross = this.laneCross;
+                    if (this._resolveLanes() !== prevLanes) {
+                        this.refresh();
+                    } else if (Math.abs(this.laneCross - prevCross) > 0.5) {
+                        // Lane count steady but each lane's width moved
+                        // (container resized): reposition without a full
+                        // remount by re-running the range pass.
+                        this.update();
+                    } else {
+                        this.update();
+                    }
                 });
                 this._containerObserver.observe(container);
             }
@@ -102,16 +147,69 @@
             });
         }
 
-        /** Recompute prefix sums + spacer extent + visible range from scratch. */
+        /** The container's cross-axis extent (perpendicular to scroll). */
+        _crossExtent() {
+            return this.horizontal ? this.container.clientHeight : this.container.clientWidth;
+        }
+
+        /**
+         * Resolve the concrete lane count + per-lane cross extent from
+         * the container's current cross size. Returns the lane count
+         * (also stored on `this.lanes`); updates `this.laneCross`.
+         */
+        _resolveLanes() {
+            const cross = this._crossExtent();
+            let lanes;
+            if (this.lanesFixed != null) {
+                lanes = this.lanesFixed;
+            } else if (this.lanesMinCross != null && this.lanesMinCross > 0 && cross > 0) {
+                // Largest N with N*min + (N-1)*gap <= cross.
+                lanes = Math.floor((cross + this.crossSpacing) / (this.lanesMinCross + this.crossSpacing));
+                lanes = Math.max(1, lanes);
+            } else {
+                lanes = 1;
+            }
+            this.lanes = lanes;
+            // Per-lane cross extent: divide the remaining space after
+            // inter-lane gaps. Guard a zero/unknown container.
+            this.laneCross = lanes > 0 && cross > 0
+                ? (cross - (lanes - 1) * this.crossSpacing) / lanes
+                : 0;
+            return lanes;
+        }
+
+        /** Main-axis extent of grid-row `r` = max item size across its lanes. */
+        _rowExtent(r, n) {
+            const L = this.lanes;
+            let ext = 0;
+            for (let lane = 0; lane < L; lane++) {
+                const idx = r * L + lane;
+                if (idx >= n) break;
+                const s = this.cb.itemSize(idx);
+                if (s > ext) ext = s;
+            }
+            return ext;
+        }
+
+        /** Recompute lanes + prefix sums + spacer extent + visible range from scratch. */
         refresh() {
             if (this._released) return;
+            this._resolveLanes();
+            const L = this.lanes;
             const n = this.cb.itemCount();
-            this.prefixSize = new Array(n + 1);
-            this.prefixSize[0] = 0;
-            for (let i = 0; i < n; i++) {
-                this.prefixSize[i + 1] = this.prefixSize[i] + this.cb.itemSize(i);
+            this.rowCount = L > 0 ? Math.ceil(n / L) : 0;
+
+            // Prefix-sum over grid-rows. prefixRow[r+1] = prefixRow[r]
+            // + rowExtent(r) + mainSpacing. Trailing spacing is trimmed
+            // from the total content extent below.
+            this.prefixRow = new Array(this.rowCount + 1);
+            this.prefixRow[0] = 0;
+            for (let r = 0; r < this.rowCount; r++) {
+                this.prefixRow[r + 1] = this.prefixRow[r] + this._rowExtent(r, n) + this.mainSpacing;
             }
-            this.totalSize = this.prefixSize[n];
+            this.totalSize = this.rowCount > 0
+                ? this.prefixRow[this.rowCount] - this.mainSpacing
+                : 0;
             if (this.horizontal) {
                 this.spacer.style.width = this.totalSize + 'px';
             } else {
@@ -141,13 +239,6 @@
             //     need to move it to a new map slot AND update its
             //     `entry.idx` field so subsequent `update()` calls
             //     position it correctly.
-            //
-            // The pre-fix version collected ONLY the moved entries
-            // into `survivors`, then `mountedByIdx.clear()` wiped
-            // every still-in-place entry from the map. The next
-            // `update()` couldn't find them and called `mountItem`
-            // again — even though the DOM nodes were still attached
-            // — producing the doubled-render bug.
             //
             // Snapshot first so we can iterate while mutating the
             // map. `entries()` returns a live iterator on Map, but
@@ -179,6 +270,7 @@
          */
         update() {
             if (this._released) return;
+            const L = this.lanes;
             const scroll = this.horizontal ? this.container.scrollLeft : this.container.scrollTop;
             const viewport = this.horizontal ? this.container.clientWidth : this.container.clientHeight;
             const buffer = viewport * (this.cb.overscan || 1.0);
@@ -186,17 +278,27 @@
             const startOffset = scroll - buffer;
             const endOffset = scroll + viewport + buffer;
 
-            // Binary-search the prefix sums to find first/last
-            // indices whose [top, top + size) overlaps the buffer
-            // range.
+            // Binary-search prefix-row sums for the first/last grid-row
+            // overlapping the buffered window, then expand to item
+            // indices. A grid-row of L lanes covers L consecutive
+            // item indices.
             const n = this.cb.itemCount();
-            const start = this._findIndexAtOffset(Math.max(0, startOffset));
-            const end = Math.min(
-                n - 1,
-                this._findIndexAtOffset(Math.max(0, endOffset))
+            const rowStart = this._findRowAtOffset(Math.max(0, startOffset));
+            const rowEnd = Math.min(
+                this.rowCount - 1,
+                this._findRowAtOffset(Math.max(0, endOffset))
             );
+            const start = rowStart * L;
+            const end = Math.min(n - 1, (rowEnd + 1) * L - 1);
 
-            if (start === this.lastStart && end === this.lastEnd) return;
+            if (start === this.lastStart && end === this.lastEnd) {
+                // Range steady, but lane geometry may have shifted on a
+                // resize — reposition mounted entries cheaply.
+                for (const [idx, entry] of this.mountedByIdx) {
+                    this._positionEntry(idx, entry);
+                }
+                return;
+            }
             this.lastStart = start;
             this.lastEnd = end;
 
@@ -214,7 +316,7 @@
             }
 
             // Reposition all currently-mounted entries (cheap; they
-            // already exist, we just set top/left).
+            // already exist, we just set top/left + cross size).
             for (const [idx, entry] of this.mountedByIdx) {
                 this._positionEntry(idx, entry);
             }
@@ -223,23 +325,19 @@
         _mountIndex(idx) {
             const [node, scopeId] = this.cb.mountItem(idx);
             const key = this.cb.itemKey(idx);
-            const size = this.prefixSize[idx + 1] - this.prefixSize[idx];
+            const size = this.cb.itemSize(idx);
             node.style.position = 'absolute';
-            if (this.horizontal) {
-                node.style.top = '0';
-                node.style.height = '100%';
-            } else {
-                node.style.left = '0';
-                node.style.width = '100%';
-            }
             this.spacer.appendChild(node);
             const entry = { node, scopeId, idx, key, size };
             this.mountedByIdx.set(idx, entry);
             this.keyToIdx.set(key, idx);
+            this._positionEntry(idx, entry);
 
             // If we measure sizes, install a ResizeObserver. On
             // rendered-size change, push the new value back to Rust
-            // and ourselves, then refresh layout.
+            // and ourselves, then refresh layout. We observe the
+            // main-axis dimension only — the cross axis is pinned to
+            // the lane width.
             if (this.cb.measureSizes && typeof ResizeObserver !== 'undefined') {
                 const obs = new ResizeObserver(() => {
                     const rect = node.getBoundingClientRect();
@@ -265,25 +363,50 @@
             this.mountedByIdx.delete(idx);
         }
 
+        /**
+         * Place an entry at its (main, cross) position. Main offset
+         * comes from its grid-row's prefix sum; cross offset + size
+         * from its lane. In single-lane (list) mode the item fills the
+         * cross axis exactly as before.
+         */
         _positionEntry(idx, entry) {
-            const off = this.prefixSize[idx] + 'px';
+            const L = this.lanes;
+            const row = (idx / L) | 0;
+            const lane = idx - row * L;
+            const main = this.prefixRow[row] || 0;
+            const crossOff = lane * (this.laneCross + this.crossSpacing);
+            const node = entry.node;
             if (this.horizontal) {
-                entry.node.style.left = off;
+                node.style.left = main + 'px';
+                if (L > 1) {
+                    node.style.top = crossOff + 'px';
+                    node.style.height = this.laneCross + 'px';
+                } else {
+                    node.style.top = '0';
+                    node.style.height = '100%';
+                }
             } else {
-                entry.node.style.top = off;
+                node.style.top = main + 'px';
+                if (L > 1) {
+                    node.style.left = crossOff + 'px';
+                    node.style.width = this.laneCross + 'px';
+                } else {
+                    node.style.left = '0';
+                    node.style.width = '100%';
+                }
             }
         }
 
         /**
-         * Find the first index `i` such that prefixSize[i+1] > offset.
-         * Binary search. Clamps to [0, n-1].
+         * Find the first grid-row `r` such that prefixRow[r+1] > offset.
+         * Binary search. Clamps to [0, rowCount-1].
          */
-        _findIndexAtOffset(offset) {
+        _findRowAtOffset(offset) {
             let lo = 0;
-            let hi = this.prefixSize.length - 1;
+            let hi = this.prefixRow.length - 1;
             while (lo < hi) {
                 const mid = (lo + hi) >> 1;
-                if (this.prefixSize[mid + 1] > offset) {
+                if (this.prefixRow[mid + 1] > offset) {
                     hi = mid;
                 } else {
                     lo = mid + 1;
@@ -328,7 +451,6 @@
             // double-running the unmount loop.
             if (this._releasedFully) return;
             this._releasedFully = true;
-            console.log('[virt] release() called, setting _released=true');
             this._released = true;
             // 1. Stop listening for new scroll/resize events.
             this.container.removeEventListener('scroll', this._scrollHandler);

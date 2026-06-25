@@ -22,7 +22,7 @@
 //! panic, but a less confusing one than a freed Signal).
 
 use crate::WebBackend;
-use runtime_core::VirtualizerCallbacks;
+use runtime_core::{Lanes, VirtualizerCallbacks, VirtualLayout};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -48,7 +48,7 @@ pub(crate) fn create(
     b: &mut WebBackend,
     callbacks: VirtualizerCallbacks<Node>,
     overscan: f32,
-    horizontal: bool,
+    layout: VirtualLayout,
 ) -> Node {
     // 1) Make sure the JS-side recycler shim is in the page.
     b.ensure_virtualizer_shim();
@@ -168,7 +168,39 @@ pub(crate) fn create(
     let _ = js_sys::Reflect::set(
         &cb_obj,
         &JsValue::from_str("horizontal"),
-        &JsValue::from_bool(horizontal),
+        &JsValue::from_bool(layout.axis.is_horizontal()),
+    );
+    // Lane layout. `lanesFixed` is the column count for a fixed grid
+    // (1 = list); when `AutoFit`, `lanesFixed` is null and
+    // `lanesMinCross` carries the responsive minimum so the JS side
+    // resolves the count from the container's cross extent at layout
+    // time. Spacing is split into main (between grid-rows) and cross
+    // (between lanes).
+    match layout.lanes {
+        Lanes::Fixed(n) => {
+            let _ = js_sys::Reflect::set(
+                &cb_obj,
+                &JsValue::from_str("lanesFixed"),
+                &JsValue::from_f64(n.max(1) as f64),
+            );
+        }
+        Lanes::AutoFit { min_cross } => {
+            let _ = js_sys::Reflect::set(
+                &cb_obj,
+                &JsValue::from_str("lanesMinCross"),
+                &JsValue::from_f64(min_cross as f64),
+            );
+        }
+    }
+    let _ = js_sys::Reflect::set(
+        &cb_obj,
+        &JsValue::from_str("mainSpacing"),
+        &JsValue::from_f64(layout.main_spacing as f64),
+    );
+    let _ = js_sys::Reflect::set(
+        &cb_obj,
+        &JsValue::from_str("crossSpacing"),
+        &JsValue::from_f64(layout.cross_spacing as f64),
     );
 
     // 4) Construct the Virtualizer JS class.

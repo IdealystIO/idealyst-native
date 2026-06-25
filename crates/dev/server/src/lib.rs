@@ -2375,6 +2375,20 @@ fn wire_element_align(a: primitives::portal::ElementAlign) -> wire::WireElementA
     }
 }
 
+fn wire_virtual_layout(l: runtime_core::VirtualLayout) -> wire::WireVirtualLayout {
+    wire::WireVirtualLayout {
+        horizontal: l.axis.is_horizontal(),
+        lanes: match l.lanes {
+            runtime_core::Lanes::Fixed(n) => wire::WireLanes::Fixed(n),
+            runtime_core::Lanes::AutoFit { min_cross } => {
+                wire::WireLanes::AutoFit { min_cross }
+            }
+        },
+        main_spacing: l.main_spacing,
+        cross_spacing: l.cross_spacing,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Navigator dispatcher — legacy callback path stripped. The
 // SDK-handler-level recording will live here once the dev wire is
@@ -2475,7 +2489,7 @@ impl WireRecordingBackend {
         &mut self,
         callbacks: runtime_core::VirtualizerCallbacks<NodeId>,
         overscan: f32,
-        horizontal: bool,
+        layout: runtime_core::VirtualLayout,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> NodeId {
         // Eagerly snapshot the current data set: count + keys +
@@ -2494,7 +2508,7 @@ impl WireRecordingBackend {
         state.emit(Command::CreateVirtualizer {
             id,
             overscan,
-            horizontal,
+            layout: wire_virtual_layout(layout),
             initial_size: wire::WireItemSize { measured, sizes },
             initial_keys: keys,
             a11y: wire_a11y,

@@ -849,7 +849,7 @@ impl Backend for SsrBackend {
         &mut self,
         _callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
         _overscan: f32,
-        _horizontal: bool,
+        _layout: runtime_core::VirtualLayout,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // First paint emits the scroll container only; the live bundle

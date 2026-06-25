@@ -39,26 +39,33 @@
 
 #![deny(missing_docs)]
 
+pub mod autosync;
+mod coord;
 mod engine;
 mod error;
 mod merge;
 mod model;
 mod outbox;
 mod partition;
+pub mod policy;
 mod protocol;
 mod store;
+mod sync_store;
 
 #[cfg(feature = "reference-server")]
 pub mod reference;
 
+pub use autosync::{PollingTrigger, SyncHandle, SyncTrigger};
+pub use coord::SharedPartition;
 pub use error::SyncError;
 pub use merge::{Merge, MergeCtx, Resolution};
-pub use model::{Cursor, Id, Intent, Presence, Record, Rev, SyncState};
+pub use model::{Cursor, Entry, EntryStatus, Id, Intent, Presence, Record, Rev, SyncState};
 pub use partition::{Partition, SyncEngine};
 pub use protocol::{
     Change, Op, OpKind, OpResult, PullMode, PullRequest, PullResponse, PushRequest, PushResponse,
     Transport, TransportFuture,
 };
+pub use sync_store::{KvSyncStore, MemorySyncStore, StoreFuture, SyncStore};
 
 /// Generate a [`Transport`] impl that wires the engine to a pair of
 /// app-authored `pull`/`push` server functions.

@@ -74,7 +74,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::VirtualizerCallbacks;
+use runtime_core::{VirtualizerCallbacks, VirtualLayout};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol};
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
@@ -121,13 +121,14 @@ pub(crate) struct VirtualizerDataSourceIvars {
     /// every `reloadData()`, and we need a single check at the top
     /// of each entry point.
     alive: Rc<RefCell<bool>>,
-    /// `true` when the list scrolls horizontally — `sizeForItemAt`
-    /// swaps the axes so `item_size` controls the cell's width
-    /// instead of its height. Stored on the data source (not just
-    /// on the flow layout) so the delegate's size-callback has it
-    /// available without reaching back into the layout to read its
-    /// `scrollDirection`.
-    horizontal: bool,
+    /// Scroll axis + lane subdivision + gaps. `sizeForItemAt` reads
+    /// this to compute each cell's cross-axis size: a list (one lane)
+    /// fills the cross axis, a grid divides it into `lanes` columns.
+    /// Stored on the data source (not just on the flow layout) so the
+    /// delegate's size-callback has it available without reaching back
+    /// into the layout. `AutoFit` resolves against the live container
+    /// bounds inside `sizeForItemAt`, so a rotation re-lanes the grid.
+    layout: VirtualLayout,
 }
 
 declare_class!(
@@ -257,16 +258,35 @@ declare_class!(
             // area when the user has set `contentInset`.
             let bounds: CGRect = unsafe { msg_send![cv, bounds] };
             let insets: UIEdgeInsets = unsafe { msg_send![cv, contentInset] };
-            if self.ivars().horizontal {
+            let layout = self.ivars().layout;
+            // Cross-axis extent available to lanes (perpendicular to
+            // scroll), then split into `lanes` columns minus gaps. With
+            // one lane this is the old list behavior (cell fills the
+            // cross axis); with N it's a uniform grid. The flow layout
+            // wraps N cells per line because each is `lane_cross` wide.
+            let (usable_cross, lane_cross) = {
+                let usable = if layout.axis.is_horizontal() {
+                    (bounds.size.height - insets.top - insets.bottom).max(0.0)
+                } else {
+                    (bounds.size.width - insets.left - insets.right).max(0.0)
+                };
+                let lanes = layout.lanes.resolve(usable as f32, layout.cross_spacing) as CGFloat;
+                let lane = if lanes >= 1.0 {
+                    ((usable - (lanes - 1.0) * layout.cross_spacing as CGFloat) / lanes).max(0.0)
+                } else {
+                    usable
+                };
+                (usable, lane)
+            };
+            let _ = usable_cross;
+            if layout.axis.is_horizontal() {
                 // Horizontal flow → user `item_size` is the cell's
-                // width; cross-axis fills available height.
-                let usable_h = (bounds.size.height - insets.top - insets.bottom).max(0.0);
-                CGSize::new(size_f, usable_h)
+                // width (main axis); cross-axis is the lane height.
+                CGSize::new(size_f, lane_cross)
             } else {
                 // Vertical flow → user `item_size` is the cell's
-                // height; cross-axis fills available width.
-                let usable_w = (bounds.size.width - insets.left - insets.right).max(0.0);
-                CGSize::new(usable_w, size_f)
+                // height (main axis); cross-axis is the lane width.
+                CGSize::new(lane_cross, size_f)
             }
         }
     }
@@ -401,14 +421,14 @@ impl VirtualizerDataSource {
     fn new(
         mtm: MainThreadMarker,
         callbacks: VirtualizerCallbacks<IosNode>,
-        horizontal: bool,
+        layout: VirtualLayout,
     ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(VirtualizerDataSourceIvars {
             callbacks: Rc::new(RefCell::new(Some(callbacks))),
             mounts: Rc::new(RefCell::new(HashMap::new())),
             alive: Rc::new(RefCell::new(true)),
-            horizontal,
+            layout,
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -474,7 +494,7 @@ pub(crate) fn create(
     instances: &mut HashMap<usize, VirtualizerInstance>,
     callbacks: VirtualizerCallbacks<IosNode>,
     _overscan: f32,
-    horizontal: bool,
+    layout: VirtualLayout,
 ) -> Retained<UIView> {
     // `overscan` is parked: UICollectionView's built-in cell prefetch
     // (default-on since iOS 10) already overscans implicitly; exposing
@@ -488,14 +508,22 @@ pub(crate) fn create(
     //    and sections so the user's `item_size` is exactly the
     //    rendered row/column pitch.
     let layout_cls = objc2::class!(UICollectionViewFlowLayout);
-    let layout: Retained<NSObject> = unsafe {
+    let flow_layout: Retained<NSObject> = unsafe {
         msg_send_id![msg_send_id![layout_cls, alloc], init]
     };
     // UICollectionViewScrollDirection: 0 = vertical, 1 = horizontal.
-    let scroll_direction: i64 = if horizontal { 1 } else { 0 };
-    let _: () = unsafe { msg_send![&layout, setScrollDirection: scroll_direction] };
-    let _: () = unsafe { msg_send![&layout, setMinimumLineSpacing: 0.0 as CGFloat] };
-    let _: () = unsafe { msg_send![&layout, setMinimumInteritemSpacing: 0.0 as CGFloat] };
+    let scroll_direction: i64 = if layout.axis.is_horizontal() { 1 } else { 0 };
+    let _: () = unsafe { msg_send![&flow_layout, setScrollDirection: scroll_direction] };
+    // `minimumLineSpacing` is the gap between successive grid-rows
+    // along the scroll axis; `minimumInteritemSpacing` is the gap
+    // between lanes (cells on the same line). For a list (one lane)
+    // only line spacing applies.
+    let _: () = unsafe {
+        msg_send![&flow_layout, setMinimumLineSpacing: layout.main_spacing as CGFloat]
+    };
+    let _: () = unsafe {
+        msg_send![&flow_layout, setMinimumInteritemSpacing: layout.cross_spacing as CGFloat]
+    };
 
     // 2) Build the collection view. `initWithFrame:collectionViewLayout:`
     //    needs a CGRect frame and the flow layout we just built; Taffy
@@ -506,7 +534,7 @@ pub(crate) fn create(
         msg_send_id![
             msg_send_id![cv_cls, alloc],
             initWithFrame: frame,
-            collectionViewLayout: &*layout
+            collectionViewLayout: &*flow_layout
         ]
     };
 
@@ -538,7 +566,7 @@ pub(crate) fn create(
     // 4) Build the data source + delegate. UIKit holds these weakly,
     //    so we keep the Retained ref in `instances` keyed by the
     //    collection view's pointer.
-    let data_source = VirtualizerDataSource::new(mtm, callbacks, horizontal);
+    let data_source = VirtualizerDataSource::new(mtm, callbacks, layout);
     let _: () = unsafe { msg_send![&cv, setDataSource: &*data_source] };
     let _: () = unsafe { msg_send![&cv, setDelegate: &*data_source] };
 
@@ -550,7 +578,7 @@ pub(crate) fn create(
         cv_key,
         VirtualizerInstance {
             data_source: data_source.clone(),
-            layout,
+            layout: flow_layout,
         },
     );
 
@@ -640,7 +668,14 @@ mod tests {
     //! `examples/welcome` flat-list page until we wire up a UI test
     //! target.
     use super::*;
-    use runtime_core::VirtualizerCallbacks;
+    use runtime_core::{Axis, Lanes, VirtualizerCallbacks, VirtualLayout};
+
+    fn vlist(horizontal: bool) -> VirtualLayout {
+        VirtualLayout {
+            axis: if horizontal { Axis::Horizontal } else { Axis::Vertical },
+            ..VirtualLayout::default()
+        }
+    }
 
     /// Empty `VirtualizerCallbacks` for tests that exercise the
     /// construction/teardown path. UIKit won't call `cellForItemAt`
@@ -678,7 +713,7 @@ mod tests {
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
 
         let mut instances = HashMap::new();
-        let view = create(mtm, &mut instances, empty_callbacks(), 1.0, false);
+        let view = create(mtm, &mut instances, empty_callbacks(), 1.0, vlist(false));
 
         // The view must be a real UIView (UICollectionView is-a
         // UIView), and our side-state map must have exactly one
@@ -712,7 +747,7 @@ mod tests {
     fn regression_ios_virtualizer_horizontal_sets_scroll_direction() {
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
         let mut instances = HashMap::new();
-        let view = create(mtm, &mut instances, empty_callbacks(), 1.0, true);
+        let view = create(mtm, &mut instances, empty_callbacks(), 1.0, vlist(true));
         let key = &*view as *const UIView as usize;
         let instance = instances
             .get(&key)
@@ -730,9 +765,54 @@ mod tests {
         // And the data source must remember the orientation so the
         // size-callback reads the correct axis.
         assert!(
-            instance.data_source.ivars().horizontal,
-            "horizontal=true must set the data source's `horizontal` ivar so \
+            instance.data_source.ivars().layout.axis.is_horizontal(),
+            "horizontal=true must set the data source's layout axis so \
              `sizeForItemAt` returns axis-swapped sizes"
+        );
+
+        release(&mut instances, &view);
+    }
+
+    /// Grid regression: a `lanes > 1` layout must propagate the lane
+    /// count + inter-lane spacing onto the flow layout
+    /// (`minimumInteritemSpacing`) and the data source so
+    /// `sizeForItemAt` divides the cross axis into columns. Without a
+    /// live window we can't assert the resolved cell width, but we can
+    /// assert the layout descriptor reached the data source and the
+    /// flow layout's spacing was configured.
+    #[test]
+    fn regression_ios_virtualizer_grid_lanes_configures_layout() {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut instances = HashMap::new();
+        let layout = VirtualLayout {
+            axis: Axis::Vertical,
+            lanes: Lanes::Fixed(3),
+            main_spacing: 8.0,
+            cross_spacing: 12.0,
+        };
+        let view = create(mtm, &mut instances, empty_callbacks(), 1.0, layout);
+        let key = &*view as *const UIView as usize;
+        let instance = instances.get(&key).expect("instance registered");
+
+        // Inter-item (cross) spacing on the flow layout drives the gap
+        // between lanes on a line.
+        let interitem: CGFloat =
+            unsafe { msg_send![&instance.layout, minimumInteritemSpacing] };
+        assert!(
+            (interitem - 12.0).abs() < 0.01,
+            "cross_spacing must set minimumInteritemSpacing (got {interitem})"
+        );
+        let line: CGFloat = unsafe { msg_send![&instance.layout, minimumLineSpacing] };
+        assert!(
+            (line - 8.0).abs() < 0.01,
+            "main_spacing must set minimumLineSpacing (got {line})"
+        );
+
+        // The data source carries the lane count for `sizeForItemAt`.
+        assert_eq!(
+            instance.data_source.ivars().layout.lanes,
+            Lanes::Fixed(3),
+            "grid lane count must reach the data source"
         );
 
         release(&mut instances, &view);

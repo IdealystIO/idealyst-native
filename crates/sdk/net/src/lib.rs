@@ -103,9 +103,24 @@ pub use websocket::{WebSocket, WsMessage, WsSender};
 // Platform-specific transport. Exactly one of these is compiled per
 // target; each one supplies the `transport` submodule that `client.rs`
 // and `request.rs` reach into.
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+// Desktop reqwest path is Linux/Windows only — Apple platforms use the
+// NSURLSession transport below (it needs no Tokio runtime, which a native
+// AppKit/UIKit host doesn't provide; reqwest's tokio I/O would panic).
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "ios",
+    target_os = "macos",
+    target_os = "tvos",
+    target_os = "android"
+)))]
 mod native;
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "ios",
+    target_os = "macos",
+    target_os = "tvos",
+    target_os = "android"
+)))]
 use native as transport;
 
 #[cfg(target_arch = "wasm32")]
@@ -113,9 +128,11 @@ mod web;
 #[cfg(target_arch = "wasm32")]
 use web as transport;
 
-#[cfg(target_os = "ios")]
+// NSURLSession transport for every Apple platform (the module's own doc covers
+// iOS / macOS / tvOS; its objc2 deps are already gated to the same set).
+#[cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))]
 mod ios;
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))]
 use ios as transport;
 
 #[cfg(target_os = "android")]

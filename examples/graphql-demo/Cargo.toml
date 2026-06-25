@@ -1,0 +1,64 @@
+[package]
+name = "graphql-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Full-stack GraphQL on the `graphql` SDK. The server (`--bin server --features server`) holds an async-graphql schema behind ONE `#[server]` fn and serves the wasm client; the client runs typed `graphql_client` operations through `use_query`/`use_mutation`. Demonstrates 'works with server functions without depending on them'."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+# The server build: the real `#[server]` body executes the async-graphql
+# schema (graphql/server) + the axum host. Never compiled into the client.
+server = [
+    "server/server",
+    "graphql/server",
+    "dep:async-graphql",
+    "dep:axum",
+    "dep:tokio",
+    "dep:tower-http",
+]
+# Set only by the CLI-generated native sidecar wrapper.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+server = { workspace = true }
+graphql = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+# The typed-operation derive (`GraphQLQuery`) — same crate the SDK uses.
+graphql_client = { version = "0.14", default-features = false, features = [
+    "graphql_query_derive",
+] }
+dev-server = { workspace = true, optional = true }
+
+# Server-only host deps. Gated by `server` so the wasm client never
+# compiles them. async-graphql is a DIRECT dep (not via the SDK re-export)
+# because its `#[derive(SimpleObject)]` / `#[Object]` macros reference
+# `::async_graphql` at the crate root. Pinned to the same major the SDK
+# uses, so cargo unifies to one crate and the `Schema` types match.
+async-graphql = { version = "7", optional = true }
+axum = { version = "0.7", optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"], optional = true }
+tower-http = { version = "0.6", features = ["fs"], optional = true }
+
+# Web client: window.location.origin for `server::configure`.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Location"] }
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
+required-features = ["server"]
+
+[package.metadata.idealyst.app]
+name      = "GraphQL Demo"
+bundle_id = "ai.truday.idealyst.graphqldemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]
+# `idealyst dev --web` runs THIS bin: it serves the wasm bundle AND the
+# `/_srv/graphql_endpoint` GraphQL endpoint from one origin.
+server_bin = "server"

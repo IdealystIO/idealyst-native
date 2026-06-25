@@ -1680,18 +1680,49 @@ fn emit_flat_list(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 
     } else {
         quote! {}
     };
-    let horizontal_call = if let Some(p) = props.iter().find(|p| p.name == "horizontal") {
+    let axis_call = if let Some(p) = props.iter().find(|p| p.name == "axis") {
         let v = &p.value;
-        quote! { .horizontal(#v) }
+        quote! { .axis(#v) }
     } else {
         quote! {}
+    };
+    let lanes_call = if let Some(p) = props.iter().find(|p| p.name == "lanes") {
+        let v = &p.value;
+        quote! { .lanes(#v) }
+    } else {
+        quote! {}
+    };
+    let spacing_call = match (
+        props.iter().find(|p| p.name == "gap"),
+        props.iter().find(|p| p.name == "main_spacing"),
+        props.iter().find(|p| p.name == "cross_spacing"),
+    ) {
+        (Some(p), _, _) => {
+            let v = &p.value;
+            quote! { .gap(#v) }
+        }
+        (None, main, cross) => {
+            let m = main
+                .map(|p| p.value.to_token_stream())
+                .unwrap_or_else(|| quote! { 0.0 });
+            let c = cross
+                .map(|p| p.value.to_token_stream())
+                .unwrap_or_else(|| quote! { 0.0 });
+            if main.is_some() || cross.is_some() {
+                quote! { .spacing(#m, #c) }
+            } else {
+                quote! {}
+            }
+        }
     };
 
     // The third generic on flat_list is unused — fall through.
     quote! {
         ::runtime_core::primitives::flat_list::flat_list::<_, _, (), _>(#data, #key, #size, #render)
             #overscan_call
-            #horizontal_call
+            #axis_call
+            #lanes_call
+            #spacing_call
     }
 }
 

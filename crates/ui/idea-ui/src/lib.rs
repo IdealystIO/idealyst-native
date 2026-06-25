@@ -92,8 +92,8 @@ pub use idea_theme::theme::{
 // name is the component tag alias (below). Reach the theme struct via
 // `idea_theme::theme::Typography` if you need it for theme construction.
 pub use idea_theme::{
-    active_theme, active_theme_untracked, install_theme, install_themes, set_theme, ThemeTokens, TokenEntry, TokenValue,
-    Tokenized,
+    active_theme, active_theme_untracked, install_theme, install_themes, set_theme,
+    theme_installed, ThemeTokens, TokenEntry, TokenValue, Tokenized,
 };
 pub use idea_theme::{
     Danger, Info, Intent, IntoRcIntent, Neutral, Primary, Secondary, Success, Warning,

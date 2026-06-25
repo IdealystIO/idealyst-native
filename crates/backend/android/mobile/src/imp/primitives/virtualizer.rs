@@ -8,7 +8,7 @@
 
 use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
-use runtime_core::VirtualizerCallbacks;
+use runtime_core::{Lanes, VirtualizerCallbacks, VirtualLayout};
 use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;
 
@@ -16,13 +16,17 @@ pub(crate) fn create(
     b: &AndroidBackend,
     callbacks: VirtualizerCallbacks<GlobalRef>,
     overscan: f32,
-    horizontal: bool,
+    layout: VirtualLayout,
 ) -> GlobalRef {
     // We leak the box to get a stable pointer; `nativeDrop` (called
     // from the adapter teardown path, if ever wired) frees it. The
     // Activity outlives the list in this demo so the leak is bounded.
     let boxed = Box::new(callbacks);
     let ptr = Box::into_raw(boxed) as jlong;
+
+    // RecyclerView orientation constants: VERTICAL=1, HORIZONTAL=0
+    // (shared by LinearLayoutManager + GridLayoutManager).
+    let orientation_int = if layout.axis.is_horizontal() { 0 } else { 1 };
 
     with_env(|env| {
         // RecyclerView(Context).
@@ -37,23 +41,62 @@ pub(crate) fn create(
             )
             .unwrap();
 
-        // RustLinearLayoutManager(Context, orientation, overscanFactor).
-        // VERTICAL=1, HORIZONTAL=0 (matches LinearLayoutManager constants).
-        let lm_class = env
-            .find_class("io/idealyst/runtime/RustLinearLayoutManager")
-            .unwrap();
-        let orientation_int = if horizontal { 0 } else { 1 };
-        let lm = env
-            .new_object(
-                &lm_class,
-                "(Landroid/content/Context;IF)V",
-                &[
-                    JValue::Object(&b.context.as_obj()),
-                    JValue::Int(orientation_int),
-                    JValue::Float(overscan),
-                ],
-            )
-            .unwrap();
+        // Pick the layout manager by lane config:
+        //   - one lane  → RustLinearLayoutManager (a plain list)
+        //   - Fixed(N)   → RustGridLayoutManager(spanCount = N)
+        //   - AutoFit    → RustAutofitGridLayoutManager(minCross)
+        // All three honor the overscan factor via the shared
+        // `calculateExtraLayoutSpace` override.
+        let lm = match layout.lanes {
+            Lanes::Fixed(1) => {
+                let lm_class = env
+                    .find_class("io/idealyst/runtime/RustLinearLayoutManager")
+                    .unwrap();
+                env.new_object(
+                    &lm_class,
+                    "(Landroid/content/Context;IF)V",
+                    &[
+                        JValue::Object(&b.context.as_obj()),
+                        JValue::Int(orientation_int),
+                        JValue::Float(overscan),
+                    ],
+                )
+                .unwrap()
+            }
+            Lanes::Fixed(n) => {
+                let lm_class = env
+                    .find_class("io/idealyst/runtime/RustGridLayoutManager")
+                    .unwrap();
+                env.new_object(
+                    &lm_class,
+                    "(Landroid/content/Context;IIF)V",
+                    &[
+                        JValue::Object(&b.context.as_obj()),
+                        JValue::Int(n.max(1) as i32),
+                        JValue::Int(orientation_int),
+                        JValue::Float(overscan),
+                    ],
+                )
+                .unwrap()
+            }
+            Lanes::AutoFit { min_cross } => {
+                let lm_class = env
+                    .find_class("io/idealyst/runtime/RustAutofitGridLayoutManager")
+                    .unwrap();
+                env.new_object(
+                    &lm_class,
+                    "(Landroid/content/Context;FFIF)V",
+                    &[
+                        JValue::Object(&b.context.as_obj()),
+                        JValue::Float(min_cross),
+                        JValue::Float(layout.cross_spacing),
+                        JValue::Int(orientation_int),
+                        JValue::Float(overscan),
+                    ],
+                )
+                .unwrap()
+            }
+        };
         env.call_method(
             &rv,
             "setLayoutManager",
@@ -61,6 +104,35 @@ pub(crate) fn create(
             &[JValue::Object(&lm)],
         )
         .unwrap();
+
+        // Inter-item gaps. A single ItemDecoration distributes the
+        // main-axis (inter-row) and cross-axis (inter-lane) spacing;
+        // it reads the live span count from the layout manager so the
+        // AutoFit case works too. Skip it entirely when both gaps are
+        // zero so plain lists pay nothing.
+        if layout.main_spacing > 0.0 || layout.cross_spacing > 0.0 {
+            let dec_class = env
+                .find_class("io/idealyst/runtime/RustGridSpacingDecoration")
+                .unwrap();
+            let dec = env
+                .new_object(
+                    &dec_class,
+                    "(FFI)V",
+                    &[
+                        JValue::Float(layout.main_spacing),
+                        JValue::Float(layout.cross_spacing),
+                        JValue::Int(orientation_int),
+                    ],
+                )
+                .unwrap();
+            env.call_method(
+                &rv,
+                "addItemDecoration",
+                "(Landroidx/recyclerview/widget/RecyclerView$ItemDecoration;)V",
+                &[JValue::Object(&dec)],
+            )
+            .unwrap();
+        }
 
         // RustListAdapter(nativePtr).
         let adapter_class = env

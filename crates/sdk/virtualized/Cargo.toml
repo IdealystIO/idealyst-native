@@ -1,0 +1,29 @@
+[package]
+name = "virtualized"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Virtualized-collection constructors — lists, grids, and (future)
+# masonry — built on the framework's low-level `flat_list` /
+# `virtualizer` windowing engine.
+#
+# The engine itself is a framework primitive (it needs native cell
+# recycling — UICollectionView / RecyclerView / NSCollectionView — that
+# can't be composed from `view`/`scroll_view`). This SDK is the
+# opinionated layer on top: thin, generic constructors that pick a lane
+# layout for a use case (`list`, `grid`, `responsive_grid`) and hand
+# back the same `Bound<VirtualizerHandle>` the primitive returns, so all
+# the builder knobs (`.axis`, `.gap`, `.overscan`, `.bind`) still chain.
+#
+# Deliberately unopinionated about data: every constructor takes the
+# author's `Signal<Vec<T>>` + key + size + render closures, exactly like
+# `flat_list`. No styling, no headers, no selection model — those are
+# app- or higher-SDK-level policy (see the `table` SDK, which can sit on
+# top of this).
+#
+# Pure Rust on top of `runtime-core`; nothing platform-specific to gate.
+# No permissions required.
+
+[dependencies]
+runtime-core = { workspace = true }

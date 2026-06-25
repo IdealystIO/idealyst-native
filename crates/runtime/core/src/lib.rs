@@ -235,6 +235,10 @@ pub use primitives::overlay::{
     anchored_overlay, overlay, AnchoredOverlayBuilder, BackdropMode, OverlayBuilder,
 };
 pub use primitives::flat_list::{flat_list, fixed_size, FlatListItemSize};
+pub use primitives::scroll_view::{scroll_view, ScrollViewHandle, ScrollViewOps};
+pub use primitives::virtualizer::{
+    virtualizer, Axis, ItemKey, ItemSize, Lanes, VirtualLayout, VirtualizerHandle,
+};
 pub use primitives::link::{external_link, NavKind};
 pub use primitives::portal::{
     portal, AnchorTarget, AnchorableHandle, ElementAlign, ElementSide, PortalHandle,

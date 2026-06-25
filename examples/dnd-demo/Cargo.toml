@@ -1,0 +1,27 @@
+[package]
+name = "dnd-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Drag-and-drop demo — drag color chips into bins. Exercises the `dnd` SDK end to end: Draggable sources, Droppable targets with reactive is_over highlight, payload delivery, and snap-back on a miss. One author tree, identical behavior on every backend."
+
+# Pure `rlib` app crate — the CLI-generated per-target wrappers carry the
+# platform crate-type + entry point.
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+dnd = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+[package.metadata.idealyst.app]
+name      = "Drag & Drop Demo"
+bundle_id = "ai.truday.idealyst.dnddemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]

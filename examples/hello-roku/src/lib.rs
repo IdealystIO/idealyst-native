@@ -23,7 +23,7 @@
 
 use backend_roku::method;
 use runtime_core::{
-    signal, stylesheet, ui, AlignItems, Color, FlexDirection, FontWeight,
+    signal, stylesheet, ui, AlignItems, Axis, Color, FlexDirection, FontWeight,
     JustifyContent, Length, Element, Signal, Tokenized,
 };
 use idea_ui::{install_themes, ThemeTokens, TokenEntry, TokenValue};
@@ -452,19 +452,19 @@ pub fn app() -> Element {
             text(style = row_label_style()) { "Trending" }
             for i in items_count(trending) {
                 text(style = repeat_row_style()) { item_at(trending, i) }
-            }.with_style(repeat_row_container_style()).horizontal(true)
+            }.with_style(repeat_row_container_style()).axis(Axis::Horizontal)
 
             // ----- Row 2: Recently Added -----
             text(style = row_label_style()) { "Recently Added" }
             for i in items_count(recent) {
                 text(style = repeat_row_style()) { item_at(recent, i) }
-            }.with_style(repeat_row_container_style()).horizontal(true)
+            }.with_style(repeat_row_container_style()).axis(Axis::Horizontal)
 
             // ----- Row 3: Top Picks -----
             text(style = row_label_style()) { "Top Picks for You" }
             for i in items_count(top_picks) {
                 text(style = repeat_row_style()) { item_at(top_picks, i) }
-            }.with_style(repeat_row_container_style()).horizontal(true)
+            }.with_style(repeat_row_container_style()).axis(Axis::Horizontal)
 
             // ----- Row 4: Popular -----
             // Fourth row pushes the page taller than the visible
@@ -474,7 +474,7 @@ pub fn app() -> Element {
             text(style = row_label_style()) { "Popular Right Now" }
             for i in items_count(popular) {
                 text(style = repeat_row_style()) { item_at(popular, i) }
-            }.with_style(repeat_row_container_style()).horizontal(true)
+            }.with_style(repeat_row_container_style()).axis(Axis::Horizontal)
 
             view(style = button_row_style()) {
                 button(

@@ -1,0 +1,59 @@
+[package]
+name = "todo-sync-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Full-stack offline-first TODO list on the `sync` SDK. The server (`--bin server --features server`) holds the authoritative data behind two `#[server]` fns (pull/push) and serves the wasm client. The client downloads tasks, edits them offline (per-task badges turn Pending), and reconnects to replay/reconcile — each task's status comes from `Partition::entries()`."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+# The server build: real `#[server]` bodies + the axum host. Pulls
+# `sync/reference-server` for the in-memory `Authority` that backs the two
+# endpoints (a real app swaps it for a DB). Never compiled into the client.
+server = [
+    "server/server",
+    "sync/reference-server",
+    "dep:axum",
+    "dep:tokio",
+    "dep:tower-http",
+]
+# Set only by the CLI-generated native sidecar wrapper.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+server = { workspace = true }
+sync = { workspace = true }
+storage = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+idea-ui = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+dev-server = { workspace = true, optional = true }
+
+# Server-only host deps. Gated by `server` so the wasm client never
+# compiles axum/tokio.
+axum = { version = "0.7", optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"], optional = true }
+tower-http = { version = "0.6", features = ["fs"], optional = true }
+
+# Web client: window.location.origin for `server::configure`, localStorage
+# for the per-browser device id; js-sys for the edit timestamp + id RNG.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Location", "Storage"] }
+js-sys = "0.3"
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
+required-features = ["server"]
+
+[package.metadata.idealyst.app]
+name      = "TODO Sync"
+bundle_id = "ai.truday.idealyst.todosync"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]
+# `idealyst dev --web` runs THIS bin: it serves the wasm bundle AND the
+# `/_srv/*` sync API from one origin.
+server_bin = "server"

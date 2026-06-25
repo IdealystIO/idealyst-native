@@ -101,7 +101,7 @@ pub enum Event {
     CreateScrollView { horizontal: bool, has_on_scroll: bool },
     CreateSlider { value: f32, min: f32, max: f32, step: Option<f32> },
     CreateActivityIndicator,
-    CreateVirtualizer { overscan: f32, horizontal: bool },
+    CreateVirtualizer { overscan: f32, layout: runtime_core::VirtualLayout },
     CreateGraphics,
     CreateNavigator { initial_route: String },
     CreateTabNavigator { initial_route: String, tabs: usize },
@@ -837,11 +837,11 @@ impl Backend for MockBackend {
         &mut self,
         callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
-        horizontal: bool,
+        layout: runtime_core::VirtualLayout,
         _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
-        self.core.record(Event::CreateVirtualizer { overscan, horizontal });
+        self.core.record(Event::CreateVirtualizer { overscan, layout });
         // Stash the callbacks so a test can drive mount/release
         // out-of-band via `TestRuntime::sync_virtualizers` (real
         // backends drive these from scroll/rAF, outside the borrow).

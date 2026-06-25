@@ -1,97 +1,75 @@
-//! Crash-safe persistence over the [`storage`] key/value SDK.
+//! Typed, crash-safe persistence over the [`SyncStore`] port.
 //!
-//! The whole crash-safety model rests on one fact: a single
-//! [`Storage::set`](storage::Storage::set) is atomic; nothing spanning two
-//! keys is. There is no batch, no transaction, no atomic rename. So this
-//! layer stores each of a partition's three pieces of state as **one blob
-//! at one key**, and every state transition is therefore a single atomic
-//! `set`:
+//! This layer turns the engine's typed state (`Vec<Record<T>>`, the
+//! outbox, the cursor) into the serialized blobs the [`SyncStore`] trait
+//! persists, and back. The *backend* is pluggable (key/value, SQLite,
+//! files — see [`crate::sync_store`]); this layer only owns the
+//! serialization and the per-partition keying.
 //!
-//! - `sync/<partition>/cache`  → the full record set (a JSON array).
-//! - `sync/<partition>/outbox` → the pending-mutation queue (a JSON array).
-//! - `sync/<partition>/cursor` → the opaque sync cursor.
-//!
-//! Storing the whole partition cache as one value (rather than a key per
-//! record) is deliberate: [`Storage`](storage::Storage) has no key
-//! enumeration, so a per-record layout couldn't be loaded on boot anyway —
-//! and the single-blob form makes applying a pull page commit atomically.
-//! It trades a whole-partition rewrite per change for that atomicity,
-//! which is the right call at the "download one project" scale this SDK
-//! targets. The engine sequences the three keys to uphold the invariants
-//! (record-data before cursor; record-state before outbox pop).
+//! Crash-safety lives in the engine's *ordering* of these calls, not here:
+//! it saves the outbox before the records on a local edit (outbox is the
+//! commit point), the records before the outbox pop on an ack, and the
+//! cursor **last** on a pull. Each `save_*` is one durable write the
+//! backend makes atomic; this layer never assumes cross-call atomicity.
 
 use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use storage::Storage;
 
 use crate::error::SyncError;
 use crate::model::{Cursor, Record};
 use crate::outbox::OutboxOp;
+use crate::sync_store::SyncStore;
 
-/// Per-partition view over the shared [`Storage`]. Cheap to construct.
+/// Per-partition typed view over a shared [`SyncStore`]. Cheap to construct.
 pub(crate) struct PartitionStore {
-    storage: Arc<dyn Storage>,
+    store: Arc<dyn SyncStore>,
     partition: String,
 }
 
 impl PartitionStore {
-    /// Bind a store to one partition over the engine's shared storage.
-    pub fn new(storage: Arc<dyn Storage>, partition: impl Into<String>) -> Self {
+    /// Bind a typed store to one partition over the engine's shared backend.
+    pub fn new(store: Arc<dyn SyncStore>, partition: impl Into<String>) -> Self {
         PartitionStore {
-            storage,
+            store,
             partition: partition.into(),
         }
-    }
-
-    fn cache_key(&self) -> String {
-        format!("sync/{}/cache", self.partition)
-    }
-
-    fn outbox_key(&self) -> String {
-        format!("sync/{}/outbox", self.partition)
-    }
-
-    fn cursor_key(&self) -> String {
-        format!("sync/{}/cursor", self.partition)
     }
 
     /// Load the cached record set. A never-written partition reads as an
     /// empty vec, never an error.
     pub async fn load_cache<T: DeserializeOwned>(&self) -> Result<Vec<Record<T>>, SyncError> {
-        match self.storage.get(&self.cache_key()).await? {
+        match self.store.load_records(&self.partition).await? {
             Some(json) => decode(&json),
             None => Ok(Vec::new()),
         }
     }
 
-    /// Persist the whole cached record set in one atomic `set`.
+    /// Persist the whole cached record set.
     pub async fn save_cache<T: Serialize>(&self, records: &[Record<T>]) -> Result<(), SyncError> {
         let json = encode(records)?;
-        self.storage.set(&self.cache_key(), &json).await?;
-        Ok(())
+        self.store.save_records(&self.partition, &json).await
     }
 
     /// Load the pending-mutation queue. Empty for a fresh partition.
     pub async fn load_outbox(&self) -> Result<Vec<OutboxOp>, SyncError> {
-        match self.storage.get(&self.outbox_key()).await? {
+        match self.store.load_outbox(&self.partition).await? {
             Some(json) => decode(&json),
             None => Ok(Vec::new()),
         }
     }
 
-    /// Persist the whole outbox queue in one atomic `set`.
+    /// Persist the whole outbox queue.
     pub async fn save_outbox(&self, ops: &[OutboxOp]) -> Result<(), SyncError> {
         let json = encode(ops)?;
-        self.storage.set(&self.outbox_key(), &json).await?;
-        Ok(())
+        self.store.save_outbox(&self.partition, &json).await
     }
 
     /// Load the last persisted cursor, or `None` if the partition was
     /// never pulled (which forces a snapshot on the first pull).
     pub async fn load_cursor(&self) -> Result<Option<Cursor>, SyncError> {
-        match self.storage.get(&self.cursor_key()).await? {
+        match self.store.load_cursor(&self.partition).await? {
             Some(json) => decode(&json).map(Some),
             None => Ok(None),
         }
@@ -102,17 +80,13 @@ impl PartitionStore {
     /// leave the cursor *behind* the data, never ahead of it.
     pub async fn save_cursor(&self, cursor: &Cursor) -> Result<(), SyncError> {
         let json = encode(cursor)?;
-        self.storage.set(&self.cursor_key(), &json).await?;
-        Ok(())
+        self.store.save_cursor(&self.partition, &json).await
     }
 
     /// Drop everything for this partition (used by "stop syncing / forget
     /// this project").
     pub async fn clear(&self) -> Result<(), SyncError> {
-        self.storage.remove(&self.cache_key()).await?;
-        self.storage.remove(&self.outbox_key()).await?;
-        self.storage.remove(&self.cursor_key()).await?;
-        Ok(())
+        self.store.clear(&self.partition).await
     }
 }
 
@@ -129,8 +103,8 @@ mod tests {
     use super::*;
     use crate::model::{Id, Rev};
     use crate::protocol::OpKind;
+    use crate::sync_store::MemorySyncStore;
     use serde::Deserialize;
-    use storage::MemoryStorage;
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     struct Doc {
@@ -138,7 +112,7 @@ mod tests {
     }
 
     fn store() -> PartitionStore {
-        PartitionStore::new(Arc::new(MemoryStorage::new()), "project:1")
+        PartitionStore::new(Arc::new(MemorySyncStore::new()), "project:1")
     }
 
     #[tokio::test]
@@ -200,9 +174,9 @@ mod tests {
 
     #[tokio::test]
     async fn partitions_are_isolated() {
-        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-        let a = PartitionStore::new(storage.clone(), "project:1");
-        let b = PartitionStore::new(storage.clone(), "project:2");
+        let backend: Arc<dyn SyncStore> = Arc::new(MemorySyncStore::new());
+        let a = PartitionStore::new(backend.clone(), "project:1");
+        let b = PartitionStore::new(backend.clone(), "project:2");
         a.save_cursor(&Cursor("a".into())).await.unwrap();
         assert_eq!(b.load_cursor().await.unwrap(), None);
         assert_eq!(a.load_cursor().await.unwrap(), Some(Cursor("a".into())));

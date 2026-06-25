@@ -39,8 +39,10 @@ serde_json = { version = "1", optional = true }
 serde_urlencoded = { version = "0.7", optional = true }
 thiserror = "1"
 
-# Native desktop HTTP: reqwest with rustls (no native-tls, no OpenSSL).
-# Mobile uses the platform-native HTTP stacks below instead.
+# reqwest with rustls (no native-tls, no OpenSSL). The async HTTP `transport`
+# uses it only on Linux/Windows (Apple/mobile have native stacks — see lib.rs),
+# but the `eventsource` SSE arm uses `reqwest::blocking` (its own runtime) on
+# desktop incl. macOS, so the dep stays available on all non-mobile targets.
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2", "blocking"] }
 

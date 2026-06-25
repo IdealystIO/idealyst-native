@@ -71,8 +71,9 @@ docs! {
         ),
 
         p("That's the whole API surface for the common case. The advanced knobs (",
-          code("overscan"), ", ", code("horizontal"),
-          ") are builder methods on the returned handle."),
+          code("overscan"), ", ", code("axis"), ", ", code("lanes"), ", ", code("gap"),
+          ") are builder methods on the returned handle — ", code("lanes"),
+          " turns the list into a grid (see below)."),
     },
 
     section(heading = "How it stays bounded") {
@@ -170,7 +171,7 @@ docs! {
         list(
             [code(".overscan(factor)"), " — multiplier on the viewport height for the mount window. ",
              code("1.0"), " (default) means mount one viewport-height of rows above and below the visible area. Higher values trade memory for smoother scroll feel on fast flicks; lower values save memory."],
-            [code(".horizontal(true)"), " — flip the scroll axis. Items are laid out left-to-right and the viewport scrolls horizontally. Default is vertical."],
+            [code(".axis(Axis::Horizontal)"), " — flip the scroll axis. Items are laid out left-to-right and the viewport scrolls horizontally. Default is vertical."],
         ),
 
         code(rust, r##"
@@ -182,7 +183,7 @@ docs! {
                     render_item = |_, item| card_view(item),
                 )
                 .overscan(2.0)
-                .horizontal(true)
+                .axis(Axis::Horizontal)
             }
         "##),
     },
@@ -305,7 +306,7 @@ docs! {
                     item_size = fixed_size(280.0),    // width here, since horizontal
                     render_item = |_, c| card_view(c),
                 )
-                .horizontal(true)
+                .axis(Axis::Horizontal)
             }
         "##),
     },

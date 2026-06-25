@@ -987,9 +987,14 @@ impl Backend for WgpuBackend {
         &mut self,
         callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
         _overscan: f32,
-        horizontal: bool,
+        virt_layout: runtime_core::VirtualLayout,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
+        // GPU backend mounts every item eagerly (no windowing yet), so
+        // lane/grid layout isn't honored — only the scroll axis maps to
+        // the existing flow. Grid support lands when this grows a real
+        // windowed layout pass.
+        let horizontal = virt_layout.axis.is_horizontal();
         let layout = self.layout.new_node();
         // Stash the callbacks on the node so
         // `virtualizer_data_changed` can re-mount items when

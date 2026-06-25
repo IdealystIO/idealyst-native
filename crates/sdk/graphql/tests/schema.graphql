@@ -1,0 +1,25 @@
+"""A book in the catalog."""
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+}
+
+type Query {
+  """All books in the catalog."""
+  books: [Book!]!
+  """A single book by id, if it exists."""
+  book(id: ID!): Book
+  """Always errors — used to test error surfacing."""
+  fail: String!
+}
+
+type Mutation {
+  """Add a book and return it."""
+  addBook(title: String!, author: String!): Book!
+}
+
+schema {
+  query: Query
+  mutation: Mutation
+}

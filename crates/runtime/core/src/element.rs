@@ -429,7 +429,9 @@ pub enum Element {
         /// `None` for the closure-only path.
         row_index_signal_id: Option<u64>,
         overscan: f32,
-        horizontal: bool,
+        /// Scroll axis + cross-axis lane subdivision + gaps. A list is
+        /// `Lanes::Fixed(1)`; a grid is `Lanes::Fixed(N)`/`AutoFit`.
+        layout: primitives::virtualizer::VirtualLayout,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,

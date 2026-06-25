@@ -4,7 +4,9 @@ import android.content.Context
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.graphics.Rect
 import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 
@@ -161,5 +163,110 @@ class RustLinearLayoutManager(
         val px = (extent * overscanFactor).toInt().coerceAtLeast(0)
         extraLayoutSpace[0] = px
         extraLayoutSpace[1] = px
+    }
+}
+
+/**
+ * Fixed-span grid layout manager. `spanCount` lanes along the cross
+ * axis; mirrors the framework's `Lanes::Fixed(N)`. Honors the same
+ * overscan factor as the linear manager.
+ */
+class RustGridLayoutManager(
+    context: Context,
+    spanCount: Int,
+    orientation: Int,
+    private val overscanFactor: Float,
+) : GridLayoutManager(context, spanCount, orientation, false) {
+    override fun calculateExtraLayoutSpace(state: RecyclerView.State, extraLayoutSpace: IntArray) {
+        val extent = if (orientation == HORIZONTAL) width else height
+        val px = (extent * overscanFactor).toInt().coerceAtLeast(0)
+        extraLayoutSpace[0] = px
+        extraLayoutSpace[1] = px
+    }
+}
+
+/**
+ * Responsive grid layout manager: derives its span count from the
+ * available cross-axis extent — the largest N whose lanes are each at
+ * least `minCrossDp` (density-independent) wide, accounting for the
+ * inter-lane gap. Mirrors the framework's `Lanes::AutoFit` and CSS
+ * `repeat(auto-fill, minmax(min, 1fr))`. Recomputes on every layout
+ * pass so a rotation / resize re-lanes the grid.
+ */
+class RustAutofitGridLayoutManager(
+    context: Context,
+    minCrossDp: Float,
+    crossSpacingDp: Float,
+    orientation: Int,
+    private val overscanFactor: Float,
+) : GridLayoutManager(context, 1, orientation, false) {
+    private val density = context.resources.displayMetrics.density
+    private val minCrossPx = (minCrossDp * density).toInt().coerceAtLeast(1)
+    private val crossSpacingPx = (crossSpacingDp * density).toInt().coerceAtLeast(0)
+    private var lastCross = -1
+
+    override fun onLayoutChildren(
+        recycler: RecyclerView.Recycler,
+        state: RecyclerView.State,
+    ) {
+        val cross = if (orientation == HORIZONTAL) height else width
+        if (cross > 0 && cross != lastCross) {
+            lastCross = cross
+            // N*min + (N-1)*gap <= cross  =>  N <= (cross+gap)/(min+gap)
+            val n = ((cross + crossSpacingPx) / (minCrossPx + crossSpacingPx)).coerceAtLeast(1)
+            if (n != spanCount) spanCount = n
+        }
+        super.onLayoutChildren(recycler, state)
+    }
+
+    override fun calculateExtraLayoutSpace(state: RecyclerView.State, extraLayoutSpace: IntArray) {
+        val extent = if (orientation == HORIZONTAL) width else height
+        val px = (extent * overscanFactor).toInt().coerceAtLeast(0)
+        extraLayoutSpace[0] = px
+        extraLayoutSpace[1] = px
+    }
+}
+
+/**
+ * Distributes inter-row (`mainDp`) and inter-lane (`crossDp`) gaps for
+ * a grid. Reads the live span count off the `GridLayoutManager` so it
+ * works for both fixed and autofit grids. The cross gap is split so
+ * every lane keeps an equal width regardless of position. Values are
+ * supplied in density-independent units and scaled here.
+ */
+class RustGridSpacingDecoration(
+    mainDp: Float,
+    crossDp: Float,
+    private val orientation: Int,
+) : RecyclerView.ItemDecoration() {
+    private var density = 1f
+    private val mainDpRaw = mainDp
+    private val crossDpRaw = crossDp
+
+    override fun getItemOffsets(
+        outRect: Rect,
+        view: View,
+        parent: RecyclerView,
+        state: RecyclerView.State,
+    ) {
+        density = parent.context.resources.displayMetrics.density
+        val mainPx = (mainDpRaw * density).toInt()
+        val crossPx = (crossDpRaw * density).toInt()
+        val lm = parent.layoutManager
+        val spanCount = if (lm is GridLayoutManager) lm.spanCount else 1
+        val pos = parent.getChildAdapterPosition(view)
+        if (pos < 0) return
+        val lane = pos % spanCount
+        val notFirstRow = pos >= spanCount
+        if (orientation == RecyclerView.VERTICAL) {
+            // Equal-width column distribution of the cross gap.
+            outRect.left = lane * crossPx / spanCount
+            outRect.right = crossPx - (lane + 1) * crossPx / spanCount
+            if (notFirstRow) outRect.top = mainPx
+        } else {
+            outRect.top = lane * crossPx / spanCount
+            outRect.bottom = crossPx - (lane + 1) * crossPx / spanCount
+            if (notFirstRow) outRect.left = mainPx
+        }
     }
 }

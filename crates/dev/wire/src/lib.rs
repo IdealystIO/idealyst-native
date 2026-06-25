@@ -644,7 +644,8 @@ pub enum Command {
     CreateVirtualizer {
         id: NodeId,
         overscan: f32,
-        horizontal: bool,
+        #[serde(default)]
+        layout: WireVirtualLayout,
         initial_size: WireItemSize,
         initial_keys: Vec<u64>,
         #[serde(default)]
@@ -1645,6 +1646,36 @@ pub struct WireTabRegistration {
     pub route: String,
     pub label: String,
     pub icon: Option<String>,
+}
+
+/// Cross-axis lane subdivision for a virtualizer, wire form. Mirrors
+/// `runtime_core::Lanes`. `Fixed(1)` is a plain list.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum WireLanes {
+    Fixed(usize),
+    AutoFit { min_cross: f32 },
+}
+
+impl Default for WireLanes {
+    fn default() -> Self {
+        WireLanes::Fixed(1)
+    }
+}
+
+/// Virtualizer layout descriptor, wire form. Mirrors
+/// `runtime_core::VirtualLayout`: scroll axis (as `horizontal`), lane
+/// subdivision, and gaps. All fields `#[serde(default)]` so an older
+/// peer that omits them decodes as a single-lane vertical list.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct WireVirtualLayout {
+    #[serde(default)]
+    pub horizontal: bool,
+    #[serde(default)]
+    pub lanes: WireLanes,
+    #[serde(default)]
+    pub main_spacing: f32,
+    #[serde(default)]
+    pub cross_spacing: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

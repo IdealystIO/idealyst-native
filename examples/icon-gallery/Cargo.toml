@@ -17,6 +17,9 @@ sidecar = ["dep:dev-server"]
 [dependencies]
 runtime-core = { workspace = true }
 idea-ui = { workspace = true }
+# Virtualized-collection constructors — this gallery uses `responsive_grid`
+# to lane the icons into as many columns as the viewport fits.
+virtualized = { workspace = true }
 # `registry` exposes `icons_lucide::ALL` — the whole set at runtime, which is
 # exactly what a gallery wants (and why the feature is off by default for
 # normal tree-shaking consumers).

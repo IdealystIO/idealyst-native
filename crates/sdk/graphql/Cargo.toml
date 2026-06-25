@@ -1,0 +1,64 @@
+[package]
+name = "graphql"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform GraphQL SDK — typed client + server execution.
+#
+# Full GraphQL, leaning on the established Rust ecosystem rather than a
+# bespoke engine:
+#   - client typing:  `graphql_client` codegen — author `.graphql` operation
+#                     files against a schema and derive typed
+#                     `Variables`/`ResponseData`.
+#   - server:         `async-graphql` (behind the `server` feature) for
+#                     schema definition, validation, execution, introspection,
+#                     and SDL export.
+#
+# The crate is decoupled from the `server` (server-functions) SDK by design:
+# it defines a `Transport` trait and an `HttpTransport` over the `net` SDK.
+# An app on the server-functions stack bridges a `#[server]` fn into the
+# client with the exported `graphql_transport!` macro (reusing auth / CSRF /
+# credentials / per-platform config) — but the crate itself never depends on
+# `server`. An app not on that stack points `HttpTransport` at any GraphQL
+# endpoint and runs `graphql::execute_request` from any server handler. This
+# mirrors how the `sync` SDK stays `server`-free.
+#
+# Scope (v1): queries + mutations end-to-end. Subscriptions are a documented
+# extension seam (async-graphql `execute_stream` + a WebSocket transport),
+# not yet wired.
+
+[features]
+default = []
+# Server-side execution. Off by default so client / wasm builds never pull
+# async-graphql. Mirrors how `crates/api/server` gates axum behind `server`.
+server = ["dep:async-graphql"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+
+# Cross-platform HTTP for the default `HttpTransport` (the no-server-fn
+# client path). `net` compiles to each target's native stack incl. wasm.
+net = { workspace = true }
+
+# Reactive Signal + resource/mutation + driver::spawn_async for the
+# `use_query` / `use_mutation` hooks.
+runtime-core = { workspace = true, features = ["async-driver"] }
+
+# Typed client codegen + the transport-agnostic wire types
+# (`GraphQLQuery`, `QueryBody`, `Response`). `default-features = false`
+# drops the bundled reqwest integration — we ride our own `Transport`,
+# and it keeps the dependency wasm-clean.
+graphql_client = { version = "0.14", default-features = false, features = [
+    "graphql_query_derive",
+] }
+
+# Server-only: the GraphQL engine. Gated out of client / wasm builds.
+async-graphql = { version = "7", optional = true }
+
+[dev-dependencies]
+# The test suite builds an in-memory async-graphql schema and drives typed
+# queries through a mock Transport — so it needs the `server` feature on.
+tokio = { version = "1", features = ["macros", "rt"] }

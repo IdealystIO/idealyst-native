@@ -36,5 +36,20 @@ storage = { workspace = true }
 # on native, spawn_local on web).
 runtime-core = { workspace = true, features = ["async-driver"] }
 
+# Web multi-tab coordination (the `coord` module): leader election via the
+# Web Locks API + cross-tab messaging via BroadcastChannel. Web-only.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+# `LockManager`/`Lock` aren't listed — Web Locks is reached via `js_sys`
+# Reflect (its web-sys binding is behind an unstable cfg), which also lets
+# it no-op gracefully where the API is unavailable.
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Navigator",
+    "BroadcastChannel",
+    "MessageEvent",
+] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

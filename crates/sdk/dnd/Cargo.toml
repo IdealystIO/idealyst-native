@@ -1,0 +1,47 @@
+[package]
+name = "dnd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform drag-and-drop SDK.
+#
+# In-app drag and drop — reorderable lists, kanban columns, drag-into-trash,
+# sortable grids — that behaves identically on every backend with no
+# per-platform code. Three small handles compose it: a shared `DragContext`
+# (the registry every draggable/droppable in a subtree reads), a `Draggable`
+# source that carries a typed payload, and a `Droppable` target that reports
+# reactive hover state and receives the payload on release.
+#
+# ## Why it works everywhere with no per-platform code
+#
+# The framework already converges pointer input below this crate: web Pointer
+# Events fold mouse + touch + pen into one stream, and the native backends
+# (iOS / Android / macOS / desktop) deliver their touches through the same
+# `runtime_core::TouchEvent` shape, each event carrying a `window_position`.
+# A drag is therefore just a gesture: `DragRecognizer` (built on the same
+# `Recognizer` FSM as `pan` / `long_press`) emits Began/Moved/Ended/Cancelled
+# samples, the dragged element follows the finger via the `AnimatedValue ->
+# Translate` path every backend already implements, and drop targets are
+# hit-tested in window space using `ViewHandle::absolute_frame()` (the same
+# geometry read overlay anchoring and scroll-spy use). Nothing here is
+# platform-specific, so it is one pure-Rust crate — exactly like `pan` /
+# `zoom` / `gesture`.
+#
+# ## Native per-platform drag systems (the seam)
+#
+# *Cross-application* drag (drag a file out to Finder, accept a drop from
+# another app) and the browser's native HTML5 drag/`DataTransfer` are a
+# separate, additive capability: they require new `Backend` trait methods on
+# every backend and render through native OS chrome that differs per platform
+# by design. The author-facing API here is deliberately strategy-agnostic so
+# a native driver can slot in behind it later without changing call sites —
+# see the `native` module docs for the planned seam. This crate ships the
+# universal in-app engine; the native layer is a documented follow-on phase.
+#
+# No permissions required.
+
+[dependencies]
+# Pure Rust on top of core's touch recognizer + animation + geometry
+# primitives — no platform crates.
+runtime-core = { workspace = true }

@@ -336,6 +336,45 @@ fn reactive_flat_list_creates_virtualizer_and_reacts_to_data() {
     );
 }
 
+/// `flat_list(lanes = .., gap = ..)` builds a grid: the lane layout +
+/// spacing authored in `ui!` must reach the backend's
+/// `create_virtualizer` verbatim. This is the wiring that turns the
+/// one-lane list engine into a multi-lane grid — proven end-to-end
+/// from macro prop → `Element::Virtualizer.layout` → backend call.
+#[test]
+fn flat_list_grid_lanes_and_spacing_reach_backend() {
+    use runtime_core::{Axis, Lanes};
+    let rt = TestRuntime::new();
+    let data: Signal<Vec<i32>> = signal!(vec![1, 2, 3, 4, 5, 6]);
+    let tree: Element = ui! {
+        view {
+            flat_list(
+                data = data,
+                lanes = Lanes::Fixed(3),
+                gap = 8.0,
+                axis = Axis::Vertical,
+                render = |_idx, item: &i32| ui! { text { format!("c{}", item) } },
+            )
+        }
+    };
+    let _owner = rt.render(tree);
+
+    let layout = rt
+        .events()
+        .iter()
+        .find_map(|e| match e {
+            Event::CreateVirtualizer { layout, .. } => Some(*layout),
+            _ => None,
+        })
+        .expect("grid flat_list must create a virtualizer");
+
+    assert_eq!(layout.lanes, Lanes::Fixed(3), "lanes prop must propagate");
+    assert_eq!(layout.main_spacing, 8.0, "gap sets main spacing");
+    assert_eq!(layout.cross_spacing, 8.0, "gap sets cross spacing");
+    assert_eq!(layout.axis, Axis::Vertical);
+    assert!(layout.is_grid());
+}
+
 /// Drive the virtualizer's mount callbacks (via `sync_virtualizers`)
 /// and assert each row builds its REAL content — `mount_item` runs the
 /// `render` closure in a per-item scope and produces the expected

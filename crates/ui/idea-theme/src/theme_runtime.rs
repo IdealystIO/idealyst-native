@@ -83,10 +83,35 @@ thread_local! {
 pub fn install_theme<T: ThemeTokens + 'static>(theme: T) {
     let tokens = theme.tokens();
     let rc: Rc<dyn Any> = Rc::new(theme);
-    let sig = Signal::new(rc);
-    ACTIVE_THEME.with(|t| *t.borrow_mut() = Some(sig));
+    store_active_theme(rc);
     install_tokens(&tokens);
     apply_host_surface_from_tokens(&tokens);
+}
+
+/// Store `rc` as the active theme: reuse the existing thread-local signal
+/// slot when present, otherwise create it **outside any render scope**.
+///
+/// `ACTIVE_THEME` is a thread-lifetime singleton owned by this module's
+/// thread-local — NOT by a reactive scope. Its backing signal must therefore
+/// be created via [`runtime_core::unscope`] so the *first* caller's scope
+/// doesn't adopt it. The hazard, concretely: an embedded sub-app (e.g. a
+/// whiteboard editor mounted on a navigator screen) re-installs the theme
+/// while building inside its screen's transient scope. If that scope owned
+/// the signal, popping the screen would free the slot while this thread-local
+/// kept pointing at it — and the next `active_theme()` from a still-mounted
+/// sibling (a drawer header re-tinting on the back-nav, say) would read a
+/// recycled slot and abort with "signal used after its scope was dropped".
+/// Reusing the slot on re-install also keeps a stable signal id (no
+/// per-install leak across repeated installs).
+fn store_active_theme(rc: Rc<dyn Any>) {
+    ACTIVE_THEME.with(|t| {
+        if let Some(sig) = t.borrow().as_ref() {
+            sig.set(rc);
+            return;
+        }
+        let sig = runtime_core::unscope(|| Signal::new(rc));
+        *t.borrow_mut() = Some(sig);
+    });
 }
 
 /// Swap the active theme. Forwards the new tokens to
@@ -99,15 +124,9 @@ pub fn set_theme<T: ThemeTokens + 'static>(theme: T) {
     let tokens = theme.tokens();
     let rc: Rc<dyn Any> = Rc::new(theme);
 
-    ACTIVE_THEME.with(|t| {
-        if let Some(sig) = t.borrow().as_ref() {
-            sig.set(rc);
-        } else {
-            // First write — create the signal lazily.
-            let new_sig = Signal::new(rc);
-            *t.borrow_mut() = Some(new_sig);
-        }
-    });
+    // Reuse the existing slot, or lazily create it outside any render scope —
+    // see [`store_active_theme`] for why the un-scoping matters.
+    store_active_theme(rc);
 
     update_tokens(&tokens);
     apply_host_surface_from_tokens(&tokens);
@@ -226,6 +245,18 @@ pub fn active_theme() -> Rc<dyn Any> {
             .expect("no theme installed; call idea_ui::install_theme(...) before rendering")
             .get()
     })
+}
+
+/// Whether a theme has been installed on this thread yet — a non-panicking
+/// peek at the [`active_theme`] singleton.
+///
+/// Lets an embeddable sub-app decide whether to install its own theme: a
+/// component mounted inside a host that already installed one (e.g. a
+/// whiteboard editor on a themed app shell) should skip its own install so it
+/// doesn't clobber the host's global theme. Standalone (no host theme) it
+/// installs as usual.
+pub fn theme_installed() -> bool {
+    ACTIVE_THEME.with(|t| t.borrow().is_some())
 }
 
 /// Read the active theme *without* subscribing the current effect to theme

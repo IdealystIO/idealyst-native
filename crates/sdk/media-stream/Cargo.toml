@@ -29,5 +29,18 @@ license.workspace = true
 # time source on `wasm32-unknown-unknown`, so it reads `Date.now()`. js-sys is
 # already universal in this project's wasm builds; nothing else here touches
 # the web platform, so the crate stays thin and GPU-free everywhere else.
+# Native `screenshot()` bridges the one-shot frame out of the `subscribe`
+# callback (a capture-thread `Send` closure) to the awaiting caller.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+futures-channel = "0.3"
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
+# `MediaStream::screenshot()` web backend: grab one frame off the canvas
+# `captureStream()` (our `native_source` on web) via a `<video>` + 2D `getImageData`.
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window", "Document", "Element", "HtmlMediaElement", "HtmlVideoElement",
+    "HtmlCanvasElement", "CanvasRenderingContext2d", "ImageData", "MediaStream",
+] }

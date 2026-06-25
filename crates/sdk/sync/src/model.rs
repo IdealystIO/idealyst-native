@@ -171,3 +171,33 @@ impl<T> Record<T> {
         matches!(self.sync, SyncState::Dirty | SyncState::Conflicted)
     }
 }
+
+/// The sync status of one entry, surfaced to the UI — a coarsened view of
+/// [`SyncState`] suitable for a per-item indicator (a badge/dot).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum EntryStatus {
+    /// In sync with the server.
+    #[default]
+    Synced,
+    /// Has a local edit queued to push (or in flight).
+    Pending,
+    /// The server diverged and the app must resolve it.
+    Conflicted,
+}
+
+/// A live entry as the UI sees it: the value plus its [`EntryStatus`]. The
+/// reactive view returned by [`Partition::entries`](crate::Partition::entries)
+/// is a `Vec` of these, so a list can render each item with a sync
+/// indicator without the app tracking state itself.
+///
+/// `Serialize`/`Deserialize` so the web multi-tab coordinator can broadcast
+/// the owner tab's entries to follower tabs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Entry<T> {
+    /// The entry's stable id.
+    pub id: Id,
+    /// The current value.
+    pub value: T,
+    /// Where this entry sits relative to the server.
+    pub status: EntryStatus,
+}

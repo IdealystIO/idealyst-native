@@ -906,7 +906,7 @@ impl Backend for CpuBackend {
         &mut self,
         _callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
         _overscan: f32,
-        _horizontal: bool,
+        _layout: runtime_core::VirtualLayout,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         self.alloc_node(

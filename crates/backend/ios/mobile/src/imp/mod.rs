@@ -2018,12 +2018,13 @@ impl Backend for IosBackend {
         &mut self,
         callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
-        horizontal: bool,
+        virt_layout: runtime_core::VirtualLayout,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
+        let horizontal = virt_layout.axis.is_horizontal();
         // Build the UICollectionView + flow layout + data source.
-        // Supports vertical and horizontal single-section lists with
-        // `ItemSize::Known` sizing.
+        // Supports vertical and horizontal single-section lists and
+        // uniform grids (`lanes > 1`) with `ItemSize::Known` sizing.
         //
         // Remaining gaps (documented in `imp/virtualizer.rs`):
         //   - `ItemSize::Measured`: blocked on framework-core exposing
@@ -2045,7 +2046,7 @@ impl Backend for IosBackend {
             &mut self.virtualizer_instances,
             callbacks,
             overscan,
-            horizontal,
+            virt_layout,
         );
         // Stage in the layout tree so Taffy gives the collection view
         // an outer frame. Cells inside the collection view are NOT
@@ -2063,7 +2064,6 @@ impl Backend for IosBackend {
             std::rc::Rc::new(move |known: runtime_layout::Size<Option<f32>>,
                                    available: runtime_layout::Size<runtime_layout::AvailableSpace>| {
                 let count = (item_count)();
-                let total: f32 = (0..count).map(|i| (item_size)(i)).sum();
                 let avail_w = match available.width {
                     runtime_layout::AvailableSpace::Definite(w) => w,
                     _ => 0.0,
@@ -2072,6 +2072,27 @@ impl Backend for IosBackend {
                     runtime_layout::AvailableSpace::Definite(h) => h,
                     _ => 0.0,
                 };
+                // Main-axis content extent = sum over grid-rows of the
+                // row's max item size + inter-row gaps. For a list
+                // (one lane) this collapses to the plain sum. Lanes are
+                // resolved against the cross-axis available space so
+                // `AutoFit` measures correctly.
+                let cross = if horizontal { avail_h } else { avail_w };
+                let lanes = virt_layout.lanes.resolve(cross, virt_layout.cross_spacing).max(1);
+                let rows = count.div_ceil(lanes);
+                let mut total = 0.0_f32;
+                for r in 0..rows {
+                    let mut row_ext = 0.0_f32;
+                    for lane in 0..lanes {
+                        let i = r * lanes + lane;
+                        if i >= count {
+                            break;
+                        }
+                        row_ext = row_ext.max((item_size)(i));
+                    }
+                    total += row_ext;
+                }
+                total += rows.saturating_sub(1) as f32 * virt_layout.main_spacing;
                 if horizontal {
                     runtime_layout::Size {
                         width: known.width.unwrap_or(total),

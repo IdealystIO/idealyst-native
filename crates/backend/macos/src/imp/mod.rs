@@ -3565,7 +3565,7 @@ impl Backend for MacosBackend {
         &mut self,
         callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
-        horizontal: bool,
+        layout: runtime_core::VirtualLayout,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Real NSCollectionView wrap with cell reuse — see
@@ -3573,13 +3573,14 @@ impl Backend for MacosBackend {
         // Mirrors iOS's UICollectionView pattern: data source +
         // delegate routed via a custom NSObject, items dequeued
         // from a reuse pool, per-item Scope released on
-        // displayEnd / reuse / teardown.
+        // displayEnd / reuse / teardown. Single-section lists +
+        // uniform grids (`lanes > 1`).
         let view = virtualizer::create(
             self.mtm,
             &mut self.virtualizer_instances,
             callbacks,
             overscan,
-            horizontal,
+            layout,
         );
         let _ = self.layout_for_view(&view);
         let node = MacosNode::View(view);

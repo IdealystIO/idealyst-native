@@ -734,13 +734,13 @@ where
             Command::CreateVirtualizer {
                 id,
                 overscan,
-                horizontal,
+                layout,
                 initial_size,
                 initial_keys,
                 a11y,
             } => {
                 self.apply_create_virtualizer(
-                    id, overscan, horizontal, initial_size, initial_keys, a11y,
+                    id, overscan, layout, initial_size, initial_keys, a11y,
                 );
             }
             Command::CreateNavigator { id, initial_route, initial_path, a11y } => {
@@ -1986,7 +1986,7 @@ where
         &mut self,
         _id: NodeId,
         _overscan: f32,
-        _horizontal: bool,
+        _layout: wire::WireVirtualLayout,
         _initial_size: WireItemSize,
         _initial_keys: Vec<u64>,
         _a11y: wire::WireAccessibilityProps,

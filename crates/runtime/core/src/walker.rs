@@ -659,11 +659,11 @@ fn dispatch_activity_indicator<B: Backend + 'static>(backend: &Rc<RefCell<B>>, n
 fn dispatch_virtualizer<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Element) -> B::Node {
     let Element::Virtualizer {
         item_count, item_key, item_size, render_item, row_template,
-        row_index_signal_id, overscan, horizontal, style, ref_fill, accessibility, ..
+        row_index_signal_id, overscan, layout, style, ref_fill, accessibility, ..
     } = node else { unreachable!() };
     virtualizer::build(
         backend, item_count, item_key, item_size, render_item, row_template,
-        row_index_signal_id, overscan, horizontal, style, ref_fill, accessibility,
+        row_index_signal_id, overscan, layout, style, ref_fill, accessibility,
     )
 }
 

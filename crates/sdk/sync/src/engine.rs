@@ -21,7 +21,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::merge::{Merge, MergeCtx, Resolution};
-use crate::model::{Cursor, Id, Intent, Presence, Record, Rev, SyncState};
+use crate::model::{Cursor, Entry, EntryStatus, Id, Intent, Presence, Record, Rev, SyncState};
 use crate::outbox::{coalesce, OutboxOp};
 use crate::protocol::{Change, Op, OpKind, OpResult, PullMode};
 
@@ -106,6 +106,29 @@ impl<T> PartitionInner<T> {
             .values()
             .filter(|r| matches!(r.presence, Presence::Live))
             .filter_map(|r| r.value.clone())
+            .collect()
+    }
+
+    /// The live entries with their per-item sync status, in id order — the
+    /// status-aware view the UI binds to for indicators.
+    pub fn entry_views(&self) -> Vec<Entry<T>>
+    where
+        T: Clone,
+    {
+        self.records
+            .values()
+            .filter(|r| matches!(r.presence, Presence::Live))
+            .filter_map(|r| {
+                r.value.clone().map(|value| Entry {
+                    id: r.id.clone(),
+                    value,
+                    status: match r.sync {
+                        SyncState::Synced => EntryStatus::Synced,
+                        SyncState::Dirty => EntryStatus::Pending,
+                        SyncState::Conflicted => EntryStatus::Conflicted,
+                    },
+                })
+            })
             .collect()
     }
 

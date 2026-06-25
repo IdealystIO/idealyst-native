@@ -32,6 +32,16 @@ use web_sys::{Element, Node, WheelEvent};
 /// magnification magnitude.
 const ZOOM_PER_WHEEL_UNIT: f32 = 0.01;
 
+/// Per-event `deltaY` clamp (magnitude) for the zoom path. A trackpad pinch
+/// fires many `ctrlKey` wheel events with a small `deltaY` (single digits), so
+/// it stays well under this and is unaffected. A **mouse wheel with Ctrl held**
+/// fires ONE event per notch with a large `deltaY` (≈100–120px on Windows,
+/// often deltaMode=line elsewhere) — which through the exponential above would
+/// jump the zoom ~3× per notch. Clamping caps a single notch at
+/// `exp(12 * 0.01) ≈ 1.13` (a smooth ~13% step) while leaving the pinch gesture
+/// untouched, so zooming feels continuous on both input devices.
+const MAX_ZOOM_WHEEL_DELTA: f32 = 12.0;
+
 /// Install the `wheel` listener on `node`. The closure is kept alive by
 /// pushing it onto the backend's shared listener keep-alive vec (same one the
 /// touch listeners use).
@@ -46,8 +56,12 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: WheelHandler) {
         let zoom = ev.ctrl_key();
         let (kind, delta_x, delta_y, scale) = if zoom {
             // Pinch / ctrl+scroll → zoom. deltaY drives the factor; deltaX is
-            // not meaningful for zoom.
-            let s = (-(ev.delta_y() as f32) * ZOOM_PER_WHEEL_UNIT).exp();
+            // not meaningful for zoom. Clamp the per-event magnitude so a large
+            // mouse-wheel notch (vs. a fine trackpad pinch) steps smoothly
+            // instead of jumping several multiples per notch.
+            let dy = (ev.delta_y() as f32)
+                .clamp(-MAX_ZOOM_WHEEL_DELTA, MAX_ZOOM_WHEEL_DELTA);
+            let s = (-dy * ZOOM_PER_WHEEL_UNIT).exp();
             (WheelKind::Zoom, 0.0, 0.0, s)
         } else {
             (

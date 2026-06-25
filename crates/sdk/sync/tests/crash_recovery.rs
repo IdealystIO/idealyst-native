@@ -137,7 +137,7 @@ async fn cursor_write_lost_after_records_recovers_by_reapply() {
     // Session 1: download, but the cursor write is dropped.
     {
         let faulty: Arc<dyn Storage> = Arc::new(FaultStorage::new(backing.clone(), "/cursor", 0));
-        let eng = SyncEngine::new(faulty, "dev");
+        let eng = SyncEngine::with_kv(faulty, "dev");
         let p = eng.partition::<Item>("p", transport(&authority)).await.unwrap();
         let err = p.sync().await.unwrap_err();
         assert!(matches!(err, SyncError::Storage(_)), "cursor write failed");
@@ -145,7 +145,7 @@ async fn cursor_write_lost_after_records_recovers_by_reapply() {
 
     // Session 2: fresh engine over the surviving storage. The cursor never
     // persisted, so it re-downloads and re-applies the same records.
-    let eng2 = SyncEngine::new(backing.clone(), "dev");
+    let eng2 = SyncEngine::with_kv(backing.clone(), "dev");
     let p2 = eng2.partition::<Item>("p", transport(&authority)).await.unwrap();
     p2.sync().await.unwrap();
 
@@ -166,7 +166,7 @@ async fn cache_write_lost_after_outbox_still_reaches_server() {
     // first as the commit point).
     {
         let faulty: Arc<dyn Storage> = Arc::new(FaultStorage::new(backing.clone(), "/cache", 0));
-        let eng = SyncEngine::new(faulty, "dev");
+        let eng = SyncEngine::with_kv(faulty, "dev");
         eng.set_online(false);
         let p = eng.partition::<Item>("p", transport(&authority)).await.unwrap();
         let err = p.upsert("x", item("queued")).await.unwrap_err();
@@ -176,7 +176,7 @@ async fn cache_write_lost_after_outbox_still_reaches_server() {
     // Session 2: the queued op survived in the outbox even though the cache
     // snapshot didn't. Flushing replays it to the server (no data loss),
     // and the local view heals from the ack.
-    let eng2 = SyncEngine::new(backing.clone(), "dev");
+    let eng2 = SyncEngine::with_kv(backing.clone(), "dev");
     let p2 = eng2.partition::<Item>("p", transport(&authority)).await.unwrap();
     assert!(p2.has_pending(), "mutation survived in the outbox");
     p2.flush().await.unwrap();
@@ -199,7 +199,7 @@ async fn outbox_pop_lost_after_ack_does_not_double_apply() {
         // The /outbox writes in this session, in order: upsert (0), flush
         // seal (1), flush post-ack pop (2). Drop the pop.
         let faulty: Arc<dyn Storage> = Arc::new(FaultStorage::new(backing.clone(), "/outbox", 2));
-        let eng = SyncEngine::new(faulty, "dev");
+        let eng = SyncEngine::with_kv(faulty, "dev");
         let p = eng.partition::<Item>("p", transport(&authority)).await.unwrap();
         p.upsert("x", item("v")).await.unwrap();
         // Flush: seal-write (ok) → push (server applies) → cache (ok) →
@@ -210,12 +210,42 @@ async fn outbox_pop_lost_after_ack_does_not_double_apply() {
     assert_eq!(authority.borrow().live_count(), 1, "server applied once");
 
     // Session 2: the un-popped op replays; the server dedups it.
-    let eng2 = SyncEngine::new(backing.clone(), "dev");
+    let eng2 = SyncEngine::with_kv(backing.clone(), "dev");
     let p2 = eng2.partition::<Item>("p", transport(&authority)).await.unwrap();
     assert!(p2.has_pending(), "op still queued (pop was lost)");
     p2.flush().await.unwrap();
     assert_eq!(authority.borrow().live_count(), 1, "no double-apply");
     assert!(!p2.has_pending(), "op finally drained");
+}
+
+/// Reproduces the demo's exact sequence: initial download (sets a cursor),
+/// go offline, CREATE a new task, then reconnect and sync. The offline
+/// create must reach the server. (Guards against an offline-create being
+/// dropped by the post-download delta pull.)
+#[tokio::test]
+async fn offline_create_after_download_reaches_server_on_reconnect() {
+    let backing: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let authority = Rc::new(RefCell::new(Authority::<Item>::new()));
+    authority.borrow_mut().seed("seed-a", item("seeded"));
+
+    let eng = SyncEngine::with_kv(backing.clone(), "dev");
+    let p = eng.partition::<Item>("p", transport(&authority)).await.unwrap();
+    p.sync().await.unwrap(); // initial download → cursor persisted
+    assert_eq!(p.snapshot(), vec![item("seeded")]);
+
+    // Offline: create a brand-new task locally.
+    eng.set_online(false);
+    p.upsert("local-1", item("made offline")).await.unwrap();
+    let _ = p.flush().await; // no-op while offline
+    assert!(p.has_pending(), "offline create is queued");
+    assert_eq!(authority.borrow().live_count(), 1, "not on server yet");
+
+    // Reconnect + sync.
+    eng.set_online(true);
+    p.sync_now().await.unwrap();
+
+    assert_eq!(authority.borrow().live_count(), 2, "offline create reached the server");
+    assert!(!p.has_pending(), "outbox drained");
 }
 
 /// End-to-end: download → edit offline → server changes underneath →
@@ -226,7 +256,7 @@ async fn full_offline_edit_then_reconcile_cycle() {
     let authority = Rc::new(RefCell::new(Authority::<Item>::new()));
     authority.borrow_mut().seed("doc", item("original"));
 
-    let eng = SyncEngine::new(backing.clone(), "dev");
+    let eng = SyncEngine::with_kv(backing.clone(), "dev");
     let p = eng.partition::<Item>("p", transport(&authority)).await.unwrap();
     p.sync().await.unwrap();
     assert_eq!(p.snapshot(), vec![item("original")]);

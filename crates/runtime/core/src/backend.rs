@@ -1354,7 +1354,7 @@ pub trait Backend {
         &mut self,
         callbacks: VirtualizerCallbacks<Self::Node>,
         overscan: f32,
-        horizontal: bool,
+        layout: primitives::virtualizer::VirtualLayout,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_virtualizer not implemented for this backend")

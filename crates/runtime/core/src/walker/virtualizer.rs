@@ -34,7 +34,7 @@ pub(super) fn build<B: Backend + 'static>(
     row_template: Option<Box<Element>>,
     row_index_signal_id: Option<u64>,
     overscan: f32,
-    horizontal: bool,
+    layout: primitives::virtualizer::VirtualLayout,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     a11y: AccessibilityProps,
@@ -52,7 +52,7 @@ pub(super) fn build<B: Backend + 'static>(
             item_count,
             *row_template.unwrap(),
             row_index_signal_id,
-            horizontal,
+            layout,
         )
     } else {
         build_virtualizer(
@@ -64,7 +64,7 @@ pub(super) fn build<B: Backend + 'static>(
             row_template,
             row_index_signal_id,
             overscan,
-            horizontal,
+            layout,
             &a11y,
         )
     };
@@ -111,7 +111,7 @@ fn build_virtualizer<B: Backend + 'static>(
     _row_template: Option<Box<Element>>,
     _row_index_signal_id: Option<u64>,
     overscan: f32,
-    horizontal: bool,
+    layout: primitives::virtualizer::VirtualLayout,
     a11y: &AccessibilityProps,
 ) -> B::Node {
     // Per-item scope registry, owned by an Rc so the mount/release
@@ -271,7 +271,7 @@ fn build_virtualizer<B: Backend + 'static>(
     };
 
     let node = time_backend_create(pkind!(Virtualizer), || {
-        backend.borrow_mut().create_virtualizer(callbacks, overscan, horizontal, a11y)
+        backend.borrow_mut().create_virtualizer(callbacks, overscan, layout, a11y)
     });
 
     // Effect: re-fires whenever the data signal changes (any reads
@@ -305,7 +305,7 @@ fn build_virtualizer_declarative<B: Backend + 'static>(
     item_count: crate::derive::Derived<usize>,
     row_template: Element,
     row_index_signal_id: Option<u64>,
-    horizontal: bool,
+    layout: primitives::virtualizer::VirtualLayout,
 ) -> B::Node {
     let anchor = time_backend_create(pkind!(View), || {
         backend.borrow_mut().create_reactive_anchor()
@@ -321,13 +321,16 @@ fn build_virtualizer_declarative<B: Backend + 'static>(
         for (sid, val) in item_count.inputs.iter().zip(item_count.initial.iter()) {
             b.note_signal_initial(*sid, val);
         }
+        // Generator backends (Roku) only model single-lane lists today;
+        // a grid `lanes > 1` would need a device-side grid component.
+        // Pass just the axis until that exists.
         b.note_virtualizer_binding(
             &anchor,
             &item_count.inputs,
             item_count.method,
             &template_node,
             row_index_signal_id,
-            horizontal,
+            layout.axis.is_horizontal(),
         );
     }
 
