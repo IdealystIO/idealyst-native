@@ -99,9 +99,12 @@ pub fn Tag(props: &TagProps) -> Element {
 
     let appearance_key = format!("{}_{}", tone.key(), variant.key());
 
-    // Static style — build-time apply, no flicker (see Button).
-    let container_style =
-        StyleApplication::new(installed_tag_sheet()).with("appearance", appearance_key);
+    // Static style — build-time apply, no flicker (see Button). The `hug`
+    // layer keeps the tag sized to content instead of stretching to a flex
+    // parent's row height (see `components::hug_self`).
+    let container_style = StyleApplication::new(installed_tag_sheet())
+        .with("appearance", appearance_key)
+        .with_computed("hug", crate::components::hug_self);
 
     // Resolve the fill's foreground so the label + close glyph carry it
     // on their own text nodes (native doesn't inherit text color).

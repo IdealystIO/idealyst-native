@@ -74,3 +74,29 @@ The call site (`offload::run(offload::handle!(f), &req)`) only names `offload`;
 only the `#[job]` expansion needs those two crates in scope.
 
 No permissions required.
+
+## Testing checklist
+
+Two divergent implementations behind one call site (web Web Worker / native
+`std::thread`), so coverage is split: native logic is unit-tested, web is a
+build + runtime check. An unchecked **native** box means the code compiles for
+that target but isn't confirmed on real hardware yet.
+
+**Automated**
+- [ ] `cargo test -p offload` — native path: a job runs off the main thread and
+  resolves through the oneshot channel; `OffloadError::Canceled` when the worker
+  drops before returning (2 unit tests)
+- [ ] `cargo build -p offload --target wasm32-unknown-unknown` — web target
+  (the `#[job]` → `#[webworker_fn]` expansion compiles)
+
+**Behavior**
+- [ ] **Web** — an `#[offload::job]` dispatched via `offload::run(...)` executes
+  in a real Web Worker (sized to `hardwareConcurrency`), the UI thread stays
+  responsive during the work, and the awaited result updates reactively. No
+  COOP/COEP headers required and embedding still works.
+- [ ] **iOS** — job runs on a spawned `std::thread`; result resolves the
+  `.await` without blocking the run loop. ⚠️ not yet device-confirmed.
+- [ ] **Android** — job runs on a `std::thread`; result resolves the `.await`.
+  ⚠️ not yet device-confirmed.
+- [ ] **macOS** — job runs on a `std::thread`; result resolves the `.await`
+  without freezing the UI. ⚠️ not yet device-confirmed.

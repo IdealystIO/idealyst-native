@@ -3,7 +3,19 @@
 //! live in `crate::invocations` so all of them are `#[macro_export]`
 //! at the crate root.
 
-use runtime_core::{text, Element, IdealystSchema, IntoElement, IntoStyleSource, Reactive};
+use runtime_core::{
+    text, AlignSelf, Element, IdealystSchema, IntoElement, IntoStyleSource, Reactive, StyleRules,
+};
+
+/// `StyleRules` that make an inline component HUG its content on the cross
+/// axis instead of inheriting a flex parent's default `align-items: stretch`
+/// (which would grow a Badge/Tag/Chip to the row's height and float its label
+/// to the top — the same class of bug Button fixes). `Center` keeps the pill
+/// sized to content while still letting a centering parent (a toolbar row, a
+/// centered preview) center it. Attach as a `with_computed` layer.
+pub(crate) fn hug_self() -> StyleRules {
+    StyleRules { align_self: Some(AlignSelf::Center), ..Default::default() }
+}
 
 /// Render an optional, possibly-reactive text prop
 /// (`Reactive<Option<String>>`) as an optional styled text node:
@@ -103,6 +115,7 @@ runtime_core::doc_scope!(
 );
 
 pub mod alert;
+pub mod autocomplete;
 pub mod avatar;
 pub mod badge;
 pub mod breadcrumbs;

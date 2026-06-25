@@ -54,8 +54,35 @@ pub fn Badge(props: &BadgeProps) -> Element {
     let appearance_key = format!("{}_{}", tone.key(), variant.key());
 
     // Static style — see Button for why (build-time apply, no flicker).
-    let style =
-        StyleApplication::new(installed_badge_sheet()).with("appearance", appearance_key);
+    let style = StyleApplication::new(installed_badge_sheet())
+        .with("appearance", appearance_key)
+        .with_computed("hug", crate::components::hug_self);
 
     text(label).with_style(style).into_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use idea_theme::theme::{install_idea_theme, light_theme};
+    use runtime_core::{resolve_style, AlignSelf, StyleSource};
+
+    // Regression: a Badge is an inline pill — it must HUG its content
+    // (`align_self: Center`), not inherit a flex parent's default
+    // `align-items: stretch` and grow to the row's height, which floated the
+    // label to the top of an over-tall pill (the Intents-row report).
+    #[test]
+    fn badge_hugs_content_not_stretch() {
+        install_idea_theme(light_theme());
+        let props = BadgeProps { label: Reactive::Static("New".into()), ..Default::default() };
+        let app = match Badge(&props) {
+            Element::Text { style: Some(StyleSource::Static(a)), .. } => a,
+            _ => panic!("Badge renders a styled Text node"),
+        };
+        assert_eq!(
+            resolve_style(&app).align_self,
+            Some(AlignSelf::Center),
+            "a Badge sizes to content (centered), never stretching to the parent cross axis"
+        );
+    }
 }

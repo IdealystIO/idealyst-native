@@ -14,6 +14,7 @@ fn frame_size_math_is_tightly_packed_rgba8() {
         width: 4,
         height: 2,
         format: PixelFormat::Rgba8,
+        pts_micros: 0,
     };
     assert_eq!(frame.pixel_count(), 8);
     assert_eq!(frame.byte_len(), 32);

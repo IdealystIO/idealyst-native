@@ -1,0 +1,50 @@
+[package]
+name = "deep-link"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform inbound-URL (deep link / universal link) SDK.
+#
+# Receive the URL that cold-started the app and every link delivered while
+# it runs, parsed into a small `DeepLink`, and subscribe to them with an
+# RAII guard. Deliberately unopinionated: it hands you the parsed URL and
+# gets out of the way — mapping a URL onto a navigator route is the app's
+# (or a router SDK's) job, not this crate's.
+#
+# The whole SDK side (parse + registry + dispatch + initial-link dedupe) is
+# pure Rust and runs on every target. `feed_link(raw_url)` is the single
+# ingress door the platform host calls when the OS hands it a URL:
+#
+#   - apple:   application(_:open:options:)            (custom scheme)
+#              application(_:continue:restorationHandler:) (universal links)
+#   - android: launch Intent.getData() in onCreate (→ initial_link) and
+#              onNewIntent (→ feed_link); intent-filters declare scheme/host
+#   - web:     read window.location.href on bootstrap (→ initial_link); feed
+#              app-internal navigations / popstate via feed_link
+#
+# Wiring each host to *call* feed_link is the orchestrator's job — this
+# crate ships the full SDK side so that once a host calls it, everything
+# works. No runtime permission is required, but inbound links need
+# build-time MANIFEST configuration (custom URL scheme / Associated Domains
+# on Apple, <intent-filter> on Android) — see the README.
+
+[dependencies]
+# Robust URL parsing — scheme / host / path / query without a fragile hand
+# parser. `default-features = false` keeps it lean (no IDNA tables needed
+# for app deep links; we still get correct percent-decoding of queries).
+url = { version = "2", default-features = false }
+
+# Only pulled for the `catalog` feature's compile-checked recipes. The core
+# SDK (parse + registry + feed_link) is pure Rust and needs nothing from
+# the framework, so this stays optional and off in production.
+runtime-core = { workspace = true, optional = true }
+
+# Web (wasm32): read window.location.href for the initial link.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Location"] }
+
+# Compile-checked usage recipes for the docs / MCP catalog. Off in every
+# production build (the recipes — and `runtime-core` — don't compile then).
+[features]
+catalog = ["dep:runtime-core", "runtime-core/catalog"]

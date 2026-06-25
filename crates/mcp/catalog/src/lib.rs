@@ -327,7 +327,7 @@ pub struct MacroEntry {
     pub docs: &'static str,
     /// One-line sketch of what the macro expands to, so a reader sees
     /// the primitive underneath — e.g. `effect!` →
-    /// `"let _effect = Effect::new(move || { … });"`. Empty when the
+    /// `"Effect::scoped(move || { … });"`. Empty when the
     /// expansion is codegen too large to usefully summarize (`ui!`,
     /// `jsx!`, `stylesheet!`).
     pub expansion: &'static str,
@@ -595,7 +595,10 @@ pub enum SdkCategory {
     /// `idea-theme`, `icons-lucide`, `webview`, `maps`, `svg`,
     /// `markdown`, `codeblock`, `table`, `form`, `toolbar`, `menu`.
     Ui,
-    /// Device capabilities that don't fit the above: `biometrics`.
+    /// Device / platform-integration capabilities that don't fit the
+    /// above: `biometrics`, `permissions`, `notifications`, `clipboard`,
+    /// `location`, `share`, `deep-link`, `connectivity`, `haptics`, plus
+    /// the gesture handles `pan` / `zoom`.
     Device,
 }
 

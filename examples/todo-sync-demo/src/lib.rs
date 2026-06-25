@@ -389,12 +389,15 @@ pub fn app() -> Element {
                 Ok(sp) => {
                     // Leadership is acquired asynchronously (the lock callback
                     // fires later), so mirror the reactive flag into `role`
-                    // rather than reading it once.
+                    // rather than reading it once. This runs in an async
+                    // callback — outside any component scope — so it's a
+                    // caller-owned `watch`; `.leak()` pins it for the session
+                    // (the mirror should live as long as the app).
                     let ls = sp.leader_signal();
-                    runtime_core::Effect::new(move || {
+                    runtime_core::watch(move || {
                         role.set(if ls.get() { "leader".into() } else { "follower".into() });
                     })
-                    .persist();
+                    .leak();
                     *cell.borrow_mut() = Some(sp);
                     loaded.set(true);
                     status.set("ready".to_string());

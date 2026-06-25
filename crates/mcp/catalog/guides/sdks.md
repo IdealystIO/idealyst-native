@@ -75,7 +75,28 @@ per-backend registry — add the crate and call the primitive in `ui!`.
 | **`form`** | Third-party `Form` SDK. |
 | **`toolbar`** | Third-party `Toolbar` SDK. |
 | **`menu`** | OS-level menu-bar SDK (desktop). |
+
+## Device & platform integration
+
+The OS-integration capabilities. `permissions` is the shared runtime-grant
+substrate: any capability that prompts the user (`notifications`, `location`,
+and the media SDKs `camera` / `microphone`) goes through it rather than
+re-implementing an OS prompt. Each capability SDK declares its own build-time
+permission requirement (`[package.metadata.idealyst] capabilities = [...]`); the
+app supplies the reason string.
+
+| Crate | What it gives you |
+|---|---|
+| **`permissions`** | Cross-platform **runtime permission** requests — the shared grant substrate. `permissions::request(Permission)` / `status(Permission)` → a uniform `PermissionStatus`. Other SDKs depend on this instead of re-implementing a grant flow. |
 | **`biometrics`** | Cross-platform biometric authentication ("prove the device owner is present"). |
+| **`notifications`** | Local + scheduled notifications and the raw device push token. Authorization goes through `permissions`; server-side push delivery is the app's job. |
+| **`location`** | Device geolocation — one-shot `current()` + continuous `watch()` yielding a `Position`. Permission grant goes through `permissions`. |
+| **`clipboard`** | System copy/paste of plain text — `clipboard::set_text` / `text`. |
+| **`share`** | The system share sheet (outbound) — hand text/url/files to another app. The inverse of `file-picker`. |
+| **`deep-link`** | Inbound URL handling — `initial_link()` + `on_link()` deliver the parsed launch/resume URL (custom scheme / universal / app link). |
+| **`connectivity`** | Network reachability — `current()` snapshot + `watch()` of online/offline and coarse transport (wifi/cellular/ethernet). |
+| **`haptics`** | Tactile feedback — `impact` / `notify` / `selection`. Fire-and-forget, best-effort. |
+| **`audio`** | Sound playback — `load(AudioSource)` → a `Sound` you `play()`, with a controllable `Playback`. The playback peer of the capture SDKs. |
 
 ## How they relate to the catalog
 

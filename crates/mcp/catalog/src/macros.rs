@@ -38,8 +38,8 @@ inventory::submit! {
         invocation: "effect!({ … })",
         kind: MacroKind::Reactive,
         module_path: "runtime_core",
-        docs: "The recommended way to write a side effect: runs the body once, re-running whenever any signal it reads changes — dependencies are tracked automatically, there is no deps array. Prefer this over a bare `Effect::new(...)` whose handle you'd have to bind yourself: the macro inserts the `move ||` and binds the handle to a hygienic local so it adopts the surrounding scope (and is a RAII guard outside one). Pair with `on_cleanup(...)` for teardown — the callback fires before the next re-run and on disposal. See [[reactivity]].",
-        expansion: "let _effect = Effect::new(move || { … });",
+        docs: "Write a reactive side effect **inside a component**: runs the body once, re-running whenever any signal it reads changes — dependencies are tracked automatically, there is no deps array. The macro inserts the `move ||` and there is no handle to manage; the surrounding component scope owns the effect and frees it on teardown (it debug-asserts a scope is active). To react to a signal from *outside* the component tree — app init, an async callback, a platform/service install — use the `watch(…)` function and store the returned `Subscription` (`.leak()` for a process-lifetime pin). Pair with `on_cleanup(...)` for teardown — the callback fires before the next re-run and on disposal. See [[reactivity]].",
+        expansion: "Effect::scoped(move || { … });",
         _seal: (),
     }
 }

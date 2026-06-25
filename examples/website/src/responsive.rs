@@ -257,7 +257,7 @@ pub fn install_drawer_open_observer(
 ) {
     #[cfg(target_arch = "wasm32")]
     {
-        use runtime_core::Effect;
+        use runtime_core::watch;
         use std::cell::Cell;
         use wasm_bindgen::closure::Closure;
         use wasm_bindgen::JsCast;
@@ -304,14 +304,15 @@ pub fn install_drawer_open_observer(
         // returning `None` is silently skipped — the next signal
         // change will retry.
         //
-        // The effect is **pinned** via `.persist()`: the observer
-        // outlives the sidebar build closure that installed it (the
-        // closure returns; without pinning, the Effect handle would
-        // Drop and stop firing). `.persist()` holds it for page
-        // lifetime (a no-op had a render scope adopted it) and keeps
-        // `mem::forget` out of app code.
+        // This observer is wired up **outside the component tree** — the
+        // sidebar build closure that installs it runs in a microtask after
+        // init, so there is no reactive scope to own it. That is exactly
+        // what `watch` is for: it returns a caller-owned `Subscription`.
+        // We `.leak()` it because the observer should live for the whole
+        // page (the `INSTALLED` guard above makes this once-only), the
+        // honest replacement for the old `Effect::persist()` pin.
         let backdrop_for_effect = backdrop;
-        Effect::new(move || {
+        watch(move || {
             let open = is_open.get();
             let Some(win) = web_sys::window() else { return };
             let Some(doc) = win.document() else { return };
@@ -330,7 +331,7 @@ pub fn install_drawer_open_observer(
                 let _ = class_list.remove_1("is-on");
             }
         })
-        .persist();
+        .leak();
     }
 }
 

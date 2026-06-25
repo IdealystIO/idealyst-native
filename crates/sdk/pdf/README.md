@@ -99,3 +99,34 @@ shows "Component not available: canvas_core::CanvasProps").
 `Document::load(bytes)` → `Document::render_page(i)` returns a `RenderedPage`
 { `scene`, `width`, `height`, `warnings` } if you want the `canvas_core::Scene`
 directly (to scale/compose it yourself) rather than a ready-made element.
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. PDF renders
+through the `canvas` primitive, so behavior tracks the active canvas renderer:
+`vello` (GPU) where available, `canvas-native` (CPU) otherwise. Run the
+`pdf-demo` example with **`idealyst dev --macos --local`** (the canvas `draw`
+closure can't cross the dev-server wire — single-process local-render only).
+Tick each item as you exercise it.
+
+**Rendering / behavior**
+
+A multi-page PDF should render with correct text (embedded sfnt → GPU glyph runs;
+standard-14/Type1 → outlined fills), vector fills/strokes, images, clips,
+transforms, shadings/gradients, blend modes, and soft masks; the page fits
+(aspect-preserved, centered) into the fixed `width × height` box; `PdfReactive`
+swaps the document when its signal changes with no remount.
+
+- [ ] **macOS** — verified on Metal (GPU/vello): open a real multi-page PDF via the
+  `pdf-demo` + file-picker, confirm text/vectors/images render and pages swap.
+- [ ] **iOS** — ⚠️ not yet device-confirmed (compile-checked). Real devices run vello
+  on Metal; the **simulator** falls back to `canvas-native` (CPU) where soft masks
+  draw content unmasked.
+- [ ] **Android** — ⚠️ not yet device-confirmed (compile-checked). Vello on Vulkan on
+  real devices; emulator uses the CPU fallback.
+- [ ] **Web** — ⚠️ not yet confirmed (compile-checked). Renders via the WebGPU canvas
+  renderer where available, Canvas2D CPU fallback otherwise.
+- [ ] **Approximations** — confirm the documented gaps surface in `Warnings` and never
+  panic: tiling patterns draw as nothing, `/Alpha` soft masks are approximate,
+  encrypted PDFs are unsupported.

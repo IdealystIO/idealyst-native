@@ -314,10 +314,13 @@ async fn become_owner<T: Clone + Serialize + DeserializeOwned + Merge + 'static>
     inner.leader_sig.set(true);
 
     // Mirror the owner partition's entries into the shared signals, and
-    // (web) broadcast them to followers, on every change.
+    // (web) broadcast them to followers, on every change. This runs in an
+    // async leadership callback — outside any render scope — so it's a
+    // caller-owned `watch`; `.leak()` pins it for the app lifetime (the
+    // mirror lives as long as this tab owns the partition).
     let inner_for_effect = inner.clone();
     let pe = partition.entries();
-    runtime_core::Effect::new(move || {
+    runtime_core::watch(move || {
         let entries = pe.get();
         inner_for_effect.set_state(entries.clone());
         #[cfg(target_arch = "wasm32")]
@@ -327,7 +330,7 @@ async fn become_owner<T: Clone + Serialize + DeserializeOwned + Merge + 'static>
             }
         }
     })
-    .persist();
+    .leak();
 
     // Announce leadership + run an initial sync.
     #[cfg(target_arch = "wasm32")]

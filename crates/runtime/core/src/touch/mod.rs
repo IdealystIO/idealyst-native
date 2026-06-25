@@ -219,3 +219,39 @@ pub fn set_pointer_modifiers(m: PointerModifiers) {
 pub fn pointer_modifiers() -> PointerModifiers {
     POINTER_MODIFIERS.with(|c| c.get())
 }
+
+thread_local! {
+    static ACTIVE_TOUCH_CLAIM: std::cell::RefCell<Option<Rc<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Publish a **node-bound claim closure** for the touch about to be dispatched.
+/// **Backend-facing** — a backend that implements the claim protocol calls this
+/// right before invoking the [`TouchHandler`] (and clears it with `None` right
+/// after), passing a closure that performs its native claim for *this* node
+/// (cancel ancestor scrollers, etc. — the same thing [`Backend::claim_touch`]
+/// would do).
+///
+/// Why this exists: the synchronous claim path ([`TouchResponse::claim`] read off
+/// the handler's return) only fires when a handler *returns* `claim: true` during
+/// an event. A recognizer that commits **off the touch stream** — e.g. a
+/// long-press whose timer fires while the finger is held still — has no event to
+/// return on at the instant it decides "this is mine". By then the next move is
+/// the one a native scroll container sees *first*, so it wins and our handler is
+/// cancelled. Capturing this closure synchronously (on `Began`) and invoking it
+/// at the async commit lets the recognizer claim at exactly the right moment,
+/// before any movement. Claiming is idempotent, so an extra call is harmless.
+///
+/// [`Backend::claim_touch`]: crate::Backend::claim_touch
+pub fn set_active_touch_claim(claim: Option<Rc<dyn Fn()>>) {
+    ACTIVE_TOUCH_CLAIM.with(|c| *c.borrow_mut() = claim);
+}
+
+/// The claim closure published by the backend for the touch currently being
+/// dispatched, if any. A recognizer captures this synchronously (typically on
+/// `Began`), holds its own clone, and invokes it if/when it commits off-stream.
+/// Returns `None` on backends that don't implement the claim protocol — callers
+/// must treat the absence as "claiming unavailable", not an error.
+pub fn active_touch_claim() -> Option<Rc<dyn Fn()>> {
+    ACTIVE_TOUCH_CLAIM.with(|c| c.borrow().clone())
+}

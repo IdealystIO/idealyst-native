@@ -1,0 +1,68 @@
+[package]
+name = "audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform sound PLAYBACK SDK — the playback peer of the capture SDKs
+# (`microphone` / `camera`). One small API:
+#
+#   let sound = audio::load(AudioSource::path("ding.wav")).await?;
+#   let playback = sound.play();      // returns a controllable handle
+#   playback.set_volume(0.5);
+#   // drop(playback) — or playback.stop() — stops the sound
+#
+# Load (decode/prepare) a sound from bytes / a file path / a URL, then play
+# it, getting back a thin RAII `Playback` handle you control (pause/resume/
+# stop/volume/looping) and whose Drop stops the sound. Deliberately
+# unopinionated: foreground playback of loaded sounds, nothing more. Mixing,
+# effects, spatialization, playlists, and background audio are later layers.
+#
+# Per-platform mechanism (one author API, identical observable behavior):
+#   - web (wasm32):                HTMLAudioElement (`new Audio()` + src)
+#   - iOS / macOS / tvOS:          AVAudioPlayer (objc2)
+#   - Android:                     MediaPlayer (JNI)
+#   - Windows / Linux / other:     NotSupported fallback (no heavy dep pulled in)
+#
+# No permissions required for foreground playback. Background audio (keeping
+# sound going when the app is backgrounded) needs app config and is out of
+# scope — see README.
+
+[dependencies]
+# Pure-Rust surface + the `runtime_core::recipe!` macro for the catalog.
+runtime-core = { workspace = true }
+
+# Web (wasm): HTMLAudioElement via web-sys.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "HtmlAudioElement",
+    "HtmlMediaElement",
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
+] }
+
+# iOS / macOS / tvOS: AVAudioPlayer via the Obj-C runtime (objc2), matching
+# the `microphone` / `camera` house style (no typed framework crate).
+[target.'cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSData", "NSURL"] }
+
+# Android: MediaPlayer via JNI on the host Activity context, mirroring the
+# `microphone` Android backend (`ndk-context` exposes the JavaVM).
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+# Recipes (compile-checked usage examples) compile only under `catalog`.
+# Forwards `async-driver` so the recipe can use the real
+# `runtime_core::driver::spawn_async` pattern (load() is async). Off in
+# production: `recipe!` expands to nothing.
+[features]
+catalog = ["runtime-core/catalog", "runtime-core/async-driver"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

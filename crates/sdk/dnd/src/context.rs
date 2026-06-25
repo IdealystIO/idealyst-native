@@ -19,7 +19,12 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use runtime_core::{Signal, TouchPoint, ViewportRect};
+use runtime_core::animation::{AnimProp, AnimatedValue};
+use runtime_core::{Element, Ref, Signal, TouchPoint, ViewHandle, ViewportRect};
+
+/// Builds the visual that follows the pointer during a drag (the "drag
+/// preview" / ghost). Snapshotted once at drag start.
+pub(crate) type PreviewBuilder = Rc<dyn Fn() -> Element>;
 
 thread_local! {
     /// Process-wide monotonic id source for droppables. Not time/random, so
@@ -80,6 +85,20 @@ struct Inner<T> {
     /// Which droppable the pointer is currently over (drives enter/leave edge
     /// detection), if any.
     over: Option<DroppableId>,
+    /// The drag-layer preview ("ghost") that follows the pointer when a
+    /// [`Draggable`](crate::Draggable) opts into one. `ghost_x`/`ghost_y` are
+    /// its top-left in window coordinates; `preview` builds its content. The
+    /// ghost lives in a top-level overlay ([`crate::drag_layer`]) so it renders
+    /// above ALL content and is never clipped by an ancestor — the real fix for
+    /// "the dragged element renders behind / gets clipped", instead of leaning
+    /// on sibling paint order.
+    /// The ghost's top-left in window coordinates, bound to its `translate`
+    /// (the drag layer pins it at `top:0; left:0`). Translate-only so the ghost
+    /// never affects layout — a real `top`/`left` offset that grows with the
+    /// drag can expand the container the overlay lowers into.
+    ghost_x: AnimatedValue<f32>,
+    ghost_y: AnimatedValue<f32>,
+    preview: Option<PreviewBuilder>,
 }
 
 /// Shared drag/drop registry for one scope. Clone freely — clones share state.
@@ -112,6 +131,9 @@ impl<T: Clone + 'static> DragContext<T> {
                 droppables: Vec::new(),
                 session_rects: Vec::new(),
                 over: None,
+                ghost_x: AnimatedValue::new(0.0),
+                ghost_y: AnimatedValue::new(0.0),
+                preview: None,
             })),
         }
     }
@@ -247,7 +269,7 @@ impl<T: Clone + 'static> DragContext<T> {
     pub(crate) fn finish(&self, window: TouchPoint) -> bool {
         // Pull out the drop target + payload + reset, holding the borrow only
         // for the bookkeeping. Run on_drop afterward.
-        let (drop_cb, payload, over_sig, dragging) = {
+        let (drop_cb, leave_cb, payload, over_sig, dragging) = {
             let mut inner = self.inner.borrow_mut();
             let payload = inner.payload.take();
             let dragging = inner.dragging;
@@ -262,19 +284,26 @@ impl<T: Clone + 'static> DragContext<T> {
             let hit = hit_test(&inner.droppables, &inner.session_rects, window, &payload);
             let entry = hit.and_then(|id| inner.droppables.iter().find(|e| e.id == id));
             let drop_cb = entry.and_then(|e| e.on_drop.clone());
-            // Clear the previously-hovered target's signal.
-            let over_sig = over
-                .and_then(|id| inner.droppables.iter().find(|e| e.id == id))
+            // The previously-hovered target: clear its `is_over` signal AND fire
+            // its `on_leave` — the drag is ending, so any hover visual (signal-
+            // OR callback-driven, e.g. an animated highlight) must reset. Drop
+            // does not skip leave.
+            let over_entry = over.and_then(|id| inner.droppables.iter().find(|e| e.id == id));
+            let leave_cb = over_entry.and_then(|e| e.on_leave.clone());
+            let over_sig = over_entry
                 .map(|e| e.is_over)
                 // …and also the freshly-hit target's signal, in case it differs
                 // from the last-hovered one.
                 .or_else(|| entry.map(|e| e.is_over));
             inner.session_rects.clear();
-            (drop_cb, payload, over_sig, dragging)
+            (drop_cb, leave_cb, payload, over_sig, dragging)
         };
 
         if let Some(sig) = over_sig {
             sig.set(false);
+        }
+        if let Some(cb) = leave_cb {
+            cb();
         }
         dragging.set(false);
         if let Some(cb) = drop_cb {
@@ -309,6 +338,92 @@ impl<T: Clone + 'static> DragContext<T> {
             }
         }
         dragging.set(false);
+    }
+
+    // ---- drag-layer ghost (Model B) --------------------------------------
+
+    /// Install the preview builder + place the ghost at window-space `(x, y)`
+    /// (its top-left). Called at drag start *before* `begin` flips `dragging`.
+    ///
+    /// The ghost is positioned purely by **translate** (the drag layer pins it
+    /// at `top: 0; left: 0` and these values drive its transform). Translate is
+    /// the only positioning that NEVER affects layout on any backend — a real
+    /// `top`/`left` offset that grows as you drag can expand whatever container
+    /// the overlay lowers into. The cost is that `AnimatedValue::bind` only
+    /// applies on the *next* change after the node mounts, so we'd flash at the
+    /// origin for one frame; to avoid that we re-apply the current value on a
+    /// microtask, which lands after the overlay has mounted (and its ref
+    /// filled) but before paint.
+    pub(crate) fn set_preview(&self, builder: PreviewBuilder, x: f32, y: f32) {
+        let (gx, gy) = {
+            let mut inner = self.inner.borrow_mut();
+            inner.preview = Some(builder);
+            (inner.ghost_x.clone(), inner.ghost_y.clone())
+        };
+        gx.cancel();
+        gy.cancel();
+        gx.set(x);
+        gy.set(y);
+        // Re-apply the *current* value once the ghost has mounted, so the bound
+        // translate isn't stuck unapplied for the first frame.
+        let (gx2, gy2) = (gx, gy);
+        runtime_core::schedule_microtask(move || {
+            gx2.set(gx2.get());
+            gy2.set(gy2.get());
+        });
+    }
+
+    /// The ghost's current top-left in **window** coordinates (the value last
+    /// fed to [`set_preview`](Self::set_preview) / [`move_preview`](Self::move_preview)).
+    ///
+    /// Read it from a [`Draggable::on_release`](crate::Draggable::on_release)
+    /// callback to drive a *drop animation*: reveal the real (previously hidden)
+    /// source element at exactly the point the ghost was let go, then spring it
+    /// into its resting slot. Without this the source reveals wherever its own
+    /// hidden animation happened to be — mid-flight on a fast drag (a visible
+    /// jerk), already-settled on a slow one (no animation at all) — because the
+    /// ghost and the source are decoupled. Anchoring the reveal to the ghost's
+    /// release point makes the hand-off seamless and speed-independent. The
+    /// value persists after the drag ends (it is only overwritten by the next
+    /// `set_preview`), so reading it during `on_release` is well-defined.
+    pub fn ghost_position(&self) -> (f32, f32) {
+        let inner = self.inner.borrow();
+        (inner.ghost_x.get(), inner.ghost_y.get())
+    }
+
+    /// Move the ghost to window-space `(x, y)` (its top-left) on each drag move.
+    pub(crate) fn move_preview(&self, x: f32, y: f32) {
+        let (gx, gy) = {
+            let inner = self.inner.borrow();
+            (inner.ghost_x.clone(), inner.ghost_y.clone())
+        };
+        gx.set(x);
+        gy.set(y);
+    }
+
+    /// Whether a drag preview is currently installed.
+    pub(crate) fn has_preview(&self) -> bool {
+        self.inner.borrow().preview.is_some()
+    }
+
+    /// Build the current preview's content (empty fragment if none).
+    pub fn build_preview(&self) -> Element {
+        let builder = self.inner.borrow().preview.clone();
+        match builder {
+            Some(b) => b(),
+            None => runtime_core::fragment(Vec::new()),
+        }
+    }
+
+    /// Bind the ghost's window position to `target`'s translate. Used by
+    /// [`crate::drag_layer`] on the overlay view that holds the preview.
+    pub fn bind_ghost(&self, target: Ref<ViewHandle>) {
+        let (gx, gy) = {
+            let inner = self.inner.borrow();
+            (inner.ghost_x.clone(), inner.ghost_y.clone())
+        };
+        gx.bind(target, AnimProp::TranslateX);
+        gy.bind(target, AnimProp::TranslateY);
     }
 }
 

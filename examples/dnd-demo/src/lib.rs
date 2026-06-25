@@ -25,8 +25,8 @@ use dnd::{Activation, DragContext, Draggable, Droppable};
 use idea_ui::{install_idea_theme, light_theme};
 use runtime_core::animation::{AnimProp, AnimatedValue};
 use runtime_core::{
-    signal, text, view, AlignItems, Color, Element, FlexDirection, JustifyContent, Length, Ref,
-    Signal, StyleRules, StyleSheet, Tokenized, ViewHandle,
+    signal, text, view, AlignItems, Bound, Color, Element, FlexDirection, JustifyContent, Length,
+    Ref, Signal, StyleRules, StyleSheet, Tokenized, ViewHandle,
 };
 use std::rc::Rc;
 
@@ -84,37 +84,46 @@ pub fn app() -> Element {
     .with_style(bins_row_sheet())
     .into();
 
-    // Bins first, palette last: the dragged chip is then a *later* sibling
-    // than the bins, so it paints on top of them as it moves over a bin. This
-    // is the cross-backend way to elevate the dragged element — paint order is
-    // sibling order on AppKit/UIKit/Android, and DOM order on web (there is no
-    // `z-index` style prop to lean on). So the chips sit below and drag up.
+    // Natural reading order — z-order is handled by the drag layer, not by
+    // tricking sibling paint order. `drag_layer(&ctx)` is mounted once here; it
+    // renders the dragged chip's ghost in a top-level overlay above everything,
+    // so the ghost is never behind a bin or clipped.
     view(vec![
         text("Drag & Drop").with_style(title_sheet()).into(),
-        text("Drag a chip up into a bin. Miss, and it springs back.")
+        text("Drag a chip into a bin.")
             .with_style(caption_sheet())
             .into(),
-        bins,
         palette,
+        bins,
+        dnd::drag_layer(&ctx),
     ])
     .with_style(page_sheet())
     .into()
 }
 
-/// A draggable color chip. Follows the finger via its bound offset and carries
-/// its [`ChipData`] as the payload. Defaults to snap-back, so the palette chip
-/// returns home after a drop (the drop target keeps its own record).
+/// A draggable color chip. The chip itself stays in the palette; a ghost (built
+/// by `.preview`) follows the pointer in the top-level drag layer. Carries its
+/// [`ChipData`] as the payload.
 fn chip(ctx: &DragContext<ChipData>, data: ChipData) -> Element {
-    let chip_ref: Ref<ViewHandle> = Ref::new();
-    let drag = Draggable::new(ctx, move || data).activation(Activation::platform_default());
-    drag.bind(chip_ref);
-    let handler = drag.handler();
+    // The one-call handle form: `attach` installs the touch handler, owns the
+    // ref, and (via `dim_source`) fades the parked source while its ghost flies
+    // — so the "two copies" reads as intentional. No ref threading needed here.
+    Draggable::new(ctx, move || data)
+        .activation(Activation::platform_default())
+        .preview(move || chip_visual(data)) // the ghost looks like the chip
+        .dim_source(0.3)
+        .attach(chip_visual_builder(data))
+}
 
-    view(vec![text(data.label).with_style(chip_label_sheet()).into()])
-        .with_style(chip_sheet(data.color))
-        .on_touch(move |ev| handler(ev))
-        .bind(chip_ref)
-        .into()
+/// The chip's visual, as a reusable builder (shared by the source chip and its
+/// drag ghost). Returns the `view` builder so the source can chain `.on_touch`.
+fn chip_visual_builder(data: ChipData) -> Bound<ViewHandle> {
+    view(vec![text(data.label).with_style(chip_label_sheet()).into()]).with_style(chip_sheet(data.color))
+}
+
+/// The chip visual as a finished `Element` — used for the drag ghost.
+fn chip_visual(data: ChipData) -> Element {
+    chip_visual_builder(data).into()
 }
 
 /// A drop bin. Highlights while a chip hovers it (reactive `is_over`) and

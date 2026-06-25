@@ -100,3 +100,36 @@ author-facing.
 [`web-navigator-helpers`]: ../web-navigator-helpers
 [`ios-navigator-helpers`]: ../ios-navigator-helpers
 [`android-navigator-helpers`]: ../android-navigator-helpers
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. The author
+tree is uniform; each backend renders its own native sidebar/scrim chrome (see
+the table above). Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p drawer-navigator --features runtime-server` — the
+  runtime-server recording handler emits the right `Select` / `DrawerCmd` wire
+  commands, including the regression that a fresh navigator carries the default
+  fill style so the native container doesn't collapse (`tests/recording.rs`,
+  host-side only)
+- [ ] `cargo test -p drawer-navigator` — SSR first-paint `ui-nav-drawer-*`
+  markup (`tests/ssr.rs`) and the terminal layout (`tests/terminal.rs`)
+- [ ] `cargo build -p drawer-navigator --target wasm32-unknown-unknown` — web
+  target
+
+**Behavior**
+- [ ] **Web** — drawer is **modal** (off-canvas) on a narrow viewport and a
+  **pinned** in-flow sidebar on a wide one; the modal⇄pinned collapse is a CSS
+  `@media` query at `navigator_pin_width`; `toggle()` opens/closes; selecting a
+  nav-link swaps the screen; slot chrome (top/bottom/leading/trailing) survives
+  screen swaps.
+- [ ] **iOS** — sidebar `UIView` slides in over a `UINavigationController` body;
+  select + open/close/toggle work; native header present. ⚠️ not yet
+  device-confirmed.
+- [ ] **Android** — androidx `DrawerLayout` opens/closes with scrim + Toolbar;
+  edge swipe-to-open per `swipe_to_open`; select swaps the body. ⚠️ not yet
+  device-confirmed.
+- [ ] **macOS** — persistent always-visible sidebar; outlet swaps on `Select`
+  (no scrim / slide). ⚠️ not yet device-confirmed.

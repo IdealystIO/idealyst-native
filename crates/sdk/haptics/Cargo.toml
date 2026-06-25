@@ -1,0 +1,61 @@
+[package]
+name = "haptics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform tactile feedback SDK.
+#
+# Three tiny fire-and-forget functions — `impact(style)`, `notify(feedback)`,
+# and `selection()` — that trigger the device's haptic engine. Each one is a
+# synchronous one-shot side effect (no async, no handle, no error type):
+# haptics are non-essential feedback, so where the platform can't deliver an
+# exact analog the call maps to the nearest effect or is a documented no-op.
+# The public surface is identical on every target; only the mechanism differs.
+#
+#   - iOS:           UIImpact/UINotification/UISelectionFeedbackGenerator
+#   - macOS:         NSHapticFeedbackManager (trackpad force-touch)
+#   - Android:       Vibrator / VibrationEffect (predefined effects)
+#   - web (wasm32):  navigator.vibrate(ms) — approximated patterns
+#   - other native:  no-op
+#
+# Scope: predefined feedback patterns only. Custom waveform / amplitude
+# composition (Core Haptics CHHapticEngine, Android amplitude curves) is a
+# deliberate later SDK.
+
+# Declares the platform permission this SDK needs. The CLI walks the app's
+# dependency graph, finds this, and injects the right artifacts per platform.
+# Only Android requires a manifest permission (`android.permission.VIBRATE`);
+# iOS / macOS / web need none.
+[package.metadata.idealyst]
+capabilities = ["haptics"]
+
+[dependencies]
+# Only pulled for the `catalog` feature's compile-checked recipes. The core
+# capability has no framework dependency — it's three platform shims.
+runtime-core = { workspace = true, optional = true }
+
+# Compile-checked usage recipes for the docs/MCP catalog. Off in every
+# production build (the `recipe!` macro then expands to nothing).
+[features]
+catalog = ["dep:runtime-core", "runtime-core/catalog"]
+
+# iOS / macOS: drive the haptic generators / NSHapticFeedbackManager through
+# the Obj-C runtime (objc2 msg_send). No typed framework crate needed — the
+# classes resolve via the runtime.
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+objc2 = "0.5"
+
+# Android: Vibrator / VibratorManager via JNI on the host Activity context.
+# `ndk-context` exposes the host JavaVM + Context (mirrors the `storage` /
+# `microphone` SDKs).
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+# Web (wasm): navigator.vibrate via web-sys; js-sys/wasm-bindgen build the
+# JS array the pattern overload (`vibrate([on, off, …])`) expects.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Window", "Navigator"] }

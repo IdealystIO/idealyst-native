@@ -212,6 +212,14 @@ pub struct DragRecognizer {
     /// Armed long-press timer, kept alive until it fires or is cancelled.
     timer: Rc<RefCell<Option<ScheduledTask>>>,
     notifier: Rc<RefCell<Option<AsyncNotifier>>>,
+    /// The backend's node-bound claim closure for the in-flight touch, captured
+    /// synchronously on `Began` (see [`runtime_core::active_touch_claim`]). For a
+    /// LongPress activation the commit happens off the touch stream (the timer),
+    /// so there is no event to return `CLAIMED` on; we invoke this at commit
+    /// instead, cancelling the ancestor scroller *before* the first move it would
+    /// otherwise steal. `None` when no drag is tracking or the backend doesn't
+    /// implement the claim protocol. Held only for the life of one gesture.
+    claim: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
 }
 
 impl DragRecognizer {
@@ -226,6 +234,7 @@ impl DragRecognizer {
             state: Rc::new(RefCell::new(State::Idle)),
             timer: Rc::new(RefCell::new(None)),
             notifier: Rc::new(RefCell::new(None)),
+            claim: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -310,6 +319,15 @@ impl DragRecognizer {
             last_ts_ns: ts_ns,
             velocity: TouchPoint::ZERO,
         };
+        // Claim the touch the instant the drag commits — critical on the
+        // LongPress path, where this runs from the timer (off the touch stream),
+        // so the ancestor native scroller is cancelled while the finger is still
+        // held, before it can recognize the first move and steal the gesture.
+        // (On the Immediate path the synchronous `CLAIMED` return already claims;
+        // this is a harmless idempotent second call.)
+        if let Some(claim) = self.claim.borrow().clone() {
+            claim();
+        }
         let sample = DragSample {
             view_position: view,
             window_position: window,
@@ -336,6 +354,9 @@ impl Recognizer for DragRecognizer {
     }
     fn reset(&mut self, cancelled: bool) {
         self.cancel_timer();
+        // Release the captured claim closure (it retains the native view on some
+        // backends) — the gesture is over.
+        *self.claim.borrow_mut() = None;
         let was_active = matches!(*self.state.borrow(), State::Active { .. });
         *self.state.borrow_mut() = State::Idle;
         if cancelled && was_active {
@@ -381,6 +402,12 @@ impl Recognizer for DragRecognizer {
                     last_view: ev.position,
                     last_window: ev.window_position,
                 };
+                // Grab the backend's claim closure for this touch NOW, while it's
+                // valid (the backend publishes it only for the duration of this
+                // synchronous dispatch). A LongPress commit later fires from the
+                // timer, off-stream, where it's no longer available — so we hold
+                // our own clone. `None` on backends without the claim protocol.
+                *self.claim.borrow_mut() = runtime_core::active_touch_claim();
                 if let Activation::LongPress { threshold_ms, .. } = activation {
                     self.arm_timer(ev.id, threshold_ms);
                 }
@@ -528,6 +555,11 @@ impl Recognizer for DragRecognizer {
             }
             (TouchPhase::Cancelled, _) => (self.state(), TouchResponse::IGNORED),
         };
+        // Any terminal transition lands in `Idle`; release the captured claim
+        // closure there so its retained native view doesn't outlive the gesture.
+        if matches!(*self.state.borrow(), State::Idle) {
+            *self.claim.borrow_mut() = None;
+        }
         RecognizerUpdate::new(state, response)
     }
 }

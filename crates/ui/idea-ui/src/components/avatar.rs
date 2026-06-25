@@ -65,6 +65,10 @@ pub fn Avatar(props: &AvatarProps) -> Element {
         StyleApplication::new(AvatarStyle::sheet())
             .with("size", size.as_variant_str().to_string())
             .with("color", color.as_variant_str().to_string())
+            // Hug + center on the cross axis so a row of mixed-size avatars
+            // centers instead of top-aligning under the parent's default
+            // align-items: stretch (see `components::hug_self`).
+            .with_computed("hug", crate::components::hug_self)
     };
 
     let text_style = move || {
@@ -88,5 +92,31 @@ pub fn Avatar(props: &AvatarProps) -> Element {
                 text(style = text_style) { initials }
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use idea_theme::theme::{install_idea_theme, light_theme};
+    use runtime_core::{resolve_style, AlignSelf, StyleSource};
+
+    // Regression: an Avatar is a fixed-size atom — it must center on its
+    // parent's cross axis (`align_self: Center`) so a row of mixed-size
+    // avatars centers instead of top-aligning under the default
+    // `align-items: stretch` (the Avatar "Sizes" row report).
+    #[test]
+    fn avatar_centers_on_cross_axis() {
+        install_idea_theme(light_theme());
+        let app = match Avatar(&AvatarProps { initials: "AB".into(), ..Default::default() }) {
+            Element::View { style: Some(StyleSource::Reactive(f)), .. } => f(),
+            Element::View { style: Some(StyleSource::Static(a)), .. } => a,
+            _ => panic!("Avatar renders a styled View"),
+        };
+        assert_eq!(
+            resolve_style(&app).align_self,
+            Some(AlignSelf::Center),
+            "an Avatar centers on the cross axis instead of stretching/top-aligning"
+        );
     }
 }

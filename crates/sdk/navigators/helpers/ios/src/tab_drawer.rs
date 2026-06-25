@@ -86,9 +86,9 @@ pub(crate) struct TabDrawerEntry {
     pub(crate) header_root_vc: Option<Retained<UIViewController>>,
     pub(crate) header_nav_ctrl: Option<Retained<NSObject>>,
     #[allow(dead_code)]
-    pub(crate) theme_effect: Option<runtime_core::Effect>,
+    pub(crate) theme_effect: Option<runtime_core::Subscription>,
     #[allow(dead_code)]
-    pub(crate) background_effect: Option<runtime_core::Effect>,
+    pub(crate) background_effect: Option<runtime_core::Subscription>,
     #[allow(dead_code)]
     pub(crate) menu_callback_target: Option<Retained<NSObject>>,
     /// Header callback targets for the *currently visible* screen. UIKit
@@ -537,10 +537,10 @@ pub(crate) fn create_drawer(
         m.borrow_mut().insert(key, entry_rc.clone());
     });
 
-    // Install the per-drawer theme-reactivity Effect. Same mechanism
-    // as before the refactor; re-runs `apply_header_options` for
-    // whichever screen is currently visible so token-resolving color
-    // closures re-tint on theme swap.
+    // Install the per-drawer theme-reactivity watch. Caller-owned and
+    // stored on the entry, so it's disposed when the entry drops. Re-runs
+    // `apply_header_options` for whichever screen is currently visible so
+    // token-resolving color closures re-tint on theme swap.
     {
         let mounted_for_theme = mounted.clone();
         let current_route_for_theme = current_route.clone();
@@ -549,7 +549,7 @@ pub(crate) fn create_drawer(
         let nav_ctrl_for_theme: Retained<NSObject> = unsafe {
             Retained::retain(Retained::as_ptr(&nav_ctrl) as *mut NSObject).unwrap()
         };
-        let theme_effect = runtime_core::Effect::new(move || {
+        let theme_effect = runtime_core::watch(move || {
             let route = *current_route_for_theme.borrow();
             let Some(route) = route else { return };
             let map = mounted_for_theme.borrow();
@@ -570,7 +570,7 @@ pub(crate) fn create_drawer(
     if let Some(bg_closure) = callbacks.background_color.clone() {
         let nav_view_for_bg = nav_view.clone();
         let body_for_bg = body.clone();
-        let bg_effect = runtime_core::Effect::new(move || {
+        let bg_effect = runtime_core::watch(move || {
             let color = (bg_closure)();
             let ui_color = color_to_uicolor(&color);
             nav_view_for_bg.setBackgroundColor(Some(&ui_color));

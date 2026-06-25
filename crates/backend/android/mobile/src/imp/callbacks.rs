@@ -117,4 +117,10 @@ pub(crate) fn leak<T>(value: T) -> jlong {
 /// would SIGSEGV.
 pub(crate) struct TouchCallback {
     pub(crate) inner: RefCell<Option<runtime_core::TouchHandler>>,
+    /// The View this handler is installed on, kept so the trampoline can
+    /// publish a node-bound claim closure (cancel ancestor scroll interception)
+    /// for recognizers that commit off the touch stream — e.g. a long-press
+    /// drag whose timer fires while the finger is held still. See
+    /// [`runtime_core::set_active_touch_claim`].
+    pub(crate) node: jni::objects::GlobalRef,
 }

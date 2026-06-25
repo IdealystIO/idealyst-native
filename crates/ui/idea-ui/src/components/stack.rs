@@ -51,3 +51,35 @@ pub fn Stack(props: StackProps) -> Element {
     }
     ui! { view(style = style) { children } }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use idea_theme::theme::{install_idea_theme, light_theme};
+    use runtime_core::{resolve_style, AlignItems, StyleSource};
+
+    // A row Stack with `align = Center` (alongside axis/gap/justify) must
+    // resolve to `align_items: Center`. Guards that chaining the `align`
+    // variant alongside the others isn't dropped (the icon-Sizes-row report,
+    // which turned out to be a stale build — this pins the resolution).
+    #[test]
+    fn align_center_resolves_to_align_items_center() {
+        install_idea_theme(light_theme());
+        let el = Stack(StackProps {
+            axis: StackAxis::Row,
+            gap: StackGap::Lg,
+            align: StackAlign::Center,
+            justify: StackJustify::Start,
+            ..Default::default()
+        });
+        let app = match el {
+            Element::View { style: Some(StyleSource::Static(a)), .. } => a,
+            _ => panic!("Stack renders a statically-styled View"),
+        };
+        assert_eq!(
+            resolve_style(&app).align_items,
+            Some(AlignItems::Center),
+            "align = Center must resolve to align_items: Center even with axis/gap/justify set"
+        );
+    }
+}

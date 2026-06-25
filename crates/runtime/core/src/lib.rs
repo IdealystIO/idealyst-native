@@ -205,8 +205,8 @@ pub use sources::{
     TextSource,
 };
 pub use touch::{
-    pointer_modifiers, set_pointer_modifiers, PointerModifiers, TouchEvent, TouchHandler, TouchId,
-    TouchPhase, TouchPoint, TouchResponse,
+    active_touch_claim, pointer_modifiers, set_active_touch_claim, set_pointer_modifiers,
+    PointerModifiers, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, TouchResponse,
 };
 pub use wheel::{WheelEvent, WheelHandler, WheelKind};
 pub use touch::recognizer::{
@@ -255,7 +255,7 @@ pub use reactive::{
     arena_stats, batch, cycle, inject, inject_or, install_drop_deferral, install_reactive_idle_hook,
     is_reactive_busy, memo, memo_with, on, on_cleanup, on_defer, provide, reducer,
     register_signal_js_notifier, signal_has_js_notifier, unregister_signal_js_notifier, untrack,
-    with_inject, ArenaStats, Effect, Ref, Signal, Trackable,
+    watch, with_inject, ArenaStats, Effect, Ref, Signal, Subscription, Trackable,
 };
 
 /// Run `f` with the reactive scope-ownership stack emptied: signals and
@@ -305,7 +305,8 @@ pub use style::{
     AlignContent, AlignItems, AlignSelf, Color, Cursor, Derive, Easing, FlexDirection, FlexWrap,
     FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop,
     IntoOverrideSource, IntoVariantSource, JustifyContent, Length, RadialExtent, Overflow,
-    Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign, TextTransform, UserSelect,
+    PointerEvents, Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign,
+    TextTransform, UserSelect,
     TokenEntry, TokenValue, Tokenized, Transform, Transition, VariantAxis, VariantEnum,
     VariantSet, VariantValue,
 };
@@ -436,18 +437,17 @@ macro_rules! signal {
     };
 }
 
-/// Creates a reactive [`Effect`] that re-runs whenever a signal it
-/// reads on its previous run changes. Equivalent to writing
-/// `let _e = Effect::new(move || { ... })` but auto-binds the handle
-/// to the surrounding block and skips the `move` keyword (always
-/// implied — signal handles are `Copy`).
+/// Creates a **scope-owned** reactive effect that re-runs whenever a
+/// signal it read on its previous run changes. The `move` keyword is
+/// always implied (signal handles are `Copy`), and there is no handle to
+/// manage — the surrounding component scope owns the effect and frees it
+/// on teardown.
 ///
-/// Inside a render scope the active `Scope` adopts the effect's
-/// arena slot, so the macro's hidden binding's `Drop` is a no-op and
-/// the effect lives until the scope ends. Outside any scope (tests,
-/// top-level binaries), the binding keeps the effect alive until the
-/// end of the enclosing block — call `Effect::new` directly and
-/// capture the handle if you need longer lifetime.
+/// `effect!` is for reactivity **inside the component tree**. It expands
+/// to [`Effect::scoped`], which debug-asserts that a reactive scope is
+/// active. To react to a signal from *outside* the tree — app init, an
+/// async callback, a platform/service install — use [`watch`] and store
+/// the returned [`Subscription`]; that is the form whose lifetime you own.
 ///
 /// ```ignore
 /// let count = signal!(0);
@@ -470,10 +470,9 @@ macro_rules! signal {
 #[macro_export]
 macro_rules! effect {
     ($body:expr) => {
-        // Hygienic binding: lives to the end of the enclosing block.
-        // Inside an active scope this is a no-op handle; outside one
-        // the binding is the slot's RAII guard.
-        let _effect = $crate::Effect::new(move || { $body });
+        // Scope-owned: the active scope adopts the slot and frees it on
+        // teardown. Debug-asserts a scope is active (see `Effect::scoped`).
+        $crate::Effect::scoped(move || { $body });
     };
 }
 

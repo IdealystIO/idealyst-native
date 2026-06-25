@@ -1201,17 +1201,18 @@ impl Backend for IosBackend {
     }
 
     fn platform(&self) -> runtime_core::Platform {
-        // `target_abi = "sim"` is set for `aarch64-apple-ios-sim` and
-        // `x86_64-apple-ios` simulator targets; absent on real devices.
-        // The sim self-reports via `Custom("Sim")` so author code
-        // (and the welcome example) can distinguish it from a real
-        // device — there's no separate `is_simulator` signal, just
-        // the `Platform` value the backend returns.
-        if cfg!(all(target_os = "ios", target_abi = "sim")) {
-            runtime_core::Platform::Custom("Sim")
-        } else {
-            runtime_core::Platform::Ios
-        }
+        // ALWAYS `Ios`, simulator included. The simulator IS iOS — same UIKit,
+        // same touch model — so `platform()` must report `Ios` there too, or
+        // `is_mobile()`-gated behavior silently flips on the sim. It did exactly
+        // that: the sim used to self-report `Custom("Sim")`, which is not
+        // `is_mobile()`, so `dnd::Activation::platform_default()` resolved to
+        // Immediate (drag-starts-on-move) instead of LongPress (press-and-hold)
+        // on the simulator only. Per CLAUDE.md §7, a sim/device predicate has no
+        // place in the public `Platform` API; genuine sim-only code uses the
+        // compile-time `cfg(target_abi = "sim")` marker (see the camera /
+        // canvas-native / vello gates), which is precise and doesn't leak into
+        // runtime author code.
+        runtime_core::Platform::Ios
     }
 
     fn supports_screenshot(&self) -> bool {

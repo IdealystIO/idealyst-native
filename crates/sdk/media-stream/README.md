@@ -111,3 +111,21 @@ on other native targets it is identical to `new()` so callers stay portable.
 None. This crate only carries already-captured frames between a producer and a
 consumer — the **producer** SDK (`camera`, `microphone`, `screen-recorder`)
 owns the OS capture permission.
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it. This crate is a pure-Rust abstraction, so most of its
+coverage is automated; the per-backend items only exercise the opaque
+`native_source` zero-copy slot.
+
+**Automated**
+- [ ] `cargo test -p media-stream` — producer/consumer channel: a producer feeds frames and `subscribe`/`latest` deliver them in order; PTS stays monotonic; the shared `clock::now_micros()` timeline is consistent across producers
+- [ ] `cargo build -p media-stream --target wasm32-unknown-unknown` — web target
+
+**Behavior**
+- [ ] **Web** — the `web_sys::MediaStream` `native_source` round-trips: `set_native_source` → `native_source()` downcast yields the same handle for a zero-copy display.
+- [ ] **iOS** — ⚠️ not yet device-confirmed: a `CMSampleBuffer` `native_source` round-trips for `AVSampleBufferDisplayLayer` enqueue.
+- [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: a `SurfaceTexture` `native_source` round-trips.
+- [ ] **macOS** — the `IOSurface` (`SurfaceSource`) `native_source` round-trips and can be set as `CALayer.contents`; `with_surface_capture()` wires the self-capture path.

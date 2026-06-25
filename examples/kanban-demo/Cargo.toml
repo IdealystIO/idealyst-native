@@ -1,0 +1,26 @@
+[package]
+name = "kanban-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Animated Kanban board — drag cards between columns. Showcases the `dnd` SDK (drag layer ghost, column hover highlight, source dim) wired to the animation system (presence enter/exit on cards, spring-driven color)."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true }
+dnd = { workspace = true }
+# Lean theme provider only (NOT idea-ui) — a theme must be installed before
+# render, but this demo styles with raw primitives + stylesheet!.
+idea-theme = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+[package.metadata.idealyst.app]
+name      = "Kanban Demo"
+bundle_id = "ai.truday.idealyst.kanbandemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]

@@ -43,7 +43,7 @@ use crate::web_layer::WebLayerCompositor;
 use canvas_core::{paint_scene, CanvasProps, DrawOp, Scene as CanvasScene, TextureLayer};
 use runtime_core::accessibility::AccessibilityProps;
 use runtime_core::primitives::graphics::{GraphicsSurface, OnReadyEvent, OnResizeEvent};
-use runtime_core::{Backend, Effect, RegisterExternal};
+use runtime_core::{effect, Backend, RegisterExternal};
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -172,16 +172,19 @@ fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node
     // present is non-blocking, so rendering synchronously per input event
     // over-submits to the swapchain (250+ fps) until it backpressure-stalls. One
     // render per animation frame caps it at the display refresh.
-    let _effect = Effect::new({
+    // Built in the canvas walker, so the component scope owns it (this is
+    // what keeps it alive past `build_canvas` return). Clones hoisted so the
+    // macro's `move` captures them (cloned once).
+    {
         let props = props.clone();
         let scene_cell = scene_cell.clone();
         let render_fn = render_fn.clone();
         let frame_pending = frame_pending.clone();
-        move || {
+        effect!({
             *scene_cell.borrow_mut() = paint_scene(&props);
             schedule_repaint(&render_fn, &scene_cell, &frame_pending);
-        }
-    });
+        });
+    }
 
     let on_ready = {
         let scene_cell = scene_cell.clone();

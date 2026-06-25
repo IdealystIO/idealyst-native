@@ -140,5 +140,36 @@ So you write the auth wiring once; each platform uses its right mechanism.
   asserts a handler's `set_cookie` surfaces a `Set-Cookie:
   session=…; HttpOnly; Secure; SameSite=Lax` response header.
 
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet (see
+[Verification status](#verification-status) above). This crate is
+**security-sensitive**: a secret that round-trips but is readable as plaintext,
+or a web build that fake-stores instead of erroring, is a *failure* even if the
+value comes back. Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p credentials` — `Unsupported`/web error-with-guidance path, portable core
+- [ ] `cargo test -p credentials --lib -- --ignored` — live Apple Keychain round-trip on a macOS host (set / get / rotate / remove / idempotent-remove)
+- [ ] `cargo build -p credentials --target wasm32-unknown-unknown` — web build compiles (every op errors)
+
+**Behavior**
+
+For each native platform: a secret stored is retrievable after restart **and**
+is NOT readable as plaintext (verify via the OS store, a backup, or disk
+inspection — not just the API).
+
+- [ ] **iOS** — secret survives relaunch via Keychain; not plaintext-readable ⚠️ Apple is host-tested on macOS; iOS-on-device not yet confirmed
+- [ ] **Android** — secret survives relaunch via AES-256-GCM keyed by AndroidKeyStore (TEE/StrongBox); not plaintext-readable ⚠️ not yet device-confirmed (compile-checked only)
+- [ ] **macOS** — secret survives relaunch via Keychain; not plaintext-readable (host-tested)
+- [ ] **Windows** — secret survives relaunch via Credential Manager; not plaintext-readable ⚠️ not yet host-confirmed
+- [ ] **Linux** — secret survives relaunch via the Secret Service (GNOME Keyring / KWallet); headless box with no daemon returns `CredError::Backend`, doesn't pretend ⚠️ not yet host-confirmed
+- [ ] **Web** — every operation **ERRORS loudly** (`CredError::Unsupported`), never fake-stores; verify the honest failure and that the BFF httpOnly-cookie pattern is the documented alternative
+
+**Security / Permissions**
+- [ ] On native, reading your own secret into app memory is gated to the owning app by the OS (Keychain/Keystore ACL) — confirm another app/profile can't read it
+- [ ] Server `set_cookie` emits `Set-Cookie: …; HttpOnly; Secure; SameSite=Lax` (end-to-end router test)
+
 [`CredError::Unsupported`]: src/lib.rs
 [`CredError::Backend`]: src/lib.rs

@@ -95,3 +95,20 @@ blocking the caller; on web it builds inline. Init failures surface as
 
 None. This SDK consumes an existing `AudioStream` and needs no OS permission of
 its own — the producer (e.g. `microphone`) already owns the capture permission.
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it. The DSP is one pure-Rust implementation across every
+target; only the *execution context* differs, so most coverage is automated.
+
+**Automated**
+- [ ] `cargo test -p denoise` — portable logic (downmix/resample to 48 kHz mono, framing, model build/process)
+- [ ] `cargo build -p denoise --target wasm32-unknown-unknown` — web target (`with_weights` only — model is not bundled into the wasm binary)
+
+**Behavior**
+- [ ] **Web** — `Denoiser::with_weights(..)` builds inline on the main thread; feed a noisy `AudioStream` → output is audibly de-noised at 48 kHz mono; first-run model load (fetched `.tar.gz`) succeeds.
+- [ ] **iOS** — ⚠️ not yet device-confirmed: embedded `new()` model builds on the worker thread; noisy input → audibly de-noised 48 kHz mono output without blocking the audio thread.
+- [ ] **Android** — ⚠️ not yet device-confirmed: same as iOS — embedded model builds on the worker thread; noisy input → audibly de-noised output.
+- [ ] **macOS** — feed a noisy `AudioStream` → output is audibly de-noised at 48 kHz mono; embedded model load via `new()` succeeds; inference runs on the worker thread.

@@ -87,3 +87,26 @@ let pan = pan.on_end(move |end| {
 ```
 
 No permissions required.
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet (see the
+verification note above). Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p pan` — offset accumulation, base snapshotting across
+  successive gestures, callback wiring, sub-slop no-op (11 unit tests)
+- [ ] `cargo build -p pan --target wasm32-unknown-unknown` — web target
+
+**Behavior**
+- [ ] **Web** — drag a pannable element with mouse / touch / pen; the reactive
+  offset handle tracks the pointer 1:1; release leaves it at the final offset,
+  and a second grab continues from there instead of snapping back.
+- [ ] **iOS** — finger drag tracks 1:1 through the native translate; momentum
+  fling in `on_end` decays smoothly. ⚠️ not yet device-confirmed.
+- [ ] **Android** — finger drag tracks 1:1; same accumulate-across-grabs
+  behavior. ⚠️ not yet device-confirmed.
+- [ ] **macOS** — trackpad / mouse drag tracks 1:1; `pan.cancel()` on grab
+  stops an in-flight fling from fighting the new drag. ⚠️ not yet
+  device-confirmed.

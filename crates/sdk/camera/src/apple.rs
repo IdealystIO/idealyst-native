@@ -17,7 +17,6 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::Mutex;
 
-use block2::RcBlock;
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObjectProtocol};
@@ -126,10 +125,6 @@ const DEVICE_TYPE_WIDE_ANGLE: &str = "AVCaptureDeviceTypeBuiltInWideAngleCamera"
 // AVCaptureDevicePosition.
 const POSITION_BACK: i64 = 1;
 const POSITION_FRONT: i64 = 2;
-// AVAuthorizationStatus.
-const AUTH_RESTRICTED: i64 = 1;
-const AUTH_DENIED: i64 = 2;
-const AUTH_AUTHORIZED: i64 = 3;
 
 // ---------------------------------------------------------------------------
 // Delegate. Receives `captureOutput:didOutputSampleBuffer:fromConnection:`
@@ -299,37 +294,24 @@ impl Drop for StreamHandle {
 }
 
 // ---------------------------------------------------------------------------
-// Permission.
+// Permission. Delegated to the shared `permissions` SDK — the AVCaptureDevice
+// `authorizationStatusForMediaType:` / `requestAccessForMediaType:` grant code
+// that used to live here now lives in `permissions::imp` (apple.rs) under
+// `Permission::Camera`. This crate keeps only the CAPTURE code below.
 // ---------------------------------------------------------------------------
 
 pub(crate) async fn request_permission() -> Result<(), CameraError> {
-    let media_type = NSString::from_str(AV_MEDIA_TYPE_VIDEO);
-    let status: i64 =
-        unsafe { msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: &*media_type] };
-    match status {
-        AUTH_AUTHORIZED => Ok(()),
-        AUTH_DENIED | AUTH_RESTRICTED => Err(CameraError::PermissionDenied),
-        // NotDetermined (0): surface the OS prompt and await the result.
-        _ => {
-            let (tx, rx) = futures_channel::oneshot::channel::<bool>();
-            let tx = std::cell::Cell::new(Some(tx));
-            let block = RcBlock::new(move |granted: Bool| {
-                if let Some(tx) = tx.take() {
-                    let _ = tx.send(granted.as_bool());
-                }
-            });
-            unsafe {
-                let _: () = msg_send![
-                    class!(AVCaptureDevice),
-                    requestAccessForMediaType: &*media_type,
-                    completionHandler: &*block,
-                ];
-            }
-            match rx.await {
-                Ok(true) => Ok(()),
-                _ => Err(CameraError::PermissionDenied),
-            }
-        }
+    map_permission(permissions::request(permissions::Permission::Camera).await)
+}
+
+/// Map the shared [`permissions::PermissionStatus`] onto camera's error.
+/// `is_usable()` (Granted, or Unsupported where the platform needs no grant)
+/// passes; anything else is a denial.
+fn map_permission(status: permissions::PermissionStatus) -> Result<(), CameraError> {
+    if status.is_usable() {
+        Ok(())
+    } else {
+        Err(CameraError::PermissionDenied)
     }
 }
 

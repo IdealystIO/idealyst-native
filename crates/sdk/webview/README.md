@@ -96,3 +96,29 @@ calls are equivalent at the Obj-C layer. See `Cargo.toml` for the full
 rationale.
 
 [`url`]: src/lib.rs
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet (see the
+verification note above). Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo build -p webview --target wasm32-unknown-unknown` — web target
+
+**Rendering / behavior**
+- [ ] **Web** — `WebView` loads the `url` in an `<iframe>` and renders the page;
+  changing the reactive `url` signal re-navigates; `on_load`/`on_error`/`on_message`
+  fire as DOM `load`/`error`/`message` listeners; `reload()` and `post_message(...)`
+  via the bound handle work; `execute_js(...)` returns `Ok` on same-origin content
+  and `Err` cross-origin.
+- [ ] **iOS** — ⚠️ not yet device-confirmed. `WKWebView` loads the URL and renders
+  the page; reactive `url` re-navigates; `on_load`/`on_message` fire via the
+  `WKNavigationDelegate` + `WKScriptMessageHandler` shim; `reload()`/`post_message`
+  drive the native view.
+- [ ] **Android** — ⚠️ not yet device-confirmed. `android.webkit.WebView` loads the
+  URL via `loadUrl` and renders; reactive `url` re-navigates. Confirm the v1 caveat:
+  `on_load`/`on_error`/`on_message` callbacks are a **no-op** (verify navigation
+  still works and nothing crashes).
+- [ ] **macOS / other** — no handler registered; verify the framework's `External`
+  "not supported" placeholder renders cleanly (no layout artifact or crash).

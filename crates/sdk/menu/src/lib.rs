@@ -349,7 +349,7 @@ pub use ios::{apply_to_builder, force_rebuild, idealyst_menu_apply_to_builder, i
 /// rebuild reads the stored spec via `apply_to_builder`, so any
 /// signals the closure read will reflect their **current** values
 /// at that moment — but the closure isn't re-run on subsequent
-/// signal changes. True reactivity needs `Effect::new` + a
+/// signal changes. True reactivity needs a `watch(...)` + a
 /// re-trigger of `force_rebuild` on signal change, which is a
 /// follow-up.
 pub fn install_reactive<F>(backend: &mut backend_ios::IosBackend, spec_fn: F)

@@ -1385,17 +1385,17 @@ impl RadioSheetBuilder {
             for variant in &self.variants {
                 let key = format!("{}_{}", tone.current_key(), variant.current_key());
                 let tone_c = tone.clone();
-                let variant_c = variant.clone();
                 outer = outer.variant("appearance", key, move |_vs| {
                     let theme_rc = active_theme();
                     let theme_ref = theme_rc
                         .downcast_ref::<IdeaThemeRef>()
                         .expect("Radio sheet: install_idea_theme(...) first");
-                    let ctx = ResolutionCtx {
-                        theme: theme_ref,
-                        tone: &*tone_c.0,
-                    };
-                    let stroke = variant_c.0.render(&ctx).color;
+                    // The selected ring is a tone-colored OUTLINE. Use the
+                    // tone's solid accent (fill_bg) directly — not
+                    // `variant.render().color`, which for the default Filled
+                    // variant is the on-fill *contrast* color (white), giving
+                    // an invisible white ring on a light surface.
+                    let stroke = Some(tone_c.0.fill_bg(theme_ref));
                     StyleRules {
                         background: Some(Tokenized::Literal(runtime_core::Color(
                             "transparent".into(),
@@ -1437,7 +1437,24 @@ impl RadioSheetBuilder {
             background_transition: Some(Transition::new(150, Easing::EaseOut)),
             ..Default::default()
         });
-        dot = add_indicator_color_arms(dot, &self.tones, &self.variants, true);
+        // Dot fill = the tone's solid accent (fill_bg), not the shared
+        // checkmark-color helper (which projects `variant.render().color` —
+        // the white on-fill contrast color for Filled, giving an invisible
+        // dot). The radio ring is transparent, so the dot must carry the
+        // tone color itself.
+        for tone in &self.tones {
+            for variant in &self.variants {
+                let key = format!("{}_{}", tone.current_key(), variant.current_key());
+                let tone_c = tone.clone();
+                dot = dot.variant("appearance", key, move |_vs| {
+                    let theme_rc = active_theme();
+                    let theme_ref = theme_rc
+                        .downcast_ref::<IdeaThemeRef>()
+                        .expect("Radio dot sheet: install_idea_theme(...) first");
+                    StyleRules { background: Some(tone_c.0.fill_bg(theme_ref)), ..Default::default() }
+                });
+            }
+        }
         for (key, _dim, dot_px) in RADIO_DIMS {
             dot = dot.variant("size", key, move |_vs| StyleRules {
                 width: Some(Tokenized::Literal(Length::Px(dot_px))),

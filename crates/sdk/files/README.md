@@ -75,3 +75,25 @@ and richer directory operations are natural follow-ons behind the same trait.
 - **web (IndexedDB)** — compile-checked for `wasm32`; not browser-run here.
 
 [`FileStore::local_path`]: src/lib.rs
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet (see
+[Verification](#verification) above). Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p files` — round-trip read/write/delete, overwrite, idempotent delete, `list`, `local_path`, unsafe-path (`..` / absolute) rejection
+- [ ] `cargo build -p files --target wasm32-unknown-unknown` — web (IndexedDB) target compiles
+
+**Behavior**
+
+For each platform: `write` a blob, `read` it back **byte-identical**; it
+survives an app restart; `list`/`exists`/`delete` behave; `..`/absolute paths
+are rejected (`FileError::UnsafePath`).
+
+- [ ] **Web** — blobs persist in IndexedDB (keyed by path) across reload; `local_path` returns `None`
+- [ ] **iOS** — blobs persist under the app sandbox's Application Support dir (NSFileManager); `local_path` returns a real path
+- [ ] **Android** — blobs persist under `Context.getFilesDir()/<name>` (JNI); `local_path` returns a real path
+- [ ] **macOS** — blobs persist under `~/Library/Application Support/<name>` (host-tested); `local_path` returns a real path
+- [ ] **Windows / Linux** — blobs persist under `%APPDATA%\<name>` / `$XDG_DATA_HOME`/`~/.local/share`/`<name>`; `local_path` returns a real path

@@ -27,8 +27,8 @@ use std::time::Duration;
 
 use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::{
-    component, effect, ui, Element, IdealystSchema, IntoElement, Reactive, Ref, Signal,
-    StyleApplication, ViewHandle,
+    component, effect, icon, ui, Color, Element, IconData, IdealystSchema, IntoElement, Reactive,
+    Ref, Signal, StyleApplication, Tokenized, ViewHandle,
 };
 
 use idea_theme::extensible::{installed_switch_sheet, ToneRef, VariantRef};
@@ -68,6 +68,10 @@ pub struct SwitchProps {
     pub variant: VariantRef,
     /// Track + thumb scale. Default Md.
     pub size: ControlSize,
+    /// Optional icon shown inside the thumb (e.g. a check/power glyph).
+    /// Tinted with the muted text color so it reads on the white thumb.
+    /// `None` = a plain thumb.
+    pub icon: Option<IconData>,
     /// Optional robot/E2E test id, forwarded to the interactive track
     /// (the pressable that toggles). Only honored when idea-ui's `robot`
     /// feature is on; ignored otherwise.
@@ -83,6 +87,7 @@ impl Default for SwitchProps {
             tone: ToneRef::default(),
             variant: VariantRef::default(),
             size: ControlSize::default(),
+            icon: None,
             test_id: None,
         }
     }
@@ -117,7 +122,22 @@ pub fn Switch(props: &SwitchProps) -> Element {
     });
 
     let thumb_size_key = size_key.clone();
-    let thumb = runtime_core::view(Vec::new())
+    // Optional glyph centered in the thumb (the SwitchThumb sheet centers it),
+    // sized to the thumb and tinted with the ink text color so it reads on the
+    // white thumb in both states.
+    let icon_px = match size {
+        ControlSize::Sm => 9.0,
+        ControlSize::Md => 11.0,
+        ControlSize::Lg => 14.0,
+    };
+    let thumb_kids: Vec<Element> = match props.icon {
+        Some(data) => vec![icon(data)
+            .size(icon_px)
+            .color(|| Tokenized::token("color-text", Color("#1a1a1f".into())).resolve())
+            .into_element()],
+        None => Vec::new(),
+    };
+    let thumb = runtime_core::view(thumb_kids)
         .with_style(move || {
             StyleApplication::new(SwitchThumb::sheet()).with("size", thumb_size_key.clone())
         })

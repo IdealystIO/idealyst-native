@@ -433,13 +433,14 @@ fn macros_table_documents_effect_and_signal() {
     assert_eq!(effect.module_path, "runtime_core");
     assert_eq!(effect.kind, mcp_catalog::MacroKind::Reactive);
     assert!(
-        effect.expansion.contains("Effect::new"),
+        effect.expansion.contains("Effect::scoped"),
         "effect! expansion should name the primitive it lowers to: {:?}",
         effect.expansion,
     );
     assert!(
-        effect.docs.to_lowercase().contains("recommend"),
-        "effect! docs should steer authors to it over a bare Effect::new",
+        effect.docs.contains("watch"),
+        "effect! docs should document the out-of-tree counterpart (`watch`) so authors \
+         don't fall back to the sealed `Effect::new`",
     );
 
     // A trailing `!` resolves the same entry — `list_macros` consumers

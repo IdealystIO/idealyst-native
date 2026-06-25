@@ -86,3 +86,31 @@ author-facing.
 [`web-navigator-helpers`]: ../web-navigator-helpers
 [`ios-navigator-helpers`]: ../ios-navigator-helpers
 [`android-navigator-helpers`]: ../android-navigator-helpers
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. The author
+tree is uniform; the navigator owns the screen-swap while the visible tab bar is
+author chrome (see the table above). Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p tab-navigator --features runtime-server` — the
+  runtime-server recording handler emits the right `Select` wire commands
+  (`tests/recording.rs`, host-side only)
+- [ ] `cargo test -p tab-navigator` — SSR first-paint markup from the
+  backend-neutral `chrome` handler (`tests/ssr.rs`)
+- [ ] `cargo build -p tab-navigator --target wasm32-unknown-unknown` — web
+  target
+
+**Behavior**
+- [ ] **Web** — selecting a tab swaps the active screen (`Select` → `Replace`,
+  no URL-stack growth); the author tab bar wired to `handle.select(...)` reflects
+  the active tab; badges render.
+- [ ] **iOS** — `Select` swaps the single body child; author tab bar drives
+  selection; at most one screen visible per `MountPolicy`. ⚠️ not yet
+  device-confirmed.
+- [ ] **Android** — `FrameLayout` swaps its active-screen child on `Select`. ⚠️
+  not yet device-confirmed.
+- [ ] **macOS** — tab bar (top/bottom per `TabPlacement`) + outlet swaps on
+  `Select` (no animated transition). ⚠️ not yet device-confirmed.

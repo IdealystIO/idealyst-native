@@ -90,4 +90,24 @@ Imperative ops go through the bound `Ref<VideoHandle>`: `play()`,
 `pause()`, `seek(seconds)`. Bind a handle with `.bind(my_ref.clone())`
 on the value `Video(..)` returns.
 
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it. This is an `Element::External` display primitive, so
+verification is mostly interactive (register the renderer at bootstrap, then
+exercise a `Video` in a running app).
+
+**Automated**
+- [ ] `cargo test -p video` — portable logic (`source` builders, prop defaults)
+- [ ] `cargo build -p video --target wasm32-unknown-unknown` — web target
+
+**Behavior**
+- [ ] **Web** — a `url(..)` source plays in a `<video>`; a `stream(..)` source binds the live `MediaStream` via `.srcObject` (zero-copy); reactive `source` swaps the clip; `autoplay`/`controls`/`loop_playback` and imperative `play`/`pause`/`seek` work.
+- [ ] **iOS** — ⚠️ not yet device-confirmed: a `url(..)` source plays via `AVPlayer`/`AVPlayerLayer`; reactive `src` swap, `controls`, `loop_playback`, and imperative `play`/`pause`/`seek` work; live `stream` source is the GPU/compositing phase (unwired).
+- [ ] **Android** — ⚠️ not yet device-confirmed: a `url(..)` source plays via `VideoView`; reactive `src`, `play`/`pause`/`seek` work. Note `controls` and `loop_playback` are **not yet wired** (need a `MediaController`/`OnCompletionListener` shim); live `stream` source is the GPU/compositing phase (unwired).
+- [ ] **Other (wgpu desktop / terminal)** — renders the framework's `External` "not supported" placeholder.
+
+No OS permission of its own — playback uses the platform's native player.
+
 [`src`]: src/lib.rs

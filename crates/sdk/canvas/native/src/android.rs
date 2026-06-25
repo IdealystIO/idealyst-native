@@ -35,7 +35,7 @@ use canvas_core::{
     Paint, PaintKind, Path, PathSeg, Scene, TextureLayer,
 };
 use std::collections::HashMap;
-use runtime_core::{after_ms_scoped, Effect};
+use runtime_core::{after_ms_scoped, effect};
 
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::sys::{jfloat, jint};
@@ -111,16 +111,18 @@ fn build_canvas(props: &Rc<CanvasProps>, b: &mut AndroidBackend) -> GlobalRef {
     };
 
     // Reactive repaint: re-record the Picture whenever a signal the draw
-    // closure reads changes (animation re-records every frame).
-    let _effect = Effect::new({
+    // closure reads changes (animation re-records every frame). Built in the
+    // canvas walker, so the component scope owns it. Clones hoisted so the
+    // macro's `move` captures them (cloned once).
+    {
         let props = props.clone();
         let cell = cell.clone();
         let render = render.clone();
-        move || {
+        effect!({
             *cell.borrow_mut() = canvas_core::paint_scene(&props);
             render();
-        }
-    });
+        });
+    }
 
     // The reactive effect first runs at mount, before the view is laid out
     // (size 0 → render no-ops). Nudge a few renders over the next ~300ms so

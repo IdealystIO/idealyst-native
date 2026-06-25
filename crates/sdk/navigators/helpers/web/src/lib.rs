@@ -1119,12 +1119,14 @@ pub fn create_drawer(
         // below only flips the `is_open` signal; without this effect
         // nothing reflects it to the DOM, so on narrow viewports the
         // drawer never opens (the pinned-wide layout never needs it,
-        // which is why this gap went unnoticed). The handle is moved into
-        // the dispatcher closure — which lives for the navigator's
-        // lifetime — to keep the effect alive.
+        // which is why this gap went unnoticed). This runs in the
+        // navigator's build callback (no guaranteed render scope), so it's a
+        // caller-owned `watch`; its `Subscription` is moved into the
+        // dispatcher closure — which lives for the navigator's lifetime — to
+        // keep the effect alive.
         let drawer_open_effect = {
             let container_node = instance.borrow().container.clone();
-            runtime_core::Effect::new(move || {
+            runtime_core::watch(move || {
                 let open = is_open.get();
                 if let Some(el) = container_node.dyn_ref::<web_sys::Element>() {
                     set_class_present(el, "drawer-open", open);

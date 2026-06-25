@@ -125,6 +125,19 @@ members = [
     "crates/sdk/i18n",
     "crates/sdk/i18n/macros",
 
+    # SDK — device / platform-integration capability crates (Tier 1).
+    # `permissions` is the shared runtime-grant substrate the others
+    # (notifications, location) build on.
+    "crates/sdk/permissions",
+    "crates/sdk/notifications",
+    "crates/sdk/clipboard",
+    "crates/sdk/location",
+    "crates/sdk/share",
+    "crates/sdk/deep-link",
+    "crates/sdk/connectivity",
+    "crates/sdk/haptics",
+    "crates/sdk/audio",
+
     # API — full-stack server-functions layer (server fns, transport,
     # auth/middleware, storage). See crates/api/server/DESIGN.md.
     "crates/api/server",
@@ -220,6 +233,8 @@ members = [
     "examples/todo-sync-demo",
     "examples/graphql-demo",
     "examples/dnd-demo",
+    "examples/kanban-demo",
+    "examples/sortable-demo",
     "benchmark",
     "benchmark/idealyst-native/wasm",
     "benchmark/idealyst-native-anim/wasm",
@@ -371,6 +386,19 @@ screen-recorder = { path = "crates/sdk/screen-recorder" }
 files = { path = "crates/sdk/files" }
 i18n = { path = "crates/sdk/i18n" }
 i18n-macros = { path = "crates/sdk/i18n/macros" }
+# Device / platform-integration capability SDKs (Tier 1). `permissions` is
+# the shared runtime-grant substrate; capability SDKs that prompt the user
+# (notifications, location, camera, microphone, …) depend on it rather than
+# re-implementing an OS grant flow.
+permissions = { path = "crates/sdk/permissions" }
+notifications = { path = "crates/sdk/notifications" }
+clipboard = { path = "crates/sdk/clipboard" }
+location = { path = "crates/sdk/location" }
+share = { path = "crates/sdk/share" }
+deep-link = { path = "crates/sdk/deep-link" }
+connectivity = { path = "crates/sdk/connectivity" }
+haptics = { path = "crates/sdk/haptics" }
+audio = { path = "crates/sdk/audio" }
 server = { path = "crates/api/server" }
 server-macros = { path = "crates/api/server-macros" }
 stack-navigator = { path = "crates/sdk/navigators/stack" }

@@ -210,3 +210,31 @@ layers on top of the v1 primitives without reworking them.
 
 [`Transport`]: https://docs.rs/sync
 [`storage`]: ../storage
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Most of the
+correctness model is platform-agnostic and covered by the automated suite; the
+per-platform checks exercise the real storage backend and (on web) leader
+election. Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p sync` — protocol state machine, outbox, cursor/snapshot/delta, idempotency, conflict surfacing, `KvSyncStore`/`MemorySyncStore` conformance
+- [ ] `cargo test -p sync --test crash_recovery` — mid-operation crash ordering invariants (outbox-before-ack, record-state-before-pop, record-data-before-cursor)
+- [ ] `cargo build -p sync --target wasm32-unknown-unknown` — web (`SharedPartition` / `navigator.locks` / `BroadcastChannel`) target compiles
+
+**Behavior**
+
+For each platform: offline writes queue in the durable outbox; on reconnect
+`sync_now()` flushes them (each `Op` carries an idempotency key, so retries are
+safe) and applies the server's snapshot/delta; killing the app mid-write and
+relaunching replays cleanly (crash-safe); conflicts surface to `conflicts()`
+rather than silently dropping a side. `entries()` badges settle
+Pending → Synced.
+
+- [ ] **Web** — `SharedPartition` leader election (`navigator.locks`): two tabs share one origin, exactly one owns the engine, the other proxies over `BroadcastChannel`, leader-tab close promotes a follower; persistence via `localStorage`
+- [ ] **iOS** — plain `Partition` over `UserDefaults`-backed `KvSyncStore`; offline/reconnect/crash-safe round-trip
+- [ ] **Android** — plain `Partition` over `SharedPreferences`-backed `KvSyncStore`; offline/reconnect/crash-safe round-trip
+- [ ] **macOS** — plain `Partition` over `UserDefaults`/file-backed `KvSyncStore`; offline/reconnect/crash-safe round-trip
+- [ ] **Windows / Linux** — plain `Partition` over the file-backed `KvSyncStore`; offline/reconnect/crash-safe round-trip

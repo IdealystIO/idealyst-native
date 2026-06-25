@@ -69,58 +69,35 @@ fn java_vm() -> Result<JavaVM, MicError> {
         .map_err(|e| MicError::Backend(format!("invalid JavaVM pointer: {e}")))
 }
 
+/// Request the RECORD_AUDIO grant, delegated to the shared `permissions` SDK
+/// (which owns the `checkSelfPermission` / `Activity.requestPermissions` grant
+/// flow + the `onRequestPermissionsResult` forwarding seam). Until the host
+/// forwards the result, `permissions::request` reports the not-yet-granted
+/// state, which maps to `PermissionDenied` — the caller re-invokes `open` once
+/// granted. Same observable posture as before; the grant code now lives in one
+/// place. The reader thread still runs its own `checkSelfPermission` fast-fail
+/// gate (a capture-path check) below.
 pub(crate) async fn request_permission() -> Result<(), MicError> {
-    let vm = java_vm()?;
-    let mut env = vm
-        .attach_current_thread()
-        .map_err(|e| MicError::Backend(format!("JNI attach failed: {e}")))?;
-
-    let ctx = ndk_context::android_context();
-    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
-
-    let granted = check_self_permission(&mut env, &activity)?;
-    if granted {
-        return Ok(());
+    let status = permissions::request(permissions::Permission::Microphone).await;
+    if status.is_usable() {
+        Ok(())
+    } else {
+        Err(MicError::PermissionDenied)
     }
-
-    // Not yet granted: surface the runtime dialog. Its result arrives in
-    // the Activity's `onRequestPermissionsResult`, which this SDK doesn't
-    // hook — so we fire the request and report the current (not-granted)
-    // state. The caller re-checks (or retries `open`) after the user
-    // responds. Documented in the crate README.
-    let perm = env
-        .new_string(RECORD_AUDIO)
-        .map_err(map_jni)?;
-    let arr = env
-        .new_object_array(1, "java/lang/String", &perm)
-        .map_err(map_jni)?;
-    let _ = env.call_method(
-        &activity,
-        "requestPermissions",
-        "([Ljava/lang/String;I)V",
-        &[JValue::Object(&JObject::from(arr)), JValue::Int(0)],
-    );
-    Err(MicError::PermissionDenied)
 }
 
-/// Passive permission read via `checkSelfPermission` (no prompt). It only
-/// distinguishes granted vs not-granted, and a not-granted result may be either
-/// undetermined or denied — so we report `Granted` or `Undetermined` (the safe
-/// "may still prompt" state), never a definitive `Denied`. Any JNI failure →
-/// [`MicPermission::Unknown`](crate::MicPermission::Unknown).
+/// Passive permission read, delegated to the shared `permissions` SDK. Maps
+/// its [`PermissionStatus`](permissions::PermissionStatus) onto microphone's
+/// [`MicPermission`](crate::MicPermission); `Unsupported` (no passive query) →
+/// `Unknown`, preserving the prior contract.
 pub(crate) async fn permission_status() -> crate::MicPermission {
-    let Ok(vm) = java_vm() else {
-        return crate::MicPermission::Unknown;
-    };
-    let Ok(mut env) = vm.attach_current_thread() else {
-        return crate::MicPermission::Unknown;
-    };
-    let ctx = ndk_context::android_context();
-    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
-    match check_self_permission(&mut env, &activity) {
-        Ok(true) => crate::MicPermission::Granted,
-        Ok(false) => crate::MicPermission::Undetermined,
-        Err(_) => crate::MicPermission::Unknown,
+    match permissions::status(permissions::Permission::Microphone).await {
+        permissions::PermissionStatus::Granted => crate::MicPermission::Granted,
+        permissions::PermissionStatus::Denied | permissions::PermissionStatus::Restricted => {
+            crate::MicPermission::Denied
+        }
+        permissions::PermissionStatus::Undetermined => crate::MicPermission::Undetermined,
+        permissions::PermissionStatus::Unsupported => crate::MicPermission::Unknown,
     }
 }
 

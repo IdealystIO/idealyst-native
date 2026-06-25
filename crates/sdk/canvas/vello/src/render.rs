@@ -25,7 +25,7 @@ use canvas_core::{
 use media_stream::FrameWriter;
 use runtime_core::accessibility::AccessibilityProps;
 use runtime_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
-use runtime_core::{Backend, Effect, RegisterExternal};
+use runtime_core::{effect, Backend, RegisterExternal};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -121,17 +121,19 @@ fn build_canvas<B: Backend>(props: &Rc<CanvasProps>, backend: &mut B) -> B::Node
     // Reactive repaint: re-paint the scene and redraw whenever a signal the
     // draw closure reads changes (animation redraws every frame). On the
     // first run the surface isn't ready yet; on_ready does the first draw.
-    let _effect = Effect::new({
+    // Built in the canvas walker, so the component scope owns it. The clones
+    // are hoisted so the macro's `move` captures them (cloned once).
+    {
         let props = props.clone();
         let scene_cell = scene_cell.clone();
         let state_cell = state_cell.clone();
-        move || {
+        effect!({
             *scene_cell.borrow_mut() = paint_scene(&props);
             if let Some(state) = state_cell.borrow_mut().as_mut() {
                 state.render(&scene_cell.borrow());
             }
-        }
-    });
+        });
+    }
 
     let on_ready = {
         let scene_cell = scene_cell.clone();
@@ -343,6 +345,120 @@ fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::T
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
+}
+
+/// A headless render result: tightly-packed, top-down `RGBA8`
+/// (`width * height * 4` bytes).
+pub struct RenderedImage {
+    /// Tightly-packed top-down RGBA8 pixels.
+    pub data: Vec<u8>,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+}
+
+/// Render a canvas [`Scene`](canvas_core::Scene) to RGBA8 pixels **offscreen** —
+/// no window, no display. This is the headless export path (server-side
+/// thumbnails, PDF/image export, OG images): the same vello pipeline the live
+/// canvas uses, pointed at an offscreen texture instead of a surface.
+///
+/// Acquires a GPU adapter, falling back to a **software** adapter (Mesa lavapipe
+/// / DX WARP) when no GPU is present, so it runs on a headless server. Fonts and
+/// images travel inside the scene's ops (`FontResource` / `ImageSource`), so the
+/// result is self-contained — no system font / asset loading.
+///
+/// **Blocking** (drives wgpu via `pollster`): call it off the async/request path
+/// — a blocking task or a background worker. Returns `None` if no usable adapter
+/// / device is available or the render fails.
+pub fn render_to_rgba(scene: &CanvasScene, width: u32, height: u32) -> Option<RenderedImage> {
+    let (w, h) = (width.max(1), height.max(1));
+
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all(),
+        flags: wgpu::InstanceFlags::default(),
+        memory_budget_thresholds: Default::default(),
+        backend_options: wgpu::BackendOptions::default(),
+        display: None,
+    });
+    let request = |fallback: bool| {
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: fallback,
+            compatible_surface: None,
+        }))
+    };
+    // Real GPU first; software adapter (lavapipe / WARP) if there's none.
+    let adapter = request(false).or_else(|_| request(true)).ok()?;
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("canvas-vello-export"),
+        ..Default::default()
+    }))
+    .ok()?;
+    let mut renderer = Renderer::new(
+        &device,
+        RendererOptions {
+            use_cpu: false,
+            antialiasing_support: AaSupport::area_only(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        },
+    )
+    .ok()?;
+
+    let mut vs = VelloScene::new();
+    encode_scene(scene.ops(), &mut vs, Affine::scale(1.0));
+    let (target, target_view) = make_target(&device, w, h);
+    let params = RenderParams {
+        base_color: Color::from_rgba8(0, 0, 0, 0),
+        width: w,
+        height: h,
+        antialiasing_method: AaConfig::Area,
+    };
+    renderer
+        .render_to_texture(&device, &queue, &vs, &target_view, &params)
+        .ok()?;
+
+    // Read back. `bytes_per_row` must be 256-aligned, so the copy is padded;
+    // strip the per-row padding to return a tight `w*4*h` buffer.
+    let unpadded = (w * 4) as usize;
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+    let padded = unpadded.div_ceil(align) * align;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("canvas-vello-export-readback"),
+        size: (padded * h as usize) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &target,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded as u32),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    queue.submit([enc.finish()]);
+    buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+
+    let mapped = buffer.slice(..).get_mapped_range();
+    let mut data = Vec::with_capacity(unpadded * h as usize);
+    for row in 0..h as usize {
+        let start = row * padded;
+        data.extend_from_slice(&mapped[start..start + unpadded]);
+    }
+    Some(RenderedImage { data, width: w, height: h })
 }
 
 // Scene classification (`ScenePlan` / `plan_scene`) lives in `crate::plan`, shared
@@ -2188,6 +2304,31 @@ mod tests {
         eprintln!("GPU raster   : min {g_min:6.2}  median {g_med:6.2}  mean {g_mean:6.2} ms/frame");
         eprintln!("CPU raster   : min {c_min:6.2}  median {c_med:6.2}  mean {c_mean:6.2} ms/frame");
         eprintln!("GPU speedup  : {:.1}x (median)\n", c_med / g_med);
+    }
+
+    /// The PUBLIC headless export (`super::render_to_rgba`). Uses a non-square
+    /// size whose row stride (100*4 = 400) is NOT 256-aligned, so it exercises
+    /// the read-back padding strip. Fills the whole frame and checks a center
+    /// pixel + the tight buffer length.
+    #[test]
+    fn public_render_to_rgba_exports_unaligned_size() {
+        let mut cs = CanvasScene::new();
+        cs.path().add_path(Path::rect(0.0, 0.0, 100.0, 60.0));
+        cs.fill(Paint::solid(CanvasColor::new(20, 130, 240, 255)));
+
+        let Some(img) = super::render_to_rgba(&cs, 100, 60) else {
+            eprintln!("skip: no GPU/software adapter");
+            return;
+        };
+        assert_eq!((img.width, img.height), (100, 60));
+        assert_eq!(img.data.len(), 100 * 60 * 4);
+        let i = ((30 * 100 + 50) * 4) as usize; // center-ish, RGBA8
+        let c = [img.data[i], img.data[i + 1], img.data[i + 2], img.data[i + 3]];
+        let near = |v: u8, t: i32| (v as i32 - t).abs() <= 8;
+        assert!(
+            near(c[0], 20) && near(c[1], 130) && near(c[2], 240) && c[3] > 200,
+            "center px should be ~(20,130,240,255), got {c:?}"
+        );
     }
 }
 

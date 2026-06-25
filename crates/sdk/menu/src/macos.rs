@@ -43,9 +43,9 @@ pub fn install(backend: &mut MacosBackend, spec: MenuBarSpec) {
 }
 
 /// Reactive variant: takes a closure that returns a fresh
-/// `MenuBarSpec` each time it's invoked. Wraps the call in
-/// `runtime_core::Effect::new(...)` so any signal the closure reads
-/// re-fires the closure (and re-installs the menu bar) on change.
+/// `MenuBarSpec` each time it's invoked. Wraps the call in a
+/// caller-owned `runtime_core::watch(...)` so any signal the closure
+/// reads re-fires the closure (and re-installs the menu bar) on change.
 ///
 /// On macOS the re-fire re-acquires `&mut MacosBackend` through the
 /// global self-handle (`backend_macos::with_global_backend`), so the
@@ -90,18 +90,17 @@ where
     // (host installs it AFTER `register_extensions`), so the
     // closure's FIRST call would no-op — but the initial install
     // already happened synchronously above, so skipping the first
-    // fire is the right behavior anyway. Effect::new always invokes
+    // fire is the right behavior anyway. `watch` always invokes
     // its closure once synchronously to record dependencies, so a
     // per-effect cell tracks that first invocation and skips
     // re-install on it (while still calling spec_fn so the dep set
     // captures every signal it reads).
     let first_fire = std::cell::Cell::new(true);
     // `install_reactive` runs outside any reactive scope (host bootstrap),
-    // so this effect owns its own slot and would be cancelled when the
-    // handle drops at end-of-fn. `persist()` pins it for the app lifetime
-    // (adopt-or-pin: a no-op had a scope been active). Bounded — at most
-    // one per `install_reactive` call.
-    runtime_core::Effect::new(move || {
+    // so this is a caller-owned `watch`. `.leak()` pins it for the app
+    // lifetime — the menu observer lives as long as the process. Bounded:
+    // at most one per `install_reactive` call.
+    runtime_core::watch(move || {
         let fresh_spec = spec_fn();
         if first_fire.get() {
             first_fire.set(false);
@@ -111,7 +110,7 @@ where
             install_impl(backend, fresh_spec);
         });
     })
-    .persist();
+    .leak();
 }
 
 fn install_impl(backend: &mut MacosBackend, spec: MenuBarSpec) {

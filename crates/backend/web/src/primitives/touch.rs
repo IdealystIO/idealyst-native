@@ -23,7 +23,7 @@ use runtime_core::{
     TouchPoint,
 };
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -64,11 +64,24 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
     let active: Rc<RefCell<HashSet<i32>>> = Rc::new(RefCell::new(HashSet::new()));
     let captured: Rc<RefCell<HashSet<i32>>> = Rc::new(RefCell::new(HashSet::new()));
 
+    // Element-local coordinates are `client - element_origin`. Reading that
+    // origin (`getBoundingClientRect`) forces a synchronous layout flush, and
+    // doing it on every `pointermove` — the drag hot path — is the dominant
+    // cost of dragging on web (it stutters *any* `on_touch` gesture, not just
+    // DnD). The origin only changes on real layout (scroll / resize / reflow),
+    // NOT from the CSS transform a drag applies to the element itself — in fact
+    // reading the live, transformed rect each move makes view-local position a
+    // *moving* frame that fights the drag. So we sample the origin ONCE at
+    // `pointerdown` and reuse it for the gesture's moves. Keyed by pointer id;
+    // dropped on up/cancel.
+    let origins: Rc<RefCell<HashMap<i32, (f64, f64)>>> = Rc::new(RefCell::new(HashMap::new()));
+
     // pointerdown — Began.
     {
         let handler = handler.clone();
         let active = active.clone();
         let captured = captured.clone();
+        let origins = origins.clone();
         let element_for_capture = element.clone();
         let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
             // Only the PRIMARY button begins a gesture. A secondary/middle press
@@ -85,7 +98,9 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 alt: ev.alt_key(),
                 meta: ev.meta_key(),
             });
-            let local = local_position(&ev);
+            // Sample the element origin once, here; reused for every move.
+            let origin = element_origin(&ev);
+            let local = local_from(&ev, origin);
             let touch_id = TouchId(ev.pointer_id() as u64);
             let te = TouchEvent {
                 id: touch_id,
@@ -113,6 +128,9 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 // Began (no stop) still bubbles up to retry one level higher.
                 ev.stop_propagation();
                 active.borrow_mut().insert(ev.pointer_id());
+                // Cache the origin for this gesture's moves (mirrors `active`,
+                // so it's cleaned up by the same up/cancel path).
+                origins.borrow_mut().insert(ev.pointer_id(), origin);
                 if response.claim {
                     capture_pointer(&element_for_capture, ev.pointer_id(), &captured);
                 }
@@ -131,6 +149,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
         let handler = handler.clone();
         let active = active.clone();
         let captured = captured.clone();
+        let origins = origins.clone();
         let element_for_capture = element.clone();
         let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
             let pid = ev.pointer_id();
@@ -143,7 +162,13 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
                 alt: ev.alt_key(),
                 meta: ev.meta_key(),
             });
-            let local = local_position(&ev);
+            // Hot path: use the origin cached at pointerdown — NO layout read.
+            let origin = origins
+                .borrow()
+                .get(&pid)
+                .copied()
+                .unwrap_or_else(|| element_origin(&ev));
+            let local = local_from(&ev, origin);
             let touch_id = TouchId(pid as u64);
             let te = TouchEvent {
                 id: touch_id,
@@ -182,13 +207,18 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
         let handler = handler.clone();
         let active = active.clone();
         let captured = captured.clone();
+        let origins = origins.clone();
         let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
             let pid = ev.pointer_id();
             if !active.borrow_mut().remove(&pid) {
                 return;
             }
             captured.borrow_mut().remove(&pid);
-            let local = local_position(&ev);
+            let origin = origins
+                .borrow_mut()
+                .remove(&pid)
+                .unwrap_or_else(|| element_origin(&ev));
+            let local = local_from(&ev, origin);
             let touch_id = TouchId(pid as u64);
             let te = TouchEvent {
                 id: touch_id,
@@ -207,6 +237,22 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
             "pointerup",
             closure.as_ref().unchecked_ref(),
         );
+        // Safety net: also listen on the window. If `setPointerCapture` didn't
+        // hold, or the release landed off this element (over another element —
+        // the now-`pointer-events:none` drag ghost lets the release fall to
+        // whatever's beneath) or outside the window entirely, the element-level
+        // `pointerup` never fires and the gesture would be stuck "active"
+        // forever (the dragged element never gets its `Ended`). This catches the
+        // release for THIS element's still-active pointers. When capture DID
+        // hold, the element handler runs first, removes the pointer from
+        // `active`, and `stop_propagation`s — so this fires as a no-op (the
+        // `active` check returns early) and never double-delivers.
+        if let Some(win) = web_sys::window() {
+            let _ = win.add_event_listener_with_callback(
+                "pointerup",
+                closure.as_ref().unchecked_ref(),
+            );
+        }
         b._touch_closures
             .push(closure.into_js_value().unchecked_into());
     }
@@ -216,13 +262,18 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
         let handler = handler.clone();
         let active = active.clone();
         let captured = captured.clone();
+        let origins = origins.clone();
         let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
             let pid = ev.pointer_id();
             if !active.borrow_mut().remove(&pid) {
                 return;
             }
             captured.borrow_mut().remove(&pid);
-            let local = local_position(&ev);
+            let origin = origins
+                .borrow_mut()
+                .remove(&pid)
+                .unwrap_or_else(|| element_origin(&ev));
+            let local = local_from(&ev, origin);
             let touch_id = TouchId(pid as u64);
             let te = TouchEvent {
                 id: touch_id,
@@ -241,6 +292,14 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
             "pointercancel",
             closure.as_ref().unchecked_ref(),
         );
+        // Window safety net — same rationale as `pointerup` above: never miss a
+        // cancel for an active pointer, even if it's delivered off this element.
+        if let Some(win) = web_sys::window() {
+            let _ = win.add_event_listener_with_callback(
+                "pointercancel",
+                closure.as_ref().unchecked_ref(),
+            );
+        }
         b._touch_closures
             .push(closure.into_js_value().unchecked_into());
     }
@@ -261,23 +320,30 @@ pub(crate) fn claim(_b: &mut WebBackend, _node: &Node, _touch_id: TouchId) {
     // No-op on web; see doc comment.
 }
 
-/// Translate `client` coordinates (viewport-relative) into element-
-/// local coordinates by subtracting the element's bounding rect.
-/// Falls back to client coordinates if the cast fails — better to
-/// hand the handler a same-frame approximation than nothing.
-fn local_position(ev: &PointerEvent) -> (f32, f32) {
-    let target = match ev.current_target() {
-        Some(t) => t,
-        None => return (ev.client_x() as f32, ev.client_y() as f32),
+/// The listener element's top-left in viewport (client) coordinates.
+/// **This is the one `getBoundingClientRect` call** — a forced synchronous
+/// layout flush — so it is made once per gesture (at `pointerdown`) and the
+/// result is cached for the gesture's moves. Returns `(0, 0)` if the target
+/// isn't an element, which makes [`local_from`] hand back raw client
+/// coordinates — a same-frame approximation, better than nothing.
+fn element_origin(ev: &PointerEvent) -> (f64, f64) {
+    let Some(target) = ev.current_target() else {
+        return (0.0, 0.0);
     };
     let el: web_sys::Element = match target.dyn_into() {
         Ok(e) => e,
-        Err(_) => return (ev.client_x() as f32, ev.client_y() as f32),
+        Err(_) => return (0.0, 0.0),
     };
     let rect = el.get_bounding_client_rect();
+    (rect.x(), rect.y())
+}
+
+/// Element-local position = client position − element origin. Pure arithmetic,
+/// no layout read.
+fn local_from(ev: &PointerEvent, origin: (f64, f64)) -> (f32, f32) {
     (
-        ev.client_x() as f32 - rect.x() as f32,
-        ev.client_y() as f32 - rect.y() as f32,
+        ev.client_x() as f32 - origin.0 as f32,
+        ev.client_y() as f32 - origin.1 as f32,
     )
 }
 

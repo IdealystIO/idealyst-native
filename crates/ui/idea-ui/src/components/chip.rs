@@ -109,8 +109,11 @@ pub fn Chip(props: &ChipProps) -> Element {
         variant::Ghost.key()
     };
     let appearance_key = format!("{}_{}", tone.key(), variant_key);
-    let container_style =
-        StyleApplication::new(installed_tag_sheet()).with("appearance", appearance_key);
+    // `hug` keeps the chip sized to content instead of stretching to a flex
+    // parent's cross axis (see `components::hug_self`).
+    let container_style = StyleApplication::new(installed_tag_sheet())
+        .with("appearance", appearance_key)
+        .with_computed("hug", crate::components::hug_self);
 
     let label_style = TagLabel();
     let label_el: Element = ui! { text(style = label_style) { label } };

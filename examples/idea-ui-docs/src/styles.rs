@@ -7,7 +7,8 @@
 
 use runtime_core::stylesheet;
 use runtime_core::{
-    AlignItems, Color, FlexDirection, JustifyContent, Length, Overflow, TextAlign, Tokenized,
+    AlignItems, Color, FlexDirection, FontWeight, JustifyContent, Length, Overflow, TextAlign,
+    TextTransform, Tokenized,
 };
 
 // ---- Page-level scroll surface --------------------------------------------
@@ -381,14 +382,389 @@ stylesheet! {
         base(_t) {
             background: Tokenized::token(
                 "intent-primary-soft-bg",
-                Color("rgba(91, 108, 255, 0.10)".into()),
+                Color("#eef2ff".into()),
             ),
             border_left_width: 3.0,
-            border_left_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+            border_left_color: Tokenized::token("intent-primary-fg", Color("#4f46e5".into())),
             border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             padding: 16.0,
             gap: 6.0,
             flex_direction: FlexDirection::Column,
+        }
+    }
+}
+
+// ===========================================================================
+// Design chrome — header bar, segmented theme toggle, sidebar search,
+// status dots, group overline, status badge, Usage label. These mirror
+// the idea-ui reference design.
+// ===========================================================================
+
+// ---- Header bar (top slot) -------------------------------------------------
+
+stylesheet! {
+    pub DocHeader<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            height: Length::Px(58.0),
+            padding_horizontal: 22.0,
+            gap: 16.0,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_bottom_width: 1.0,
+            border_bottom_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_bottom_color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub HeaderBrand<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: 11.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub LogoBox<()> {
+        base(_t) {
+            width: Length::Px(27.0),
+            height: Length::Px(27.0),
+            border_radius: 8.0,
+            background: Tokenized::token("intent-primary-solid-bg", Color("#4f46e5".into())),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+        }
+    }
+}
+
+stylesheet! {
+    pub LogoGlyph<()> {
+        base(_t) {
+            color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
+            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            font_size: 14.0,
+            font_weight: FontWeight::Bold,
+        }
+    }
+}
+
+stylesheet! {
+    pub BrandName<()> {
+        base(_t) {
+            color: Tokenized::token("color-text", Color("#0f172a".into())),
+            font_size: 15.0,
+            font_weight: FontWeight::Bold,
+        }
+        transitions { color: 250ms EaseInOut, }
+    }
+}
+
+stylesheet! {
+    pub VersionPill<()> {
+        base(_t) {
+            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            font_size: 11.0,
+            font_weight: FontWeight::Medium,
+            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            padding_horizontal: 8.0,
+            padding_vertical: 2.0,
+            border_radius: 999.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub HeaderMono<()> {
+        base(_t) {
+            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            font_size: 12.0,
+            font_weight: FontWeight::Medium,
+            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+        }
+    }
+}
+
+// A flex-grow spacer that pushes the trailing header content right.
+stylesheet! {
+    pub HeaderSpacer<()> {
+        base(_t) {
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+        }
+    }
+}
+
+// ---- Segmented Light/Dark toggle ------------------------------------------
+
+stylesheet! {
+    pub SegToggle<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_radius: 999.0,
+            padding: 3.0,
+            gap: 2.0,
+        }
+        transitions { background: 250ms EaseInOut, }
+    }
+}
+
+stylesheet! {
+    pub SegBtn<()> {
+        base(_t) {
+            padding_horizontal: 14.0,
+            padding_vertical: 5.0,
+            border_radius: 999.0,
+            background: Color("transparent".into()),
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            }
+        }
+        transitions { background: 150ms EaseOut, }
+    }
+}
+
+stylesheet! {
+    pub SegBtnText<()> {
+        base(_t) {
+            font_size: 13.0,
+            text_align: TextAlign::Center,
+            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                color: Tokenized::token("color-text", Color("#0f172a".into())),
+                font_weight: FontWeight::SemiBold,
+            }
+        }
+        transitions { color: 150ms EaseOut, }
+    }
+}
+
+// ---- Sidebar search --------------------------------------------------------
+
+stylesheet! {
+    pub SearchInput<()> {
+        base(_t) {
+            width: Length::pct(100.0),
+            padding_horizontal: 12.0,
+            padding_vertical: 8.0,
+            font_size: 13.0,
+            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_radius: 8.0,
+            color: Tokenized::token("color-text", Color("#0f172a".into())),
+            margin_bottom: 12.0,
+        }
+        transitions { background: 250ms EaseInOut, border_color: 250ms EaseInOut, }
+    }
+}
+
+// ---- Sidebar nav item (row: label + status dot) ---------------------------
+
+stylesheet! {
+    pub NavItem<()> {
+        base(_t) {
+            // Span the sidebar width so `space-between` pushes the status dot
+            // to the right edge; vertically center the label + dot.
+            width: Length::pct(100.0),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            padding_vertical: 7.0,
+            padding_horizontal: 11.0,
+            border_radius: 8.0,
+            background: Color("transparent".into()),
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                background: Tokenized::token("intent-primary-soft-bg", Color("#eef2ff".into())),
+            }
+        }
+        transitions { background: 150ms EaseOut, }
+    }
+}
+
+stylesheet! {
+    pub NavDot<()> {
+        base(_t) {
+            width: Length::Px(6.0),
+            height: Length::Px(6.0),
+            border_radius: 999.0,
+            background: Tokenized::token("color-border-strong", Color("#94a3b8".into())),
+        }
+        // "ready"/Detailed entries get a green dot; Preview keep the base grey.
+        variant ready {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                background: Tokenized::token("intent-success-fg", Color("#16a34a".into())),
+            }
+        }
+    }
+}
+
+// ---- Page frame: group overline, status badge, Usage label ----------------
+
+stylesheet! {
+    pub GroupOverline<()> {
+        base(_t) {
+            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            font_size: 11.0,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: 1.3,
+            text_transform: TextTransform::Uppercase,
+            color: Tokenized::token("intent-primary-fg", Color("#4f46e5".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub TitleRow<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: 14.0,
+            flex_wrap: runtime_core::FlexWrap::Wrap,
+        }
+    }
+}
+
+stylesheet! {
+    pub StatusBadge<()> {
+        base(_t) {
+            padding_horizontal: 10.0,
+            padding_vertical: 4.0,
+            border_radius: 999.0,
+            border_width: 1.0,
+            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+        }
+        variant detailed {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                background: Tokenized::token("intent-success-soft-bg", Color("#f0fdf4".into())),
+                border_color: Tokenized::token("intent-success-border", Color("#bbf7d0".into())),
+            }
+        }
+    }
+}
+
+stylesheet! {
+    pub StatusBadgeText<()> {
+        base(_t) {
+            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            font_size: 11.0,
+            font_weight: FontWeight::SemiBold,
+            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+        }
+        variant detailed {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                color: Tokenized::token("intent-success-soft-text", Color("#15803d".into())),
+            }
+        }
+    }
+}
+
+// A definite-width column for demos whose children use *percentage* widths
+// (e.g. Skeleton's Full/Half/ThreeQuarter). DemoSurface centers + shrink-wraps
+// its content, so a bare %-width child resolves against a zero-width column and
+// renders nothing; this frame gives it a real width to resolve against.
+stylesheet! {
+    pub PercentWidthFrame<()> {
+        base(_t) {
+            width: Length::pct(100.0),
+            max_width: 380.0,
+            flex_direction: FlexDirection::Column,
+        }
+    }
+}
+
+// ---- Foundations visuals: color swatch + radius box ----------------------
+
+// A color swatch block. The actual fill is applied per-token via
+// `override_background(Tokenized::token(...))` so it re-tints on theme swap.
+stylesheet! {
+    pub SwatchBlock<()> {
+        base(_t) {
+            height: Length::Px(64.0),
+            width: Length::pct(100.0),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+        }
+    }
+}
+
+// One box per radius token, picked by the `r` variant.
+stylesheet! {
+    pub RadiusBox<()> {
+        base(_t) {
+            width: Length::Px(76.0),
+            height: Length::Px(76.0),
+            background: Tokenized::token("intent-primary-soft-bg", Color("#eef2ff".into())),
+            border_width: 1.5,
+            border_color: Tokenized::token("intent-primary-fg", Color("#4f46e5".into())),
+        }
+        variant r {
+            #[default]
+            sm(_t) { border_radius: Tokenized::token("radius-sm", Length::Px(4.0)), }
+            md(_t) { border_radius: Tokenized::token("radius-md", Length::Px(8.0)), }
+            lg(_t) { border_radius: Tokenized::token("radius-lg", Length::Px(12.0)), }
+            pill(_t) { border_radius: Tokenized::token("radius-pill", Length::Px(999.0)), }
+        }
+    }
+}
+
+// Two small blocks used to demonstrate a Stack gap visually.
+stylesheet! {
+    pub GapBlock<()> {
+        base(_t) {
+            width: Length::Px(40.0),
+            height: Length::Px(28.0),
+            border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
+            background: Tokenized::token("intent-primary-soft-bg", Color("#eef2ff".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("intent-primary-border", Color("#c7d2fe".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub UsageLabel<()> {
+        base(_t) {
+            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            font_size: 11.0,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: 0.9,
+            text_transform: TextTransform::Uppercase,
+            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+            margin_bottom: 11.0,
         }
     }
 }

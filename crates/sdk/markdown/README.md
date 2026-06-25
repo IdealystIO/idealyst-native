@@ -151,3 +151,31 @@ Implemented and exercised on all three primary backends via the
 
 Parser logic is unit-tested (`src/parse.rs` — headings, inline styles,
 links, ordered/unordered/nested lists, code blocks, quotes, rules).
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p markdown` — parser unit tests (`src/parse.rs`)
+- [ ] `cargo build -p markdown --target wasm32-unknown-unknown` — web target
+
+**Rendering / behavior**
+
+Use the `markdown-demo` example. A CommonMark/GFM doc should render headings
+(h1–h6), paragraphs, ordered/unordered/nested lists, block quotes, code blocks,
+thematic rules, and every inline style (bold/italic/both/code/strikethrough/link)
+on each backend, plus a live light↔dark theme toggle re-painting text + background.
+
+- [ ] **Web** — semantic DOM (`<h1>`/`<p>`/`<pre>`/`<blockquote>`/`<hr>`/list rows);
+  inspect the DOM to confirm real elements with per-run inline styling; theme toggle
+  re-paints.
+- [ ] **iOS** — one `UILabel` with an `NSAttributedString` renders the document,
+  wraps to the column width, and re-themes on toggle (sim-verified per the
+  verification note; ⚠️ not yet device-confirmed).
+- [ ] **Android** — one `TextView` with a `SpannableStringBuilder` renders the
+  document and re-themes on toggle (emulator-verified; ⚠️ not yet device-confirmed).
+- [ ] **macOS / terminal / gpu** — no handler registered; verify the framework's
+  `External` placeholder renders cleanly (no layout artifact or crash).

@@ -75,3 +75,29 @@ app.
 
 [`graphql_client`]: https://crates.io/crates/graphql_client
 [`async-graphql`]: https://crates.io/crates/async-graphql
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. The wire
+itself rides the `net` / server-functions transport, so each platform runs the
+*same* query/mutation flow over its own native HTTP stack. Tick each item as you
+exercise it.
+
+**Automated**
+- [ ] `cargo test -p graphql` — request/response serialization, transport bridge, server `execute_request` (with the `server` feature)
+- [ ] `cargo build -p graphql --target wasm32-unknown-unknown` — web client target compiles
+
+**Behavior**
+
+For each platform: a typed query **and** a mutation resolve against a live
+endpoint (over `HttpTransport` or a `graphql_transport!`-bridged `#[server]`
+fn); `use_query` drives `data()`/`error()`/`loading()`/`refetch()` and
+`use_mutation` drives `trigger()`/`state()`, and a component **re-renders
+reactively** as results arrive.
+
+- [ ] **Web** — query + mutation resolve over `fetch`; hooks update reactively
+- [ ] **iOS** — query + mutation resolve over the `NSURLSession` net stack; hooks update reactively
+- [ ] **Android** — query + mutation resolve over the `HttpURLConnection` net stack; hooks update reactively
+- [ ] **macOS** — query + mutation resolve over `NSURLSession`/`reqwest`; hooks update reactively
+- [ ] **Windows / Linux** — query + mutation resolve over the `reqwest` net stack; hooks update reactively

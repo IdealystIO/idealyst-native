@@ -1,0 +1,24 @@
+[package]
+name = "sortable-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Live-reorder sortable list on the `dnd` SDK — as you drag a row, the others spring aside to open the gap where it WOULD land (dnd-kit style), before you drop. Proves the SDK supports responsive insertion preview, not just drop-zones."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+runtime-core = { workspace = true }
+dnd = { workspace = true }
+idea-theme = { workspace = true }
+dev-server = { workspace = true, optional = true }
+
+[package.metadata.idealyst.app]
+name      = "Sortable Demo"
+bundle_id = "ai.truday.idealyst.sortabledemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]

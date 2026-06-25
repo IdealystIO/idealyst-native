@@ -13,8 +13,8 @@
 
 use runtime_core::stylesheet;
 use runtime_core::{
-    AlignItems, Color, FlexDirection, FontWeight, JustifyContent, Length, TextAlign, TextTransform,
-    Tokenized,
+    AlignItems, Color, Cursor, FlexDirection, FontWeight, JustifyContent, Length, Position,
+    TextAlign, TextTransform, Tokenized,
 };
 
 #[allow(unused_imports)]
@@ -55,10 +55,13 @@ stylesheet! {
         }
         variant align {
             #[default]
-            stretch(_t) { align_items: AlignItems::Stretch }
-            start(_t)   { align_items: AlignItems::FlexStart }
-            center(_t)  { align_items: AlignItems::Center }
-            end(_t)     { align_items: AlignItems::FlexEnd }
+            stretch(_t)  { align_items: AlignItems::Stretch }
+            start(_t)    { align_items: AlignItems::FlexStart }
+            center(_t)   { align_items: AlignItems::Center }
+            end(_t)      { align_items: AlignItems::FlexEnd }
+            // Align children on their text baseline — for inline rows that mix
+            // prose and a Link/Badge so they sit on a common baseline.
+            baseline(_t) { align_items: AlignItems::Baseline }
         }
         variant justify {
             #[default]
@@ -751,6 +754,9 @@ stylesheet! {
         base(t) {
             background: Color("#ffffff".into()),
             border_radius: Tokenized::token("radius-pill", Length::Px(999.0)),
+            // Center an optional thumb icon (without this it sits in the corner).
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
             shadow: runtime_core::Shadow {
                 x: 0.0,
                 y: 1.0,
@@ -777,6 +783,10 @@ stylesheet! {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            // Clickable control: pointer cursor on web (inherits to the inner
+            // box/track + label). macOS maps it to NSCursor; touch backends
+            // no-op. Mirrors Button/IconButton.
+            cursor: Cursor::Pointer,
         }
     }
 }
@@ -822,6 +832,20 @@ stylesheet! {
             font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             text_align: TextAlign::Left,
             min_width: 160.0,
+            // Row: label on the left, chevron on the right.
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            cursor: Cursor::Pointer,
+        }
+        // When the menu is open, highlight with the focus ring (like Field).
+        variant open {
+            #[default]
+            off(_t) {}
+            on(t) {
+                border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
+            }
         }
         variant size {
             sm(t) {
@@ -890,6 +914,7 @@ stylesheet! {
             border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
             font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             text_align: TextAlign::Left,
+            cursor: Cursor::Pointer,
         }
         variant active {
             #[default]
@@ -905,6 +930,114 @@ stylesheet! {
         transitions {
             background: 150ms EaseOut,
             color: 150ms EaseOut,
+        }
+    }
+}
+
+// =============================================================================
+// Autocomplete — searchable combobox (input + chevron + filtered menu)
+// =============================================================================
+//
+// `AutocompleteBox` is a thin positioning shell: the editable input carries
+// the bordered chrome (so the native focus ring lands on the focusable
+// element, exactly like `Field`), and the disclosure chevron is pinned over
+// the input's right edge — hence `position: relative` on the box so the
+// absolutely-placed chevron resolves against it.
+//
+// `AutocompleteInput` is the text input itself: same box shape as
+// `FieldInput`/`SelectTrigger` (so a combobox sits flush beside a Field or
+// Select) with extra right padding reserving room for the chevron, plus the
+// focused/disabled state overlays.
+//
+// The dropdown deliberately REUSES `SelectMenu` (panel) and `SelectOption`
+// (rows) so a Select and an Autocomplete drop the same menu — one less
+// surface to keep in visual sync. `AutocompleteChevron` is the caret;
+// `AutocompleteEmpty` styles the "no matches" row.
+
+stylesheet! {
+    pub AutocompleteBox<IdeaThemeRef> {
+        base(_t) {
+            position: Position::Relative,
+            flex_direction: FlexDirection::Column,
+            min_width: 200.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub AutocompleteInput<IdeaThemeRef> {
+        base(t) {
+            width: Length::pct(100.0),
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_left: Tokenized::token("spacing-md", Length::Px(12.0)),
+            // Reserve room for the chevron pinned over the right edge.
+            padding_right: Tokenized::token("spacing-xl", Length::Px(28.0)),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+            text_align: TextAlign::Left,
+        }
+        variant size {
+            sm(t) {
+                padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+                padding_left: Tokenized::token("spacing-sm", Length::Px(8.0)),
+                padding_right: Tokenized::token("spacing-lg", Length::Px(24.0)),
+                font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
+            }
+            #[default]
+            md(t) {
+                padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+                padding_left: Tokenized::token("spacing-md", Length::Px(12.0)),
+                padding_right: Tokenized::token("spacing-xl", Length::Px(28.0)),
+                font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+            }
+            lg(t) {
+                padding_vertical: Tokenized::token("spacing-md", Length::Px(12.0)),
+                padding_left: Tokenized::token("spacing-lg", Length::Px(16.0)),
+                padding_right: Tokenized::token("spacing-xl", Length::Px(32.0)),
+                font_size: Tokenized::token("typography-body-lg-size", Length::Px(18.0)),
+            }
+        }
+        state focused(t) {
+            border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
+        }
+        state disabled(_t) {
+            opacity: 0.55,
+        }
+        transitions {
+            border_color: 150ms EaseOut,
+            background: 250ms EaseInOut,
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub AutocompleteChevron<IdeaThemeRef> {
+        base(t) {
+            position: Position::Absolute,
+            right: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            top: Length::Px(0.0),
+            bottom: Length::Px(0.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+        }
+    }
+}
+
+stylesheet! {
+    pub AutocompleteEmpty<IdeaThemeRef> {
+        base(t) {
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+            text_align: TextAlign::Left,
         }
     }
 }
@@ -1597,6 +1730,7 @@ stylesheet! {
             font_weight: FontWeight::Medium,
             font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             border_radius: 0.0,
+            cursor: Cursor::Pointer,
             // Bottom border draws under the active tab to mark
             // selection; off-state is transparent so the bar's
             // own bottom border shows through.
@@ -2128,6 +2262,7 @@ stylesheet! {
             border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
             font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             text_align: TextAlign::Left,
+            cursor: Cursor::Pointer,
         }
         variant active {
             #[default]
@@ -2251,6 +2386,7 @@ stylesheet! {
             font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
             font_weight: FontWeight::Medium,
             text_align: TextAlign::Center,
+            cursor: Cursor::Pointer,
         }
         variant active {
             #[default]

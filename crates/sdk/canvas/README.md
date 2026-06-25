@@ -142,3 +142,23 @@ Emulated/virtualized GPUs (the iOS Simulator, the Android emulator) advertise
 reduced feature sets that omit these, which is why vello can't run there. The
 gate is a **capability check, not a platform check** (`canvas_vello::render`),
 so any GPU lacking a required feature falls back uniformly.
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it. The same scene must render identically under both
+renderers (CLAUDE.md §7), so verify the **GPU (`canvas-vello`)** and **CPU
+(`canvas-native`)** paths produce the same pixels — only speed should differ.
+
+**Automated**
+- [ ] `cargo test -p canvas` — scene-model logic (paths, paint, `ShapeInstance` batches, glyph runs, blend/mask ops)
+- [ ] `cargo build -p canvas --target wasm32-unknown-unknown` — web target
+
+**Behavior**
+- [ ] **Web** — register `canvas-native`; a `draw` scene renders via Canvas2D; reactive `Signal` reads re-render on change; self-capture records via `captureStream()`.
+- [ ] **iOS** — on a **device**, `canvas-vello` (GPU) renders the scene and self-capture uses GPU→CPU read-back. On the **Simulator**, vello self-gates off (Metal lacks `INDIRECT_EXECUTION`) → `canvas-native` (CoreGraphics) renders the *same* pixels; recording uses the offscreen re-rasterize fallback and logs the one-time slow-path warning (`NSLog`). ⚠️ device GPU path needs a physical device to confirm.
+- [ ] **Android** — on a **device**, `canvas-vello` (GPU) renders + self-capture via GPU→CPU read-back. On the **emulator**, vello self-gates off (Vulkan lacks `SHADER_F16`) → `android.graphics` CPU renderer, bitmap read-back, one-time `Log.w("canvas", …)` warning. ⚠️ device GPU path needs real Adreno/Mali hardware to confirm.
+- [ ] **macOS** — GPU-verified: `canvas-vello` renders the scene and self-capture is zero-copy IOSurface → encoder (no read-back); confirm bulk `shapes` batches draw in one instanced-SDF pass and glyph runs render via vello's glyph pipeline.
+
+No OS permission of its own — drawing and self-capture stay within the app's own surface.

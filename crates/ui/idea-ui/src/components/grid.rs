@@ -14,9 +14,10 @@
 //!
 //! Built from flex (the framework has no CSS grid): children are
 //! chunked into rows of `columns`, and each cell flexes equally
-//! (`flex-grow: 1; flex-basis: 0`). A partial final row keeps the same
-//! cell width as full rows is *not* guaranteed — its cells stretch to
-//! fill — which is the conventional flex-grid behavior.
+//! (`flex-grow: 1; flex-basis: 0`). A partial final row is padded with
+//! empty filler cells so its real cells keep the same `1/columns` width
+//! as full rows and stay LEFT-aligned under the columns above (rather
+//! than flex-growing to fill the row width).
 
 use runtime_core::{
     component, ChildList, IdealystSchema, IntoElement, Element, StyleApplication, VariantEnum,
@@ -55,6 +56,13 @@ pub fn Grid(props: GridProps) -> Element {
         ChildList::append_to(c, &mut flat);
     }
 
+    // One equal-flex cell wrapping a child (or empty, for row padding).
+    let cell = |child: Vec<Element>| {
+        runtime_core::view(child)
+            .with_style(|| StyleApplication::new(GridCell::sheet()))
+            .into_element()
+    };
+
     // Chunk into rows of `cols`; wrap each child in an equal-flex cell.
     let mut rows: Vec<Element> = Vec::new();
     let mut iter = flat.into_iter();
@@ -63,14 +71,13 @@ pub fn Grid(props: GridProps) -> Element {
         if chunk.is_empty() {
             break;
         }
-        let cells: Vec<Element> = chunk
-            .into_iter()
-            .map(|child| {
-                runtime_core::view(vec![child])
-                    .with_style(|| StyleApplication::new(GridCell::sheet()))
-                    .into_element()
-            })
-            .collect();
+        let n = chunk.len();
+        let mut cells: Vec<Element> = chunk.into_iter().map(|c| cell(vec![c])).collect();
+        // Pad a partial final row with empty cells so the real cells keep
+        // their 1/cols width and stay left-aligned instead of stretching.
+        for _ in n..cols {
+            cells.push(cell(vec![]));
+        }
         let row_gap = gap_key.clone();
         let row = runtime_core::view(cells)
             .with_style(move || StyleApplication::new(GridRow::sheet()).with("gap", row_gap.clone()))
@@ -84,4 +91,45 @@ pub fn Grid(props: GridProps) -> Element {
             StyleApplication::new(GridContainer::sheet()).with("gap", container_gap.clone())
         })
         .into_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_core::{view, Element};
+
+    fn view_children(el: &Element) -> &Vec<Element> {
+        match el {
+            Element::View { children, .. } => children,
+            _ => panic!("expected a View"),
+        }
+    }
+
+    fn leaf() -> Element {
+        view(vec![]).into_element()
+    }
+
+    // Regression: a partial final row must be PADDED to `columns` cells so
+    // its real cells keep their 1/columns width and stay left-aligned under
+    // the columns above — not flex-grow to fill the row (the icons-page
+    // "bottom row spreads out" report).
+    #[test]
+    fn partial_final_row_is_padded_for_left_alignment() {
+        // 4 cells across 3 columns → rows of [3, 1]; the partial row is
+        // padded up to 3 cells (1 real + 2 empty fillers).
+        let props = GridProps {
+            columns: 3,
+            gap: StackGap::Md,
+            children: vec![leaf(), leaf(), leaf(), leaf()],
+        };
+        let grid = Grid(props);
+        let rows = view_children(&grid);
+        assert_eq!(rows.len(), 2, "4 cells in 3 columns make 2 rows");
+        assert_eq!(view_children(&rows[0]).len(), 3, "first row is full");
+        assert_eq!(
+            view_children(&rows[1]).len(),
+            3,
+            "the partial final row is padded to `columns` cells so real cells left-align"
+        );
+    }
 }

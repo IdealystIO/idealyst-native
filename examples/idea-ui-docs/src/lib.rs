@@ -1,59 +1,35 @@
-//! idea-ui-docs — the self-referencing documentation app for idea-ui.
+//! idea-ui-docs — the self-referencing component reference for idea-ui.
 //!
-//! Persistent drawer sidebar lists every page (grouped by section);
-//! the navigator swaps only the page body. Every page documents the
-//! component library *with the component library* — control panels,
-//! props tables, callouts, and the sidebar itself are all idea-ui +
-//! local `#[component]` wrappers around it.
+//! A single [`routes::CATALOG`] table drives everything: the grouped,
+//! searchable sidebar (`leading_with`), the custom header bar with the
+//! Light/Dark toggle (`top_with`), and the per-screen page frame
+//! (`shell::page_frame`) that renders the group overline, title, status
+//! badge, lead, body, and Usage panel. `DrawerNavigator` still owns
+//! navigation + cross-platform chrome; we just drive its slots.
 //!
 //! ## Crate layout
 //!
 //! - `lib.rs` (this) — `app()` entry: theme install + DrawerNavigator wiring.
-//! - `routes.rs` — Route constants + `SECTIONS` index the sidebar walks.
-//! - `shell.rs` — Sidebar + page-template components (`ComponentPage`,
-//!   `Demo`, `PropsTable`, `CodePanel`, `Callout`, …).
-//! - `styles.rs` — Local stylesheets for chrome only.
-//! - `pages/*.rs` — One file per category; each module exports one
-//!   `page()` per documented surface.
+//! - `routes.rs` — the `CATALOG` (groups → entries) + route constants.
+//! - `shell.rs` — header / sidebar / `page_frame` + page-template helpers.
+//! - `styles.rs` — local stylesheets for chrome only.
+//! - `pages/*.rs` — one module per design group; each exports body-only
+//!   `pub fn name() -> Element`.
 
-use runtime_core::{component, signal, ui, Element, Ref, Signal, Route};
 use runtime_core::primitives::navigator::Screen;
+use runtime_core::{component, signal, ui, Element, Ref, Signal};
 use drawer_navigator::{
     install_navigator_pin_width, DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerScreenExt,
-    HeaderStyle,
+    TopSlot,
 };
-use idea_ui::{idea_color, install_idea_theme, light_theme};
-
-/// Wrap a page's `Element` in a `Screen` whose title is the
-/// human-readable `IndexEntry::label` for the route. Drives both the
-/// iOS `UINavigationItem.title` and the Android `Toolbar` title via
-/// the per-screen `header_options.title` field — without this the iOS
-/// fallback shows `route.name()` (`"overview"`, `"tokens"`, …) and
-/// the Android Toolbar renders no title text at all.
-fn titled(route: &'static Route<()>, el: Element) -> Screen {
-    let label = label_for_route(route.name()).unwrap_or_else(|| route.name());
-    Screen::new(el).title(label)
-}
-
-/// Look up the human-readable sidebar label for a route. Walks
-/// `routes::SECTIONS` (the single source of truth for both the
-/// sidebar list and the navigator wiring). Returns `None` for routes
-/// that aren't in the sidebar — callers fall back to the route name.
-fn label_for_route(route_name: &'static str) -> Option<&'static str> {
-    for section in routes::SECTIONS {
-        for entry in section.entries {
-            if entry.route.name() == route_name {
-                return Some(entry.label);
-            }
-        }
-    }
-    None
-}
+use idea_ui::{install_idea_theme, light_theme};
 
 mod pages;
 mod routes;
 mod shell;
 mod styles;
+
+use routes::{CATALOG, DEFAULT_ROUTE};
 
 // =============================================================================
 // Per-target SDK-handler registration. Called by the CLI-generated
@@ -61,16 +37,25 @@ mod styles;
 // =============================================================================
 
 #[cfg(target_arch = "wasm32")]
-pub fn register_extensions(_backend: &mut backend_web::WebBackend) {
+pub fn register_extensions(backend: &mut backend_web::WebBackend) {
     backend_web::install_viewport_observer();
+    // Register the drawer navigator handler on the web backend. The
+    // crate self-registers via `inventory`, but under `--local` (no
+    // runtime-server) the linker can dead-strip that submission since
+    // nothing else pulls in the web module's object; the explicit call
+    // forces linkage + registration so `DrawerPresentation` resolves.
+    drawer_navigator::register(backend);
+    // Same story for the `table` External SDK (idea-ui's Table / the docs
+    // PropsTable lower to it): it's only referenced indirectly via idea-ui,
+    // so under `--local` its inventory registrar gets stripped and Table
+    // renders the "not supported on web" placeholder. Register it explicitly.
+    // (`codeblock` is fine — `shell::CodePanel` calls `codeblock::code_block`
+    // directly, which keeps its registrar linked.)
+    table::register(backend);
 }
 
-// `codeblock` and `table` are converted-External SDKs that now
-// self-register via `inventory` — there are no per-backend register
-// calls to make here. The crates stay linked because their primitives
-// (`codeblock::CodeBlock`, idea-ui's `Table` lowering to the `table`
-// SDK) are referenced in page code; `use table as _` below pins the
-// `table` crate in case the only reference is via idea-ui's re-export.
+// `codeblock` and `table` self-register via `inventory`; `use table as _`
+// pins the crate in case the only reference is via idea-ui's re-export.
 use table as _;
 
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
@@ -79,124 +64,48 @@ pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {}
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 pub fn register_extensions(_backend: &mut backend_android::AndroidBackend) {}
 
-// macOS native — but NOT when the `terminal` feature is on. The terminal
-// target builds for the macOS host triple, so without `not(feature =
-// "terminal")` this and the terminal arm below would both compile on a
-// macOS host and collide as duplicate definitions.
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32"), not(feature = "terminal")))]
 pub fn register_extensions(_backend: &mut backend_macos::MacosBackend) {}
 
-// Terminal — selected by the `terminal` feature (the CLI's terminal
-// wrapper enables it), not a `target_os` cfg, because the terminal target
-// builds for the host triple and would otherwise be shadowed by the host's
-// native backend (macOS).
 #[cfg(feature = "terminal")]
 pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}
 
-// Recorder-side registration for the runtime-server sidecar. A distinct
-// fn name (not an overload of `register_extensions`) so it never
-// collides with the host target's per-backend overload above when both
-// compile in the sidecar build. Only the drawer navigator needs a
-// recording handler: `codeblock` / `table` self-register via inventory
-// and build their trees from primitives the recorder captures as
-// ordinary nodes — nothing to register. Gated by `sidecar` (set only by the generated sidecar
-// wrapper) so device/web builds never pull `dev-server`.
 #[cfg(feature = "sidecar")]
 pub fn register_extensions_recorder(backend: &mut dev_server::WireRecordingBackend) {
     drawer_navigator::recording::register(backend);
 }
-
-use routes::{
-    ALERT_ROUTE, AVATAR_ROUTE, BADGE_ROUTE, BUTTON_ROUTE, CARD_ROUTE, CENTER_ROUTE,
-    COLLAPSIBLE_ROUTE, COMBOS_ROUTE, CONTROLS_ROUTE, CUSTOM_THEME_ROUTE, DATA_ROUTE, DIVIDER_ROUTE,
-    DRAWER_ROUTE, EXT_BUILD_COMPONENT_ROUTE, EXT_CUSTOM_TONE_ROUTE, EXT_CUSTOM_VARIANT_ROUTE,
-    EXT_DOC_CONTROLS_ROUTE, FIELD_ROUTE, HELLO_ROUTE, ICON_BUTTON_ROUTE, INSTALL_ROUTE,
-    INTENTS_ROUTE, LIGHT_DARK_ROUTE, MENUS_ROUTE, MODAL_ROUTE, MODIFIERS_ROUTE, OVERVIEW_ROUTE,
-    POPOVER_ROUTE, SELECT_ROUTE, SKELETON_ROUTE, SPACER_ROUTE, SPINNER_ROUTE, STACK_ROUTE,
-    SWITCH_ROUTE, TABLE_ROUTE, TABS_ROUTE, TAG_ROUTE, TOKENS_ROUTE, TOOLTIP_ROUTE,
-    TYPOGRAPHY_ROUTE,
-};
 
 #[component]
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
     let nav: Ref<DrawerHandle> = Ref::new();
-    // App-level dark-mode state survives navigation: theme flag for
-    // the sidebar's dark-mode toggle, owned at the top so each
-    // pushed screen's per-screen scope can drop without losing it.
+    // App-level state surviving navigation: dark-mode flag for the
+    // header toggle, and the sidebar search query.
     let is_dark: Signal<bool> = signal!(false);
+    let q: Signal<String> = signal!(String::new());
 
     // Pin the sidebar (vs. modal slide-in) at wide viewports.
     install_navigator_pin_width(900.0);
 
-    let builder = DrawerNavigator::new(&OVERVIEW_ROUTE)
-        // Navigator-level header theming: closures re-resolve their
-        // token reads every time the iOS slot-style Effect / Android
-        // slot_styles dispatcher re-fires, which the framework's
-        // reactive plumbing wires automatically on `set_idea_theme`
-        // token swaps. Without this the UINavigationController bar /
-        // Android Toolbar stay at the platform default that was
-        // installed once at create_drawer time.
-        .header(|| HeaderStyle {
-            background: Some((idea_color(|c| c.surface.clone()))()),
-            title: Some((idea_color(|c| c.text.clone()))()),
-            tint: Some((idea_color(|c| c.text.clone()))()),
-            body_background: Some((idea_color(|c| c.background.clone()))()),
-        })
-        // Getting Started
-        .screen(OVERVIEW_ROUTE, move |_| titled(&OVERVIEW_ROUTE, pages::overview::page()))
-        .screen(INSTALL_ROUTE, move |_| titled(&INSTALL_ROUTE, pages::install::page()))
-        .screen(HELLO_ROUTE, move |_| titled(&HELLO_ROUTE, pages::hello::page()))
-        // Theming
-        .screen(TOKENS_ROUTE, move |_| titled(&TOKENS_ROUTE, pages::theming::tokens()))
-        .screen(INTENTS_ROUTE, move |_| titled(&INTENTS_ROUTE, pages::theming::intents()))
-        .screen(LIGHT_DARK_ROUTE, move |_| titled(&LIGHT_DARK_ROUTE, pages::theming::light_dark(is_dark)))
-        .screen(CUSTOM_THEME_ROUTE, move |_| titled(&CUSTOM_THEME_ROUTE, pages::theming::custom_theme()))
-        .screen(MODIFIERS_ROUTE, move |_| titled(&MODIFIERS_ROUTE, pages::theming::modifiers()))
-        // Layout
-        .screen(STACK_ROUTE, move |_| titled(&STACK_ROUTE, pages::layout::stack()))
-        .screen(CARD_ROUTE, move |_| titled(&CARD_ROUTE, pages::layout::card()))
-        .screen(TABLE_ROUTE, move |_| titled(&TABLE_ROUTE, pages::layout::table()))
-        .screen(DIVIDER_ROUTE, move |_| titled(&DIVIDER_ROUTE, pages::layout::divider()))
-        .screen(CENTER_ROUTE, move |_| titled(&CENTER_ROUTE, pages::layout::center()))
-        .screen(SPACER_ROUTE, move |_| titled(&SPACER_ROUTE, pages::layout::spacer()))
-        // Typography
-        .screen(TYPOGRAPHY_ROUTE, move |_| titled(&TYPOGRAPHY_ROUTE, pages::typography::page()))
-        // Actions
-        .screen(BUTTON_ROUTE, move |_| titled(&BUTTON_ROUTE, pages::actions::button()))
-        .screen(ICON_BUTTON_ROUTE, move |_| titled(&ICON_BUTTON_ROUTE, pages::actions::icon_button()))
-        .screen(BADGE_ROUTE, move |_| titled(&BADGE_ROUTE, pages::actions::badge()))
-        .screen(TAG_ROUTE, move |_| titled(&TAG_ROUTE, pages::actions::tag()))
-        // Inputs
-        .screen(FIELD_ROUTE, move |_| titled(&FIELD_ROUTE, pages::inputs::field()))
-        .screen(SWITCH_ROUTE, move |_| titled(&SWITCH_ROUTE, pages::inputs::switch()))
-        .screen(SELECT_ROUTE, move |_| titled(&SELECT_ROUTE, pages::inputs::select()))
-        // Feedback
-        .screen(ALERT_ROUTE, move |_| titled(&ALERT_ROUTE, pages::feedback::alert()))
-        .screen(SPINNER_ROUTE, move |_| titled(&SPINNER_ROUTE, pages::feedback::spinner()))
-        .screen(SKELETON_ROUTE, move |_| titled(&SKELETON_ROUTE, pages::feedback::skeleton()))
-        .screen(AVATAR_ROUTE, move |_| titled(&AVATAR_ROUTE, pages::feedback::avatar()))
-        // Overlays
-        .screen(MODAL_ROUTE, move |_| titled(&MODAL_ROUTE, pages::overlays::modal()))
-        .screen(POPOVER_ROUTE, move |_| titled(&POPOVER_ROUTE, pages::overlays::popover()))
-        .screen(TOOLTIP_ROUTE, move |_| titled(&TOOLTIP_ROUTE, pages::tooltip::tooltip()))
-        .screen(DRAWER_ROUTE, move |_| titled(&DRAWER_ROUTE, pages::overlays::drawer()))
-        // Stateful
-        .screen(TABS_ROUTE, move |_| titled(&TABS_ROUTE, pages::stateful::tabs()))
-        .screen(COLLAPSIBLE_ROUTE, move |_| titled(&COLLAPSIBLE_ROUTE, pages::stateful::collapsible()))
-        // New components & patterns
-        .screen(CONTROLS_ROUTE, move |_| titled(&CONTROLS_ROUTE, pages::controls::controls()))
-        .screen(DATA_ROUTE, move |_| titled(&DATA_ROUTE, pages::controls::data()))
-        .screen(MENUS_ROUTE, move |_| titled(&MENUS_ROUTE, pages::patterns::menus()))
-        .screen(COMBOS_ROUTE, move |_| titled(&COMBOS_ROUTE, pages::patterns::combos()))
-        // Extending
-        .screen(EXT_CUSTOM_TONE_ROUTE, move |_| titled(&EXT_CUSTOM_TONE_ROUTE, pages::extending::custom_tone()))
-        .screen(EXT_CUSTOM_VARIANT_ROUTE, move |_| titled(&EXT_CUSTOM_VARIANT_ROUTE, pages::extending::custom_variant()))
-        .screen(EXT_BUILD_COMPONENT_ROUTE, move |_| titled(&EXT_BUILD_COMPONENT_ROUTE, pages::extending::build_component()))
-        .screen(EXT_DOC_CONTROLS_ROUTE, move |_| titled(&EXT_DOC_CONTROLS_ROUTE, pages::extending::doc_controls()))
-        .drawer_width(280.0)
-        .leading_with(move |slot| shell::sidebar(slot, is_dark));
+    let mut builder = DrawerNavigator::new(DEFAULT_ROUTE)
+        // Own the chrome: no native iOS/Android nav bar — the custom
+        // header bar (top slot) carries the brand + theme toggle.
+        .native_header(false)
+        .top_with(TopSlot::Custom(Box::new(move |slot| shell::header(slot, is_dark))))
+        .leading_with(move |slot| shell::sidebar(slot, q))
+        .drawer_width(252.0);
+
+    // Fold the catalog into one screen per entry. Each screen wraps the
+    // entry's body in the central page frame.
+    for group in CATALOG {
+        for entry in group.entries {
+            let route = entry.route.clone();
+            builder = builder.screen(route, move |_| {
+                Screen::new(shell::page_frame(entry)).title(entry.name)
+            });
+        }
+    }
 
     ui! { builder.bind(nav) }
 }

@@ -31,6 +31,10 @@ mod encode;
 mod render;
 #[cfg(not(target_arch = "wasm32"))]
 pub use render::register;
+// Headless offscreen export — render a `canvas::Scene` to RGBA8 with no surface
+// (server-side thumbnails / image export). GPU with software fallback.
+#[cfg(not(target_arch = "wasm32"))]
+pub use render::{render_to_rgba, RenderedImage};
 
 // Scene classification (`ScenePlan` / `plan_scene`) for the instanced fast path,
 // shared by the native and web renderers (pure op-list walk, no GPU).

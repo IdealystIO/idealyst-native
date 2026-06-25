@@ -1,121 +1,95 @@
-//! Overlays — Modal, Popover, Drawer (one page each).
+//! Overlays — Tooltip, Popover, Modal, Collapsible, Alert, Toast.
+//!
+//! Each `pub fn name() -> Element` returns the page **body only** — a
+//! column of demo `Section`s wrapped by `crate::pages::body`. The central
+//! page frame in `lib.rs` renders the group overline, title, status badge,
+//! lead, and the Usage code panel, so bodies never add their own
+//! title/lead/scroll wrapper.
 
 use std::rc::Rc;
 
-use runtime_core::primitives::overlay::BackdropMode;
-use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
-use runtime_core::{signal, ui, Easing, Element, PresenceAnim, PresenceState, PressableHandle, Ref};
+use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
+use runtime_core::{signal, ui, Element, PressableHandle, Ref};
 use idea_ui::{
-    tone, typography_kind, variant, Button, Card, Popover, Stack, StackGap, Typography,
+    push_toast, push_toast_with, tone, typography_kind, variant, Alert, Button, Collapsible,
+    CollapsibleTransition, Modal, Popover, Stack, StackAxis, StackGap, ToastHost, ToastPlacement,
+    Tooltip, Typography,
 };
 
-use crate::shell::{self, Callout, CodePanel, ComponentPage, DemoSurface, H2, P, Section};
+use crate::pages::body;
+use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, P};
 
 // =============================================================================
-// Modal
+// Tooltip
 // =============================================================================
 
-pub fn modal() -> Element {
+pub fn tooltip() -> Element {
     let open = signal!(false);
-    let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
-    let on_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+    let trigger: Ref<PressableHandle> = Ref::new();
+    let toggle: Rc<dyn Fn()> = Rc::new(move || open.update(|v| *v = !*v));
 
-    shell::layout(ui! {
-        ComponentPage(
-            title = "Modal".to_string(),
-            lead = "Viewport-centered overlay with a dismiss-on-click scrim. Built on the \
-                framework's Overlay primitive — portaled to the document body so it escapes \
-                parent overflow and stacking contexts.".to_string(),
-        ) {
-            H2(content = "Live demo".to_string())
-            DemoSurface {
-                Button(
-                    label = "Open modal".to_string(),
-                    on_click = on_open,
-                    tone = tone::Primary,
-                    variant = variant::Filled,
-                )
-                presence(
-                    present = move || open.get(),
-                    enter = PresenceAnim::new(
-                        PresenceState::default().opacity(0.0).translate_y(8.0),
-                        200,
-                        Easing::EaseOut,
-                    ),
-                    exit = PresenceAnim::new(
-                        PresenceState::default().opacity(0.0).translate_y(8.0),
-                        150,
-                        Easing::EaseIn,
-                    ),
-                ) {
-                    overlay(
-                        placement = ViewportPlacement::Center,
-                        backdrop = BackdropMode::Dismiss,
-                        on_dismiss = {
-                            let oc = on_close.clone();
-                            move || (oc)()
-                        },
-                    ) {
-                        Card {
-                            Typography(content = "Confirm".to_string(), kind = typography_kind::H3)
-                            Typography(content = "Click outside or press Escape to dismiss.".to_string())
-                            Button(
-                                label = "OK".to_string(),
-                                on_click = on_close.clone(),
-                                tone = tone::Primary,
-                                variant = variant::Filled,
-                            )
-                        }
+    body(vec![ui! {
+        Stack(gap = StackGap::Xl) {
+            Section(title = "Live demo".to_string()) {
+                P(content = "There's no cross-backend hover event, so this demo toggles the \
+                    bubble on press. Tap the button to show or hide the tooltip — the same \
+                    open-state signal you'd flip from a hover handler on web.".to_string())
+                DemoSurface {
+                    Button(
+                        label = "Toggle tooltip".to_string(),
+                        on_click = toggle,
+                        tone = tone::Neutral,
+                        variant = variant::Soft,
+                        bind_to = Some(trigger),
+                    )
+                    if open.get() {
+                        Tooltip(
+                            target = Some(AnchorTarget::from(trigger)),
+                            text = "Resets everything to defaults".to_string(),
+                        )
                     }
                 }
             }
 
-            Section(title = "Pattern".to_string()) {
-                P(content = "Modal is composed from three primitives: a host-owned `Signal<bool>` \
-                    for open/closed state, a `presence(...)` block for enter/exit animations, and \
-                    an `overlay(...)` primitive that handles backdrop + dismiss routing.".to_string())
-                CodePanel(src = r##"let open = signal!(false);
-let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
-let on_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+            Section(title = "Props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "target", ty: "Option<AnchorTarget>", desc: "Element to anchor against — AnchorTarget::from(some_ref). Required." },
+                    Prop { name: "text",   ty: "Reactive<String>",     desc: "Bubble text. Static or live." },
+                    Prop { name: "side",   ty: "ElementSide",          desc: "Which side of the target the bubble sits on. Default: Above." },
+                    Prop { name: "align",  ty: "ElementAlign",         desc: "Alignment along the anchor edge. Default: Center." },
+                    Prop { name: "offset", ty: "f32",                  desc: "Gap in px between the anchor and the bubble. Default: 6." },
+                ])
+            }
+
+            Section(title = "Recipe".to_string()) {
+                P(content = "Bind a Ref to the trigger, gate the Tooltip on an open-state \
+                    signal, and pass the trigger's Ref as the anchor target.".to_string())
+                CodePanel(src = r##"let trigger: Ref<PressableHandle> = Ref::new();
+let open = signal!(false);
 
 ui! {
-    Button(label = "Open".into(), on_click = on_open, tone = tone::Primary, variant = variant::Filled)
-
-    presence(
-        present = move || open.get(),
-        enter = PresenceAnim::new(
-            PresenceState::default().opacity(0.0).translate_y(8.0),
-            200, Easing::EaseOut,
-        ),
-        exit = PresenceAnim::new(
-            PresenceState::default().opacity(0.0).translate_y(8.0),
-            150, Easing::EaseIn,
-        ),
-    ) {
-        overlay(
-            placement = ViewportPlacement::Center,
-            backdrop = BackdropMode::Dismiss,
-            on_dismiss = { let oc = on_close.clone(); move || (oc)() },
-        ) {
-            Card {
-                Typography(content = "Confirm".into(), kind = typography_kind::H3)
-                Typography(content = "Are you sure?".into())
-                Button(label = "OK".into(), on_click = on_close, tone = tone::Primary, variant = variant::Filled)
-            }
-        }
+    IconButton(
+        glyph = "?".into(),
+        on_click = move || open.update(|v| *v = !*v),
+        bind_to = Some(trigger),
+    )
+    if open.get() {
+        Tooltip(
+            target = Some(AnchorTarget::from(trigger)),
+            text = "Resets to defaults".into(),
+        )
     }
 }"##.to_string())
             }
 
-            Callout(label = "Why idea-ui doesn't ship a `Modal` wrapper".to_string()) {
-                P(content = "The current shape — your own signal, presence, overlay — gives \
-                    you direct control over the animation, dismiss policy, and content surface. \
-                    A wrapper would have to invent a vocabulary for all three and still let you \
-                    escape it. A future Modal component would compose these in the same shape; \
-                    until then, the pattern above is the canonical recipe.".to_string())
+            Callout(label = "Tooltip vs Popover".to_string()) {
+                P(content = "Tooltip is a single styled text node — non-interactive, no \
+                    backdrop, no focus trap. The bubble inverts onto the theme's color-text \
+                    so it reads against any surface. When you need clickable content (menu \
+                    items, a form), reach for Popover instead.".to_string())
             }
         }
-    })
+    }])
 }
 
 // =============================================================================
@@ -128,49 +102,32 @@ pub fn popover() -> Element {
     let on_toggle: Rc<dyn Fn()> = Rc::new(move || open.update(|v| *v = !*v));
     let on_dismiss: Rc<dyn Fn()> = Rc::new(move || open.set(false));
 
-    shell::layout(ui! {
-        ComponentPage(
-            title = "Popover".to_string(),
-            lead = "Element-anchored overlay with no backdrop. The trigger binds a \
-                `Ref<PressableHandle>`; the popover targets that ref and follows it through \
-                scrolls and resizes.".to_string(),
-        ) {
-            H2(content = "Live demo".to_string())
-            DemoSurface {
-                Button(
-                    label = "Open menu".to_string(),
-                    on_click = on_toggle,
-                    tone = tone::Neutral,
-                    variant = variant::Soft,
-                    bind_to = Some(trigger),
-                )
-                presence(
-                    present = move || open.get(),
-                    enter = PresenceAnim::new(
-                        PresenceState::default().opacity(0.0).translate_y(-4.0),
-                        160,
-                        Easing::EaseOut,
-                    ),
-                    exit = PresenceAnim::new(
-                        PresenceState::default().opacity(0.0).translate_y(-4.0),
-                        120,
-                        Easing::EaseIn,
-                    ),
-                ) {
-                    Popover(
-                        target = Some(AnchorTarget::from(trigger)),
-                        side = ElementSide::Below,
-                        align = ElementAlign::Start,
-                        offset = 6.0,
-                        on_dismiss = Some({
-                            let d = on_dismiss.clone();
-                            Rc::new(move || (d)()) as Rc<dyn Fn()>
-                        })
-                    ) {
-                        Stack(gap = StackGap::Xs) {
-                            Typography(content = "Edit".to_string())
-                            Typography(content = "Duplicate".to_string())
-                            Typography(content = "Delete".to_string(), tone = Some(tone::Danger.into()))
+    body(vec![ui! {
+        Stack(gap = StackGap::Xl) {
+            Section(title = "Live demo".to_string()) {
+                P(content = "Click the trigger to open a scrim-less menu anchored to it. A tap \
+                    anywhere off the surface (or Escape) dismisses.".to_string())
+                DemoSurface {
+                    Button(
+                        label = "Open menu".to_string(),
+                        on_click = on_toggle,
+                        tone = tone::Neutral,
+                        variant = variant::Soft,
+                        bind_to = Some(trigger),
+                    )
+                    if open.get() {
+                        Popover(
+                            target = Some(AnchorTarget::from(trigger)),
+                            side = ElementSide::Below,
+                            align = ElementAlign::Start,
+                            offset = 6.0,
+                            on_dismiss = Some(on_dismiss.clone()),
+                        ) {
+                            Stack(gap = StackGap::Xs) {
+                                Typography(content = "Edit".to_string())
+                                Typography(content = "Duplicate".to_string())
+                                Typography(content = "Delete".to_string(), tone = Some(tone::Danger.into()))
+                            }
                         }
                     }
                 }
@@ -178,10 +135,20 @@ pub fn popover() -> Element {
 
             Section(title = "Anchoring vs portaling".to_string()) {
                 P(content = "Popover uses the framework's anchored_overlay primitive — the \
-                    surface is portaled to the document body (escapes parent overflow) but \
-                    positioned relative to the bound trigger Ref. Scrolling the trigger's \
-                    container moves the popover with it; resizing the window re-runs \
-                    positioning.".to_string())
+                    surface is portaled to the document body (so it escapes parent overflow \
+                    and stacking contexts) but positioned relative to the bound trigger Ref. \
+                    Scrolling the trigger's container moves the popover with it; resizing the \
+                    window re-runs positioning.".to_string())
+            }
+
+            Section(title = "Props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "target",     ty: "Option<AnchorTarget>", desc: "Element to anchor against — AnchorTarget::from(some_ref). A None target renders nothing (the host gates open-state)." },
+                    Prop { name: "side",       ty: "ElementSide",          desc: "Which side of the target the popover sits on. Default: Below." },
+                    Prop { name: "align",      ty: "ElementAlign",         desc: "Alignment along the anchor's edge. Default: Start." },
+                    Prop { name: "offset",     ty: "f32",                  desc: "Gap in px between the anchor and the popover. Default: 4." },
+                    Prop { name: "on_dismiss", ty: "Option<Rc<dyn Fn()>>", desc: "Fires on Escape and on an outside click. Flip your open-state signal here. Unset → can't self-dismiss." },
+                ])
             }
 
             Section(title = "Recipe — context menu".to_string()) {
@@ -214,84 +181,356 @@ ui! {
 }"##.to_string())
             }
         }
-    })
+    }])
 }
 
 // =============================================================================
-// Drawer (pattern)
+// Modal
 // =============================================================================
 
-pub fn drawer() -> Element {
+pub fn modal() -> Element {
     let open = signal!(false);
     let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
     let on_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
 
-    shell::layout(ui! {
-        ComponentPage(
-            title = "Drawer pattern".to_string(),
-            lead = "Same Overlay primitive as Modal, pinned to the right edge with a \
-                slide-in transition. For navigation drawers (persistent on web wide \
-                viewports), use the `drawer-navigator` SDK — that's what powers this \
-                site's sidebar.".to_string(),
-        ) {
-            H2(content = "Live demo".to_string())
-            DemoSurface {
-                Button(
-                    label = "Open drawer".to_string(),
-                    on_click = on_open,
-                    tone = tone::Neutral,
-                    variant = variant::Soft,
-                )
-                presence(
-                    present = move || open.get(),
-                    enter = PresenceAnim::new(
-                        PresenceState::default().translate_x(360.0),
-                        260,
-                        Easing::EaseOut,
-                    ),
-                    exit = PresenceAnim::new(
-                        PresenceState::default().translate_x(360.0),
-                        220,
-                        Easing::EaseIn,
-                    ),
-                ) {
-                    overlay(
-                        placement = ViewportPlacement::Right,
-                        backdrop = BackdropMode::Dismiss,
-                        on_dismiss = {
-                            let oc = on_close.clone();
-                            move || (oc)()
-                        },
-                    ) {
-                        Card {
-                            Typography(content = "Drawer".to_string(), kind = typography_kind::H3)
-                            Typography(content = "Right-edge drawer content.".to_string())
-                            Button(
-                                label = "Close".to_string(),
-                                on_click = on_close.clone(),
-                                tone = tone::Neutral,
-                                variant = variant::Soft,
+    body(vec![ui! {
+        Stack(gap = StackGap::Xl) {
+            Section(title = "Live demo".to_string()) {
+                P(content = "A viewport-centered overlay with a dimming, dismiss-on-tap scrim. \
+                    The surface fades and slides in, caps to the viewport, and scrolls \
+                    internally when its content is taller than the screen.".to_string())
+                DemoSurface {
+                    Button(
+                        label = "Open modal".to_string(),
+                        on_click = on_open,
+                        tone = tone::Primary,
+                        variant = variant::Filled,
+                    )
+                    if open.get() {
+                        Modal(on_dismiss = Some(on_close.clone())) {
+                            Typography(content = "Confirm".to_string(), kind = typography_kind::H3)
+                            Typography(
+                                content = "Tap outside, press Escape, or use the buttons \
+                                    below to dismiss.".to_string(),
+                                muted = true,
                             )
+                            Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                                Button(
+                                    label = "Cancel".to_string(),
+                                    on_click = on_close.clone(),
+                                    tone = tone::Neutral,
+                                    variant = variant::Soft,
+                                )
+                                Button(
+                                    label = "Confirm".to_string(),
+                                    on_click = on_close.clone(),
+                                    tone = tone::Primary,
+                                    variant = variant::Filled,
+                                )
+                            }
                         }
                     }
                 }
             }
 
-            Section(title = "Transient drawer vs navigator drawer".to_string()) {
-                P(content = "The demo above is a transient drawer — opens, dismisses, gone. \
-                    For navigation chrome that persists across pages (the sidebar on this \
-                    site), use `drawer_navigator::DrawerNavigator` instead. The navigator owns \
-                    routing, breakpoint-based pinning, and per-platform sidebars.".to_string())
-                CodePanel(src = r##"use drawer_navigator::{DrawerNavigator, DrawerBuilder};
+            Section(title = "Pattern".to_string()) {
+                P(content = "Modal is controlled — the host owns a Signal<bool> and gates the \
+                    Modal behind it. The component never auto-unmounts itself; on_dismiss \
+                    (backdrop tap / Escape / back) fires the host's close so the same signal \
+                    drives every dismissal path.".to_string())
+                CodePanel(src = r##"let open = signal!(false);
+let on_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
 
-let nav = DrawerNavigator::new(&HOME_ROUTE)
-    .screen(HOME_ROUTE, |_| home_page())
-    .screen(ABOUT_ROUTE, |_| about_page())
-    .drawer_width(280.0)
-    .leading_with(move |slot| sidebar(slot));
+ui! {
+    Button(label = "Open".into(), on_click = move || open.set(true),
+           tone = tone::Primary, variant = variant::Filled)
+    if open.get() {
+        Modal(on_dismiss = Some(on_close.clone())) {
+            Typography(content = "Confirm".into(), kind = typography_kind::H3)
+            Typography(content = "Are you sure?".into())
+            Button(label = "OK".into(), on_click = on_close,
+                   tone = tone::Primary, variant = variant::Filled)
+        }
+    }
+}"##.to_string())
+            }
 
-ui! { nav.bind(nav_ref) }"##.to_string())
+            Section(title = "Props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "on_dismiss",       ty: "Option<Rc<dyn Fn()>>", desc: "Fires on backdrop tap (unless overridden), Escape, or back. Flip your open-state signal here." },
+                    Prop { name: "on_backdrop_press", ty: "Option<Rc<dyn Fn()>>", desc: "Intercepts the backdrop tap. Unset → falls back to on_dismiss when dismissable." },
+                    Prop { name: "dismissable",      ty: "bool",                 desc: "true (default) lets the backdrop tap and Escape dismiss; false makes the backdrop inert unless on_backdrop_press is set." },
+                    Prop { name: "width",            ty: "f32",                  desc: "Desired surface width on a roomy viewport (DIPs). Capped to the viewport reactively so it never overflows a phone. Default: 520." },
+                    Prop { name: "children",         ty: "Vec<Element>",         desc: "Modal body, laid out in a column inside the scrollable surface." },
+                ])
+            }
+
+            Callout(label = "Dismissal is delegated".to_string()) {
+                P(content = "idea-ui's Modal doesn't decide what \"dismiss\" means — it routes \
+                    the gesture to your on_dismiss and lets the host close. That keeps the \
+                    backdrop tap, Escape, and an explicit Close button all flowing through one \
+                    signal, and lets you intercept (confirm-before-close) without fighting the \
+                    component.".to_string())
             }
         }
-    })
+    }])
+}
+
+// =============================================================================
+// Collapsible
+// =============================================================================
+
+pub fn collapsible() -> Element {
+    body(vec![ui! {
+        Stack(gap = StackGap::Xl) {
+            Section(title = "Live demo".to_string()) {
+                P(content = "Click the header to toggle. The body always stays mounted; \
+                    visibility flows through a measured animation (or an instant Snap) per \
+                    the transition prop.".to_string())
+                collapsible_demo_measured()
+            }
+
+            Section(title = "Snap (no animation)".to_string()) {
+                P(content = "Sets transition = Snap — the body appears in one frame. Cheap, \
+                    predictable, and the right call for reduced-motion users.".to_string())
+                collapsible_demo_snap()
+            }
+
+            Section(title = "Props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "title",       ty: "Reactive<String>",      desc: "Header text. Static literal, Signal<String>, or rx!(...)." },
+                    Prop { name: "value",       ty: "Signal<bool>",          desc: "Controlled open state. The host owns this — pass signal!(false) for default-closed." },
+                    Prop { name: "on_change",   ty: "Rc<dyn Fn(bool)>",      desc: "Fires on header click with the requested new state. Wire Rc::new(move |v| value.set(v)) for standard toggle." },
+                    Prop { name: "transition",  ty: "CollapsibleTransition", desc: "Measured (default) — animates MaxHeight 0↔measured-content-height. Snap — instant." },
+                    Prop { name: "duration_ms", ty: "u32",                   desc: "Open/close duration. Default 240; only meaningful with Measured. Keep near 240 to match baked chrome transitions." },
+                    Prop { name: "children",    ty: "Vec<Element>",          desc: "Body contents. Always mounted; visibility flows through the transition strategy." },
+                ])
+            }
+
+            Section(title = "Recipe".to_string()) {
+                CodePanel(src = r##"let open = signal!(false);
+let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| open.set(v));
+
+ui! {
+    Collapsible(
+        title = "Advanced settings".into(),
+        value = open,
+        on_change = on_change,
+    ) {
+        Stack(gap = StackGap::Md) {
+            Field(label = Some("API key".into()), value = key, on_change = on_key)
+            Switch(label = Some("Beta features".into()), value = beta, on_change = on_beta)
+        }
+    }
+}"##.to_string())
+            }
+
+            Callout(label = "Controlled, like every disclosure here".to_string()) {
+                P(content = "The host owns the open-state signal, so the same pattern that \
+                    drives Tabs / Field / Switch applies: flip the signal from anywhere (an \
+                    Expand-all button, a URL param) and the section follows. For a coordinated \
+                    group where only one item opens at a time, reach for Accordion.".to_string())
+            }
+        }
+    }])
+}
+
+fn collapsible_demo_measured() -> Element {
+    let open = signal!(false);
+    let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| open.set(v));
+    ui! {
+        DemoSurface {
+            Collapsible(
+                title = "Measured — click to expand".to_string(),
+                value = open,
+                on_change = on_change,
+                transition = CollapsibleTransition::Measured,
+            ) {
+                Stack(gap = StackGap::Sm) {
+                    Typography(
+                        content = "The body's natural height is measured via the framework's \
+                            ViewHandle::on_layout (web ResizeObserver, iOS layoutSubviews, \
+                            Android OnLayoutChangeListener). The animator tweens \
+                            AnimProp::MaxHeight between 0 and that measured value.".to_string(),
+                    )
+                    Typography(
+                        content = "Content changes re-measure automatically — the next toggle \
+                            uses the new natural height. No fixed cap.".to_string(),
+                        muted = true,
+                    )
+                }
+            }
+        }
+    }
+}
+
+fn collapsible_demo_snap() -> Element {
+    let open = signal!(false);
+    let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| open.set(v));
+    ui! {
+        DemoSurface {
+            Collapsible(
+                title = "Snap — click to expand".to_string(),
+                value = open,
+                on_change = on_change,
+                transition = CollapsibleTransition::Snap,
+            ) {
+                Stack(gap = StackGap::Sm) {
+                    Typography(
+                        content = "No animation — the body appears in one frame.".to_string(),
+                    )
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Alert
+// =============================================================================
+
+pub fn alert() -> Element {
+    body(vec![ui! {
+        Stack(gap = StackGap::Xl) {
+            Section(title = "Intents (soft)".to_string()) {
+                P(content = "Tone drives the surface color; the soft variant tints a muted \
+                    background behind the text.".to_string())
+                DemoSurface {
+                    Stack(gap = StackGap::Sm) {
+                        Alert(title = "Info: cache refreshed".to_string(),  tone = tone::Info,    variant = variant::Soft)
+                        Alert(title = "Success: saved 12 rows".to_string(), tone = tone::Success, variant = variant::Soft)
+                        Alert(title = "Warning: quota at 80%".to_string(),  tone = tone::Warning, variant = variant::Soft)
+                        Alert(title = "Danger: payment failed".to_string(), tone = tone::Danger,  variant = variant::Soft)
+                    }
+                }
+            }
+
+            Section(title = "Solid".to_string()) {
+                P(content = "The filled variant carries the tone as a solid fill with inverted \
+                    text — for the loudest, most urgent banners.".to_string())
+                DemoSurface {
+                    Stack(gap = StackGap::Sm) {
+                        Alert(title = "Deploy complete".to_string(),          tone = tone::Success, variant = variant::Filled)
+                        Alert(title = "Action required: verify email".to_string(), tone = tone::Warning, variant = variant::Filled)
+                        Alert(title = "Outage: API unreachable".to_string(),  tone = tone::Danger,  variant = variant::Filled)
+                    }
+                }
+            }
+
+            Section(title = "With body & dismiss".to_string()) {
+                P(content = "Pass a body for a second detail line, and on_dismiss to surface a \
+                    close affordance in the top-right.".to_string())
+                alert_dismissible_demo()
+            }
+
+            Section(title = "Props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "title",      ty: "Reactive<String>",         desc: "Headline text." },
+                    Prop { name: "body",       ty: "Reactive<Option<String>>", desc: "Optional second-line detail." },
+                    Prop { name: "tone",       ty: "ToneRef",                  desc: "Semantic palette. Default: Info." },
+                    Prop { name: "variant",    ty: "VariantRef",               desc: "Filled / Soft / Outlined. Default: Soft." },
+                    Prop { name: "on_dismiss", ty: "Option<Rc<dyn Fn()>>",     desc: "When Some, a close affordance appears in the top-right." },
+                ])
+            }
+
+            Callout(label = "Alert vs Toast".to_string()) {
+                P(content = "Alert is in-flow — it pushes content and stays until dismissed. \
+                    For transient, self-dismissing notifications stacked over the app, use \
+                    Toast (same tone × variant styling, different lifecycle).".to_string())
+            }
+        }
+    }])
+}
+
+fn alert_dismissible_demo() -> Element {
+    let shown = signal!(true);
+    let on_dismiss: Rc<dyn Fn()> = Rc::new(move || shown.set(false));
+    ui! {
+        DemoSurface {
+            if shown.get() {
+                Alert(
+                    title = "Storage almost full".to_string(),
+                    body = Some("You're using 92% of your plan's quota. Upgrade or free up space.".to_string()),
+                    tone = tone::Warning,
+                    variant = variant::Soft,
+                    on_dismiss = Some(on_dismiss.clone()),
+                )
+            } else {
+                P(content = "Dismissed. (Reload the page to bring it back.)".to_string())
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Toast
+// =============================================================================
+
+pub fn toast() -> Element {
+    // push_toast / push_toast_with enqueue onto a process-global queue; a
+    // single ToastHost mounted anywhere renders them. We mount one here so
+    // the demo is self-contained on this page.
+    let push_success: Rc<dyn Fn()> =
+        Rc::new(|| { push_toast("Saved successfully", tone::Success); });
+    let push_danger: Rc<dyn Fn()> =
+        Rc::new(|| { push_toast_with("Upload failed", tone::Danger, variant::Filled); });
+
+    body(vec![ui! {
+        Stack(gap = StackGap::Xl) {
+            Section(title = "Live demo".to_string()) {
+                P(content = "Toasts are pushed imperatively from anywhere and rendered by a \
+                    single ToastHost mounted near the app root (one is mounted on this page). \
+                    Each fades in, shows for a few seconds, then animates out and removes \
+                    itself.".to_string())
+                DemoSurface {
+                    Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                        Button(
+                            label = "Push success".to_string(),
+                            on_click = push_success,
+                            tone = tone::Success,
+                            variant = variant::Soft,
+                        )
+                        Button(
+                            label = "Push error".to_string(),
+                            on_click = push_danger,
+                            tone = tone::Danger,
+                            variant = variant::Filled,
+                        )
+                    }
+                    // The host: a non-modal, touch-passthrough overlay anchored
+                    // to the top of the viewport. Mount once per app, not per
+                    // call site — here it's page-local for the demo.
+                    ToastHost(placement = ToastPlacement::Top)
+                }
+            }
+
+            Section(title = "Pushing & dismissing".to_string()) {
+                P(content = "The queue is process-global, so push_toast works from event \
+                    handlers, async completions — anywhere, no component scope required. The \
+                    returned id lets you close a toast early.".to_string())
+                CodePanel(src = r##"// Mount the host once, near the app root:
+ui! { ToastHost(placement = ToastPlacement::Top) }
+
+// Push from anywhere — returns the toast's id:
+let id = idea_ui::push_toast("Saved!", tone::Success);
+idea_ui::push_toast_with("Upload failed", tone::Danger, variant::Filled);
+
+// Close one early:
+idea_ui::dismiss_toast(id);"##.to_string())
+            }
+
+            Section(title = "Props (ToastHost)".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "placement", ty: "ToastPlacement", desc: "Viewport edge the stack anchors to — Top (default) or Bottom." },
+                ])
+            }
+
+            Callout(label = "Same styling as Alert".to_string()) {
+                P(content = "Toast surfaces reuse the installed Alert stylesheet, so they carry \
+                    the same tone × variant treatment and theme tokens — override globally via \
+                    install_alert_sheet(...). The difference is lifecycle: Alert is in-flow \
+                    and persistent, Toast is overlaid and transient.".to_string())
+            }
+        }
+    }])
 }

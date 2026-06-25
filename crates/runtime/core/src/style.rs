@@ -645,6 +645,28 @@ pub enum UserSelect {
     All,
 }
 
+/// Whether an element participates in pointer hit-testing.
+///
+/// The canonical use is [`PointerEvents::None`] on a purely *decorative* overlay
+/// — a drag preview, a highlight, a non-interactive scrim — so pointer events
+/// pass straight through it to the content beneath instead of being swallowed.
+///
+/// - Web: emits CSS `pointer-events`.
+/// - Native backends: no-op today (the layering hazard this solves is a web /
+///   stacked-DOM problem; native overlays don't intercept the same way).
+///
+/// The framework sets no default; only an author/SDK opt-in produces a
+/// non-default value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PointerEvents {
+    /// Default — the element hit-tests normally (CSS `auto`).
+    #[default]
+    Auto,
+    /// The element is transparent to pointer events; they pass through to
+    /// whatever is behind it (CSS `none`).
+    None,
+}
+
 /// Drop shadow. Mobile-shaped — no CSS `spread` (which doesn't map
 /// cleanly to UIView/Android shadow APIs). Backends translate:
 /// - Web: `box-shadow: {x}px {y}px {blur}px {color}`
@@ -967,6 +989,10 @@ pub struct StyleRules {
     /// Text-selection behavior. See [`UserSelect`]. The common opt-in is
     /// [`UserSelect::None`] on a clickable so its label can't be selected.
     pub user_select: Option<UserSelect>,
+    /// Pointer hit-testing. See [`PointerEvents`]. The common opt-in is
+    /// [`PointerEvents::None`] on a decorative overlay (e.g. a drag preview) so
+    /// it doesn't swallow the clicks/drags meant for the content beneath.
+    pub pointer_events: Option<PointerEvents>,
 
     // --- Transitions ---
     // One per animatable property. Set via `transitions { ... }` in
@@ -1039,7 +1065,7 @@ impl StyleRules {
             font_family, font_weight, font_style, line_height, letter_spacing,
             text_align, underline, strikethrough, text_transform,
             opacity, overflow, shadow, background_gradient, transform, transform_origin,
-            cursor, user_select,
+            cursor, user_select, pointer_events,
             background_transition, color_transition, caret_color_transition,
             opacity_transition,
             transform_transition, width_transition, height_transition,
@@ -1211,6 +1237,7 @@ impl StyleRules {
         // Interaction
         write_enum(&mut s, "cur", self.cursor.map(|x| x as u8));
         write_enum(&mut s, "usel", self.user_select.map(|x| x as u8));
+        write_enum(&mut s, "pev", self.pointer_events.map(|x| x as u8));
 
         // Transitions — one labeled segment per animatable property.
         // Inactive (None) transitions write an empty value so the

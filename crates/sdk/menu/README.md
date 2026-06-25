@@ -91,3 +91,30 @@ literal Control key everywhere. Compose extra modifiers with
 [`Shortcut::ctrl`]: src/lib.rs
 [`Shortcut::with`]: src/lib.rs
 [`Modifiers`]: src/lib.rs
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it. This is an OS-menu-bar capability, not a rendered
+primitive: where there's no menu-bar concept the call is a clean no-op.
+
+**Rendering / behavior**
+
+The bar should show the supplied menus left-to-right; opening a menu shows its
+items (commands, separators, submenus); choosing a command fires its `on_click`;
+shortcuts display + trigger; `enabled(false)` greys a command out.
+
+- [ ] **macOS** — `NSApplication.mainMenu` shows the menus at the top of the screen;
+  shortcuts map to `keyEquivalent` + modifier mask and fire; `install_reactive`
+  re-installs the bar when a read signal changes (fully reactive).
+- [ ] **Windows** — ⚠️ not yet device-confirmed. `HMENU` via `SetMenu(hwnd, hmenu)`;
+  `install_reactive` is **best-effort** (one-shot, no re-install on change — verify
+  the initial bar + shortcuts).
+- [ ] **Linux (GTK)** — ⚠️ not yet device-confirmed. `GtkPopoverMenuBar` + accels;
+  `install_reactive` best-effort one-shot (same as Windows).
+- [ ] **iOS** — ⚠️ not yet device-confirmed. UIKit menu builder; `install_reactive`
+  reads current signal values once and forces a rebuild, but does **not** re-run on
+  later changes (verify the one-shot result).
+- [ ] **Android / web / terminal / gpu** — `install` is a no-op (no menu bar
+  exists); confirm it's a clean no-op (no crash).

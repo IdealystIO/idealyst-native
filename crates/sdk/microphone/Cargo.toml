@@ -34,10 +34,12 @@ license.workspace = true
 [package.metadata.idealyst]
 capabilities = ["microphone"]
 
-# AVFoundation is needed at runtime for the macOS `AVCaptureDevice` permission
-# query (`permission_status`) and the iOS `AVAudioSession`. The classes resolve
-# via objc_getClass, but the CLI links the framework into the final app from this
-# list (same mechanism `camera` uses).
+# AVFoundation is needed at runtime for the iOS `AVAudioSession` activation (a
+# capture requirement). The classes resolve via objc_getClass, but the CLI
+# links the framework into the final app from this list (same mechanism
+# `camera` uses). The microphone permission grant now lives in the
+# `permissions` SDK, which links AVFoundation itself for its AVCaptureDevice
+# request.
 [package.metadata.idealyst.ios]
 frameworks = ["AVFoundation"]
 
@@ -48,6 +50,12 @@ thiserror = "1"
 # of `AudioStream` (the audio peer of `MediaStream`) via `open_stream()`,
 # exactly as `camera` produces `MediaStream`. Thin and GPU-free.
 media-stream = { workspace = true }
+# The shared runtime-permission substrate. Microphone's grant flow (the OS
+# prompt + status read) is delegated here instead of duplicated per platform;
+# this crate keeps only its CAPTURE code (cpal, AudioRecord, the iOS
+# AVAudioSession activation). `capabilities = ["microphone"]` (below) still
+# declares the manifest requirement — `permissions` declares none.
+permissions = { workspace = true }
 
 # Native targets (desktop + iOS): cpal wraps the platform audio SDK —
 # CoreAudio on macOS/iOS, WASAPI on Windows, ALSA on Linux. Android is
@@ -55,20 +63,15 @@ media-stream = { workspace = true }
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
 cpal = "0.15"
 
-# iOS + macOS: drive the Obj-C runtime (objc2 msg_send), no typed framework
-# crate. macOS uses it ONLY for the passive `AVCaptureDevice
-# .authorizationStatusForMediaType` permission query (no prompt). iOS
-# additionally activates AVAudioSession in a record category + runs the async
-# record-permission request (the block2 / futures-channel deps, iOS-only below).
-[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+# iOS only: drive the Obj-C runtime (objc2 msg_send), no typed framework
+# crate, to ACTIVATE an AVAudioSession in a record category (a capture
+# requirement so the input AudioUnit produces sound). The microphone *grant*
+# (the record-permission prompt + status read) is delegated to the
+# `permissions` SDK, so the old block2/futures-channel completion-block bridge
+# and the macOS-only AVCaptureDevice status query are gone from here.
+[target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString"] }
-
-# iOS only: AVAudioSession activation + the async `requestRecordPermission:`
-# completion-block → future bridge (same pattern the `net` SDK uses).
-[target.'cfg(target_os = "ios")'.dependencies]
-block2 = "0.5"
-futures-channel = "0.3"
 
 # Web (wasm) target: getUserMedia for the MediaStream, a Web Audio graph
 # (MediaStreamAudioSourceNode → ScriptProcessorNode) to pull PCM frames.

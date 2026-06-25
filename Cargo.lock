@@ -693,6 +693,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "audio"
+version = "0.0.1"
+dependencies = [
+ "jni 0.21.1",
+ "js-sys",
+ "ndk-context",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "runtime-core",
+ "tokio",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1404,7 +1419,6 @@ dependencies = [
 name = "camera"
 version = "0.0.1"
 dependencies = [
- "block2 0.5.1",
  "futures-channel",
  "jni 0.21.1",
  "js-sys",
@@ -1412,6 +1426,7 @@ dependencies = [
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+ "permissions",
  "thiserror 1.0.69",
  "tokio",
  "wasm-bindgen",
@@ -1671,6 +1686,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "clipboard"
+version = "0.0.1"
+dependencies = [
+ "jni 0.21.1",
+ "js-sys",
+ "ndk-context",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "runtime-core",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1762,6 +1793,20 @@ dependencies = [
  "robot-e2e",
  "runtime-core",
  "stack-navigator",
+]
+
+[[package]]
+name = "connectivity"
+version = "0.0.1"
+dependencies = [
+ "block2 0.5.1",
+ "jni 0.21.1",
+ "js-sys",
+ "ndk-context",
+ "objc2 0.5.2",
+ "runtime-core",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -2175,6 +2220,15 @@ dependencies = [
  "once_cell",
  "sha2",
  "zeroize",
+]
+
+[[package]]
+name = "deep-link"
+version = "0.0.1"
+dependencies = [
+ "runtime-core",
+ "url",
+ "web-sys",
 ]
 
 [[package]]
@@ -3793,6 +3847,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "haptics"
+version = "0.0.1"
+dependencies = [
+ "jni 0.21.1",
+ "js-sys",
+ "ndk-context",
+ "objc2 0.5.2",
+ "runtime-core",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "harfrust"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4893,6 +4960,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanban-demo"
+version = "0.0.1"
+dependencies = [
+ "dev-server",
+ "dnd",
+ "idea-theme",
+ "runtime-core",
+]
+
+[[package]]
 name = "keyring"
 version = "3.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5151,6 +5228,23 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+
+[[package]]
+name = "location"
+version = "0.0.1"
+dependencies = [
+ "jni 0.21.1",
+ "js-sys",
+ "ndk-context",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "permissions",
+ "runtime-core",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
 
 [[package]]
 name = "lock_api"
@@ -5499,7 +5593,6 @@ dependencies = [
 name = "microphone"
 version = "0.0.1"
 dependencies = [
- "block2 0.5.1",
  "cpal",
  "futures-channel",
  "jni 0.21.1",
@@ -5508,6 +5601,7 @@ dependencies = [
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+ "permissions",
  "thiserror 1.0.69",
  "tokio",
  "wasm-bindgen",
@@ -5804,6 +5898,23 @@ checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
  "memchr",
  "minimal-lexical",
+]
+
+[[package]]
+name = "notifications"
+version = "0.0.1"
+dependencies = [
+ "jni 0.21.1",
+ "js-sys",
+ "ndk-context",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "permissions",
+ "runtime-core",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -6521,6 +6632,23 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "permissions"
+version = "0.0.1"
+dependencies = [
+ "block2 0.5.1",
+ "jni 0.21.1",
+ "js-sys",
+ "ndk-context",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "runtime-core",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
 
 [[package]]
 name = "pest"
@@ -8231,6 +8359,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "share"
+version = "0.0.1"
+dependencies = [
+ "block2 0.5.1",
+ "futures-channel",
+ "jni 0.21.1",
+ "js-sys",
+ "ndk-context",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "runtime-core",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8448,6 +8594,16 @@ dependencies = [
  "web-sys",
  "windows-sys 0.61.2",
  "x11rb",
+]
+
+[[package]]
+name = "sortable-demo"
+version = "0.0.1"
+dependencies = [
+ "dev-server",
+ "dnd",
+ "idea-theme",
+ "runtime-core",
 ]
 
 [[package]]

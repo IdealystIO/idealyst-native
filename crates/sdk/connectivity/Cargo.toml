@@ -1,0 +1,59 @@
+[package]
+name = "connectivity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform network reachability.
+#
+# Reports whether the device currently has network access and over what
+# transport (wifi / cellular / ethernet), plus notifies on change. One small
+# author API — `current()` for a synchronous snapshot and `watch(cb)` for a
+# change subscription whose returned guard unregisters on drop — maps to each
+# platform's native reachability monitor:
+#   - web      : `navigator.onLine` + `online`/`offline` window events,
+#                `navigator.connection` for the transport hint.
+#   - iOS/macOS: `NWPathMonitor` (Network framework).
+#   - Android  : `ConnectivityManager` (getActiveNetwork + capabilities;
+#                registerDefaultNetworkCallback).
+#
+# Reachability + coarse transport only. Bandwidth, metered/expensive flags,
+# and a reactive `Signal` binding are deliberately later layers.
+
+[package.metadata.idealyst]
+# Knowing the network's reachability/transport needs a permission only on
+# Android (`ACCESS_NETWORK_STATE`). iOS/macOS/web need none — the CLI maps
+# this capability per platform.
+capabilities = ["network_state"]
+
+[features]
+# Compile-checked usage recipes for the catalog / MCP / docs surface. Off in
+# production builds, so recipes cost nothing there.
+catalog = ["runtime-core/catalog"]
+
+[dependencies]
+# Used by the recipe `ui!` examples (and the recipe! macro). With `catalog`
+# off the recipes expand to nothing, but the dep stays present for the macro.
+runtime-core = { workspace = true }
+
+# Web (wasm): navigator.onLine + online/offline events + NetworkInformation.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Navigator",
+    "EventTarget",
+    "Event",
+    "console",
+] }
+
+# iOS / macOS / tvOS: NWPathMonitor via the Network framework (objc2 runtime).
+[target.'cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))'.dependencies]
+objc2 = "0.5"
+block2 = "0.5"
+
+# Android: ConnectivityManager via JNI on the host Activity context.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"

@@ -78,3 +78,25 @@ attributes), or `None` until the first successful render — call it from
 with `.bind(my_ref.clone())` on the value `Svg(..)` returns.
 
 [`markup`]: src/lib.rs
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it.
+
+**Automated**
+- [ ] `cargo build -p svg --target wasm32-unknown-unknown` — web target
+
+**Rendering / behavior**
+- [ ] **Web** — a known SVG renders crisp via `innerHTML` (the browser's own SVG
+  engine); changing the reactive `markup` signal re-renders; `on_load` fires;
+  `intrinsic_size()` returns the SVG's natural dimensions after first render.
+- [ ] **iOS** — ⚠️ not yet device-confirmed. `usvg` parse → `drawRect:`/`CGContext`
+  redraws the vector tree crisply at the view's current bounds through resize /
+  scroll / retina scale changes (resolution-independent, no raster step);
+  `on_load`/`on_error` fire; `intrinsic_size()` populated.
+- [ ] **Android** — ⚠️ not yet device-confirmed. `usvg` → `Picture` → `PictureDrawable`
+  on an `ImageView` scales crisply with bounds; same observable output as iOS + web.
+- [ ] **macOS / other** — no handler registered; verify the framework's `External`
+  "not supported" placeholder renders cleanly (no layout artifact or crash).

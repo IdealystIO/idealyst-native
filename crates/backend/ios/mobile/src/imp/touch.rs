@@ -16,6 +16,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use runtime_core::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
 use objc2::rc::Retained;
@@ -185,7 +186,25 @@ impl IdealystTouchView {
             }
 
             let event = self.make_touch_event(&touch, phase);
+            // On Began, publish a node-bound claim closure so a recognizer that
+            // commits OFF the touch stream (a long-press drag, whose timer fires
+            // while the finger is held still) can still cancel ancestor
+            // `UIScrollView`s at the moment it commits — before the scroll pan
+            // sees the first move and steals the gesture. Without this the drag
+            // only claims on the next `Moved`, by which point the pan has already
+            // recognized and cancelled our touch. Cleared right after dispatch so
+            // it's scoped to this synchronous handler call (mirrors
+            // `set_pointer_modifiers`). Idempotent with the synchronous claim.
+            if matches!(phase, TouchPhase::Began) {
+                let view = self.retain();
+                runtime_core::set_active_touch_claim(Some(Rc::new(move || {
+                    claim_touch_internal(&view);
+                })));
+            }
             let response = (handler)(&event);
+            if matches!(phase, TouchPhase::Began) {
+                runtime_core::set_active_touch_claim(None);
+            }
 
             if response.consumed {
                 any_consumed = true;

@@ -7,8 +7,27 @@
 //! could tint the wheel). Until then this is identical to the
 //! closed-enum [`crate::components::spinner`].
 
-use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
-use runtime_core::{component, ui, Element, IdealystSchema, VariantEnum};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use runtime_core::primitives::activity_indicator::{activity_indicator, ActivityIndicatorSize};
+use runtime_core::{component, Element, IdealystSchema, IntoElement, StyleSheet, VariantEnum};
+
+thread_local! {
+    static SPINNER_HUG_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
+}
+
+/// Cached static sheet that hugs + centers the spinner on its parent's cross
+/// axis, so a row of mixed-size spinners centers instead of top-aligning under
+/// the default `align-items: stretch` (see `components::hug_self`).
+fn spinner_hug_sheet() -> Rc<StyleSheet> {
+    SPINNER_HUG_SHEET.with(|s| {
+        if s.borrow().is_none() {
+            *s.borrow_mut() = Some(Rc::new(StyleSheet::r#static(crate::components::hug_self())));
+        }
+        s.borrow().as_ref().cloned().unwrap()
+    })
+}
 
 /// Size knob for the [`Spinner`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -49,5 +68,5 @@ pub fn Spinner(props: &SpinnerProps) -> Element {
         SpinnerSize::Small => ActivityIndicatorSize::Small,
         SpinnerSize::Large => ActivityIndicatorSize::Large,
     };
-    ui! { activity_indicator().size(native) }
+    activity_indicator().size(native).with_style(spinner_hug_sheet()).into_element()
 }

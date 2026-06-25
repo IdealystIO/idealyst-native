@@ -233,7 +233,7 @@ where
     /// The shared re-application effect, created lazily on the first
     /// safe-area opt-in. Owns its arena slot (created outside any scope),
     /// so it lives until this backend drops.
-    safe_area_effect: Option<runtime_core::Effect>,
+    safe_area_effect: Option<runtime_core::Subscription>,
 }
 
 impl<B: Backend + 'static> WireBackend<B>
@@ -2040,16 +2040,16 @@ where
     /// safe-area opt-in whenever the CLIENT's `safe_area_insets()` signal
     /// changes (rotation, sheet adaptation, dynamic island). This is the
     /// device-side analogue of the framework's per-node `attach_safe_area`
-    /// Effect, which over the wire only ran on the headless (ZERO-inset)
-    /// dev side. The effect owns its arena slot (created with no active
-    /// scope), so it lives until this backend drops.
+    /// effect, which over the wire only ran on the headless (ZERO-inset)
+    /// dev side. A caller-owned `watch` stored on the backend (created with
+    /// no active scope), so its `Subscription` lives until this backend drops.
     fn ensure_safe_area_effect(&mut self) {
         if self.safe_area_effect.is_some() {
             return;
         }
         let backend = self.backend.clone();
         let nodes = self.safe_area_nodes.clone();
-        self.safe_area_effect = Some(runtime_core::Effect::new(move || {
+        self.safe_area_effect = Some(runtime_core::watch(move || {
             // Subscribe to the device insets; the backend reads the
             // concrete platform value itself inside the apply calls.
             let _ = runtime_core::safe_area_insets().get();

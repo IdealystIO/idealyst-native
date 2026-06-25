@@ -25,16 +25,16 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::{Color, Effect, FontFamily, Length, Tokenized};
+use runtime_core::{watch, Color, FontFamily, Length, Subscription, Tokenized};
 use crate::theme_runtime::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
 
 thread_local! {
-    /// Keepalive for [`install_idea_theme_reactive`]'s internal Effect when it's
-    /// called outside a render scope (tests, top-level binaries). In an app the
-    /// active scope owns the effect and this just holds an empty handle.
-    /// Single-slot, so repeated installs supersede rather than leak — same
-    /// posture as `theme_runtime::INSTALL_THEMES_KEEPALIVE`.
-    static REACTIVE_THEME_KEEPALIVE: RefCell<Option<Effect>> = const { RefCell::new(None) };
+    /// Owns [`install_idea_theme_reactive`]'s theme `watch` for the process
+    /// lifetime. The install runs outside any render scope (app boot, tests,
+    /// top-level binaries), so the subscription is caller-owned and this is
+    /// the caller. Single-slot, so repeated installs supersede rather than
+    /// leak — same posture as `theme_runtime::INSTALL_THEMES_KEEPALIVE`.
+    static REACTIVE_THEME_KEEPALIVE: RefCell<Option<Subscription>> = const { RefCell::new(None) };
 }
 
 /// The default body font for every idea-ui text surface.
@@ -560,12 +560,12 @@ const DEFAULT_RADIUS: Radius = Radius {
 };
 
 const DEFAULT_TYPOGRAPHY: Typography = Typography {
-    display_size: 56.0,
-    h1_size: 36.0,
-    h2_size: 28.0,
-    h3_size: 20.0,
-    body_xl_size: 20.0,
-    body_lg_size: 18.0,
+    display_size: 40.0,
+    h1_size: 32.0,
+    h2_size: 24.0,
+    h3_size: 19.0,
+    body_xl_size: 18.0,
+    body_lg_size: 16.0,
     body_size: 14.0,
     body_sm_size: 13.0,
     caption_size: 12.0,
@@ -608,68 +608,68 @@ macro_rules! intent_colors {
 pub fn light_theme() -> IdeaThemeDefaults {
     IdeaThemeDefaults {
         colors: Colors {
-            background: tok("color-background", "#f7f8fb"),
+            background: tok("color-background", "#f6f7f9"),
             surface: tok("color-surface", "#ffffff"),
-            surface_alt: tok("color-surface-alt", "#eef0f7"),
+            surface_alt: tok("color-surface-alt", "#f1f5f9"),
 
-            text: tok("color-text", "#1a1a1f"),
-            text_muted: tok("color-text-muted", "#6b7280"),
+            text: tok("color-text", "#0f172a"),
+            text_muted: tok("color-text-muted", "#64748b"),
             text_inverse: tok("color-text-inverse", "#ffffff"),
 
-            border: tok("color-border", "#e4e6ef"),
-            border_hover: tok("color-border-hover", "#b9bdcc"),
-            border_strong: tok("color-border-strong", "#9097a8"),
+            border: tok("color-border", "#e3e8ef"),
+            border_hover: tok("color-border-hover", "#cdd5e0"),
+            border_strong: tok("color-border-strong", "#94a3b8"),
 
-            focus_ring: tok("color-focus-ring", "#5b6cff"),
-            overlay: tok("color-overlay", "rgba(15, 17, 21, 0.45)"),
+            focus_ring: tok("color-focus-ring", "#6366f1"),
+            overlay: tok("color-overlay", "rgba(15, 23, 42, 0.45)"),
         },
         intents: Intents {
             // primary: indigo
             primary: intent_colors!(
                 "primary",
-                "#5b6cff", "#ffffff",
-                "rgba(91, 108, 255, 0.12)", "#3947d6",
-                "#3947d6", "#5b6cff",
+                "#4f46e5", "#ffffff",
+                "#eef2ff", "#3730a3",
+                "#4f46e5", "#c7d2fe",
             ),
             // secondary: slate gray
             secondary: intent_colors!(
                 "secondary",
                 "#475569", "#ffffff",
-                "rgba(71, 85, 105, 0.10)", "#334155",
-                "#334155", "#475569",
+                "#f1f5f9", "#334155",
+                "#475569", "#cbd5e1",
             ),
-            // neutral: solid is near-black (think "Cancel" buttons);
+            // neutral: solid is a dark slate (think "Cancel" buttons);
             // soft is the surface-alt wash.
             neutral: intent_colors!(
                 "neutral",
-                "#1a1a1f", "#ffffff",
-                "#eef0f7", "#1a1a1f",
-                "#1a1a1f", "#e4e6ef",
+                "#334155", "#ffffff",
+                "#f1f5f9", "#334155",
+                "#475569", "#e2e8f0",
             ),
             success: intent_colors!(
                 "success",
-                "#3ba55d", "#ffffff",
-                "rgba(59, 165, 93, 0.12)", "#1f6e3a",
-                "#1f6e3a", "#3ba55d",
+                "#15803d", "#ffffff",
+                "#f0fdf4", "#15803d",
+                "#16a34a", "#bbf7d0",
             ),
             danger: intent_colors!(
                 "danger",
-                "#e5484d", "#ffffff",
-                "rgba(229, 72, 77, 0.12)", "#a82127",
-                "#a82127", "#e5484d",
+                "#dc2626", "#ffffff",
+                "#fef2f2", "#b91c1c",
+                "#dc2626", "#fecaca",
             ),
             warning: intent_colors!(
                 "warning",
-                "#e0a82e", "#1a1a1f",
-                "rgba(224, 168, 46, 0.16)", "#7a5810",
-                "#7a5810", "#e0a82e",
+                "#b45309", "#ffffff",
+                "#fffbeb", "#92400e",
+                "#b45309", "#fde68a",
             ),
             // info: cyan — visually distinct from primary's indigo.
             info: intent_colors!(
                 "info",
-                "#0ea5e9", "#ffffff",
-                "rgba(14, 165, 233, 0.12)", "#065e85",
-                "#065e85", "#0ea5e9",
+                "#0e7490", "#ffffff",
+                "#ecfeff", "#155e75",
+                "#0891b2", "#a5f3fc",
             ),
         },
         spacing: DEFAULT_SPACING.clone(),
@@ -682,63 +682,63 @@ pub fn light_theme() -> IdeaThemeDefaults {
 pub fn dark_theme() -> IdeaThemeDefaults {
     IdeaThemeDefaults {
         colors: Colors {
-            background: tok("color-background", "#0f1115"),
-            surface: tok("color-surface", "#1a1d24"),
-            surface_alt: tok("color-surface-alt", "#262a35"),
+            background: tok("color-background", "#0a0e17"),
+            surface: tok("color-surface", "#0f1625"),
+            surface_alt: tok("color-surface-alt", "#1a2336"),
 
-            text: tok("color-text", "#e8eaf0"),
-            text_muted: tok("color-text-muted", "#9099a8"),
-            text_inverse: tok("color-text-inverse", "#0f1115"),
+            text: tok("color-text", "#e6edf6"),
+            text_muted: tok("color-text-muted", "#8b97aa"),
+            text_inverse: tok("color-text-inverse", "#0a0e17"),
 
-            border: tok("color-border", "#2a2e3a"),
-            border_hover: tok("color-border-hover", "#3d4252"),
-            border_strong: tok("color-border-strong", "#525868"),
+            border: tok("color-border", "#1f2a3d"),
+            border_hover: tok("color-border-hover", "#2c3a52"),
+            border_strong: tok("color-border-strong", "#475569"),
 
-            focus_ring: tok("color-focus-ring", "#8b9aff"),
-            overlay: tok("color-overlay", "rgba(0, 0, 0, 0.55)"),
+            focus_ring: tok("color-focus-ring", "#818cf8"),
+            overlay: tok("color-overlay", "rgba(0, 0, 0, 0.62)"),
         },
         intents: Intents {
             primary: intent_colors!(
                 "primary",
-                "#8b9aff", "#0f1115",
-                "rgba(139, 154, 255, 0.18)", "#b8c2ff",
-                "#b8c2ff", "#8b9aff",
+                "#6366f1", "#ffffff",
+                "rgba(99, 102, 241, 0.16)", "#c7d2fe",
+                "#a5b4fc", "rgba(99, 102, 241, 0.42)",
             ),
             secondary: intent_colors!(
                 "secondary",
                 "#64748b", "#ffffff",
                 "rgba(148, 163, 184, 0.14)", "#cbd5e1",
-                "#cbd5e1", "#64748b",
+                "#cbd5e1", "rgba(148, 163, 184, 0.32)",
             ),
             neutral: intent_colors!(
                 "neutral",
-                "#e8eaf0", "#0f1115",
-                "#262a35", "#e8eaf0",
-                "#e8eaf0", "#2a2e3a",
+                "#475569", "#ffffff",
+                "rgba(148, 163, 184, 0.12)", "#cbd5e1",
+                "#cbd5e1", "rgba(148, 163, 184, 0.26)",
             ),
             success: intent_colors!(
                 "success",
-                "#4cc77c", "#0f1115",
-                "rgba(76, 199, 124, 0.16)", "#7fdfa1",
-                "#7fdfa1", "#4cc77c",
+                "#22c55e", "#04210f",
+                "rgba(34, 197, 94, 0.15)", "#86efac",
+                "#4ade80", "rgba(34, 197, 94, 0.36)",
             ),
             danger: intent_colors!(
                 "danger",
-                "#ff6369", "#ffffff",
-                "rgba(255, 99, 105, 0.18)", "#ff9ba0",
-                "#ff9ba0", "#ff6369",
+                "#ef4444", "#ffffff",
+                "rgba(239, 68, 68, 0.15)", "#fca5a5",
+                "#f87171", "rgba(239, 68, 68, 0.36)",
             ),
             warning: intent_colors!(
                 "warning",
-                "#f0b942", "#0f1115",
-                "rgba(240, 185, 66, 0.18)", "#f5cf7a",
-                "#f5cf7a", "#f0b942",
+                "#f59e0b", "#231400",
+                "rgba(245, 158, 11, 0.15)", "#fcd34d",
+                "#fbbf24", "rgba(245, 158, 11, 0.36)",
             ),
             info: intent_colors!(
                 "info",
-                "#38bdf8", "#0f1115",
-                "rgba(56, 189, 248, 0.16)", "#7dd0f5",
-                "#7dd0f5", "#38bdf8",
+                "#06b6d4", "#04212a",
+                "rgba(6, 182, 212, 0.15)", "#67e8f9",
+                "#22d3ee", "rgba(6, 182, 212, 0.36)",
             ),
         },
         spacing: DEFAULT_SPACING.clone(),
@@ -786,7 +786,7 @@ where
     install_default_idea_sheets();
     let mut select = select;
     let mut primed = false;
-    let effect = Effect::new(move || {
+    let sub = watch(move || {
         let theme = IdeaThemeRef::new(select());
         if primed {
             set_theme(theme);
@@ -795,7 +795,9 @@ where
             install_theme(theme);
         }
     });
-    REACTIVE_THEME_KEEPALIVE.with(|k| *k.borrow_mut() = Some(effect));
+    // Single-slot: replacing the keepalive drops any prior Subscription,
+    // disposing the previous install's effect.
+    REACTIVE_THEME_KEEPALIVE.with(|k| *k.borrow_mut() = Some(sub));
 }
 
 /// Install the default stylesheets for every idea-ui component that
@@ -987,12 +989,12 @@ mod tests {
         assert_eq!(px(find_length(&toks, "radius-lg")), 12.0);
         assert_eq!(px(find_length(&toks, "radius-pill")), 999.0);
         // Typography — one token per Typography variant.
-        assert_eq!(px(find_length(&toks, "typography-display-size")), 56.0);
-        assert_eq!(px(find_length(&toks, "typography-h1-size")), 36.0);
-        assert_eq!(px(find_length(&toks, "typography-h2-size")), 28.0);
-        assert_eq!(px(find_length(&toks, "typography-h3-size")), 20.0);
-        assert_eq!(px(find_length(&toks, "typography-body-xl-size")), 20.0);
-        assert_eq!(px(find_length(&toks, "typography-body-lg-size")), 18.0);
+        assert_eq!(px(find_length(&toks, "typography-display-size")), 40.0);
+        assert_eq!(px(find_length(&toks, "typography-h1-size")), 32.0);
+        assert_eq!(px(find_length(&toks, "typography-h2-size")), 24.0);
+        assert_eq!(px(find_length(&toks, "typography-h3-size")), 19.0);
+        assert_eq!(px(find_length(&toks, "typography-body-xl-size")), 18.0);
+        assert_eq!(px(find_length(&toks, "typography-body-lg-size")), 16.0);
         assert_eq!(px(find_length(&toks, "typography-body-size")), 14.0);
         assert_eq!(px(find_length(&toks, "typography-body-sm-size")), 13.0);
         assert_eq!(px(find_length(&toks, "typography-caption-size")), 12.0);

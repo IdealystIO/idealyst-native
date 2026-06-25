@@ -44,6 +44,25 @@ drop into `ui!`.
 | `screen-recorder` | [`screen-recorder/`](./screen-recorder) | Screen / window frame capture as a raw frame stream. Capability API plus a private-layer `Element::External` overlay. |
 | `menu` | [`menu/`](./menu) | OS menu-bar definitions — `NSMenu` / native app menus. A capability API (no rendered primitive); reactivity is full on macOS, one-shot elsewhere. |
 
+## Device / platform-integration SDKs
+
+OS-integration capabilities. `permissions` is the shared runtime-grant
+substrate — any SDK that prompts the user (`notifications`, `location`, and the
+media SDKs `camera` / `microphone`) delegates to it instead of re-implementing
+an OS grant flow.
+
+| Crate | Path | What it adds |
+| --- | --- | --- |
+| `permissions` | [`permissions/`](./permissions) | Cross-platform runtime permission requests — `request(Permission)` / `status(Permission)` → a uniform `PermissionStatus`. The shared grant substrate every prompting capability depends on. |
+| `notifications` | [`notifications/`](./notifications) | Local + scheduled notifications and the raw device push token. Authorization via `permissions`; server-side push delivery is the app's job. |
+| `location` | [`location/`](./location) | Device geolocation — one-shot `current()` and continuous `watch()` yielding a `Position`. Permission via `permissions`. |
+| `clipboard` | [`clipboard/`](./clipboard) | System copy/paste of plain text — `set_text` / `text`. |
+| `share` | [`share/`](./share) | The system share sheet (outbound) — hand text/url/files to another app. The inverse of `file-picker`. |
+| `deep-link` | [`deep-link/`](./deep-link) | Inbound URL handling — `initial_link()` + `on_link()` deliver the parsed launch/resume URL (custom scheme / universal / app link). |
+| `connectivity` | [`connectivity/`](./connectivity) | Network reachability — `current()` snapshot + `watch()` of online/offline and coarse transport. |
+| `haptics` | [`haptics/`](./haptics) | Tactile feedback — `impact` / `notify` / `selection`. Best-effort, fire-and-forget. |
+| `audio` | [`audio/`](./audio) | Sound playback — `load(AudioSource)` → a `Sound` you `play()`. The playback peer of the capture SDKs. |
+
 ## Navigator SDKs
 
 Navigators are extension SDKs too — they ride `Element::Navigator` and
@@ -71,6 +90,11 @@ What's covered by automated tests, and — for the SDKs that wrap a native
 facility — how far each backend has actually been *exercised* vs. only
 *compiled*. This is deliberately honest: a backend that compiles for a
 target but has never run on a device says so.
+
+Each SDK's own `README.md` ends with a **`## Testing checklist`** — the
+concrete, per-platform manual steps that turn a ⚠️ *compile-checked* backend
+into a ✅ *verified* one. The matrix below is the summary; the per-crate
+checklist is what you actually run on the device.
 
 **Why two axes.** Much of an SDK's surface is pure logic (framing math,
 parsers, builder/macro lowering) that unit tests pin down on any host. But
@@ -120,6 +144,20 @@ JNI/Obj-C symbol resolution that the compiler can't check. So a green
 | `screen-recorder` | 🧪 unit (portable) | ⚠️ per-platform capture paths compile-checked |
 | `menu` | — none | 🟢 macOS (`NSMenu`) reactive; one-shot elsewhere |
 | `i18n` · `i18n-macros` | 🧪 unit (locale, packs, format) · 🔌 macro + compile-fail UI tests | n/a — pure Rust, no native backend |
+
+### Device / platform-integration SDKs
+
+| Crate | Tests | Native verification |
+| --- | --- | --- |
+| `permissions` | 🧪 unit (status helpers, oneshot bridge) | 🟢 web (Notification / Permissions / geolocation) run-exercised; ⚠️ **Apple (`UNUserNotificationCenter` / `CLLocationManager` / `AVCaptureDevice`) + Android (`checkSelfPermission` + request seam) compile-checked only** |
+| `notifications` | 🧪 unit (id resolution, builder) | 🟢 web immediate `Notification` run-exercised; ⚠️ **Apple `UNUserNotificationCenter` + Android `NotificationManager` compile-checked only**; push token + delay-scheduling are documented seams |
+| `location` | 🧪 unit (Position mapping, oneshot) | 🟢 web `geolocation` run-exercised; ⚠️ **Apple `CLLocationManager` + Android `LocationManager` compile-checked only**; Android `watch` needs a host `LocationListener` shim |
+| `clipboard` | 🧪 unit (error Display) | 🟢 web `navigator.clipboard` run-exercised; ⚠️ **Apple `UIPasteboard`/`NSPasteboard` + Android `ClipboardManager` compile-checked only** |
+| `share` | 🧪 unit (builder, empty-guard) | 🟢 web `navigator.share` where supported; ⚠️ **Apple `UIActivityViewController`/`NSSharingServicePicker` + Android `ACTION_SEND` compile-checked only**; Android file-share needs a `FileProvider` seam |
+| `deep-link` | 🧪 unit (URL parse, dedupe, dispatch, RAII unsubscribe) | 🟢 web `location.href` run-exercised; ⚠️ **Apple/Android launch-URL forwarding is a host seam (the parse/dispatch core is pure Rust)** |
+| `connectivity` | 🧪 unit (snapshot consistency, transport) | 🟢 web `navigator.onLine` run-exercised; ⚠️ **Apple `NWPathMonitor` + Android `ConnectivityManager` compile-checked only**; Android `watch` needs a host `NetworkCallback` shim |
+| `haptics` | 🧪 unit (style mapping) | 🟢 web `navigator.vibrate` where supported; ⚠️ **Apple `UIFeedbackGenerator`/`NSHapticFeedbackManager` + Android `Vibrator` compile-checked only** |
+| `audio` | 🧪 unit (source/handle, async load) | 🟢 web `HTMLAudioElement` run-exercised; ⚠️ **Apple `AVAudioPlayer` + Android `MediaPlayer` compile-checked only**; desktop = `NotSupported` fallback |
 
 ### Navigator SDKs
 

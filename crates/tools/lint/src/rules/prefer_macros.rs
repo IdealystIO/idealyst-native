@@ -53,8 +53,9 @@ pub(crate) fn check_call(call: &syn::ExprCall, out: &mut Vec<RawDiag>) {
                     span_of(path_expr),
                 )
                 .with_help(
-                    "use `effect! { … }` — it binds the effect handle to the surrounding scope \
-                     so it keeps running instead of being dropped immediately",
+                    "inside a component use `effect! { … }` (the scope owns it); outside the \
+                     tree use `watch(…)` and hold the returned `Subscription`. The raw \
+                     `Effect::new` constructor is sealed.",
                 ),
             );
         }

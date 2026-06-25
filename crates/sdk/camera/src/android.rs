@@ -46,9 +46,6 @@ use jni::{JNIEnv, JavaVM};
 use crate::{CameraConfig, CameraError, CameraFacing, NativeSource};
 use media_stream::FrameWriter;
 
-const CAMERA_PERMISSION: &str = "android.permission.CAMERA";
-const PERMISSION_GRANTED: i32 = 0; // PackageManager.PERMISSION_GRANTED
-
 // CameraConfig::facing as the int the Kotlin shim understands.
 const FACING_DEFAULT: i32 = 0;
 const FACING_FRONT: i32 = 1;
@@ -98,31 +95,21 @@ impl Drop for StreamHandle {
     }
 }
 
+/// Ensure the CAMERA runtime permission, delegated to the shared
+/// `permissions` SDK (which owns the `checkSelfPermission` /
+/// `Activity.requestPermissions` grant flow + the
+/// `onRequestPermissionsResult` forwarding seam). On first use the prompt
+/// fires; until the host forwards the result, `permissions::request` reports
+/// the not-yet-granted state, which maps to `PermissionDenied` — the caller
+/// re-invokes `open` once granted. Same observable posture as before; the
+/// grant code just lives in one place now.
 pub(crate) async fn request_permission() -> Result<(), CameraError> {
-    let vm = java_vm()?;
-    let mut env = vm.attach_current_thread().map_err(jni_err)?;
-    let activity = android_context();
-
-    if check_self_permission(&mut env, &activity)? {
-        return Ok(());
+    let status = permissions::request(permissions::Permission::Camera).await;
+    if status.is_usable() {
+        Ok(())
+    } else {
+        Err(CameraError::PermissionDenied)
     }
-
-    // Not yet granted: surface the runtime dialog. Its result arrives in the
-    // Activity's `onRequestPermissionsResult`, which this SDK doesn't hook —
-    // so we fire the request and report the current (not-granted) state. The
-    // caller re-checks (or retries `open`) after the user responds. Same
-    // posture as `microphone`. Documented in the README.
-    let perm = env.new_string(CAMERA_PERMISSION).map_err(jni_err)?;
-    let arr = env
-        .new_object_array(1, "java/lang/String", &perm)
-        .map_err(jni_err)?;
-    let _ = env.call_method(
-        &activity,
-        "requestPermissions",
-        "([Ljava/lang/String;I)V",
-        &[JValue::Object(&JObject::from(arr)), JValue::Int(0)],
-    );
-    Err(CameraError::PermissionDenied)
 }
 
 pub(crate) async fn open(
@@ -205,25 +192,6 @@ fn jni_err(e: jni::errors::Error) -> CameraError {
 fn android_context<'a>() -> JObject<'a> {
     let ctx = ndk_context::android_context();
     unsafe { JObject::from_raw(ctx.context().cast()) }
-}
-
-/// `context.checkSelfPermission("android.permission.CAMERA") == GRANTED`.
-fn check_self_permission(
-    env: &mut JNIEnv<'_>,
-    activity: &JObject<'_>,
-) -> Result<bool, CameraError> {
-    let perm = env.new_string(CAMERA_PERMISSION).map_err(jni_err)?;
-    let result = env
-        .call_method(
-            activity,
-            "checkSelfPermission",
-            "(Ljava/lang/String;)I",
-            &[JValue::Object(&JObject::from(perm))],
-        )
-        .map_err(jni_err)?
-        .i()
-        .map_err(jni_err)?;
-    Ok(result == PERMISSION_GRANTED)
 }
 
 /// Map the shim's error `(code, message)` to a typed [`CameraError`]. `code`

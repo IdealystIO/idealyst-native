@@ -73,3 +73,29 @@ future addition here: another lane mode, not a separate engine.
 
 Pure Rust on top of `runtime-core`; nothing platform-specific to gate. No
 permissions required.
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it. This crate is a thin generic layer; the windowing /
+recycling / lane-math *behavior* is owned by the `flat_list` / `virtualizer`
+primitive and tested in `runtime-core`, so the boxes below exercise the
+underlying engine through these constructors.
+
+**Automated**
+- [ ] `cargo test -p virtualized` — `list` / `grid` / `responsive_grid`
+  construction smoke tests against a real `Signal<Vec<T>>` with non-`Copy` data
+- [ ] `cargo build -p virtualized --target wasm32-unknown-unknown` — web target
+
+**Behavior**
+- [ ] **Web** — a long `list` only renders visible items; `grid(N)` lays out N
+  lanes; `responsive_grid` reflows its lane count on window resize; fast scroll
+  keeps up with no blank gaps.
+- [ ] **iOS** — virtualized cell recycling (UICollectionView) renders only
+  visible items; grid lanes + responsive re-laning on rotation correct. ⚠️ not
+  yet device-confirmed.
+- [ ] **Android** — recycling (RecyclerView) renders only visible items; grid +
+  responsive lanes correct. ⚠️ not yet device-confirmed.
+- [ ] **macOS** — recycling (NSCollectionView) renders only visible items; grid
+  lanes + responsive reflow on resize correct. ⚠️ not yet device-confirmed.

@@ -53,58 +53,64 @@ macro_rules! builtin_kind {
 // Px values mirror the original closed-enum Typography stylesheet so
 // the visual output is identical to the pre-migration baseline.
 
+// Sizes, line-heights, weights and letter-spacing mirror the idea-ui
+// design type scale: a tight display/heading ramp (display 40 → h3 19)
+// with negative tracking on the large roles, and generous body
+// line-heights (~1.5–1.6×) for reading comfort. The `size_fallback`s
+// match the theme's typography tokens so an un-themed surface still
+// renders the canonical scale.
 builtin_kind!(
     Display,
     key = "display",
     size_token = "typography-display-size",
-    size_fallback = 56.0,
+    size_fallback = 40.0,
     weight = FontWeight::Bold,
-    line_height_px = 60.0,
-    letter_spacing_px = -1.4,
+    line_height_px = 44.0,
+    letter_spacing_px = -1.0,
 );
 builtin_kind!(
     H1,
     key = "h1",
     size_token = "typography-h1-size",
-    size_fallback = 36.0,
+    size_fallback = 32.0,
     weight = FontWeight::Bold,
-    line_height_px = 42.0,
-    letter_spacing_px = -1.0,
+    line_height_px = 36.0,
+    letter_spacing_px = -0.8,
 );
 builtin_kind!(
     H2,
     key = "h2",
     size_token = "typography-h2-size",
-    size_fallback = 28.0,
+    size_fallback = 24.0,
     weight = FontWeight::SemiBold,
-    line_height_px = 34.0,
-    letter_spacing_px = -0.3,
+    line_height_px = 28.0,
+    letter_spacing_px = -0.5,
 );
 builtin_kind!(
     H3,
     key = "h3",
     size_token = "typography-h3-size",
-    size_fallback = 20.0,
+    size_fallback = 19.0,
     weight = FontWeight::SemiBold,
-    line_height_px = 26.0,
+    line_height_px = 24.0,
     letter_spacing_px = -0.2,
 );
 builtin_kind!(
     BodyXl,
     key = "body-xl",
     size_token = "typography-body-xl-size",
-    size_fallback = 20.0,
+    size_fallback = 18.0,
     weight = FontWeight::Normal,
-    line_height_px = 30.0,
+    line_height_px = 27.0,
     letter_spacing_px = 0.0,
 );
 builtin_kind!(
     BodyLg,
     key = "body-lg",
     size_token = "typography-body-lg-size",
-    size_fallback = 18.0,
+    size_fallback = 16.0,
     weight = FontWeight::Normal,
-    line_height_px = 26.0,
+    line_height_px = 25.0,
     letter_spacing_px = 0.0,
 );
 builtin_kind!(
@@ -113,7 +119,7 @@ builtin_kind!(
     size_token = "typography-body-size",
     size_fallback = 14.0,
     weight = FontWeight::Normal,
-    line_height_px = 20.0,
+    line_height_px = 22.0,
     letter_spacing_px = 0.0,
 );
 builtin_kind!(
@@ -122,7 +128,7 @@ builtin_kind!(
     size_token = "typography-body-sm-size",
     size_fallback = 13.0,
     weight = FontWeight::Normal,
-    line_height_px = 18.0,
+    line_height_px = 21.0,
     letter_spacing_px = 0.0,
 );
 builtin_kind!(
@@ -130,8 +136,8 @@ builtin_kind!(
     key = "caption",
     size_token = "typography-caption-size",
     size_fallback = 12.0,
-    weight = FontWeight::Normal,
-    line_height_px = 16.0,
+    weight = FontWeight::Medium,
+    line_height_px = 17.0,
     letter_spacing_px = 0.0,
 );
 builtin_kind!(
@@ -139,7 +145,7 @@ builtin_kind!(
     key = "overline",
     size_token = "typography-overline-size",
     size_fallback = 11.0,
-    weight = FontWeight::SemiBold,
-    line_height_px = 16.0,
-    letter_spacing_px = 0.8,
+    weight = FontWeight::Bold,
+    line_height_px = 14.0,
+    letter_spacing_px = 1.5,
 );

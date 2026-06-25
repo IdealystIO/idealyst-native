@@ -249,12 +249,27 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTouchListener_nativeI
     let Some(handler) = handler_opt else {
         return 0;
     };
+    // On Began, publish a node-bound claim closure so a recognizer that commits
+    // OFF the touch stream (a long-press drag, whose timer fires while the finger
+    // is held still) can disable ancestor scroll interception at the moment it
+    // commits — before any container's `onInterceptTouchEvent` sees a scroll and
+    // steals the gesture. Scoped to this synchronous dispatch (cleared after),
+    // mirroring the iOS backend; idempotent with the Kotlin inline claim.
+    if matches!(phase, TouchPhase::Began) {
+        let node = cb.node.clone();
+        runtime_core::set_active_touch_claim(Some(std::rc::Rc::new(move || {
+            crate::imp::primitives::touch::claim_node(&node);
+        })));
+    }
     // Crash-loud on panic \u{2014} substituting IGNORED would hide a
     // bug in the user's touch handler behind random "lost touches."
     let response = run_returning_callback(
         "touch",
         std::panic::AssertUnwindSafe(|| handler(&event)),
     );
+    if matches!(phase, TouchPhase::Began) {
+        runtime_core::set_active_touch_claim(None);
+    }
     let mut packed: jint = 0;
     if response.consumed {
         packed |= 0x1;

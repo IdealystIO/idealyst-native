@@ -79,14 +79,11 @@ If a child only sometimes appears, express it with `if` / `if let` /
 before the macro call. Same for iteration: `for … { … }` inside the
 macro is the standard form.
 
-## Effects: prefer `effect!` over a bare `Effect::new`
+## Effects: `effect!` in the tree, `watch` outside it
 
-Inside a component body, write side effects with [[effect]], not a bare
-`Effect::new(...)` whose handle you bind by hand. The macro inserts the
-`move ||`, tracks dependencies by what the body reads (no deps array),
-and binds the handle so it adopts the surrounding scope. Reach for
-`Effect::new` directly only when you genuinely need to *hold* the handle
-(store it, `.persist()` it). See [[reactivity]].
+Inside a component body, write side effects with [[effect]]. The macro
+inserts the `move ||`, tracks dependencies by what the body reads (no deps
+array), and is owned by the surrounding scope — there is no handle to bind.
 
 ```rust
 let count = signal!(0);
@@ -95,9 +92,18 @@ effect!({
 });
 ```
 
-Pair with `on_cleanup(...)` for teardown — it fires before the next
-re-run and on disposal. Don't reach for `mem::forget` to keep an effect
-alive; that's what scope adoption and `.persist()` are for.
+For reactivity wired up **outside** the component tree — app init, an async
+callback, a platform/service install — use `watch(…)` instead. It returns a
+caller-owned `Subscription`: store it where its lifetime should match (a
+struct field, the owning service), or `Subscription::leak()` it for a
+process-lifetime pin. `effect!` debug-asserts a scope is active, so using it
+out-of-tree fails loudly rather than silently cancelling.
+
+The raw `Effect::new` constructor is sealed (`#[doc(hidden)]`, framework
+internals only) — reach for `effect!` or `watch`, never it. Pair either with
+`on_cleanup(...)` for teardown — it fires before the next re-run and on
+disposal. Don't reach for `mem::forget` to keep an effect alive; that's what
+scope adoption and `Subscription::leak()` are for.
 
 ## Optional callbacks: bind only when present
 

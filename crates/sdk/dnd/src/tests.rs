@@ -333,6 +333,33 @@ fn drop_delivers_payload_and_clears_state() {
 }
 
 #[test]
+fn drop_fires_on_leave_so_hover_visual_resets() {
+    // Regression: a drop ON a hovered target must still fire its `on_leave`
+    // (and clear `is_over`), or a callback-driven highlight stays stuck "on"
+    // after release.
+    let ctx: DragContext<u64> = DragContext::new();
+    let is_over = Signal::new(false);
+    let leaves = Rc::new(Cell::new(0u32));
+    let l = leaves.clone();
+    register_zone(
+        &ctx,
+        rect(0.0, 0.0, 100.0, 100.0),
+        is_over,
+        Rc::new(|_| true),
+        None,
+        Some(Rc::new(move || l.set(l.get() + 1))),
+        Some(Rc::new(|_| {})),
+    );
+
+    ctx.begin(1);
+    ctx.update(TouchPoint::new(50.0, 50.0)); // hover the zone (is_over → true)
+    assert!(is_over.get());
+    assert!(ctx.finish(TouchPoint::new(50.0, 50.0)), "drops on the zone");
+    assert!(!is_over.get(), "is_over clears on drop");
+    assert_eq!(leaves.get(), 1, "on_leave fires on drop so the highlight resets");
+}
+
+#[test]
 fn drop_outside_any_target_returns_false() {
     let ctx: DragContext<u64> = DragContext::new();
     register_zone(
@@ -502,4 +529,85 @@ fn draggable_cancel_reports_cancelled_and_clears() {
     assert_eq!(*outcomes.borrow(), vec![DropOutcome::Cancelled]);
     assert_eq!(leaves.get(), 1, "cancel fires the hovered target's on_leave");
     assert!(!ctx.dragging().get());
+}
+
+#[test]
+fn ghost_position_tracks_release_point_for_drop_animation() {
+    // The drop-animation hand-off (reveal the hidden source where the ghost was
+    // let go, then spring it into its slot) depends on `ghost_position()`
+    // reporting the ghost's window top-left = pointer − grab-offset, AND on that
+    // value surviving the release so `on_release` can read it.
+    install_test_scheduler_once();
+    let ctx: DragContext<u64> = DragContext::new();
+
+    let drag = Draggable::new(&ctx, || 7u64)
+        .activation(Activation::immediate())
+        .preview(|| runtime_core::fragment(Vec::new()));
+    let h = drag.handler();
+
+    // Press at (10,20); the drag commits on the first move past the 8 px slop —
+    // that move's position is the grab offset (where in the element the finger
+    // sits). View == window in these tests, so grab offset = (10,40).
+    h(&ev(TouchPhase::Began, 1, 10.0, 20.0, 0));
+    h(&ev(TouchPhase::Moved, 1, 10.0, 40.0, 16_000_000));
+    // A real move: ghost top-left = pointer − grab offset = (60−10, 90−40).
+    h(&ev(TouchPhase::Moved, 1, 60.0, 90.0, 32_000_000));
+    assert_eq!(
+        ctx.ghost_position(),
+        (50.0, 50.0),
+        "ghost top-left = pointer − grab offset"
+    );
+
+    // Persists through release so the drop animation can anchor to it.
+    h(&ev(TouchPhase::Ended, 1, 60.0, 90.0, 48_000_000));
+    assert_eq!(ctx.ghost_position(), (50.0, 50.0));
+}
+
+#[test]
+fn long_press_commit_claims_off_stream() {
+    // The fix for "iOS scroll view steals the drag": a LongPress commits from
+    // the timer, off the touch stream, so it must invoke the backend's
+    // node-bound claim THERE (cancelling the ancestor scroller before the first
+    // move) rather than waiting for the next `Moved` — by which point the native
+    // pan has already recognized and cancelled the touch.
+    install_test_scheduler_once();
+    reset_test_clock();
+    let claims = Rc::new(Cell::new(0u32));
+    let sink = claims.clone();
+    // Stand in for the backend publishing a claim closure for the in-flight
+    // touch (iOS does this on `Began`, scoped to the synchronous dispatch).
+    runtime_core::set_active_touch_claim(Some(Rc::new(move || sink.set(sink.get() + 1))));
+
+    let h = DragRecognizer::new(Activation::long_press(), |_| {}).into_handler();
+    h(&ev(TouchPhase::Began, 1, 10.0, 10.0, 0));
+    // The backend clears it after dispatch — so the recognizer must have grabbed
+    // its OWN clone on `Began` for the off-stream commit to still claim.
+    runtime_core::set_active_touch_claim(None);
+
+    assert_eq!(claims.get(), 0, "no claim before the hold elapses");
+    advance_ms(crate::DEFAULT_DRAG_LONG_PRESS_MS);
+    assert_eq!(claims.get(), 1, "the long-press commit claims off-stream, at commit time");
+
+    h(&ev(TouchPhase::Ended, 1, 10.0, 10.0, 32_000_000));
+}
+
+#[test]
+fn abandoned_long_press_never_claims() {
+    // A finger that moves past slop before the hold is a SCROLL, not a drag —
+    // it must never claim, leaving the gesture to the native scroll container.
+    install_test_scheduler_once();
+    reset_test_clock();
+    let claims = Rc::new(Cell::new(0u32));
+    let sink = claims.clone();
+    runtime_core::set_active_touch_claim(Some(Rc::new(move || sink.set(sink.get() + 1))));
+
+    let h = DragRecognizer::new(Activation::long_press(), |_| {}).into_handler();
+    h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+    runtime_core::set_active_touch_claim(None);
+    // Past the 10 px long-press slop before the hold → abandon.
+    h(&ev(TouchPhase::Moved, 1, 30.0, 0.0, 16_000_000));
+    advance_ms(crate::DEFAULT_DRAG_LONG_PRESS_MS);
+    assert_eq!(claims.get(), 0, "an abandoned long-press leaves the touch to native scroll");
+
+    h(&ev(TouchPhase::Ended, 1, 30.0, 0.0, 32_000_000));
 }

@@ -89,3 +89,22 @@ description is not supposed to change`) and corrupt the file.
   of its own.
 - **Android** — ships `runtime/kotlin/.../RustMediaWriter.kt` via
   `[package.metadata.idealyst.android].runtime_kotlin`.
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet (see
+*Verification status* above). Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p media-writer` — host record (`host_record.rs`): synthetic `MediaStream` + `AudioStream` producers (no hardware) mux to a non-trivial, real `.mp4` on disk
+- [ ] `wasm-pack test --headless --safari --release` (from this crate dir) — the canvas-capture size-before-`captureStream()` invariant
+- [ ] `cargo build -p media-writer --target wasm32-unknown-unknown` — web target
+
+**Behavior**
+- [ ] **Web** — record camera+mic streams → the written file opens in a player with correct duration/av-sync; container is `video/mp4` where the browser supports it, `video/webm` otherwise (always playable).
+- [ ] **iOS** — ⚠️ not yet device-confirmed (shares the macOS `AVAssetWriter` backend): record a stream → resulting `.mp4` opens with correct duration + A/V lip-sync.
+- [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: `MediaCodec`/`MediaMuxer` path produces a playable `.mp4` with correct duration/av-sync.
+- [ ] **macOS** — host-verified: record a stream → resulting `.mp4` opens in a player with correct duration and A/V sync.
+
+This SDK needs **no permission of its own** — the `camera`/`microphone`/`screen-recorder` producers gate capture.

@@ -99,3 +99,23 @@ r.with(|h| h.set_visible(false));
 [`ToolbarButton::icon`]: src/lib.rs
 [`ToolbarButton::tooltip`]: src/lib.rs
 [`ToolbarButton::on_click`]: src/lib.rs
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it. This primitive is a real widget only on macOS; every
+other target renders a zero-size no-op, so most checks verify the *absence* is
+clean.
+
+**Rendering / behavior**
+- [ ] **macOS** — a real `NSToolbar` appears on the host window's title bar with the
+  `items` (buttons = `NSToolbarItem`, SF Symbol icons; separator/space/flexible-space
+  map to the system identifiers); clicking a button fires its `on_click`; the
+  reactive `items` closure rebuilds the toolbar when a read signal changes;
+  `ToolbarHandle::set_visible(...)` shows/hides it.
+- [ ] **Windows / Linux** — `register` is wired but the backends don't yet expose
+  `register_external`; verify it's a clean no-op (no toolbar, no crash).
+- [ ] **iOS / Android / web / terminal / gpu** — `register` is a no-op and the
+  in-tree primitive renders **zero-size**; confirm nothing visible appears and there's
+  no layout artifact wherever the `Toolbar(...)` is mounted.

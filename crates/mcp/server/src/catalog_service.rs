@@ -1231,7 +1231,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Get the full record for one authoring macro: what it does, the crate it's exported from, the canonical invocation syntax, and a one-line sketch of what it expands to (so you see the primitive underneath — e.g. `effect!` → `let _effect = Effect::new(move || …)`). Accepts the bare name or a trailing `!` (`effect` and `effect!` both resolve).")]
+    #[tool(description = "Get the full record for one authoring macro: what it does, the crate it's exported from, the canonical invocation syntax, and a one-line sketch of what it expands to (so you see the primitive underneath — e.g. `effect!` → `Effect::scoped(move || …)`). Accepts the bare name or a trailing `!` (`effect` and `effect!` both resolve).")]
     async fn describe_macro(
         &self,
         Parameters(req): Parameters<NameRequest>,

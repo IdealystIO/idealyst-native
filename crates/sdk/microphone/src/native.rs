@@ -27,61 +27,48 @@ impl StreamHandle {
     }
 }
 
+/// Request the microphone grant, delegated to the shared `permissions` SDK
+/// (which owns the Apple `AVCaptureDevice requestAccessForMediaType:` audio
+/// grant + every other platform's request flow). On desktop (Windows/Linux)
+/// `permissions` reports `Unsupported` — the OS grants cpal implicitly — which
+/// maps to `Ok(())`. iOS's `AVAudioSession` *activation* still happens in
+/// [`open`] (it's a capture requirement, not a grant); the record grant itself
+/// rides this delegated request.
 pub(crate) async fn request_permission() -> Result<(), MicError> {
-    // Desktop (macOS/Windows/Linux): the OS either grants implicitly or
-    // surfaces its own prompt the first time the input stream starts —
-    // there's no portable pre-prompt API, so this is a no-op success.
-    #[cfg(target_os = "ios")]
-    {
-        ios_session::request_record_permission().await
-    }
-    #[cfg(not(target_os = "ios"))]
-    {
-        Ok(())
-    }
+    map_permission(permissions::request(permissions::Permission::Microphone).await)
 }
 
-/// Passive permission query — no prompt, no capture. macOS reads
-/// `AVCaptureDevice` authorization status; iOS reads `AVAudioSession`
-/// `recordPermission`; Windows/Linux have no status API (cpal grants
-/// implicitly) so they report [`MicPermission::Unknown`].
+/// Passive permission query — no prompt, no capture. Delegated to the shared
+/// `permissions` SDK (macOS reads `AVCaptureDevice` authorization status; iOS
+/// reads its AVCaptureDevice audio status). Windows/Linux have no status API
+/// (cpal grants implicitly), surfacing as `Unsupported`, which maps to
+/// [`MicPermission::Unknown`].
 pub(crate) async fn permission_status() -> crate::MicPermission {
-    #[cfg(target_os = "macos")]
-    {
-        macos_authorization_status()
-    }
-    #[cfg(target_os = "ios")]
-    {
-        ios_session::record_permission_status()
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-    {
-        crate::MicPermission::Unknown
+    map_status(permissions::status(permissions::Permission::Microphone).await)
+}
+
+/// Map the shared [`permissions::PermissionStatus`] onto microphone's error.
+/// `is_usable()` (Granted, or Unsupported where the platform needs no grant)
+/// passes; anything else is a denial.
+fn map_permission(status: permissions::PermissionStatus) -> Result<(), MicError> {
+    if status.is_usable() {
+        Ok(())
+    } else {
+        Err(MicError::PermissionDenied)
     }
 }
 
-/// `+[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio]` — the
-/// passive status check (does NOT prompt or open the device). Mirrors the
-/// `camera` SDK's video-side query.
-#[cfg(target_os = "macos")]
-fn macos_authorization_status() -> crate::MicPermission {
-    use objc2::{class, msg_send};
-    use objc2_foundation::NSString;
-    // AVAuthorizationStatus.
-    const AUTH_RESTRICTED: i64 = 1;
-    const AUTH_DENIED: i64 = 2;
-    const AUTH_AUTHORIZED: i64 = 3;
-    // `AVMediaTypeAudio`'s string value is "soun"; the constant equals this
-    // literal, so we build it directly rather than linking the extern symbol
-    // (same trick the audio-session category + camera's "vide" use).
-    let media_type = NSString::from_str("soun");
-    let status: i64 = unsafe {
-        msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: &*media_type]
-    };
+/// Map the shared [`permissions::PermissionStatus`] onto microphone's own
+/// [`MicPermission`]. `Unsupported` (no passive query on this platform — e.g.
+/// desktop cpal) becomes [`MicPermission::Unknown`], the existing contract.
+fn map_status(status: permissions::PermissionStatus) -> crate::MicPermission {
     match status {
-        AUTH_AUTHORIZED => crate::MicPermission::Granted,
-        AUTH_DENIED | AUTH_RESTRICTED => crate::MicPermission::Denied,
-        _ => crate::MicPermission::Undetermined, // NotDetermined (0)
+        permissions::PermissionStatus::Granted => crate::MicPermission::Granted,
+        permissions::PermissionStatus::Denied | permissions::PermissionStatus::Restricted => {
+            crate::MicPermission::Denied
+        }
+        permissions::PermissionStatus::Undetermined => crate::MicPermission::Undetermined,
+        permissions::PermissionStatus::Unsupported => crate::MicPermission::Unknown,
     }
 }
 
@@ -90,10 +77,12 @@ pub(crate) async fn open(
     callback: BoxedCallback,
 ) -> Result<StreamHandle, MicError> {
     // iOS needs a granted permission and an active record session before
-    // the input AudioUnit will produce anything but silence.
+    // the input AudioUnit will produce anything but silence. The grant is
+    // delegated to the shared `permissions` SDK; the AVAudioSession
+    // *activation* (a capture requirement) stays local.
     #[cfg(target_os = "ios")]
     let session = {
-        ios_session::request_record_permission().await?;
+        request_permission().await?;
         ios_session::activate()?
     };
 
@@ -207,7 +196,6 @@ where
 #[cfg(target_os = "ios")]
 mod ios_session {
     use crate::MicError;
-    use block2::RcBlock;
     use objc2::runtime::{AnyObject, Bool};
     use objc2::{class, msg_send};
     use objc2_foundation::NSString;
@@ -267,50 +255,6 @@ mod ios_session {
                 return Err(MicError::Backend("AVAudioSession setActive failed".into()));
             }
             Ok(SessionGuard)
-        }
-    }
-
-    /// Bridge `requestRecordPermission:`'s completion block to async via a
-    /// oneshot channel.
-    pub(crate) async fn request_record_permission() -> Result<(), MicError> {
-        let (tx, rx) = futures_channel::oneshot::channel::<bool>();
-        // The block is invoked once, on an arbitrary queue. Move the
-        // sender in; `RcBlock` keeps it alive until the block fires.
-        let tx = std::cell::Cell::new(Some(tx));
-        let block = RcBlock::new(move |granted: Bool| {
-            if let Some(tx) = tx.take() {
-                let _ = tx.send(granted.as_bool());
-            }
-        });
-        unsafe {
-            let session = shared_instance();
-            let _: () = msg_send![session, requestRecordPermission: &*block];
-        }
-        match rx.await {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(MicError::PermissionDenied),
-            // Sender dropped without firing — treat as denial.
-            Err(_) => Err(MicError::PermissionDenied),
-        }
-    }
-
-    /// `[AVAudioSession recordPermission]` — the passive status read (no prompt).
-    /// Returns an `AVAudioSessionRecordPermission`, a FourCharCode enum.
-    pub(crate) fn record_permission_status() -> crate::MicPermission {
-        use objc2::msg_send;
-        // AVAudioSessionRecordPermission values (FourCharCodes).
-        const UNDETERMINED: u64 = 0x756e_6465; // 'unde'
-        const DENIED: u64 = 0x6465_6e79; // 'deny'
-        const GRANTED: u64 = 0x6772_6e74; // 'grnt'
-        let status: u64 = unsafe {
-            let session = shared_instance();
-            msg_send![session, recordPermission]
-        };
-        match status {
-            GRANTED => crate::MicPermission::Granted,
-            DENIED => crate::MicPermission::Denied,
-            UNDETERMINED => crate::MicPermission::Undetermined,
-            _ => crate::MicPermission::Unknown,
         }
     }
 }

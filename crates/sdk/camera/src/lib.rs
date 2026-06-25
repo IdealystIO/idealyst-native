@@ -55,8 +55,11 @@
 //! ["camera"]`); the build CLI injects `NSCameraUsageDescription` (iOS/macOS)
 //! / the `CAMERA` permission (Android). Web prompts on first `getUserMedia`.
 //!
-//! [`Camera::request_permission`] proactively triggers that prompt; it's
-//! optional — [`Camera::open`] requests access itself if needed.
+//! The runtime *grant* flow (reading the current status and surfacing the OS
+//! prompt) is delegated to the shared [`permissions`] SDK
+//! (`permissions::request(Permission::Camera)`); this crate keeps only the
+//! capture code. [`Camera::request_permission`] proactively triggers that
+//! prompt; it's optional — [`Camera::open`] requests access itself if needed.
 
 #![deny(missing_docs)]
 

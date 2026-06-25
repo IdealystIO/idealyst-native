@@ -115,6 +115,27 @@ declare_class!(
             true
         }
 
+        // Make views positioned by an animated `TranslateX/Y` clickable where
+        // they VISUALLY render. AppKit hit-tests by frame and ignores the CALayer
+        // transform, so a transform-positioned view (e.g. a kanban card laid out
+        // purely by translate) would draw in place but keep its click target at
+        // its untransformed frame origin — web/iOS hit-test the transform, so
+        // without this the platforms diverge (CLAUDE.md §7). We shift the
+        // incoming point by the inverse of this view's translate, then defer to
+        // the default frame-based hitTest, which now resolves against the visual
+        // position. Composes through nesting: each translated ancestor subtracts
+        // its own translate. A no-op for the common untransformed view (translate
+        // is `(0, 0)`).
+        #[method_id(hitTest:)]
+        fn hit_test(&self, point: CGPoint) -> Option<Retained<NSView>> {
+            let (tx, ty) = crate::imp::animated::view_layer_translate(self);
+            let adjusted = CGPoint {
+                x: point.x - tx,
+                y: point.y - ty,
+            };
+            unsafe { msg_send_id![super(self), hitTest: adjusted] }
+        }
+
         #[method(mouseDown:)]
         fn mouse_down(&self, event: &NSEvent) {
             // macOS Ctrl-click is the system "secondary click". It can be
@@ -343,8 +364,20 @@ impl FlippedView {
         // `FlippedView` is `isFlipped`, the result is top-left (dp), matching
         // Taffy frames and the canvas Scene — no density scaling on macOS.
         let win: CGPoint = unsafe { msg_send![event, locationInWindow] };
-        let local: CGPoint =
+        let local_raw: CGPoint =
             unsafe { msg_send![self, convertPoint: win, fromView: std::ptr::null::<NSView>()] };
+        // `convertPoint:` is frame-based and ignores the CALayer transform, so for
+        // a view positioned by an animated `TranslateX/Y` the result is relative
+        // to its untransformed frame, not its visual top-left. Subtract the
+        // translate so `position` is the point *within the visual view* — matching
+        // web/iOS. Without this the grab offset for a drag preview comes out as
+        // ~the window position, flinging the ghost to the top-left and offsetting
+        // it more the further the grabbed view sits from the origin.
+        let (ltx, lty) = crate::imp::animated::view_layer_translate(self);
+        let local = CGPoint {
+            x: local_raw.x - ltx,
+            y: local_raw.y - lty,
+        };
 
         // True top-left WINDOW coords. We can't reuse `local` (it's relative to
         // THIS view) for `window_position`: a drag handler that moves its own

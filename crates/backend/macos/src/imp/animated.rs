@@ -394,6 +394,21 @@ pub(crate) fn current_layer_scale(layer: &NSObject) -> f64 {
     t.m11
 }
 
+/// The `(x, y)` translate currently on `view`'s layer (`transform.m41`/`m42`).
+/// `hitTest:` uses this to make transform-positioned views clickable where they
+/// VISUALLY render instead of where their untransformed frame sits — AppKit
+/// hit-tests by frame and ignores the layer transform, unlike web/iOS. For a
+/// pure translate the center-pivot compensation is zero, so `m41`/`m42` are
+/// exactly the translate. Returns `(0, 0)` when the view isn't layer-backed.
+pub(crate) fn view_layer_translate(view: &NSView) -> (f64, f64) {
+    let layer: *mut objc2::runtime::AnyObject = unsafe { msg_send![view, layer] };
+    if layer.is_null() {
+        return (0.0, 0.0);
+    }
+    let t: CATransform3D = unsafe { msg_send![layer, transform] };
+    (t.m41, t.m42)
+}
+
 /// Apply a uniform scale (about the layer's anchor point) to `layer`'s
 /// `transform`. Shared with the icon backend, which scales a fixed-size
 /// glyph sublayer down to its laid-out box. Uses the same raw

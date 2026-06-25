@@ -1,223 +1,238 @@
-//! Persistent shell (drawer sidebar) + the per-page chrome primitives
-//! every component page is built from: `CodePanel`, `PropsTable`,
-//! `DemoSurface`, `Demo`, `Callout`, `ComponentPage`.
+//! The docs chrome: the design's custom header bar (`top_with`), the
+//! grouped + searchable sidebar with status dots (`leading_with`), the
+//! central `page_frame` (group overline, title + status badge, lead,
+//! body, Usage panel), and the per-page helper components every body is
+//! built from (`CodePanel`, `PropsTable`, `DemoSurface`, `Demo`,
+//! `Callout`, `Section`, `P`, `H2`, `H3`).
 //!
-//! Each of these is a real `#[component]` so it dispatches inside
-//! `ui!` like any other tag (e.g. `Demo(preview = ..., controls = ...)`)
-//! and pages compose them through the macro.
+//! Each helper is a real `#[component]` so it dispatches inside `ui!`.
 
 use std::rc::Rc;
 
 use runtime_core::{
-    component, derived, switch, ui, Color, Element, IntoElement, SafeAreaSides, StyleApplication,
-    Tokenized,
+    component, derived, switch, ui, Color, Element, IntoElement, SafeAreaSides, Signal,
+    StyleApplication, Tokenized,
 };
 use drawer_navigator::SlotProps;
 use idea_ui::{
-    dark_theme, light_theme, set_idea_theme, typography_kind, Card, Spacer, Stack, StackGap,
-    Switch, Table, TableCell, TableRow, Typography,
+    dark_theme, light_theme, set_idea_theme, typography_kind, Spacer, Stack, StackGap, Switch,
+    Table, TableCell, TableRow, Typography,
 };
 
-use crate::routes::SECTIONS;
+use crate::routes::{Entry, Status, CATALOG};
 use crate::styles::{
-    Callout as CalloutBox, CodePanel as CodePanelBox, CodeText, ControlsBox, DemoRow,
-    DemoSurface as DemoSurfaceBox, NavLink, NavLinkActive, NavLinkText, NavLinkTextActive,
-    PageColumn, PagePad, PreviewBox, PreviewSlot, ScreenScroll, SidebarBody, SidebarFooter,
-    SidebarHeader, SidebarSection,
+    BrandName, Callout as CalloutBox, CodePanel as CodePanelBox, CodeText, ControlsBox, DemoRow,
+    DemoSurface as DemoSurfaceBox, DocHeader, GroupOverline, HeaderBrand, HeaderMono, HeaderSpacer,
+    LogoBox, LogoGlyph, NavDot, NavDotReady, NavItem, NavItemActive, PagePad, PreviewBox,
+    PreviewSlot, ScreenScroll, SearchInput, SegBtn, SegBtnActive, SegBtnText, SegBtnTextActive,
+    SegToggle, SidebarBody, SidebarSection, StatusBadge, StatusBadgeDetailed, StatusBadgeText,
+    StatusBadgeTextDetailed, TitleRow, UsageLabel, VersionPill,
 };
 
-// =============================================================================
-// Layout wrapper — every page calls `shell::layout(...)` to render
-// inside the page-background scroll surface.
-// =============================================================================
-
-pub fn layout(content: Element) -> Element {
-    // Each page's body lives inside a vertical scroll view. On web the
-    // browser provides page scroll for free, but on native (iOS /
-    // Android) an overflowing flex view just clips — there's no scroll
-    // affordance unless we explicitly wrap the content in a scroll
-    // primitive. `scroll_view` defaults to vertical, which is what
-    // every page needs.
-    //
-    // `.safe_area(BOTTOM)` adds the device's bottom inset (Android
-    // gesture bar / iOS home indicator) to the scroll content so the
-    // last page section isn't sitting under the system chrome. Top is
-    // handled by the navigator's toolbar, which has its own
-    // status-bar inset; horizontal insets aren't an issue here
-    // because the page never bleeds into them.
-    let style = ScreenScroll();
-    // The hamburger sits above the scroll surface so it stays pinned
-    // while the page body scrolls. It renders itself reactively (only
-    // when the drawer is collapsed), so on wide/pinned layouts this
-    // column is just the scroll view. The outer column fills the
-    // screen; the scroll view grows to take the remaining height under
-    // the (conditionally-rendered) top bar.
-    ui! {
-        view(style = PageColumn()) {
-            menu_button()
-            scroll_view(style = style) { content }
-                .safe_area(SafeAreaSides::BOTTOM)
-        }
-    }
-}
+const VERSION: &str = "v0.1.0";
 
 // =============================================================================
-// Menu button (hamburger) — consumes `ambient_drawer()` and opens the
-// collapsed drawer. Renders ONLY when the viewport is narrower than the
-// navigator's pin width (so the drawer is modal/off-canvas); at wide
-// viewports the sidebar is pinned and no hamburger is needed.
-//
-// This is the documented `DrawerChrome` consumer pattern
-// (`runtime_core::primitives::navigator::ambient_drawer`): screens are
-// mounted as navigator *content* (not slot closures), so they reach the
-// "open the drawer" action through this thread-local ambient. The
-// reactive `viewport_size().get()` read inside the `ui!` `if` keeps the
-// region live, so the button appears/disappears as the viewport crosses
-// the pin breakpoint.
+// Header — the custom top bar mounted via `top_with(TopSlot::Custom)`.
+// Logo + name + version, a "component reference" label, the active
+// entry's token hint, and the Light/Dark segmented toggle.
 // =============================================================================
 
-fn menu_button() -> Element {
-    use runtime_core::primitives::navigator::ambient_drawer;
-    use runtime_core::viewport_size;
-
-    // No drawer chrome published (e.g. headless/non-navigator render) —
-    // render nothing.
-    let Some(chrome) = ambient_drawer() else {
-        return ui! { view {} };
-    };
-
-    let open = chrome.open.clone();
-    let below = chrome.collapse_below;
-
-    ui! {
-        if viewport_size().get().width < below {
-            view(style = crate::styles::TopBar()) {
-                hamburger(open.clone())
-            }
-        }
-    }
-}
-
-// The pressable glyph itself. Built with `runtime_core::pressable` (not
-// a `ui!` tag — pressable has no macro tag) wrapping the Lucide `MENU`
-// icon, mirroring idea-ui's `IconButton` construction.
-fn hamburger(open: Rc<dyn Fn()>) -> Element {
-    let glyph = runtime_core::icon(icons_lucide::MENU)
-        .color(idea_ui::idea_color(|c| c.text.clone()))
-        .into_element();
-    runtime_core::pressable(vec![glyph], move || (open)())
-        .with_style(move || runtime_core::StyleApplication::new(crate::styles::MenuButton::sheet()))
-        .into_element()
-}
-
-// =============================================================================
-// Sidebar — runs once at navigator init; survives screen swaps.
-// =============================================================================
-
-pub fn sidebar(slot: SlotProps, is_dark: runtime_core::Signal<bool>) -> Element {
-    let body_style = SidebarBody();
-    let header_style = SidebarHeader();
-    let footer_style = SidebarFooter();
-
-    let header_children: Vec<Element> = vec![
-        ui! { Typography(content = "idea-ui".to_string(), kind = typography_kind::H3) },
-        ui! {
-            Typography(
-                content = "Component reference, theming, and extension guide.".to_string(),
-                muted = true,
-            )
-        },
-    ];
-
+pub fn header(slot: SlotProps, is_dark: Signal<bool>) -> Element {
     let active_route = slot.active_route;
+    // Token hint follows the active component. Rebuilt on navigation.
+    let token_hint = switch(
+        move || active_route.get(),
+        move |route_name: &&'static str| {
+            let token = crate::routes::entry_for(route_name).map(|e| e.token).unwrap_or("");
+            ui! { text(style = HeaderMono()) { token.to_string() } }
+        },
+    );
 
-    // The sidebar is a full-height panel that slides over (or pins
-    // beside) the screen, bleeding under the status bar / Dynamic Island
-    // at the top and the home indicator at the bottom. Navigators no
-    // longer apply safe-area insets to slots, so the sidebar opts in
-    // itself: `.safe_area(VERTICAL)` pads the top + bottom by the device
-    // insets (the background still bleeds edge-to-edge — only the header
-    // and footer content inset). The opt-in travels over the
-    // runtime-server wire; the client resolves the real device inset.
     ui! {
-        view(style = body_style) {
-            view(style = header_style) { header_children }
-            for section in SECTIONS {
-                (!section.title.is_empty()).then(|| ui! {
-                    text(style = SidebarSection()) { section.title.to_string() }
-                })
-                for entry in section.entries {
-                    nav_link(entry.route, entry.label, active_route)
+        view(style = DocHeader()) {
+            view(style = HeaderBrand()) {
+                view(style = LogoBox()) {
+                    text(style = LogoGlyph()) { "i".to_string() }
                 }
+                text(style = BrandName()) { "idea-ui".to_string() }
+                text(style = VersionPill()) { VERSION.to_string() }
             }
-            Spacer()
-            theme_toggle(footer_style, is_dark)
+            text(style = HeaderMono()) { "component reference".to_string() }
+            view(style = HeaderSpacer()) {}
+            token_hint
+            theme_toggle(is_dark)
+        }
+    }
+}
+
+fn theme_toggle(is_dark: Signal<bool>) -> Element {
+    let set_light: Rc<dyn Fn()> = Rc::new(move || {
+        is_dark.set(false);
+        set_idea_theme(light_theme());
+    });
+    let set_dark: Rc<dyn Fn()> = Rc::new(move || {
+        is_dark.set(true);
+        set_idea_theme(dark_theme());
+    });
+
+    let light_btn = seg_button("Light", set_light, is_dark, true);
+    let dark_btn = seg_button("Dark", set_dark, is_dark, false);
+
+    ui! {
+        view(style = SegToggle()) {
+            light_btn
+            dark_btn
+        }
+    }
+}
+
+fn seg_button(
+    label: &'static str,
+    on_press: Rc<dyn Fn()>,
+    is_dark: Signal<bool>,
+    is_light: bool,
+) -> Element {
+    let btn_style = SegBtn().active(derived(move || {
+        let active = if is_light { !is_dark.get() } else { is_dark.get() };
+        if active { SegBtnActive::On } else { SegBtnActive::Off }
+    }));
+    let text_style = SegBtnText().active(derived(move || {
+        let active = if is_light { !is_dark.get() } else { is_dark.get() };
+        if active { SegBtnTextActive::On } else { SegBtnTextActive::Off }
+    }));
+    let label_el = ui! { text(style = text_style) { label.to_string() } };
+    runtime_core::pressable(vec![label_el], move || (on_press)())
+        .with_style(btn_style)
+        .into()
+}
+
+// =============================================================================
+// Sidebar — search box + grouped nav with status dots. Mounted via
+// `leading_with`. Filtered reactively by the shared `q` signal.
+// =============================================================================
+
+pub fn sidebar(slot: SlotProps, q: Signal<String>) -> Element {
+    let active_route = slot.active_route;
+    let on_search_q = q;
+    let search = runtime_core::text_input(q, move |v: String| on_search_q.set(v))
+        .placeholder("Search".to_string())
+        .with_style(move || StyleApplication::new(SearchInput::sheet()))
+        .into_element();
+
+    // Reactive nav: rebuilt whenever the query changes.
+    let nav = switch(
+        move || q.get(),
+        move |query: &String| build_nav(query, active_route),
+    );
+
+    ui! {
+        view(style = SidebarBody()) {
+            search
+            nav
         }
         .safe_area(SafeAreaSides::VERTICAL)
     }
 }
 
-fn theme_toggle(footer_style: SidebarFooter, is_dark: runtime_core::Signal<bool>) -> Element {
-    let on_change: Rc<dyn Fn(bool)> = Rc::new(move |dark| {
-        is_dark.set(dark);
-        if dark {
-            set_idea_theme(dark_theme());
-        } else {
-            set_idea_theme(light_theme());
+fn build_nav(query: &str, active_route: Signal<&'static str>) -> Element {
+    let q = query.trim().to_lowercase();
+    let mut items: Vec<Element> = Vec::new();
+    for group in CATALOG {
+        let matches = group
+            .entries
+            .iter()
+            .filter(|e| q.is_empty() || e.name.to_lowercase().contains(&q));
+        let mut any = false;
+        let mut group_items: Vec<Element> = Vec::new();
+        for entry in matches {
+            if !any {
+                items.push(ui! { text(style = SidebarSection()) { group.label.to_string() } });
+                any = true;
+            }
+            group_items.push(nav_item(entry, active_route));
         }
-    });
-
-    let row_children: Vec<Element> = vec![ui! {
-        Switch(
-            label = Some("Dark mode".to_string()),
-            value = is_dark,
-            on_change = on_change,
-        )
-    }];
-
-    ui! { view(style = footer_style) { row_children } }
+        items.extend(group_items);
+    }
+    ui! { Stack(gap = StackGap::None) { items } }
 }
 
-fn nav_link(
-    route: &'static runtime_core::Route<()>,
-    label: &'static str,
-    active_route: runtime_core::Signal<&'static str>,
-) -> Element {
-    let route_for_match: &'static str = route.name();
-    // Container styles (padding, background, border-radius) on the
-    // wrapping view; text styles (color, font) on the text. Splitting
-    // is required because Android `apply_style` doesn't propagate
-    // padding to `setPadding` — padding works only via Taffy shifting
-    // child positions, so a text node (no children) gets zero
-    // padding on native. See styles.rs for the full rationale.
-    let container_style = NavLink().active(derived(move || {
-        if active_route.get() == route_for_match {
-            NavLinkActive::On
-        } else {
-            NavLinkActive::Off
-        }
+fn nav_item(entry: &'static Entry, active_route: Signal<&'static str>) -> Element {
+    let route = entry.route;
+    let route_name = route.name();
+    let name = entry.name.to_string();
+    let ready = entry.status == Status::Detailed;
+
+    let container = NavItem().active(derived(move || {
+        if active_route.get() == route_name { NavItemActive::On } else { NavItemActive::Off }
     }));
-    let text_style = NavLinkText().active(derived(move || {
-        if active_route.get() == route_for_match {
-            NavLinkTextActive::On
-        } else {
-            NavLinkTextActive::Off
-        }
-    }));
-    let label_text = label.to_string();
+    let dot = NavDot().ready(if ready { NavDotReady::On } else { NavDotReady::Off });
 
     ui! {
         link(route = route, params = ()) {
-            view(style = container_style) {
-                text(style = text_style) { label_text }
+            view(style = container) {
+                text(style = crate::styles::NavLinkText()) { name }
+                view(style = dot) {}
             }
         }
     }
 }
 
 // =============================================================================
-// CodePanel — theme-aware syntax-highlighted code block. Lifted from
-// the tutorial.
+// page_frame — the central frame applied to every screen. Pulls the
+// group, title, status and Usage code from the catalog `Entry`; calls
+// the entry's `body` for the demo sections.
+// =============================================================================
+
+pub fn page_frame(entry: &'static Entry) -> Element {
+    let group = crate::routes::group_for(entry.route.name()).unwrap_or("");
+    let detailed = entry.status == Status::Detailed;
+    let status_label = if detailed { "Detailed" } else { "Preview" };
+
+    let badge_style = StatusBadge()
+        .detailed(if detailed { StatusBadgeDetailed::On } else { StatusBadgeDetailed::Off });
+    let badge_text_style = StatusBadgeText().detailed(if detailed {
+        StatusBadgeTextDetailed::On
+    } else {
+        StatusBadgeTextDetailed::Off
+    });
+
+    let body = (entry.body)();
+    let lead = entry.desc.to_string();
+    let title = entry.name.to_string();
+
+    let usage: Element = if entry.code.is_empty() {
+        ui! { view {} }
+    } else {
+        let code = entry.code.to_string();
+        ui! {
+            view {
+                text(style = UsageLabel()) { "Usage".to_string() }
+                CodePanel(src = code)
+            }
+        }
+    };
+
+    ui! {
+        scroll_view(style = ScreenScroll()) {
+            view(style = PagePad()) {
+                text(style = GroupOverline()) { group.to_string() }
+                view(style = TitleRow()) {
+                    Typography(content = title, kind = typography_kind::H1)
+                    view(style = badge_style) {
+                        text(style = badge_text_style) { status_label.to_string() }
+                    }
+                }
+                Typography(content = lead, kind = typography_kind::BodyLg, muted = true)
+                body
+                usage
+            }
+        }
+        .safe_area(SafeAreaSides::BOTTOM)
+    }
+}
+
+// =============================================================================
+// CodePanel — theme-aware syntax-highlighted code block.
 // =============================================================================
 
 #[derive(Default)]
@@ -382,8 +397,7 @@ pub fn Callout(props: CalloutProps) -> Element {
 }
 
 // =============================================================================
-// DemoSurface — a single-purpose preview panel (no controls). Used
-// when a static preview is enough.
+// DemoSurface — a single-purpose preview panel (no controls).
 // =============================================================================
 
 #[derive(Default)]
@@ -401,9 +415,7 @@ pub fn DemoSurface(props: DemoSurfaceProps) -> Element {
 }
 
 // =============================================================================
-// Demo — preview + controls in a side-by-side wrapping row. Used for
-// interactive component pages where `DocControls::render_controls`
-// emits the right panel.
+// Demo — preview + controls in a side-by-side wrapping row.
 // =============================================================================
 
 #[derive(Default)]
@@ -414,12 +426,8 @@ pub struct DemoProps {
 
 #[component]
 pub fn Demo(props: DemoProps) -> Element {
-    let preview = props
-        .preview
-        .unwrap_or_else(|| ui! { view {} });
-    let controls = props
-        .controls
-        .unwrap_or_else(|| ui! { view {} });
+    let preview = props.preview.unwrap_or_else(|| ui! { view {} });
+    let controls = props.controls.unwrap_or_else(|| ui! { view {} });
     let row_style = DemoRow();
     let preview_style = PreviewBox();
     let controls_style = ControlsBox();
@@ -435,9 +443,7 @@ pub fn Demo(props: DemoProps) -> Element {
 }
 
 // =============================================================================
-// PropsTable — every component page documents its props with this.
-// One header row + one row per prop, all rendered as flex rows so
-// columns line up.
+// PropsTable — documents a component's props.
 // =============================================================================
 
 pub struct Prop {
@@ -453,11 +459,6 @@ pub struct PropsTableProps {
 
 #[component]
 pub fn PropsTable(props: PropsTableProps) -> Element {
-    // Uses idea-ui's themed `Table` / `TableRow` / `TableCell`
-    // components, which layer on the cross-platform `table` SDK
-    // (real HTML `<table>` on web) and read header/body cell tokens
-    // straight from the active theme. No local cell stylesheets
-    // needed — the docs app is the consumer, not the designer.
     let mut rows: Vec<Element> = Vec::with_capacity(props.rows.len() + 1);
     rows.push(ui! {
         TableRow {
@@ -482,8 +483,7 @@ pub fn PropsTable(props: PropsTableProps) -> Element {
 }
 
 // =============================================================================
-// Section — a labelled block inside a page. Useful for grouping
-// "Examples", "Variants", "Props" under a sub-heading.
+// Section — a labelled block inside a page.
 // =============================================================================
 
 #[derive(Default)]
@@ -505,37 +505,7 @@ pub fn Section(props: SectionProps) -> Element {
 }
 
 // =============================================================================
-// ComponentPage — top-level frame for every page in the docs. Renders
-// the title block and supplied body inside the padded reading column.
-// =============================================================================
-
-#[derive(Default)]
-pub struct ComponentPageProps {
-    pub title: String,
-    pub lead: String,
-    pub children: Vec<Element>,
-}
-
-#[component]
-pub fn ComponentPage(props: ComponentPageProps) -> Element {
-    let pad = PagePad();
-    let title = props.title;
-    let lead = props.lead;
-    let children = props.children;
-    ui! {
-        view(style = pad) {
-            Stack(gap = StackGap::Sm) {
-                Typography(content = title, kind = typography_kind::H1)
-                Typography(content = lead, kind = typography_kind::BodyLg, muted = true)
-            }
-            children
-        }
-    }
-}
-
-// =============================================================================
-// Convenience: paragraph helper. Most pages render a lot of body text
-// — a tiny wrapper saves the `kind = …` boilerplate.
+// Paragraph + heading helpers.
 // =============================================================================
 
 #[derive(Default)]
@@ -550,10 +520,12 @@ pub fn P(props: PProps) -> Element {
 }
 
 #[derive(Default)]
+#[allow(dead_code)]
 pub struct H2Props {
     pub content: String,
 }
 
+#[allow(dead_code)]
 #[component]
 pub fn H2(props: H2Props) -> Element {
     let content = props.content;
@@ -571,8 +543,13 @@ pub fn H3(props: H3Props) -> Element {
     ui! { Typography(content = content, kind = typography_kind::H3) }
 }
 
-// Silence the `Card`-import unused-warning if a page doesn't use it.
+// Keep `Spacer` + `Switch` imports live for pages that re-export shell.
 #[allow(dead_code)]
-fn _force_card_import() -> Element {
-    ui! { Card {} }
+fn _force_imports() -> Element {
+    ui! {
+        Stack {
+            Spacer()
+            Switch(value = runtime_core::signal!(false))
+        }
+    }
 }

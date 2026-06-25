@@ -121,6 +121,62 @@ pub const REGISTRY: &[Capability] = &[
         android_service: None,
         default_reason: "",
     },
+    // Local / push notifications. iOS authorization is a runtime prompt
+    // (UNUserNotificationCenter), so there's no plist usage key; Android 13+
+    // gates posting behind the runtime `POST_NOTIFICATIONS` permission.
+    // Remote push additionally needs the iOS `aps-environment` entitlement +
+    // `remote-notification` background mode — a deeper seam not modelled here.
+    // Declared by the `notifications` SDK.
+    Capability {
+        name: "notifications",
+        ios_plist_key: None,
+        macos_plist_key: None,
+        macos_entitlement: None,
+        android_permissions: &["android.permission.POST_NOTIFICATIONS"],
+        android_service: None,
+        default_reason: "This app sends you notifications.",
+    },
+    // Device location (when-in-use). iOS/macOS show the reason string from the
+    // plist usage key; Android gates fine+coarse location behind runtime
+    // permissions. Background ("Always") location is a superset the app opts
+    // into separately. Declared by the `location` SDK.
+    Capability {
+        name: "location",
+        ios_plist_key: Some("NSLocationWhenInUseUsageDescription"),
+        macos_plist_key: Some("NSLocationUsageDescription"),
+        macos_entitlement: Some("com.apple.security.personal-information.location"),
+        android_permissions: &[
+            "android.permission.ACCESS_FINE_LOCATION",
+            "android.permission.ACCESS_COARSE_LOCATION",
+        ],
+        android_service: None,
+        default_reason: "This app uses your location.",
+    },
+    // Haptic feedback. Android needs the (normal, no-prompt) `VIBRATE`
+    // permission in the manifest; iOS/macOS need none. Declared by `haptics`.
+    Capability {
+        name: "haptics",
+        ios_plist_key: None,
+        macos_plist_key: None,
+        macos_entitlement: None,
+        android_permissions: &["android.permission.VIBRATE"],
+        android_service: None,
+        default_reason: "",
+    },
+    // Network reachability monitoring. Android reads connectivity state behind
+    // the (normal, no-prompt) `ACCESS_NETWORK_STATE` permission; iOS/macOS
+    // gate nothing. Declared by the `connectivity` SDK. (An app that also
+    // pulls `net` already gets this via the `internet` capability; declaring
+    // it here keeps `connectivity` self-contained.)
+    Capability {
+        name: "network_state",
+        ios_plist_key: None,
+        macos_plist_key: None,
+        macos_entitlement: None,
+        android_permissions: &["android.permission.ACCESS_NETWORK_STATE"],
+        android_service: None,
+        default_reason: "",
+    },
 ];
 
 /// Look up a capability by the name an SDK declared.

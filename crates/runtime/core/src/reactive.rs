@@ -1843,14 +1843,20 @@ impl Drop for Effect {
 }
 
 impl Effect {
-    /// Creates an effect and runs it once. Any signals read during the run
-    /// re-fire the effect on change.
+    /// Shared constructor for every effect handle. `register` decides
+    /// whether the active scope (if any) adopts the slot:
     ///
-    /// If a `Scope` is active (via `with_scope`), the effect's slot is
-    /// owned by that scope — the returned `Effect` handle's drop is a
-    /// no-op and the slot is freed when the scope drops. If no scope is
-    /// active, the returned handle owns the slot directly.
-    pub fn new<F: FnMut() + 'static>(f: F) -> Self {
+    /// - `register == true` — the active scope takes ownership (`owns ==
+    ///   false`) and frees the slot on its own teardown; with no active
+    ///   scope the returned handle owns the slot. This is the `effect!`
+    ///   path (via [`Effect::scoped`]) and the legacy [`Effect::new`].
+    /// - `register == false` — the slot is **never** adopted by a scope;
+    ///   the returned handle always owns it. This is the [`watch`] path:
+    ///   the caller owns the [`Subscription`], independent of the tree.
+    ///
+    /// Either way the effect runs once immediately and re-runs when a
+    /// signal it read changes.
+    pub(crate) fn create<F: FnMut() + 'static>(f: F, register: bool) -> Self {
         // Capture the owner chain at creation time so re-runs can
         // restore it. `with_scope` keeps these pointers valid for as
         // long as each scope is held by an outer call frame.
@@ -1864,9 +1870,54 @@ impl Effect {
                 stable_deps: false,
             })
         });
-        let registered = register_effect(id);
+        let registered = if register { register_effect(id) } else { false };
         run_effect(id);
         Effect { id, owns: !registered }
+    }
+
+    /// Creates an effect and runs it once. Any signals read during the run
+    /// re-fire the effect on change.
+    ///
+    /// If a `Scope` is active (via `with_scope`), the effect's slot is
+    /// owned by that scope — the returned `Effect` handle's drop is a
+    /// no-op and the slot is freed when the scope drops. If no scope is
+    /// active, the returned handle owns the slot directly.
+    ///
+    /// Prefer `effect! { … }` (scope-owned) or [`watch`] (caller-owned)
+    /// over calling this directly — see [`Effect::scoped`] / [`watch`].
+    ///
+    /// Sealed from the authoring surface (`#[doc(hidden)]`): retained `pub`
+    /// only for framework internals and backend-integration crates (the
+    /// render walker, canvas backends) that legitimately create scope-adopted
+    /// effects. App and SDK author code should never call it — the
+    /// `prefer-effect-macro` lint flags it in source.
+    #[doc(hidden)]
+    pub fn new<F: FnMut() + 'static>(f: F) -> Self {
+        Self::create(f, true)
+    }
+
+    /// Creates a **scope-owned** effect — the form behind `effect! { … }`.
+    ///
+    /// Debug-asserts that a reactive scope is active, because a reactive
+    /// effect only makes sense inside the component tree: the owning scope
+    /// frees it on teardown. To react to a signal from *outside* the tree
+    /// (app init, an async callback, a platform/service install), use
+    /// [`watch`] and hold the returned [`Subscription`] instead.
+    ///
+    /// Returns `()` — there is no handle to manage. The active scope owns
+    /// the effect; it lives exactly as long as that scope.
+    pub fn scoped<F: FnMut() + 'static>(f: F) {
+        debug_assert!(
+            ACTIVE_SCOPE.with(|s| !s.borrow().is_empty()),
+            "effect! {{ … }} used with no active reactive scope. A reactive \
+             effect must be created inside a component body (or other \
+             reactive scope) so its owning scope can free it. To react to a \
+             signal from outside the tree, use `watch(…)` and store the \
+             returned `Subscription`."
+        );
+        // The active scope adopts the slot (`owns == false`); dropping the
+        // returned no-op handle here is intentional — the scope owns it.
+        let _adopted = Self::create(f, true);
     }
 
     /// Like [`Effect::new`] but flips the effect into a fast-path
@@ -1900,6 +1951,10 @@ impl Effect {
     /// subscriber set, and the original branch's signal would keep
     /// firing this effect even after no longer being read. Use
     /// [`Effect::new`] for those.
+    ///
+    /// Sealed from the authoring surface (`#[doc(hidden)]`): a perf
+    /// fast-path used only by the framework's reactive text bindings.
+    #[doc(hidden)]
     pub fn new_with_stable_deps<F: FnMut() + 'static>(f: F) -> Self {
         let owning_stack: Vec<*mut Scope> =
             ACTIVE_SCOPE.with(|s| s.borrow().clone());
@@ -1944,6 +1999,13 @@ impl Effect {
     /// and app code should call `persist()` rather than reaching for
     /// `mem::forget` — the adopt-or-pin behaviour is identical, but the
     /// intent is explicit and greppable.
+    ///
+    /// Author code should prefer [`watch`] + holding the [`Subscription`]
+    /// (or [`Subscription::leak`] for a process-lifetime pin) over
+    /// `persist`. Sealed from the authoring surface (`#[doc(hidden)]`):
+    /// retained `pub` for framework internals (`memo_with` / `resource` /
+    /// animation bindings) only.
+    #[doc(hidden)]
     pub fn persist(self) {
         // `owns == false` (scope-adopted): forget drops a no-op handle.
         // `owns == true` (no scope): forget skips the cancelling Drop,
@@ -1952,6 +2014,63 @@ impl Effect {
         // (see `memo_in_scope_releases_signal_and_effect_on_scope_drop`).
         std::mem::forget(self);
     }
+}
+
+/// A caller-owned reactive subscription, created by [`watch`].
+///
+/// The watched closure runs once immediately and re-runs whenever any
+/// signal it read changes — for exactly as long as this handle is alive.
+/// Dropping the `Subscription` disposes the effect and runs its
+/// `on_cleanup` callbacks; [`Subscription::leak`] keeps it for the process
+/// lifetime.
+///
+/// Unlike `effect! { … }` — which is owned by the surrounding component
+/// scope and needs no handle — a `Subscription` is owned by **you**. Store
+/// it where its lifetime should match: a struct field, a thread-local, the
+/// owning service. This is the right tool for reactive wiring created
+/// *outside* the component tree (app init, async callbacks, platform
+/// integrations), where there is no scope to own the effect.
+#[must_use = "a Subscription disposes its effect when dropped — store it (or call \
+              `.leak()`) to keep the effect running"]
+pub struct Subscription {
+    effect: Effect,
+}
+
+impl Subscription {
+    /// Keep the subscription alive for the rest of the process, giving up
+    /// the handle. The honest, greppable replacement for the old
+    /// `Effect::persist()` *pin* semantics — e.g. a global theme observer
+    /// installed once at app boot that should never be torn down.
+    pub fn leak(self) {
+        // The inner effect `owns` its slot (created with `register ==
+        // false`); forgetting it skips the cancelling Drop, pinning the
+        // slot for the process lifetime.
+        std::mem::forget(self.effect);
+    }
+}
+
+/// Create a caller-owned reactive [`Subscription`]: run `f` now and re-run
+/// it whenever a signal it read changes, until the returned handle is
+/// dropped.
+///
+/// This is the out-of-tree counterpart to `effect! { … }`. Reactivity
+/// inside the component tree belongs in `effect!` (the scope owns it);
+/// reactivity wired up *outside* the tree — at app init, in an async
+/// callback, in a platform/service install — belongs here, where the
+/// lifetime is explicit and yours to hold.
+///
+/// The slot is **never** adopted by an active scope: the returned
+/// `Subscription` always owns it, so `watch` behaves identically whether
+/// or not a scope happens to be active at the call site.
+///
+/// ```ignore
+/// // Stored on the owning struct; dropped (and disposed) with `self`.
+/// self.insets_sub = Some(super::watch(move || apply_insets(safe_area_insets().get())));
+/// ```
+#[must_use = "a Subscription disposes its effect when dropped — store it (or call \
+              `.leak()`) to keep the effect running"]
+pub fn watch<F: FnMut() + 'static>(f: F) -> Subscription {
+    Subscription { effect: Effect::create(f, false) }
 }
 
 /// Transitive run-stack depth above which `run_effect` panics. Catches
@@ -3606,6 +3725,127 @@ mod tests {
         drop(scope);
         count.set(8);
         assert_eq!(runs.get(), 2, "effect should not fire after its scope drops");
+    }
+
+    #[test]
+    #[should_panic(expected = "no active reactive scope")]
+    fn scoped_effect_panics_without_active_scope() {
+        // `effect!` (→ `Effect::scoped`) is for in-tree reactivity only.
+        // Outside a scope it must fail loudly in debug builds rather than
+        // silently cancel — out-of-tree code should reach for `watch`.
+        Effect::scoped(|| {});
+    }
+
+    #[test]
+    fn watch_runs_and_refires_until_dropped() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let count = Signal::new(0i32);
+        let runs = Rc::new(Cell::new(0));
+        let r = runs.clone();
+        let sub = super::watch(move || {
+            let _ = count.get();
+            r.set(r.get() + 1);
+        });
+        assert_eq!(runs.get(), 1, "watch runs once immediately");
+        count.set(1);
+        assert_eq!(runs.get(), 2, "watch re-fires on dependency change");
+        drop(sub);
+        count.set(2);
+        assert_eq!(runs.get(), 2, "dropping the Subscription disposes the effect");
+    }
+
+    #[test]
+    fn watch_subscription_drop_runs_cleanup() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let dep = Signal::new(0i32);
+        let cleaned = Rc::new(Cell::new(0));
+        let c = cleaned.clone();
+        let sub = super::watch(move || {
+            let _ = dep.get();
+            let c2 = c.clone();
+            on_cleanup(move || c2.set(c2.get() + 1));
+        });
+        assert_eq!(cleaned.get(), 0);
+        dep.set(1);
+        assert_eq!(cleaned.get(), 1, "cleanup fires before re-run");
+        drop(sub);
+        assert_eq!(cleaned.get(), 2, "cleanup fires again on disposal");
+    }
+
+    #[test]
+    fn watch_leak_survives_handle_drop() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let count = Signal::new(0i32);
+        let runs = Rc::new(Cell::new(0));
+        let r = runs.clone();
+        // `.leak()` gives up the handle but pins the effect for the process.
+        super::watch(move || {
+            let _ = count.get();
+            r.set(r.get() + 1);
+        })
+        .leak();
+        assert_eq!(runs.get(), 1);
+        count.set(1);
+        assert_eq!(runs.get(), 2, "leaked subscription keeps firing past handle drop");
+    }
+
+    #[test]
+    fn watch_is_caller_owned_not_scope_adopted() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let count = Signal::new(0i32);
+        let runs = Rc::new(Cell::new(0));
+        let r = runs.clone();
+        let mut scope = Scope::new();
+        // Created inside a scope, but `watch` is never adopted by it.
+        let sub = with_scope(&mut scope, || {
+            super::watch(move || {
+                let _ = count.get();
+                r.set(r.get() + 1);
+            })
+        });
+        assert_eq!(runs.get(), 1);
+        // Scope teardown must NOT dispose a watch — the caller owns it.
+        drop(scope);
+        count.set(1);
+        assert_eq!(runs.get(), 2, "watch survives its enclosing scope's drop");
+        // The caller's handle is what disposes it.
+        drop(sub);
+        count.set(2);
+        assert_eq!(runs.get(), 2, "dropping the Subscription disposes it");
+    }
+
+    #[test]
+    fn subscription_single_slot_replacement_disposes_prior() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let a = Signal::new(0i32);
+        let runs = Rc::new(Cell::new(0));
+        // Single-slot keepalive: replacing the slot drops the prior
+        // Subscription, which must dispose its effect (the theme-keepalive
+        // pattern). If it didn't, `a.set` would fire both watches.
+        let r1 = runs.clone();
+        let mut slot = Some(super::watch(move || {
+            let _ = a.get();
+            r1.set(r1.get() + 1);
+        }));
+        assert_eq!(runs.get(), 1);
+        let r2 = runs.clone();
+        slot = Some(super::watch(move || {
+            let _ = a.get();
+            r2.set(r2.get() + 1);
+        }));
+        assert_eq!(runs.get(), 2, "replacement watch runs once at creation");
+        a.set(1);
+        assert_eq!(
+            runs.get(),
+            3,
+            "only the surviving subscription re-fires; the replaced one was disposed"
+        );
+        drop(slot);
     }
 
     #[test]

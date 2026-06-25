@@ -83,3 +83,31 @@ auto-discovered and compiled by `idealyst run android` via the
 
 See [`examples/file-picker-demo`](../../../examples/file-picker-demo) for a
 runnable demo.
+
+## Testing checklist
+
+Manual verification per backend — every backend is **interactive OS UI**; an
+unchecked **native** box means the code compiles for that target but isn't
+confirmed on real hardware yet (macOS is host-verified). Tick each item as you
+exercise it.
+
+**Automated**
+- [ ] `cargo test -p file-picker` — portable request/outcome types, `PickedFile` handle plumbing
+- [ ] `cargo build -p file-picker --target wasm32-unknown-unknown` — web (`showOpenFilePicker` / `<input type=file>`) target compiles
+
+**Behavior**
+
+For each platform: the native picker appears; a picked file streams in chunks
+via `open()` / `copy_to()` (**never** the whole file in RAM — pick a large
+video and confirm memory stays flat); `.multiple()` returns a `Vec<PickedFile>`;
+on mobile, `PickRequest::media` routes to the dedicated photo picker (no
+photo-library permission), `documents` to the general file picker.
+
+- [ ] **Web** — `showOpenFilePicker()` / `<input type=file>`; no `path()`, `open()`/`read_all()` stream a `Blob`
+- [ ] **iOS** — `UIDocumentPickerViewController` (documents, security-scoped) vs `PHPickerViewController` (media); `path()` available
+- [ ] **Android** — `ACTION_OPEN_DOCUMENT` vs Photo Picker (`ACTION_PICK_IMAGES`); no `path()`, reads via detached fd (Kotlin shim auto-discovered — no `MainActivity` edits)
+- [ ] **macOS** — `NSOpenPanel` (documents) vs image/movie-filtered panel (media); `path()` available (host-verified)
+- [ ] **Windows / Linux** — `IFileOpenDialog` / portal `FileChooser.OpenFile`; `path()` available
+
+**Security / Permissions**
+- [ ] No storage or photo-library permission is requested on any platform — the user picking the file is the grant

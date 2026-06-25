@@ -72,3 +72,23 @@ The iOS leaf reaches `MKMapView` at the Obj-C runtime layer via
 `AnyClass::get` + raw `msg_send` rather than `objc2-map-kit` — same
 objc2-major-conflict rationale as the webview SDK. The host project must
 link `MapKit.framework` so the class is registered at startup.
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it.
+
+**Automated**
+- [ ] `cargo build -p maps --target wasm32-unknown-unknown` — web target
+
+**Rendering / behavior**
+- [ ] **Web** — `MapView` shows the OpenStreetMap embed `<iframe>` centered on the
+  given `lat`/`lon` at the requested `zoom`; a re-render with changed coordinates
+  rebuilds the view at the new center (no in-place mutation — confirm the new
+  location shows).
+- [ ] **iOS** — ⚠️ not yet device-confirmed. Native `MKMapView` renders centered on
+  the coords with `zoom` mapped to camera altitude; native + web show the same place.
+  Requires the host to link `MapKit.framework`.
+- [ ] **Android / macOS / other** — no leaf crate; verify the framework's `External`
+  "not supported" placeholder renders cleanly (no layout artifact or crash).

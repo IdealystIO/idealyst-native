@@ -64,3 +64,31 @@ recorder wiring is needed.
 [`code_block`]: src/lib.rs
 [`register`]: src/lib.rs
 [`CodeBlockProps`]: src/lib.rs
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it.
+
+**Automated**
+- [ ] `cargo build -p codeblock --target wasm32-unknown-unknown` — web target
+
+**Rendering / behavior**
+
+A tokenized snippet should render as **one** native node per `code_block(...)`,
+read-only, with each `(text, color)` run carrying its own color, scrolling
+horizontally when the content overflows.
+
+- [ ] **Web** — a `<pre>` with one styled `<span>` per run (inspect DOM); colors
+  match the spans; SSR + hydration stay in lockstep.
+- [ ] **iOS** — ⚠️ not yet device-confirmed. A horizontal `UIScrollView` wrapping
+  one `UILabel` (`NSAttributedString` with per-run color ranges); horizontal scroll
+  works; one label regardless of token count.
+- [ ] **Android** — ⚠️ not yet device-confirmed. A `RustCodeBlock`
+  (HorizontalScrollView + TextView) with a `SpannableString` (one
+  `ForegroundColorSpan` per run); one TextView regardless of token count.
+- [ ] **macOS** — ⚠️ not yet device-confirmed. An `NSScrollView` wrapping an
+  `NSTextField` label (`NSAttributedString` with per-run color).
+- [ ] **terminal / gpu** — no handler registered; verify the framework's `External`
+  placeholder renders cleanly (no layout artifact or crash).

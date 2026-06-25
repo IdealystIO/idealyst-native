@@ -110,6 +110,25 @@ usual CORS rules.
   cargo test -p video-decode --test host_open -- --nocapture
   ```
 
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p video-decode` — portable logic (source/config builders, error contracts)
+- [ ] `VIDEO_DECODE_TEST_FILE=/path/clip.mp4 cargo test -p video-decode --test host_open -- --nocapture` — opens a real local clip, exercises `open()` + transport getters + the frame pump (macOS)
+- [ ] `cargo build -p video-decode --target wasm32-unknown-unknown` — web target
+
+**Behavior**
+- [ ] **Web** — open a `Blob`/`data:`/remote URL clip → `frames()` delivers decoded RGBA8 (hidden `<video>` → `<canvas>` pump); `audio()` yields PCM when present; `transport` play/pause/seek/`seek_preview`/mute drive playback; `position`/`duration` resolve.
+- [ ] **iOS** — ⚠️ not yet device-confirmed: open a clip via `AVPlayer` + `AVPlayerItemVideoOutput` → RGBA8 frames + `MTAudioProcessingTap` PCM; transport ops + getters work.
+- [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: `MediaExtractor` + `MediaCodec` shim decodes to RGBA8 + PCM; transport ops + getters work.
+- [ ] **macOS** — host-verified via `host_open`: a local clip decodes to RGBA8 frames; transport getters (`position`/`duration`/`is_playing`) and the frame pump behave; `set_muted` silences the player but the `AudioStream` keeps carrying PCM.
+
+No OS permission of its own — this decodes media you already have (remote URLs follow normal CORS rules on web).
+
 [`camera`]: ../camera/README.md
 [`screen-recorder`]: ../screen-recorder/README.md
 [`MediaStream`]: ../media-stream/src/lib.rs

@@ -78,3 +78,25 @@ this crate declares no capability and the CLI injects nothing.
 A flat string→string namespace per store — the unopinionated raw capability.
 Typed values, reactive bindings, and migration helpers are deliberately left
 to a higher-level SDK rather than baked in here.
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet (see the
+verification note above). Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p storage` — `MemoryStorage`/`FileStorage` round-trip, namespaced `clear`, idempotent `remove`
+- [ ] `cargo build -p storage --target wasm32-unknown-unknown` — web (`localStorage`) target compiles
+
+**Behavior**
+
+For each platform: a `set`/`get`/`remove`/`clear` round-trip survives an app
+restart (data is genuinely persisted, not in-memory).
+
+- [ ] **Web** — values persist via `localStorage` (keys prefixed with `name`) across a page reload
+- [ ] **iOS** — values persist via `NSUserDefaults` across app relaunch
+- [ ] **Android** — values persist via `SharedPreferences` (file named `name`) across app relaunch
+- [ ] **macOS** — values persist via `NSUserDefaults` across app relaunch
+- [ ] **Windows / Linux** — values persist via the JSON `FileStorage` under the user data dir (`%APPDATA%` / `$XDG_DATA_HOME` / `~/.local/share`) across relaunch
+- [ ] `clear()` removes only this store's `name` namespace, not the whole platform store

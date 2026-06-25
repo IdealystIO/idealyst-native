@@ -21,7 +21,8 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, Element, IdealystSchema, IntoElement, Reactive, Signal, StyleApplication,
+    component, icon, resolve_style, ui, Element, IconData, IdealystSchema, IntoElement, Reactive,
+    Signal, StyleApplication,
 };
 
 use idea_theme::extensible::{installed_checkbox_sheets, ToneRef, VariantRef};
@@ -48,6 +49,10 @@ pub struct CheckboxProps {
     pub variant: VariantRef,
     /// Box scale. Default Md.
     pub size: ControlSize,
+    /// Optional custom checked-state icon, shown in place of the default
+    /// checkmark glyph (e.g. `icons_lucide::CHECK` or a task-specific mark).
+    /// Inherits the checkmark's foreground color. `None` = the default ✓.
+    pub icon: Option<IconData>,
     /// Optional robot/E2E test id, forwarded to the interactive row. Only
     /// honored when idea-ui's `robot` feature is on; ignored otherwise.
     pub test_id: Option<&'static str>,
@@ -62,6 +67,7 @@ impl Default for CheckboxProps {
             tone: ToneRef::default(),
             variant: VariantRef::default(),
             size: ControlSize::default(),
+            icon: None,
             test_id: None,
         }
     }
@@ -79,27 +85,44 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
 
     let sheets = installed_checkbox_sheets();
 
-    // Checkmark glyph — mounted only while checked, tinted to the
-    // variant foreground by the glyph sheet's appearance arm.
+    // Checkmark — mounted only while checked, tinted to the variant
+    // foreground by the glyph sheet's appearance arm. A custom `icon`
+    // replaces the default ✓ glyph, inheriting the same foreground.
     let glyph_sheet = sheets.glyph_sheet.clone();
     let glyph_appearance = appearance.clone();
     let glyph_size = size_key.clone();
+    let icon_data = props.icon;
     let glyph = runtime_core::switch(
         move || value.get(),
         move |on: &bool| {
-            if *on {
-                let gs = glyph_sheet.clone();
-                let ga = glyph_appearance.clone();
-                let gz = glyph_size.clone();
-                runtime_core::text(CHECK_GLYPH)
+            if !*on {
+                return ui! { view {} }.into_element();
+            }
+            let gs = glyph_sheet.clone();
+            let ga = glyph_appearance.clone();
+            let gz = glyph_size.clone();
+            match icon_data {
+                Some(data) => {
+                    // Resolve the checkmark foreground and stamp it on the icon
+                    // (native icons don't inherit text color — see Button).
+                    let fg = resolve_style(
+                        &StyleApplication::new(gs).with("appearance", ga).with("size", gz),
+                    )
+                    .color
+                    .clone();
+                    let el = icon(data).size(14.0);
+                    match fg {
+                        Some(c) => el.color(move || c.resolve()).into_element(),
+                        None => el.into_element(),
+                    }
+                }
+                None => runtime_core::text(CHECK_GLYPH)
                     .with_style(move || {
                         StyleApplication::new(gs.clone())
                             .with("appearance", ga.clone())
                             .with("size", gz.clone())
                     })
-                    .into_element()
-            } else {
-                ui! { view {} }.into_element()
+                    .into_element(),
             }
         },
     );

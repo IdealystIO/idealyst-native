@@ -185,3 +185,30 @@ prompt has **not** been exercised.
 
 Failures on every backend are surfaced as typed `BioError`s carrying the
 platform message, to keep that on-device diagnosis quick.
+
+## Testing checklist
+
+Manual verification per backend — **every real backend is compile-checked
+only, not yet runtime/device-verified** (see [Status / verification](#status--verification)
+above). Each native box below is a to-do until run against a real enrolled
+prompt. Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p biometrics` — portable core: trait, `Biometry`, `BioError`, `AuthRequest`/`WebAuthnRequest` builders, `Unsupported` shim, factory
+- [ ] `cargo build -p biometrics --target wasm32-unknown-unknown` — web (WebAuthn) target compiles
+
+**Behavior**
+
+For each platform: `availability()` reports the right `Biometry`; the OS prompt
+appears and **gates** access on success; `cancel`/`Failed`/`Lockout`/
+`Unavailable` map to the right typed `BioError`.
+
+- [ ] **Web** — WebAuthn ceremony (`navigator.credentials.get`): `AuthRequest` must carry a `WebAuthnRequest` (server challenge + rp id) or it errors `Unsupported`; the returned **assertion is verified server-side** (that verification *is* the authentication); `NotAllowedError`/`AbortError` → `Cancelled` ⚠️ not yet browser-confirmed
+- [ ] **iOS** — Face ID / Touch ID prompt (`LAContext`) gates; `NSFaceIDUsageDescription` present; `allow_device_credential` passcode fallback ⚠️ not yet device-confirmed
+- [ ] **Android** — framework `BiometricPrompt` gates; Kotlin shim `RustBiometricPrompt.kt` discovered/compiled; `nativeResult` JNI symbol resolves from the app cdylib; `DEVICE_CREDENTIAL` fallback ⚠️ not yet device-confirmed (highest-risk backend)
+- [ ] **macOS** — Touch ID prompt (`LAContext`) gates on a Touch ID Mac ⚠️ not yet runtime-confirmed
+- [ ] **Windows** — Windows Hello (`UserConsentVerifier` via `IUserConsentVerifierInterop`, foreground-HWND parented) gates ⚠️ not yet host-confirmed; **Linux / other** — no standard API, every op errors `Unsupported` (unit-tested)
+
+**Security / Permissions**
+- [ ] iOS `Info.plist` declares `NSFaceIDUsageDescription`; Android manifest declares `USE_BIOMETRIC`
+- [ ] On native the OS verifies locally (`Authentication::assertion` is `None`); on web the assertion is meaningless until a relying-party server verifies the signature — confirm the server actually verifies it

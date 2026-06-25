@@ -262,3 +262,64 @@ sdk!(
     SdkKind::Api,
     "Cross-platform biometric authentication — prove the device owner is present."
 );
+
+// ---------------------------------------------------------------------
+// Device — Tier 1 platform-integration capabilities. `permissions` is the
+// shared runtime-grant substrate the prompting ones (notifications,
+// location, camera, microphone) delegate to.
+// ---------------------------------------------------------------------
+
+sdk!(
+    "permissions",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "Cross-platform runtime permission requests — the shared grant substrate. `permissions::request(Permission)` / `status(Permission)` returning a uniform `PermissionStatus`. Capability SDKs that prompt the user depend on this instead of re-implementing an OS grant flow."
+);
+sdk!(
+    "notifications",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "Local + scheduled notifications and the raw device push token. `notify`/`schedule`/`cancel`; authorization goes through `permissions`. Server-side push delivery is the app's job."
+);
+sdk!(
+    "clipboard",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "System copy/paste of plain text — `clipboard::set_text` / `text`. UIPasteboard / NSPasteboard / ClipboardManager / `navigator.clipboard`."
+);
+sdk!(
+    "location",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "Device geolocation — one-shot `current()` and continuous `watch()` yielding a `Position`. Permission grant goes through `permissions`."
+);
+sdk!(
+    "share",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "The system share sheet (outbound) — hand text/url/files to another app. `share(ShareContent)`. The inverse of `file-picker`. UIActivityViewController / ACTION_SEND / `navigator.share`."
+);
+sdk!(
+    "deep-link",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "Inbound URL handling — `initial_link()` + `on_link()` deliver the parsed launch/resume URL (custom scheme / universal / app link). The host forwards URLs in via `feed_link`."
+);
+sdk!(
+    "connectivity",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "Network reachability — `current()` snapshot + `watch()` of online/offline and coarse transport (wifi/cellular/ethernet). NWPathMonitor / ConnectivityManager / `navigator.onLine`."
+);
+sdk!(
+    "haptics",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "Tactile feedback — `impact`/`notify`/`selection`. Fire-and-forget, best-effort. UIFeedbackGenerator / Vibrator / `navigator.vibrate`."
+);
+sdk!(
+    "audio",
+    SdkCategory::Media,
+    SdkKind::Api,
+    "Sound playback — `load(AudioSource)` → a `Sound` you `play()`, with a controllable `Playback` (pause/stop/volume/loop). The playback peer of the capture SDKs. AVAudioPlayer / MediaPlayer / HTMLAudioElement."
+);

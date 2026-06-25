@@ -275,3 +275,33 @@ From the `i18n` crate:
 | `set_pack_loader(Fn(&str))` / `ensure_pack_loaded(code)` | Opt-in loader seam. |
 | `net_pack_loader(base)` *(feature `lazy-fetch`)* | Ready-made network loader. |
 | `install_formatter(..)` / `clear_formatter()` | Swap in a custom message formatter. |
+
+## Testing checklist
+
+Pure Rust on top of `runtime-core`'s reactive `Reactive<String>` — **no native
+backend code**, so almost everything is covered by `cargo test`. The behavior
+boxes only confirm the reactive locale-swap re-renders in place through each
+backend's real text path.
+
+**Automated**
+- [ ] `cargo test -p i18n` — interpolation / `{{`-`}}` escapes, locale switch,
+  opt-in (lazy) pack install + fallback, custom-formatter seam, plus the
+  generated-macro tests (`tests/macro.rs`)
+- [ ] `cargo test -p i18n compile_fail` — `trybuild` checks that each
+  strong-typing mistake (missing bundled translation, bad placeholder, unused
+  arg, inline string on a lazy locale, zero/multiple `(default)`) is a
+  `compile_error!` at the right span (`tests/ui/*`)
+- [ ] `cargo build -p i18n --target wasm32-unknown-unknown` — web target
+- [ ] `cargo build -p i18n --features lazy-fetch --target wasm32-unknown-unknown`
+  — opt-in network loader path
+
+**Behavior** (reactive re-render only — same code on every backend)
+- [ ] **Web** — `set_locale(...)` re-renders every visible translated string in
+  place; `{name}` interpolation correct; a lazy locale fetches its JSON pack and
+  upgrades the text in place; SSG emits per-locale static variants.
+- [ ] **iOS** — locale switch re-renders translated `text()` in place. ⚠️ not
+  yet device-confirmed.
+- [ ] **Android** — locale switch re-renders translated `text()` in place. ⚠️
+  not yet device-confirmed.
+- [ ] **macOS** — locale switch re-renders translated `text()` in place. ⚠️ not
+  yet device-confirmed.

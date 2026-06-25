@@ -47,7 +47,7 @@ use runtime_core::animation::{
 };
 use runtime_core::primitives::slider::slider;
 use runtime_core::{
-    pan, signal, tap, text, view, AlignItems, Color, Easing, Effect, FlexDirection,
+    effect, pan, signal, tap, text, view, AlignItems, Color, Easing, FlexDirection,
     JustifyContent, Length, Overflow, PanEvent, PanRecognizer, Position, Element, Ref, Signal,
     StyleApplication, StyleRules, StyleSheet, TapRecognizer, Tokenized, TouchEvent, TouchPhase,
     TouchResponse, ViewHandle,
@@ -840,20 +840,19 @@ fn particle_sim_section() -> Element {
     let restitution: Signal<f32> = signal!(0.96);
     let air_drag: Signal<f32> = signal!(0.0);
 
-    // Wire slider values into the sim's runtime parameters via an
-    // Effect — reads both signals and copies them into the sim on
-    // every change. Cheap: the Effect only fires when a slider
-    // moves, not per frame.
+    // Wire slider values into the sim's runtime parameters via a
+    // scope-owned effect — reads both signals and copies them into the
+    // sim on every change. Cheap: it only fires when a slider moves, not
+    // per frame. Built during render, so the component scope owns it.
     {
         let sim = sim.clone();
-        let _e = Effect::new(move || {
+        effect!({
             let r = restitution.get();
             let d = air_drag.get();
             let mut s = sim.borrow_mut();
             s.restitution = r;
             s.drag = d;
         });
-        let _ = Box::leak(Box::new(_e));
     }
 
     // Canvas ref filled at mount. The tick reads `frame()` each

@@ -95,15 +95,25 @@ bundled and which crate requested it, so nothing is added invisibly.
 one exists (and is a no-op success on Windows/Linux). It's optional —
 [`Microphone::open`] requests access on its own.
 
+The runtime **grant** flow (reading the current status and surfacing the OS
+prompt) is delegated to the shared `permissions` SDK —
+`permissions::request(Permission::Microphone)` on iOS/macOS/Android/web. This
+crate keeps only the *capture* code (cpal / `AudioRecord` / the iOS
+`AVAudioSession` activation); the AVCaptureDevice / `checkSelfPermission` /
+`navigator.permissions` grant logic lives in `permissions`. `microphone` still
+declares the `microphone` capability above (the manifest requirement); only the
+grant mechanism moved.
+
 ### Android runtime-permission caveat
 
-`request_permission()` checks the current grant and, if missing, fires the
-system dialog — but its result is delivered to the Activity's
-`onRequestPermissionsResult`, which this SDK does not hook. So the call
-returns the *current* (not-yet-granted) state after showing the dialog;
-re-check (or retry `open`) once the user has responded. Most apps simply
-ensure `RECORD_AUDIO` is granted at startup. `open()` fails fast with
-`MicError::PermissionDenied` if it isn't.
+`request_permission()` delegates to `permissions`, which checks the current
+grant and, if missing, fires the system dialog — but its result is delivered
+to the Activity's `onRequestPermissionsResult`, which the host must forward to
+`permissions` (see its README's request seam). So the call returns the
+*current* (not-yet-granted) state after showing the dialog; re-check (or retry
+`open`) once the user has responded. Most apps simply ensure `RECORD_AUDIO` is
+granted at startup. `open()` fails fast with `MicError::PermissionDenied` if it
+isn't.
 
 ## Configuration
 
@@ -131,6 +141,26 @@ let _ = AudioStreamConfig::new().with_sample_rate(16_000).mono();
   ```text
   cargo test -p microphone --test host_capture -- --ignored --nocapture
   ```
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet (see the
+verification note above). Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p microphone` — portable logic (framing math + config builders)
+- [ ] `cargo test -p microphone --test host_capture -- --ignored --nocapture` — opens the host's default input, asserts the callback fires
+- [ ] `cargo build -p microphone --target wasm32-unknown-unknown` — web target
+
+**Behavior**
+- [ ] **Web** — `getUserMedia` prompt appears (secure context only); capturing yields non-silent PCM at the configured sample rate/channels; dropping the stream releases the device.
+- [ ] **iOS** — ⚠️ not yet device-confirmed: permission prompt fires; `AVAudioSession` activates; non-silent interleaved-`f32` PCM at the configured rate/channels; stop releases the device.
+- [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: permission prompt fires (delegated to `permissions`; host must forward `onRequestPermissionsResult`); `AudioRecord` worker yields non-silent PCM; stop releases the device.
+- [ ] **macOS** — host-verified via `host_capture`: capturing yields non-silent PCM at the configured rate/channels; confirm the prompt still appears now that the grant routes through the `permissions` SDK.
+
+**Permissions**
+- [ ] Permission prompt still surfaces (grant flow now delegated to the `permissions` SDK); the build-injected `NSMicrophoneUsageDescription` / `RECORD_AUDIO` carries the app's configured reason.
 
 [`cpal`]: https://crates.io/crates/cpal
 [`AudioBuffer`]: src/buffer.rs

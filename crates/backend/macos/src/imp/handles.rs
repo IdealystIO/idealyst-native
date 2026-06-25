@@ -114,16 +114,35 @@ impl ViewOps for MacosViewOps {
         if window.is_null() {
             return None;
         }
-        // `-[NSView convertRect:toView:]` with the window's contentView
-        // gives window coordinates. We use the window itself as the
-        // reference (passing nil converts to window coords, same idea).
-        let nil: *mut NSView = std::ptr::null_mut();
-        let frame_in_window: CGRect = unsafe {
-            msg_send![view, convertRect: bounds, toView: nil]
+        // Convert into the window's `contentView`, NOT `nil`. Passing `nil`
+        // yields AppKit's window *base* coordinates, which are BOTTOM-LEFT
+        // (y grows up). The contentView is the `isFlipped` full-window host, so
+        // its space is TOP-LEFT window coordinates (y grows down) — matching the
+        // touch `window_position` path (see `view.rs`, which converts a point
+        // into the same contentView) and the documented top-left
+        // `ViewportRect` / `TouchPoint` convention. Without this, this rect's Y
+        // is inverted relative to touch coordinates, so any window-space
+        // hit-testing (drag-and-drop collision, overlay anchoring) silently
+        // fails on macOS.
+        let content: *mut NSView = unsafe { msg_send![window, contentView] };
+        let to_view: *mut NSView = if content.is_null() {
+            std::ptr::null_mut()
+        } else {
+            content
         };
+        let frame_in_window: CGRect = unsafe {
+            msg_send![view, convertRect: bounds, toView: to_view]
+        };
+        // `convertRect:` is frame-based and ignores the CALayer transform — so a
+        // view positioned by an animated `TranslateX/Y` reports its untransformed
+        // frame, not where it visually sits. Add the translate so the rect is the
+        // VISUAL window rect, matching the touch `window_position` the SDK
+        // hit-tests it against (without this, drag-and-drop drops land offset by
+        // the transform — more the further the target sits from the origin).
+        let (tx, ty) = super::animated::view_layer_translate(view);
         Some(ViewportRect {
-            x: frame_in_window.origin.x as f32,
-            y: frame_in_window.origin.y as f32,
+            x: frame_in_window.origin.x as f32 + tx as f32,
+            y: frame_in_window.origin.y as f32 + ty as f32,
             width: frame_in_window.size.width as f32,
             height: frame_in_window.size.height as f32,
         })

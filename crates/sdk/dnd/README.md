@@ -140,3 +140,34 @@ without changing call sites.
 ## Permissions
 
 None.
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it. The in-app engine is pure Rust on the unified
+`TouchEvent` stream + window-space `absolute_frame` hit-test, so it has no
+per-platform code; the behavior boxes confirm the drag + hit-test land
+correctly through each backend's real input + geometry.
+
+**Automated**
+- [ ] `cargo test -p dnd` — drag FSM (`Immediate` / `LongPress` activation),
+  payload delivery, drop hit-test, `accepts` filtering, hover state, snap-back
+  (12 unit tests)
+- [ ] `cargo build -p dnd --target wasm32-unknown-unknown` — web target
+
+**Behavior**
+- [ ] **Web** — drag a `Draggable` over a `Droppable`: hover state toggles,
+  `on_drop` fires with the payload, a missed drop springs back; window-space
+  hit-test stays correct across a scrolled / transformed container.
+- [ ] **iOS** — long-press-then-drag (platform default) commits; ghost offset
+  follows the finger; drop + hover correct across scroll. ⚠️ not yet
+  device-confirmed.
+- [ ] **Android** — same long-press activation + hit-test across scroll. ⚠️ not
+  yet device-confirmed.
+- [ ] **macOS** — immediate drag commits; offset tracks pointer; drop + hover
+  correct. ⚠️ not yet device-confirmed.
+
+> In-app DnD only. *Cross-application* OS drag and the browser's native HTML5
+> `DataTransfer` are a documented seam (see the `native` module) and are **not**
+> implemented here — nothing to test for that path yet.

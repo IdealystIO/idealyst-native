@@ -168,11 +168,12 @@ impl Backend for IosBackend {
     type Node = IosNode;
 
     fn platform(&self) -> runtime_core::Platform {
-        if cfg!(all(target_os = "ios", target_abi = "sim")) {
-            runtime_core::Platform::Custom("Sim")
-        } else {
-            runtime_core::Platform::Ios
-        }
+        // Always `Ios`, simulator included — the sim IS iOS. A sim/device
+        // predicate must not leak into `Platform` (CLAUDE.md §7); `is_mobile()`
+        // would otherwise be false on the sim and flip mobile-gated behavior
+        // (e.g. `dnd` long-press vs immediate drag activation). Sim-only code
+        // uses the compile-time `cfg(target_abi = "sim")` marker instead.
+        runtime_core::Platform::Ios
     }
 
     fn color_scheme(&self) -> runtime_core::ColorScheme {

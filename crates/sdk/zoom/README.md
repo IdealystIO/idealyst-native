@@ -86,3 +86,26 @@ let zoom = zoom.on_end(move |end| {
 ```
 
 No permissions required.
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet (see the
+verification note above). Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p zoom` — base snapshotting across pinches, wheel
+  multiplication + consume, scroll-vs-zoom discrimination, pinch↔wheel
+  convergence onto one value (8 unit tests)
+- [ ] `cargo build -p zoom --target wasm32-unknown-unknown` — web target
+
+**Behavior**
+- [ ] **Web** — two-finger pinch (touch) scales smoothly; `wheel`+`ctrlKey`
+  (trackpad pinch / ctrl-scroll) also zooms and is consumed so the page
+  doesn't scroll; plain scroll still passes through. Scale handle is reactive.
+- [ ] **iOS** — pinch scales smoothly via the native scale transform;
+  successive pinches compound. ⚠️ not yet device-confirmed.
+- [ ] **Android** — pinch scales smoothly; compounds across gestures. ⚠️ not
+  yet device-confirmed.
+- [ ] **macOS** — trackpad magnify (`magnify:`) zooms via the wheel channel;
+  touch pinch also works; scale handle reactive. ⚠️ not yet device-confirmed.

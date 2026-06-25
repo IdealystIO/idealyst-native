@@ -22,6 +22,7 @@ pub(crate) fn install(_b: &AndroidBackend, node: &GlobalRef, handler: runtime_co
     with_env(|env| {
         let ptr: jlong = leak(TouchCallback {
             inner: RefCell::new(Some(handler)),
+            node: node.clone(),
         });
         let listener_class = env
             .find_class("io/idealyst/runtime/RustTouchListener")
@@ -52,8 +53,17 @@ pub(crate) fn install(_b: &AndroidBackend, node: &GlobalRef, handler: runtime_co
 /// Note: the Kotlin listener already calls this inline whenever a
 /// touch returns `claim: true`, so the Rust trait method is a
 /// belt-and-suspenders entry point for any future code path that
-/// wants to claim from outside a `MotionEvent` dispatch.
+/// wants to claim from outside a `MotionEvent` dispatch — e.g. the
+/// off-stream long-press drag commit (see [`claim_node`]).
 pub(crate) fn claim(_b: &AndroidBackend, node: &GlobalRef) {
+    claim_node(node);
+}
+
+/// The backend-independent body of [`claim`]: cancel ancestor scroll
+/// interception for `node`. Split out so a `'static` claim closure (published
+/// for the off-stream commit path via `runtime_core::set_active_touch_claim`)
+/// can run it without holding the backend.
+pub(crate) fn claim_node(node: &GlobalRef) {
     with_env(|env| {
         let parent = env.call_method(node.as_obj(), "getParent", "()Landroid/view/ViewParent;", &[]);
         let Ok(parent) = parent.and_then(|p| p.l()) else {

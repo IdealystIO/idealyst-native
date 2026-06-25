@@ -11,9 +11,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo};
-use runtime_core::{Ref, ViewHandle};
+use runtime_core::{effect, Bound, Element, Ref, Signal, ViewHandle};
 
-use crate::context::DragContext;
+use crate::context::{DragContext, PreviewBuilder};
 use crate::recognizer::{Activation, DragPhase, DragRecognizer};
 
 /// Spring stiffness used for the snap-back when a drag misses every target.
@@ -49,8 +49,20 @@ pub struct Draggable<T: Clone + 'static> {
     /// springs back to exactly where the element rested before the grab.
     base: Rc<Cell<(f32, f32)>>,
     snap_back: bool,
+    /// Reactive "this specific source is being dragged right now". The wrapped
+    /// component reads it to restyle itself (dim/hide while its ghost flies) —
+    /// the equivalent of react-dnd's `isDragging` from `useDrag`.
+    is_dragging: Signal<bool>,
     on_start: Option<StartCb>,
     on_release: Option<ReleaseCb>,
+    /// When set, the drag uses the **drag-layer** model: a ghost built by this
+    /// closure follows the pointer in a top-level overlay (see
+    /// [`crate::drag_layer`]) and the source element stays put. When `None`,
+    /// the source element itself translates (the in-place model).
+    preview: Option<PreviewBuilder>,
+    /// Opacity to fade the source element to while it is being dragged (so a
+    /// drag-layer ghost reads as "the live copy"). Applied by [`Draggable::attach`].
+    dim: Option<f32>,
 }
 
 impl<T: Clone + 'static> Draggable<T> {
@@ -67,9 +79,32 @@ impl<T: Clone + 'static> Draggable<T> {
             y: AnimatedValue::new(0.0),
             base: Rc::new(Cell::new((0.0, 0.0))),
             snap_back: true,
+            is_dragging: Signal::new(false),
             on_start: None,
             on_release: None,
+            preview: None,
+            dim: None,
         }
+    }
+
+    /// Reactive flag: `true` while THIS source is being dragged. Read it in the
+    /// wrapped component to restyle the source while its drag is in flight
+    /// (e.g. dim it to `opacity: 0.4`, or hide it so only the ghost shows).
+    /// The react-dnd `isDragging` equivalent.
+    pub fn is_dragging(&self) -> Signal<bool> {
+        self.is_dragging
+    }
+
+    /// Opt into the **drag-layer** model: `build` produces a ghost that follows
+    /// the pointer in a top-level overlay, rendered above all content and never
+    /// clipped by an ancestor. The source element stays in place (dim it via
+    /// [`DragContext::dragging`] if you like). Requires [`crate::drag_layer`]
+    /// to be mounted once near the app root. This is the robust default for
+    /// cross-container drag; without it the source element translates in place,
+    /// which is constrained to its own stacking context.
+    pub fn preview(mut self, build: impl Fn() -> Element + 'static) -> Self {
+        self.preview = Some(std::rc::Rc::new(build));
+        self
     }
 
     /// Override when the drag commits. See [`Activation`].
@@ -115,6 +150,40 @@ impl<T: Clone + 'static> Draggable<T> {
         self.y.bind(target, AnimProp::TranslateY);
     }
 
+    /// Fade the source element to `opacity` while it is being dragged, so a
+    /// drag-layer ghost reads as the live copy and the original as parked.
+    /// Applied by [`Draggable::attach`]. (For full control instead, read
+    /// [`Draggable::is_dragging`] in your own view.)
+    pub fn dim_source(mut self, opacity: f32) -> Self {
+        self.dim = Some(opacity);
+        self
+    }
+
+    /// Wire this draggable onto `view` and return the finished element — the
+    /// one-call form of "make a ref, install the handler, bind it". Installs
+    /// the touch handler, owns the ref, binds the in-place offset, and applies
+    /// [`Draggable::dim_source`] if set. Use [`Draggable::handler`] +
+    /// [`Draggable::bind`] directly when you need the ref yourself (to bind
+    /// other animated props to the node) or to compose in a `GestureGroup`.
+    pub fn attach(self, view: Bound<ViewHandle>) -> Element {
+        let r: Ref<ViewHandle> = Ref::new();
+        // Offset bind is harmless in the drag-layer model (the element never
+        // translates) and required in the in-place model.
+        self.bind(r);
+        if let Some(opacity) = self.dim {
+            let dim_av = AnimatedValue::new(1.0);
+            dim_av.bind(r, AnimProp::Opacity);
+            let is_dragging = self.is_dragging;
+            // Bridge the per-source drag flag to the bound opacity. Built
+            // during render, so the surrounding component scope owns it.
+            effect!({
+                dim_av.set(if is_dragging.get() { opacity } else { 1.0 });
+            });
+        }
+        let handler = self.handler();
+        view.on_touch(move |ev| handler(ev)).bind(r).into()
+    }
+
     /// The installable [`TouchHandler`](runtime_core::TouchHandler) for the
     /// view's `on_touch` slot.
     pub fn handler(&self) -> runtime_core::TouchHandler {
@@ -136,18 +205,34 @@ impl<T: Clone + 'static> Draggable<T> {
         let payload = self.payload.clone();
         let x = self.x.clone();
         let y = self.y.clone();
+        // In drag-layer mode `base` instead holds the grab offset (where in the
+        // element the finger landed), so the ghost sits under the finger.
         let base = self.base.clone();
         let snap_back = self.snap_back;
+        let is_dragging = self.is_dragging;
         let on_start = self.on_start.clone();
         let on_release = self.on_release.clone();
+        let preview = self.preview.clone();
 
         move |phase: DragPhase| match phase {
             DragPhase::Began(sample) => {
-                // Take over any running animation and snapshot the rest
-                // position so a miss springs back exactly here.
-                x.cancel();
-                y.cancel();
-                base.set((x.get(), y.get()));
+                is_dragging.set(true);
+                if let Some(builder) = &preview {
+                    // Drag-layer model: the ghost moves, the source stays put.
+                    // Stash the grab offset so the ghost tracks under the finger.
+                    base.set((sample.view_position.x, sample.view_position.y));
+                    ctx.set_preview(
+                        builder.clone(),
+                        sample.window_position.x - sample.view_position.x,
+                        sample.window_position.y - sample.view_position.y,
+                    );
+                } else {
+                    // In-place model: the source element translates. Snapshot
+                    // the rest position so a miss springs back exactly here.
+                    x.cancel();
+                    y.cancel();
+                    base.set((x.get(), y.get()));
+                }
                 ctx.begin((payload)());
                 ctx.update(sample.window_position);
                 if let Some(cb) = &on_start {
@@ -155,19 +240,28 @@ impl<T: Clone + 'static> Draggable<T> {
                 }
             }
             DragPhase::Moved(sample) => {
-                let (bx, by) = base.get();
-                x.set(bx + sample.delta.x);
-                y.set(by + sample.delta.y);
+                if preview.is_some() {
+                    let (gx, gy) = base.get();
+                    ctx.move_preview(sample.window_position.x - gx, sample.window_position.y - gy);
+                } else {
+                    let (bx, by) = base.get();
+                    x.set(bx + sample.delta.x);
+                    y.set(by + sample.delta.y);
+                }
                 ctx.update(sample.window_position);
             }
             DragPhase::Ended {
                 window_position, ..
             } => {
+                is_dragging.set(false);
                 let landed = ctx.finish(window_position);
                 let outcome = if landed {
                     DropOutcome::Landed
                 } else {
-                    if snap_back {
+                    // In-place mode springs the element back; the ghost just
+                    // vanishes when `dragging` flips false (the drag layer
+                    // unmounts it), so there is nothing to restore.
+                    if preview.is_none() && snap_back {
                         spring_back(&x, &y, base.get());
                     }
                     DropOutcome::Missed
@@ -177,8 +271,9 @@ impl<T: Clone + 'static> Draggable<T> {
                 }
             }
             DragPhase::Cancelled => {
+                is_dragging.set(false);
                 ctx.cancel();
-                if snap_back {
+                if preview.is_none() && snap_back {
                     spring_back(&x, &y, base.get());
                 }
                 if let Some(cb) = &on_release {

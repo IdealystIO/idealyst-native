@@ -820,6 +820,15 @@ pub fn user_select_css(v: runtime_core::UserSelect) -> &'static str {
     }
 }
 
+/// CSS `pointer-events` keyword for a [`runtime_core::PointerEvents`].
+pub fn pointer_events_css(v: runtime_core::PointerEvents) -> &'static str {
+    use runtime_core::PointerEvents;
+    match v {
+        PointerEvents::Auto => "auto",
+        PointerEvents::None => "none",
+    }
+}
+
 pub fn transform_css(t: &runtime_core::Transform) -> String {
     use runtime_core::Transform;
     match t {
@@ -1025,6 +1034,9 @@ pub fn rules_to_css(rules: &StyleRules) -> String {
         let v = user_select_css(u);
         parts.push(format!("-webkit-user-select: {v}"));
         parts.push(format!("user-select: {v}"));
+    }
+    if let Some(p) = rules.pointer_events {
+        parts.push(format!("pointer-events: {}", pointer_events_css(p)));
     }
 
     // Transitions: a single CSS `transition` listing every active

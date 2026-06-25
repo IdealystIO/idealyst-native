@@ -79,13 +79,18 @@
 mod context;
 mod draggable;
 mod droppable;
+mod layer;
 mod recognizer;
 
 pub mod native;
 
+#[doc(hidden)]
+mod recipes;
+
 pub use context::{DragContext, DroppableId};
 pub use draggable::{Draggable, DropOutcome, SNAP_BACK_DAMPING, SNAP_BACK_STIFFNESS};
 pub use droppable::Droppable;
+pub use layer::drag_layer;
 pub use recognizer::{
     Activation, DragPhase, DragRecognizer, DragSample, DEFAULT_DRAG_LONG_PRESS_MS,
     DEFAULT_DRAG_LONG_PRESS_SLOP_PX, DEFAULT_DRAG_SLOP_PX,

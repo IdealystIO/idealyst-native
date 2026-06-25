@@ -1,0 +1,60 @@
+[package]
+name = "permissions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform RUNTIME-PERMISSION substrate — the shared grant flow the
+# capability SDKs (`notifications`, `location`, …) build on instead of each
+# re-implementing an OS prompt. A permission is two facts: the manifest/plist
+# *requirement* (declared by each capability SDK) and the runtime *grant*
+# (the user tapping "Allow"). This crate owns the second half: a tiny,
+# unopinionated `status(p)` / `request(p)` surface, uniform across backends.
+#
+#   - web (wasm32)        : Notification + navigator.permissions + geolocation
+#   - iOS / macOS / tvOS  : UNUserNotificationCenter + CLLocationManager (objc2)
+#   - Android             : ContextCompat.checkSelfPermission (JNI); request seam
+#
+# This crate declares NO capability metadata — the plist keys / Android
+# permissions are declared by `notifications` and `location`.
+
+[dependencies]
+runtime-core = { workspace = true }
+
+# Web (wasm): Notification / Permissions / Geolocation via web-sys.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Navigator",
+    "Permissions",
+    "PermissionStatus",
+    "PermissionState",
+    "Notification",
+    "NotificationPermission",
+] }
+
+# iOS / macOS / tvOS: UNUserNotificationCenter + CLLocationManager via objc2.
+[target.'cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSThread"] }
+# UNUserNotificationCenter completion handlers are `void(^)(...)` blocks;
+# bridge them to the async fn with `block2`.
+block2 = "0.5"
+
+# Android: ContextCompat.checkSelfPermission + Activity.requestPermissions via JNI.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+[features]
+# Compile the `recipe!` usage examples (feeds MCP / autodocs). Off in
+# production builds, so recipes cost nothing there. The notifications recipe
+# spawns the async `request` with `runtime_core::driver::spawn_async`, which
+# lives behind core's `async-driver` feature — enable it for the recipe build.
+catalog = ["runtime-core/catalog", "runtime-core/async-driver"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

@@ -197,7 +197,7 @@ pub fn variant_enum_control<E>(value: Signal<E>) -> Element
 where
     E: VariantEnum + PartialEq + 'static,
 {
-    use runtime_core::Effect;
+    use runtime_core::effect;
 
     let variants = E::all_variants();
     let options: Vec<IdeaSelectOption> = variants
@@ -219,19 +219,15 @@ where
     // so the `shadow.set` below doesn't recursively re-fire this
     // effect and corrupt its subscription set.
     //
-    // `persist()` is adopt-or-pin: inside an active render scope (the
-    // common case) the scope already owns the effect and this is a no-op;
-    // outside any scope (tests, ad-hoc construction) it pins the effect to
-    // thread lifetime so the typed→shadow sync survives past return — pre-
-    // fix the `let _e_typed_to_shadow` drop fired at end-of-statement and
-    // silently cancelled the sync.
-    Effect::new(move || {
+    // These controls are always rendered inside the docs component tree,
+    // so a scope owns the effect and frees it on teardown — `effect!` is
+    // the right form (and debug-asserts that in-tree invariant).
+    effect!({
         let s = value.get().as_variant_str().to_string();
         if shadow.get() != s {
             shadow.set(s);
         }
-    })
-    .persist();
+    });
 
     let on_change: Rc<dyn Fn(String)> = {
         let variants = variants;
@@ -273,7 +269,7 @@ where
 pub fn ref_picker_control<T: idea_theme::extensible::RefBuiltins>(
     value: Signal<T>,
 ) -> Element {
-    use runtime_core::Effect;
+    use runtime_core::effect;
 
     let builtins = T::builtins_list();
     let options: Vec<IdeaSelectOption> = builtins
@@ -287,14 +283,13 @@ pub fn ref_picker_control<T: idea_theme::extensible::RefBuiltins>(
     let initial = value.get().current_key().to_string();
     let shadow: Signal<String> = Signal::new(initial);
 
-    // adopt-or-pin; see `variant_enum_control` above.
-    Effect::new(move || {
+    // Scope-owned; see `variant_enum_control` above.
+    effect!({
         let s = value.get().current_key().to_string();
         if shadow.get() != s {
             shadow.set(s);
         }
-    })
-    .persist();
+    });
 
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |picked: String| {
         // Re-enumerate per call so we can return owned `T` from the

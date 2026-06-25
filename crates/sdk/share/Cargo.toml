@@ -1,0 +1,59 @@
+[package]
+name = "share"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Hand content to the system **share sheet** (outbound) — the inverse of
+# `file-picker`. The user picks *another app* to send text / a URL / files to.
+# One async `share(ShareContent) -> ShareOutcome` surface; one cfg-gated backend
+# compiles per target, presenting the platform's own share UI:
+#
+#   - iOS:     UIActivityViewController (presented from the top view controller)
+#   - macOS:   NSSharingServicePicker (shown relative to the key window)
+#   - Android: Intent.ACTION_SEND / ACTION_SEND_MULTIPLE wrapped in createChooser
+#   - web:     navigator.share() (Web Share API; needs a user gesture + https)
+#   - Windows / Linux: NotSupported (no universal native share surface)
+#
+# The share sheet is user-initiated UI, so this SDK needs NO permission on any
+# platform.
+
+[dependencies]
+# The catalog feature pulls in `recipe!` for the compile-checked usage examples.
+runtime-core = { workspace = true }
+
+[features]
+# Build the compile-checked usage recipes into the MCP/docs catalog. Off in
+# production: `recipe!` expands to nothing. Forwards `async-driver` so the
+# recipes can use the real `runtime_core::driver::spawn_async` pattern (the
+# canonical way author code drives `share(...).await` from a button press).
+catalog = ["runtime-core/catalog", "runtime-core/async-driver"]
+
+# iOS / macOS: drive UIActivityViewController (iOS) / NSSharingServicePicker
+# (macOS) through the Obj-C runtime, the same posture `file-export` takes. We
+# bridge the iOS completion handler to async via a oneshot, like file-export's
+# document-picker delegate.
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSURL"] }
+block2 = "0.5"
+futures-channel = "0.3"
+
+# Android: build an ACTION_SEND / ACTION_SEND_MULTIPLE intent and startActivity
+# on the Activity from `ndk_context::android_context()`. Text/URL share is fully
+# self-contained (no shim); file sharing needs a FileProvider content URI — see
+# the crate docs for that seam.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+# Web: navigator.share() (Web Share API). Driven dynamically through js-sys
+# because the typed `Navigator::share` surface isn't in web-sys's stable API.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Window", "Navigator"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

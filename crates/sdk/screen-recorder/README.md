@@ -121,6 +121,25 @@ at build time and injects the right per-platform artifacts:
 - `tests/portable.rs` — config builders + the private-layer `Element::External`
   lowering contract + the skeleton's `Unsupported` contract; runs anywhere.
 
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p screen-recorder` — config builders, private-layer `Element::External` lowering, the `Unsupported` skeleton contract
+- [ ] `cargo build -p screen-recorder --target wasm32-unknown-unknown` — web target
+
+**Behavior**
+- [ ] **Web** — `getDisplayMedia` source picker appears; frames stream as RGBA8; `PrivateLayer` is an inline no-op (no exclusion yet).
+- [ ] **iOS** — device-verified: ReplayKit consent dialog appears; `Source::ThisApp` frames stream (in-app capture shows the app — recursive mirror expected); the private layer's separate `UIWindow` is excluded; `UserChoice` falls back to `ThisApp`, `Window` → `UnsupportedSource`.
+- [ ] **Android** — ⚠️ not yet device-confirmed: MediaProjection consent dialog appears (re-prompts each session on API 14+); confirm the `FOREGROUND_SERVICE_MEDIA_PROJECTION` foreground-service notification shows; frames stream; the private layer's separate `WindowManager` window is PixelCopy-excluded.
+- [ ] **macOS** — system Screen Recording (TCC) prompt appears; ScreenCaptureKit frames stream; the private `NSWindow`/`NSPanel` is excluded via `SCContentFilter`.
+
+**Permissions**
+- [ ] The consent flow surfaces per platform (ReplayKit / TCC / MediaProjection / browser picker); `start` fails with `PermissionDenied` when refused, no crash.
+
 [`camera`]: ../camera/README.md
 [`MediaStream`]: ../media-stream/src/lib.rs
 [`VideoFrame`]: ../media-stream/src/lib.rs

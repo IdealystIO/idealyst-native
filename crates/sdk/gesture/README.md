@@ -96,3 +96,30 @@ rather than deadlocking.
 ## Permissions
 
 None.
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it. Arbitration is pure Rust on top of the unified
+`TouchEvent` stream, so most coverage is in the unit suite; the behavior boxes
+confirm the recognizers fire correctly through each backend's real input.
+
+**Automated**
+- [ ] `cargo test -p gesture` — priority/add-order ties, `require_to_fail`
+  gating + dependency-order driving, `allow_simultaneous`, off-stream
+  (long-press timer) re-arbitration, exclusivity cancellation, cycle fallback
+- [ ] `cargo build -p gesture --target wasm32-unknown-unknown` — web target
+
+**Behavior**
+- [ ] **Web** — each recognizer (tap / long-press / pan / pinch / rotate) fires
+  its callback at the right threshold; a tap that `require_to_fail`s a pan
+  waits and arbitrates correctly; a simultaneous pinch+rotate both stay active.
+- [ ] **iOS** — same recognizers fire at the right thresholds through the
+  native touch stream; exclusivity cancels the loser before it emits. ⚠️ not
+  yet device-confirmed.
+- [ ] **Android** — recognizer thresholds + arbitration correct on touch. ⚠️
+  not yet device-confirmed.
+- [ ] **macOS** — tap / long-press / pan recognizers fire correctly via mouse +
+  trackpad input; simultaneous recognizers arbitrate. ⚠️ not yet
+  device-confirmed.

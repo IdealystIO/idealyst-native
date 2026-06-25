@@ -61,16 +61,20 @@ impl Drop for StreamHandle {
 }
 
 pub(crate) async fn request_permission() -> Result<(), CameraError> {
-    // Acquire a stream purely to surface the prompt, then immediately stop
-    // its tracks. A granted prompt is cached by the browser, so the later
-    // `open()` won't prompt again.
-    let stream = get_user_media(&CameraConfig::default()).await?;
-    for track in stream.get_tracks().iter() {
-        if let Ok(track) = track.dyn_into::<MediaStreamTrack>() {
-            track.stop();
-        }
+    // Delegated to the shared `permissions` SDK. On web the browser has no
+    // explicit camera-request API — the prompt fires on the first
+    // `getUserMedia` (which `open()` calls). `permissions::request` honestly
+    // reports the queried `navigator.permissions` state without prompting; a
+    // `Denied` is a real denial, while `Undetermined`/`Unsupported` ("will
+    // prompt on first use") map to `Ok(())` so a caller doesn't treat
+    // "not yet decided" as a failure before `open()` ever runs. See the
+    // `permissions` web backend docs.
+    let status = permissions::request(permissions::Permission::Camera).await;
+    if matches!(status, permissions::PermissionStatus::Denied) {
+        Err(CameraError::PermissionDenied)
+    } else {
+        Ok(())
     }
-    Ok(())
 }
 
 pub(crate) async fn open(

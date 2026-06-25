@@ -36,7 +36,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::{install_tokens, update_tokens, Color, Effect, Signal};
+use runtime_core::{install_tokens, update_tokens, watch, Color, Signal, Subscription};
 
 pub use runtime_core::{TokenEntry, TokenValue, Tokenized};
 
@@ -59,21 +59,17 @@ thread_local! {
     /// touches it.
     static ACTIVE_THEME: RefCell<Option<Signal<Rc<dyn Any>>>> = const { RefCell::new(None) };
 
-    /// Keepalive for [`install_themes`]'s internal Effect when
-    /// called outside any render scope (e.g. tests, top-level
-    /// binaries). In production this is unused — `install_themes`
-    /// runs inside the user's `app()` which holds an active scope
-    /// and the scope owns the slot.
+    /// Owns [`install_themes`]'s theme-variant `watch` for the process
+    /// lifetime. `install_themes` runs at app boot, outside any render
+    /// scope, so the subscription is caller-owned and this is the caller.
     ///
-    /// Single-slot: each [`install_themes`] call replaces the
-    /// previous keepalive, dropping its `Effect`. That way a hot-
-    /// reload or fixture teardown that re-installs the theme system
-    /// doesn't leak one `Effect` per call (and, when outside a scope,
-    /// doesn't leave a growing pile of `owns: true` handles for
-    /// thread-teardown to trip over). Two concurrent active-theme
-    /// signals never make sense — the new install supersedes the
-    /// old one.
-    static INSTALL_THEMES_KEEPALIVE: RefCell<Option<Effect>> = const { RefCell::new(None) };
+    /// Single-slot: each [`install_themes`] call replaces the previous
+    /// keepalive, dropping its `Subscription` and disposing the prior
+    /// effect. That way a hot-reload or fixture teardown that re-installs
+    /// the theme system doesn't leak one subscription per call. Two
+    /// concurrent active-theme signals never make sense — the new install
+    /// supersedes the old one.
+    static INSTALL_THEMES_KEEPALIVE: RefCell<Option<Subscription>> = const { RefCell::new(None) };
 }
 
 /// Install the initial active theme. Call once at app startup
@@ -209,7 +205,7 @@ pub fn install_themes<T: ThemeTokens + Clone + 'static>(
         .map(|(name, theme)| (name.to_string(), theme.clone()))
         .collect();
     let last_seen: Rc<RefCell<String>> = Rc::new(RefCell::new(initial_name));
-    let effect = Effect::new(move || {
+    let sub = watch(move || {
         let name = active.get();
         if last_seen.borrow().as_str() == name.as_str() {
             return;
@@ -219,16 +215,14 @@ pub fn install_themes<T: ThemeTokens + Clone + 'static>(
             *last_seen.borrow_mut() = name;
         }
     });
-    // If a render scope took ownership of the slot, `effect`'s drop
-    // is a no-op and the keepalive just stores an empty handle.
-    // Outside a scope (tests, top-level binaries), this is what
-    // keeps the effect alive past the function return.
+    // `install_themes` runs outside a render scope, so the `watch` is
+    // caller-owned; this keepalive is what keeps it alive past the
+    // function return.
     //
-    // Single-slot replacement: dropping the previous `Option`'s
-    // `Effect` here frees the prior install's slot (or no-ops if
-    // a scope owned it), preventing unbounded growth across
-    // repeated calls.
-    INSTALL_THEMES_KEEPALIVE.with(|k| *k.borrow_mut() = Some(effect));
+    // Single-slot replacement: storing the new `Subscription` drops the
+    // previous `Option`'s one, disposing the prior install's effect and
+    // preventing unbounded growth across repeated calls.
+    INSTALL_THEMES_KEEPALIVE.with(|k| *k.borrow_mut() = Some(sub));
 }
 
 /// Read the active theme. Subscribes the current effect (if any) to

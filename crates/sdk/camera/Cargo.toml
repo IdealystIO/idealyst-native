@@ -50,6 +50,11 @@ thiserror = "1"
 # The platform-agnostic live-source abstraction camera produces. Thin and
 # GPU-free; shared with `screen-recorder` (producer) and `video` (consumer).
 media-stream = { workspace = true }
+# The shared runtime-permission substrate. Camera's grant flow (the OS prompt
+# + status read) is delegated here instead of duplicated per platform; this
+# crate keeps only its CAPTURE code. `capabilities = ["camera"]` (below) still
+# declares the manifest requirement — `permissions` declares none.
+permissions = { workspace = true }
 
 # iOS / macOS: AVFoundation capture, driven through the Obj-C runtime
 # (objc2 msg_send + a declared AVCaptureVideoDataOutputSampleBufferDelegate
@@ -59,10 +64,6 @@ media-stream = { workspace = true }
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString"] }
-block2 = "0.5"
-# Bridges AVCaptureDevice's `requestAccessForMediaType:` completion block to
-# async — same callback→future pattern `microphone` uses for AVAudioSession.
-futures-channel = "0.3"
 
 # Web (wasm) target: getUserMedia for the MediaStream, an offscreen
 # <canvas> to pull RGBA pixels out of each <video> frame.

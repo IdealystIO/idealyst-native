@@ -21,9 +21,9 @@ use std::rc::Rc;
 
 use block2::StackBlock;
 use runtime_core::scheduling::{install_scheduler as install, ScheduleHandle, Scheduler};
-use objc2::msg_send_id;
+use objc2::{msg_send, msg_send_id};
 use objc2::rc::Retained;
-use objc2_foundation::NSObject;
+use objc2_foundation::{NSObject, NSString};
 
 /// Register this scheduler with `runtime-core`. Idempotent — first
 /// install wins. Safe to call from any Apple host (iOS / tvOS / macOS).
@@ -202,17 +202,34 @@ fn after_ms_inner(delay_ms: i32, f: Box<dyn FnOnce() + 'static>) -> NsTimerHandl
         }
     });
     let block = block.copy();
-    // `scheduledTimerWithTimeInterval:repeats:block:` requires a
-    // non-negative interval.
+    // `timerWithTimeInterval:` requires a non-negative interval.
     let interval = (delay_ms as f64) / 1000.0;
+    // Create the timer UNSCHEDULED, then add it to the main run loop in COMMON
+    // modes. `scheduledTimerWithTimeInterval:` (the obvious call) would add it in
+    // the default mode only — but UIKit switches the run loop into
+    // `UITrackingRunLoopMode` while a finger is tracking a `UIScrollView` (and
+    // AppKit into `NSEventTrackingRunLoopMode` during a scroll/drag), so a
+    // default-mode timer is PAUSED for the entire touch. That silently broke the
+    // long-press drag: holding a card inside a scroll view never fired the commit
+    // timer, so only the movement-driven (Immediate) path could start a drag.
+    // Common modes keeps it firing during tracking — the same fix the portal /
+    // sticky `CADisplayLink`s already use. Benefits every timer-driven feature
+    // (presence, debounces, animations) during a scroll, not just the drag.
+    extern "C" {
+        static NSRunLoopCommonModes: *const NSString;
+    }
     let timer: Retained<NSObject> = unsafe {
         msg_send_id![
             objc2::class!(NSTimer),
-            scheduledTimerWithTimeInterval: interval,
+            timerWithTimeInterval: interval,
             repeats: false,
             block: &*block
         ]
     };
+    let run_loop: Retained<NSObject> =
+        unsafe { msg_send_id![objc2::class!(NSRunLoop), mainRunLoop] };
+    let common_modes: &NSString = unsafe { &*NSRunLoopCommonModes };
+    let _: () = unsafe { msg_send![&*run_loop, addTimer: &*timer, forMode: common_modes] };
     NsTimerHandle {
         timer: Some(timer),
         _state: AnyState::Once(cell),

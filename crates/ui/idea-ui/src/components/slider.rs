@@ -28,9 +28,9 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, AlignItems, Cursor, Element, FlexDirection, IdealystSchema, IntoElement,
-    JustifyContent, Length, Position, Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized,
-    TouchPhase, TouchResponse, VariantSet,
+    component, icon, AlignItems, Color, Cursor, Element, FlexDirection, IconData, IdealystSchema,
+    IntoElement, JustifyContent, Length, Position, Reactive, StyleApplication, StyleRules,
+    StyleSheet, Tokenized, TouchPhase, TouchResponse, VariantSet,
 };
 
 use idea_theme::extensible::{installed_slider_sheets, ToneRef, VariantRef};
@@ -84,6 +84,12 @@ pub struct SliderProps {
     pub size: ControlSize,
     /// When `true`, blocks dragging and dims the control. Default `false`.
     pub disabled: bool,
+    /// Optional icon to the LEFT of the track (e.g. a "min"/volume-low glyph).
+    /// Tinted muted. Sits outside the drag area so it can't perturb the
+    /// `x / width` drag math.
+    pub leading_icon: Option<IconData>,
+    /// Optional icon to the RIGHT of the track (e.g. a "max"/volume-high glyph).
+    pub trailing_icon: Option<IconData>,
 }
 
 impl Default for SliderProps {
@@ -99,6 +105,8 @@ impl Default for SliderProps {
             variant: VariantRef::default(),
             size: ControlSize::default(),
             disabled: false,
+            leading_icon: None,
+            trailing_icon: None,
         }
     }
 }
@@ -184,7 +192,7 @@ pub fn Slider(props: &SliderProps) -> Element {
         ..Default::default()
     }));
 
-    runtime_core::view(vec![track, thumb])
+    let slider = runtime_core::view(vec![track, thumb])
         .with_style(container_style)
         .on_touch(move |ev| {
             if disabled {
@@ -200,5 +208,74 @@ pub fn Slider(props: &SliderProps) -> Element {
             }
             TouchResponse::CLAIMED
         })
-        .into_element()
+        .into_element();
+
+    // No icons → the bare slider. Otherwise flank the track with muted icons in
+    // a row. The icons sit OUTSIDE the drag container, so the `x / width` math
+    // (relative to the track) is untouched.
+    let mk_icon = |data: IconData| -> Element {
+        icon(data)
+            .size(16.0)
+            .color(|| Tokenized::token("color-text-muted", Color("#6b7280".into())).resolve())
+            .into_element()
+    };
+    if props.leading_icon.is_none() && props.trailing_icon.is_none() {
+        return slider;
+    }
+    let mut kids: Vec<Element> = Vec::with_capacity(3);
+    if let Some(d) = props.leading_icon {
+        kids.push(mk_icon(d));
+    }
+    kids.push(slider);
+    if let Some(d) = props.trailing_icon {
+        kids.push(mk_icon(d));
+    }
+    let row_style = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+        flex_direction: Some(FlexDirection::Row),
+        align_items: Some(AlignItems::Center),
+        gap: Some(Tokenized::token("spacing-sm", Length::Px(8.0))),
+        ..Default::default()
+    }));
+    runtime_core::view(kids).with_style(row_style).into_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use idea_theme::theme::{install_idea_theme, light_theme};
+    use runtime_core::FillRule;
+
+    const DOT: IconData = IconData {
+        view_box: (24, 24),
+        paths: &["M12 12h.01"],
+        fill_rule: FillRule::NonZero,
+        filled: true,
+    };
+
+    fn view_children(el: Element) -> Vec<Element> {
+        match el {
+            Element::View { children, .. } => children,
+            _ => panic!("Slider renders a View"),
+        }
+    }
+
+    // Icons flank the track in an OUTER row (leading icon, slider, trailing
+    // icon) so they sit outside the drag container — keeping the `x / width`
+    // drag math relative to the track intact.
+    #[test]
+    fn icons_flank_the_track_outside_the_drag_container() {
+        install_idea_theme(light_theme());
+        let kids = view_children(Slider(&SliderProps {
+            leading_icon: Some(DOT),
+            trailing_icon: Some(DOT),
+            ..Default::default()
+        }));
+        assert_eq!(kids.len(), 3, "leading icon + slider + trailing icon");
+        assert!(matches!(kids[0], Element::Icon { .. }), "leading icon");
+        assert!(matches!(kids[2], Element::Icon { .. }), "trailing icon");
+
+        // No icons → no wrapping row; the bare slider container (track + thumb).
+        let plain = view_children(Slider(&SliderProps::default()));
+        assert_eq!(plain.len(), 2, "track + thumb, no icon row");
+    }
 }

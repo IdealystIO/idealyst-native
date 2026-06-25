@@ -99,3 +99,35 @@ author-facing.
 [`web-navigator-helpers`]: ../web-navigator-helpers
 [`ios-navigator-helpers`]: ../ios-navigator-helpers
 [`android-navigator-helpers`]: ../android-navigator-helpers
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. The author
+tree is uniform; each backend renders its own native push/pop chrome (see the
+table above). Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p stack-navigator --features runtime-server` — the
+  runtime-server recording handler emits the right push/pop/replace/reset wire
+  commands (`tests/recording.rs`, host-side only)
+- [ ] `cargo test -p stack-navigator` — SSR first-paint markup from the
+  backend-neutral `chrome` handler (`tests/ssr.rs`)
+- [ ] `cargo test -p stack-navigator --features robot --test robot_screen_tree`
+  — a navigator's screen content is captured by `Robot::snapshot()`
+- [ ] `cargo build -p stack-navigator --target wasm32-unknown-unknown` — web
+  target
+
+**Behavior**
+- [ ] **Web** — push slides a new screen in (`history.pushState`); the browser
+  back button pops; back-stack depth correct; `back_enabled(false)` is a no-op
+  (browsers can't disable back).
+- [ ] **iOS** — `UINavigationController` push/pop animates with the native
+  header; interactive swipe-back reconciles; `back_enabled(false)` suppresses
+  swipe-back + chevron while imperative `pop` still works. ⚠️ not yet
+  device-confirmed.
+- [ ] **Android** — `FragmentManager` back-stack push/pop; system back button +
+  edge-swipe pop; `back_enabled(false)` locks both. ⚠️ not yet
+  device-confirmed.
+- [ ] **macOS** — single-window outlet swaps its child on each push/pop command
+  (no animated transition). ⚠️ not yet device-confirmed.

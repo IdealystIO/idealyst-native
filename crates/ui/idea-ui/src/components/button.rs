@@ -26,6 +26,7 @@
 
 use std::rc::Rc;
 
+use runtime_core::primitives::activity_indicator::{activity_indicator, ActivityIndicatorSize};
 use runtime_core::{
     component, icon, resolve_style, text, AlignSelf, Color, Element, FlexDirection, IconData,
     IdealystSchema, IntoElement, Length, PressableHandle, Reactive, Ref, StyleApplication,
@@ -55,11 +56,16 @@ pub struct ButtonProps {
     pub size: ButtonSizeRef,
     /// Corner-radius scale (Sm, Md, Lg, Pill, …). Default Md.
     pub shape: ShapeRef,
-    /// When `true`, blocks the press and dims the button. Default `false`.
-    /// For reactive disabling, read a signal in the enclosing render scope
-    /// (e.g. `disabled = some_state.get()`); the scope re-renders the button
-    /// when the value changes.
+    /// When `true`, blocks the press and dims the button (opacity drop).
+    /// Default `false`. For reactive disabling, read a signal in the
+    /// enclosing render scope (e.g. `disabled = some_state.get()`); the scope
+    /// re-renders the button when the value changes.
     pub disabled: bool,
+    /// When `true`, swaps the leading slot for a spinner (tinted to the
+    /// button's text color) and blocks the press while the action runs.
+    /// Default `false`. Unlike `disabled` it does not dim the surface — the
+    /// button reads as "busy", not "off".
+    pub loading: bool,
     /// When `Some`, fills the given `Ref<PressableHandle>` on mount.
     /// Useful for anchoring an `Overlay` to this button.
     pub bind_to: Option<Ref<PressableHandle>>,
@@ -88,6 +94,7 @@ impl Default for ButtonProps {
             size: ButtonSizeRef::default(),
             shape: ShapeRef::default(),
             disabled: false,
+            loading: false,
             bind_to: None,
             leading_icon: None,
             trailing_icon: None,
@@ -155,10 +162,14 @@ pub fn Button(props: &ButtonProps) -> Element {
     let size = props.size.clone();
     let shape = props.shape.clone();
     let disabled = props.disabled;
+    let loading = props.loading;
     let bind_to = props.bind_to;
     let leading_icon = props.leading_icon;
     let trailing_icon = props.trailing_icon;
     let block = props.block;
+    // Both `disabled` and `loading` make the button inert (block the press);
+    // only `disabled` dims the surface.
+    let inert = disabled || loading;
 
     // Variant-axis keys map directly to the installed stylesheet's
     // pre-generated arms. For a built-in modifier set the arms exist;
@@ -183,32 +194,47 @@ pub fn Button(props: &ButtonProps) -> Element {
         .with("shape", shape_key);
 
     // The Button base sheet doesn't pin a flex direction (it had a single
-    // text child). With leading/trailing icons the contents must lay out
-    // as a centered row with a small gap; with `block` the button must
-    // stretch to its container's width. Both are call-site-varying, so
-    // they ride a computed layer (keyed on the variation) rather than the
+    // text child) or a cross-axis alignment. Three call-site-varying bits
+    // ride a computed layer (keyed on the variation) rather than the
     // pregenerated variant arms — the framework caches one resolved
-    // StyleRules per distinct key.
-    let has_icon = leading_icon.is_some() || trailing_icon.is_some();
-    if has_icon || block {
-        let layer_key = format!("layout_{}_{}", has_icon as u8, block as u8);
-        style = style.with_computed(layer_key, move || {
-            let mut rules = StyleRules::default();
-            if has_icon {
-                rules.flex_direction = Some(FlexDirection::Row);
-                rules.align_items = Some(runtime_core::AlignItems::Center);
-                rules.gap = Some(Tokenized::token("spacing-xs", Length::Px(6.0)));
-            }
-            if block {
-                // 100% width + stretch so the button fills its parent even
-                // when the parent is a flex container that would otherwise
-                // size it to content.
-                rules.width = Some(Tokenized::Literal(Length::Percent(100.0)));
-                rules.align_self = Some(AlignSelf::Stretch);
-            }
-            rules
-        });
-    }
+    // StyleRules per distinct key:
+    //
+    //  - With leading/trailing icons, the contents lay out as a centered
+    //    row with a small gap.
+    //  - With `block`, the button stretches to its container's width.
+    //  - WITHOUT `block`, the button must HUG its content and NOT stretch
+    //    on the parent's cross axis. A flex parent defaults to
+    //    `align-items: stretch`, which otherwise grows the button to the
+    //    row's height (a row of buttons) or the column's width — the
+    //    "buttons flex to the parent height" bug. Pinning `align_self:
+    //    Center` makes the button size to content in any container while
+    //    still letting a centering parent (a centered preview card, a
+    //    toolbar row) center it — `Center` reads better than `FlexStart`
+    //    for mixed-height button rows.
+    // A loading spinner occupies the leading slot, so it needs the same
+    // centered-row layout an icon does.
+    let row_layout = leading_icon.is_some() || trailing_icon.is_some() || loading;
+    let layer_key = format!("layout_{}_{}_{}", row_layout as u8, block as u8, disabled as u8);
+    style = style.with_computed(layer_key, move || {
+        let mut rules = StyleRules::default();
+        if row_layout {
+            rules.flex_direction = Some(FlexDirection::Row);
+            rules.align_items = Some(runtime_core::AlignItems::Center);
+            rules.gap = Some(Tokenized::token("spacing-xs", Length::Px(6.0)));
+        }
+        if block {
+            rules.width = Some(Tokenized::Literal(Length::Percent(100.0)));
+            rules.align_self = Some(AlignSelf::Stretch);
+        } else {
+            rules.align_self = Some(AlignSelf::Center);
+        }
+        if disabled {
+            // Deterministic dim (not a hover-state overlay) so a disabled
+            // button reads as off on every backend.
+            rules.opacity = Some(Tokenized::Literal(0.45));
+        }
+        rules
+    });
 
     // Resolve the fill's foreground so the label + icons can carry it on
     // their own nodes (native doesn't inherit text/icon color — see
@@ -232,7 +258,14 @@ pub fn Button(props: &ButtonProps) -> Element {
     };
 
     let mut children: Vec<Element> = Vec::with_capacity(3);
-    if let Some(d) = leading_icon {
+    // Loading takes the leading slot (a spinner) in place of the leading icon.
+    if loading {
+        let ai = activity_indicator().size(ActivityIndicatorSize::Small);
+        children.push(match fg.clone() {
+            Some(c) => ai.color(c.resolve()).into_element(),
+            None => ai.into_element(),
+        });
+    } else if let Some(d) = leading_icon {
         children.push(icon_node(d));
     }
     let label_node = match fg.clone() {
@@ -246,7 +279,7 @@ pub fn Button(props: &ButtonProps) -> Element {
     let on_click_for_p = on_click.clone();
     let mut bound = runtime_core::pressable(children, move || (on_click_for_p)())
         .with_style(style);
-    if disabled {
+    if inert {
         bound = bound.disabled(true);
     }
     if let Some(r) = bind_to {
@@ -441,6 +474,70 @@ mod tests {
             resolve_style(&app).width.is_none(),
             "a non-block button doesn't pin a width"
         );
+    }
+
+    // Regression: a non-block button must HUG its content — `align_self:
+    // Center` (NOT `Stretch`) — so a flex parent's default `align-items:
+    // stretch` can't grow it to the row's height (a button row) or the
+    // column's width. This is the "buttons flex to the parent height" bug;
+    // `Center` (vs `FlexStart`) also lets a centering preview card center it.
+    // `block` opts back into Stretch.
+    #[test]
+    fn regression_non_block_button_hugs_content_not_stretch() {
+        theme();
+        let (_, app) = pressable_parts(Button(&ButtonProps::default()));
+        assert_eq!(
+            resolve_style(&app).align_self,
+            Some(AlignSelf::Center),
+            "a non-block button sizes to content (centered, not stretched to the parent cross axis)"
+        );
+
+        let block = ButtonProps { block: true, ..Default::default() };
+        let (_, app) = pressable_parts(Button(&block));
+        assert_eq!(
+            resolve_style(&app).align_self,
+            Some(AlignSelf::Stretch),
+            "a block button stretches"
+        );
+    }
+
+    // `disabled` dims the surface with a deterministic opacity (not a
+    // hover-state overlay) AND blocks the press.
+    #[test]
+    fn disabled_button_dims_and_blocks_press() {
+        theme();
+        let mk = || ButtonProps { disabled: true, ..Default::default() };
+        let (_, app) = pressable_parts(Button(&mk()));
+        assert_eq!(
+            resolve_style(&app).opacity.as_ref().map(|t| t.resolve()),
+            Some(0.45),
+            "a disabled button is dimmed so it reads as off"
+        );
+        let d = pressable_disabled(Button(&mk())).expect("disabled blocks the press");
+        assert!(d(), "disabled reports the button inert");
+    }
+
+    // `loading` puts a spinner in the leading slot and blocks the press,
+    // without dimming the surface (it reads as busy, not off).
+    #[test]
+    fn loading_button_shows_spinner_and_blocks_press() {
+        theme();
+        let mk = || ButtonProps {
+            label: Reactive::Static("Saving".into()),
+            loading: true,
+            ..Default::default()
+        };
+        let (children, app) = pressable_parts(Button(&mk()));
+        assert!(
+            matches!(children[0], Element::ActivityIndicator { .. }),
+            "loading renders a spinner as the leading child"
+        );
+        assert!(
+            resolve_style(&app).opacity.as_ref().map(|t| t.resolve()) != Some(0.45),
+            "loading does not dim like disabled"
+        );
+        let d = pressable_disabled(Button(&mk())).expect("loading blocks the press");
+        assert!(d(), "loading reports the button inert");
     }
 
     // The framework imposes NO cursor/selection default on the bare

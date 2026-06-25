@@ -1,0 +1,79 @@
+[package]
+name = "location"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform device geolocation SDK.
+#
+# One small API — `location::current().await` for a single fix, and
+# `location::watch(|pos| { .. })` for a continuous stream — that reads the
+# device's position from each platform's own location stack and hands back a
+# uniform `Position` (lat/long + accuracy/altitude/heading/speed/timestamp).
+# Deliberately unopinionated: raw position and updates, nothing more. Geocoding,
+# map rendering (`maps` SDK), background tracking, geofencing, and reactive
+# `Signal` bindings are separate, higher-level layers.
+#
+#   - web (wasm32):        navigator.geolocation getCurrentPosition / watchPosition
+#   - iOS / macOS / tvOS:  CLLocationManager + a CLLocationManagerDelegate (objc2)
+#   - Android:             framework LocationManager via JNI (getLastKnownLocation;
+#                          requestLocationUpdates needs a Java LocationListener shim)
+#
+# The permission GRANT goes through the `permissions` SDK (the shared runtime
+# substrate); only the position-DATA APIs are called here directly.
+#
+# Required platform permissions (the app must declare these — see README):
+#   - iOS:     NSLocationWhenInUseUsageDescription (+ …AlwaysAndWhenInUse… for always)
+#   - macOS:   NSLocationUsageDescription
+#   - Android: ACCESS_FINE_LOCATION + ACCESS_COARSE_LOCATION
+
+# Declares the platform capability this SDK needs. The CLI walks the app's
+# dependency graph, finds this, and injects the right artifacts per platform
+# (iOS/macOS usage-description plist keys + entitlement, Android location
+# uses-permission entries). The app supplies the user-facing reason via
+# [package.metadata.idealyst.app.permissions] location = "…".
+[package.metadata.idealyst]
+capabilities = ["location"]
+
+[dependencies]
+# The shared runtime-permission substrate. The location-permission grant goes
+# through here (Permission::LocationWhenInUse) rather than re-implemented. Path
+# dep (no workspace.dependencies entry yet) — functionally identical.
+permissions = { workspace = true }
+runtime-core = { workspace = true }
+
+# Web (wasm): navigator.geolocation via web-sys.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Navigator",
+    "Geolocation",
+    "Position",
+    "Coordinates",
+    "PositionError",
+    "PositionOptions",
+] }
+
+# iOS / macOS / tvOS: CLLocationManager + delegate via objc2.
+[target.'cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSArray"] }
+
+# Android: framework LocationManager via JNI on the host Activity context.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+[features]
+# Compile the `recipe!` usage examples (feeds MCP / autodocs). Off in
+# production builds, so recipes cost nothing there. The `Position` recipe
+# drives `current()` from a button press via `runtime_core::driver::spawn_async`,
+# so the catalog build needs the framework's `async-driver` (same as the
+# `clipboard` SDK's recipe).
+catalog = ["runtime-core/catalog", "runtime-core/async-driver"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

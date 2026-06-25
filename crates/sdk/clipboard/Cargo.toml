@@ -1,0 +1,64 @@
+[package]
+name = "clipboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform system clipboard (copy / paste) SDK — plain text only.
+#
+# Two small async free functions:
+#   - set_text(text).await -> Result<(), ClipboardError>     (copy)
+#   - text().await         -> Result<Option<String>, _>      (paste; None = no text)
+#
+# The async surface is uniform across the genuinely-async web backend
+# (navigator.clipboard is Promise-based) and the synchronous native ones.
+# Each cfg-gated module supplies one backend; the public API is identical
+# everywhere:
+#
+#   - web (wasm32):              navigator.clipboard.writeText / readText (JsFuture)
+#   - iOS / macOS / tvOS:        UIPasteboard / NSPasteboard general pasteboard (objc2)
+#   - Android:                   ClipboardManager via JNI on the Activity context
+#   - Windows / Linux / other:   NotSupported fallback (a desktop clipboard
+#                                crate is out of scope — see README)
+#
+# Plain text only by design. Images / rich content / multiple
+# representations are deliberately left to a later SDK (see ## Scope).
+#
+# This SDK declares NO platform capability: clipboard access needs no OS
+# manifest permission on any target. (Web `readText` needs a runtime user
+# gesture / `clipboard-read` permission, but that's not a build-time
+# manifest entry — see README.)
+
+[dependencies]
+# Recipes (compile-checked usage examples) compile only under `catalog`.
+runtime-core = { workspace = true }
+
+# Web (wasm): navigator.clipboard via web-sys; JsFuture bridges the Promises.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Navigator",
+    "Clipboard",
+] }
+
+# iOS / macOS / tvOS: UIPasteboard / NSPasteboard via the Obj-C runtime (objc2).
+[target.'cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString"] }
+
+# Android: ClipboardManager via JNI on the host Activity context.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+[features]
+# Compile + register the `recipe!` usage examples (off in production builds).
+# Pulls `async-driver` too: the recipe spawns the async clipboard work via
+# `runtime_core::driver::spawn_async`, which lives behind that feature.
+catalog = ["runtime-core/catalog", "runtime-core/async-driver"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

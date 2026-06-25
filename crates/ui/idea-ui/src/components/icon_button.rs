@@ -24,7 +24,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, icon, text, Color, Element, IconData, IdealystSchema, IntoElement, Length,
+    component, icon, text, AlignSelf, Color, Element, IconData, IdealystSchema, IntoElement, Length,
     StyleApplication, StyleRules, StyleSheet, Tokenized, VariantEnum,
 };
 
@@ -156,18 +156,21 @@ pub fn IconButton(props: &IconButtonProps) -> Element {
         .with("appearance", appearance_key)
         .with("size", size_key)
         .with("selected", if selected { "on" } else { "off" });
-    // Optional per-call overrides: a custom square size (value-keyed computed
-    // layer, so distinct sizes don't share a cache slot) and a custom radius
-    // (content-keyed override). Both win over the `size` step's defaults.
-    if let Some(px) = size_px {
-        style = style.with_computed(format!("ib-size-{}", (px * 100.0).round() as i32), move || {
-            StyleRules {
-                width: Some(Tokenized::Literal(Length::Px(px))),
-                height: Some(Tokenized::Literal(Length::Px(px))),
-                ..Default::default()
-            }
-        });
-    }
+    // One computed layer (the StyleApplication has a single slot): hug +
+    // center on the cross axis, plus an optional custom square size. Without
+    // `align_self: Center` a flex parent's default `align-items: stretch`
+    // top-aligns the square in a row of mixed sizes (the IconButton "Sizes"
+    // row). Keyed by `size_px` so distinct sizes don't share a cache entry.
+    let sp = size_px;
+    let layer_key = format!("ib-layout-{}", sp.map(|p| (p * 100.0).round() as i32).unwrap_or(-1));
+    style = style.with_computed(layer_key, move || {
+        let mut rules = StyleRules { align_self: Some(AlignSelf::Center), ..Default::default() };
+        if let Some(px) = sp {
+            rules.width = Some(Tokenized::Literal(Length::Px(px)));
+            rules.height = Some(Tokenized::Literal(Length::Px(px)));
+        }
+        rules
+    });
     if let Some(r) = radius {
         style = style.override_border_radius(Length::Px(r));
     }
@@ -260,5 +263,23 @@ mod tests {
         assert_eq!(icon_px_for(IconButtonSize::Sm), 16.0);
         assert_eq!(icon_px_for(IconButtonSize::Md), 18.0);
         assert_eq!(icon_px_for(IconButtonSize::Lg), 24.0);
+    }
+
+    // Regression: an IconButton must center on its parent's cross axis
+    // (`align_self: Center`) so a row of mixed-size icon buttons centers
+    // instead of top-aligning under the parent's default `align-items:
+    // stretch` (the IconButton "Sizes" row report).
+    #[test]
+    fn icon_button_centers_on_cross_axis() {
+        theme();
+        let app = match IconButton(&IconButtonProps::default()) {
+            Element::Pressable { style: Some(runtime_core::StyleSource::Static(a)), .. } => a,
+            _ => panic!("IconButton renders a statically-styled Pressable"),
+        };
+        assert_eq!(
+            runtime_core::resolve_style(&app).align_self,
+            Some(AlignSelf::Center),
+            "an IconButton centers on the cross axis instead of stretching/top-aligning"
+        );
     }
 }

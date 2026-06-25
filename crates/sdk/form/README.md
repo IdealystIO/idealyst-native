@@ -73,3 +73,30 @@ fires the same `submit` event). On native it's a no-op — invoke your
 
 [`FormHandle`]: src/lib.rs
 [`FormHandle::submit`]: src/lib.rs
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p form` — lowering tests (`Element::External` keyed by
+  `FormProps`, children flow through, `ui!`/`Form!` dispatch)
+- [ ] `cargo build -p form --target wasm32-unknown-unknown` — web target
+
+**Rendering / behavior**
+
+The `Form` should render its children unchanged on every backend; only what
+*triggers* `on_submit` differs.
+
+- [ ] **Web** — inspect the DOM for a real `<form>` wrapping the inputs as
+  descendants; pressing Enter in a field submits (fires `on_submit` after
+  `preventDefault()`, no page navigation); browser autofill groups the fields;
+  the bound handle's `submit()` (→ `requestSubmit()`) runs validation + fires submit.
+- [ ] **iOS** — ⚠️ not yet device-confirmed. Passthrough container renders children
+  unchanged; there's no form `submit` event, so submission fires only via the
+  author's submit button calling `on_submit`; the handle's `submit()` is a no-op.
+- [ ] **Android** — ⚠️ not yet device-confirmed. Same passthrough behavior as iOS.
+- [ ] **macOS / other** — no handler registered; verify the framework's `External`
+  placeholder renders cleanly (no layout artifact or crash).

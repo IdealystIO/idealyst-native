@@ -93,3 +93,29 @@ installs the three external handlers; on every native target it's a no-op
 [`Table`]: src/lib.rs
 [`TableRow`]: src/lib.rs
 [`TableCell`]: src/lib.rs
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet. Tick each
+item as you exercise it.
+
+**Automated**
+- [ ] `cargo build -p table --target wasm32-unknown-unknown` — web target
+
+**Rendering / behavior**
+
+Rows and cells should align into a coherent grid; `header = true` cells read as
+headers; borders on cells merge cleanly under `border-collapse`.
+
+- [ ] **Web** — inspect the DOM for a real `<table>`/`<tr>`/`<th>`/`<td>`; the
+  browser's `table-layout: auto` sizes each column to its widest cell and applies
+  that width across every row; `border-collapse: collapse` merges adjacent cell
+  borders.
+- [ ] **iOS** — ⚠️ not yet device-confirmed. Plain `view`/Taffy-flex tree: rows stack
+  in a column, cells lay out in a row with **equal** width (`flex_grow:1` +
+  `flex_basis:0`). Confirm cells share width equally (native does *not* fit columns
+  to content); `header` has no visual effect unless styled.
+- [ ] **Android** — ⚠️ not yet device-confirmed. Same equal-width flex layout as iOS.
+- [ ] **macOS / terminal / gpu** — same flex fallback (no per-backend handler);
+  verify rows/cells lay out (⚠️ not yet device-confirmed where applicable).

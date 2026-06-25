@@ -48,6 +48,10 @@
 //! - **Android** — `<uses-permission android:name="android.permission.RECORD_AUDIO"/>`.
 //! - **web** — none; the browser prompts on first `getUserMedia`.
 //!
+//! The runtime *grant* flow (reading the current status and surfacing the OS
+//! prompt) is delegated to the shared [`permissions`] SDK
+//! (`permissions::request(Permission::Microphone)`); this crate keeps only the
+//! capture code (cpal / `AudioRecord` / the iOS `AVAudioSession` activation).
 //! [`Microphone::request_permission`] proactively triggers that prompt
 //! (and is a no-op where the OS prompts implicitly), but it's optional —
 //! [`Microphone::open`] requests access itself if needed.
@@ -188,9 +192,10 @@ impl Microphone {
     /// on a deliberate capture or [`request_permission`](Self::request_permission).
     ///
     /// Returns [`MicPermission::Unknown`] where the platform has no passive query
-    /// (desktop Windows/Linux; some browsers). Backed by `AVCaptureDevice`
-    /// authorization status on macOS, `AVAudioSession.recordPermission` on iOS,
-    /// `navigator.permissions.query` on web, and `checkSelfPermission` on Android.
+    /// (desktop Windows/Linux; some browsers). Delegated to the shared
+    /// [`permissions`] SDK — `AVCaptureDevice` authorization status on
+    /// iOS/macOS, `navigator.permissions.query` on web, and
+    /// `checkSelfPermission` on Android — and mapped onto [`MicPermission`].
     pub async fn permission_status(&self) -> MicPermission {
         imp::permission_status().await
     }

@@ -76,3 +76,30 @@ interactive backends.
 - **web** — `showSaveFilePicker` is Chromium-only and secure-context-only; the
   `<a download>` fallback saves to the browser's default download location and
   reports `Saved { location: None }` (no completion signal is exposed).
+
+## Testing checklist
+
+Manual verification per backend — every backend is **interactive OS UI** and is
+**compile-verified only** (see [Verification status](#verification-status)
+above); a save dialog needs a human to pick a location, so none is host-tested.
+Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p file-export` — portable request/outcome types
+- [ ] `cargo build -p file-export --target wasm32-unknown-unknown` — web target compiles
+
+**Behavior**
+
+For each platform: the native save UI appears; the chosen location receives the
+bytes (`SaveRequest::path` copies a file, `SaveRequest::bytes` writes in-memory);
+dismissing the picker yields `SaveOutcome::Cancelled` (not an error); **no
+storage permission prompt** appears.
+
+- [ ] **Web** — `showSaveFilePicker()` (Chromium, secure context) writes to the chosen file; `<a download>` Blob fallback otherwise reports `Saved { location: None }`
+- [ ] **iOS** — `UIDocumentPickerViewController` "Save to Files" writes the file
+- [ ] **Android** — SAF `ACTION_CREATE_DOCUMENT` (Kotlin shim, routed via `RustActivityResult`) writes the file — no `MainActivity` edits
+- [ ] **macOS** — `NSSavePanel` writes the file (sandboxed apps get write access to the chosen location automatically)
+- [ ] **Windows / Linux** — `IFileSaveDialog` / `xdg-desktop-portal` `FileChooser.SaveFile` writes the file; headless Linux (no portal) errors honestly
+
+**Security / Permissions**
+- [ ] No filesystem/storage permission is requested on any platform — the user picking the location is the grant

@@ -1,0 +1,76 @@
+[package]
+name = "notifications"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform LOCAL notifications (+ a raw push-token seam).
+#
+# Show a notification now or after a delay, update/cancel it by id, and read
+# the device's push token for *app-owned* remote delivery. One author API
+# (`Notification` builder + `notify` / `schedule` / `cancel` / `cancel_all`),
+# every backend, identical observable behavior:
+#
+#   - web (wasm32)        : the `Notification` Web API (immediate); web-push
+#                           `PushManager.subscribe` is the push-token analog
+#   - iOS / macOS / tvOS  : UNUserNotificationCenter + UNTimeIntervalTrigger
+#                           (objc2); APNs token via registerForRemoteNotifications
+#   - Android             : NotificationManager + NotificationChannel (JNI);
+#                           AlarmManager scheduling + FCM token are host seams
+#
+# Authorization is NOT re-implemented here — it goes through the `permissions`
+# crate (`Permission::Notifications`). This crate declares the manifest
+# capability; remote push needs deeper build wiring (APNs entitlement / FCM
+# project / a service worker) which is a documented seam, not built here.
+
+# Capability requirement. The CLI injects the matching manifest entry per
+# target: Android `android.permission.POST_NOTIFICATIONS` (API 33+); iOS/macOS
+# need no plist key (runtime prompt via `permissions`). Remote push additionally
+# needs the iOS `aps-environment` entitlement + a `remote-notification`
+# background mode — a deeper build seam, declared by the app, not here.
+[package.metadata.idealyst]
+capabilities = ["notifications"]
+
+[dependencies]
+# Runtime grant flow (status / request) — the shared substrate; we never call
+# OS permission APIs directly.
+permissions = { workspace = true }
+# Recipes + the `ui!` / primitives they compile against.
+runtime-core = { workspace = true }
+
+# Web (wasm): the Notification Web API + web-push subscription via web-sys.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Navigator",
+    "Notification",
+    "NotificationOptions",
+    "ServiceWorkerContainer",
+    "ServiceWorkerRegistration",
+    "PushManager",
+    "PushSubscription",
+] }
+
+# iOS / macOS / tvOS: UNUserNotificationCenter via objc2.
+[target.'cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSDictionary"] }
+
+# Android: NotificationManager + NotificationChannel via JNI on the host context.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+[features]
+# Compile the `recipe!` usage examples (feeds MCP / autodocs). Off in
+# production builds, so recipes cost nothing there. Forwards `async-driver`
+# so the recipes can use the real `runtime_core::driver::spawn_async`
+# pattern (the canonical way author code drives `notify(...).await` from a
+# button press).
+catalog = ["runtime-core/catalog", "runtime-core/async-driver"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

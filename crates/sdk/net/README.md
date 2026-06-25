@@ -115,3 +115,21 @@ and the pluggable codec seam; higher-level SDKs (server functions, resource
 hooks) layer the state-binding and typed-RPC opinions on top.
 
 [`reqwest`]: https://crates.io/crates/reqwest
+
+## Testing checklist
+
+Manual verification per backend — an unchecked **native** box means the code
+compiles for that target but isn't confirmed on real hardware yet (see the
+verification note above). Tick each item as you exercise it.
+
+**Automated**
+- [ ] `cargo test -p net` — body codecs, header map, builder, error mapping
+- [ ] `cargo test -p net --test native_transport` — live HTTP / WebSocket / SSE / cancellation integration suite (reqwest + tungstenite arms)
+- [ ] `cargo build -p net --target wasm32-unknown-unknown` — web (fetch / `web_sys::WebSocket` / browser `EventSource`)
+
+**Behavior**
+- [ ] **Web** — GET/POST to a live endpoint over `fetch`; WebSocket echo over `web_sys::WebSocket`; SSE stream over the browser's `EventSource`; cancel mid-flight aborts (`Error::Cancelled`)
+- [ ] **iOS** — same over `NSURLSession` (HTTP + SSE) and the shared `tungstenite` WebSocket arm
+- [ ] **Android** — GET/POST over `HttpURLConnection`; SSE over `getInputStream()`; WebSocket echo (`ws://` only — `wss://` is the documented future path); cancel mid-flight aborts
+- [ ] **macOS** — HTTP/SSE over `NSURLSession` or `reqwest`; WebSocket echo (`ws://` + `wss://`); cancel mid-flight aborts
+- [ ] **Windows / Linux** — HTTP via `reqwest` (rustls TLS); WebSocket echo (`ws://` + `wss://`); SSE via `reqwest::blocking` worker; cancel mid-flight aborts

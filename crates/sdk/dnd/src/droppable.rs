@@ -9,7 +9,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{on_cleanup, Ref, Signal, ViewHandle};
+use runtime_core::{on_cleanup, Bound, Element, Ref, Signal, ViewHandle};
 
 use crate::context::{DragContext, DroppableEntry, DroppableId};
 
@@ -103,5 +103,16 @@ impl<T: Clone + 'static> Droppable<T> {
         let ctx = self.ctx.clone();
         let id = self.id;
         on_cleanup(move || ctx.deregister(id));
+    }
+
+    /// Wire this drop target onto `view` and return the finished element — the
+    /// one-call form of "make a ref, register the zone, bind it". Read
+    /// [`Droppable::is_over`] before calling this to style `view` reactively.
+    /// Use [`Droppable::bind`] directly when you need the ref yourself (e.g. to
+    /// bind your own animated background to the node for the hover highlight).
+    pub fn attach(self, view: Bound<ViewHandle>) -> Element {
+        let r: Ref<ViewHandle> = Ref::new();
+        self.bind(r);
+        view.bind(r).into()
     }
 }

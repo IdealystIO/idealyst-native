@@ -21,3 +21,23 @@ away) means a job is annotated **once** and the call site is identical on every
 platform.
 
 See [`offload`](../offload) for the full API and usage.
+
+## Testing checklist
+
+A `proc-macro` crate whose only export is a no-op passthrough — there is no
+runtime behavior and no native backend, so verification is purely
+compile/expansion, exercised through `offload`.
+
+**Automated**
+- [ ] `cargo build -p offload-macro` — the proc-macro crate compiles
+- [ ] `cargo test -p offload` — the downstream crate that actually invokes
+  `#[offload_macro::job]` builds and its native job runs (this crate has no
+  tests of its own; its correctness is that the annotated fn is emitted
+  verbatim, observed via the `offload` native path)
+
+**Behavior**
+
+Pure compile-time, no native backend. The only observable property is that
+`#[offload::job]` on a native target leaves the annotated function unchanged so
+the call site is identical to the web build — confirmed by `offload`'s native
+tests above.
