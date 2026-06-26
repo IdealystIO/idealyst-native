@@ -1,9 +1,10 @@
-//! `Alert` — banner with title + optional body and dismiss button,
-//! built on the extensible Tone + Variant trait surface.
+//! `Alert` — banner with title + optional body, an optional trailing
+//! action slot, and a configurable close affordance, built on the
+//! extensible Tone + Variant trait surface.
 //!
 //! ```ignore
 //! use std::rc::Rc;
-//! use idea_ui::extensible::alert::{alert, AlertProps};
+//! use idea_ui::{Alert, AlertClose};
 //! use idea_theme::extensible::{tone, variant};
 //!
 //! ui! {
@@ -12,7 +13,11 @@
 //!         body = Some("Server returned 503.".to_string()),
 //!         tone = tone::Danger,
 //!         variant = variant::Soft,
-//!         on_dismiss = Some(Rc::new(move || hide_alert())),
+//!         // Trailing action slot — any element (a Button here).
+//!         action = Some(ui! { Button(label = "Retry", on_click = retry) }),
+//!         // Close affordance: `None` (default), `Button(handler)` for the
+//!         // standard ×, or `Custom(element)` to supply your own.
+//!         close = AlertClose::Button(Rc::new(move || hide_alert())),
 //!     )
 //! }
 //! ```
@@ -21,6 +26,12 @@
 //! has its own padding/font/radius in the base stylesheet, so no
 //! Size/Shape axis — adding one would imply a continuous range of
 //! banner densities which we don't have a use for yet.
+//!
+//! Layout is a row: a flex-growing title/body column, then the optional
+//! `action`, then the optional `close`. The action and close slots take
+//! caller-supplied elements verbatim (they carry their own styling and
+//! handlers); only the built-in `×` close and the title/body get Alert's
+//! native text-color stamping.
 
 use std::rc::Rc;
 
@@ -31,7 +42,7 @@ use runtime_core::{
 
 use idea_theme::extensible::{installed_alert_sheet, tone, variant, ToneRef, VariantRef};
 
-use crate::stylesheets::{AlertBody, AlertTitle, TagClose};
+use crate::stylesheets::{AlertBody, AlertContent, AlertTitle, TagClose};
 
 /// Resolves `text_style` and overlays the parent fill's foreground
 /// `color` onto its own node. Native `UILabel`/`TextView` don't inherit
@@ -58,6 +69,27 @@ fn label_color_only(color: Tokenized<Color>) -> Rc<StyleSheet> {
     }))
 }
 
+/// The close affordance shown at an [`Alert`]'s trailing edge.
+///
+/// One prop expresses all three modes so there's no "show a close?" flag
+/// that has to agree with a separate "what does it do?" handler.
+pub enum AlertClose {
+    /// No close affordance. (Default.)
+    None,
+    /// The standard `×` glyph; invokes the handler when pressed. Alert
+    /// styles and colors it (carrying the intent foreground on native).
+    Button(Rc<dyn Fn()>),
+    /// A caller-supplied element used in place of the `×`. Taken verbatim
+    /// — it carries its own styling and press behaviour.
+    Custom(Element),
+}
+
+impl Default for AlertClose {
+    fn default() -> Self {
+        AlertClose::None
+    }
+}
+
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct AlertProps {
@@ -73,8 +105,13 @@ pub struct AlertProps {
     pub tone: ToneRef,
     /// Surface treatment (Soft, Filled, Outline, …). Default Soft.
     pub variant: VariantRef,
-    /// When `Some`, a close affordance appears in the top-right.
-    pub on_dismiss: Option<Rc<dyn Fn()>>,
+    /// Optional trailing action slot — e.g. an "Undo"/"Retry" `Button`,
+    /// or any element. Rendered after the text column, before `close`.
+    /// Taken verbatim (carries its own styling and handlers).
+    pub action: Option<Element>,
+    /// Close affordance at the trailing edge. See [`AlertClose`]. Default
+    /// [`AlertClose::None`] (no close).
+    pub close: AlertClose,
 }
 
 impl Default for AlertProps {
@@ -86,26 +123,24 @@ impl Default for AlertProps {
             // for breaking news, Warning/Soft for cautionary, etc.
             tone: tone::Info.into(),
             variant: variant::Soft.into(),
-            on_dismiss: None,
+            action: None,
+            close: AlertClose::None,
         }
     }
 }
 
-/// Renders a banner with a bold title, optional body line, and an
-/// optional dismiss button, styled by the tone × variant axes.
+/// Renders a banner with a bold title, optional body line, an optional
+/// trailing action slot, and an optional close affordance, styled by the
+/// tone × variant axes.
 #[component]
-pub fn Alert(props: &AlertProps) -> Element {
-    let title = props.title.clone();
-    let tone = props.tone.clone();
-    let variant = props.variant.clone();
-
-    let appearance_key = format!("{}_{}", tone.key(), variant.key());
+pub fn Alert(props: AlertProps) -> Element {
+    let appearance_key = format!("{}_{}", props.tone.key(), props.variant.key());
 
     // Static style — build-time apply, no flicker (see Button).
     let container_style =
         StyleApplication::new(installed_alert_sheet()).with("appearance", appearance_key);
 
-    // Resolve the fill's foreground so the title, body, and close glyph
+    // Resolve the fill's foreground so the title, body, and `×` glyph
     // carry it on their own text nodes (native doesn't inherit color).
     let fg = resolve_style(&container_style).color.clone();
 
@@ -117,37 +152,44 @@ pub fn Alert(props: &AlertProps) -> Element {
         Some(c) => with_inherited_color(AlertBody(), c),
         None => AlertBody::sheet(),
     };
-    let close_style = TagClose();
 
-    let title_node: Element = ui! { text(style = title_style) { title } };
+    let title = props.title.clone();
     let body_node: Option<Element> =
         crate::components::optional_reactive_text(props.body.clone(), body_style);
 
-    let close_node: Option<Element> = props.on_dismiss.clone().map(|on_dismiss| {
-        // Bare `×` text node — color it directly so it shows on native.
-        let close_text = match fg.clone() {
-            Some(c) => runtime_core::text("×".to_string())
-                .with_style(label_color_only(c))
-                .into_element(),
-            None => runtime_core::text("×".to_string()).into_element(),
-        };
-        runtime_core::pressable(vec![close_text], move || (on_dismiss)())
-            .with_style(close_style)
-            .into_element()
-    });
+    // Trailing slots. The action element is used verbatim; the close
+    // affordance is built from `AlertClose`.
+    let action_node: Option<Element> = props.action;
+    let close_node: Option<Element> = match props.close {
+        AlertClose::None => None,
+        AlertClose::Button(on_press) => {
+            // Bare `×` text node — color it directly so it shows on native.
+            let close_text = match fg.clone() {
+                Some(c) => runtime_core::text("×".to_string())
+                    .with_style(label_color_only(c))
+                    .into_element(),
+                None => runtime_core::text("×".to_string()).into_element(),
+            };
+            Some(
+                runtime_core::pressable(vec![close_text], move || (on_press)())
+                    .with_style(TagClose())
+                    .into_element(),
+            )
+        }
+        AlertClose::Custom(el) => Some(el),
+    };
 
-    let mut children: Vec<Element> = Vec::with_capacity(2);
-    let mut text_column: Vec<Element> = Vec::with_capacity(2);
-    text_column.push(title_node);
-    if let Some(b) = body_node {
-        text_column.push(b);
+    let content_style = AlertContent();
+    ui! {
+        view(style = container_style) {
+            view(style = content_style) {
+                text(style = title_style) { title }
+                body_node
+            }
+            action_node
+            close_node
+        }
     }
-    children.push(ui! { view { text_column } });
-    if let Some(c) = close_node {
-        children.push(c);
-    }
-
-    ui! { view(style = container_style) { children } }
 }
 
 #[cfg(test)]
@@ -204,15 +246,16 @@ mod tests {
             body: Reactive::Static(Some("All changes persisted.".into())),
             tone: tone::Primary.into(),
             variant: variant::Filled.into(),
-            on_dismiss: Some(std::rc::Rc::new(|| {})),
+            close: AlertClose::Button(Rc::new(|| {})),
+            ..Default::default()
         };
         let expected = container_fg();
 
-        let outer = view_children(Alert(&props));
-        // [text-column-view, close-pressable]
+        let outer = view_children(Alert(props));
+        // [content-view, close-pressable]
         let text_column = match &outer[0] {
             Element::View { children, .. } => children,
-            _ => panic!("first child is the text column view"),
+            _ => panic!("first child is the content view"),
         };
         // title + body
         let title_color = text_node_color(&text_column[0]).expect("title carries its own color");
@@ -229,5 +272,65 @@ mod tests {
         assert_eq!(close_color, expected, "close glyph is the intent text color");
 
         assert_eq!(expected.0.to_ascii_lowercase(), "#ffffff");
+    }
+
+    /// The trailing slots render in order: content column, then the
+    /// `action` element (verbatim), then the close affordance.
+    #[test]
+    fn renders_action_and_close_slots_in_order() {
+        theme();
+        let action = runtime_core::text("Retry".to_string()).into_element();
+        let props = AlertProps {
+            title: Reactive::Static("Couldn't save".into()),
+            tone: tone::Danger.into(),
+            variant: variant::Soft.into(),
+            action: Some(action),
+            close: AlertClose::Button(Rc::new(|| {})),
+            ..Default::default()
+        };
+
+        let outer = view_children(Alert(props));
+        assert_eq!(outer.len(), 3, "content + action + close");
+        // The action slot is the bare text node we passed, used verbatim.
+        match &outer[1] {
+            Element::Text { .. } => {}
+            _ => panic!("action slot renders the provided element"),
+        }
+        match &outer[2] {
+            Element::Pressable { .. } => {}
+            _ => panic!("close is a Pressable"),
+        }
+    }
+
+    /// `AlertClose::Custom` uses the supplied element verbatim instead of
+    /// building the standard `×` Pressable.
+    #[test]
+    fn close_custom_renders_provided_element() {
+        theme();
+        let custom = runtime_core::text("done".to_string()).into_element();
+        let props = AlertProps {
+            title: Reactive::Static("hi".into()),
+            close: AlertClose::Custom(custom),
+            ..Default::default()
+        };
+        let outer = view_children(Alert(props));
+        // [content-view, custom-close-text] — no Pressable wrapper.
+        assert_eq!(outer.len(), 2);
+        match &outer[1] {
+            Element::Text { .. } => {}
+            _ => panic!("custom close element is used verbatim"),
+        }
+    }
+
+    /// `AlertClose::None` (the default) emits no close affordance.
+    #[test]
+    fn close_none_omits_affordance() {
+        theme();
+        let props = AlertProps {
+            title: Reactive::Static("hi".into()),
+            ..Default::default()
+        };
+        let outer = view_children(Alert(props));
+        assert_eq!(outer.len(), 1, "no action, no close → just the content column");
     }
 }

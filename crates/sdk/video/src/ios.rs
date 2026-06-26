@@ -9,7 +9,7 @@
 //! bounds in practice (CALayer's `autoresizingMask` is documented but
 //! unreliable here — video renders as a tiny tile in the top-left if
 //! the layer is left at its construction-time CGRectZero). We sync the
-//! layer's frame from the host view's bounds inside an `Effect::new`
+//! layer's frame from the host view's bounds inside an `effect!`
 //! callback that re-runs every reactive frame; the framework's
 //! scheduler ticks Effects per frame, so the layer follows the view
 //! within one frame of any resize.
@@ -579,6 +579,11 @@ impl VideoOps for IosVideoOps {
             epoch: 0,
         };
         let _: () = unsafe { msg_send![&*player, seekToTime: t] };
+    }
+
+    fn set_muted(&self, node: &dyn Any, muted: bool) {
+        let Some(player) = lookup_player(node) else { return };
+        let _: () = unsafe { msg_send![&*player, setMuted: muted] };
     }
 }
 

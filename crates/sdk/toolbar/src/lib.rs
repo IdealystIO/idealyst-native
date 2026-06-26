@@ -55,7 +55,7 @@
 //!
 //! - The `Element::External` payload type is [`ToolbarProps`].
 //! - Per-backend `register(&mut backend)` impls live in cfg-gated
-//!   modules. The macOS impl installs an `Effect::new` inside its
+//!   modules. The macOS impl installs an `effect!` inside its
 //!   handler closure, so the `items` closure re-runs whenever the
 //!   signals it reads change — same reactive shape as `webview::url`.
 //! - [`ToolbarHandle`] carries a type-erased `Rc<dyn Any>` to the

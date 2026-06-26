@@ -1511,6 +1511,14 @@ stylesheet! {
             // Inherit the parent's foreground; no fill of its own.
             background: Color("transparent".into()),
             padding: 0.0,
+            // The `×` is a child text node, so flex-center it within the
+            // 16×16 box — `text_align` alone only centers glyphs inside a
+            // text node, not the node within this container.
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            // Clickable affordance: pointer on web, NSCursor on macOS, inert
+            // on touch backends.
+            cursor: Cursor::Pointer,
             font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
             font_weight: FontWeight::Bold,
             text_align: TextAlign::Center,
@@ -1677,6 +1685,21 @@ stylesheet! {
         base(t) {
             font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
             line_height: 18.0,
+        }
+    }
+}
+
+// The title/body text column. `flex_grow: 1` + `min_width: 0` lets it
+// take the available width and shrink (wrapping text) so the trailing
+// `action` and `close` slots align to the banner's far edge instead of
+// clustering right after the text.
+stylesheet! {
+    pub AlertContent<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Column,
+            flex_grow: 1.0,
+            min_width: 0.0,
+            gap: Tokenized::token("spacing-2xs", Length::Px(2.0)),
         }
     }
 }

@@ -231,10 +231,11 @@ recipe!(
 
 recipe!(
     Modal,
-    /// A centered overlay with a dimming backdrop and a themed surface.
-    /// idea-ui's Modal does NOT auto-unmount — the host gates it behind
-    /// an open-state signal (`if open.get() { Modal { .. } }`) and flips
-    /// that signal in `on_dismiss`.
+    /// A centered overlay with a dimming backdrop and a themed surface. The
+    /// host owns an open-state `Signal<bool>` and passes it as `open` — the
+    /// Modal is ALWAYS mounted (no `if open { .. }` gate); flipping `open`
+    /// false animates the exit then unmounts. `content` is a closure (rebuilt
+    /// on each open); flip the signal in `on_dismiss`.
     pub fn modal_confirm() -> ::runtime_core::Element {
         use crate::{typography_kind, Modal, Typography};
         use ::runtime_core::{signal, ui};
@@ -243,12 +244,14 @@ recipe!(
         let open = signal!(true);
         let on_dismiss: Rc<dyn Fn()> = Rc::new(move || open.set(false));
         ui! {
-            if open.get() {
-                Modal(on_dismiss = Some(on_dismiss.clone())) {
+            Modal(
+                open = open,
+                on_dismiss = Some(on_dismiss.clone()),
+                content = move || ui! {
                     Typography(content = "Confirm", kind = typography_kind::H2)
                     Typography(content = "Are you sure you want to continue?")
-                }
-            }
+                },
+            )
         }
     }
 );
@@ -330,15 +333,18 @@ recipe!(
 
 recipe!(
     Alert,
-    /// A banner with a title, optional body line, and an optional
-    /// dismiss button. Pick a semantic `tone` (Info/Success/Warning/
-    /// Danger) and a `variant` (Soft/Filled/Outline). Provide
-    /// `on_dismiss = Some(...)` to show the close affordance.
-    pub fn alert_dismissible() -> ::runtime_core::Element {
-        use crate::{tone, variant, Alert};
+    /// A banner with a title, optional body line, an optional trailing
+    /// `action` slot, and a configurable `close`. Pick a semantic `tone`
+    /// (Info/Success/Warning/Danger) and a `variant` (Soft/Filled/
+    /// Outline). `close = AlertClose::Button(handler)` shows the standard
+    /// ×; `AlertClose::Custom(element)` supplies your own; the default
+    /// `AlertClose::None` shows nothing.
+    pub fn alert_with_action() -> ::runtime_core::Element {
+        use crate::{tone, variant, Alert, AlertClose, Button};
         use ::runtime_core::ui;
         use ::std::rc::Rc;
 
+        let retry: Rc<dyn Fn()> = Rc::new(|| { /* retry the request */ });
         let on_dismiss: Rc<dyn Fn()> = Rc::new(|| { /* hide the alert */ });
         ui! {
             Alert(
@@ -346,7 +352,8 @@ recipe!(
                 body = Some("The server returned 503.".to_string()),
                 tone = tone::Danger,
                 variant = variant::Soft,
-                on_dismiss = Some(on_dismiss),
+                action = Some(ui! { Button(label = "Retry", on_click = retry) }),
+                close = AlertClose::Button(on_dismiss),
             )
         }
     }
@@ -972,28 +979,20 @@ recipe!(
 
 recipe!(
     Tooltip,
-    /// A small hint anchored to a trigger. Anchor it the same way as a
-    /// Popover (`bind_to` on the trigger, `target =
-    /// AnchorTarget::from(trigger)` on the Tooltip) and reveal it on
-    /// hover/focus by flipping its presence signal. `text` is the hint.
+    /// A small hint that wraps its trigger and reveals itself on hover
+    /// (desktop) or long-press (touch) — no host open-state signal. `text`
+    /// is the hint shown in the bubble.
     pub fn tooltip_hint() -> ::runtime_core::Element {
         use crate::{Button, Tooltip};
-        use ::runtime_core::primitives::portal::AnchorTarget;
-        use ::runtime_core::{signal, ui, PressableHandle, Ref};
+        use ::runtime_core::ui;
         use ::std::rc::Rc;
 
-        let trigger: Ref<PressableHandle> = Ref::new();
-        let show = signal!(false);
         let noop: Rc<dyn Fn()> = Rc::new(|| {});
+        // The Tooltip wraps its trigger and shows on hover (desktop) /
+        // long-press (touch) — no host open-state signal.
         ui! {
-            view {
-                Button(label = "Save", on_click = noop, bind_to = Some(trigger))
-                if show.get() {
-                    Tooltip(
-                        target = Some(AnchorTarget::from(trigger)),
-                        text = "Saves your changes",
-                    )
-                }
+            Tooltip(text = "Saves your changes".to_string()) {
+                Button(label = "Save", on_click = noop)
             }
         }
     }
@@ -1016,7 +1015,7 @@ recipe!(
         ui! {
             view {
                 Button(label = "Notify", on_click = notify)
-                ToastHost(placement = ToastPlacement::Bottom)
+                ToastHost(placement = ToastPlacement::BottomLeft)
             }
         }
     }

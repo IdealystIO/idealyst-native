@@ -76,7 +76,7 @@ each source-language call shape:
 
 - **Mechanical** — call maps to an idealyst primitive
   (`useState`/`createSignal`/`ref` → `signal!`,
-  `useEffect`/`createEffect`/`watchEffect` → `Effect::new`).
+  `useEffect`/`createEffect`/`watchEffect` → `effect!`).
 - **Unknown** — everything else. Ported as a plain function call.
 
 That's the entire surface. There is no "Shimmed" tier — the porter does
@@ -199,7 +199,7 @@ pub struct CounterProps {
 #[component(default(initial = 0))]
 pub fn counter(props: &CounterProps) -> Element {
     let count = signal!(props.initial);
-    Effect::new(move || {
+    effect!({
         todo!("port handler-body (line N): console.log → idiomatic Rust logging — <original>");
     });
     jsx! {

@@ -3459,6 +3459,16 @@ impl Backend for IosBackend {
         runtime_core::ViewHandle::new(Rc::new(node.clone()), &handles::IOS_VIEW_OPS)
     }
 
+    fn make_scroll_view_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
+        runtime_core::primitives::scroll_view::ScrollViewHandle::new(
+            Rc::new(node.clone()),
+            &handles::IOS_SCROLL_OPS,
+        )
+    }
+
     fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
         runtime_core::TextHandle::new(Rc::new(node.clone()), &handles::IOS_TEXT_OPS)
     }

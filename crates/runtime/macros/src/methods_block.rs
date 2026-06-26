@@ -434,14 +434,15 @@ fn rewrite_body(
     let instance_id_stmt: Stmt = syn::parse_quote! {
         let __robot_component_instance = __robot_component_registration.id();
     };
-    // The Effect's closure captures the registration guard by move.
-    // While a `Scope` is active (the build walker runs each Element
-    // inside one), the returned `Effect` handle is a no-op on drop —
-    // the scope owns the slot and frees it (and the captured guard)
-    // on scope drop. That ties the component's registration lifetime
-    // to its mounted lifetime.
+    // Keepalive effect: its closure captures the registration guard by move.
+    // While a `Scope` is active (the build walker runs each Element inside
+    // one), the effect's slot is owned by that scope, which frees it (and the
+    // captured guard) on scope drop — tying the component's registration
+    // lifetime to its mounted lifetime. `__component_keepalive_effect` is the
+    // framework's internal codegen entry (adopt-or-own, no scope assertion);
+    // author code can't reach the raw `Effect` constructor.
     let keepalive_stmt: Stmt = syn::parse_quote! {
-        let _ = ::runtime_core::Effect::new(move || {
+        ::runtime_core::__component_keepalive_effect(move || {
             let _ = &__robot_component_registration;
         });
     };

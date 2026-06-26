@@ -2,7 +2,7 @@
 //!
 //! Builds a `WKWebView` via raw `msg_send` (see note in Cargo.toml on
 //! why we don't lean on `objc2-web-kit`). Navigates via `loadRequest:`,
-//! subscribes to reactive URL changes through `Effect::new(...)`.
+//! subscribes to reactive URL changes through an `effect!`.
 //!
 //! # Callbacks (v2)
 //!

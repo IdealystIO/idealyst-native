@@ -77,11 +77,11 @@ pub fn effects() -> Element {
                     then again on every relevant change. Dependencies are tracked by \
                     construction: whatever the closure reads is what it depends on.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{signal, Effect};
+            CodePanel(src = r##"use runtime_core::{signal, effect};
 
 let count = signal!(0);
 
-let _e = Effect::new(move || {
+effect!({
     // reads inside the body subscribe automatically:
     log::info!("count is {}", count.get());
 });

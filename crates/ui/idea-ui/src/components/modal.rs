@@ -66,9 +66,10 @@ use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
-    component, safe_area_insets, viewport_size, AlignItems, Color, Element, FlexDirection,
-    IdealystSchema, IntoElement, JustifyContent, Length, Overflow, Position, Ref, StyleApplication,
-    StyleRules, StyleSheet, Tokenized, VariantSet, ViewHandle,
+    component, effect, presence, safe_area_insets, viewport_size, AlignItems, Color, Easing,
+    Element, FlexDirection, IdealystSchema, IntoElement, JustifyContent, Length, Overflow,
+    Position, PresenceAnim, PresenceState, Reactive, Ref, StyleApplication, StyleRules, StyleSheet,
+    Tokenized, VariantSet, ViewHandle,
 };
 
 use crate::stylesheets::Modal as ModalStyle;
@@ -86,12 +87,29 @@ const MODAL_MIN_FIT: f32 = 280.0;
 const MODAL_MIN_HEIGHT_FIT: f32 = 200.0;
 /// Enter animation duration.
 const ENTER_MS: u64 = 180;
+/// Exit animation duration. The modal stays mounted this long after `open`
+/// flips false so the fade/slide-out can play before `presence` unmounts it.
+const EXIT_MS: u64 = 150;
 /// How far below its resting position the card starts before sliding up.
 const CARD_SLIDE_PX: f32 = 14.0;
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct ModalProps {
+    /// Open state. `Reactive<bool>` — pass your open-state `Signal<bool>`
+    /// directly (it coerces). The modal is **always mounted**; flipping this
+    /// false plays the exit animation and then unmounts via `presence`. Do
+    /// NOT gate the modal with `if open.get() { Modal(...) }` — that unmounts
+    /// instantly and skips the exit animation (the bug this replaced).
+    #[schema(constraint = "reactive: static bool or Signal/rx!")]
+    pub open: Reactive<bool>,
+    /// Builds the modal body, laid out in a column inside the scrollable
+    /// surface. A closure (not a `{ }` child block) because `presence`
+    /// rebuilds the content on each open — so it must be reconstructable.
+    /// Author it as `content = move || ui! { … }` (a `move` closure; multiple
+    /// nodes → a `Vec<Element>`). State inside is rebuilt fresh on each open.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub content: ModalContent,
     /// Fires when the user dismisses (backdrop tap — unless
     /// `on_backdrop_press` overrides it — or Escape / back). The host is
     /// expected to flip its open-state signal in response; idea-ui's modal
@@ -113,20 +131,39 @@ pub struct ModalProps {
     /// Must keep the backdrop full-bleed (`position: absolute` + zero
     /// insets).
     pub backdrop_style: Option<Rc<StyleSheet>>,
-    /// Modal body content, laid out in a column inside the scrollable
-    /// surface. Incoming fragments are flattened.
-    pub children: Vec<Element>,
+}
+
+/// The modal body builder. A newtype over `Rc<dyn Fn() -> Element>` whose
+/// `From<closure>` lets a call site pass a bare `move || ui! { … }` (the `ui!`
+/// macro feeds prop values through `.into()`, which can't unsize a
+/// `Rc<{closure}>` to a `Rc<dyn Fn …>` — this newtype bridges that). The
+/// closure returns one `Element` — exactly what a `ui! { … }` block yields
+/// (multi-node blocks are view-wrapped by the macro). Cloned cheaply (`Rc`).
+#[derive(Clone)]
+pub struct ModalContent(pub Rc<dyn Fn() -> Element>);
+
+impl<F: Fn() -> Element + 'static> From<F> for ModalContent {
+    fn from(f: F) -> Self {
+        ModalContent(Rc::new(f))
+    }
+}
+
+impl Default for ModalContent {
+    fn default() -> Self {
+        ModalContent(Rc::new(|| runtime_core::view(Vec::new()).into_element()))
+    }
 }
 
 impl Default for ModalProps {
     fn default() -> Self {
         Self {
+            open: Reactive::Static(false),
+            content: ModalContent::default(),
             on_dismiss: None,
             on_backdrop_press: None,
             dismissable: true,
             width: DEFAULT_MODAL_WIDTH,
             backdrop_style: None,
-            children: Vec::new(),
         }
     }
 }
@@ -292,36 +329,125 @@ fn center_container_sheet() -> Rc<StyleSheet> {
 /// fading dimming backdrop and a themed, viewport-capped, scrollable
 /// surface that fades and slides in. Dismissal is delegated to the host
 /// via `on_dismiss`/`on_backdrop_press`.
-#[component(children)]
+#[component]
 pub fn Modal(props: ModalProps) -> Element {
-    let on_dismiss = props.on_dismiss.clone();
+    let open = props.open;
+    let content = props.content;
+    let on_dismiss = props.on_dismiss;
+    let on_backdrop_press = props.on_backdrop_press;
+    let dismissable = props.dismissable;
+    let desired = props.width;
+    let backdrop_style = props.backdrop_style;
 
+    // `presence` keeps the portal mounted through the EXIT window, then truly
+    // unmounts it — so a closed modal leaves the tree on every backend (no
+    // blocking, no focus trap), and `trap_focus(true)` is safe again. `build`
+    // is re-run on each open, so the body content + its state are rebuilt
+    // fresh (`content` is a closure, not an owned `Vec`, precisely so it can
+    // be reconstructed). The visual fade/slide stays on `AnimatedValue`s bound
+    // to the inner real views — presence's own opacity/translate no-op on a
+    // *portal* child (see the module docs), so we only use presence for the
+    // mount/unmount TIMING and drive the animation ourselves, now
+    // bidirectionally via an effect that reads `open`.
+    let build = {
+        let open = open.clone();
+        move || build_overlay(
+            (content.0)(),
+            open.clone(),
+            on_dismiss.clone(),
+            on_backdrop_press.clone(),
+            dismissable,
+            desired,
+            backdrop_style.clone(),
+        )
+    };
+
+    presence(build)
+        .present(move || open.get())
+        // Timing-only exit: hold the portal mounted EXIT_MS so the
+        // animate-out (driven inside `build`) can play, then unmount. The
+        // PresenceState is a no-op on the portal child; the visual lives on
+        // the inner views.
+        .exit(PresenceAnim::new(PresenceState::default(), EXIT_MS as u32, Easing::EaseIn))
+        .into_element()
+}
+
+/// Build the full modal overlay for one open cycle. Called fresh by
+/// `presence` on each open, so all animators/effect/content are recreated.
+#[allow(clippy::too_many_arguments)]
+fn build_overlay(
+    content: Element,
+    open: Reactive<bool>,
+    on_dismiss: Option<Rc<dyn Fn()>>,
+    on_backdrop_press: Option<Rc<dyn Fn()>>,
+    dismissable: bool,
+    desired: f32,
+    backdrop_style: Option<Rc<StyleSheet>>,
+) -> Element {
     // Resolve the backdrop press handler: explicit override wins; otherwise
     // dismiss when dismissable; otherwise the backdrop is inert.
-    let backdrop_handler: Option<Rc<dyn Fn()>> = props.on_backdrop_press.clone().or_else(|| {
-        if props.dismissable {
+    let backdrop_handler: Option<Rc<dyn Fn()>> = on_backdrop_press.or_else(|| {
+        if dismissable {
             on_dismiss.clone()
         } else {
             None
         }
     });
 
-    let mut content: Vec<Element> = Vec::with_capacity(props.children.len());
-    for c in props.children {
-        runtime_core::ChildList::append_to(c, &mut content);
-    }
-
-    // Backdrop layer: a full-bleed view (scrim color) that fades in, with a
-    // transparent pressable inside catching taps. Opacity-only — no slide —
-    // so no hard dark edge sweeps across.
+    // Bidirectional animators: bound to the inner views, then driven by an
+    // effect reading `open` — animate IN on open, OUT on close. The backdrop
+    // fades only (no slide → no hard dark edge sweep); the card fades + slides.
     let backdrop_ref: Ref<ViewHandle> = Ref::new();
     let bd_opacity = AnimatedValue::new(0.0_f32);
     bd_opacity.bind(backdrop_ref, AnimProp::Opacity);
-    bd_opacity.animate(TweenTo::new(1.0_f32, Duration::from_millis(ENTER_MS)).ease_out());
+    let surface_ref: Ref<ViewHandle> = Ref::new();
+    let card_opacity = AnimatedValue::new(0.0_f32);
+    card_opacity.bind(surface_ref, AnimProp::Opacity);
+    let card_slide = AnimatedValue::new(CARD_SLIDE_PX);
+    card_slide.bind(surface_ref, AnimProp::TranslateY);
+    // Scope-adopted by the presence-mounted subtree: freed when presence
+    // unmounts after exit. No `mem::forget`.
+    effect!({
+        let is_open = open.get();
+        let (op, slide, ms) = if is_open {
+            (1.0_f32, 0.0_f32, ENTER_MS)
+        } else {
+            (0.0_f32, CARD_SLIDE_PX, EXIT_MS)
+        };
+        bd_opacity.animate(TweenTo::new(op, Duration::from_millis(ms)).ease_out());
+        card_opacity.animate(TweenTo::new(op, Duration::from_millis(ms)).ease_out());
+        card_slide.animate(TweenTo::new(slide, Duration::from_millis(ms)).ease_out());
+    });
 
-    let backdrop_sheet = props
-        .backdrop_style
-        .unwrap_or_else(default_backdrop_sheet);
+    assemble_overlay(
+        content,
+        backdrop_ref,
+        surface_ref,
+        backdrop_handler,
+        backdrop_style,
+        desired,
+        on_dismiss,
+    )
+}
+
+/// Pure structural assembly of the modal portal (backdrop + scrollable card +
+/// safe-area centering container) — no animators/effect, so it can be built
+/// WITHOUT a reactive scope (the `regression_modal_card_layer_consumes_touches`
+/// test exercises it directly). The animator refs are passed in, already bound
+/// by [`build_overlay`].
+#[allow(clippy::too_many_arguments)]
+fn assemble_overlay(
+    content: Element,
+    backdrop_ref: Ref<ViewHandle>,
+    surface_ref: Ref<ViewHandle>,
+    backdrop_handler: Option<Rc<dyn Fn()>>,
+    backdrop_style: Option<Rc<StyleSheet>>,
+    desired: f32,
+    on_dismiss: Option<Rc<dyn Fn()>>,
+) -> Element {
+    // Backdrop layer: a full-bleed view (scrim color) that fades, with a
+    // transparent pressable inside catching taps.
+    let backdrop_sheet = backdrop_style.unwrap_or_else(default_backdrop_sheet);
     let backdrop = {
         let h = backdrop_handler.clone();
         let hit = runtime_core::pressable(Vec::new(), move || {
@@ -352,9 +478,12 @@ pub fn Modal(props: ModalProps) -> Element {
     // `opacity: 0` sheet makes the first painted frame invisible (see
     // `card_anim_sheet`).
     let viewport = viewport_size();
-    let desired = props.width;
 
-    let body = runtime_core::view(content)
+    // The content closure yields one Element (a `ui! { … }` block — multi-node
+    // blocks are view-wrapped by the macro). Wrap it in the padded, column body
+    // view. Inter-item spacing is the content's own concern (wrap it in a
+    // `Stack` for a gap); the body supplies padding + scroll behavior.
+    let body = runtime_core::view(vec![content])
         .with_style(StyleApplication::new(modal_body_sheet()))
         .into_element();
     // The scroller carries the viewport-derived height cap. It sizes to its
@@ -415,18 +544,10 @@ pub fn Modal(props: ModalProps) -> Element {
         })
         .into_element();
 
-    // Animation wrapper: opacity 0→1 fade + translateY slide-up. Bound here
-    // (a real `view` with a `ViewHandle`) rather than on the surface so the
-    // static `opacity: 0` base (pre-paint, flicker-free) is separate from the
-    // surface's reactive width style, and so the card pressable below (which
-    // can't carry a `ViewHandle`) stays purely a touch layer.
-    let surface_ref: Ref<ViewHandle> = Ref::new();
-    let card_opacity = AnimatedValue::new(0.0_f32);
-    card_opacity.bind(surface_ref, AnimProp::Opacity);
-    card_opacity.animate(TweenTo::new(1.0_f32, Duration::from_millis(ENTER_MS)).ease_out());
-    let card_slide = AnimatedValue::new(CARD_SLIDE_PX);
-    card_slide.bind(surface_ref, AnimProp::TranslateY);
-    card_slide.animate(TweenTo::new(0.0_f32, Duration::from_millis(ENTER_MS)).ease_out());
+    // Animation wrapper: the fade + translateY slide live on this real
+    // `view` (`ViewHandle`), driven by `card_opacity`/`card_slide` (bound +
+    // animated by the effect above). Its static `opacity: 0` base
+    // (`card_anim_sheet`) keeps the first painted frame invisible, flicker-free.
     let anim_view = runtime_core::view(vec![surface])
         .with_style(StyleApplication::new(card_anim_sheet()))
         .bind(surface_ref)
@@ -584,21 +705,28 @@ mod tests {
     fn regression_modal_card_layer_consumes_touches() {
         use runtime_core::Element;
 
-        // Build the Modal element directly (no backend install needed —
-        // `AnimatedValue::bind` no-ops without one and `viewport_size`
-        // just returns a signal).
-        let modal = Modal(ModalProps {
-            children: vec![runtime_core::text("hi").into_element()],
-            ..Default::default()
-        });
+        // Assemble the portal structure directly. We call `assemble_overlay`
+        // (the pure structural half) rather than the full Modal because
+        // `build_overlay` creates an `effect!`, which requires a live reactive
+        // scope (provided by the walker in real use, absent in a unit test).
+        // `AnimatedValue::bind` no-ops without a backend and `viewport_size`
+        // just returns a signal, so the structure builds fine here.
+        let portal = assemble_overlay(
+            runtime_core::text("hi").into_element(),
+            Ref::new(),
+            Ref::new(),
+            None,
+            None,
+            DEFAULT_MODAL_WIDTH,
+            None,
+        );
 
-        // Modal → Element::Portal { children: [content_view], .. }.
-        // `build_overlay_portal` wraps the Modal's own children in a
-        // single flex-center content view, so the portal has ONE child
-        // (the center container) whose children are [backdrop, card].
-        let portal_children = match &modal {
+        // The portal wraps the Modal's content in a single flex-center
+        // content view, so it has ONE child (the center container) whose
+        // children are [backdrop, card].
+        let portal_children = match &portal {
             Element::Portal { children, .. } => children,
-            _ => panic!("Modal should build a Portal"),
+            _ => panic!("assemble_overlay should build a Portal"),
         };
         assert_eq!(
             portal_children.len(),

@@ -341,7 +341,7 @@ fn avatar_content_row() -> Element {
             Avatar(initials = "AB".to_string(), color = AvatarColor::Primary, size = AvatarSize::Lg)
             Avatar(initials = "CD".to_string(), color = AvatarColor::Success, size = AvatarSize::Lg)
             Avatar(
-                src = Some("https://i.pravatar.cc/120?img=12".to_string()),
+                src = Some("https://i.pravatar.cc/120?img=12".into()),
                 size = AvatarSize::Lg,
             )
         }

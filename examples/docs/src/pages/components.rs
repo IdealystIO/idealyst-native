@@ -123,8 +123,9 @@ docs! {
             [code("signal!(value)"), " — shorthand for ", code("Signal::new(value)"),
              ". Covered in Reactivity."],
             [code("effect!({ … })"),
-             " — shorthand for an ", code("Effect::new(...)"),
-             " bound to the surrounding scope. Covered in Reactivity."],
+             " — a reactive side effect owned by the surrounding component \
+              scope (", code("watch(…)"), " is the out-of-tree peer). \
+              Covered in Reactivity."],
             [code("children![ … ]"),
              " — builds a ", code("Vec<Element>"),
              " from a mixed-shape list (single primitives, ",

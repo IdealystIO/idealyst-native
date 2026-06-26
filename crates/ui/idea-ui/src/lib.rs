@@ -108,7 +108,7 @@ pub use breakpoint::{
 // and the `*Props` struct + any companion enums. `ui! { Foo(...) }` resolves
 // `Foo` via the type alias, while direct fn-call sites resolve to the fn —
 // they coexist in different namespaces. See [[project_buildelement_dispatch]].
-pub use components::alert::{Alert, AlertProps};
+pub use components::alert::{Alert, AlertClose, AlertProps};
 pub use components::autocomplete::{Autocomplete, AutocompleteProps};
 pub use components::avatar::{Avatar, AvatarColor, AvatarProps, AvatarSize};
 pub use components::badge::{Badge, BadgeProps};
@@ -140,7 +140,7 @@ pub use components::collapsible::{
 pub use components::divider::{Divider, DividerAxis, DividerProps};
 pub use components::field::{Field, FieldAppearance, FieldProps, FieldSize};
 pub use components::icon_button::{IconButton, IconButtonProps, IconButtonSize};
-pub use components::modal::{Modal, ModalProps};
+pub use components::modal::{Modal, ModalContent, ModalProps};
 pub use components::popover::{Popover, PopoverProps};
 pub use components::progress::{Progress, ProgressProps};
 pub use components::segmented_control::{
@@ -161,8 +161,8 @@ pub use components::tabs::{Tab, TabIndicator, Tabs, TabsProps};
 pub use components::tag::{Tag, TagProps};
 pub use components::textarea::{Textarea, TextareaProps};
 pub use components::toast::{
-    dismiss_toast, push_toast, push_toast_with, ToastCard, ToastCardProps, ToastEntry, ToastHost,
-    ToastHostProps, ToastPlacement,
+    dismiss_toast, push_toast, push_toast_node, push_toast_with, Toast, ToastCard, ToastCardProps,
+    ToastEntry, ToastHost, ToastHostProps, ToastPlacement,
 };
 pub use components::typography::{Typography, TypographyProps};
 

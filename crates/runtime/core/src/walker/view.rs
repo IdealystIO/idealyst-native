@@ -31,6 +31,7 @@ pub(super) fn build<B: Backend + 'static>(
     safe_area_sides: crate::SafeAreaSides,
     on_touch: Option<crate::TouchHandler>,
     on_wheel: Option<crate::WheelHandler>,
+    on_hover: Option<crate::HoverHandler>,
     is_container: bool,
     a11y: AccessibilityProps,
 ) -> B::Node {
@@ -46,6 +47,9 @@ pub(super) fn build<B: Backend + 'static>(
     }
     if let Some(h) = on_wheel {
         backend.borrow_mut().install_wheel_handler(&n, h);
+    }
+    if let Some(h) = on_hover {
+        backend.borrow_mut().install_hover_handler(&n, h);
     }
     if let Some(RefFill::View(fill)) = ref_fill {
         let handle = backend.borrow().make_view_handle(&n);
@@ -485,11 +489,13 @@ fn enqueue_primitive<B: Backend + 'static>(
             safe_area_sides,
             on_touch,
             on_wheel,
+            on_hover,
             ..
         } => {
             if ref_fill.is_some()
                 || on_touch.is_some()
                 || on_wheel.is_some()
+                || on_hover.is_some()
                 || !safe_area_sides.is_empty()
             {
                 return None;

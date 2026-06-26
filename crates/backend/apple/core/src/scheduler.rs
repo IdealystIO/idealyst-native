@@ -25,6 +25,62 @@ use objc2::{msg_send, msg_send_id};
 use objc2::rc::Retained;
 use objc2_foundation::{NSObject, NSString};
 
+/// CADisplayLink target for the iOS/tvOS `raf_loop` — a vsync-driven animation
+/// tick. Unlike an NSTimer (even one in common modes) it keeps firing reliably
+/// while a finger tracks a `UIScrollView` (`UITrackingRunLoopMode`); the run
+/// loop services the display-synced source promptly during tracking but starves
+/// a wall-clock timer. macOS stays on NSTimer (CADisplayLink there is a
+/// view/screen method) — see `raf_loop`.
+#[cfg(any(target_os = "ios", target_os = "tvos"))]
+mod raf_link {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use objc2::rc::Retained;
+    use objc2::runtime::NSObject;
+    use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
+    use objc2_foundation::MainThreadMarker;
+
+    pub(super) struct RafTargetIvars {
+        state: Rc<RefCell<Box<dyn FnMut() + 'static>>>,
+    }
+
+    declare_class!(
+        pub(super) struct RafTarget;
+
+        unsafe impl ClassType for RafTarget {
+            type Super = NSObject;
+            type Mutability = mutability::InteriorMutable;
+            const NAME: &'static str = "IdealystRafDisplayLinkTarget";
+        }
+
+        impl DeclaredClass for RafTarget {
+            type Ivars = RafTargetIvars;
+        }
+
+        unsafe impl RafTarget {
+            #[method(tick:)]
+            fn tick(&self, _sender: &NSObject) {
+                // Count this animation frame for the frame-pacing trace (debug).
+                #[cfg(debug_assertions)]
+                crate::perf_trace::on_raf_tick();
+                (self.ivars().state.borrow_mut())();
+            }
+        }
+    );
+
+    impl RafTarget {
+        pub(super) fn new(
+            mtm: MainThreadMarker,
+            state: Rc<RefCell<Box<dyn FnMut() + 'static>>>,
+        ) -> Retained<Self> {
+            let this = mtm.alloc::<Self>();
+            let this = this.set_ivars(RafTargetIvars { state });
+            unsafe { msg_send_id![super(this), init] }
+        }
+    }
+}
+
 /// Register this scheduler with `runtime-core`. Idempotent — first
 /// install wins. Safe to call from any Apple host (iOS / tvOS / macOS).
 pub fn install_scheduler() {
@@ -50,6 +106,12 @@ pub fn install_scheduler() {
     // into scope); without it there is no `spawn_async` to host.
     #[cfg(feature = "async-driver")]
     crate::async_executor::install_async_executor();
+
+    // Frame-pacing trace (debug iOS/tvOS only) — a CADisplayLink that logs
+    // dropped frames + raf-tick starvation during gestures. Stripped from
+    // release. Self-silencing (only logs while animating).
+    #[cfg(all(any(target_os = "ios", target_os = "tvos"), debug_assertions))]
+    crate::perf_trace::install();
 }
 
 struct AppleScheduler;
@@ -98,37 +160,90 @@ impl Scheduler for AppleScheduler {
     }
 
     fn raf_loop(&self, f: Box<dyn FnMut() + 'static>) -> Box<dyn ScheduleHandle> {
-        // Recurring 60Hz timer. CADisplayLink would be more accurate
-        // but requires a custom ObjC class with a target/action
-        // pair — same trade-off the render-loop drivers in the leaf
-        // crates make.
+        // Drives the framework's ANIMATION CLOCK (`animation::clock` →
+        // AnimatedValue springs) — cheap per frame (CALayer transform + reactive
+        // coalescing), and it MUST keep advancing during a gesture or a
+        // drag-to-reorder's springs freeze for the whole drag.
         //
-        // Scheduled in `NSDefaultRunLoopMode` (NOT `kCFRunLoopCommonModes`)
-        // so the per-frame tick does NOT fire during UIKit
-        // scroll/pan gestures. The wgpu host's `draw_frame` is
-        // expensive enough (Metal command-buffer encode + present)
-        // that competing with scroll for CPU/GPU makes the gesture
-        // visibly jumpy. Pausing tick during scroll trades animation
-        // smoothness during the gesture for scroll smoothness; the
-        // user said this was the preferable trade-off.
+        // iOS/tvOS use a **CADisplayLink** (vsync-driven). A common-mode NSTimer
+        // is NOT enough here: measured live, an `addTimer:forMode:CommonModes`
+        // 60 Hz timer still collapses to ~3/60 fires while a finger tracks a
+        // UIScrollView (`UITrackingRunLoopMode`), even though the display link
+        // beside it holds a clean 60/60 (see `perf_trace`). The run loop services
+        // the display-synced source promptly during tracking but starves the
+        // wall-clock timer. CADisplayLink is the reliable per-frame source — the
+        // original "would be more accurate but needs a target class" caveat, now
+        // that the target class is cheap to declare (`RafTarget` below).
+        //
+        // This is the "decouple draw from tick" split: the EXPENSIVE wgpu
+        // `draw_frame` (Metal encode + present) runs on a SEPARATE loop — the iOS
+        // `RenderLoopDriver` in `backend-ios-core::render_loop`, kept in DEFAULT
+        // mode so it still yields to scroll. Different loops, so this cheap tick
+        // no longer pays that cost.
         let state: Rc<RefCell<Box<dyn FnMut() + 'static>>> = Rc::new(RefCell::new(f.take_inner()));
-        let state_for_block = state.clone();
-        let block = StackBlock::new(move |_t: *const NSObject| {
-            (state_for_block.borrow_mut())();
-        });
-        let block = block.copy();
-        let timer: Retained<NSObject> = unsafe {
-            msg_send_id![
-                objc2::class!(NSTimer),
-                scheduledTimerWithTimeInterval: (1.0 / 60.0) as f64,
-                repeats: true,
-                block: &*block
-            ]
-        };
-        Box::new(NsTimerHandle {
-            timer: Some(timer),
-            _state: AnyState::Raf(state),
-        })
+
+        #[cfg(any(target_os = "ios", target_os = "tvos"))]
+        {
+            // SAFETY: the scheduler (and the animation clock it drives) runs on
+            // the main thread — the same assumption the rest of this file makes.
+            let mtm = unsafe { objc2_foundation::MainThreadMarker::new_unchecked() };
+            let target = raf_link::RafTarget::new(mtm, state.clone());
+            let link: Retained<NSObject> = unsafe {
+                msg_send_id![
+                    objc2::class!(CADisplayLink),
+                    displayLinkWithTarget: &*target,
+                    selector: objc2::sel!(tick:)
+                ]
+            };
+            extern "C" {
+                static NSRunLoopCommonModes: *const NSString;
+            }
+            let run_loop: Retained<NSObject> =
+                unsafe { msg_send_id![objc2::class!(NSRunLoop), mainRunLoop] };
+            let common_modes: &NSString = unsafe { &*NSRunLoopCommonModes };
+            let _: () =
+                unsafe { msg_send![&*link, addToRunLoop: &*run_loop, forMode: common_modes] };
+            // The link retains its target. `NsTimerHandle::cancel_inner` calls
+            // `invalidate` (CADisplayLink has it, same as NSTimer) on drop, which
+            // unschedules the link and releases the target.
+            return Box::new(NsTimerHandle {
+                timer: Some(link),
+                _state: AnyState::Raf(state),
+            });
+        }
+
+        // macOS: keep an NSTimer in common modes. CADisplayLink on macOS is a
+        // method on NSView/NSScreen (needs a view), which the scheduler doesn't
+        // have; common-mode NSTimer is adequate there (AppKit event tracking,
+        // mouse-driven — no reported starvation) and still runs during scroll.
+        #[cfg(target_os = "macos")]
+        {
+            let state_for_block = state.clone();
+            let block = StackBlock::new(move |_t: *const NSObject| {
+                (state_for_block.borrow_mut())();
+            });
+            let block = block.copy();
+            extern "C" {
+                static NSRunLoopCommonModes: *const NSString;
+            }
+            let timer: Retained<NSObject> = unsafe {
+                msg_send_id![
+                    objc2::class!(NSTimer),
+                    timerWithTimeInterval: (1.0 / 60.0) as f64,
+                    repeats: true,
+                    block: &*block
+                ]
+            };
+            let run_loop: Retained<NSObject> =
+                unsafe { msg_send_id![objc2::class!(NSRunLoop), mainRunLoop] };
+            let common_modes: &NSString = unsafe { &*NSRunLoopCommonModes };
+            let _: () =
+                unsafe { msg_send![&*run_loop, addTimer: &*timer, forMode: common_modes] };
+            Box::new(NsTimerHandle {
+                timer: Some(timer),
+                _state: AnyState::Raf(state),
+            })
+        }
     }
 }
 

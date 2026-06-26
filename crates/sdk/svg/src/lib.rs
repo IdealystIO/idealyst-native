@@ -38,7 +38,7 @@
 //!   `web` / `android` / `ios` modules below. Each one calls
 //!   `backend.register_external::<SvgProps, _>(handler)` to install a
 //!   builder closure keyed by `TypeId::of::<SvgProps>()`.
-//! - Reactive markup flows through `Effect::new(...)` *inside* the
+//! - Reactive markup flows through an `effect!` *inside* the
 //!   per-backend handler. No framework-level `update_svg_markup`
 //!   plumbing — the SDK owns its own update loop.
 //! - `SvgHandle` is the typed ref-target. It carries a type-erased
@@ -58,7 +58,7 @@ use std::rc::Rc;
 /// `Element::External` payload at build time; the active backend's
 /// registered handler reads the typed `Rc<SvgProps>` back out.
 ///
-/// `markup` is reactive: the backend subscribes via `Effect::new(...)`
+/// `markup` is reactive: the backend subscribes via an `effect!`
 /// and re-renders whenever signals captured by the closure change.
 /// Callbacks fire once per successful parse + raster (`on_load`) or
 /// once per parse failure (`on_error`).

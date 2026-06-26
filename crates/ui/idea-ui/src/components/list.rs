@@ -18,7 +18,8 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, ChildList, IdealystSchema, IntoElement, Element, Reactive, StyleApplication,
+    component, ui, ChildList, Cursor, Element, IdealystSchema, IntoElement, Reactive,
+    StyleApplication, StyleRules,
 };
 
 use crate::stylesheets::{Divider, ListContainer, ListItemRow};
@@ -118,15 +119,30 @@ pub fn ListItem(props: ListItemProps) -> Element {
         kids.push(tr);
     }
 
-    let style = move || {
-        StyleApplication::new(ListItemRow::sheet())
-            .with("active", if active { "on" } else { "off" }.to_string())
-    };
+    let active_str = if active { "on" } else { "off" }.to_string();
 
     match props.on_press {
-        Some(cb) => runtime_core::pressable(kids, move || (cb)())
-            .with_style(style)
+        // Clickable row: pressable + a pointer cursor so it reads as
+        // interactive (the "anything pressable shows a pointer" rule). The
+        // cursor rides the single computed slot alongside the active variant.
+        Some(cb) => {
+            let active_str = active_str.clone();
+            runtime_core::pressable(kids, move || (cb)())
+                .with_style(move || {
+                    StyleApplication::new(ListItemRow::sheet())
+                        .with("active", active_str.clone())
+                        .with_computed("li-cursor", || StyleRules {
+                            cursor: Some(Cursor::Pointer),
+                            ..Default::default()
+                        })
+                })
+                .into_element()
+        }
+        // Static row: no pointer (it isn't interactive).
+        None => runtime_core::view(kids)
+            .with_style(move || {
+                StyleApplication::new(ListItemRow::sheet()).with("active", active_str.clone())
+            })
             .into_element(),
-        None => runtime_core::view(kids).with_style(style).into_element(),
     }
 }

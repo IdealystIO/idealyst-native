@@ -6,7 +6,7 @@
 //!
 //! - [`HookClass::Mechanical`] — the lowering pass emits a
 //!   runtime-core equivalent (`useState` → `signal!`,
-//!   `useEffect` → `Effect::new`).
+//!   `useEffect` → `effect!`).
 //! - [`HookClass::Unknown`] — every other call (custom hooks,
 //!   third-party hooks, `useContext`, `useReducer`, ...). The
 //!   porter ports these as plain function calls. If a Rust
@@ -38,7 +38,7 @@ pub enum Mechanical {
     /// The lowering pass also records the matching setter ident
     /// so JSX/handler walkers can rewrite `setX(v)` → `x.set(v)`.
     UseState,
-    /// `useEffect(fn, deps)` → `Effect::new(move || { … });`
+    /// `useEffect(fn, deps)` → `effect!({ … });`
     /// Deps are emitted as an informational comment — idealyst
     /// signals auto-track, so the dep list is redundant in the
     /// lowered code but useful for review.

@@ -452,7 +452,7 @@ pub const CATALOG: &[Group] = &[
                 token: "color-overlay · surface",
                 desc: "A focused dialog over a scrim. Demonstrates the overlay and surface tokens together.",
                 body: pages::overlays::modal,
-                code: "Modal(open = open, on_close = close, title = \"Confirm\".into()) { … }",
+                code: "Modal(open = open, on_dismiss = Some(close), content = move || ui! { … })",
             },
             Entry {
                 route: &COLLAPSIBLE_ROUTE,

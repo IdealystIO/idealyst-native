@@ -27,7 +27,7 @@ use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::primitives::overlay::{overlay, BackdropMode};
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{
-    component, icon, signal, ui, Color, Effect, Element, FillRule, IconData, IdealystSchema,
+    component, effect, icon, signal, ui, Color, Element, FillRule, IconData, IdealystSchema,
     IntoElement, Length, Position, PressableHandle, Reactive, Ref, Signal, StyleApplication,
     StyleRules, StyleSheet, Tokenized, VariantEnum, VariantSet, ViewHandle,
 };
@@ -154,11 +154,10 @@ pub fn Select(props: SelectProps) -> Element {
     let chevron_ref: Ref<ViewHandle> = Ref::new();
     let rot = AnimatedValue::new(0.0);
     rot.bind(chevron_ref, AnimProp::RotateZ);
-    Effect::new(move || {
+    effect!({
         let target = if open.get() { 180.0 } else { 0.0 };
         rot.animate(TweenTo::new(target, Duration::from_millis(CHEVRON_SPIN_MS)).ease_out());
-    })
-    .persist();
+    });
     let chevron_glyph = icon(icon_data)
         .size(16.0)
         .color(|| Tokenized::token("color-text-muted", Color("#6b7280".into())).resolve())

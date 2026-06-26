@@ -38,11 +38,11 @@ pub fn engine() -> Element {
                     are tracked automatically as each effect runs, so a branch that stops reading \
                     a signal stops being notified by it.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{signal, Effect};
+            CodePanel(src = r##"use runtime_core::{signal, effect};
 
 let count = signal!(0);
 
-let _e = Effect::new(move || {
+effect!({
     // reading count here subscribes this effect to it:
     log::info!("count = {}", count.get());
 });

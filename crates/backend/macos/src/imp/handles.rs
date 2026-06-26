@@ -178,6 +178,53 @@ impl ViewOps for MacosViewOps {
 pub(crate) static MACOS_VIEW_OPS: MacosViewOps = MacosViewOps;
 
 // =========================================================================
+// ScrollView ops
+// =========================================================================
+
+/// `ScrollViewOps` for macOS — programmatic scrolling (`scroll_to`) by moving
+/// the `NSScrollView`'s clip view. Without it `ScrollViewHandle::scroll_to`
+/// dispatches through the no-op default and silently does nothing (so e.g.
+/// drag-to-edge autoscroll never moves). Interoperable with the web/iOS
+/// `scroll_to` — same content-pixel coordinate space.
+pub(crate) struct MacosScrollViewOps;
+
+impl runtime_core::primitives::scroll_view::ScrollViewOps for MacosScrollViewOps {
+    fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
+        let Some(macos_node) = node.downcast_ref::<MacosNode>() else {
+            return;
+        };
+        let scroll = macos_node.as_view(); // the NSScrollView
+        // Scroll the clip view (contentView) and reflect it so the scroller +
+        // documentView placement update. The documentView is `isFlipped`
+        // (top-left coords, matching Taffy/web), so (x, y) maps directly —
+        // `x` for the horizontal scroller. `setFrame:` on the documentView
+        // alone wouldn't move it; AppKit needs `reflectScrolledClipView:`.
+        let clip: *mut objc2::runtime::AnyObject = unsafe { msg_send![scroll, contentView] };
+        if clip.is_null() {
+            return;
+        }
+        let point = objc2_foundation::CGPoint {
+            x: x as f64,
+            y: y as f64,
+        };
+        let _: () = unsafe { msg_send![clip, scrollToPoint: point] };
+        let _: () = unsafe { msg_send![scroll, reflectScrolledClipView: clip] };
+    }
+}
+
+pub(crate) static MACOS_SCROLL_OPS: MacosScrollViewOps = MacosScrollViewOps;
+
+/// Build a [`ScrollViewHandle`] for `node` backed by [`MacosScrollViewOps`].
+pub(crate) fn make_scroll_view_handle(
+    node: &MacosNode,
+) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
+    runtime_core::primitives::scroll_view::ScrollViewHandle::new(
+        Rc::new(node.clone()) as Rc<dyn Any>,
+        &MACOS_SCROLL_OPS,
+    )
+}
+
+// =========================================================================
 // Text ops
 // =========================================================================
 

@@ -1292,7 +1292,7 @@ fn sidebar() -> Element {
         let row_signal = signal!(current_suite_sig.get() == suite_name);
         {
             let row_signal = row_signal.clone();
-            let _e = runtime_core::Effect::new(move || {
+            runtime_core::effect!({
                 let want = selected_for_read.get() == suite_name;
                 if row_signal.get() != want {
                     row_signal.set(want);
@@ -1351,7 +1351,7 @@ fn sidebar() -> Element {
                                 let row_signal = signal!(selected.get().contains(id));
                                 {
                                     let row_signal = row_signal.clone();
-                                    let _e = runtime_core::Effect::new(move || {
+                                    runtime_core::effect!({
                                         let want = selected_for_read.get().contains(id);
                                         if row_signal.get() != want {
                                             row_signal.set(want);

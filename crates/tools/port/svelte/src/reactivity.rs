@@ -18,7 +18,7 @@
 //! - `$: derived = expr;` — a *reactive assignment*. Lowers to a
 //!   derived signal (MVP: an inline closure).
 //! - `$: bareStatement;` — a *reactive side effect*. Lowers to
-//!   `Effect::new(move || …)`. Body translation is best-effort;
+//!   `effect!({ … })`. Body translation is best-effort;
 //!   non-translatable bodies become handler-body holes.
 //!
 //! The compiler's job at the IR level is *just* this

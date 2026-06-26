@@ -98,11 +98,11 @@ code are:
   source is wrapped so the list rebuilds when the source changes.
 - **Stylesheets** — reading from the active theme is itself a
   tracked read. Theme tokens propagate to styles automatically.
-- **A manual `Effect`** — `Effect::new(|| ...)` is the lowest-level
-  way to make any closure a tracked context.
+- **A manual effect** — `effect!({ ... })` inside a component, or
+  `watch(|| ...)` outside the tree, makes any closure a tracked context.
 
-The underlying primitive in every case is `Effect`. Everything in
-this list is one or another way of installing one.
+The underlying primitive in every case is a reactive effect. Everything
+in this list is one or another way of installing one.
 
 ### What isn't tracked
 
@@ -124,21 +124,24 @@ at render time. It doesn't subscribe the click handler to anything
 
 ## Effects
 
-`Effect::new(closure)` is the lowest-level reactive primitive. It
-runs the closure once, recording every signal read, then re-runs
-the closure whenever any of those signals change.
+`effect!({ ... })` is the way to write a reactive effect inside a
+component. It runs the body once, recording every signal read, then
+re-runs the body whenever any of those signals change. The surrounding
+component scope owns it — there is no handle to manage. (Outside the
+tree, use `watch(|| ...)` and hold the returned `Subscription`.)
 
 ```rust
-use runtime_core::Effect;
+use runtime_core::{effect, signal};
 
-let _e = Effect::new(move || {
+let count = signal!(0);
+effect!({
     println!("count is now {}", count.get());
 });
 ```
 
 You rarely write effects by hand — most of the time the framework
 installs them for you via `Text`, reactive props, `when`, and so
-on. The cases where a manual Effect makes sense are:
+on. The cases where a manual effect makes sense are:
 
 - **Debug logging** — observe a signal without putting it on screen.
 - **External side effects** — write to a database, fire an analytics
@@ -146,24 +149,32 @@ on. The cases where a manual Effect makes sense are:
 - **Imperative work on a Ref handle** — read a primitive's frame and
   do something with it whenever a signal changes.
 
-### Lifetime
+### Lifetime: `effect!` in the tree, `watch` outside it
 
-`Effect::new` returns an `Effect` handle. What happens when the
-handle drops depends on context:
+`effect!` is owned by the surrounding component scope — there is no
+handle to manage. The effect lives until the scope drops (when the
+component's subtree is replaced or torn down). That's why `effect!`
+debug-asserts a scope is active: a scope-owned effect only makes sense
+inside the tree.
 
-- **Inside a component's `app()` body**, the renderer's surrounding
-  `Owner` captures the effect into the current scope. The returned
-  handle's drop is a no-op. The effect lives until the scope drops
-  (when the component's subtree is replaced or torn down).
-- **Outside any scope** — say, in a top-level helper before the
-  app starts — the handle owns the effect. Drop it to stop the
-  effect from firing.
+For reactivity wired up **outside** the component tree — app startup,
+an async callback, library or platform setup — use `watch` instead:
 
-In practice, application code creates effects inside components, so
-"hand the returned `Effect` to `let _e =` and forget about it" is
-the normal pattern. The scope owns the lifecycle.
+```rust
+use runtime_core::watch;
 
-> **From React.** `Effect::new` is in the family of `useEffect`,
+let sub = watch(move || apply_class(is_open.get()));
+// `sub` is a `Subscription` — YOU own it. Dropping it disposes the
+// effect; `Subscription::leak()` pins it for the whole process.
+```
+
+`watch(f)` returns a caller-owned `Subscription`: store it where its
+lifetime should match (a struct field, the owning service). Unlike
+`effect!`, a `watch` is never adopted by an ambient scope, so it
+behaves the same whether or not one is active. The raw `Effect::new`
+constructor these build on is sealed — use `effect!` or `watch`.
+
+> **From React.** `effect!` is in the family of `useEffect`,
 > with three concrete differences:
 >
 > 1. **No deps array.** Idealyst tracks dependencies by what the
@@ -182,11 +193,11 @@ the normal pattern. The scope owns the lifecycle.
 >    after a commit phase. This is faster and more predictable, but
 >    means heavy work inside an effect blocks the writer.
 
-> **From Solid.** `Effect::new(...)` is `createEffect(...)`. Same
+> **From Solid.** `effect!` is `createEffect(...)`. Same
 > semantics: runs once eagerly, re-runs on dependency change,
 > dependencies recomputed each run.
 
-> **From Vue 3.** `Effect::new` is `watchEffect`. Both auto-track
+> **From Vue 3.** `effect!` is `watchEffect`. Both auto-track
 > reads, both re-run on change, both lifetime-bound to a scope.
 
 ## Untracked reads
@@ -198,7 +209,7 @@ current value, but I don't want to re-run if it changes").
 ```rust
 use runtime_core::untrack;
 
-Effect::new(move || {
+effect!({
     let user = current_user.get();              // tracked: re-fire if user changes
     let pref = untrack(|| theme_pref.get());    // untracked: just a snapshot
     log_visit(&user, &pref);
@@ -242,7 +253,7 @@ manually with an effect that writes to a derived signal:
 ```rust
 let count = signal!(0);
 let doubled = signal!(0);
-let _e = Effect::new(move || doubled.set(count.get() * 2));
+effect!({ doubled.set(count.get() * 2) });
 ```
 
 `doubled` is now a signal that mirrors `count * 2`. Anything that
@@ -385,7 +396,7 @@ let mode = signal!("a");
 let a_value = signal!(1);
 let b_value = signal!(2);
 
-let _e = Effect::new(move || {
+effect!({
     if mode.get() == "a" {
         println!("a = {}", a_value.get());
     } else {
@@ -473,7 +484,7 @@ fn app() -> Element {
 ### Effect for a side effect
 
 ```rust
-Effect::new(move || {
+effect!({
     let user = current_user.get();
     save_to_local_storage("user", &user);
 });
@@ -496,7 +507,7 @@ ui! {
 ```rust
 let count = signal!(0);
 let doubled = signal!(0);
-let _e = Effect::new(move || doubled.set(count.get() * 2));
+effect!({ doubled.set(count.get() * 2) });
 
 ui! {
     Text { format!("count={}", count.get()) }
@@ -556,7 +567,7 @@ context. If you want a frozen value, that's already what you have
 
 ```rust
 let count = signal!(0);
-Effect::new(move || {
+effect!({
     let v = count.get();
     count.set(v + 1);    // re-entry: this run is skipped, no loop
 });

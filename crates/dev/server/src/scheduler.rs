@@ -328,11 +328,11 @@ mod tests {
         ensure_installed();
 
         // Helper: build one "lifetime" of the welcome pattern,
-        // return an owning Effect + a per-lifetime call counter.
-        fn build_lifetime() -> (runtime_core::Effect, Rc<Cell<u32>>) {
+        // return an owning Subscription + a per-lifetime call counter.
+        fn build_lifetime() -> (runtime_core::Subscription, Rc<Cell<u32>>) {
             let calls = Rc::new(Cell::new(0u32));
             let calls_for_body = calls.clone();
-            let effect = runtime_core::Effect::new(move || {
+            let effect = runtime_core::watch(move || {
                 let counter = calls_for_body.clone();
                 // delay=0 matches `session::after_ms(at, ...)` after
                 // the session epoch has already passed `at`.
@@ -385,7 +385,7 @@ mod tests {
 
         let raf_calls = Rc::new(Cell::new(0u32));
         let raf_calls_for_body = raf_calls.clone();
-        let _effect = runtime_core::Effect::new(move || {
+        let _sub = runtime_core::watch(move || {
             let raf_calls_inner = raf_calls_for_body.clone();
             after_ms_scoped(0, move || {
                 let counter = raf_calls_inner.clone();

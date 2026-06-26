@@ -29,6 +29,12 @@ pub mod log;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub mod scheduler;
 
+/// Debug-only frame-pacing trace for diagnosing animation stutter. iOS/tvOS
+/// only (uses `CADisplayLink.displayLinkWithTarget:selector:`, a UIKit-family
+/// API). Self-installs from `install_scheduler`; compiled out of release builds.
+#[cfg(all(any(target_os = "ios", target_os = "tvos"), debug_assertions))]
+pub mod perf_trace;
+
 /// Cooperative main-thread async executor — drives `spawn_async` futures
 /// on the main run loop instead of `runtime-core`'s blocking `pollster`
 /// fallback, so long-running futures (SSE / WebSocket `recv` loops) don't

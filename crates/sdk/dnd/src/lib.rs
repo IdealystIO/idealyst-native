@@ -92,7 +92,7 @@ pub use draggable::{Draggable, DropOutcome, SNAP_BACK_DAMPING, SNAP_BACK_STIFFNE
 pub use droppable::Droppable;
 pub use layer::drag_layer;
 pub use recognizer::{
-    Activation, DragPhase, DragRecognizer, DragSample, DEFAULT_DRAG_LONG_PRESS_MS,
+    Activation, DragPhase, DragRecognizer, DragSample, ScrollAxis, DEFAULT_DRAG_LONG_PRESS_MS,
     DEFAULT_DRAG_LONG_PRESS_SLOP_PX, DEFAULT_DRAG_SLOP_PX,
 };
 

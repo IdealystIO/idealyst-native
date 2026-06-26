@@ -11,7 +11,7 @@
 //!
 //! # Reactive items
 //!
-//! Same `Effect::new`-driven rebuild as the macOS impl: on each
+//! Same `effect!`-driven rebuild as the macOS impl: on each
 //! re-fire we wipe the HeaderBar's packed children and append fresh
 //! buttons from the new `items` Vec.
 //!

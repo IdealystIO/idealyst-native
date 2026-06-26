@@ -516,4 +516,9 @@ impl VideoOps for MacosVideoOps {
         };
         let _: () = unsafe { msg_send![&*player, seekToTime: t] };
     }
+
+    fn set_muted(&self, node: &dyn Any, muted: bool) {
+        let Some(player) = lookup_player(node) else { return };
+        let _: () = unsafe { msg_send![&*player, setMuted: muted] };
+    }
 }

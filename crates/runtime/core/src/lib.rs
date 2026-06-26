@@ -28,6 +28,7 @@ mod style;
 pub mod text_defaults;
 mod touch;
 pub mod wheel;
+pub mod hover;
 mod walker;
 pub mod primitives;
 
@@ -209,6 +210,7 @@ pub use touch::{
     PointerModifiers, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, TouchResponse,
 };
 pub use wheel::{WheelEvent, WheelHandler, WheelKind};
+pub use hover::HoverHandler;
 pub use touch::recognizer::{
     AsyncNotifier, GestureState, Recognizer, RecognizerCtx, RecognizerKind, RecognizerUpdate,
 };
@@ -226,7 +228,9 @@ pub use primitives::navigator::{
     NavigatorRegistry, Route, RouteParams, Screen, ScreenStateGuard,
 };
 pub use primitives::icon::{icon, FillRule, IconData, IconHandle, IconOps, StrokeAnimation};
-pub use primitives::image::{image, image_asset, ImageHandle, ImageOps};
+pub use primitives::image::{
+    image, image_asset, image_from, ImageHandle, ImageOps, ImageSource,
+};
 pub use primitives::key::{KeyEvent, KeyOutcome};
 pub use primitives::text_input::{text_input, TextInputHandle, TextInputOps};
 pub use primitives::text_area::{text_area, TextAreaHandle, TextAreaOps};
@@ -257,6 +261,10 @@ pub use reactive::{
     register_signal_js_notifier, signal_has_js_notifier, unregister_signal_js_notifier, untrack,
     watch, with_inject, ArenaStats, Effect, Ref, Signal, Subscription, Trackable,
 };
+/// Internal re-export for the `#[component]` / `methods!` codegen only —
+/// hidden from the authoring surface. See `reactive::__component_keepalive_effect`.
+#[doc(hidden)]
+pub use reactive::__component_keepalive_effect;
 
 /// Run `f` with the reactive scope-ownership stack emptied: signals and
 /// memos created inside are **not** adopted by the surrounding render

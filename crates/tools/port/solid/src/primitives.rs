@@ -20,7 +20,7 @@ pub enum Mechanical {
     /// Solid signals are *called* to read (`v()`) — the lowering pass
     /// rewrites reads to `v.get()` and `setV(x)` to `v.set(x)`.
     CreateSignal,
-    /// `createEffect(fn)` → `Effect::new(move || …)`.
+    /// `createEffect(fn)` → `effect!({ … })`.
     CreateEffect,
     /// `createMemo(fn)` → derived signal. The MVP emits an inline
     /// closure; future passes can upgrade to a memo signal.
@@ -29,7 +29,7 @@ pub enum Mechanical {
     /// as a hole with the original call attached — there's no
     /// idealyst MVP equivalent yet.
     CreateResource,
-    /// `onMount(fn)` → `Effect::new` with a `// onMount` marker
+    /// `onMount(fn)` → `effect!({ … })` with a `// onMount` marker
     /// comment. Solid's onMount is effectively "effect that runs
     /// once after first paint" — idealyst signals don't separate
     /// mount from update phases, so the lowering is one-way lossy.

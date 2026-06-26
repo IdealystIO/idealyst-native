@@ -66,7 +66,7 @@ mod reactivity {
                 ["Reactive ", code("Text"), " content"],
                 ["Reactive ", code("if"), " inside ", code("ui!")],
                 ["Reactive ", code("for"), " over a signal-backed list"],
-                ["A manual ", code("Effect::new"), " closure"],
+                ["A manual ", code("effect!"), " body (", code("watch"), " outside the tree)"],
             ),
         },
 

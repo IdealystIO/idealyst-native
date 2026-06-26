@@ -11,9 +11,9 @@ use std::rc::Rc;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{signal, ui, Element, PressableHandle, Ref};
 use idea_ui::{
-    push_toast, push_toast_with, tone, typography_kind, variant, Alert, Button, Collapsible,
-    CollapsibleTransition, Modal, Popover, Stack, StackAxis, StackGap, ToastHost, ToastPlacement,
-    Tooltip, Typography,
+    push_toast, push_toast_with, tone, typography_kind, variant, Alert, AlertClose, Button,
+    Collapsible, CollapsibleTransition, Modal, Popover, Stack, StackAxis, StackGap, ToastHost,
+    ToastPlacement, Tooltip, Typography,
 };
 
 use crate::pages::body;
@@ -24,28 +24,19 @@ use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, P
 // =============================================================================
 
 pub fn tooltip() -> Element {
-    let open = signal!(false);
-    let trigger: Ref<PressableHandle> = Ref::new();
-    let toggle: Rc<dyn Fn()> = Rc::new(move || open.update(|v| *v = !*v));
-
     body(vec![ui! {
         Stack(gap = StackGap::Xl) {
             Section(title = "Live demo".to_string()) {
-                P(content = "There's no cross-backend hover event, so this demo toggles the \
-                    bubble on press. Tap the button to show or hide the tooltip — the same \
-                    open-state signal you'd flip from a hover handler on web.".to_string())
+                P(content = "The Tooltip wraps its trigger and shows itself — hover the \
+                    button (desktop/web) to reveal the bubble; on touch it appears on \
+                    long-press and auto-dismisses. No host open-state signal.".to_string())
                 DemoSurface {
-                    Button(
-                        label = "Toggle tooltip".to_string(),
-                        on_click = toggle,
-                        tone = tone::Neutral,
-                        variant = variant::Soft,
-                        bind_to = Some(trigger),
-                    )
-                    if open.get() {
-                        Tooltip(
-                            target = Some(AnchorTarget::from(trigger)),
-                            text = "Resets everything to defaults".to_string(),
+                    Tooltip(text = "Resets everything to defaults".to_string()) {
+                        Button(
+                            label = "Hover me".to_string(),
+                            on_click = (Rc::new(|| {}) as Rc<dyn Fn()>),
+                            tone = tone::Neutral,
+                            variant = variant::Soft,
                         )
                     }
                 }
@@ -53,31 +44,21 @@ pub fn tooltip() -> Element {
 
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
-                    Prop { name: "target", ty: "Option<AnchorTarget>", desc: "Element to anchor against — AnchorTarget::from(some_ref). Required." },
-                    Prop { name: "text",   ty: "Reactive<String>",     desc: "Bubble text. Static or live." },
-                    Prop { name: "side",   ty: "ElementSide",          desc: "Which side of the target the bubble sits on. Default: Above." },
-                    Prop { name: "align",  ty: "ElementAlign",         desc: "Alignment along the anchor edge. Default: Center." },
-                    Prop { name: "offset", ty: "f32",                  desc: "Gap in px between the anchor and the bubble. Default: 6." },
+                    Prop { name: "text",       ty: "Reactive<String>", desc: "Bubble text. Static or live." },
+                    Prop { name: "children",   ty: "Vec<Element>",     desc: "The trigger the tooltip wraps and anchors to." },
+                    Prop { name: "side",       ty: "ElementSide",      desc: "Which side of the trigger the bubble sits on. Default: Above." },
+                    Prop { name: "align",      ty: "ElementAlign",     desc: "Alignment along the anchor edge. Default: Center." },
+                    Prop { name: "offset",     ty: "f32",              desc: "Gap in px between the trigger and the bubble. Default: 6." },
+                    Prop { name: "dismiss_ms", ty: "u32",              desc: "How long a long-press (touch) tooltip stays up before auto-dismissing. Ignored for hover. Default: 1800." },
                 ])
             }
 
             Section(title = "Recipe".to_string()) {
-                P(content = "Bind a Ref to the trigger, gate the Tooltip on an open-state \
-                    signal, and pass the trigger's Ref as the anchor target.".to_string())
-                CodePanel(src = r##"let trigger: Ref<PressableHandle> = Ref::new();
-let open = signal!(false);
-
-ui! {
-    IconButton(
-        glyph = "?".into(),
-        on_click = move || open.update(|v| *v = !*v),
-        bind_to = Some(trigger),
-    )
-    if open.get() {
-        Tooltip(
-            target = Some(AnchorTarget::from(trigger)),
-            text = "Resets to defaults".into(),
-        )
+                P(content = "Wrap the trigger in a Tooltip and give it text — it manages \
+                    its own visibility (hover on desktop, long-press on touch).".to_string())
+                CodePanel(src = r##"ui! {
+    Tooltip(text = "Resets to defaults".into()) {
+        IconButton(glyph = "?".into(), on_press = move || reset())
     }
 }"##.to_string())
             }
@@ -192,6 +173,7 @@ pub fn modal() -> Element {
     let open = signal!(false);
     let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
     let on_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+    let content_close = on_close.clone();
 
     body(vec![ui! {
         Stack(gap = StackGap::Xl) {
@@ -206,62 +188,72 @@ pub fn modal() -> Element {
                         tone = tone::Primary,
                         variant = variant::Filled,
                     )
-                    if open.get() {
-                        Modal(on_dismiss = Some(on_close.clone())) {
-                            Typography(content = "Confirm".to_string(), kind = typography_kind::H3)
-                            Typography(
-                                content = "Tap outside, press Escape, or use the buttons \
-                                    below to dismiss.".to_string(),
-                                muted = true,
-                            )
-                            Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
-                                Button(
-                                    label = "Cancel".to_string(),
-                                    on_click = on_close.clone(),
-                                    tone = tone::Neutral,
-                                    variant = variant::Soft,
+                    Modal(
+                        open = open,
+                        on_dismiss = Some(on_close.clone()),
+                        content = move || ui! {
+                            Stack(gap = StackGap::Md) {
+                                Typography(content = "Confirm".to_string(), kind = typography_kind::H3)
+                                Typography(
+                                    content = "Tap outside, press Escape, or use the buttons \
+                                        below to dismiss.".to_string(),
+                                    muted = true,
                                 )
-                                Button(
-                                    label = "Confirm".to_string(),
-                                    on_click = on_close.clone(),
-                                    tone = tone::Primary,
-                                    variant = variant::Filled,
-                                )
+                                Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                                    Button(
+                                        label = "Cancel".to_string(),
+                                        on_click = content_close.clone(),
+                                        tone = tone::Neutral,
+                                        variant = variant::Soft,
+                                    )
+                                    Button(
+                                        label = "Confirm".to_string(),
+                                        on_click = content_close.clone(),
+                                        tone = tone::Primary,
+                                        variant = variant::Filled,
+                                    )
+                                }
                             }
-                        }
-                    }
+                        },
+                    )
                 }
             }
 
             Section(title = "Pattern".to_string()) {
-                P(content = "Modal is controlled — the host owns a Signal<bool> and gates the \
-                    Modal behind it. The component never auto-unmounts itself; on_dismiss \
-                    (backdrop tap / Escape / back) fires the host's close so the same signal \
-                    drives every dismissal path.".to_string())
+                P(content = "Modal is controlled — the host owns a Signal<bool> and passes it as \
+                    `open`. The Modal is ALWAYS mounted (no `if open { … }` gate): flipping \
+                    `open` false plays the exit animation and then unmounts via presence. \
+                    `content` is a closure (not a `{ }` block) because it's rebuilt fresh on \
+                    each open. on_dismiss (backdrop tap / Escape / back) fires the host's \
+                    close.".to_string())
                 CodePanel(src = r##"let open = signal!(false);
 let on_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
 
 ui! {
     Button(label = "Open".into(), on_click = move || open.set(true),
            tone = tone::Primary, variant = variant::Filled)
-    if open.get() {
-        Modal(on_dismiss = Some(on_close.clone())) {
+    // Always mounted — no `if open { … }`. presence animates the exit.
+    Modal(
+        open = open,
+        on_dismiss = Some(on_close.clone()),
+        content = move || ui! {
             Typography(content = "Confirm".into(), kind = typography_kind::H3)
             Typography(content = "Are you sure?".into())
-            Button(label = "OK".into(), on_click = on_close,
+            Button(label = "OK".into(), on_click = on_close.clone(),
                    tone = tone::Primary, variant = variant::Filled)
-        }
-    }
+        },
+    )
 }"##.to_string())
             }
 
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
+                    Prop { name: "open",             ty: "Reactive<bool>",       desc: "Open state — pass your Signal<bool>. Always mounted; flipping false animates out then unmounts. Do NOT wrap in `if open { … }`." },
+                    Prop { name: "content",          ty: "Rc<dyn Fn()->Vec<Element>>", desc: "Builds the modal body (a closure, rebuilt fresh on each open). Author as content = Rc::new(|| ui! { … })." },
                     Prop { name: "on_dismiss",       ty: "Option<Rc<dyn Fn()>>", desc: "Fires on backdrop tap (unless overridden), Escape, or back. Flip your open-state signal here." },
                     Prop { name: "on_backdrop_press", ty: "Option<Rc<dyn Fn()>>", desc: "Intercepts the backdrop tap. Unset → falls back to on_dismiss when dismissable." },
                     Prop { name: "dismissable",      ty: "bool",                 desc: "true (default) lets the backdrop tap and Escape dismiss; false makes the backdrop inert unless on_backdrop_press is set." },
                     Prop { name: "width",            ty: "f32",                  desc: "Desired surface width on a roomy viewport (DIPs). Capped to the viewport reactively so it never overflows a phone. Default: 520." },
-                    Prop { name: "children",         ty: "Vec<Element>",         desc: "Modal body, laid out in a column inside the scrollable surface." },
                 ])
             }
 
@@ -429,7 +421,8 @@ pub fn alert() -> Element {
                     Prop { name: "body",       ty: "Reactive<Option<String>>", desc: "Optional second-line detail." },
                     Prop { name: "tone",       ty: "ToneRef",                  desc: "Semantic palette. Default: Info." },
                     Prop { name: "variant",    ty: "VariantRef",               desc: "Filled / Soft / Outlined. Default: Soft." },
-                    Prop { name: "on_dismiss", ty: "Option<Rc<dyn Fn()>>",     desc: "When Some, a close affordance appears in the top-right." },
+                    Prop { name: "action",     ty: "Option<Element>",          desc: "Optional trailing action slot (e.g. a Retry button)." },
+                    Prop { name: "close",      ty: "AlertClose",               desc: "None (default) / Button(handler) for the × / Custom(element)." },
                 ])
             }
 
@@ -453,7 +446,7 @@ fn alert_dismissible_demo() -> Element {
                     body = Some("You're using 92% of your plan's quota. Upgrade or free up space.".to_string()),
                     tone = tone::Warning,
                     variant = variant::Soft,
-                    on_dismiss = Some(on_dismiss.clone()),
+                    close = AlertClose::Button(on_dismiss.clone()),
                 )
             } else {
                 P(content = "Dismissed. (Reload the page to bring it back.)".to_string())
@@ -498,9 +491,9 @@ pub fn toast() -> Element {
                         )
                     }
                     // The host: a non-modal, touch-passthrough overlay anchored
-                    // to the top of the viewport. Mount once per app, not per
-                    // call site — here it's page-local for the demo.
-                    ToastHost(placement = ToastPlacement::Top)
+                    // to a viewport region. Mount once per app, not per call
+                    // site — here it's page-local for the demo.
+                    ToastHost(placement = ToastPlacement::BottomLeft)
                 }
             }
 
@@ -509,7 +502,7 @@ pub fn toast() -> Element {
                     handlers, async completions — anywhere, no component scope required. The \
                     returned id lets you close a toast early.".to_string())
                 CodePanel(src = r##"// Mount the host once, near the app root:
-ui! { ToastHost(placement = ToastPlacement::Top) }
+ui! { ToastHost(placement = ToastPlacement::BottomLeft) }
 
 // Push from anywhere — returns the toast's id:
 let id = idea_ui::push_toast("Saved!", tone::Success);
@@ -521,7 +514,8 @@ idea_ui::dismiss_toast(id);"##.to_string())
 
             Section(title = "Props (ToastHost)".to_string()) {
                 PropsTable(rows = vec![
-                    Prop { name: "placement", ty: "ToastPlacement", desc: "Viewport edge the stack anchors to — Top (default) or Bottom." },
+                    Prop { name: "placement", ty: "ToastPlacement", desc: "One of nine viewport regions (TopLeft…BottomRight). Default BottomLeft." },
+                    Prop { name: "edge_gap", ty: "f32", desc: "Gap (px) from the hugged viewport edge(s). Default 16." },
                 ])
             }
 

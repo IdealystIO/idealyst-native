@@ -24,7 +24,7 @@
 //!
 //! # Reactive items
 //!
-//! Same shape as the macOS impl: an `Effect::new(...)` inside the
+//! Same shape as the macOS impl: an `effect!` inside the
 //! handler subscribes to whatever signals `props.items()` reads, and
 //! re-fires to rebuild the button list (clear-then-add via
 //! `TB_DELETEBUTTON` / `TB_ADDBUTTONS`).

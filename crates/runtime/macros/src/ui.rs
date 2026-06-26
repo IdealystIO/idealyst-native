@@ -1783,13 +1783,29 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> Token
     }
 }
 
-/// An empty `View`, coerced to `Element` — used as the `else`
-/// branch of a single-slot `if`/`when` that has no author `else`, so
-/// both arms have the same `Element` type.
+/// An empty, **layout-neutral** `View`, coerced to `Element` — used as
+/// the `else` branch of a single-slot `if`/`when` that has no author
+/// `else`, so both arms have the same `Element` type.
+///
+/// The placeholder is `position: absolute` so it occupies no flex slot.
+/// A plain in-flow empty `view` is still a flex item, so a parent's
+/// `gap` (or centering) spaces it and the siblings *shift* when the
+/// condition toggles — e.g. `if open { Popover/Tooltip/Modal }` made the
+/// trigger jump as the overlay mounted/unmounted, even though the overlay
+/// itself portals out of flow. An absolutely-positioned empty view is a
+/// real (When-swappable) node that contributes nothing to layout when the
+/// branch is absent, so a false `if` is truly weightless.
 fn empty_view_primitive() -> TokenStream2 {
     quote! {
         ::runtime_core::IntoElement::into_element(
-            ::runtime_core::view(::std::vec::Vec::new())
+            ::runtime_core::view(::std::vec::Vec::new()).with_style(
+                ::std::rc::Rc::new(::runtime_core::StyleSheet::r#static(
+                    ::runtime_core::StyleRules {
+                        position: ::core::option::Option::Some(::runtime_core::Position::Absolute),
+                        ..::core::default::Default::default()
+                    }
+                ))
+            )
         )
     }
 }

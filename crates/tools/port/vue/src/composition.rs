@@ -25,16 +25,16 @@ pub enum Mechanical {
     /// `computed(fn)` → derived signal. Same MVP shape as Solid's
     /// `createMemo`.
     Computed,
-    /// `watchEffect(fn)` → `Effect::new(move || …)`. idealyst
+    /// `watchEffect(fn)` → `effect!({ … })`. idealyst
     /// signals auto-track, so the implicit dep set matches.
     WatchEffect,
-    /// `watch(source, cb)` → `Effect::new(move || { let _ = source.get(); cb })`.
+    /// `watch(source, cb)` → `effect!({ let _ = source.get(); cb })`.
     /// Vue's `watch` is "track these specific sources, run the
     /// callback when they change" — modeled as an effect that
     /// reads its sources up front so idealyst's auto-tracking
     /// picks them up.
     Watch,
-    /// `onMounted(fn)` → `Effect::new` with `// onMounted`
+    /// `onMounted(fn)` → `effect!({ … })` with `// onMounted`
     /// comment. Same lossy mapping as Solid's `onMount`.
     OnMounted,
     /// `onUnmounted(fn)` → cleanup closure. Hole when context is

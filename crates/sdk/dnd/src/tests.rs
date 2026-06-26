@@ -11,7 +11,7 @@ use runtime_core::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
 use runtime_core::{Signal, TouchEvent, TouchId, TouchPhase, TouchPoint, ViewportRect};
 
 use crate::context::{DroppableEntry, DroppableId};
-use crate::recognizer::{Activation, DragPhase, DragRecognizer};
+use crate::recognizer::{Activation, DragPhase, DragRecognizer, ScrollAxis};
 use crate::{DragContext, Draggable, DropOutcome};
 
 // ---------------------------------------------------------------------------
@@ -610,4 +610,87 @@ fn abandoned_long_press_never_claims() {
     assert_eq!(claims.get(), 0, "an abandoned long-press leaves the touch to native scroll");
 
     h(&ev(TouchPhase::Ended, 1, 30.0, 0.0, 32_000_000));
+}
+
+// ---------------------------------------------------------------------------
+// Directional activation — instant pickup perpendicular to the scroll axis,
+// scroll along it, hold to override.
+// ---------------------------------------------------------------------------
+
+/// Build a DirectionalLongPress for a HORIZONTAL scroller (the kanban case:
+/// vertical = drag, horizontal = scroll).
+fn directional_horizontal() -> Activation {
+    Activation::DirectionalLongPress {
+        scroll_axis: ScrollAxis::Horizontal,
+        threshold_ms: crate::DEFAULT_DRAG_LONG_PRESS_MS,
+        slop_px: crate::DEFAULT_DRAG_LONG_PRESS_SLOP_PX,
+    }
+}
+
+#[test]
+fn directional_perpendicular_commits_instantly() {
+    install_test_scheduler_once();
+    reset_test_clock();
+    let committed = Rc::new(Cell::new(false));
+    let sink = committed.clone();
+    let h = DragRecognizer::new(directional_horizontal(), move |p| {
+        if matches!(p, DragPhase::Began(_)) {
+            sink.set(true);
+        }
+    })
+    .into_handler();
+
+    h(&ev(TouchPhase::Began, 1, 50.0, 50.0, 0));
+    // Vertical motion (perpendicular to the horizontal scroll axis), 15 px past
+    // the 10 px slop — no clock advance, so this proves it's INSTANT.
+    let r = h(&ev(TouchPhase::Moved, 1, 50.0, 65.0, 16_000_000));
+    assert!(committed.get(), "perpendicular motion picks up instantly — no hold wait");
+    assert!(r.claim, "an active drag claims the touch (cancels the scroller)");
+    h(&ev(TouchPhase::Ended, 1, 50.0, 65.0, 32_000_000));
+}
+
+#[test]
+fn directional_along_axis_abandons_to_scroll() {
+    install_test_scheduler_once();
+    reset_test_clock();
+    let committed = Rc::new(Cell::new(false));
+    let sink = committed.clone();
+    let h = DragRecognizer::new(directional_horizontal(), move |p| {
+        if matches!(p, DragPhase::Began(_)) {
+            sink.set(true);
+        }
+    })
+    .into_handler();
+
+    h(&ev(TouchPhase::Began, 1, 50.0, 50.0, 0));
+    // Horizontal motion (along the scroll axis), 15 px → it's a scroll.
+    let r = h(&ev(TouchPhase::Moved, 1, 65.0, 50.0, 16_000_000));
+    assert!(!committed.get(), "along-axis motion is a scroll, not a pickup");
+    assert!(r.consumed && !r.claim, "left to the native scroller — not claimed");
+    // Past the hold threshold too: the abandon cancelled the timer.
+    advance_ms(crate::DEFAULT_DRAG_LONG_PRESS_MS);
+    assert!(!committed.get(), "an abandoned along-axis swipe never picks up");
+    h(&ev(TouchPhase::Ended, 1, 65.0, 50.0, 32_000_000));
+}
+
+#[test]
+fn directional_hold_commits_regardless_of_direction() {
+    install_test_scheduler_once();
+    reset_test_clock();
+    let committed = Rc::new(Cell::new(false));
+    let sink = committed.clone();
+    let h = DragRecognizer::new(directional_horizontal(), move |p| {
+        if matches!(p, DragPhase::Began(_)) {
+            sink.set(true);
+        }
+    })
+    .into_handler();
+
+    h(&ev(TouchPhase::Began, 1, 50.0, 50.0, 0));
+    // Hold still (within slop): the hold tie-breaker commits, which is what
+    // enables a subsequent along-axis (cross-column) drag.
+    assert!(!committed.get(), "no pickup before the hold elapses");
+    advance_ms(crate::DEFAULT_DRAG_LONG_PRESS_MS);
+    assert!(committed.get(), "a still hold picks up regardless of direction");
+    h(&ev(TouchPhase::Ended, 1, 50.0, 50.0, 32_000_000));
 }

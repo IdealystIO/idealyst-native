@@ -89,13 +89,29 @@ fn nav_button(glyph: &str, target: Option<usize>, on_change: Rc<dyn Fn(usize)>) 
 /// Renders prev/next chevrons around a windowed run of page buttons,
 /// collapsing the middle to ellipses for large `total`. The button
 /// matching `page` is marked active; navigation fires `on_change`.
+///
+/// The whole row is rebuilt through [`switch`](runtime_core::switch) keyed
+/// on `page`. A `#[component]` body builds **once**, so computing the
+/// prev/next targets and the windowed cell list from a single `page.get()`
+/// snapshot froze the arrows (they always fired the initial ±1 and the
+/// window never slid — only the fine-grained active-highlight updated).
+/// `switch` re-runs the builder with the live page on every change, so the
+/// targets, the sliding window, and the highlight all stay correct.
 #[component]
 pub fn Pagination(props: PaginationProps) -> Element {
     let page = props.page;
     let total = props.total.max(1);
     let on_change = props.on_change.clone();
-    let current = page.get();
+    runtime_core::switch(
+        move || page.get(),
+        move |current| build_row(*current, total, on_change.clone()),
+    )
+}
 
+/// Build the pagination row for a concrete `current` page. Called fresh by
+/// `switch` on every page change, so all page-derived values (nav targets,
+/// the windowed cells, the active mark) are computed from the live page.
+fn build_row(current: usize, total: usize, on_change: Rc<dyn Fn(usize)>) -> Element {
     let mut kids: Vec<Element> = Vec::new();
 
     // Prev.
@@ -108,10 +124,12 @@ pub fn Pagination(props: PaginationProps) -> Element {
             Some(n) => {
                 let on_change_for = on_change.clone();
                 let label = runtime_core::text(n.to_string()).into_element();
+                // `active` is baked from `current` (this row is rebuilt per
+                // page change), not read reactively — no per-cell closure.
+                let active = if current == n { "on" } else { "off" }.to_string();
                 let row = runtime_core::pressable(vec![label], move || (on_change_for)(n))
                     .with_style(move || {
-                        StyleApplication::new(PageButton::sheet())
-                            .with("active", if page.get() == n { "on" } else { "off" }.to_string())
+                        StyleApplication::new(PageButton::sheet()).with("active", active.clone())
                     })
                     .into_element();
                 kids.push(row);
@@ -135,7 +153,26 @@ pub fn Pagination(props: PaginationProps) -> Element {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use super::cells;
+
+    /// REGRESSION: the row must be REACTIVE on `page` so the prev/next arrows
+    /// (and the windowed cells) recompute as the page changes. The original
+    /// built the row once in the component body, freezing the nav targets —
+    /// `›` advanced one page then stuck. A reactive `switch` fixes it, so
+    /// `Pagination` must build an `Element::Switch`, not a static `View`.
+    #[test]
+    fn pagination_is_reactive_switch_not_static_row() {
+        let el = Pagination(PaginationProps {
+            page: Signal::new(3),
+            total: 20,
+            on_change: Rc::new(|_| {}),
+        });
+        assert!(
+            matches!(el, Element::Switch { .. }),
+            "Pagination must rebuild reactively via switch (else the arrows freeze)",
+        );
+    }
 
     #[test]
     fn small_total_shows_every_page_no_ellipsis() {

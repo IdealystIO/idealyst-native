@@ -79,7 +79,7 @@ fn opt_in_locale_falls_back_then_upgrades() {
 
 #[test]
 fn reactive_text_recomputes_inside_an_effect() {
-    use runtime_core::{Effect, Signal};
+    use runtime_core::{watch, Signal};
 
     t::init();
     let greet = t::greeting("Ada");
@@ -87,7 +87,7 @@ fn reactive_text_recomputes_inside_an_effect() {
     // Mirror what a `text()` node does: read the reactive value inside an
     // Effect so the runtime subscribes it to the locale signal.
     let captured: Signal<String> = Signal::new(String::new());
-    let _effect = Effect::new({
+    let _sub = watch({
         let greet = greet.clone();
         move || captured.set(greet.get())
     });

@@ -42,7 +42,7 @@
 //! - `VideoHandle` is the typed ref-target. It carries a type-erased
 //!   `Rc<dyn Any>` to the native node + a `&'static dyn VideoOps`
 //!   pointer that the active backend module exposes as a static.
-//! - Reactive `src` flows through `Effect::new(...)` *inside* the
+//! - Reactive `src` flows through an `effect!` *inside* the
 //!   backend handler closure — the per-backend impl subscribes itself
 //!   when it builds the native view. No framework-level
 //!   `update_video_src` plumbing involved.
@@ -301,6 +301,19 @@ impl VideoHandle {
     pub fn seek(&self, seconds: f32) {
         self.ops.seek(&*self.node, seconds);
     }
+
+    /// Mute or unmute the audio track without touching playback position.
+    ///
+    /// Unlike the [`muted`](VideoProps::muted) prop (fixed at construction),
+    /// this flips muting on a *live* player. The motivating case is a real-time
+    /// A/B: mount two players of the same length, start them together, and flip
+    /// which one is audible by muting the other — the listener hears the cut at
+    /// the same playhead. Honored on macOS/iOS (`AVPlayer.muted`) and the web
+    /// (`HTMLMediaElement.muted`); a no-op on Android (its `VideoView` always
+    /// plays its audio track — see [`muted`](VideoProps::muted)).
+    pub fn set_muted(&self, muted: bool) {
+        self.ops.set_muted(&*self.node, muted);
+    }
 }
 
 /// Imperative-ops dispatch. Implementations live in each cfg-gated
@@ -318,6 +331,9 @@ pub trait VideoOps: Sync {
     fn pause(&self, _node: &dyn Any) {}
     /// Seek to the given offset in seconds. Default no-op.
     fn seek(&self, _node: &dyn Any, _seconds: f32) {}
+    /// Mute/unmute the audio track. Default no-op (the fallback for backends
+    /// that can't toggle muting on a live player, e.g. Android's `VideoView`).
+    fn set_muted(&self, _node: &dyn Any, _muted: bool) {}
 }
 
 /// Fallback ops used on targets with no `Video` impl. Every method is

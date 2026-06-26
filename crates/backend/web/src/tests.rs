@@ -1783,3 +1783,85 @@ fn web_touch_ignored_child_still_bubbles_to_ancestor() {
         "an IGNORED child press must still bubble up to the parent on_touch",
     );
 }
+
+/// Dispatch a non-bubbling pointer enter/leave event directly at `target`,
+/// optionally tagging the pointer type (`""` = unspecified/mouse-like).
+fn dispatch_pointer_typed(target: &web_sys::Element, kind: &str, pointer_type: &str) {
+    let init = web_sys::PointerEventInit::new();
+    if !pointer_type.is_empty() {
+        init.set_pointer_type(pointer_type);
+    }
+    let ev = web_sys::PointerEvent::new_with_event_init_dict(kind, &init)
+        .expect("construct pointer event");
+    target.dispatch_event(&ev).expect("dispatch pointer event");
+}
+
+fn dispatch_pointer(target: &web_sys::Element, kind: &str) {
+    dispatch_pointer_typed(target, kind, "");
+}
+
+/// `on_hover` fires `true` on `pointerenter` and `false` on `pointerleave`.
+/// This is the web wiring behind `idea-ui`'s hover-driven `Tooltip`.
+#[wasm_bindgen_test]
+fn web_on_hover_fires_true_on_enter_false_on_leave() {
+    use runtime_core::Backend;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let el = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el).unwrap();
+
+    let states: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+    let s = states.clone();
+    backend.install_hover_handler(
+        &el.clone().unchecked_into(),
+        Rc::new(move |entering: bool| s.borrow_mut().push(entering)),
+    );
+
+    dispatch_pointer(&el, "pointerenter");
+    dispatch_pointer(&el, "pointerleave");
+
+    assert_eq!(
+        *states.borrow(),
+        vec![true, false],
+        "on_hover must fire true on pointerenter then false on pointerleave",
+    );
+}
+
+/// REGRESSION: `on_hover` must IGNORE touch pointers. On a touch device the
+/// browser fires `pointerenter` on touch-DOWN (the finger "enters" as it
+/// lands), so firing the hover handler there would pop a hover tooltip the
+/// instant the user presses — defeating the long-press affordance for
+/// wrapping buttons. Hover is mouse/pen only; touch goes through `on_touch`
+/// (the `long_press` path) instead.
+#[wasm_bindgen_test]
+fn web_on_hover_ignores_touch_pointers() {
+    use runtime_core::Backend;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let el = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el).unwrap();
+
+    let fired = Rc::new(Cell::new(0u32));
+    let f = fired.clone();
+    backend.install_hover_handler(
+        &el.clone().unchecked_into(),
+        Rc::new(move |_entering: bool| f.set(f.get() + 1)),
+    );
+
+    // Touch enter/leave must NOT reach the hover handler.
+    dispatch_pointer_typed(&el, "pointerenter", "touch");
+    dispatch_pointer_typed(&el, "pointerleave", "touch");
+    assert_eq!(fired.get(), 0, "touch pointers must not fire on_hover");
+
+    // A mouse pointer still does.
+    dispatch_pointer_typed(&el, "pointerenter", "mouse");
+    assert_eq!(fired.get(), 1, "mouse pointers must still fire on_hover");
+}

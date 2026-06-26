@@ -44,9 +44,13 @@ use runtime_core::{
 /// recognizer's 8 px so an immediate drag and a pan feel identical.
 pub const DEFAULT_DRAG_SLOP_PX: f32 = 8.0;
 
-/// Default hold duration for [`Activation::LongPress`] — matches
-/// `DEFAULT_LONG_PRESS_THRESHOLD_MS` (UIKit 0.5s / Android ~500ms).
-pub const DEFAULT_DRAG_LONG_PRESS_MS: u64 = 500;
+/// Default hold duration for [`Activation::LongPress`] — the press-and-hold
+/// delay before a drag picks up. Deliberately SHORTER than the OS context-menu
+/// long-press (UIKit/Android ~500 ms): for drag-to-reorder the hold *is* the
+/// interaction, so 500 ms reads as sluggish. 200 ms matches the snappy pickup
+/// of Trello / native collection-view reordering while still being long enough
+/// that a quick swipe (which crosses the slop first) escapes to scroll.
+pub const DEFAULT_DRAG_LONG_PRESS_MS: u64 = 200;
 
 /// Default movement tolerance during a long-press hold before the press is
 /// abandoned (the user meant to scroll). Matches the long-press default.
@@ -55,6 +59,21 @@ pub const DEFAULT_DRAG_LONG_PRESS_SLOP_PX: f32 = 10.0;
 /// EMA mixing factor for velocity smoothing — the same constant the pan /
 /// pinch / swipe recognizers use, so release velocities are comparable.
 const DRAG_VELOCITY_SMOOTHING: f32 = 0.6;
+
+/// The axis a draggable's enclosing scroller scrolls along. Used by
+/// [`Activation::scroll_aware`] / [`Activation::DirectionalLongPress`] to tell
+/// a *drag* gesture apart from a *scroll* by direction: motion PERPENDICULAR to
+/// this axis can't be a scroll (so it's a drag), motion ALONG it is a scroll
+/// until a hold says otherwise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollAxis {
+    /// The scroller pans left-right (e.g. a horizontal board). Vertical motion
+    /// is the unambiguous drag direction.
+    Horizontal,
+    /// The scroller pans up-down (e.g. a vertical list). Horizontal motion is
+    /// the unambiguous drag direction.
+    Vertical,
+}
 
 /// When a drag commits relative to the finger landing.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,6 +84,20 @@ pub enum Activation {
     /// where it landed. Moving past `slop_px` before the timer fires abandons
     /// the drag (and leaves the touch to any native scroller).
     LongPress { threshold_ms: u64, slop_px: f32 },
+    /// Direction-aware hybrid for a draggable inside a scroller — the robust
+    /// choice for reorderable lists/boards. Decisive motion PERPENDICULAR to
+    /// `scroll_axis` past `slop_px` commits the drag IMMEDIATELY (it can't be a
+    /// scroll, so there's nothing to wait for — instant pickup). Decisive motion
+    /// ALONG `scroll_axis` past `slop_px` abandons the drag and leaves the touch
+    /// to the native scroller. A still hold of `threshold_ms` commits regardless
+    /// of direction, so an along-axis (e.g. cross-column) drag is still possible:
+    /// hold to pick up, then move anywhere. The first move's dominant axis
+    /// decides; a hold is the tie-breaker.
+    DirectionalLongPress {
+        scroll_axis: ScrollAxis,
+        threshold_ms: u64,
+        slop_px: f32,
+    },
 }
 
 impl Activation {
@@ -93,10 +126,42 @@ impl Activation {
         }
     }
 
+    /// Direction-aware activation for a draggable inside a scroller on
+    /// `scroll_axis` — prefer this over [`platform_default`](Self::platform_default)
+    /// for reorderable lists/boards. On touch platforms it's
+    /// [`DirectionalLongPress`](Self::DirectionalLongPress): perpendicular motion
+    /// picks up instantly, along-axis motion scrolls, a hold picks up either way.
+    /// On desktop (mouse drag is unambiguous; scrolling is a separate wheel/
+    /// trackpad input) it degrades to [`immediate`](Self::immediate). Resilient
+    /// before a backend is installed (falls back to immediate).
+    pub fn scroll_aware(scroll_axis: ScrollAxis) -> Self {
+        match runtime_core::platform() {
+            Platform::Ios | Platform::Android => Self::DirectionalLongPress {
+                scroll_axis,
+                threshold_ms: DEFAULT_DRAG_LONG_PRESS_MS,
+                slop_px: DEFAULT_DRAG_LONG_PRESS_SLOP_PX,
+            },
+            _ => Self::immediate(),
+        }
+    }
+
     /// Slop in px, whichever variant.
     fn slop_px(self) -> f32 {
         match self {
-            Self::Immediate { slop_px } | Self::LongPress { slop_px, .. } => slop_px,
+            Self::Immediate { slop_px }
+            | Self::LongPress { slop_px, .. }
+            | Self::DirectionalLongPress { slop_px, .. } => slop_px,
+        }
+    }
+
+    /// The hold threshold for variants that arm a long-press timer (`None` for
+    /// [`Immediate`](Self::Immediate)). Drives whether the recognizer arms its
+    /// timer on `Began`.
+    fn long_press_ms(self) -> Option<u64> {
+        match self {
+            Self::Immediate { .. } => None,
+            Self::LongPress { threshold_ms, .. }
+            | Self::DirectionalLongPress { threshold_ms, .. } => Some(threshold_ms),
         }
     }
 }
@@ -408,7 +473,7 @@ impl Recognizer for DragRecognizer {
                 // timer, off-stream, where it's no longer available — so we hold
                 // our own clone. `None` on backends without the claim protocol.
                 *self.claim.borrow_mut() = runtime_core::active_touch_claim();
-                if let Activation::LongPress { threshold_ms, .. } = activation {
+                if let Some(threshold_ms) = activation.long_press_ms() {
                     self.arm_timer(ev.id, threshold_ms);
                 }
                 (G::Possible, TouchResponse::CONSUMED)
@@ -459,6 +524,48 @@ impl Recognizer for DragRecognizer {
                             (G::Failed, TouchResponse::CONSUMED)
                         } else {
                             (G::Possible, TouchResponse::CONSUMED)
+                        }
+                    }
+                    Activation::DirectionalLongPress { scroll_axis, .. } => {
+                        if dist2 <= slop * slop {
+                            // Sub-slop: undecided. The hold timer may still commit.
+                            (G::Possible, TouchResponse::CONSUMED)
+                        } else {
+                            // First decisive motion classifies by dominant axis:
+                            // `perp` is movement perpendicular to the scroll axis
+                            // (the unambiguous drag direction), `along` is movement
+                            // parallel to it (the scroll direction).
+                            let (along, perp) = match scroll_axis {
+                                ScrollAxis::Horizontal => (dx.abs(), dy.abs()),
+                                ScrollAxis::Vertical => (dy.abs(), dx.abs()),
+                            };
+                            if perp >= along {
+                                // Perpendicular to the scroll axis → can't be a
+                                // scroll → pick up immediately (no hold). Honor a
+                                // require-to-fail gate by waiting if not yet
+                                // allowed to recognize.
+                                if ctx.may_recognize {
+                                    self.cancel_timer();
+                                    self.commit(
+                                        ev.id,
+                                        start,
+                                        ev.position,
+                                        ev.window_position,
+                                        ev.timestamp_ns,
+                                    );
+                                    (G::Began, TouchResponse::CLAIMED)
+                                } else {
+                                    (G::Possible, TouchResponse::CONSUMED)
+                                }
+                            } else {
+                                // Along the scroll axis → it's a scroll. Abandon
+                                // and leave the touch to the native scroller
+                                // (a cross-axis drag must hold first). The hold
+                                // timer is moot now.
+                                self.cancel_timer();
+                                *self.state.borrow_mut() = State::Rejected { id };
+                                (G::Failed, TouchResponse::CONSUMED)
+                            }
                         }
                     }
                 }

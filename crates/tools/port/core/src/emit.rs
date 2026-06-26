@@ -9,7 +9,7 @@
 //! #[component(default(initial = 0))]
 //! pub fn Counter(props: &CounterProps) -> Element {
 //!     let count = signal!(props.initial);
-//!     Effect::new(move || {
+//!     effect!({
 //!         todo!("port handler-body: console.log('count:', count)");
 //!     });
 //!     jsx! {

@@ -15,7 +15,10 @@
 //! }
 //! ```
 
-use runtime_core::{component, ui, Element, IdealystSchema, Reactive, StyleApplication, VariantEnum};
+use runtime_core::{
+    component, image_from, ui, Element, IdealystSchema, ImageSource, IntoElement, Reactive,
+    StyleApplication, VariantEnum,
+};
 
 use crate::stylesheets::{Avatar as AvatarStyle, AvatarText};
 use crate::theme::IdeaThemeRef;
@@ -25,10 +28,13 @@ pub use crate::stylesheets::{AvatarColor, AvatarSize};
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct AvatarProps {
-    /// Optional image URL. When `Some`, an `Image` primitive renders
-    /// and the initials are hidden. When `None`, the initials show.
-    #[schema(constraint = "absolute image URL when present")]
-    pub src: Option<String>,
+    /// Optional image source — a URL **or** a bundled
+    /// [`Asset`](runtime_core::assets::Asset), via
+    /// [`ImageSource`]. When `Some`, an image renders and the initials are
+    /// hidden; when `None`, the initials show. Build it from a string
+    /// (`Some("https://…".into())`) or an asset (`Some(LOGO.into())`).
+    #[schema(constraint = "ImageSource — URL string or bundled Asset")]
+    pub src: Option<ImageSource>,
     /// Fallback text rendered when `src` is `None`.
     /// `Reactive<String>` — static or live (signal/`rx!`).
     pub initials: Reactive<String>,
@@ -82,11 +88,16 @@ pub fn Avatar(props: &AvatarProps) -> Element {
     let initials = props.initials.clone();
 
     match props.src.clone() {
-        Some(src) => ui! {
-            view(style = container_style) {
-                image(src = src)
+        Some(source) => {
+            // Build the image from the unified source (URL or Asset) and
+            // splat it into the circular container.
+            let img = image_from(source).into_element();
+            ui! {
+                view(style = container_style) {
+                    img
+                }
             }
-        },
+        }
         None => ui! {
             view(style = container_style) {
                 text(style = text_style) { initials }

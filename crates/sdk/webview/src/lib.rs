@@ -44,7 +44,7 @@
 //!   `Bound<WebViewHandle>::bind` installs a `RefFill::External`
 //!   closure that wraps the node any in a `WebViewHandle` using that
 //!   static `OPS`.
-//! - Reactive URL changes flow through `Effect::new(...)` *inside* the
+//! - Reactive URL changes flow through an `effect!` *inside* the
 //!   backend handler closure — the per-backend impl subscribes itself
 //!   when it builds the native view. No framework-level
 //!   `update_web_view_url` plumbing involved.
@@ -70,7 +70,7 @@ use std::rc::Rc;
 #[derive(IdealystSchema)]
 pub struct WebViewProps {
     /// Initial + reactive URL. The backend handler subscribes via
-    /// `Effect::new(...)`, so changes to the closure's captured
+    /// an `effect!`, so changes to the closure's captured
     /// signals re-navigate the WebView. Use [`url`] to coerce any of
     /// `&str` / `String` / `Fn() -> String` into this shape.
     #[schema(constraint = "absolute URL (http/https) or file://")]

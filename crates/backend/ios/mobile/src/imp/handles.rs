@@ -8,7 +8,7 @@
 
 use objc2::msg_send;
 use objc2::rc::Retained;
-use objc2_foundation::{CGRect, NSObject, NSString};
+use objc2_foundation::{CGPoint, CGRect, NSObject, NSString};
 use objc2_ui_kit::{UITextField, UITextView, UIView};
 use std::any::Any;
 
@@ -204,6 +204,23 @@ impl ViewOps for IosViewOps {
     }
 }
 pub(crate) static IOS_VIEW_OPS: IosViewOps = IosViewOps;
+
+/// `ScrollViewOps` for iOS — programmatic scrolling (`scroll_to`) via
+/// `UIScrollView.setContentOffset:animated:`. Without it the framework's
+/// `ScrollViewHandle::scroll_to` dispatches through the no-op default and
+/// silently does nothing (e.g. drag-to-edge autoscroll never moves).
+pub(crate) struct IosScrollViewOps;
+impl runtime_core::primitives::scroll_view::ScrollViewOps for IosScrollViewOps {
+    fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
+        if let Some(IosNode::ScrollView(sv)) = node.downcast_ref::<IosNode>() {
+            let offset = CGPoint { x: x as f64, y: y as f64 };
+            // animated:false — the caller (an autoscroll loop) drives the pacing
+            // per frame; UIKit's own animation would fight it.
+            let _: () = unsafe { msg_send![sv, setContentOffset: offset, animated: false] };
+        }
+    }
+}
+pub(crate) static IOS_SCROLL_OPS: IosScrollViewOps = IosScrollViewOps;
 
 // `IosTextOps` provides the same animated-color dispatch as
 // `IosViewOps` but on a text-bearing widget — `set_animated_color`

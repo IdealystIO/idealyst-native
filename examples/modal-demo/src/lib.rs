@@ -67,6 +67,10 @@ pub fn app() -> Element {
     let close_short: Rc<dyn Fn()> = Rc::new(move || short_open.set(false));
     let open_tall: Rc<dyn Fn()> = Rc::new(move || tall_open.set(true));
     let close_tall: Rc<dyn Fn()> = Rc::new(move || tall_open.set(false));
+    // Dedicated clones for the `content` closures (the Modal is always mounted
+    // and `content` is rebuilt per open; on_dismiss reuses the originals).
+    let close_short_content = close_short.clone();
+    let close_tall_content = close_tall.clone();
 
     ui! {
         view(style = root_style()) {
@@ -93,8 +97,10 @@ pub fn app() -> Element {
             )
 
             // --- Short modal: content-sized card ---
-            if short_open.get() {
-                Modal(on_dismiss = Some(close_short.clone())) {
+            Modal(
+                open = short_open,
+                on_dismiss = Some(close_short.clone()),
+                content = move || ui! {
                     Typography(content = "Short modal".to_string(), kind = typography_kind::H2)
                     Typography(
                         content = "This card sizes to its content — no wasted space. \
@@ -103,16 +109,18 @@ pub fn app() -> Element {
                     )
                     Button(
                         label = "Close".to_string(),
-                        on_click = close_short.clone(),
+                        on_click = close_short_content.clone(),
                         tone = tone::Primary,
                         variant = variant::Filled,
                     )
-                }
-            }
+                },
+            )
 
             // --- Tall modal: capped at the viewport, body scrolls ---
-            if tall_open.get() {
-                Modal(on_dismiss = Some(close_tall.clone())) {
+            Modal(
+                open = tall_open,
+                on_dismiss = Some(close_tall.clone()),
+                content = move || ui! {
                     Typography(content = "Tall modal".to_string(), kind = typography_kind::H2)
                     Typography(
                         content = "This body is taller than the screen, so the card \
@@ -129,12 +137,12 @@ pub fn app() -> Element {
                     }
                     Button(
                         label = "Close".to_string(),
-                        on_click = close_tall.clone(),
+                        on_click = close_tall_content.clone(),
                         tone = tone::Primary,
                         variant = variant::Filled,
                     )
-                }
-            }
+                },
+            )
         }
     }
 }

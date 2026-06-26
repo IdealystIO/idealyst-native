@@ -451,11 +451,30 @@ pub(super) fn build<B: Backend + 'static>(
     // popped screens deregister at the right time (this also fixes the stale
     // "popped screen still in the registry" leak). Regression:
     // `stack-navigator/tests/robot_screen_tree` (run with `--features robot`).
+    // The `control` itself must be retained for the same reason. It owns the
+    // `nav_state` scope (`retain_scope` stashes it in `owning_scope`), so
+    // `active_route`/`active_path`/`depth`/`can_go_back` live exactly as long
+    // as `control`. But after `build` returns, the SDK handler's `init` has
+    // already dropped the `NavigatorHost` it took by value (handlers don't
+    // store it), so the ONLY strong ref left can be a transient clone an SDK
+    // handler captured — e.g. the macOS drawer defers its sidebar build into a
+    // `schedule_microtask` whose `control` clone is consumed when the builder
+    // closure returns, BEFORE the walker builds the sidebar's reactive styles.
+    // A sidebar that reads `active_route` reactively (a nav item's active-
+    // highlight) but doesn't itself capture a `control`-bearing closure
+    // (it uses framework `link(route=…)` rather than the slot's `on_select`)
+    // then drops `control`'s last ref mid-build, freeing `active_route` out
+    // from under the style effect → "signal used after its scope was dropped".
+    // Anchoring `control` here makes nav-state lifetime deterministic across
+    // every backend, independent of what a handler's sidebar happens to
+    // capture. Regression: `reactive_nav_state_survives_handler_dropping_host`.
     let _chrome_keepalive = nav_chrome_scopes.clone();
     let _screen_scopes_keepalive = scopes.clone();
+    let _control_keepalive = control.clone();
     let _keepalive_effect = Effect::new(move || {
         let _ = &_chrome_keepalive;
         let _ = &_screen_scopes_keepalive;
+        let _ = &_control_keepalive;
     });
 
     node

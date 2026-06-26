@@ -38,7 +38,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, pressable, recipe, ui, Element, IdealystSchema, IntoElement, Reactive,
+    component, pressable, recipe, ui, Cursor, Element, IdealystSchema, IntoElement, Reactive,
     StyleApplication,
 };
 
@@ -110,10 +110,21 @@ pub fn Chip(props: &ChipProps) -> Element {
     };
     let appearance_key = format!("{}_{}", tone.key(), variant_key);
     // `hug` keeps the chip sized to content instead of stretching to a flex
-    // parent's cross axis (see `components::hug_self`).
+    // parent's cross axis (see `components::hug_self`); a clickable chip also
+    // gets a pointer cursor so it reads as selectable (the "anything
+    // selectable shows a pointer" rule). Both ride one computed slot
+    // (`StyleApplication` has a single computed layer) — a second
+    // `with_computed` would overwrite, not stack.
+    let clickable = on_select.is_some();
     let container_style = StyleApplication::new(installed_tag_sheet())
         .with("appearance", appearance_key)
-        .with_computed("hug", crate::components::hug_self);
+        .with_computed("chip-box", move || {
+            let mut r = crate::components::hug_self();
+            if clickable {
+                r.cursor = Some(Cursor::Pointer);
+            }
+            r
+        });
 
     let label_style = TagLabel();
     let label_el: Element = ui! { text(style = label_style) { label } };

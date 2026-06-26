@@ -1,7 +1,7 @@
 //! Web (`target_arch = "wasm32"`) implementation of the WebView SDK.
 //!
 //! Builds an `<iframe>` per mount. Reactive URL changes flow through
-//! `Effect::new(...)` inside the handler (the framework runs us inside
+//! an `effect!` inside the handler (the framework runs us inside
 //! the walker's active scope, so the effect is owned by the scope and
 //! survives past handler return). Message / load / error callbacks are
 //! wired as DOM event listeners with their closures persisted in JS

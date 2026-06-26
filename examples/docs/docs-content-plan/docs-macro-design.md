@@ -330,7 +330,7 @@ docs! {
             ["A reactive ", code("for"), " over a signal-backed list"],
             ["Closure props that read a signal"],
             ["Stylesheets — reading the active theme is itself tracked"],
-            ["A manual ", code("Effect::new(...)")],
+            ["A manual ", code("effect!({ ... })"), " (or ", code("watch(...)"), " outside the tree)"],
         }
 
         p("A plain expression that doesn't read a signal is not tracked — \

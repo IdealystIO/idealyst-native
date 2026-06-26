@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use runtime_core::primitives::portal::AnchorTarget;
 use runtime_core::{signal, ui, Element, IntoElement, PressableHandle, Ref};
-use icons_lucide::{COPY, PENCIL, SHARE_2, TRASH_2};
+use icons_lucide::{CHEVRON_RIGHT, COPY, PENCIL, SHARE_2, TRASH_2};
 use idea_ui::{
     tone, typography_kind, variant, Avatar, AvatarColor, AvatarSize, Breadcrumbs, Button, Crumb, Icon, List,
     ListItem, Menu, MenuEntry, MenuItem, MenuLabel, MenuSeparator, Pagination, Stack, StackAxis,
@@ -71,10 +71,36 @@ pub fn breadcrumbs() -> Element {
             }
         },
         ui! {
+            Section(title = "Icon separator".to_string()) {
+                P(content = "Pass `separator_icon` to draw an icon between crumbs instead of \
+                    a text glyph — both forms are supported (the glyph is the fallback when \
+                    no icon is set). Linked crumbs show a pointer cursor on hover.".to_string())
+                DemoSurface {
+                    Breadcrumbs(
+                        separator_icon = Some(CHEVRON_RIGHT),
+                        items = vec![
+                            Crumb::linked("Home", noop.clone()),
+                            Crumb::linked("Components", noop.clone()),
+                            Crumb::new("Breadcrumbs"),
+                        ],
+                    )
+                }
+                CodePanel(src = r##"Breadcrumbs(
+    separator_icon = Some(icons_lucide::CHEVRON_RIGHT),
+    items = vec![
+        Crumb::linked("Home", go_home),
+        Crumb::linked("Components", go_components),
+        Crumb::new("Breadcrumbs"),
+    ],
+)"##.to_string())
+            }
+        },
+        ui! {
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
-                    Prop { name: "items",     ty: "Vec<Crumb>", desc: "Trail in order. Crumb::new(label) is plain; Crumb::linked(label, on_press) is clickable. The last crumb always renders as the current page." },
-                    Prop { name: "separator", ty: "String",     desc: "Glyph drawn between crumbs. Default: \"/\"." },
+                    Prop { name: "items",          ty: "Vec<Crumb>",       desc: "Trail in order. Crumb::new(label) is plain; Crumb::linked(label, on_press) is clickable. The last crumb always renders as the current page." },
+                    Prop { name: "separator",      ty: "String",           desc: "Glyph drawn between crumbs. Default: \"/\". Ignored when separator_icon is set." },
+                    Prop { name: "separator_icon", ty: "Option<IconData>", desc: "Icon drawn between crumbs instead of the glyph. None falls back to separator." },
                 ])
             }
         },

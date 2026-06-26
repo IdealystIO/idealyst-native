@@ -77,8 +77,8 @@ fetches it) or a live `Stream`. The *mechanism* differs per platform:
 ## Reactive vs. imperative
 
 `src` is reactive: pass a closure reading a `Signal`/`Source` and the
-per-backend handler swaps the playing clip on change (it subscribes via
-`Effect::new(...)` when it builds the native view). Use [`src`] to
+per-backend handler swaps the playing clip on change (it subscribes via an
+`effect!` when it builds the native view). Use [`src`] to
 coerce a `&str`, `String`, or `Fn() -> String` into the stored closure
 shape.
 

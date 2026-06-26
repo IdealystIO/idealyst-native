@@ -189,7 +189,7 @@ pub enum Reactive {
         setter: String,
         init: String,
     },
-    /// `Effect::new(move || { … });`
+    /// `effect!({ … });`
     /// Lowered from `useEffect(fn, deps)`. The body is kept as
     /// a snippet (typically a hole) because we can't translate
     /// arbitrary JS imperative code mechanically.

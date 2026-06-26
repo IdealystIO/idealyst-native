@@ -12,7 +12,7 @@
 //!   lets, and over-promoting to a signal is harmless.
 //! - `$: expr;` — reactive statement. If `expr` is an assignment
 //!   (`x = y`), lowers to a derived signal; otherwise lowers to
-//!   `Effect::new(move || …)`.
+//!   `effect!({ … })`.
 //! - `function name() { … }` — handler. Recorded for the markup
 //!   walker to substitute when an `on:click={name}` references it.
 

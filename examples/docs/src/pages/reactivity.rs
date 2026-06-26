@@ -128,12 +128,13 @@ docs! {
               list rebuilds when the source changes."],
             ["Stylesheets — reading from the active theme is itself a tracked \
               read. Theme tokens propagate to styles automatically."],
-            ["A manual ", code("Effect"), " — ", code("Effect::new(|| ...)"),
-             " is the lowest-level way to make any closure a tracked context."],
+            ["A manual effect — ", code("effect!({ ... })"),
+             " inside a component, or ", code("watch(|| ...)"),
+             " outside the tree, makes any closure a tracked context."],
         ),
 
-        p("The underlying primitive in every case is ", code("Effect"),
-          ". Everything in this list is one or another way of installing one."),
+        p("The underlying primitive in every case is a reactive effect. \
+           Everything in this list is one or another way of installing one."),
 
         p("A signal read outside any tracked context is just a value read — \
            useful when you want to look at the current value without \
@@ -153,21 +154,29 @@ docs! {
     },
 
     section(heading = "Effects") {
-        p(code("Effect::new(closure)"), " is the lowest-level reactive \
-           primitive. It runs the closure once, recording every signal read, \
-           then re-runs the closure whenever any of those signals change."),
+        p(code("effect!({ ... })"), " is the way to write a reactive effect \
+           inside a component. It runs the body once, recording every signal \
+           read, then re-runs the body whenever any of those signals change. \
+           There is no handle to manage — the surrounding component scope owns \
+           the effect and frees it on teardown."),
 
         code(rust, r##"
-            use runtime_core::Effect;
+            use runtime_core::{effect, signal};
 
-            let _e = Effect::new(move || {
+            let count = signal!(0);
+            effect!({
                 println!("count is now {}", count.get());
             });
+            count.set(1);  // re-runs the effect
         "##),
 
-        p("You rarely write effects by hand — most of the time the framework \
+        p("The macro inserts the ", code("move ||"),
+          " for you (always implied — signal handles are ", code("Copy"),
+          ") and debug-asserts that a reactive scope is active, because a \
+           scope-owned effect only makes sense inside the tree. You rarely \
+           write effects by hand anyway — most of the time the framework \
            installs them for you via ", code("Text"), ", reactive props, ",
-          code("when"), ", and so on. The cases where a manual Effect makes \
+          code("when"), ", and so on. The cases where a manual effect makes \
            sense are:"),
 
         list(
@@ -178,27 +187,8 @@ docs! {
               do something with it whenever a signal changes."],
         ),
 
-        p(code("Effect::new"), " returns an ", code("Effect"),
-          " handle. What happens when the handle drops depends on context:"),
-
-        list(
-            ["Inside a component's ", code("app()"), " body, the renderer's \
-              surrounding ", code("Owner"), " captures the effect into the \
-              current scope. The returned handle's drop is a no-op. The \
-              effect lives until the scope drops (when the component's \
-              subtree is replaced or torn down)."],
-            ["Outside any scope — say, in a top-level helper before the app \
-              starts — the handle owns the effect. Drop it to stop the effect \
-              from firing."],
-        ),
-
-        p("In practice, application code creates effects inside components, \
-           so \"hand the returned ", code("Effect"), " to ", code("let _e ="),
-          " and forget about it\" is the normal pattern. The scope owns the \
-           lifecycle."),
-
         compare(from = React) {
-            p(code("Effect::new"), " is in the family of ", code("useEffect"),
+            p(code("effect!"), " is in the family of ", code("useEffect"),
               ", with three concrete differences:"),
             p("1. No deps array. Idealyst tracks dependencies by what the \
                closure actually reads on each run. There is nothing to list \
@@ -207,7 +197,7 @@ docs! {
                removing the read unsubscribes."),
             p("2. Cleanup is separate from the effect. Idealyst gives you ",
               code("on_cleanup(callback)"),
-              " — call it from inside an Effect to register a teardown \
+              " — call it from inside an effect to register a teardown \
                that fires before the next re-run and on final disposal. \
                No \"return a function from the body,\" no implicit \
                last-statement-is-cleanup convention. See the ",
@@ -219,48 +209,50 @@ docs! {
                blocks the writer."),
         },
         compare(from = Solid) {
-            p(code("Effect::new(...)"), " is ", code("createEffect(...)"),
+            p(code("effect!"), " is ", code("createEffect(...)"),
               ". Same semantics: runs once eagerly, re-runs on dependency \
                change, dependencies recomputed each run."),
         },
         compare(from = VueThree) {
-            p(code("Effect::new"), " is ", code("watchEffect"),
+            p(code("effect!"), " is ", code("watchEffect"),
               ". Both auto-track reads, both re-run on change, both \
                lifetime-bound to a scope."),
         },
     },
 
-    section(heading = "effect! — shorthand macro") {
-        p(code("effect!"), " is the natural shorthand for ",
-          code("Effect::new(move || { ... })"),
-          ". The macro skips the ", code("move ||"),
-          " keyword (always implied — signal handles are ",
-          code("Copy"),
-          "), auto-binds the returned handle to a hygienic local, and \
-           reads more like the body it wraps:"),
-        code(rust, r##"
-            use runtime_core::{effect, signal};
+    section(heading = "watch — reactivity outside the tree") {
+        p("Reactivity lives in the component tree. ", code("effect!"),
+          " is owned by the surrounding scope — which is exactly why it \
+           debug-asserts one is active. But sometimes you wire reactivity up \
+           where there is no scope to own it: at app startup, inside an async \
+           callback, in library or platform setup code. That is what ",
+          code("watch"), " is for."),
 
-            let count = signal!(0);
-            effect!({
-                println!("count is now {}", count.get());
-            });
-            count.set(1);  // re-runs the effect
+        code(rust, r##"
+            use runtime_core::watch;
+
+            // No render scope here — an app-init / async / service context.
+            let sub = watch(move || apply_drawer_class(is_open.get()));
+            // `sub` is a `Subscription` — YOU own it.
         "##),
-        p("Inside a render scope (anywhere reached by ",
-          code("mount"),
-          "'s root closure, anywhere inside a ", code("#[component]"),
-          ", anywhere inside a ", code("when()"), " / ", code("for"),
-          " / ", code("Presence"),
-          " arm), the active ", code("Scope"),
-          " adopts the effect and the hidden binding's drop is a no-op. \
-           The effect lives until the scope ends. Outside any scope — \
-           tests, top-level binaries, or constructors called via ",
-          code("render(backend, app())"),
-          " — the binding owns the effect and its drop runs the cleanups \
-           immediately. Capture the handle in a longer-lived binding (or \
-           switch the entry point to ", code("mount"),
-          ") to keep the effect alive."),
+
+        p(code("watch(f)"), " returns a ", code("Subscription"),
+          " that you own. The effect runs for as long as you hold the handle; \
+           dropping it disposes the effect and runs its cleanups. Store it \
+           where its lifetime should match — a struct field, a thread-local, \
+           the owning service. For a one-time install that should live for the \
+           whole process, call ", code("Subscription::leak()"),
+          " — the honest, greppable \"pin forever\"."),
+
+        p("Unlike ", code("effect!"),
+          ", a ", code("watch"),
+          " is never adopted by an ambient scope, so it behaves identically \
+           whether or not one happens to be active. Reach for it the moment \
+           you are outside a ", code("#[component]"), " body."),
+
+        p("The raw ", code("Effect::new"),
+          " constructor these both build on is sealed — author code uses ",
+          code("effect!"), " or ", code("watch"), ", never it."),
     },
 
     section(heading = "on_cleanup — release on drop") {
@@ -535,7 +527,7 @@ docs! {
         code(rust, r##"
             use runtime_core::untrack;
 
-            Effect::new(move || {
+            effect!({
                 let user = current_user.get();              // tracked: re-fire if user changes
                 let pref = untrack(|| theme_pref.get());    // untracked: just a snapshot
                 log_visit(&user, &pref);
@@ -582,7 +574,7 @@ docs! {
         code(rust, r##"
             let count = signal!(0);
             let doubled = signal!(0);
-            let _e = Effect::new(move || doubled.set(count.get() * 2));
+            effect!({ doubled.set(count.get() * 2) });
         "##),
 
         p(code("doubled"), " is now a signal that mirrors ", code("count * 2"),
@@ -863,7 +855,7 @@ docs! {
             let a_value = signal!(1);
             let b_value = signal!(2);
 
-            let _e = Effect::new(move || {
+            effect!({
                 if mode.get() == "a" {
                     println!("a = {}", a_value.get());
                 } else {
@@ -952,7 +944,7 @@ docs! {
         p("Effect for a side effect:"),
 
         code(rust, r##"
-            Effect::new(move || {
+            effect!({
                 let user = current_user.get();
                 save_to_local_storage("user", &user);
             });
@@ -975,7 +967,7 @@ docs! {
         code(rust, r##"
             let count = signal!(0);
             let doubled = signal!(0);
-            let _e = Effect::new(move || doubled.set(count.get() * 2));
+            effect!({ doubled.set(count.get() * 2) });
 
             ui! {
                 text { format!("count={}", count.get()) }
@@ -1033,7 +1025,7 @@ docs! {
 
         code(rust, r##"
             let count = signal!(0);
-            Effect::new(move || {
+            effect!({
                 let v = count.get();
                 count.set(v + 1);    // re-entry: this run is skipped, no loop
             });

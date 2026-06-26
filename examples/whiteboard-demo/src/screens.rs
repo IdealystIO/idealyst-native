@@ -17,7 +17,7 @@ use crate::{BoardState, CanvasStore, Strokes, REC_FILE, REC_STORE};
 use idea_ui::{typography_kind, Modal, SegmentOption, SegmentedControl, Switch, Typography};
 use icons_lucide::X;
 use runtime_core::{
-    component, icon, safe_area_insets, ui, view, AlignItems, ChildList, Color,
+    component, icon, rx, safe_area_insets, ui, view, AlignItems, ChildList, Color,
     Element, FlexDirection, FontWeight, IntoElement, JustifyContent, Length, Overflow, Ref,
     Signal, StyleRules, Tokenized, TouchPhase, TouchResponse,
 };
@@ -362,6 +362,12 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
         ..Default::default()
     });
 
+    // Dedicated clones for the always-mounted Modal's `content` closure
+    // (rebuilt per open); on_dismiss reuses the originals.
+    let cancel_change_content = cancel_change.clone();
+    let confirm_change_content = confirm_change.clone();
+    let dialog_actions_style_content = dialog_actions_style.clone();
+
     ui! {
         ScreenScaffold(title = "Settings", nav = nav) {
             view(style = list_style) {
@@ -402,16 +408,20 @@ pub fn SettingsScreen(props: &SettingsScreenProps) -> Element {
                 }
             }
             // Confirm clearing the board before an aspect change wipes drawings.
-            if pending.get().is_some() {
-                Modal(on_dismiss = Some(cancel_change.clone())) {
+            // Always mounted; `open` tracks `pending` reactively so the exit
+            // animation plays when the dialog is dismissed.
+            Modal(
+                open = rx!(pending.get().is_some()),
+                on_dismiss = Some(cancel_change.clone()),
+                content = move || ui! {
                     Typography(content = "Change aspect ratio?", kind = typography_kind::H3)
                     Typography(content = "A new aspect ratio starts a fresh board — every canvas and its drawings will be cleared. This can't be undone.", muted = true)
-                    view(style = dialog_actions_style.clone()) {
-                        ActionButton(label = "Cancel", primary = false, on_press = Some(cancel_change.clone()))
-                        ActionButton(label = "Clear & change", primary = true, on_press = Some(confirm_change.clone()))
+                    view(style = dialog_actions_style_content.clone()) {
+                        ActionButton(label = "Cancel", primary = false, on_press = Some(cancel_change_content.clone()))
+                        ActionButton(label = "Clear & change", primary = true, on_press = Some(confirm_change_content.clone()))
                     }
-                }
-            }
+                },
+            )
         }
     }
 }

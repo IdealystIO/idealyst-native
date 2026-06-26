@@ -4,7 +4,7 @@
 //!
 //! - **URL** → an `android.widget.VideoView` child. `setVideoURI` takes an
 //!   `android.net.Uri` (`Uri.parse(String)`); reactive URL changes flow
-//!   through `Effect::new(...)`. `start`/`pause`/`seekTo` drive the ops.
+//!   through an `effect!`. `start`/`pause`/`seekTo` drive the ops.
 //! - **Live `MediaStream`** → an `ImageView` child whose `Bitmap` is replaced
 //!   each frame from the stream's tightly-packed RGBA8 frames. We poll the
 //!   stream's latest frame on the framework's frame loop (which runs on the

@@ -551,7 +551,7 @@ fn render_tree_node(
     // synchronously: set the active path, and load that file's
     // contents into the editor buffer. We can't lean on a
     // reactive Effect here because `app()` runs before the
-    // framework sets up its render scope, so any `Effect::new(...)`
+    // framework sets up its render scope, so any `effect!`
     // here would drop the moment its handle goes out of scope.
     let is_active = active.get() == node.full_path;
     let path_for_click = node.full_path.clone();

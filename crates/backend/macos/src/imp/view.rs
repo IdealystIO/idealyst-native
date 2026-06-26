@@ -39,8 +39,8 @@ use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSString};
 use std::cell::Cell as StdCell;
 
 use runtime_core::{
-    set_pointer_modifiers, PointerModifiers, StateBits, TouchEvent, TouchHandler, TouchId,
-    TouchPhase, TouchPoint, WheelEvent, WheelHandler, WheelKind,
+    set_pointer_modifiers, HoverHandler, PointerModifiers, StateBits, TouchEvent, TouchHandler,
+    TouchId, TouchPhase, TouchPoint, WheelEvent, WheelHandler, WheelKind,
 };
 
 /// Stable id for the single mouse pointer (macOS has no multitouch here).
@@ -83,9 +83,15 @@ pub struct FlippedViewIvars {
     /// `(StateBits::PRESSED, on)` from mouseDown/Up; the framework
     /// re-resolves + re-applies the node's style.
     state_setter: RefCell<Option<Rc<dyn Fn(StateBits, bool)>>>,
+    /// Installed by `Backend::install_hover_handler` for views with an
+    /// `on_hover`. Fired `true` on `mouseEntered:`, `false` on
+    /// `mouseExited:` — the macOS counterpart of web's
+    /// `pointerenter`/`pointerleave`. `None` for views with no `on_hover`.
+    hover_handler: RefCell<Option<HoverHandler>>,
     /// The live hover-tracking area, retained so `updateTrackingAreas` can
     /// remove the stale one before installing a fresh one. `None` until a
-    /// `state_setter` is attached (only interactive views track hover).
+    /// `state_setter` OR `hover_handler` is attached (only views that need
+    /// hover — for styling or for `on_hover` — track it).
     tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
 }
 
@@ -214,11 +220,17 @@ declare_class!(
         #[method(mouseEntered:)]
         fn mouse_entered(&self, _event: &NSEvent) {
             self.flip_state(StateBits::HOVERED, true);
+            if let Some(h) = self.ivars().hover_handler.borrow().as_ref() {
+                h(true);
+            }
         }
 
         #[method(mouseExited:)]
         fn mouse_exited(&self, _event: &NSEvent) {
             self.flip_state(StateBits::HOVERED, false);
+            if let Some(h) = self.ivars().hover_handler.borrow().as_ref() {
+                h(false);
+            }
         }
 
         // AppKit calls this when the view enters a window and on every
@@ -231,7 +243,12 @@ declare_class!(
             if let Some(old) = self.ivars().tracking_area.borrow_mut().take() {
                 let _: () = unsafe { msg_send![self, removeTrackingArea: &*old] };
             }
-            if self.ivars().state_setter.borrow().is_none() {
+            // Track hover when the view needs it for EITHER styling
+            // (`state_setter`) or an `on_hover` handler. Skip the area
+            // entirely for the many views that need neither.
+            if self.ivars().state_setter.borrow().is_none()
+                && self.ivars().hover_handler.borrow().is_none()
+            {
                 return;
             }
             // `InVisibleRect` makes AppKit auto-size the area to the view's
@@ -282,6 +299,7 @@ impl FlippedView {
             active: Cell::new(false),
             cursor: RefCell::new(None),
             state_setter: RefCell::new(None),
+            hover_handler: RefCell::new(None),
             tracking_area: RefCell::new(None),
         });
         unsafe { msg_send_id![super(this), init] }
@@ -297,6 +315,16 @@ impl FlippedView {
     /// `Backend::install_wheel_handler`.
     pub(crate) fn set_wheel_handler(&self, handler: WheelHandler) {
         *self.ivars().wheel_handler.borrow_mut() = Some(handler);
+    }
+
+    /// Install (or replace) the `on_hover` handler and build the hover
+    /// tracking area. Called by `Backend::install_hover_handler`. Idempotent
+    /// — re-runs `updateTrackingAreas`, which swaps the area cleanly (and is
+    /// what makes a non-styled view start tracking once it has a hover
+    /// handler).
+    pub(crate) fn set_hover_handler(&self, handler: HoverHandler) {
+        *self.ivars().hover_handler.borrow_mut() = Some(handler);
+        let _: () = unsafe { msg_send![self, updateTrackingAreas] };
     }
 
     /// `true` if an `on_touch` handler has been installed — i.e. this view is

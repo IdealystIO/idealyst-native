@@ -77,8 +77,35 @@ impl AnimatedValue<f32> {
             drop(sub);
             drop(av_clone);
         });
+        // Re-apply the current value once, just after mount. See
+        // [`reapply_after_mount_note`].
+        let av = self.clone();
+        crate::scheduling::after_ms_scoped(0, move || {
+            target.with(|handle| handle.set_animated_f32(prop, av.get()));
+        });
     }
 }
+
+/// ## `reapply_after_mount_note`
+///
+/// Each `bind*` schedules a 0-delay scoped re-apply of its CURRENT value after
+/// `subscribe_and_apply`. Why: `subscribe_and_apply` writes the starting value
+/// immediately at `bind()` time — but that's during component construction, when
+/// the target `Ref` isn't filled yet, so the write silently no-ops. The bound
+/// value then first reaches the backend on the *next* change. For a STATIC value
+/// (or a `SpringTo` whose start already equals its target, which never ticks)
+/// there is no next change, so the value would never be applied at all — e.g.
+/// macOS leaves a transform-positioned view stuck at frame (0,0) until something
+/// else moves it; web/iOS happen to land it but the gap is the same.
+///
+/// The deferred task runs once the build walker has filled the ref (a 0-delay
+/// task fires on the next loop turn). It WRITES the value via `set_animated_*`
+/// WITHOUT going through `AnimatedValue::set`, so an in-flight animation's
+/// animator is untouched, and it's idempotent where the first apply already
+/// landed. `after_ms_scoped` anchors it to the active scope: a hot-patch rerender
+/// that recycles the ref slot before it fires cancels it (its cancelled-flag
+/// guard), so it never writes through a recycled handle.
+const _REAPPLY_AFTER_MOUNT_NOTE: () = ();
 
 impl AnimatedValue<(f32, f32, f32, f32)> {
     /// Subscribe a color animation property to a `Ref<ViewHandle>`.
@@ -95,6 +122,12 @@ impl AnimatedValue<(f32, f32, f32, f32)> {
         on_cleanup(move || {
             drop(sub);
             drop(av_clone);
+        });
+        // Re-apply the current value after mount — see `reapply_after_mount_note`.
+        let av = self.clone();
+        crate::scheduling::after_ms_scoped(0, move || {
+            let (r, g, b, a) = av.get();
+            target.with(|handle| handle.set_animated_color(prop, [r, g, b, a]));
         });
     }
 
@@ -126,6 +159,12 @@ impl AnimatedValue<(f32, f32, f32, f32)> {
         on_cleanup(move || {
             drop(sub);
             drop(av_clone);
+        });
+        // Re-apply the current value after mount — see `reapply_after_mount_note`.
+        let av = self.clone();
+        crate::scheduling::after_ms_scoped(0, move || {
+            let (r, g, b, a) = av.get();
+            target.with(|handle| handle.set_animated_color(prop, [r, g, b, a]));
         });
     }
 }
@@ -312,6 +351,58 @@ mod tests {
              handle (A went {} → {})",
             a_after_drop,
             OPS_A.count()
+        );
+    }
+
+    #[test]
+    fn bind_reapplies_value_after_mount_so_static_value_lands() {
+        // Regression for: a STATIC bound value (no animation, no later change)
+        // never reached the backend, because `subscribe_and_apply`'s one-time
+        // write happens at bind() time when the ref is still empty. On macOS that
+        // left transform-positioned views stuck at (0,0) until an interaction.
+        // The fix schedules a re-apply after mount (see `reapply_after_mount_note`);
+        // it writes a SECOND time so the value lands even with no change.
+        //
+        // We observe it inline via the no-scheduler SYNCHRONOUS fallback
+        // (`after_ms` runs `f()` immediately off-web). `install_scheduler` is a
+        // process-wide OnceLock shared with other tests' schedulers — installing
+        // a queueing one here would hijack theirs — so if some other test already
+        // installed one (which routes our `after_ms_scoped` to it instead of the
+        // sync fallback), skip rather than assert. Same posture as
+        // `no_scheduler_on_web_panics`.
+        if crate::scheduling::is_scheduler_installed() {
+            return;
+        }
+        // Pin platform non-web so the no-scheduler fallback is synchronous, not a
+        // panic (mirrors the scheduling fallback tests).
+        crate::backend::install_current_platform(crate::Platform::Ios);
+
+        struct CountOps {
+            n: std::sync::atomic::AtomicU32,
+        }
+        impl ViewOps for CountOps {
+            fn set_animated_f32(&self, _node: &dyn Any, _prop: AnimProp, _value: f32) {
+                self.n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        static OPS: CountOps = CountOps {
+            n: std::sync::atomic::AtomicU32::new(0),
+        };
+
+        let av: AnimatedValue<f32> = AnimatedValue::new(0.42);
+        in_scope(|| {
+            let r: Ref<ViewHandle> = Ref::<ViewHandle>::new();
+            let node: Rc<dyn Any> = Rc::new(0u32);
+            r.fill(ViewHandle::new(node, &OPS));
+            // Bind ONLY — no `av.set(...)`, no animation. Pre-fix this was a
+            // single write (subscribe_and_apply); post-fix the re-apply adds a
+            // second one, which is what makes a static value actually land.
+            av.bind(r, AnimProp::Opacity);
+        });
+        assert!(
+            OPS.n.load(std::sync::atomic::Ordering::Relaxed) >= 2,
+            "bind of a static value must apply it AND re-apply after mount (got {} writes)",
+            OPS.n.load(std::sync::atomic::Ordering::Relaxed),
         );
     }
 }

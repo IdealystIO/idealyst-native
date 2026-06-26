@@ -1,7 +1,7 @@
 //! Web (`target_arch = "wasm32"`) implementation of the Video SDK.
 //!
 //! Builds a `<video>` element per mount. Reactive src changes flow
-//! through `Effect::new(...)` inside the handler (the framework runs
+//! through an `effect!` inside the handler (the framework runs
 //! us inside the walker's active scope, so the effect is owned by the
 //! scope and survives past handler return).
 
@@ -139,6 +139,11 @@ impl VideoOps for WebVideoOps {
     fn seek(&self, node: &dyn Any, seconds: f32) {
         let Some(el) = downcast_media(node) else { return };
         el.set_current_time(seconds as f64);
+    }
+
+    fn set_muted(&self, node: &dyn Any, muted: bool) {
+        let Some(el) = downcast_media(node) else { return };
+        el.set_muted(muted);
     }
 }
 

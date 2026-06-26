@@ -18,14 +18,16 @@
 //! to hand off to, so a commit moves nothing — the dragged card just settles
 //! into the gap that's already open.
 
-use dnd::{Activation, DragContext, Draggable, Droppable};
+use dnd::{Activation, DragContext, Draggable};
 use idea_theme::{install_theme, ThemeTokens};
 use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo};
 use runtime_core::{
-    component, effect, signal, stylesheet, text, ui, view, AlignItems, Color, Element,
-    FlexDirection, IntoElement, JustifyContent, Length, Position, Ref, Signal, TokenEntry,
-    ViewHandle,
+    component, effect, raf_loop, scroll_view, signal, stylesheet, text, ui, view, AlignItems,
+    Color, Element, FlexDirection, IntoElement, JustifyContent, Length, Position, RafLoop, Ref,
+    ScrollViewHandle, Signal, TokenEntry, ViewHandle, ViewportRect,
 };
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub fn register_extensions<B: runtime_core::Backend>(_backend: &mut B) {}
 
@@ -48,6 +50,12 @@ const CARD_GAP: f32 = 10.0;
 const ROW: f32 = CARD_H + CARD_GAP; // vertical stride per slot
 const HEADER_H: f32 = 48.0; // space above the first card for the column title
 const BOARD_H: f32 = 420.0;
+const BOARD_W: f32 = COL_W * 3.0 + COL_GAP * 2.0; // 756 — total scrollable width
+const GHOST_W: f32 = COL_W - COL_PAD * 2.0; // dragged ghost width (== a card)
+// Autoscroll: while the dragged ghost's center is within EDGE_PX of a viewport
+// edge, the board scrolls that way SPEED_PX per frame.
+const AUTOSCROLL_EDGE_PX: f32 = 56.0;
+const AUTOSCROLL_SPEED_PX: f32 = 12.0;
 const COL_TITLES: [&str; 3] = ["To Do", "In Progress", "Done"];
 
 fn col_x(c: usize) -> f32 {
@@ -81,6 +89,60 @@ struct Board {
     /// The dragged card id, and the slot it would land in `(column, slot)`.
     dragging: Signal<Option<u32>>,
     over: Signal<Option<(usize, usize)>>,
+    /// Live horizontal scroll offset (px). Tracked via the scroll view's
+    /// `on_scroll`; the autoscroll loop both reads it and drives it.
+    scroll_x: Signal<f32>,
+    /// The horizontal scroll view, for programmatic autoscroll (`scroll_to`).
+    scroll_ref: Ref<ScrollViewHandle>,
+    /// The scroll *viewport* (visible window), read once at drag start to map
+    /// the ghost's window position into board-content space.
+    viewport_ref: Ref<ViewHandle>,
+    /// Per-frame autoscroll + geometric drop-detection loop. Alive only while a
+    /// card is being dragged (started in `on_start`, dropped in `on_release`).
+    autoscroll: Rc<RefCell<Option<RafLoop>>>,
+}
+
+/// One autoscroll + drop-detection frame. Maps the ghost's window-space center
+/// into board-content space — accounting for the LIVE scroll offset, which the
+/// dnd context's snapshot hit-test cannot — to pick the `(column, slot)` it is
+/// over, and nudges the scroll when the ghost nears a viewport edge. `viewport`
+/// is cached at drag start (it doesn't move; only the content scrolls), so this
+/// does no per-frame layout reads.
+fn autoscroll_frame(board: &Board, viewport: ViewportRect) {
+    let (gx0, gy0) = board.ctx.ghost_position();
+    let gx = gx0 + GHOST_W / 2.0; // ghost center, window space
+    let gy = gy0 + CARD_H / 2.0;
+    let sx = board.scroll_x.get();
+
+    // Window → board-content space: the content's left edge sits at
+    // `viewport.x - scroll_x`, so add `scroll_x` back.
+    let board_x = gx - viewport.x + sx;
+    let board_y = gy - viewport.y;
+    let col = (board_x / (COL_W + COL_GAP)).floor().clamp(0.0, 2.0) as usize;
+    let slot = ((board_y - HEADER_H) / ROW).round().max(0.0) as usize;
+    board.over.set(Some((col, slot)));
+
+    // Autoscroll near the edges.
+    let max_scroll = (BOARD_W - viewport.width).max(0.0);
+    let new_sx = if gx < viewport.x + AUTOSCROLL_EDGE_PX {
+        (sx - AUTOSCROLL_SPEED_PX).max(0.0)
+    } else if gx > viewport.x + viewport.width - AUTOSCROLL_EDGE_PX {
+        (sx + AUTOSCROLL_SPEED_PX).min(max_scroll)
+    } else {
+        sx
+    };
+    if new_sx != sx {
+        // Clone the handle OUT of `Ref::with` before scrolling. `Ref::with`
+        // holds the reactive-arena borrow across its closure, and on iOS/macOS
+        // `scroll_to` SYNCHRONOUSLY fires `on_scroll` → `scroll_x.set(..)` — a
+        // signal write that re-borrows the arena → "RefCell already borrowed"
+        // panic. (Web doesn't hit it: its DOM scroll event is async.) Calling
+        // `scroll_to` outside the borrow makes the re-entrant write safe.
+        if let Some(handle) = board.scroll_ref.with(|h| h.clone()) {
+            handle.scroll_to(new_sx, 0.0);
+        }
+        board.scroll_x.set(new_sx);
+    }
 }
 
 /// The columns to *render* right now: committed `cols`, but while dragging with
@@ -135,37 +197,56 @@ fn KanbanBoard() -> Element {
         ],
         dragging: signal!(None),
         over: signal!(None),
+        scroll_x: signal!(0.0),
+        scroll_ref: Ref::new(),
+        viewport_ref: Ref::new(),
+        autoscroll: Rc::new(RefCell::new(None)),
     };
 
     let cards_board = board.clone();
     let cols_board = board.clone();
     let drag_layer = dnd::drag_layer(&board.ctx);
+
+    // Board content (columns + cards). Cards are DIRECT children of the sized
+    // `BoardStyle` view — don't wrap them in an intermediate view: they're
+    // `position:absolute` (out of flow), so a wrapper sizes to 0×0 and macOS
+    // `hitTest:` (which respects bounds) never descends into them → can't grab.
+    let board_content = ui! {
+        view(style = BoardStyle()) {
+            for c in 0..3usize {
+                ColumnBg(board = cols_board.clone(), col = c)
+            }
+            for card in CARDS {
+                CardView(board = cards_board.clone(), card = card)
+            }
+        }
+    };
+
+    // The board (756 px wide) overflows the full-width horizontal scroller.
+    // Builder form so we can bind a `Ref` + track the scroll offset.
+    let scroll_x = board.scroll_x;
+    let scroller = scroll_view(vec![board_content.into_element()])
+        .horizontal(true)
+        .with_style(ScrollerStyle())
+        .bind(board.scroll_ref)
+        .on_scroll(move |x, _y| scroll_x.set(x));
+    // Wrap the scroller in a plain view bound to a `ViewHandle`, purely to read
+    // the VIEWPORT's window rect at drag start (the scroll-view handle doesn't
+    // expose its frame, and autoscroll is app-level — we don't add that to
+    // core). Wrapping a normal scroll view, not absolute children, so there's
+    // no 0×0 hit-test issue.
+    let viewport = view(vec![Element::from(scroller)])
+        .with_style(ViewportStyle())
+        .bind(board.viewport_ref)
+        .into_element();
+
     ui! {
         view(style = PageStyle()) {
             text(style = Heading()) { "Kanban board" }
-            text(style = Caption()) { "Drag within a column to reorder, or to another column — nothing jumps." }
-            // Horizontal scroller: the board is a fixed 756 px wide; on a narrow
-            // screen (iOS) it overflows the full-width scroll view, which scrolls
-            // left-right. `drag_layer` stays OUTSIDE the scroller — it's a
-            // top-level window-space overlay, not board content.
-            scroll_view(style = ScrollerStyle(), horizontal = true) {
-                // Cards are DIRECT children of the sized board view. Don't wrap
-                // them in an intermediate view: they're `position:absolute` (out
-                // of flow), so a wrapper sizes to 0×0 and — though macOS still
-                // renders them (no clipping) — AppKit `hitTest:` respects the
-                // 0×0 bounds and never descends into them, so you can't grab a
-                // card. They must live under the explicitly-sized `BoardStyle`.
-                view(style = BoardStyle()) {
-                    // Column backgrounds (static) — the cards float over them.
-                    for c in 0..3usize {
-                        ColumnBg(board = cols_board.clone(), col = c)
-                    }
-                    // One fixed-order absolute card layer, positioned by transform.
-                    for card in CARDS {
-                        CardView(board = cards_board.clone(), card = card)
-                    }
-                }
-            }
+            text(style = Caption()) { "Drag to reorder or change columns — drag to an edge to autoscroll." }
+            // `drag_layer` stays OUTSIDE the scroller — a top-level window-space
+            // overlay, not board content.
+            viewport
             drag_layer
         }
     }
@@ -182,23 +263,19 @@ fn ColumnBg(props: &ColumnBgProps) -> Element {
     let board = props.board.clone();
     let col = props.col;
 
-    // The column tints when the pointer is over it.
+    // The column tints when the dragged card is over it. `over` is set each
+    // frame by `autoscroll_frame` (geometric hit-test), not by a dnd Droppable —
+    // a snapshot-based Droppable can't track the column moving under a
+    // (possibly stationary) pointer while autoscrolling.
     let bg_ref: Ref<ViewHandle> = Ref::new();
     let bg = AnimatedValue::new(COL_BG);
     bg.bind_color(bg_ref, AnimProp::BackgroundColor);
     let over = board.over;
+    let dragging = board.dragging;
     effect!({
-        let hot = matches!(over.get(), Some((c, _)) if c == col);
+        let hot = dragging.get().is_some() && matches!(over.get(), Some((c, _)) if c == col);
         bg.set(if hot { COL_BG_OVER } else { COL_BG });
     });
-
-    // The whole column is a drop zone for "below the last card" → slot = len.
-    let drop_board = board.clone();
-    let drop = Droppable::new(&board.ctx).on_enter(move |_| {
-        let len = drop_board.cols[col].get().len();
-        drop_board.over.set(Some((col, len)));
-    });
-    drop.bind(bg_ref);
 
     view(vec![text(COL_TITLES[col]).with_style(ColHeader()).into()])
         .with_style(column_box_style(col))
@@ -256,13 +333,30 @@ fn CardView(props: &CardViewProps) -> Element {
     let r_ctx = board.ctx.clone();
     let r_card_ref = card_ref;
     let drag = Draggable::new(&board.ctx, move || id)
-        .activation(Activation::platform_default())
+        // Direction-aware: the board scrolls HORIZONTALLY, so a vertical drag is
+        // unambiguously a reorder → picks up instantly; a horizontal swipe
+        // scrolls. A press-and-hold still picks up in any direction (for moving a
+        // card to another column). On desktop this degrades to immediate.
+        .activation(Activation::scroll_aware(dnd::ScrollAxis::Horizontal))
         .preview(move || ghost_view(title))
         .on_start(move || {
             s_start.dragging.set(Some(id));
             s_start.over.set(Some(committed_pos(&s_start, id)));
+            // Start the per-frame autoscroll + geometric drop loop. Cache the
+            // viewport rect once (fixed during the drag — only the content
+            // scrolls) so the loop does no per-frame layout reads.
+            if let Some(vp) = s_start.viewport_ref.with(|h| h.absolute_frame()).flatten() {
+                let board = s_start.clone();
+                *s_start.autoscroll.borrow_mut() =
+                    Some(raf_loop(move || autoscroll_frame(&board, vp)));
+            }
         })
         .on_release(move |_| {
+            // Stop the autoscroll/drop loop first so it can't set `over` again
+            // mid-commit. Bind the take() so the `RefMut` is released before the
+            // RafLoop drops (avoids a re-borrow during teardown).
+            let stopped = s_rel.autoscroll.borrow_mut().take();
+            drop(stopped);
             // Drop animation (rbd-style hand-off): reveal the hidden card at the
             // exact point the ghost was let go, then let the position effect
             // spring it into its slot. Snapping `tx`/`ty` here BEFORE clearing
@@ -299,13 +393,9 @@ fn CardView(props: &CardViewProps) -> Element {
         });
     let handler = drag.handler();
 
-    // Hovering this card sets the would-be slot to this card's (column, slot).
-    let d_board = board.clone();
-    let drop = Droppable::new(&board.ctx).on_enter(move |_| {
-        d_board.over.set(Some(committed_pos(&d_board, id)));
-    });
-    drop.bind(card_ref);
-
+    // No dnd Droppable: `over` is computed geometrically each frame in
+    // `autoscroll_frame` (the only model that tracks columns scrolling under the
+    // pointer). The card is a drag SOURCE only.
     view(vec![text(title).with_style(CardTitle()).into()])
         .with_style(CardStyle())
         .on_touch(move |ev| handler(ev))
@@ -356,6 +446,17 @@ stylesheet! {
 // explicit height so it doesn't collapse around the absolute board content.
 stylesheet! {
     ScrollerStyle<()> {
+        base(_t) {
+            width: Length::Percent(100.0),
+            height: Length::Px(BOARD_H),
+        }
+    }
+}
+
+// Plain wrapper around the scroller — same footprint, exists only to carry a
+// `ViewHandle` so the autoscroll loop can read the visible viewport's rect.
+stylesheet! {
+    ViewportStyle<()> {
         base(_t) {
             width: Length::Percent(100.0),
             height: Length::Px(BOARD_H),

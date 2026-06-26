@@ -118,6 +118,12 @@ pub enum Element {
         /// on every view by default; only set via `.on_wheel(..)`. iOS /
         /// Android ignore it (no trackpad/wheel). See [`crate::wheel`].
         on_wheel: Option<crate::WheelHandler>,
+        /// Optional hover (pointer-over) handler — fires `true` on pointer
+        /// enter, `false` on leave. `None` by default; set via
+        /// `.on_hover(..)`. A pointer concept: web + macOS deliver it,
+        /// touch-only backends (iOS / Android) ignore it. See
+        /// [`crate::hover`].
+        on_hover: Option<crate::HoverHandler>,
         /// Container-query containment context opt-in (`.container()`).
         /// When `true`, descendant `container (min_width: N)` style
         /// overlays resolve against *this* view's resolved inline-size

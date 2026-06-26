@@ -641,6 +641,25 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Install a hover (pointer-over) handler. Called once per
+    /// `Element::View { on_hover: Some(_), .. }`. The backend wires
+    /// `handler` to its native pointer-enter / pointer-leave source (web
+    /// `pointerenter`/`pointerleave`, macOS `NSTrackingArea`
+    /// `mouseEntered:`/`mouseExited:`) and invokes it with `true` on enter,
+    /// `false` on leave.
+    ///
+    /// Default impl is a no-op — correct for touch-only backends (iOS /
+    /// Android, which have no hover) and non-interactive ones (terminal,
+    /// SSR, CPU). See [`crate::hover`].
+    #[allow(unused_variables)]
+    fn install_hover_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: crate::HoverHandler,
+    ) {
+        // default: no-op
+    }
+
     /// Placeholder node for reactive `when` / `switch` branches.
     /// The walker creates one of these as a stable parent that
     /// stays put across branch swaps, with the live branch's

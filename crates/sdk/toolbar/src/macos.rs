@@ -2,7 +2,7 @@
 //!
 //! Builds an `NSToolbar`, attaches it to the host `NSWindow`, and
 //! drives its item list from a reactive [`ToolbarProps::items`] closure
-//! via `Effect::new(...)`. NSToolbar + NSToolbarItem + the delegate
+//! via an `effect!`. NSToolbar + NSToolbarItem + the delegate
 //! are reached at the Obj-C runtime layer via `class!()` + `msg_send`
 //! rather than typed objc2-app-kit bindings — `objc2-app-kit` 0.2
 //! doesn't ship an `NSToolbar` feature, and bumping to 0.3 would
@@ -21,7 +21,7 @@
 //!   to keep its delegate alive past `build_web_view`.
 //! - The reactive `Effect` is owned by the active framework scope
 //!   (the render path's outer scope), so its drop is a no-op here;
-//!   the `let _effect = Effect::new(...)` shape mirrors webview-ios.
+//!   the `let _effect = effect!({ … })` shape mirrors webview-ios.
 //!
 //! # Item-update strategy
 //!

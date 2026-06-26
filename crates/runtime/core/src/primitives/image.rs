@@ -118,6 +118,68 @@ pub fn image_asset(asset: Asset<kinds::Image>) -> Bound<ImageHandle> {
     })
 }
 
+/// A unified source for an image — a (reactive) URL **or** a declarative
+/// bundled [`Asset`]. The two existing construction paths ([`image`] for a
+/// free-form URL, [`image_asset`] for a registered asset) converge here so
+/// an image-bearing API (an `Avatar`, a card, …) can accept either with a
+/// single prop instead of forcing a string URL.
+///
+/// `#[non_exhaustive]`: future modes (raw bytes, a pre-decoded handle, a
+/// blob) can be added as new variants without breaking call sites —
+/// construct via the `From` impls (`&str` / `String` / `Reactive<String>` /
+/// `Signal<String>` / `Asset<Image>`) rather than matching exhaustively.
+#[non_exhaustive]
+#[derive(Clone)]
+pub enum ImageSource {
+    /// A URL string (`http(s)://`, `file://`, `data:`…). Reactive — a
+    /// static literal or a signal-driven getter; the image repaints when it
+    /// changes.
+    Url(crate::Reactive<String>),
+    /// A declarative bundled asset, resolved to a backend-local path
+    /// (web `dist/assets/`, iOS bundle resource, Android `AssetManager`).
+    Asset(Asset<kinds::Image>),
+}
+
+impl From<&str> for ImageSource {
+    fn from(s: &str) -> Self {
+        ImageSource::Url(s.into())
+    }
+}
+impl From<String> for ImageSource {
+    fn from(s: String) -> Self {
+        ImageSource::Url(s.into())
+    }
+}
+impl From<crate::Reactive<String>> for ImageSource {
+    fn from(r: crate::Reactive<String>) -> Self {
+        ImageSource::Url(r)
+    }
+}
+impl From<crate::Signal<String>> for ImageSource {
+    fn from(s: crate::Signal<String>) -> Self {
+        ImageSource::Url(s.into())
+    }
+}
+impl From<Asset<kinds::Image>> for ImageSource {
+    fn from(a: Asset<kinds::Image>) -> Self {
+        ImageSource::Asset(a)
+    }
+}
+
+/// Construct an `Image` from a unified [`ImageSource`], dispatching to the
+/// URL path ([`image`]) or the asset path ([`image_asset`]). Accepts
+/// anything `Into<ImageSource>`, so component props can hold one
+/// `ImageSource` and callers still write `src = Some("https://…".into())`
+/// or `src = Some(LOGO.into())`.
+pub fn image_from(src: impl Into<ImageSource>) -> Bound<ImageHandle> {
+    match src.into() {
+        // `r.get()` is a reactive read, so a `Signal`/`rx!` URL repaints the
+        // image; a `Reactive::Static` URL is a constant.
+        ImageSource::Url(r) => image(move || r.get()),
+        ImageSource::Asset(a) => image_asset(a),
+    }
+}
+
 impl Bound<ImageHandle> {
     /// Set an accessibility label. Maps to `alt` on web,
     /// `accessibilityLabel` on iOS, `contentDescription` on Android.
@@ -154,6 +216,37 @@ mod tests {
             }
             _ => panic!("expected Image"),
         }
+    }
+
+    // `image_from` + `ImageSource` unify the two paths: a string/URL source
+    // dispatches to the URL path (asset unset, src = the url), and an asset
+    // source dispatches to the asset path (asset set, sentinel src).
+    #[test]
+    fn image_from_url_source_dispatches_to_url_path() {
+        let b = image_from("https://example.com/y.png");
+        match &b.primitive {
+            Element::Image { src, asset, .. } => {
+                assert!(asset.is_none(), "a URL ImageSource must not carry an asset");
+                assert_eq!(src(), "https://example.com/y.png");
+            }
+            _ => panic!("expected Image"),
+        }
+        // `From<String>` + the explicit `Url` variant route the same way.
+        assert!(matches!(ImageSource::from("u".to_string()), ImageSource::Url(_)));
+    }
+
+    #[test]
+    fn image_from_asset_source_dispatches_to_asset_path() {
+        static PIC: Asset<ImageKind> = asset!("pic.png");
+        let b = image_from(PIC);
+        match &b.primitive {
+            Element::Image { src, asset, .. } => {
+                assert!(asset.is_some(), "an Asset ImageSource must carry the asset");
+                assert_eq!(src(), format!("asset://{}", PIC.id.0), "sentinel asset url");
+            }
+            _ => panic!("expected Image"),
+        }
+        assert!(matches!(ImageSource::from(PIC), ImageSource::Asset(_)));
     }
 
     #[test]

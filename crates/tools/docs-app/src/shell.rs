@@ -165,8 +165,11 @@ pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
                 }
             }
             Spacer()
-            if open.get() {
-                Modal(on_dismiss = Some(close_search.clone()), width = 600.0) {
+            Modal(
+                open = open,
+                on_dismiss = Some(close_search.clone()),
+                width = 600.0,
+                content = move || ui! {
                     Typography(content = "Search the catalog".to_string(), kind = typography_kind::H3)
                     Field(
                         value = query,
@@ -179,8 +182,8 @@ pub fn sidebar(slot: SlotProps, model: Rc<CatalogModel>) -> Element {
                         filter,
                         close_search.clone(),
                     )
-                }
-            }
+                },
+            )
         }
         .safe_area(SafeAreaSides::VERTICAL)
     }

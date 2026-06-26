@@ -60,8 +60,8 @@ to the browser.
 ## Reactive markup
 
 `markup` is reactive: pass a closure reading a `Signal`/`Source` and the
-per-backend handler re-renders on change (it subscribes via
-`Effect::new(...)` when it builds the native view). Use [`markup`] to
+per-backend handler re-renders on change (it subscribes via an
+`effect!` when it builds the native view). Use [`markup`] to
 coerce a `&str`, `String`, or `Fn() -> String` into the stored closure
 shape — static logo constants pass straight through.
 

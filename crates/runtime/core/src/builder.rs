@@ -263,6 +263,30 @@ impl Bound<ViewHandle> {
         }
         self
     }
+
+    /// Install a hover (pointer-over) handler — the desktop/web "is the
+    /// cursor over me" channel. The closure fires `true` when the pointer
+    /// enters this view and `false` when it leaves.
+    ///
+    /// A pointer concept: delivered on web (`pointerenter`/`pointerleave`)
+    /// and macOS (`NSTrackingArea`); a **no-op on touch-only backends**
+    /// (iOS / Android) — there is no hovering with a finger. Pair it with a
+    /// `long_press` recognizer via [`Bound::on_touch`] for the touch
+    /// affordance (this is what `idea-ui`'s `Tooltip` does).
+    ///
+    /// Calling twice replaces the handler.
+    pub fn on_hover<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(bool) + 'static,
+    {
+        if let Element::View { on_hover, .. } = &mut self.primitive {
+            // Born batched — see `on_touch` / `reactive::cycle`.
+            *on_hover = Some(std::rc::Rc::new(move |entering: bool| {
+                crate::cycle(|| handler(entering))
+            }));
+        }
+        self
+    }
 }
 
 impl Bound<PressableHandle> {
@@ -441,6 +465,7 @@ pub fn view(children: Vec<Element>) -> Bound<ViewHandle> {
         safe_area_sides: crate::SafeAreaSides::NONE,
         on_touch: None,
         on_wheel: None,
+        on_hover: None,
         is_container: false,
         accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]
@@ -1038,5 +1063,39 @@ pub trait BuildElement: Default {
 
     fn defaults() -> Self {
         Self::default()
+    }
+}
+
+#[cfg(test)]
+mod hover_builder_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// `.on_hover(cb)` must populate `Element::View::on_hover`, and the
+    /// stored handler must forward the enter/leave bool to the callback
+    /// (it's wrapped in `cycle`, which runs the closure synchronously).
+    #[test]
+    fn on_hover_wires_handler_and_forwards_bool() {
+        let states: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+        let s = states.clone();
+        let el: Element =
+            view(Vec::new()).on_hover(move |entering| s.borrow_mut().push(entering)).into();
+        let handler = match el {
+            Element::View { on_hover, .. } => {
+                on_hover.expect("on_hover must be Some after .on_hover()")
+            }
+            _ => panic!("view() must build Element::View"),
+        };
+        handler(true);
+        handler(false);
+        assert_eq!(*states.borrow(), vec![true, false]);
+    }
+
+    /// A plain `view()` carries no hover handler.
+    #[test]
+    fn view_without_on_hover_is_none() {
+        let el: Element = view(Vec::new()).into();
+        assert!(matches!(el, Element::View { on_hover: None, .. }));
     }
 }

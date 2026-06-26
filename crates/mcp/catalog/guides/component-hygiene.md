@@ -99,8 +99,9 @@ struct field, the owning service), or `Subscription::leak()` it for a
 process-lifetime pin. `effect!` debug-asserts a scope is active, so using it
 out-of-tree fails loudly rather than silently cancelling.
 
-The raw `Effect::new` constructor is sealed (`#[doc(hidden)]`, framework
-internals only) — reach for `effect!` or `watch`, never it. Pair either with
+The raw `Effect::new` constructor is private to the framework (`pub(crate)`) —
+writing it in author code is a compile error, by design. Reach for `effect!`
+or `watch`, never it. Pair either with
 `on_cleanup(...)` for teardown — it fires before the next re-run and on
 disposal. Don't reach for `mem::forget` to keep an effect alive; that's what
 scope adoption and `Subscription::leak()` are for.

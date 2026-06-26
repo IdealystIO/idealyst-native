@@ -287,7 +287,7 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
                 // Construct the sidebar Element INSIDE the navigator's retained
                 // chrome scope via `build_node_scoped`, NOT `build_node`. The
                 // sidebar contains `#[component]` bodies (idea-ui's animated
-                // `Switch`) whose standalone `Effect::new` runs at construction;
+                // `Switch`) whose standalone `effect!` runs at construction;
                 // building the Element here and only then calling `build_node`
                 // would create those effects with no active scope → freed when
                 // the body returns → run once, never re-fire (frozen Switch

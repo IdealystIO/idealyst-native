@@ -721,7 +721,7 @@ mod tests {
         let entries = p.entries();
         let runs_c = runs.clone();
         let len_c = observed_len.clone();
-        let _effect = runtime_core::Effect::new(move || {
+        let _sub = runtime_core::watch(move || {
             // Subscribe to BOTH signals publish() writes.
             len_c.set(items.get().len());
             let _ = entries.get();

@@ -68,8 +68,8 @@ The *mechanism* differs per platform:
 ## Reactive vs. imperative
 
 `url` is reactive: pass a closure reading a `Signal`/`Source` and the
-per-backend handler re-navigates on change (it subscribes via
-`Effect::new(...)` when it builds the native view — there's no
+per-backend handler re-navigates on change (it subscribes via an
+`effect!` when it builds the native view — there's no
 framework-level update plumbing). Use [`url`] to coerce a `&str`,
 `String`, or `Fn() -> String` into the stored closure shape without
 thinking about boxing.

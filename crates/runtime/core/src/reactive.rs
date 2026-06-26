@@ -1883,16 +1883,13 @@ impl Effect {
     /// no-op and the slot is freed when the scope drops. If no scope is
     /// active, the returned handle owns the slot directly.
     ///
-    /// Prefer `effect! { … }` (scope-owned) or [`watch`] (caller-owned)
-    /// over calling this directly — see [`Effect::scoped`] / [`watch`].
-    ///
-    /// Sealed from the authoring surface (`#[doc(hidden)]`): retained `pub`
-    /// only for framework internals and backend-integration crates (the
-    /// render walker, canvas backends) that legitimately create scope-adopted
-    /// effects. App and SDK author code should never call it — the
-    /// `prefer-effect-macro` lint flags it in source.
-    #[doc(hidden)]
-    pub fn new<F: FnMut() + 'static>(f: F) -> Self {
+    /// Crate-internal adopt-or-own constructor used throughout the framework
+    /// (the render walker, `resource`, `memo_with`, …). It is **not** part of
+    /// the public API — author code uses `effect! { … }` (scope-owned) or
+    /// [`watch`] (caller-owned). Writing `Effect::new` in author code is a
+    /// privacy error, which is the point: the tempting React/Solid-style name
+    /// is unreachable.
+    pub(crate) fn new<F: FnMut() + 'static>(f: F) -> Self {
         Self::create(f, true)
     }
 
@@ -1952,10 +1949,9 @@ impl Effect {
     /// firing this effect even after no longer being read. Use
     /// [`Effect::new`] for those.
     ///
-    /// Sealed from the authoring surface (`#[doc(hidden)]`): a perf
-    /// fast-path used only by the framework's reactive text bindings.
-    #[doc(hidden)]
-    pub fn new_with_stable_deps<F: FnMut() + 'static>(f: F) -> Self {
+    /// Crate-internal perf fast-path used only by the framework's reactive
+    /// text bindings — not part of the public API.
+    pub(crate) fn new_with_stable_deps<F: FnMut() + 'static>(f: F) -> Self {
         let owning_stack: Vec<*mut Scope> =
             ACTIVE_SCOPE.with(|s| s.borrow().clone());
         // Insert with `stable_deps: false` so the first `run_effect`
@@ -2000,13 +1996,10 @@ impl Effect {
     /// `mem::forget` — the adopt-or-pin behaviour is identical, but the
     /// intent is explicit and greppable.
     ///
-    /// Author code should prefer [`watch`] + holding the [`Subscription`]
-    /// (or [`Subscription::leak`] for a process-lifetime pin) over
-    /// `persist`. Sealed from the authoring surface (`#[doc(hidden)]`):
-    /// retained `pub` for framework internals (`memo_with` / `resource` /
-    /// animation bindings) only.
-    #[doc(hidden)]
-    pub fn persist(self) {
+    /// Crate-internal (`memo_with` / `resource` / animation bindings). Not
+    /// public — author code uses [`watch`] + holding the [`Subscription`]
+    /// (or [`Subscription::leak`] for a process-lifetime pin).
+    pub(crate) fn persist(self) {
         // `owns == false` (scope-adopted): forget drops a no-op handle.
         // `owns == true` (no scope): forget skips the cancelling Drop,
         // pinning the slot for the process lifetime. Both are exactly the
@@ -2014,6 +2007,25 @@ impl Effect {
         // (see `memo_in_scope_releases_signal_and_effect_on_scope_drop`).
         std::mem::forget(self);
     }
+}
+
+/// Internal entry point for the `methods!` codegen's component-registration
+/// keepalive — **not** an author API (the `#[component]` macro emits it).
+///
+/// It exists because proc-macro output lands in user crates and can only
+/// call `pub` items of `runtime_core`, yet [`Effect::new`] is `pub(crate)`.
+/// This is the one sanctioned `pub` effect constructor, deliberately given a
+/// `__`-prefixed, purpose-specific name so no author reaches for it.
+///
+/// Semantics: adopt-or-own with **no** scope assertion. The build walker
+/// always runs components inside a `Scope` (so the registration guard lives
+/// exactly as long as the component's mounted subtree), but a component
+/// constructor invoked directly outside `mount` — as some tests do — must
+/// not panic. That rules out [`Effect::scoped`]; this mirrors the historical
+/// `let _ = Effect::new(...)` exactly.
+#[doc(hidden)]
+pub fn __component_keepalive_effect<F: FnMut() + 'static>(f: F) {
+    let _ = Effect::create(f, true);
 }
 
 /// A caller-owned reactive subscription, created by [`watch`].

@@ -53,8 +53,8 @@
 
 use std::rc::Rc;
 
-use runtime_core::primitives::overlay::BackdropMode;
-use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
+use runtime_core::primitives::overlay::{overlay, BackdropMode};
+use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{
     component, ui, ChildList, Color, Element, IdealystSchema, IntoElement, Length, Position,
     StyleApplication, StyleRules, StyleSheet, Tokenized, VariantSet,
@@ -68,6 +68,22 @@ use crate::stylesheets::Popover as PopoverStyle;
 /// scrim-less to the eye. Absolutely positioned with zero insets so it
 /// fills the portal behind the anchored surface. Mirrors `Modal`'s
 /// backdrop, minus the dimming color.
+/// A layout-neutral (out-of-flow) wrapper sheet for the
+/// `view(vec![catcher, anchored])` the Popover returns. Both children are
+/// portals that render at the viewport root, so the wrapper holds no
+/// visible content — but as a plain in-flow `view` it would still be a
+/// flex item, so a gapped/centered parent would *shift its siblings* when
+/// the popover mounts/unmounts (the "the popover button moves on open/close"
+/// report). `position: absolute` takes the wrapper out of flow entirely, so
+/// the trigger stays put. (Same fix the `if`-without-else macro lowering
+/// applies to its empty branch.)
+fn out_of_flow_wrapper_sheet() -> Rc<StyleSheet> {
+    Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+        position: Some(Position::Absolute),
+        ..Default::default()
+    }))
+}
+
 fn transparent_backdrop_sheet() -> Rc<StyleSheet> {
     Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
         position: Some(Position::Absolute),
@@ -145,29 +161,57 @@ pub fn Popover(props: PopoverProps) -> Element {
     for c in props.children {
         ChildList::append_to(c, &mut content);
     }
-    let overlay_children = vec![ui! {
+    let surface = ui! {
         view(style = surface_style) { content }
-    }];
+    };
 
-    // Outside-click dismissal: `BackdropMode::Dismiss` renders a
-    // full-bleed pressable *behind* the surface that routes its tap to
-    // `on_dismiss`. We override the default dimming scrim with a fully
-    // transparent sheet so the page behind looks unscrimmed (the
-    // popover's hallmark) while the backdrop still catches the outside
-    // tap. A tap on the surface itself lands on the surface (painted
-    // above the backdrop) and never reaches the backdrop, so it doesn't
-    // dismiss. This mirrors `Modal`'s backdrop-press path.
-    let mut bound = runtime_core::anchored_overlay(target, overlay_children)
-        .side(props.side)
-        .align(props.align)
-        .offset(props.offset)
-        .backdrop(BackdropMode::Dismiss)
-        .backdrop_style(StyleApplication::new(transparent_backdrop_sheet()))
-        .trap_focus(false);
-    if let Some(d) = props.on_dismiss {
-        bound = bound.on_dismiss(move || (d)());
-    }
-    runtime_core::IntoElement::into_element(bound)
+    // Outside-click dismissal: a FULLSCREEN, transparent dismiss catcher
+    // rendered *behind* the anchored surface. An anchored overlay's own
+    // `Dismiss` backdrop only fills its small anchored box (the portal is
+    // positioned at the trigger; there's no `position: fixed` to escape
+    // it), so a click truly *away* from the surface misses it and the
+    // popover never closes. A fullscreen `overlay()` portal IS
+    // viewport-sized, so its transparent Dismiss backdrop catches every
+    // outside click and fires `on_dismiss`. A tap *on* the surface lands on
+    // the surface (rendered after the catcher, so above it) and never
+    // reaches the catcher, so it doesn't dismiss. (Same fix as `Select`.)
+    let dismiss = props.on_dismiss;
+    let catcher = {
+        let mut c = overlay(Vec::new())
+            // FullScreen so the portal (and its inset-0 backdrop) is
+            // viewport-sized — the default Center placement would size the
+            // portal to its (empty) content, collapsing the catcher to 0×0.
+            .placement(ViewportPlacement::FullScreen)
+            .backdrop(BackdropMode::Dismiss)
+            .backdrop_style(StyleApplication::new(transparent_backdrop_sheet()));
+        if let Some(d) = dismiss.clone() {
+            c = c.on_dismiss(move || (d)());
+        }
+        c.into_element()
+    };
+
+    // The anchored surface sits ABOVE the catcher (same layer, rendered
+    // after). Its own backdrop is None — the catcher owns outside-click
+    // dismissal; Escape still closes via this `on_dismiss`.
+    let anchored = {
+        let mut a = runtime_core::anchored_overlay(target, vec![surface])
+            .side(props.side)
+            .align(props.align)
+            .offset(props.offset)
+            .backdrop(BackdropMode::None)
+            .trap_focus(false);
+        if let Some(d) = dismiss {
+            a = a.on_dismiss(move || (d)());
+        }
+        a.into_element()
+    };
+
+    // Out-of-flow wrapper: both children are viewport portals, so the
+    // wrapper must not occupy a flex slot or it shifts the trigger's
+    // siblings on open/close (see `out_of_flow_wrapper_sheet`).
+    runtime_core::view(vec![catcher, anchored])
+        .with_style(out_of_flow_wrapper_sheet())
+        .into_element()
 }
 
 #[cfg(test)]
@@ -187,22 +231,30 @@ mod tests {
             children: vec![runtime_core::text("hi").into_element()],
             ..Default::default()
         });
-        // Degenerate output: a plain (childless) view, never a Portal —
-        // there's nothing to anchor so nothing is rendered.
-        assert!(
-            matches!(el, Element::View { .. }),
-            "a None-target Popover must render an empty View, not panic or build a Portal"
-        );
+        // Degenerate output: a plain (childless) view — there's nothing to
+        // anchor so nothing is rendered. A *targeted* popover is a View too
+        // (catcher + anchored), so distinguish on child count: None = empty.
+        match el {
+            Element::View { children, .. } => assert!(
+                children.is_empty(),
+                "a None-target Popover must render an EMPTY View (nothing to anchor)"
+            ),
+            _ => panic!("a None-target Popover must render an empty View, not panic / build a Portal"),
+        }
     }
 
-    /// Regression: an outside click dismisses. The composition relies on
-    /// a backdrop layer behind the surface (a `Pressable` wired to
-    /// `on_dismiss`) — the same shape `Modal` uses. If a refactor drops
-    /// the backdrop (e.g. reverts to `BackdropMode::None`), outside-click
-    /// dismissal silently disappears and this test fails.
+    /// Regression: an outside click dismisses. Like `Select`, the popover
+    /// composes a FULLSCREEN dismiss catcher (a viewport-sized `overlay()`
+    /// portal whose transparent backdrop is a `Pressable` wired to
+    /// `on_dismiss`) *behind* the anchored surface. An anchored overlay's
+    /// own backdrop only fills its small anchored box, so a click away from
+    /// the surface would miss it — the fullscreen catcher is what makes
+    /// click-away actually close. If a refactor drops the catcher (or
+    /// shrinks it from FullScreen), outside-click dismissal silently
+    /// disappears and this test fails.
     #[test]
-    fn outside_click_backdrop_is_present_behind_surface() {
-        use runtime_core::primitives::portal::AnchorTarget;
+    fn outside_click_uses_fullscreen_catcher_behind_surface() {
+        use runtime_core::primitives::portal::{AnchorTarget, PortalTarget};
         use runtime_core::{PressableHandle, Ref};
 
         let trigger: Ref<PressableHandle> = Ref::new();
@@ -212,21 +264,34 @@ mod tests {
             ..Default::default()
         });
 
-        let portal_children = match &el {
-            Element::Portal { children, .. } => children,
-            _ => panic!("a targeted Popover should build a Portal"),
+        // Top level: a View wrapping [catcher, anchored].
+        let kids = match &el {
+            Element::View { children, .. } => children,
+            _ => panic!("a targeted Popover should wrap [catcher, anchored] in a View"),
         };
-        // anchored_overlay lowers to [backdrop, content_view] when the
-        // backdrop is not `None`. The first child must be the
-        // tap-catching backdrop pressable.
-        assert_eq!(
-            portal_children.len(),
-            2,
-            "Popover must have a backdrop layer behind its surface for outside-click dismissal"
-        );
+        assert_eq!(kids.len(), 2, "Popover = fullscreen catcher + anchored surface");
+
+        // child[0]: the fullscreen catcher portal. Its backdrop pressable is
+        // the first portal child, and its target is the FullScreen viewport.
+        match &kids[0] {
+            Element::Portal { children, target, .. } => {
+                assert!(
+                    matches!(target, PortalTarget::Viewport(ViewportPlacement::FullScreen)),
+                    "the catcher must be a FULLSCREEN viewport portal so its backdrop covers the page"
+                );
+                assert!(
+                    matches!(children.first(), Some(Element::Pressable { .. })),
+                    "the catcher's first child must be the tap-catching backdrop Pressable"
+                );
+            }
+            _ => panic!("Popover's first child must be the fullscreen catcher Portal"),
+        }
+
+        // child[1]: the anchored surface portal (backdrop None → no catcher
+        // pressable of its own; the surface view is its content).
         assert!(
-            matches!(portal_children[0], Element::Pressable { .. }),
-            "the first portal child must be the backdrop Pressable that catches the outside tap"
+            matches!(&kids[1], Element::Portal { .. }),
+            "Popover's second child must be the anchored surface Portal"
         );
     }
 }

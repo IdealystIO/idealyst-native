@@ -98,13 +98,18 @@ fn start_inner(f: Box<dyn FnMut(f32) + 'static>) -> IosHandle {
         }
     });
     let block = block.copy();
-    // Scheduled in `NSDefaultRunLoopMode` so the wgpu host's
-    // per-frame draw doesn't fire during UIKit scroll/pan gestures.
-    // The Metal command-buffer encode + present is expensive enough
-    // that competing with scroll for CPU/GPU makes the gesture
-    // visibly jumpy. Trading off animation freeze during a scroll
-    // gesture for smooth scrolling is the explicit preferred
-    // trade-off for the website's Simulator demo.
+    // Scheduled in `NSDefaultRunLoopMode` (NOT common modes) so the wgpu host's
+    // per-frame draw doesn't fire during UIKit scroll/pan gestures. The Metal
+    // command-buffer encode + present is expensive enough that competing with
+    // scroll for CPU/GPU makes the gesture visibly jumpy. Trading off the GPU
+    // draw freezing during a scroll for smooth scrolling is the explicit
+    // preferred trade-off (e.g. the website's Simulator demo).
+    //
+    // This is the EXPENSIVE half of the "decouple draw from tick" split: the
+    // cheap animation CLOCK (`backend-apple-core::scheduler::raf_loop`) runs in
+    // COMMON modes so AnimatedValue springs keep advancing during a gesture
+    // (a drag-to-reorder must not freeze); only THIS GPU draw stays default-mode
+    // so it yields to scroll. Keep these two timers' modes distinct on purpose.
     let timer: Retained<NSObject> = unsafe {
         msg_send_id![
             objc2::class!(NSTimer),

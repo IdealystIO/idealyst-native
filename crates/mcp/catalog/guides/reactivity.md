@@ -55,7 +55,7 @@ let sub = watch(move || apply_class(is_open.get()));
 
 `watch(f) -> Subscription` is the counterpart for reactivity wired up **outside** the component tree, where no scope exists to own the effect: app bootstrap, async callbacks, library/SDK setup. The returned `Subscription` is **caller-owned** — keep it alive by storing it (a struct field, a thread-local, the owning service); dropping it disposes the effect and runs its `on_cleanup` callbacks. For a one-time install that should live for the whole process, call `Subscription::leak()` — the honest, greppable "pin forever".
 
-> Using `effect!` outside a scope panics in debug builds (it's a sign the logic should either move into a component or use `watch`). Don't reach for the raw `Effect::new` constructor — it's sealed; `effect!` and `watch` are the surface.
+> Using `effect!` outside a scope panics in debug builds (it's a sign the logic should either move into a component or use `watch`). The raw `Effect::new` constructor is private to `runtime_core` (`pub(crate)`) — writing it is a compile error; `effect!` and `watch` are the surface.
 
 Pair either form with `on_cleanup(…)` for teardown — the callback fires before the next re-run *and* on disposal.
 

@@ -136,9 +136,9 @@ pub fn signal_escape() -> Element {
                     conditional that reads it doesn't re-run on every pixel of a \
                     drag-resize.".to_string()
             )
-            CodePanel(src = r##"use runtime_core::{current_breakpoint, Breakpoint, Effect};
+            CodePanel(src = r##"use runtime_core::{current_breakpoint, Breakpoint, effect};
 
-let _e = Effect::new(|| {
+effect!({
     match current_breakpoint().get() {
         Breakpoint::Xs | Breakpoint::Sm => { /* stacked layout */ }
         _                               => { /* side-by-side layout */ }

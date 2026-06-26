@@ -2103,6 +2103,27 @@ impl Backend for MacosBackend {
         flipped.set_wheel_handler(handler);
     }
 
+    fn install_hover_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: runtime_core::HoverHandler,
+    ) {
+        // Same FlippedView path as `install_touch_handler`: the view's
+        // tracking-area `mouseEntered:` / `mouseExited:` route to this handler.
+        let MacosNode::View(view) = node else {
+            return;
+        };
+        let cls = objc2::class!(IdealystFlippedView);
+        let is_flipped: bool = unsafe { msg_send![&**view, isKindOfClass: cls] };
+        if !is_flipped {
+            return;
+        }
+        // SAFETY: dynamic class confirmed `IdealystFlippedView`; layout is
+        // `NSView` + our ivars, ABI-compatible here.
+        let flipped: &FlippedView = unsafe { &*(Retained::as_ptr(view) as *const FlippedView) };
+        flipped.set_hover_handler(handler);
+    }
+
     fn create_pressable(
         &mut self,
         on_click: Rc<dyn Fn()>,
@@ -2806,6 +2827,20 @@ impl Backend for MacosBackend {
         let clip_for_bg: *mut NSObject = unsafe { msg_send![&scroll_view, contentView] };
         if !clip_for_bg.is_null() {
             let _: () = unsafe { msg_send![clip_for_bg, setDrawsBackground: false] };
+            // Force a full redraw of the visible rect on every scroll instead of
+            // AppKit's default copy-old-pixels optimization. `copiesOnScroll`
+            // assumes content is positioned by FRAME and only repaints the strip
+            // newly exposed by the frame delta. But the framework positions and
+            // animates views by CALayer TRANSFORM (`AnimatedValue` Translate —
+            // every animation, and the transform-only DnD layout where cards are
+            // laid out at frame (0,0) and translated into place). Under the copy
+            // optimization a transformed card is repainted only where its
+            // *untransformed* frame intersects the exposed strip, so its content
+            // (e.g. a card's centered label) gets sliced off — worse the further
+            // it's scrolled. A full redraw composites every layer at its true
+            // transformed position. iOS/web get this for free; this is the macOS
+            // equivalent (CLAUDE.md §7 — converge in output).
+            let _: () = unsafe { msg_send![clip_for_bg, setCopiesOnScroll: false] };
         }
 
         // Install the documentView. NSScrollView retains it; we
@@ -3524,6 +3559,13 @@ impl Backend for MacosBackend {
 
     fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
         handles::make_view_handle(node)
+    }
+
+    fn make_scroll_view_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
+        handles::make_scroll_view_handle(node)
     }
 
     /// Node's rect in its parent's coordinate system. The framework's

@@ -1,7 +1,7 @@
 //! Android implementation of the WebView SDK.
 //!
 //! Builds an `android.webkit.WebView`, navigates via `loadUrl(String)`,
-//! subscribes to reactive URL changes through `Effect::new(...)`.
+//! subscribes to reactive URL changes through an `effect!`.
 //!
 //! Callback wiring (`on_message`/`on_load`/`on_error`) is a no-op in
 //! v1 — needs a `WebViewClient` subclass (`onPageFinished`/
