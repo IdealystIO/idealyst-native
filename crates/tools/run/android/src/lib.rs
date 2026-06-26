@@ -77,6 +77,13 @@ pub struct RunOptions {
     /// Cargo features to enable on the build. `idealyst dev` passes
     /// `runtime-core/dev` here so the Robot bridge auto-starts.
     pub user_features: Vec<String>,
+    /// Robot relay URL (`ws://127.0.0.1:<port>`) the dev process hosts. When
+    /// set, we (a) `adb reverse tcp:<port> tcp:<port>` so the emulator's
+    /// localhost reaches the host relay, and (b) bake it into the manifest as
+    /// `IdealystRobotRelayUrl` — MainActivity hands it to Rust before `attach`
+    /// so the bridge dials out instead of self-hosting. Empty/None leaves the
+    /// app self-hosting an on-device TCP bridge (the prior behavior).
+    pub robot_relay_url: Option<String>,
 }
 
 /// Mirrors `run-ios::RunMode` — same trade-offs (local self-contained
@@ -248,6 +255,10 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             ("APP_NAME", &xml_escape(&manifest.app.name)),
             ("APP_ID", &xml_escape(manifest.app.require_bundle_id()?)),
             ("AAS_URL", &xml_escape(&aas_url)),
+            (
+                "ROBOT_RELAY_URL",
+                &xml_escape(opts.robot_relay_url.as_deref().unwrap_or("")),
+            ),
             ("ICON_ATTRS", &icon_attrs),
             ("USES_PERMISSIONS", &uses_permissions),
             ("SERVICES", &services),
@@ -360,6 +371,14 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     //          devices because USB ADB supports reverse tunnels too. ─
     if let Some(port) = opts.runtime_server_port {
         adb_reverse(&adb, &serial, port)?;
+    }
+    // Same tunnel for the robot relay: the device dials `ws://127.0.0.1:<port>`
+    // (baked into the manifest above) and `adb reverse` forwards it to the host
+    // relay. Parse the port out of the relay URL.
+    if let Some(url) = &opts.robot_relay_url {
+        if let Some(port) = url.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()) {
+            adb_reverse(&adb, &serial, port)?;
+        }
     }
 
     // ── 12. adb install + launch ────────────────────────────────

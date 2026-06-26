@@ -771,6 +771,12 @@ runtime-server = ["dep:dev-client", "backend-web/runtime-server"]
 # (matches the generated code's `#[cfg(feature = "runtime-server")]`
 # gates and `idealyst dev`'s `--features runtime-server`).
 aas = ["runtime-server"]
+# Robot-on-web (local/static builds only): the WebSocket dial-out transport
+# to a `robot-relay`. Enabled by `idealyst build --web --robot` /
+# `idealyst dev --web --local --robot`. Pulls `backend-web/robot`, which
+# cascades `runtime-core/robot` — exposing `install_robot_relay_client` and
+# the platform-agnostic dispatch core.
+robot = ["backend-web/robot"]
 {user_feature_forwards}
 {patch_block}
 # Wrapper-level release profile. wasm-pack is no longer in the
@@ -980,6 +986,18 @@ fn start_local() {{
     if prerendered {{
         backend_web::install_viewport_observer();
     }}
+
+    // Robot-on-web (local/static only): dial the relay so this
+    // browser-hosted app exposes its Robot bridge to the MCP server /
+    // evaluator. In runtime-server mode the framework runs in the native
+    // sidecar (robot is native there), so the transport lives here in
+    // start_local, not start_aas.
+    #[cfg(feature = "robot")]
+    if let Some(url) = read_robot_relay_url() {{
+        if let Err(e) = backend_web::install_robot_relay_client(&url) {{
+            web_sys::console::error_2(&"[robot] relay connect failed:".into(), &e);
+        }}
+    }}
 }}
 
 /// runtime-server mode: framework runtime lives in the runtime-server sidecar on the dev
@@ -1071,6 +1089,17 @@ fn start_aas() {{
 fn read_aas_url() -> Option<String> {{
     let win = web_sys::window()?;
     js_sys::Reflect::get(&win, &"IDEALYST_RUNTIME_SERVER_URL".into())
+        .ok()?
+        .as_string()
+}}
+
+/// Read `window.IDEALYST_ROBOT_RELAY_URL`, injected by the dev HTTP layer (or
+/// the arena's static server) so the browser app knows where to dial its
+/// Robot bridge relay.
+#[cfg(feature = "robot")]
+fn read_robot_relay_url() -> Option<String> {{
+    let win = web_sys::window()?;
+    js_sys::Reflect::get(&win, &"IDEALYST_ROBOT_RELAY_URL".into())
         .ok()?
         .as_string()
 }}
@@ -1491,6 +1520,10 @@ fn user_feature_forwards(user_name: &str, user_features: &[String]) -> String {
                 // which is exactly the bug this guards against.
                 && f.as_str() != "aas"
                 && f.as_str() != "runtime-server"
+                // Wrapper-local: the template declares `robot` itself
+                // (`robot = ["backend-web/robot"]`); forwarding it to the
+                // user crate would collide and break cargo resolution.
+                && f.as_str() != "robot"
         })
         .collect();
     if local.is_empty() {

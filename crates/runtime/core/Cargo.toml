@@ -91,7 +91,10 @@ strict-naming = ["runtime-macros/strict-naming"]
 # `dep:libc` is the unix `kill(pid, 0)` liveness check the bridge uses to
 # sweep dead-pid registration files from `~/.idealyst/apps/` on bind (so
 # a crashed prior run doesn't leave a ghost the MCP server tries to dial).
-robot = ["dep:base64", "dep:libc"]
+# `dep:tungstenite` is the native dial-out transport's WebSocket client
+# (target-gated to non-wasm, so it's a no-op when `robot` is enabled on a web
+# build — mirrors how `dep:libc` resolves to nothing there).
+robot = ["dep:base64", "dep:libc", "dep:tungstenite"]
 
 # `dev` umbrella feature — the one `idealyst dev` flips. Bundles
 # every feature that "the user is running locally for development"
@@ -191,4 +194,10 @@ log = { version = "0.4", optional = true }
 # `kill(pid, 0)` for the Robot bridge's stale-registration sweep. Only
 # linked under `robot` (non-wasm); ordinary app builds don't pull it.
 libc = { version = "0.2", optional = true }
+# Native WebSocket CLIENT for the Robot bridge's dial-out transport: when a
+# relay URL is configured the app dials a `robot-relay` (web-style universal
+# transport) instead of self-hosting a TCP listener. Only under `robot`
+# (non-wasm) — web uses `backend-web`'s `web_sys` client instead. No TLS
+# (ws:// loopback / dev-host only) so it's a pure-Rust, cross-compiles-clean dep.
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
 

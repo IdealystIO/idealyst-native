@@ -36,10 +36,7 @@ fn todo_app_scenario_and_rubric_load_and_link() {
 #[test]
 fn every_static_decision_item_passes_against_the_fixture() {
     let rubric = Rubric::load(&scenario_dir().join("rubric.toml")).expect("rubric loads");
-    let ctx = RunContext {
-        project_dir: fixture_dir(),
-        transcript_path: None,
-    };
+    let ctx = RunContext::source_only(fixture_dir());
     let verifier = StaticAstVerifier;
 
     let static_items: Vec<_> = rubric
@@ -76,10 +73,7 @@ fn static_verifier_fails_a_pattern_the_fixture_lacks() {
     item.assertion.pattern = Some("this_symbol_does_not_exist_anywhere_xyzzy".into());
     item.assertion.min_count = None;
 
-    let ctx = RunContext {
-        project_dir: fixture_dir(),
-        transcript_path: None,
-    };
+    let ctx = RunContext::source_only(fixture_dir());
     let result = StaticAstVerifier.verify(&item, &ctx);
     assert!(!result.passed, "absent pattern must fail: {}", result.evidence);
 }

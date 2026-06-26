@@ -62,3 +62,16 @@ impl Shape for Pill {
         Tokenized::token("radius-pill", Length::Px(999.0))
     }
 }
+
+// Reactive-prop coercion: `shape = shape::Pill` into a `#[props]`-wrapped
+// `Reactive<ShapeRef>` field (see typography.rs::builtin_kind!).
+macro_rules! shape_reactive_coercion {
+    ($($name:ident),*) => { $(
+        impl ::core::convert::From<$name> for ::runtime_core::Reactive<super::ShapeRef> {
+            fn from(marker: $name) -> Self {
+                ::runtime_core::Reactive::Static(super::ShapeRef::from(marker))
+            }
+        }
+    )* };
+}
+shape_reactive_coercion!(Sm,Md,Lg,Pill);

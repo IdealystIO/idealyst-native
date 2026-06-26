@@ -39,6 +39,12 @@ use idea_theme::extensible::{installed_button_sheet, ButtonSizeRef, ShapeRef, To
 /// handle (`*Ref` newtype) so call sites can write
 /// `tone: tone::Primary.into()` instead of `Rc::new(...)`. Built-in
 /// defaults route to Filled/Primary/Md/Md.
+// Reactive-by-default: `#[props]` wraps each data field. Style axes
+// (tone/variant/size/shape) route to the style sink; structural props
+// (disabled/loading/block/icons) are read once (see the TODO in `Button`).
+// `on_click` (handler), `bind_to` (Ref), and `test_id` (`&'static str`) are
+// auto-skipped (not reactive data).
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct ButtonProps {
@@ -89,16 +95,16 @@ impl Default for ButtonProps {
         Self {
             label: Reactive::Static(String::new()),
             on_click: Rc::new(|| {}),
-            tone: ToneRef::default(),
-            variant: VariantRef::default(),
-            size: ButtonSizeRef::default(),
-            shape: ShapeRef::default(),
-            disabled: false,
-            loading: false,
+            tone: Reactive::Static(ToneRef::default()),
+            variant: Reactive::Static(VariantRef::default()),
+            size: Reactive::Static(ButtonSizeRef::default()),
+            shape: Reactive::Static(ShapeRef::default()),
+            disabled: Reactive::Static(false),
+            loading: Reactive::Static(false),
             bind_to: None,
-            leading_icon: None,
-            trailing_icon: None,
-            block: false,
+            leading_icon: Reactive::Static(None),
+            trailing_icon: Reactive::Static(None),
+            block: Reactive::Static(false),
             test_id: None,
         }
     }
@@ -157,16 +163,24 @@ fn label_color_style(color: Tokenized<Color>) -> Rc<StyleSheet> {
 pub fn Button(props: &ButtonProps) -> Element {
     let label = props.label.clone();
     let on_click = props.on_click.clone();
+    // Style axes — kept as `Reactive` and read live INSIDE `make_style` so a
+    // reactive tone/variant/size/shape re-styles the button in place.
     let tone = props.tone.clone();
     let variant = props.variant.clone();
     let size = props.size.clone();
     let shape = props.shape.clone();
-    let disabled = props.disabled;
-    let loading = props.loading;
+    // TODO(reactive-sweep): these drive STRUCTURE (press-block, spinner-vs-icon
+    // children, the layout layer, and the resolved fg color stamped on the
+    // label/icons), so they are snapshotted here. A live one needs a
+    // `switch`/`when` rebuild (children) or a reactive fg-color sink, not a
+    // style closure — flagged. The tone/variant/size/shape STYLE axes below
+    // ARE routed reactively.
+    let disabled = props.disabled.get();
+    let loading = props.loading.get();
     let bind_to = props.bind_to;
-    let leading_icon = props.leading_icon;
-    let trailing_icon = props.trailing_icon;
-    let block = props.block;
+    let leading_icon = props.leading_icon.get();
+    let trailing_icon = props.trailing_icon.get();
+    let block = props.block.get();
     // Both `disabled` and `loading` make the button inert (block the press);
     // only `disabled` dims the surface.
     let inert = disabled || loading;
@@ -176,71 +190,60 @@ pub fn Button(props: &ButtonProps) -> Element {
     // for an app-extended set, apps must have installed an extended
     // sheet that includes those arms (else the framework falls back
     // to the default arms).
-    let appearance_key = format!("{}_{}", tone.key(), variant.key());
-    let size_key = size.key().to_string();
-    let shape_key = shape.key().to_string();
-
-    // STATIC style — applied at build time (before first paint) and
-    // re-applied in bulk by the theme cohort on `set_theme`. A
-    // reactive closure here would defer the apply to a per-node
-    // Effect, letting the element paint once with browser-default
-    // styles before the themed class lands — which the CSS transition
-    // then animates (the on-load / on-navigation flicker). The
-    // variant-axis keys are fixed per instance, so nothing here needs
-    // to be reactive; theme swaps flow through the CSS-variable tokens.
-    let mut style = StyleApplication::new(installed_button_sheet())
-        .with("appearance", appearance_key)
-        .with("size", size_key)
-        .with("shape", shape_key);
-
-    // The Button base sheet doesn't pin a flex direction (it had a single
-    // text child) or a cross-axis alignment. Three call-site-varying bits
-    // ride a computed layer (keyed on the variation) rather than the
-    // pregenerated variant arms — the framework caches one resolved
-    // StyleRules per distinct key:
-    //
-    //  - With leading/trailing icons, the contents lay out as a centered
-    //    row with a small gap.
-    //  - With `block`, the button stretches to its container's width.
-    //  - WITHOUT `block`, the button must HUG its content and NOT stretch
-    //    on the parent's cross axis. A flex parent defaults to
-    //    `align-items: stretch`, which otherwise grows the button to the
-    //    row's height (a row of buttons) or the column's width — the
-    //    "buttons flex to the parent height" bug. Pinning `align_self:
-    //    Center` makes the button size to content in any container while
-    //    still letting a centering parent (a centered preview card, a
-    //    toolbar row) center it — `Center` reads better than `FlexStart`
-    //    for mixed-height button rows.
     // A loading spinner occupies the leading slot, so it needs the same
-    // centered-row layout an icon does.
+    // centered-row layout an icon does. (`row_layout`/`block`/`disabled` are
+    // structural snapshots — see the TODO above.)
     let row_layout = leading_icon.is_some() || trailing_icon.is_some() || loading;
-    let layer_key = format!("layout_{}_{}_{}", row_layout as u8, block as u8, disabled as u8);
-    style = style.with_computed(layer_key, move || {
-        let mut rules = StyleRules::default();
-        if row_layout {
-            rules.flex_direction = Some(FlexDirection::Row);
-            rules.align_items = Some(runtime_core::AlignItems::Center);
-            rules.gap = Some(Tokenized::token("spacing-xs", Length::Px(6.0)));
+
+    // The button style is REACTIVE when any style axis (tone/variant/size/
+    // shape) is live; otherwise the build-time fast path (no first-paint
+    // flicker). `make_style` reads each axis live INSIDE so the apply-style
+    // Effect subscribes to the dynamic ones. The layout layer keys on the
+    // structural snapshots (icons/block/disabled).
+    let style_is_reactive = !tone.is_static()
+        || !variant.is_static()
+        || !size.is_static()
+        || !shape.is_static();
+    let make_style = {
+        let tone = tone.clone();
+        let variant = variant.clone();
+        let size = size.clone();
+        let shape = shape.clone();
+        move || {
+            let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
+            let style = StyleApplication::new(installed_button_sheet())
+                .with("appearance", appearance_key)
+                .with("size", size.get().key().to_string())
+                .with("shape", shape.get().key().to_string());
+            let layer_key =
+                format!("layout_{}_{}_{}", row_layout as u8, block as u8, disabled as u8);
+            style.with_computed(layer_key, move || {
+                let mut rules = StyleRules::default();
+                if row_layout {
+                    rules.flex_direction = Some(FlexDirection::Row);
+                    rules.align_items = Some(runtime_core::AlignItems::Center);
+                    rules.gap = Some(Tokenized::token("spacing-xs", Length::Px(6.0)));
+                }
+                if block {
+                    rules.width = Some(Tokenized::Literal(Length::Percent(100.0)));
+                    rules.align_self = Some(AlignSelf::Stretch);
+                } else {
+                    rules.align_self = Some(AlignSelf::Center);
+                }
+                if disabled {
+                    // Deterministic dim so a disabled button reads as off on
+                    // every backend.
+                    rules.opacity = Some(Tokenized::Literal(0.45));
+                }
+                rules
+            })
         }
-        if block {
-            rules.width = Some(Tokenized::Literal(Length::Percent(100.0)));
-            rules.align_self = Some(AlignSelf::Stretch);
-        } else {
-            rules.align_self = Some(AlignSelf::Center);
-        }
-        if disabled {
-            // Deterministic dim (not a hover-state overlay) so a disabled
-            // button reads as off on every backend.
-            rules.opacity = Some(Tokenized::Literal(0.45));
-        }
-        rules
-    });
+    };
 
     // Resolve the fill's foreground so the label + icons can carry it on
-    // their own nodes (native doesn't inherit text/icon color — see
-    // `label_color_style`). Resolved against the same appearance variant
-    // the pressable uses, so the label color always matches the fill.
-    let fg = resolve_style(&style).color.clone();
+    // their own nodes (native doesn't inherit text/icon color). Snapshot — a
+    // live tone won't re-tint the label/icons (coupled fg sink, see TODO).
+    let fg = resolve_style(&make_style()).color.clone();
 
     // Fixed-size sheet for inline icons — they need explicit dimensions
     // (an SVG/CAShapeLayer has no intrinsic content size to flex against).
@@ -277,8 +280,12 @@ pub fn Button(props: &ButtonProps) -> Element {
         children.push(icon_node(d));
     }
     let on_click_for_p = on_click.clone();
-    let mut bound = runtime_core::pressable(children, move || (on_click_for_p)())
-        .with_style(style);
+    let mut bound = runtime_core::pressable(children, move || (on_click_for_p)());
+    bound = if style_is_reactive {
+        bound.with_style(make_style)
+    } else {
+        bound.with_style(make_style())
+    };
     if inert {
         bound = bound.disabled(true);
     }
@@ -339,8 +346,8 @@ mod tests {
         theme();
         let props = ButtonProps {
             label: Reactive::Static("Save".into()),
-            tone: ToneRef::default(),     // Primary
-            variant: VariantRef::default(), // Filled
+            tone: Reactive::Static(ToneRef::default()),     // Primary
+            variant: Reactive::Static(VariantRef::default()), // Filled
             ..Default::default()
         };
         let (children, _) = pressable_parts(Button(&props));
@@ -363,8 +370,8 @@ mod tests {
         theme();
         let props = ButtonProps {
             label: Reactive::Static("Save".into()),
-            leading_icon: Some(PLUS),
-            trailing_icon: Some(PLUS),
+            leading_icon: Reactive::Static(Some(PLUS)),
+            trailing_icon: Reactive::Static(Some(PLUS)),
             ..Default::default()
         };
         let (children, _) = pressable_parts(Button(&props));
@@ -405,8 +412,8 @@ mod tests {
         theme();
         let props = ButtonProps {
             label: Reactive::Static("Save".into()),
-            leading_icon: Some(PLUS),
-            trailing_icon: Some(PLUS),
+            leading_icon: Reactive::Static(Some(PLUS)),
+            trailing_icon: Reactive::Static(Some(PLUS)),
             ..Default::default()
         };
         let (children, _) = pressable_parts(Button(&props));
@@ -437,7 +444,7 @@ mod tests {
     fn icon_button_lays_out_as_centered_row() {
         theme();
         let props = ButtonProps {
-            leading_icon: Some(PLUS),
+            leading_icon: Reactive::Static(Some(PLUS)),
             ..Default::default()
         };
         let (_, app) = pressable_parts(Button(&props));
@@ -455,7 +462,7 @@ mod tests {
     fn block_stretches_to_container_width() {
         theme();
         let props = ButtonProps {
-            block: true,
+            block: Reactive::Static(true),
             ..Default::default()
         };
         let (_, app) = pressable_parts(Button(&props));
@@ -492,7 +499,7 @@ mod tests {
             "a non-block button sizes to content (centered, not stretched to the parent cross axis)"
         );
 
-        let block = ButtonProps { block: true, ..Default::default() };
+        let block = ButtonProps { block: Reactive::Static(true), ..Default::default() };
         let (_, app) = pressable_parts(Button(&block));
         assert_eq!(
             resolve_style(&app).align_self,
@@ -506,7 +513,7 @@ mod tests {
     #[test]
     fn disabled_button_dims_and_blocks_press() {
         theme();
-        let mk = || ButtonProps { disabled: true, ..Default::default() };
+        let mk = || ButtonProps { disabled: Reactive::Static(true), ..Default::default() };
         let (_, app) = pressable_parts(Button(&mk()));
         assert_eq!(
             resolve_style(&app).opacity.as_ref().map(|t| t.resolve()),
@@ -524,7 +531,7 @@ mod tests {
         theme();
         let mk = || ButtonProps {
             label: Reactive::Static("Saving".into()),
-            loading: true,
+            loading: Reactive::Static(true),
             ..Default::default()
         };
         let (children, app) = pressable_parts(Button(&mk()));
@@ -614,7 +621,7 @@ mod tests {
     fn disabled_bool_marks_the_button_inert() {
         theme();
         let on = ButtonProps {
-            disabled: true,
+            disabled: Reactive::Static(true),
             ..Default::default()
         };
         let d = pressable_disabled(Button(&on)).expect("disabled=true sets a disabled source");

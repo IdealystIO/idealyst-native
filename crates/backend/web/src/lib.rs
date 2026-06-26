@@ -49,6 +49,10 @@ mod assets;
 mod defaults;
 #[cfg(feature = "runtime-server")]
 pub mod dev_transport;
+#[cfg(feature = "robot")]
+pub mod robot_transport;
+#[cfg(feature = "robot")]
+mod robot_screenshot;
 pub mod drop_deferral;
 pub mod logger;
 mod phase_timer;
@@ -66,6 +70,8 @@ pub use async_executor::install_async_executor;
 pub use dynlink::{host_reserve, install_dynlink_loader};
 #[cfg(feature = "runtime-server")]
 pub use dev_transport::{connect_web, WebClientHandle};
+#[cfg(feature = "robot")]
+pub use robot_transport::install_robot_relay_client;
 pub use drop_deferral::install_drop_deferral;
 pub use logger::install_logger;
 #[cfg(feature = "async-driver")]
@@ -2388,6 +2394,14 @@ impl Backend for WebBackend {
         primitives::icon::update_color(node, color)
     }
 
+    fn update_icon_data(
+        &mut self,
+        node: &Self::Node,
+        data: &runtime_core::primitives::icon::IconData,
+    ) {
+        primitives::icon::update_data(self, node, data)
+    }
+
     fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
         primitives::icon::update_stroke(node, progress)
     }
@@ -2431,6 +2445,14 @@ impl Backend for WebBackend {
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
         primitives::text_input::update_value(node, value)
+    }
+
+    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+        primitives::text_input::update_secure(node, secure)
+    }
+
+    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
+        primitives::text_input::update_placeholder(node, placeholder)
     }
 
     fn create_text_area(

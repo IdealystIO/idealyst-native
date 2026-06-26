@@ -65,3 +65,17 @@ impl ButtonSize for Lg {
         Tokenized::token("typography-body-lg-size", Length::Px(18.0))
     }
 }
+
+// Reactive-prop coercion: `size = size::Md` into a `#[props]`-wrapped
+// `Reactive<ButtonSizeRef>` field (marker → ref → Reactive can't go through
+// one `.into()`; see typography.rs::builtin_kind!).
+macro_rules! size_reactive_coercion {
+    ($($name:ident),*) => { $(
+        impl ::core::convert::From<$name> for ::runtime_core::Reactive<super::ButtonSizeRef> {
+            fn from(marker: $name) -> Self {
+                ::runtime_core::Reactive::Static(super::ButtonSizeRef::from(marker))
+            }
+        }
+    )* };
+}
+size_reactive_coercion!(Sm, Md, Lg);

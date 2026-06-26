@@ -18,6 +18,7 @@ use std::rc::Rc;
 pub(super) fn build<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     data: primitives::icon::IconData,
+    data_fn: Option<Box<dyn Fn() -> primitives::icon::IconData>>,
     color: Option<Box<dyn Fn() -> crate::style::Color>>,
     stroke: Option<Box<dyn Fn() -> f32>>,
     draw_in: Option<primitives::icon::StrokeAnimation>,
@@ -31,6 +32,16 @@ pub(super) fn build<B: Backend + 'static>(
     });
     if let Some(s) = style {
         attach_style(backend, &n, s);
+    }
+    // Reactive icon geometry: swap the rendered glyph in place when the
+    // source changes (no node rebuild).
+    if let Some(f) = data_fn {
+        let backend = backend.clone();
+        let node = n.clone();
+        let _e = Effect::new(move || {
+            let d = f();
+            backend.borrow_mut().update_icon_data(&node, &d);
+        });
     }
     // Reactive color effect.
     if let Some(f) = color {

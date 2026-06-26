@@ -45,10 +45,12 @@ use crate::stylesheets::{ControlRow, FieldLabel};
 
 /// Build the ring+dot indicator. `is_selected` is read reactively, so
 /// the ring re-tints and the dot mounts/unmounts as selection changes.
+/// `appearance`/`size_key` are CLOSURES read live inside each style sink so
+/// a reactive tone/variant/size re-styles the indicator in place.
 fn radio_indicator(
     is_selected: impl Fn() -> bool + Clone + 'static,
-    appearance: String,
-    size_key: String,
+    appearance: impl Fn() -> String + Clone + 'static,
+    size_key: impl Fn() -> String + Clone + 'static,
     sheets: RadioSheets,
 ) -> Element {
     // Inner dot — mounted only while selected.
@@ -66,8 +68,8 @@ fn radio_indicator(
                 runtime_core::view(Vec::new())
                     .with_style(move || {
                         StyleApplication::new(ds.clone())
-                            .with("appearance", da.clone())
-                            .with("size", dz.clone())
+                            .with("appearance", da())
+                            .with("size", dz())
                     })
                     .into_element()
             } else {
@@ -82,9 +84,9 @@ fn radio_indicator(
     runtime_core::view(vec![dot])
         .with_style(move || {
             StyleApplication::new(outer_sheet.clone())
-                .with("appearance", appearance.clone())
+                .with("appearance", appearance())
                 .with("checked", if sel_for_ring() { "on" } else { "off" }.to_string())
-                .with("size", size_key.clone())
+                .with("size", size_key())
         })
         .into_element()
 }
@@ -94,8 +96,8 @@ fn radio_row(
     is_selected: impl Fn() -> bool + Clone + 'static,
     label: Option<Element>,
     on_select: Rc<dyn Fn()>,
-    appearance: String,
-    size_key: String,
+    appearance: impl Fn() -> String + Clone + 'static,
+    size_key: impl Fn() -> String + Clone + 'static,
     sheets: RadioSheets,
 ) -> Element {
     let indicator = radio_indicator(is_selected, appearance, size_key, sheets);
@@ -113,6 +115,12 @@ fn radio_row(
 // Radio (standalone)
 // =============================================================================
 
+// Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
+// `Reactive<T>` (tone/variant/size), so a `ui!` call site can pass a
+// `Signal`/`rx!` and re-style in place. The controlled `selected` `Signal`
+// stays bare (a reactive *source*), `on_select` is a handler, `label` is
+// already `Reactive`.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct RadioProps {
@@ -138,9 +146,9 @@ impl Default for RadioProps {
             label: Reactive::Static(None),
             selected: Signal::new(false),
             on_select: Rc::new(|| {}),
-            tone: ToneRef::default(),
-            variant: VariantRef::default(),
-            size: ControlSize::default(),
+            tone: Reactive::Static(ToneRef::default()),
+            variant: Reactive::Static(VariantRef::default()),
+            size: Reactive::Static(ControlSize::default()),
         }
     }
 }
@@ -151,8 +159,15 @@ impl Default for RadioProps {
 #[component]
 pub fn Radio(props: &RadioProps) -> Element {
     let selected = props.selected;
-    let appearance = format!("{}_{}", props.tone.key(), props.variant.key());
-    let size_key = props.size.as_variant_str().to_string();
+    // Style keys as live closures so a reactive tone/variant/size re-styles
+    // the indicator in place; bare props collapse to a static resolution.
+    let appearance = {
+        let tone = props.tone.clone();
+        let variant = props.variant.clone();
+        move || format!("{}_{}", tone.get().key(), variant.get().key())
+    };
+    let size = props.size.clone();
+    let size_key = move || size.get().as_variant_str().to_string();
     let label = crate::components::optional_reactive_text(props.label.clone(), FieldLabel());
     radio_row(
         move || selected.get(),
@@ -209,6 +224,12 @@ impl runtime_core::VariantEnum for RadioAxis {
     }
 }
 
+// Reactive-by-default: `#[props]` wraps the scalar-DATA style props
+// (tone/variant/size). The controlled `value` `Signal` stays bare,
+// `on_change` is a handler, and `options` is a `Vec` (auto-skipped — bare).
+// `axis` drives STRUCTURE (it selects the Stack layout branch) and so isn't
+// routed reactively here — see the body TODO.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct RadioGroupProps {
@@ -235,10 +256,10 @@ impl Default for RadioGroupProps {
             value: Signal::new(String::new()),
             on_change: Rc::new(|_| {}),
             options: Vec::new(),
-            axis: RadioAxis::default(),
-            tone: ToneRef::default(),
-            variant: VariantRef::default(),
-            size: ControlSize::default(),
+            axis: Reactive::Static(RadioAxis::default()),
+            tone: Reactive::Static(ToneRef::default()),
+            variant: Reactive::Static(VariantRef::default()),
+            size: Reactive::Static(ControlSize::default()),
         }
     }
 }
@@ -251,8 +272,15 @@ impl Default for RadioGroupProps {
 pub fn RadioGroup(props: RadioGroupProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
-    let appearance = format!("{}_{}", props.tone.key(), props.variant.key());
-    let size_key = props.size.as_variant_str().to_string();
+    // Style keys as live closures, cloned per row so a reactive tone/variant/
+    // size re-styles every option's indicator in place.
+    let appearance = {
+        let tone = props.tone.clone();
+        let variant = props.variant.clone();
+        move || format!("{}_{}", tone.get().key(), variant.get().key())
+    };
+    let size = props.size.clone();
+    let size_key = move || size.get().as_variant_str().to_string();
     let sheets = installed_radio_sheets();
 
     let mut rows: Vec<Element> = Vec::with_capacity(props.options.len());
@@ -277,7 +305,10 @@ pub fn RadioGroup(props: RadioGroupProps) -> Element {
     }
 
     let gap = StackGap::Sm;
-    match props.axis {
+    // TODO(reactive-sweep): `axis` drives STRUCTURE (which Stack layout branch
+    // is built), so a reactive axis won't re-lay-out without a `when()`/`switch`
+    // around the Stack. Read once for now; the common case is a fixed axis.
+    match props.axis.get() {
         RadioAxis::Column => ui! { Stack(gap = gap, axis = StackAxis::Column) { rows } },
         RadioAxis::Row => ui! { Stack(gap = gap, axis = StackAxis::Row) { rows } },
     }

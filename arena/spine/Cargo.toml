@@ -16,3 +16,7 @@ toml.workspace = true
 regex.workspace = true
 glob.workspace = true
 anyhow.workspace = true
+# Robot-on-web: stand up a relay the browser-hosted app dials, so the `robot`
+# verifier tier can introspect a web build. Path-deps into the framework tree
+# (the arena is its own workspace).
+robot-relay = { path = "../../crates/dev/robot-relay" }

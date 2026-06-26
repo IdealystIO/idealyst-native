@@ -757,6 +757,18 @@ pub enum Command {
         node: NodeId,
         value: String,
     },
+    /// Toggle an existing text input's secure-entry (mask) mode. Emitted
+    /// when `secure` is a live source; mirrors `UpdateTextInputValue`.
+    UpdateTextInputSecure {
+        node: NodeId,
+        secure: bool,
+    },
+    /// Update an existing text input's placeholder. Emitted when
+    /// `placeholder` is a live source; mirrors `UpdateTextInputValue`.
+    UpdateTextInputPlaceholder {
+        node: NodeId,
+        placeholder: Option<String>,
+    },
     UpdateTextAreaValue {
         node: NodeId,
         value: String,

@@ -212,6 +212,13 @@ thread_local! {
     static LAYOUT_PASS_QUEUED: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
 
+    /// Depth of in-flight navigator screen-swap coalescing windows (see
+    /// [`coalesce_layout_passes`]). While > 0, [`run_pending_layout_pass`]
+    /// suppresses the idle hook's mid-swap full-tree flushes — the swap leaves
+    /// the `LAYOUT_PASS_QUEUED` flag armed and runs ONE pass when the guard ends.
+    static LAYOUT_COALESCE_DEPTH: std::cell::Cell<u32> =
+        const { std::cell::Cell::new(0) };
+
     /// Profiling (§6): set `IDEALYST_LAYOUT_TRACE=1` to log every layout pass
     /// that actually runs (origin, duration, running totals) plus how many
     /// times the reactive-idle hook fired. The smoking gun for an O(N²)
@@ -374,6 +381,52 @@ pub fn flush_pending_layout_pass() {
     run_pending_layout_pass("event-flush");
 }
 
+/// RAII guard that coalesces every layout pass a navigator screen-swap would
+/// otherwise trigger into ONE pass.
+///
+/// A drawer/stack/tab screen swap builds the incoming screen's whole subtree —
+/// crossing one reactive-window boundary per `attach_style` effect first-run —
+/// and then, after `active_changed`, fans `active_route` out to every sidebar
+/// item. The macOS reactive-idle hook ([`install_global_self`]) flushes a
+/// *full-tree* layout pass at each boundary whose `LAYOUT_PASS_QUEUED` flag is
+/// armed, so a single navigation fired 4–9+ redundant full passes (~15–20ms
+/// each — one even nested *inside* an effect's first run, showing up as a 19ms
+/// `attach_style_effect_alloc`). Worse, with the persistent-screen cache each
+/// pass was O(all cached views) until [[project_macos_apply_frames_reachable_scope]].
+///
+/// Holding this guard across the swap suppresses those mid-swap flushes (the
+/// flag stays armed; see [`run_pending_layout_pass`]). When the outermost guard
+/// drops it runs exactly one coalesced pass, capturing the build + insert + the
+/// `active_route` fan-out together. The swap's own immediate
+/// [`MacosBackend::run_layout_pass_now`] still lays the new screen out before
+/// paint (no flash); this guard removes the *redundant* extra passes around it.
+#[must_use = "the guard must be held across the screen-swap; dropping it immediately defeats coalescing"]
+pub struct LayoutCoalesceGuard(());
+
+/// Open a layout-coalescing window for a navigator screen-swap. Hold the
+/// returned guard across `mount_screen` + `insert` + the post-swap
+/// `active_changed` fan-out. See [`LayoutCoalesceGuard`].
+pub fn coalesce_layout_passes() -> LayoutCoalesceGuard {
+    LAYOUT_COALESCE_DEPTH.with(|d| d.set(d.get() + 1));
+    LayoutCoalesceGuard(())
+}
+
+impl Drop for LayoutCoalesceGuard {
+    fn drop(&mut self) {
+        let depth = LAYOUT_COALESCE_DEPTH.with(|d| {
+            let n = d.get().saturating_sub(1);
+            d.set(n);
+            n
+        });
+        // Outermost swap window closed: run the single coalesced pass now (it
+        // clears the flag first, so a re-arm during the pass still fires after).
+        // No-op if nothing armed it.
+        if depth == 0 {
+            run_pending_layout_pass("nav-coalesced");
+        }
+    }
+}
+
 /// Cached read of `IDEALYST_LAYOUT_TRACE` (§6 profiling toggle). Returns
 /// `false` unless the env var is set to a non-empty, non-`0` value.
 fn layout_trace_enabled() -> bool {
@@ -397,6 +450,15 @@ fn layout_trace_enabled() -> bool {
 /// UB; per the crash-loud policy we log + abort rather than continue half-
 /// applied.
 fn run_pending_layout_pass(origin: &str) {
+    // Suppressed while a navigator screen-swap is coalescing: the swap crosses
+    // many reactive-window boundaries building the incoming screen, and the idle
+    // hook would otherwise fire a full-tree pass at each. Leave the flag armed —
+    // the swap's `LayoutCoalesceGuard` runs ONE pass when it ends.
+    if crate::layout_policy::coalesced_swap_suppresses_pass(
+        LAYOUT_COALESCE_DEPTH.with(|d| d.get()),
+    ) {
+        return;
+    }
     if !LAYOUT_PASS_QUEUED.with(|q| q.get()) {
         return;
     }
@@ -570,8 +632,20 @@ impl MacosBackend {
                 let content_w = (fit.width as f32).max(0.0).ceil() + pad * 2.0;
                 let content_h = (fit.height as f32).max(0.0).ceil() + pad * 2.0;
                 let avail_w = match available_space.width {
+                    // Definite: fill the offered width (content wider scrolls).
                     runtime_layout::AvailableSpace::Definite(w) => Some(w),
-                    _ => None,
+                    // MIN-content: a single-axis scroller can shrink to nothing —
+                    // its content scrolls, so its minimum width is ~0, NOT its
+                    // content width. Reporting `content_w` here floored EVERY flex
+                    // ancestor at the content's natural width (Taffy's
+                    // `min-width:auto`), so a page with a wide codeblock (a long
+                    // Recipe line) couldn't shrink to its navigator outlet and
+                    // overflowed the window — until a resize re-queried with a
+                    // `Definite` width and it fit. Matches web, where an
+                    // `overflow-x:auto` box has min-content 0.
+                    runtime_layout::AvailableSpace::MinContent => Some(0.0),
+                    // MAX-content: the content's natural width.
+                    runtime_layout::AvailableSpace::MaxContent => None,
                 };
                 runtime_layout::Size {
                     width: known_dimensions
@@ -1226,23 +1300,28 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
                 let _: () = unsafe { msg_send![&layer, setCornerRadius: effective] };
             }
             None => {
-                // Defer clamping to the layout pass — without explicit
-                // px dimensions, we can't know `min(W, H)/2` until
-                // Taffy assigns a frame. Stash the requested value as
-                // an associated `NSNumber` on the layer; the layout
-                // pass reads it back in `sync_corner_radius` and
-                // clamps against the real bounds. Same pattern iOS
-                // uses; see [[project_ios_cornerradius_unclamped]].
-                //
-                // We set cornerRadius=0 in the meantime so the layer
-                // doesn't render the broken "999 on tiny view → blank"
-                // state during the first paint before layout lands.
+                // Without explicit px dimensions we can't know `min(W, H)/2`
+                // until Taffy assigns a frame, so stash the requested value as
+                // an associated `NSNumber`; the layout pass (`sync_corner_radius`)
+                // reads it back and clamps against the real bounds (and re-clamps
+                // on resize). Same pattern iOS uses; see
+                // [[project_ios_cornerradius_unclamped]].
                 let key = NSString::from_str("idealyst_requested_corner_radius");
                 let number: Retained<NSObject> = unsafe {
                     msg_send_id![objc2::class!(NSNumber), numberWithDouble: radius]
                 };
                 let _: () = unsafe { msg_send![&layer, setValue: &*number, forKey: &*key] };
-                let _: () = unsafe { msg_send![&layer, setCornerRadius: 0.0_f64] };
+                // If the view is ALREADY laid out (real bounds), clamp against
+                // those and apply NOW. A re-apply with no layout pass to follow —
+                // e.g. a FOCUSED state change re-running `apply_style` — would
+                // otherwise reset the corners to 0 (square) and never recover,
+                // since state re-renders don't relayout. Only before the first
+                // layout (bounds 0×0) do we defer with `cornerRadius = 0` (avoids
+                // the "999 on a 0-size view → blank" first-paint glitch).
+                let bounds: CGRect = unsafe { msg_send![view, bounds] };
+                let min_half = (bounds.size.width.min(bounds.size.height) as f64) / 2.0;
+                let effective = if min_half > 0.0 { radius.min(min_half) } else { 0.0 };
+                let _: () = unsafe { msg_send![&layer, setCornerRadius: effective] };
             }
         }
         // AppKit's NSView has no `setMasksToBounds:` (that's UIView).
@@ -1439,6 +1518,92 @@ mod portal_tests {
     }
 }
 
+/// The set of layout nodes reachable from `root` by walking Taffy's child
+/// edges (BFS). The apply-frames pass in [`MacosBackend::compute_and_apply_layout`]
+/// uses this to frame ONLY the live host tree.
+///
+/// Why it matters: `view_to_layout` retains a view for as long as its scope is
+/// alive, which — for an orphan-and-cache navigator screen (drawer
+/// `MountPolicy::LazyPersistent` / `EagerPersistent`) — outlives the screen's
+/// presence in the tree. `clear_children` detaches such a screen's Taffy edge
+/// from the outlet (so `compute` no longer recomputes it) but deliberately
+/// keeps its views registered for instant re-attach. Framing the *whole*
+/// `view_to_layout` map therefore re-applied a stale frame AND re-ran the
+/// per-view sync (gradient / icon / corner-radius / transform / on_layout) for
+/// every cached, off-screen screen on every pass — making each pass cost
+/// O(all views across every screen ever visited) instead of O(current screen).
+/// With a persistent drawer that grows without bound as you browse (idea-ui-docs:
+/// ~26ms/pass at first paint → ~91ms/pass after ~19 screens, ×3–9 passes per
+/// navigation = seconds of nav lag). Scoping to the reachable set fixes it and
+/// mirrors `layout_detached_root`'s own subtree-scoped frame write.
+fn reachable_layout_nodes(
+    layout: &runtime_layout::LayoutTree,
+    root: runtime_layout::LayoutNode,
+) -> std::collections::HashSet<runtime_layout::LayoutNode> {
+    let mut reachable = std::collections::HashSet::new();
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if reachable.insert(n) {
+            stack.extend(layout.children_of(n));
+        }
+    }
+    reachable
+}
+
+#[cfg(test)]
+mod reachable_tests {
+    use super::reachable_layout_nodes;
+    use runtime_layout::LayoutTree;
+
+    // Regression: navigating a persistent drawer left every visited screen's
+    // views in `view_to_layout`, and the apply-frames pass framed ALL of them
+    // every pass — so per-pass cost grew O(distinct screens visited) and a
+    // single screen change fired 3–9 such passes (seconds of lag on macOS).
+    // The fix scopes the pass to the nodes reachable from the host root; a
+    // screen `clear_children` detached from the outlet must NOT appear.
+    #[test]
+    fn detached_screen_subtree_is_excluded() {
+        let mut layout = LayoutTree::new();
+        // host root → outlet → screen_a(→ a1, a2)
+        let root = layout.new_node();
+        let outlet = layout.new_node();
+        let screen_a = layout.new_node();
+        let a1 = layout.new_node();
+        let a2 = layout.new_node();
+        layout.add_child(root, outlet);
+        layout.add_child(outlet, screen_a);
+        layout.add_child(screen_a, a1);
+        layout.add_child(screen_a, a2);
+
+        // Before navigating away, screen A's whole subtree is reachable.
+        let live = reachable_layout_nodes(&layout, root);
+        for n in [root, outlet, screen_a, a1, a2] {
+            assert!(live.contains(&n), "live tree must include every node");
+        }
+
+        // Navigate away: the drawer orphans screen A off the outlet
+        // (`clear_children` → `remove_child`) but keeps its nodes registered
+        // (persistent cache). Mount screen B in its place.
+        layout.remove_child(outlet, screen_a);
+        let screen_b = layout.new_node();
+        let b1 = layout.new_node();
+        layout.add_child(outlet, screen_b);
+        layout.add_child(screen_b, b1);
+
+        let live = reachable_layout_nodes(&layout, root);
+        // Detached screen A (still registered in `view_to_layout`) must be
+        // excluded — that is the whole point of the fix.
+        for n in [screen_a, a1, a2] {
+            assert!(!live.contains(&n), "detached/cached screen must be excluded from the pass");
+        }
+        // The active set is exactly root + outlet + screen B.
+        assert_eq!(live.len(), 4, "pass touches only the live tree, not cached screens");
+        for n in [root, outlet, screen_b, b1] {
+            assert!(live.contains(&n));
+        }
+    }
+}
+
 /// Resolve a deferred cornerRadius (stashed as `idealyst_requested_
 /// corner_radius` on the layer by [`apply_style_to_view`] when the
 /// view's dimensions weren't known at apply-style time) against the
@@ -1603,12 +1768,25 @@ impl MacosBackend {
     ) {
         self.layout.compute(root_layout, width, height);
 
-        // Apply frames to every registered view. We don't recurse
-        // through `NSView.subviews` because some views may not yet
-        // be attached at finish time (matches the iOS rationale).
+        // Apply frames to the views in the ACTIVE host tree — the nodes
+        // reachable from `root_layout`. We don't recurse through
+        // `NSView.subviews` because some views may not yet be attached at
+        // finish time (matches the iOS rationale); we walk Taffy's own child
+        // edges instead, which also excludes detached subtrees.
+        //
+        // Iterating the full `view_to_layout` map here re-framed every view
+        // ever created, including the off-screen subtrees of orphan-and-cached
+        // navigator screens (drawer `MountPolicy::*Persistent`) that
+        // `clear_children` removed from the tree but left registered for
+        // instant re-attach. `compute(root_layout, …)` above doesn't recompute
+        // those, so framing them wrote stale frames and ran the per-view sync
+        // for nothing — O(all views across every screen visited) per pass.
+        // See `reachable_layout_nodes` for the full rationale + regression.
+        let reachable = reachable_layout_nodes(&self.layout, root_layout);
         let snapshot: Vec<(usize, runtime_layout::LayoutNode)> = self
             .view_to_layout
             .iter()
+            .filter(|(_, (_, n))| reachable.contains(n))
             .map(|(k, (_, n))| (*k, *n))
             .collect();
         // Disable Core Animation's implicit actions for the whole apply-frames
@@ -1822,6 +2000,16 @@ impl MacosBackend {
     /// unsized (the navigation "flash"/delay). Safe to call from inside a
     /// `with_global_backend` block — it only needs `&mut self`.
     pub fn run_layout_pass_now(&mut self) {
+        if layout_trace_enabled() {
+            let started = std::time::Instant::now();
+            self.run_layout_pass_global();
+            let fires = IDLE_FIRE_COUNT.with(|c| c.get());
+            eprintln!(
+                "[layout-trace] pass (nav-sync) {:.2}ms — idle-fires so far this run: {fires}",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+            return;
+        }
         self.run_layout_pass_global();
     }
 }
@@ -2539,6 +2727,19 @@ impl Backend for MacosBackend {
         }
         let ns = NSString::from_str(value);
         let _: () = unsafe { msg_send![view, setStringValue: &*ns] };
+    }
+
+    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+        // In-place cell swap (NSSecureTextFieldCell ↔ VCenterTextFieldCell) —
+        // keeps the node's NSView so the walker handle + controlled value
+        // survive the toggle. See `set_text_field_secure` for the invariant.
+        crate::imp::view::set_text_field_secure(self.mtm, node.as_view(), secure);
+    }
+
+    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
+        let view = node.as_view();
+        let ns = NSString::from_str(placeholder.unwrap_or(""));
+        let _: () = unsafe { msg_send![view, setPlaceholderString: &*ns] };
     }
 
     fn create_text_area(

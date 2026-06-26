@@ -42,6 +42,11 @@ use crate::stylesheets::TooltipBubble;
 /// pointer-leave.
 pub const TOOLTIP_DISMISS_MS: u32 = 1800;
 
+// Reactive-by-default: `#[props]` wraps the scalar data props (`side`/`align`
+// enums, `offset`, `dismiss_ms`) → `Reactive<…>`. `text` is already `Reactive`
+// (routes to the `text()` sink, untouched); `children` is a `Vec<Element>`
+// (auto-skipped).
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct TooltipProps {
@@ -69,10 +74,10 @@ impl Default for TooltipProps {
     fn default() -> Self {
         Self {
             text: Reactive::Static(String::new()),
-            side: ElementSide::Above,
-            align: ElementAlign::Center,
-            offset: 6.0,
-            dismiss_ms: TOOLTIP_DISMISS_MS,
+            side: Reactive::Static(ElementSide::Above),
+            align: Reactive::Static(ElementAlign::Center),
+            offset: Reactive::Static(6.0),
+            dismiss_ms: Reactive::Static(TOOLTIP_DISMISS_MS),
             children: Vec::new(),
         }
     }
@@ -104,10 +109,17 @@ pub fn Tooltip(props: TooltipProps) -> Element {
     let open = signal!(false);
     let anchor_ref: Ref<ViewHandle> = Ref::new();
     let text = props.text;
-    let side = props.side;
-    let align = props.align;
-    let offset = props.offset;
-    let dismiss_ms = props.dismiss_ms as i32;
+    // TODO(reactive-sweep): route `side`/`align`/`offset`/`dismiss_ms`
+    // reactively into the bubble's `anchored_overlay` placement + the
+    // long-press timer. They're consumed by value as builder args (inside the
+    // `when` bubble closure) and the touch-dismiss delay — STRUCTURE, not a
+    // style closure — so a live signal would need the bubble rebuilt on change.
+    // The `when` already rebuilds the bubble on each open, so a value change
+    // between shows is picked up. `text` stays reactive (routes to `text()`).
+    let side = props.side.get();
+    let align = props.align.get();
+    let offset = props.offset.get();
+    let dismiss_ms = props.dismiss_ms.get() as i32;
 
     // Touch path: long-press shows the bubble, then auto-dismisses. The
     // `long_press` recognizer reports recognition (press start) only — no

@@ -29,9 +29,18 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, Easing, IdealystSchema, IntoElement, Length, Element, Reactive, Signal,
+    component, pressable, recipe, ui, AlignItems, Color, Cursor, Easing, Element, FlexDirection,
+    IconData, IdealystSchema, IntoElement, JustifyContent, Length, Reactive, Signal,
     StyleApplication, StyleRules, StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
 };
+
+use crate::components::icon::Icon;
+
+/// Horizontal inset on the BARE (adorned) input. Just enough that the glyph's
+/// left/right bearing doesn't clip against the input edge (macOS draws the cell
+/// text flush). The row gap is reduced by this so the icon↔text spacing stays
+/// visually equal to the edge↔icon padding.
+const FIELD_BARE_H_PAD: f32 = 2.0;
 
 use idea_theme::active_theme;
 use idea_theme::extensible::{tone as tones, RefBuiltins, ResolutionCtx, ToneRef};
@@ -40,6 +49,136 @@ use idea_theme::theme::{IdeaTheme, IdeaThemeRef};
 use crate::stylesheets::{FieldGroup, FieldLabel};
 pub use crate::stylesheets::{FieldAppearance, FieldSize};
 
+/// A leading/trailing adornment inside a [`Field`]'s box — an icon or a custom
+/// element rendered beside the input (e.g. a search glyph, a unit suffix, a
+/// clear button). Three shapes:
+///
+/// - [`Adornment::None`] — nothing (the default).
+/// - [`Adornment::Icon`] — a vector icon, rendered in the field's muted text
+///   color at a size derived from the field `size` (it "inherits" the field's
+///   styling so you just pass the icon).
+/// - [`Adornment::Element`] — any element, rendered as-is, for full control
+///   (a button, badge, spinner, …).
+///
+/// Adornments compose into a flex row alongside the input, so any width works.
+#[derive(Clone)]
+pub enum Adornment {
+    /// No adornment.
+    None,
+    /// An arbitrary element, built on demand. `Element` isn't `Clone`, so the
+    /// variant holds a builder closure (the same shape as the modal's content)
+    /// — use [`Adornment::element`] to construct it from a `move || ui! { … }`.
+    Element(Rc<dyn Fn() -> Element>),
+    /// A vector icon, auto-sized + muted to match the field.
+    Icon(IconData),
+    /// A TAPPABLE icon — same auto-sized, muted glyph as [`Adornment::Icon`]
+    /// but wrapped in a `pressable` with a press handler and a subtle
+    /// hover/press dim. Use this for a clear button, a password-visibility
+    /// toggle, etc.: unlike dropping an `IconButton` into [`Adornment::Element`]
+    /// (which stacks the button's own square padding on top of the field's),
+    /// this stays icon-sized so it never inflates the field box.
+    Button(IconData, Rc<dyn Fn()>),
+}
+
+impl Adornment {
+    /// Build an [`Adornment::Element`] from a closure: `Adornment::element(move
+    /// || ui! { Button(…) })`.
+    pub fn element(builder: impl Fn() -> Element + 'static) -> Self {
+        Adornment::Element(Rc::new(builder))
+    }
+
+    /// Build an icon-sized [`Adornment::Button`]: `Adornment::button(icon, move
+    /// || visible.set(!visible.get()))`.
+    pub fn button(icon: IconData, on_press: impl Fn() + 'static) -> Self {
+        Adornment::Button(icon, Rc::new(on_press))
+    }
+}
+
+impl Default for Adornment {
+    fn default() -> Self {
+        Adornment::None
+    }
+}
+
+/// Icon point size for an adornment at a given field size.
+fn adornment_icon_px(size: FieldSize) -> f32 {
+    match size.as_variant_str() {
+        "sm" => 14.0,
+        "lg" => 18.0,
+        _ => 16.0,
+    }
+}
+
+/// The muted glyph color shared by `Icon`/`Button` adornments.
+fn adornment_icon_color() -> Color {
+    Tokenized::token("color-text-muted", Color("#8a8270".into())).resolve()
+}
+
+/// Resolve an adornment to a renderable element (or `None`). `Icon`/`Button`
+/// are sized from the field `size` and painted in the theme's muted text color.
+fn render_adornment(adornment: &Adornment, size: FieldSize) -> Option<Element> {
+    match adornment {
+        Adornment::None => None,
+        Adornment::Element(build) => Some(build()),
+        Adornment::Icon(data) => {
+            let px = adornment_icon_px(size);
+            let muted = adornment_icon_color();
+            Some(ui! { Icon(data = data.clone(), size = px, color = Some(muted)) })
+        }
+        Adornment::Button(data, on_press) => {
+            let px = adornment_icon_px(size);
+            let muted = adornment_icon_color();
+            let glyph = ui! { Icon(data = data.clone(), size = px, color = Some(muted)) };
+            let on_press = on_press.clone();
+            // An icon-sized pressable — no button chrome/padding, so it never
+            // inflates the field box (the whole point of `Button` vs an
+            // `IconButton` in an `Element` adornment).
+            Some(
+                pressable(vec![glyph], move || on_press())
+                    .with_style(StyleApplication::new(adornment_button_sheet()))
+                    .into_element(),
+            )
+        }
+    }
+}
+
+/// Lazy stylesheet for [`Adornment::Button`]: a pointer cursor, centered glyph,
+/// and a subtle hover/press dim. No padding — it stays icon-sized.
+fn adornment_button_sheet() -> Rc<StyleSheet> {
+    thread_local! {
+        static SHEET: Rc<StyleSheet> = Rc::new(
+            StyleSheet::new(|_| StyleRules {
+                cursor: Some(Cursor::Pointer),
+                align_items: Some(AlignItems::Center),
+                justify_content: Some(JustifyContent::Center),
+                ..Default::default()
+            })
+            .variant("__state_hovered", "on", |_| StyleRules {
+                opacity: Some(Tokenized::Literal(0.65)),
+                ..Default::default()
+            })
+            .variant("__state_pressed", "on", |_| StyleRules {
+                opacity: Some(Tokenized::Literal(0.4)),
+                ..Default::default()
+            }),
+        );
+    }
+    SHEET.with(|s| s.clone())
+}
+
+// Reactive-by-default: `#[props]` rewrites each scalar-DATA field `T` →
+// `Reactive<T>` so a `ui!` call site can pass a `Signal`/`rx!` and have it
+// carry through live (a bare value stays a zero-overhead `Static` snapshot).
+// EVERY data prop here is reactive. The exclusions are a different category,
+// NOT "static": `on_change` (a handler — invoked on events, never rendered to
+// a sink), the controlled `value` `Signal` (already a reactive *source*), the
+// already-`Reactive` text props, and the `Adornment` slots — which are
+// ELEMENT-BUILDERS (`Rc<dyn Fn() -> Element>`), the *children* category, whose
+// reactivity is structural/internal (reactive content inside
+// `Adornment::element`, e.g. the password recipe), not data-reactive.
+// `Reactive<Adornment>` can't even route: `switch` needs `PartialEq` and an
+// element-builder isn't comparable — so a bare `Adornment` is the right type.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct FieldProps {
@@ -74,8 +213,23 @@ pub struct FieldProps {
     /// or `Bare` (no chrome). All three keep a focus ring.
     pub variant: FieldAppearance,
     /// Mask the entered text (password entry). Forwarded to the underlying
-    /// `text_input` primitive's `secure` flag.
-    pub secure: bool,
+    /// `text_input` primitive's `secure` flag. `Reactive<bool>` — a static
+    /// `bool` (the common case) or a live `Signal`/`rx!` so the mask can
+    /// toggle at runtime (password show/hide) without rebuilding the input.
+    #[schema(constraint = "reactive: static bool or Signal/rx!")]
+    pub secure: Reactive<bool>,
+    /// Leading adornment (icon/element) rendered before the input, inside the
+    /// field box. Default [`Adornment::None`]. See [`Adornment`]. An
+    /// element-builder (children category) — kept bare; reactivity is internal
+    /// (`Adornment::element(move || …reactive content…)`), not `Reactive<_>`.
+    #[prop(static)]
+    pub leading: Adornment,
+    /// Trailing adornment rendered after the input, inside the field box.
+    /// Default [`Adornment::None`]. See [`Adornment`]. Element-builder
+    /// (children category) — kept bare; reactivity is internal, not
+    /// `Reactive<_>` (an element-builder isn't `PartialEq`, so it can't route).
+    #[prop(static)]
+    pub trailing: Adornment,
     /// Pin an exact minimum input height in pixels. When set, it layers a
     /// `min-height` on top of the size-derived height so the input can't
     /// shrink below it — use this to match a design's exact px floor (e.g.
@@ -95,15 +249,17 @@ impl Default for FieldProps {
             label: Reactive::Static(None),
             value: Signal::new(String::new()),
             on_change: Rc::new(|_| {}),
-            placeholder: None,
+            placeholder: Reactive::Static(None),
             help: Reactive::Static(None),
             error: Reactive::Static(None),
-            tone: None,
-            size: FieldSize::default(),
-            variant: FieldAppearance::default(),
-            secure: false,
-            min_height: None,
-            width: None,
+            tone: Reactive::Static(None),
+            size: Reactive::Static(FieldSize::default()),
+            variant: Reactive::Static(FieldAppearance::default()),
+            secure: Reactive::Static(false),
+            leading: Adornment::None,
+            trailing: Adornment::None,
+            min_height: Reactive::Static(None),
+            width: Reactive::Static(None),
         }
     }
 }
@@ -328,46 +484,67 @@ fn size_key(size: FieldSize) -> &'static str {
 pub fn Field(props: &FieldProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
-    let placeholder = props.placeholder.clone();
-    let size = props.size;
-    let appearance = props.variant.as_variant_str().to_string();
-    let min_height = props.min_height;
-    let width = props.width;
 
-    // The effective tone is reactive iff it's *derived* from a live error
-    // signal — i.e. no explicit tone was given AND `error` is `Dynamic`.
-    // An explicit `tone`, or a `Static` error, fixes the tone at build.
-    let explicit_tone = props.tone.clone();
+    // `size` snapshot, used only for the adornment SIZING + adorned-shell
+    // layout below (size-derived icon px / row gap). A live `size` re-styles
+    // the INPUT via the reactive style closure below; making the adornment
+    // glyph size + row gap track it too needs those sinks routed reactively
+    // as well — the same shape, tracked as a follow-on.
+    let size = props.size.get();
+
     let error = props.error.clone();
-    let tone_is_reactive = explicit_tone.is_none() && !error.is_static();
 
-    // Derive the effective tone key from the *current* error value.
-    // Explicit tone wins; otherwise Danger when error is present.
+    // The input style is REACTIVE when any style-driving prop is live: a
+    // single apply-style Effect re-resolves the whole `StyleApplication`
+    // (size × appearance × tone × dims) whenever any of them changes,
+    // because `make_input_style` reads each prop's `.get()` INSIDE the
+    // closure (so the Effect subscribes to them). When every input is
+    // `Static` it collapses to one build-time resolution — no Effect, no
+    // first-paint flicker. The tone arm preserves the D9 rule: tone matters
+    // reactively only when it's a live prop, or absent-and-derived from a
+    // live `error` (an explicit fixed tone makes `error` style-irrelevant).
+    let tone_is_reactive = !props.tone.is_static()
+        || (matches!(props.tone, Reactive::Static(None)) && !error.is_static());
+    let style_is_reactive = tone_is_reactive
+        || !props.size.is_static()
+        || !props.variant.is_static()
+        || !props.min_height.is_static()
+        || !props.width.is_static();
+
+    // Resolve the effective tone key, reading the `tone`/`error` props LIVE.
+    // Explicit tone wins; otherwise Danger when a live error is present.
     let tone_key_for = {
-        let explicit_tone = explicit_tone.clone();
+        let tone = props.tone.clone();
         let error = error.clone();
         move || -> String {
-            let tone: Option<ToneRef> = explicit_tone.clone().or_else(|| {
+            let resolved: Option<ToneRef> = tone.get().or_else(|| {
                 if error.get().is_some() {
                     Some(tones::Danger.into())
                 } else {
                     None
                 }
             });
-            tone.as_ref().map(|t| t.key()).unwrap_or("default").to_string()
+            resolved.as_ref().map(|t| t.key()).unwrap_or("default").to_string()
         }
     };
 
-    // Build the input's `StyleApplication` for a given tone key. Factored
-    // into a closure so it can be evaluated once (static fast path) or per
-    // apply-style fire (reactive path); see the dispatch below.
+    // Build the input's `StyleApplication` for a tone key, reading every
+    // other style prop LIVE inside so the apply-style Effect subscribes to
+    // them. Called once (static path) or per apply-style fire (reactive
+    // path); see the dispatch below.
     let make_input_style = {
-        let appearance = appearance.clone();
-        let size_str = size_key(size).to_string();
+        let size = props.size.clone();
+        let variant = props.variant.clone();
+        let min_height = props.min_height.clone();
+        let width = props.width.clone();
         move |tone_key: String| -> StyleApplication {
+            let size_str = size_key(size.get()).to_string();
+            let appearance = variant.get().as_variant_str().to_string();
+            let min_height = min_height.get();
+            let width = width.get();
             let mut app = StyleApplication::new(field_input_sheet())
-                .with("size", size_str.clone())
-                .with("appearance", appearance.clone())
+                .with("size", size_str)
+                .with("appearance", appearance)
                 .with("tone", tone_key);
             // Pin an exact min-height / width on top of the size-derived
             // box. Keyed by the px values so identical configs dedupe to
@@ -408,43 +585,181 @@ pub fn Field(props: &FieldProps) -> Element {
     };
     let help_node = crate::components::optional_reactive_text(help_combined, help_style);
 
-    let secure = props.secure;
-    let mut input = runtime_core::text_input(value, move |v: String| (on_change)(v))
-        .secure(secure);
-    if let Some(p) = placeholder {
-        input = input.placeholder(p);
-    }
-    // INVARIANT (D9): when the tone is derived from a live `error` signal,
-    // the input style MUST be attached as a *reactive* closure (read
-    // `error.get()` inside it) so the apply-style Effect re-subscribes and
-    // re-resolves the border on every validation change. A pre-built
-    // `StyleApplication` is `StyleSource::Static` — applied once at mount,
-    // only re-run on theme swaps — so it would snapshot the border color at
-    // build time and never turn it red on live validation (the error TEXT
-    // updates regardless, via `help_combined`, which is why only the border
-    // regressed). Keep the static fast path when the tone is fixed to avoid
-    // a per-Field Effect + first-paint flicker.
-    let input_node: Element = if tone_is_reactive {
-        let make_input_style = make_input_style.clone();
-        let tone_key_for = tone_key_for.clone();
-        input
-            .with_style(move || make_input_style(tone_key_for()))
-            .into_element()
+    let secure = props.secure.clone();
+    let leading = render_adornment(&props.leading, size);
+    let trailing = render_adornment(&props.trailing, size);
+    let adorned = leading.is_some() || trailing.is_some();
+
+    // `placeholder` is routed LIVE: a reactive source updates the native
+    // placeholder in place (no rebuild); a `Static` one sets it once.
+    let input = runtime_core::text_input(value, move |v: String| (on_change)(v))
+        .secure(secure)
+        .placeholder_reactive(props.placeholder.clone());
+
+    // The "field box" — either the bare input (no adornments) or a flex-row
+    // SHELL wrapping a bare input with leading/trailing adornments.
+    let field_box: Element = if adorned {
+        // ADORNED: the chrome lives on the row SHELL; the input is bare so it
+        // sits flush beside the adornments (any width works — flex layout).
+        //
+        // KNOWN GAP: the focus ring is driven by the input's FOCUSED state,
+        // which a plain `view` shell can't receive, so adorned fields don't
+        // show the ring yet. Restoring it needs an `on_focus` event on
+        // `text_input` (the symmetric partner of the new `on_blur`) so the
+        // Field can drive a `focused` overlay on the shell — tracked as a
+        // follow-on. Non-adorned fields keep their ring (the branch below).
+        let size_str = size_key(size).to_string();
+        let bare_style = StyleApplication::new(field_input_sheet())
+            .with("size", size_str)
+            .with("appearance", "bare")
+            .with("tone", "default")
+            .with_computed("field-input-bare", || StyleRules {
+                flex_grow: Some(Tokenized::Literal(1.0)),
+                // NB: do NOT add `flex_basis: 0` / `min_width: 0` here. The
+                // shell fills the column via `width: 100%`, and that percent is
+                // resolved through the shell's CONTENT size on macOS — collapse
+                // the input's content contribution to zero and the shell hugs
+                // the lone icon (regressed to an icon-only box). Letting the
+                // input keep its auto basis is what makes `width: 100%` resolve
+                // to the full field width; `flex_grow: 1` then fills the row.
+                // KEEP the size-derived VERTICAL padding on the input: it's
+                // what establishes the field's height, so adornments center
+                // within it instead of stretching the row (an Element adornment
+                // shouldn't inflate the field — only the auto-sized Icon adapts
+                // the other way). Horizontal padding moves to the shell; a 2px
+                // inset stays so the glyph's bearing doesn't clip the edge.
+                padding_left: Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD))),
+                padding_right: Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD))),
+                border_top_width: Some(Tokenized::Literal(0.0)),
+                border_right_width: Some(Tokenized::Literal(0.0)),
+                border_bottom_width: Some(Tokenized::Literal(0.0)),
+                border_left_width: Some(Tokenized::Literal(0.0)),
+                background: Some(Tokenized::Literal(Color("transparent".into()))),
+                ..Default::default()
+            });
+        let input_node = input.with_style(bare_style).into_element();
+
+        // Shell = the field chrome (border/bg/radius/padding, tone border) +
+        // a row layout. Static tone snapshot here (live-validation borders on
+        // adorned fields are the same follow-on as the focus ring).
+        //
+        // The row GAP matches the shell's horizontal padding so the icon↔text
+        // spacing equals the edge↔icon spacing — minus the input's 2px anti-clip
+        // inset, so the *visual* gaps end up identical. Size-derived to track
+        // the field_input_sheet size variant (sm/md/lg → 8/12/16).
+        let edge_pad = match size.as_variant_str() {
+            "sm" => 8.0_f32,
+            "lg" => 16.0,
+            _ => 12.0,
+        };
+        let gap_px = (edge_pad - FIELD_BARE_H_PAD).max(0.0);
+        let shell_style = make_input_style(tone_key_for()).with_computed(
+            format!("field-shell-row-{}", size.as_variant_str()),
+            move || StyleRules {
+                flex_direction: Some(FlexDirection::Row),
+                align_items: Some(AlignItems::Center),
+                gap: Some(Tokenized::Literal(Length::Px(gap_px))),
+                // Fill the FieldGroup. The group fills its own container via
+                // `align_self: stretch` (see the `FieldGroup` stylesheet — it's
+                // what makes a Field full-width even under a centering parent);
+                // this `width: 100%` then resolves against that definite width
+                // so the row spans the field and the input has room to grow.
+                width: Some(Tokenized::Literal(Length::pct(100.0))),
+                // Vertical padding lives on the INPUT (it drives the box height);
+                // zeroing it here means a tall-ish adornment centers in the
+                // input's height instead of stretching the row taller.
+                padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
+                padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
+                ..Default::default()
+            },
+        );
+
+        let mut shell_children: Vec<Element> = Vec::with_capacity(3);
+        if let Some(l) = leading {
+            shell_children.push(l);
+        }
+        shell_children.push(input_node);
+        if let Some(t) = trailing {
+            shell_children.push(t);
+        }
+        ui! { view(style = shell_style) { shell_children } }
     } else {
-        input.with_style(make_input_style(tone_key_for())).into_element()
+        // PLAIN: chrome (+ focus ring) on the input itself (unchanged).
+        //
+        // INVARIANT (D9): when the tone is derived from a live `error` signal,
+        // the input style MUST be attached as a *reactive* closure (read
+        // `error.get()` inside it) so the apply-style Effect re-subscribes and
+        // re-resolves the border on every validation change. A pre-built
+        // `StyleApplication` is `StyleSource::Static` — applied once at mount,
+        // only re-run on theme swaps — so it would snapshot the border color
+        // at build time and never turn it red on live validation (the error
+        // TEXT updates regardless, via `help_combined`). Keep the static fast
+        // path when the tone is fixed to avoid a per-Field Effect + flicker.
+        // Generalized beyond tone: ANY live style prop (size/variant/dims)
+        // takes the reactive closure so the field re-styles in place when it
+        // changes — `make_input_style` reads each prop live inside.
+        if style_is_reactive {
+            let make_input_style = make_input_style.clone();
+            let tone_key_for = tone_key_for.clone();
+            input
+                .with_style(move || make_input_style(tone_key_for()))
+                .into_element()
+        } else {
+            input.with_style(make_input_style(tone_key_for())).into_element()
+        }
     };
 
     let mut children: Vec<Element> = Vec::with_capacity(3);
     if let Some(l) = label_node {
         children.push(l);
     }
-    children.push(input_node);
+    children.push(field_box);
     if let Some(h) = help_node {
         children.push(h);
     }
 
     ui! { view(style = FieldGroup()) { children } }
 }
+
+recipe!(
+    Field,
+    /// Password field with a show/hide toggle, built from a reactive `secure`
+    /// plus a trailing adornment. `secure = rx!(!visible.get())` makes the mask
+    /// itself reactive: the Field is NOT wrapped in a `switch`, the underlying
+    /// `text_input` is never rebuilt, and the typed `value` is never disturbed
+    /// when the mask toggles — the framework flips the native secure-entry mode
+    /// in place (on macOS, an in-place `NSSecureTextFieldCell` swap). The eye
+    /// glyph is a reactive `text` leaf that flips with the same `visible`
+    /// signal, so nothing in the tree is rebuilt on toggle. Swap the emoji for
+    /// `icon = Some(icons_lucide::EYE/EYE_OFF)` in an app with an icon pack.
+    pub fn field_password_with_visibility_toggle() -> ::runtime_core::Element {
+        use crate::components::field::{Adornment, Field};
+        use ::runtime_core::{pressable, rx, signal, text, ui, IntoElement};
+        use ::std::rc::Rc;
+
+        let value = signal!(String::new());
+        let visible = signal!(false);
+        let on_change: Rc<dyn Fn(String)> = Rc::new(move |v: String| value.set(v));
+        let toggle: Rc<dyn Fn()> = Rc::new(move || visible.set(!visible.get()));
+
+        ui! {
+            Field(
+                value = value,
+                on_change = on_change,
+                placeholder = "Password".to_string(),
+                secure = rx!(!visible.get()),
+                trailing = Adornment::element(move || {
+                    let toggle = toggle.clone();
+                    let glyph = text(move || {
+                        if visible.get() { "🙈".to_string() } else { "👁".to_string() }
+                    })
+                    .into_element();
+                    pressable(vec![glyph], move || (toggle)()).into_element()
+                }),
+            )
+        }
+    }
+);
 
 #[cfg(test)]
 mod tests {
@@ -530,7 +845,9 @@ mod tests {
         let err: Signal<Option<String>> = Signal::new(None);
         let props = FieldProps {
             error: err.into(),
-            tone: Some(tones::Warning.into()),
+            // Hand-written struct literals don't get `ui!`'s `.into()`, so a
+            // now-reactive prop is set with an explicit `Static`.
+            tone: Reactive::Static(Some(tones::Warning.into())),
             ..Default::default()
         };
         assert!(
@@ -544,7 +861,7 @@ mod tests {
     fn min_height_prop_sets_min_height_style() {
         theme();
         let props = FieldProps {
-            min_height: Some(48.0),
+            min_height: Reactive::Static(Some(48.0)),
             ..Default::default()
         };
         let rules = match input_style_source(Field(&props)) {
@@ -563,7 +880,7 @@ mod tests {
     fn width_prop_sets_width_style() {
         theme();
         let props = FieldProps {
-            width: Some(240.0),
+            width: Reactive::Static(Some(240.0)),
             ..Default::default()
         };
         let rules = match input_style_source(Field(&props)) {
@@ -571,5 +888,85 @@ mod tests {
             _ => unreachable!(),
         };
         assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(240.0))));
+    }
+
+    /// Is the built Field's `text_input` secure flag a `Static` snapshot?
+    fn input_secure_is_static(field: Element) -> bool {
+        let children = match field {
+            Element::View { children, .. } => children,
+            _ => panic!("Field renders a view wrapper"),
+        };
+        for c in children {
+            if let Element::TextInput { secure, .. } = c {
+                return secure.is_static();
+            }
+        }
+        panic!("Field tree has no text_input node");
+    }
+
+    // A live `secure` source must thread to the `text_input` as
+    // `Reactive::Dynamic` — NOT snapshotted at build — so the mask can toggle
+    // at runtime without rebuilding the Field (the password show/hide path
+    // that previously needed a `switch`).
+    #[test]
+    fn reactive_secure_threads_through_not_flattened() {
+        theme();
+        let visible: Signal<bool> = Signal::new(false);
+        let props = FieldProps {
+            secure: runtime_core::rx!(!visible.get()),
+            ..Default::default()
+        };
+        assert!(
+            !input_secure_is_static(Field(&props)),
+            "a reactive `secure` must reach the text_input as Reactive::Dynamic"
+        );
+    }
+
+    // A live `size` (or any style-driving prop) must attach the input style
+    // as `Reactive` so the field re-styles IN PLACE when it changes — props
+    // are routed into the style sink, not snapshotted at build.
+    #[test]
+    fn reactive_size_drives_reactive_input_style() {
+        theme();
+        let big: Signal<bool> = Signal::new(false);
+        let props = FieldProps {
+            size: runtime_core::rx!(if big.get() { FieldSize::Lg } else { FieldSize::Sm }),
+            ..Default::default()
+        };
+        assert!(
+            matches!(input_style_source(Field(&props)), StyleSource::Reactive(_)),
+            "a reactive `size` must attach a reactive input style (routed to the \
+             style sink, not snapshotted)"
+        );
+    }
+
+    // All-`Static` style props keep the build-time fast path — one resolution,
+    // no per-Field apply-style Effect.
+    #[test]
+    fn all_static_style_props_use_static_fast_path() {
+        theme();
+        let props = FieldProps {
+            size: Reactive::Static(FieldSize::Lg),
+            ..Default::default()
+        };
+        assert!(
+            matches!(input_style_source(Field(&props)), StyleSource::Static(_)),
+            "static style props must keep the no-Effect fast path"
+        );
+    }
+
+    // A bare `bool` stays a `Static` mask — the zero-overhead common case (no
+    // per-input effect).
+    #[test]
+    fn static_secure_stays_static() {
+        theme();
+        let props = FieldProps {
+            secure: true.into(),
+            ..Default::default()
+        };
+        assert!(
+            input_secure_is_static(Field(&props)),
+            "a static `secure` stays Reactive::Static"
+        );
     }
 }

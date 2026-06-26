@@ -203,7 +203,10 @@ fn project_cargo_toml(
     bundle_id: &str,
     source: &FrameworkSource,
 ) -> String {
-    let fcore_dep = source.dep("crates/framework/core", &[]);
+    // The framework core crate lives at `crates/runtime/core` (renamed from
+    // the old `crates/framework/core`). Pointing at the stale path makes a
+    // path-dep'd scaffold fail to resolve `runtime-core`.
+    let fcore_dep = source.dep("crates/runtime/core", &[]);
 
     format!(
         r##"[package]
@@ -301,7 +304,10 @@ fn write_library(
 
     let pascal = pascal_case(name);
     let props_type = format!("{pascal}Props");
-    let fcore_dep = source.dep("crates/framework/core", &[]);
+    // The framework core crate lives at `crates/runtime/core` (renamed from
+    // the old `crates/framework/core`). Pointing at the stale path makes a
+    // path-dep'd scaffold fail to resolve `runtime-core`.
+    let fcore_dep = source.dep("crates/runtime/core", &[]);
     let bweb_dep = source.dep("crates/backend/web", &[]);
     let bios_dep = source.dep("crates/backend/ios/mobile", &[]);
     let bandroid_dep = source.dep("crates/backend/android/mobile", &[]);

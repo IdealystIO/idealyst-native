@@ -81,6 +81,49 @@ mod raf_link {
     }
 }
 
+thread_local! {
+    /// Initial-mount microtask buffer. `None` normally (microtasks dispatch
+    /// via `dispatch_async(main_queue)`, i.e. the *next* run-loop turn — which
+    /// is AFTER the first paint). While a host has opened a mount-buffering
+    /// window, microtasks queue here instead and are drained SYNCHRONOUSLY by
+    /// [`Scheduler::drain_buffered_microtasks`] (called from `runtime_core::mount`
+    /// before `finish`), so navigator-SDK deferred chrome (the drawer header /
+    /// sidebar, built via `schedule_microtask` to escape the `init` backend
+    /// borrow) lands in the FIRST layout instead of popping in a turn later.
+    /// Mirrors the web backend's hydration buffer — web doesn't flicker because
+    /// JS microtasks drain before the browser's first paint; this gives the
+    /// Apple hosts the same pre-paint drain. Set by [`begin_mount_buffering`],
+    /// cleared by [`end_mount_buffering`].
+    static MOUNT_BUFFER: RefCell<Option<std::collections::VecDeque<Box<dyn FnOnce() + 'static>>>> =
+        const { RefCell::new(None) };
+}
+
+/// Open a mount-buffering window: microtasks scheduled until
+/// [`end_mount_buffering`] queue in [`MOUNT_BUFFER`] instead of dispatching to
+/// the next run-loop turn. The host calls this immediately before
+/// `runtime_core::mount(...)` so the build's deferred chrome can be drained
+/// before the first paint. Idempotent (a second call keeps the existing queue).
+pub fn begin_mount_buffering() {
+    MOUNT_BUFFER.with(|b| {
+        let mut b = b.borrow_mut();
+        if b.is_none() {
+            *b = Some(std::collections::VecDeque::new());
+        }
+    });
+}
+
+/// Close the mount-buffering window. Any still-buffered tasks (there shouldn't
+/// be — `mount` drains before this runs) are dispatched normally so nothing is
+/// lost. After this, microtasks dispatch via `dispatch_async` as usual.
+pub fn end_mount_buffering() {
+    let leftover = MOUNT_BUFFER.with(|b| b.borrow_mut().take());
+    if let Some(q) = leftover {
+        for f in q {
+            dispatch_main_async(f);
+        }
+    }
+}
+
 /// Register this scheduler with `runtime-core`. Idempotent — first
 /// install wins. Safe to call from any Apple host (iOS / tvOS / macOS).
 pub fn install_scheduler() {
@@ -128,6 +171,21 @@ unsafe impl Sync for AppleScheduler {}
 
 impl Scheduler for AppleScheduler {
     fn schedule_microtask(&self, f: Box<dyn FnOnce() + 'static>) {
+        // During the initial-mount buffering window, queue instead of
+        // dispatching so `mount` can drain these synchronously before the first
+        // paint (see `MOUNT_BUFFER` / `begin_mount_buffering`). Move `f` into the
+        // buffer when buffering, else hand it back to dispatch below.
+        let f = MOUNT_BUFFER.with(|b| {
+            if let Some(q) = b.borrow_mut().as_mut() {
+                q.push_back(f);
+                None
+            } else {
+                Some(f)
+            }
+        });
+        let Some(f) = f else {
+            return;
+        };
         // `dispatch_async(dispatch_get_main_queue(), block)` — the
         // canonical "run this on the next main-loop iteration"
         // primitive on Apple platforms. Independent of NSRunLoop
@@ -243,6 +301,23 @@ impl Scheduler for AppleScheduler {
                 timer: Some(timer),
                 _state: AnyState::Raf(state),
             })
+        }
+    }
+
+    /// Synchronously run every microtask queued in the [`MOUNT_BUFFER`] during a
+    /// mount-buffering window. Drains in FIFO order and keeps draining tasks
+    /// scheduled BY those tasks (a chrome build's follow-up layout-pass
+    /// microtask, a `switch`/`when` first-build), so the whole deferred-build
+    /// cascade settles before `mount` calls `finish`. No-op when not buffering.
+    fn drain_buffered_microtasks(&self) {
+        loop {
+            let next = MOUNT_BUFFER.with(|b| {
+                b.borrow_mut().as_mut().and_then(|q| q.pop_front())
+            });
+            match next {
+                Some(f) => f(),
+                None => break,
+            }
         }
     }
 }
@@ -483,6 +558,64 @@ fn dispatch_main_async(f: Box<dyn FnOnce() + 'static>) {
 // ===========================================================================
 // Tests
 // ===========================================================================
+
+#[cfg(test)]
+#[cfg(target_os = "macos")]
+mod mount_buffer_tests {
+    //! Regression: the mount-buffering window holds `schedule_microtask`
+    //! callbacks (the navigator SDK's deferred chrome) so `mount` can drain
+    //! them synchronously before `finish` — landing the drawer header/sidebar in
+    //! the first paint instead of a `dispatch_async` turn later (the "top
+    //! toolbar renders after the initial cycle" bug). Exercises only the
+    //! buffered path (no libdispatch / run loop needed).
+    use super::*;
+    use runtime_core::scheduling::Scheduler;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[test]
+    fn buffers_until_drain_then_runs_fifo_including_cascade() {
+        // Clean slate (thread-local could carry state from another test).
+        end_mount_buffering();
+
+        let log: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
+        begin_mount_buffering();
+        let sched = AppleScheduler;
+
+        let l1 = log.clone();
+        sched.schedule_microtask(Box::new(move || l1.borrow_mut().push(1)));
+        // A task that schedules ANOTHER task — the drain must pick up the
+        // cascade (a chrome build's follow-up insert/layout microtask).
+        let l2 = log.clone();
+        sched.schedule_microtask(Box::new(move || {
+            l2.borrow_mut().push(2);
+            let l3 = l2.clone();
+            AppleScheduler.schedule_microtask(Box::new(move || l3.borrow_mut().push(3)));
+        }));
+
+        // Nothing has run — they're buffered, not dispatched to the next turn.
+        assert!(log.borrow().is_empty(), "microtasks must buffer while a mount window is open");
+
+        sched.drain_buffered_microtasks();
+        assert_eq!(
+            *log.borrow(),
+            vec![1, 2, 3],
+            "drain runs buffered tasks FIFO and follows cascaded scheduling",
+        );
+
+        end_mount_buffering();
+
+        // After the window closes, buffering is off (a later task would dispatch,
+        // not queue) — assert the buffer is empty / not capturing.
+        let l4 = log.clone();
+        // Re-open + immediately drain to confirm a fresh window starts empty.
+        begin_mount_buffering();
+        sched.drain_buffered_microtasks();
+        assert_eq!(*log.borrow(), vec![1, 2, 3], "a fresh window starts empty");
+        end_mount_buffering();
+        let _ = l4;
+    }
+}
 
 #[cfg(test)]
 #[cfg(target_os = "macos")]

@@ -55,21 +55,37 @@ fn panel(children: Vec<Element>) -> Element {
 // Menu
 // =============================================================================
 
+// Reactive-by-default: `#[props]` would wrap each scalar field, but every
+// data prop here is STRUCTURAL/positioning — `target`/`side`/`align`/`offset`
+// feed the `anchored_overlay` builder once at render, not a reactive style
+// sink. They're held bare via `#[prop(static)]`; routing them reactively is a
+// separate structural change (TODO below), not a style-prop sweep.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct MenuProps {
     /// Element to anchor against — `AnchorTarget::from(some_ref)`.
     /// Required; the component panics if `None`.
+    // TODO(reactive-sweep): route `target` to the anchored_overlay anchor
+    // (structural — a live target re-anchors the panel). Kept bare for now.
+    #[prop(static)]
     pub target: Option<AnchorTarget>,
     /// Fires on click-outside / Escape; flip your open-state signal.
     pub on_dismiss: Option<Rc<dyn Fn()>>,
     /// Which side of the anchor the panel opens toward. Default `Below`.
+    // TODO(reactive-sweep): route `side` to anchored_overlay `.side()`
+    // (structural positioning, not a style sink). Kept bare for now.
+    #[prop(static)]
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub side: ElementSide,
     /// Alignment along the anchor's edge. Default `Start`.
+    // TODO(reactive-sweep): route `align` to anchored_overlay `.align()`.
+    #[prop(static)]
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub align: ElementAlign,
     /// Gap in pixels between the anchor and the panel. Default 4.
+    // TODO(reactive-sweep): route `offset` to anchored_overlay `.offset()`.
+    #[prop(static)]
     #[schema(constraint = "pixels, >= 0")]
     pub offset: f32,
     /// Panel contents — compose [`MenuItem`], [`MenuLabel`],
@@ -119,6 +135,10 @@ pub fn Menu(props: MenuProps) -> Element {
 // MenuItem
 // =============================================================================
 
+// Reactive-by-default: `#[props]` wraps the scalar `active` → `Reactive<bool>`
+// (routes to the row style sink below). `label` is already reactive; the
+// handler (`on_select`) and element slots (`leading`/`trailing`) auto-skip.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct MenuItemProps {
@@ -133,7 +153,8 @@ pub struct MenuItemProps {
     /// Optional trailing element (shortcut hint, badge), pushed right.
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub trailing: Option<Element>,
-    /// Renders the row in its highlighted/active state.
+    /// Renders the row in its highlighted/active state. `Reactive<bool>` —
+    /// static or live (signal/`rx!`); the row re-styles in place.
     pub active: bool,
 }
 
@@ -144,7 +165,7 @@ impl Default for MenuItemProps {
             on_select: Rc::new(|| {}),
             leading: None,
             trailing: None,
-            active: false,
+            active: Reactive::Static(false),
         }
     }
 }
@@ -153,7 +174,7 @@ impl Default for MenuItemProps {
 /// and optional right-pushed trailing element, in a pressable.
 #[component]
 pub fn MenuItem(props: MenuItemProps) -> Element {
-    let active = props.active;
+    let active = props.active.clone();
     let on_select = props.on_select.clone();
 
     let mut kids: Vec<Element> = Vec::with_capacity(4);
@@ -166,18 +187,29 @@ pub fn MenuItem(props: MenuItemProps) -> Element {
         kids.push(tr);
     }
 
-    runtime_core::pressable(kids, move || (on_select)())
-        .with_style(move || {
-            StyleApplication::new(MenuItemRow::sheet())
-                .with("active", if active { "on" } else { "off" }.to_string())
-        })
-        .into_element()
+    // `active` reads live INSIDE the style closure so the apply-style Effect
+    // subscribes when it's a signal; a static stays the build-time fast path.
+    let style_is_reactive = !active.is_static();
+    let make_style = move || {
+        StyleApplication::new(MenuItemRow::sheet())
+            .with("active", if active.get() { "on" } else { "off" }.to_string())
+    };
+
+    let bound = runtime_core::pressable(kids, move || (on_select)());
+    if style_is_reactive {
+        bound.with_style(make_style).into_element()
+    } else {
+        bound.with_style(make_style()).into_element()
+    }
 }
 
 // =============================================================================
 // MenuLabel / MenuSeparator
 // =============================================================================
 
+// Reactive-by-default: only data field (`text`) is already `Reactive`;
+// `#[props]` is a no-op here but kept for uniformity with the family.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct MenuLabelProps {
@@ -232,6 +264,10 @@ impl MenuEntry {
     }
 }
 
+// Reactive-by-default: `label` is already reactive; `items` is a LIST
+// (`Vec<MenuEntry>`, auto-skipped — the flyout structure, not a style sink);
+// `side` is structural overlay positioning, kept bare via `#[prop(static)]`.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct SubMenuProps {
@@ -243,9 +279,14 @@ pub struct SubMenuProps {
     /// — the `when`-gated builder must be able to rebuild it on each
     /// open. Selecting an entry runs its `on_select` and closes the
     /// flyout.
+    // TODO(reactive-sweep): route `items` to the flyout rows (list/structural
+    // — a live items list would rebuild the flyout). Kept bare for now.
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub items: Vec<MenuEntry>,
     /// Which side the flyout opens toward. Default `End` (right in LTR).
+    // TODO(reactive-sweep): route `side` to anchored_overlay `.side()`
+    // (structural positioning, not a style sink). Kept bare for now.
+    #[prop(static)]
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub side: ElementSide,
 }

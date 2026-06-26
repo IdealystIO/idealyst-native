@@ -33,6 +33,12 @@ use crate::stylesheets::{ControlRow, FieldLabel};
 /// Unicode check mark glyph rendered in the box when checked.
 const CHECK_GLYPH: &str = "\u{2713}";
 
+// Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
+// `Reactive<T>` (tone/variant/size/icon), so a `ui!` call site can pass a
+// `Signal`/`rx!` and have it re-style in place. The controlled `value`
+// `Signal` stays bare (a reactive *source*), `on_change` is a handler, and
+// `label` is already `Reactive`.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct CheckboxProps {
@@ -64,10 +70,10 @@ impl Default for CheckboxProps {
             label: Reactive::Static(None),
             value: Signal::new(false),
             on_change: Rc::new(|_| {}),
-            tone: ToneRef::default(),
-            variant: VariantRef::default(),
-            size: ControlSize::default(),
-            icon: None,
+            tone: Reactive::Static(ToneRef::default()),
+            variant: Reactive::Static(VariantRef::default()),
+            size: Reactive::Static(ControlSize::default()),
+            icon: Reactive::Static(None),
             test_id: None,
         }
     }
@@ -80,18 +86,35 @@ impl Default for CheckboxProps {
 pub fn Checkbox(props: &CheckboxProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
-    let size_key = props.size.as_variant_str().to_string();
-    let appearance = format!("{}_{}", props.tone.key(), props.variant.key());
+    let tone = props.tone.clone();
+    let variant = props.variant.clone();
+    let size = props.size.clone();
+    let icon_data = props.icon.clone();
 
     let sheets = installed_checkbox_sheets();
 
+    // Style keys read LIVE from the reactive props so the apply-style Effect
+    // subscribes to whichever are dynamic; bare props collapse to one static
+    // resolution (no per-node Effect, no first-paint flicker).
+    let appearance_for = {
+        let tone = tone.clone();
+        let variant = variant.clone();
+        move || format!("{}_{}", tone.get().key(), variant.get().key())
+    };
+    let size_key_for = {
+        let size = size.clone();
+        move || size.get().as_variant_str().to_string()
+    };
+
     // Checkmark — mounted only while checked, tinted to the variant
     // foreground by the glyph sheet's appearance arm. A custom `icon`
-    // replaces the default ✓ glyph, inheriting the same foreground.
+    // replaces the default ✓ glyph, inheriting the same foreground. The
+    // switch re-runs on `value`; the appearance/size/icon keys are read live
+    // inside so the glyph re-styles when those props change too.
     let glyph_sheet = sheets.glyph_sheet.clone();
-    let glyph_appearance = appearance.clone();
-    let glyph_size = size_key.clone();
-    let icon_data = props.icon;
+    let glyph_appearance_for = appearance_for.clone();
+    let glyph_size_for = size_key_for.clone();
+    let glyph_icon = icon_data.clone();
     let glyph = runtime_core::switch(
         move || value.get(),
         move |on: &bool| {
@@ -99,14 +122,14 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
                 return ui! { view {} }.into_element();
             }
             let gs = glyph_sheet.clone();
-            let ga = glyph_appearance.clone();
-            let gz = glyph_size.clone();
-            match icon_data {
+            let ga = glyph_appearance_for.clone();
+            let gz = glyph_size_for.clone();
+            match glyph_icon.get() {
                 Some(data) => {
                     // Resolve the checkmark foreground and stamp it on the icon
                     // (native icons don't inherit text color — see Button).
                     let fg = resolve_style(
-                        &StyleApplication::new(gs).with("appearance", ga).with("size", gz),
+                        &StyleApplication::new(gs).with("appearance", ga()).with("size", gz()),
                     )
                     .color
                     .clone();
@@ -119,8 +142,8 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
                 None => runtime_core::text(CHECK_GLYPH)
                     .with_style(move || {
                         StyleApplication::new(gs.clone())
-                            .with("appearance", ga.clone())
-                            .with("size", gz.clone())
+                            .with("appearance", ga())
+                            .with("size", gz())
                     })
                     .into_element(),
             }
@@ -128,16 +151,17 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
     );
 
     // The box — fill flips between the tone appearance (checked) and
-    // the muted outline (unchecked) via the `checked` axis.
+    // the muted outline (unchecked) via the `checked` axis. Appearance/size
+    // are read live inside so a reactive tone/variant/size re-styles the box.
     let box_sheet = sheets.box_sheet.clone();
-    let box_appearance = appearance;
-    let box_size = size_key;
+    let box_appearance_for = appearance_for;
+    let box_size_for = size_key_for;
     let box_el = runtime_core::view(vec![glyph])
         .with_style(move || {
             StyleApplication::new(box_sheet.clone())
-                .with("appearance", box_appearance.clone())
+                .with("appearance", box_appearance_for())
                 .with("checked", if value.get() { "on" } else { "off" }.to_string())
-                .with("size", box_size.clone())
+                .with("size", box_size_for())
         })
         .into_element();
 

@@ -527,6 +527,15 @@ stylesheet! {
         base(t) {
             flex_direction: FlexDirection::Column,
             gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            // A form field fills its container width by default (web `<input>`
+            // is block-level; native should match — §7 parity). Without this
+            // the field hugs its content and a centering parent — e.g. the
+            // docs `DemoSurface` (`align_items: center`) — collapses it to the
+            // content width (an icon-only adorned field shrank to ~54pt and
+            // centered). `align_self: stretch` overrides a centering parent for
+            // this child only; width stays auto so the field's height is still
+            // content-driven and an explicit `width` prop still constrains it.
+            align_self: runtime_core::AlignSelf::Stretch,
         }
     }
 }

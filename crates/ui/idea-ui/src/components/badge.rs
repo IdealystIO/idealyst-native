@@ -20,6 +20,11 @@ use runtime_core::{component, text, IdealystSchema, IntoElement, Element, Reacti
 
 use idea_theme::extensible::{installed_badge_sheet, tone, variant, ToneRef, VariantRef};
 
+// Reactive-by-default: `#[props]` wraps `tone`/`variant` → `Reactive<…>`;
+// `label` is already reactive. Bare markers (`tone = tone::Success`) coerce
+// to `Reactive<ToneRef>` via the marker's generated `From` (see
+// idea-theme `builtin_tone!`).
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct BadgeProps {
@@ -51,14 +56,23 @@ pub fn Badge(props: &BadgeProps) -> Element {
     let label = props.label.clone();
     let tone = props.tone.clone();
     let variant = props.variant.clone();
-    let appearance_key = format!("{}_{}", tone.key(), variant.key());
 
-    // Static style — see Button for why (build-time apply, no flicker).
-    let style = StyleApplication::new(installed_badge_sheet())
-        .with("appearance", appearance_key)
-        .with_computed("hug", crate::components::hug_self);
+    // Reactive when tone/variant is live; else the build-time fast path (no
+    // first-paint flicker). The closure reads them live so the apply-style
+    // Effect subscribes to whichever are dynamic.
+    let style_is_reactive = !tone.is_static() || !variant.is_static();
+    let make_style = move || {
+        let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
+        StyleApplication::new(installed_badge_sheet())
+            .with("appearance", appearance_key)
+            .with_computed("hug", crate::components::hug_self)
+    };
 
-    text(label).with_style(style).into_element()
+    if style_is_reactive {
+        text(label).with_style(make_style).into_element()
+    } else {
+        text(label).with_style(make_style()).into_element()
+    }
 }
 
 #[cfg(test)]

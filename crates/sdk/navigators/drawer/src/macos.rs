@@ -425,6 +425,17 @@ impl NavigatorHandler<MacosBackend> for MacosDrawerHandler {
                 }
                 *dispatching.borrow_mut() = true;
 
+                // Coalesce every layout pass this swap would trigger into one.
+                // Building the incoming screen crosses a reactive-window
+                // boundary per `attach_style` effect, and `active_changed` below
+                // fans `active_route` out to every sidebar item — the macOS idle
+                // hook would fire a full-tree layout pass at each, so one
+                // navigation cost 4–9+ redundant passes. Held across mount +
+                // insert + `active_changed`; the guard runs ONE coalesced pass
+                // when it drops at the end of this arm. The `run_layout_pass_now`
+                // below still lays the new screen out before paint (no flash).
+                let _coalesce = backend_macos::coalesce_layout_passes();
+
                 // ---- Incoming: cache hit or fresh mount? ----
                 //
                 // Check the persistence cache first. A hit means the

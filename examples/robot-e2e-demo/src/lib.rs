@@ -68,11 +68,26 @@ pub fn app() -> Element {
     let show_secret: Signal<bool> = signal!(false);
     let name: Signal<String> = signal!(String::new());
 
+    // Expose `count` by name so an out-of-process driver (`idealyst test`,
+    // the inspector) can read it via the `read_signal` bridge verb — the
+    // signal-assertion half of a cross-platform test. Gated on `robot`
+    // because `watch_signal` only exists when that feature is on (the same
+    // feature `idealyst dev` always enables).
+    #[cfg(feature = "robot")]
+    runtime_core::robot::watch_signal("count", count);
+
     // Kick off the E2E suite shortly after mount, once the first render
     // has populated the Robot registry. `after_ms_detached` self-manages
     // its handle (no cancel-on-drop), so a fire-and-forget schedule from
     // here is safe.
-    runtime_core::after_ms_detached(INITIAL_RUN_DELAY_MS, run_suite);
+    //
+    // Skip the auto-run when an external driver (`idealyst test`) owns the
+    // app: that driver runs its own suite over the relay and the in-app
+    // suite would race it for the same `count`/`secret` state. The driver
+    // sets `IDEALYST_TEST_DRIVER`, inherited by the spawned app process.
+    if std::env::var_os("IDEALYST_TEST_DRIVER").is_none() {
+        runtime_core::after_ms_detached(INITIAL_RUN_DELAY_MS, run_suite);
+    }
 
     screen(count, show_secret, name)
 }

@@ -102,6 +102,11 @@ impl Tab {
     }
 }
 
+// Reactive-by-default: `#[props]` wraps the scalar `indicator` →
+// `Reactive<TabIndicator>` (routes to the per-tab style sink). `tabs` is a
+// reactive `Signal` LIST, `active` is already `Reactive`, and `on_change` is a
+// handler — all auto-skipped.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct TabsProps {
@@ -120,6 +125,7 @@ pub struct TabsProps {
     pub on_change: Rc<dyn Fn(String)>,
     /// How the active tab is marked. Default [`TabIndicator::Underline`];
     /// [`TabIndicator::Dot`] gives the compact dot + chip switcher.
+    /// `Reactive<TabIndicator>` — static or live; the strip re-styles in place.
     pub indicator: TabIndicator,
 }
 
@@ -131,7 +137,7 @@ impl Default for TabsProps {
             tabs: Signal::new(Vec::new()),
             active: Reactive::Static(String::new()),
             on_change: Rc::new(|_| {}),
-            indicator: TabIndicator::default(),
+            indicator: Reactive::Static(TabIndicator::default()),
         }
     }
 }
@@ -146,7 +152,7 @@ pub fn Tabs(props: TabsProps) -> Element {
     let tabs = props.tabs;
     let active = props.active;
     let on_change = props.on_change;
-    let dot_mode = matches!(props.indicator, TabIndicator::Dot);
+    let indicator = props.indicator;
     let container_style = TabBar();
 
     // Reactive, keyed list — tabs reconcile by `Tab::id` (a surviving tab keeps
@@ -155,7 +161,7 @@ pub fn Tabs(props: TabsProps) -> Element {
     ui! {
         view(style = container_style) {
             for tab in tabs, key = tab.id.clone() {
-                tab_button(tab, active.clone(), on_change.clone(), dot_mode)
+                tab_button(tab, active.clone(), on_change.clone(), indicator.clone())
             }
         }
     }
@@ -175,19 +181,30 @@ fn tab_button(
     tab: Tab,
     active: Reactive<String>,
     on_change: Rc<dyn Fn(String)>,
-    dot_mode: bool,
+    indicator: Reactive<TabIndicator>,
 ) -> Element {
     let id = tab.id;
     let label = tab.label;
 
     // The button sheet for the chosen indicator — chip (dot) vs underline.
-    let button_sheet = move || {
-        if dot_mode {
-            TabButtonDot::sheet()
-        } else {
-            TabButton::sheet()
+    // Reads `indicator` live so a reactive indicator re-selects the sheet in
+    // place (the style sink). The DOT CHILD's *presence* is structural, not a
+    // style sink, so it snapshots below (see TODO).
+    let button_sheet = {
+        let indicator = indicator.clone();
+        move || {
+            if matches!(indicator.get(), TabIndicator::Dot) {
+                TabButtonDot::sheet()
+            } else {
+                TabButton::sheet()
+            }
         }
     };
+
+    // TODO(reactive-sweep): route `indicator` to the dot CHILD presence below
+    // (structural — adding/removing the leading dot node on a live indicator
+    // flip needs a `when`/keyed splice, not a style closure). Snapshot for now.
+    let dot_mode = matches!(indicator.get(), TabIndicator::Dot);
 
     let press = {
         let id = id.clone();
@@ -197,6 +214,7 @@ fn tab_button(
     let tab_style = {
         let active = active.clone();
         let id = id.clone();
+        let button_sheet = button_sheet.clone();
         move || {
             let variant = if active.get() == id { "on" } else { "off" };
             StyleApplication::new(button_sheet()).with("active", variant.to_string())
@@ -290,8 +308,10 @@ mod tests {
         // is selected, the "b" tab is not.
         let on_change: Rc<dyn Fn(String)> = Rc::new(|_| {});
         let active = Reactive::Static("a".to_string());
-        let active_tab = tab_button(Tab::new("a", "A"), active.clone(), on_change.clone(), false);
-        let inactive_tab = tab_button(Tab::new("b", "B"), active, on_change, false);
+        let indicator = Reactive::Static(TabIndicator::Underline);
+        let active_tab =
+            tab_button(Tab::new("a", "A"), active.clone(), on_change.clone(), indicator.clone());
+        let inactive_tab = tab_button(Tab::new("b", "B"), active, on_change, indicator);
 
         let active_color =
             tab_label_color(&active_tab).expect("active tab label carries a color");

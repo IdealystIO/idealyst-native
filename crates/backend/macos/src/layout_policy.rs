@@ -44,6 +44,21 @@ pub(crate) fn reactive_change_needs_layout_pass(view_attached_to_window: bool) -
     view_attached_to_window
 }
 
+/// Whether a queued layout pass should be SUPPRESSED right now because a
+/// navigator screen-swap is coalescing (`coalesce_depth > 0`).
+///
+/// A screen swap builds the incoming screen's whole subtree, crossing many
+/// reactive-window boundaries (one per `attach_style` effect first-run, plus the
+/// post-swap `active_route` fan-out to every sidebar item). The macOS idle hook
+/// flushes a *full-tree* layout pass at each such boundary whose
+/// `LAYOUT_PASS_QUEUED` flag is armed — so one navigation fired 4–9+ redundant
+/// passes (~15–20ms each, one even nested *inside* an effect first-run). While a
+/// swap holds a coalesce guard, those mid-swap flushes are suppressed (the flag
+/// stays armed); the guard runs ONE pass when it ends. Pure → host-testable.
+pub(crate) fn coalesced_swap_suppresses_pass(coalesce_depth: u32) -> bool {
+    coalesce_depth > 0
+}
+
 /// Whether a `Backend::insert` should schedule a layout pass. Same gate as a
 /// reactive style change: during the initial build the parent isn't in a window
 /// yet and `finish` lays the whole tree out, so scheduling is waste; but a
@@ -258,6 +273,17 @@ mod tests {
                 |n| self.kids[n].clone(),
             )
         }
+    }
+
+    #[test]
+    fn coalesce_suppresses_only_while_a_swap_is_in_flight() {
+        // No swap running: a queued pass runs immediately (the steady state).
+        assert!(!coalesced_swap_suppresses_pass(0), "no swap → pass runs");
+        // Inside a swap (guard held): mid-build idle flushes are held back so a
+        // navigation doesn't fire one full-tree pass per reactive-window boundary.
+        assert!(coalesced_swap_suppresses_pass(1), "swap in flight → suppress");
+        // Nested guards (defensive) still suppress until the outermost ends.
+        assert!(coalesced_swap_suppresses_pass(3), "nested swap → still suppress");
     }
 
     #[test]

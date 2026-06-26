@@ -1138,29 +1138,46 @@ impl NavigatorControl {
         // SDK is still committing the change. Pop and Custom don't
         // carry a new route name — the SDK is responsible for
         // updating signals via `active_changed` after committing.
-        if let Some(state) = self.nav_state.borrow().as_ref() {
-            match &cmd {
-                NavCommand::Push { name, url, .. }
-                | NavCommand::Replace { name, url, .. }
-                | NavCommand::Reset { name, url, .. }
-                | NavCommand::Select { name, url, .. } => {
-                    state.active_route.set(name);
-                    state.active_path.set(url.clone());
+        // One navigation = ONE reactive update. We write the route/path mirror
+        // here, AND the SDK's installed dispatcher re-writes the same two
+        // signals via its `active_changed` callback after committing the swap
+        // (the macOS/iOS drawer + stack handlers do this). `set` is the
+        // always-notify primitive, so without batching those duplicate writes
+        // fan out separately — waking chrome subscribers (e.g. every sidebar
+        // item's active-state `derived`, the header's route `switch`) more than
+        // once per navigation, and a backend whose layout flush hooks the
+        // reactive-idle boundary (macOS) turns each fan-out into a full-tree
+        // layout pass. Batching collapses the duplicate writes of a given signal
+        // to a single subscriber wake (a signal recorded twice in one window
+        // wakes its subscribers once at flush), so navigation drives exactly one
+        // chrome relayout. Reads inside the dispatch (`get()`) still see the
+        // updated value immediately — `batch` defers only the subscriber wake.
+        crate::reactive::batch(|| {
+            if let Some(state) = self.nav_state.borrow().as_ref() {
+                match &cmd {
+                    NavCommand::Push { name, url, .. }
+                    | NavCommand::Replace { name, url, .. }
+                    | NavCommand::Reset { name, url, .. }
+                    | NavCommand::Select { name, url, .. } => {
+                        state.active_route.set(name);
+                        state.active_path.set(url.clone());
+                    }
+                    NavCommand::Pop | NavCommand::Custom(_) => {}
                 }
-                NavCommand::Pop | NavCommand::Custom(_) => {}
             }
-        }
-        if let Some(f) = self.dispatch.borrow().as_ref() {
-            f(cmd);
-        }
-        // Centralized layout guarantee: after the SDK handler commits the
-        // command (mounts/swaps the screen), ensure a layout pass is scheduled.
-        // This is the ONE place every navigation triggers a relayout, on every
-        // backend — replacing the per-handler `schedule_layout_pass()` calls
-        // that some backends had and others (Android stack) forgot.
-        if let Some(f) = self.request_layout.borrow().as_ref() {
-            f();
-        }
+            if let Some(f) = self.dispatch.borrow().as_ref() {
+                f(cmd);
+            }
+            // Centralized layout guarantee: after the SDK handler commits the
+            // command (mounts/swaps the screen), ensure a layout pass is
+            // scheduled. This is the ONE place every navigation triggers a
+            // relayout, on every backend — replacing the per-handler
+            // `schedule_layout_pass()` calls that some backends had and others
+            // (Android stack) forgot.
+            if let Some(f) = self.request_layout.borrow().as_ref() {
+                f();
+            }
+        });
     }
 
     /// Rebuild a command with `base + url` as its full hierarchical path.
@@ -1681,6 +1698,75 @@ mod layout_pass_contract_tests {
         let control = NavigatorControl::new();
         control.install(Box::new(|_cmd| {}));
         control.dispatch(NavCommand::Pop);
+    }
+}
+
+#[cfg(test)]
+mod navigation_batch_tests {
+    //! Regression: one navigation = ONE chrome fan-out. `dispatch` writes the
+    //! route/path mirror, and the SDK handler re-writes the SAME two signals via
+    //! its `active_changed` callback after committing the swap (macOS/iOS drawer
+    //! + stack). `set` always notifies, so unbatched those duplicate writes woke
+    //! chrome subscribers (sidebar active-state derives, header route switch)
+    //! twice per navigation — and on macOS the reactive-idle layout hook turned
+    //! each wake into a full-tree layout pass (a chunk of the navigation
+    //! multi-pass lag). `dispatch` now batches the writes + SDK swap, so a signal
+    //! written twice in the window wakes its subscribers once.
+    use super::*;
+    use crate::reactive::{Effect, Signal};
+    use std::cell::Cell;
+
+    #[test]
+    fn one_navigation_wakes_route_subscribers_once_despite_duplicate_writes() {
+        let control = NavigatorControl::new();
+        let nav_state = NavState {
+            active_route: Signal::new("home"),
+            active_path: Signal::new("/".to_string()),
+            depth: Signal::new(1),
+            can_go_back: Signal::new(false),
+        };
+        control.attach_nav_state(nav_state.clone());
+
+        // A chrome subscriber: re-runs whenever `active_route` fans out. Held in
+        // `_eff` so it isn't dropped (which would unsubscribe).
+        let runs = Rc::new(Cell::new(0u32));
+        let r = runs.clone();
+        let route = nav_state.active_route;
+        let _eff = Effect::new(move || {
+            let _ = route.get();
+            r.set(r.get() + 1);
+        });
+        assert_eq!(runs.get(), 1, "subscriber runs once on creation");
+
+        // SDK handler mirrors a backend dispatcher re-setting the same signals
+        // via `active_changed` after committing the swap.
+        let st = nav_state.clone();
+        control.install(Box::new(move |cmd| {
+            if let NavCommand::Select { name, url, .. } = &cmd {
+                st.active_route.set(name);
+                st.active_path.set(url.clone());
+            }
+        }));
+
+        runs.set(0);
+        control.dispatch(NavCommand::Select {
+            name: "detail",
+            url: "/detail".into(),
+            params: Box::new(()),
+            state: None,
+        });
+
+        // Pre-fix (unbatched): the pre-dispatch write AND the handler's
+        // `active_changed` write each fanned out → 2 subscriber runs → 2 macOS
+        // full-tree passes. Batched: the route signal, written twice in one
+        // window, wakes its subscriber exactly once.
+        assert_eq!(
+            runs.get(),
+            1,
+            "duplicate route writes within one navigation must coalesce to a \
+             single subscriber wake"
+        );
+        assert_eq!(nav_state.active_route.get(), "detail", "value still updates");
     }
 }
 

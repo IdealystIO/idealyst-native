@@ -99,7 +99,7 @@ pub fn intents() -> Element {
     body(vec![
         ui! {
             Section(title = "Semantic palettes".to_string()) {
-                P(content = "An intent isn't a color — it's a meaning. \"Danger\" reads as the \
+                P(content = "An intent names a meaning rather than a color. \"Danger\" reads as the \
                     right red on Button (Filled), the right tint on Badge (Soft), and the right \
                     border on Alert (Outlined). You write the meaning once; the theme + variant \
                     axes produce the visual. Each tone exposes six slots: solid-bg, solid-text, \

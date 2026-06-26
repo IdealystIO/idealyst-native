@@ -47,6 +47,19 @@ macro_rules! builtin_kind {
                 Tokenized::Literal($ls)
             }
         }
+
+        // Reactive-prop coercion: lets a `ui!` call site pass a bare marker
+        // (`kind = typography_kind::H3`) to a `#[props]`-wrapped
+        // `Reactive<TypographyKindRef>` field. The marker → ref → `Reactive`
+        // chain can't go through a single `.into()` (and a blanket
+        // `From<K: TypographyKind> for Reactive<TypographyKindRef>` is
+        // orphan-illegal — the ref is covered by the foreign `Reactive`), so
+        // each concrete marker emits its own static coercion here.
+        impl From<$name> for ::runtime_core::Reactive<super::TypographyKindRef> {
+            fn from(marker: $name) -> Self {
+                ::runtime_core::Reactive::Static(super::TypographyKindRef::from(marker))
+            }
+        }
     };
 }
 

@@ -632,6 +632,12 @@ impl Backend for MockBackend {
         }
     }
 
+    fn update_text_input_secure(&mut self, node: &u64, secure: bool) {
+        if let Some(n) = self.node_mut(*node) {
+            n.secure = secure;
+        }
+    }
+
     fn update_text_area_value(&mut self, node: &u64, value: &str) {
         if let Some(n) = self.node_mut(*node) {
             n.text = Some(value.to_string());

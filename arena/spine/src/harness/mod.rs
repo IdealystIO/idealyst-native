@@ -1,22 +1,28 @@
 //! The live half of the arena: turning a scenario into scored runs by driving
 //! real agents. Where [`crate::verify`] and [`crate::score`] are pure and
-//! deterministic, this module shells out — to the `idealyst` CLI (scaffold +
-//! build), to `claude` headless (the implementation, locator, and feedback
-//! agents), and to a static web server (for the locator pass).
+//! deterministic, this module supplies the seams the *orchestrator* uses.
 //!
-//! Layering: [`scaffold`] builds the isolated project, [`agent`] runs the
-//! implementation agent and captures its transcript, [`run`] orchestrates one
-//! full run through verification + scoring, and [`bench`] repeats it N times
-//! and aggregates.
+//! The agent roles (implementation, locator, feedback) are **subagents** the
+//! orchestrating Claude Code session runs — see `.claude/agents/arena-*.md` and
+//! `.claude/skills/arena-bench`. Driving them as subagents keeps the run on the
+//! Claude subscription instead of pay-as-you-go API billing (the cost of
+//! `claude --print`), and lets the implementation agent be hard-isolated to the
+//! idealyst MCP via the subagent's `mcpServers:` frontmatter.
 //!
-//! Every external dependency is treated as optional: a missing `idealyst`,
-//! `claude`, or web server downgrades the affected tier to a *skip* with
-//! evidence, never a silent pass or a hard crash. That keeps the spine useful
-//! on a machine that only has some of the toolchain.
+//! So this module no longer spawns `claude`. It provides:
+//!   * [`scaffold`] — build the isolated project + best-effort web build;
+//!   * [`agent`] — parse a subagent transcript into a tool-call log + tokens;
+//!   * [`locate`] — the deterministic Playwright-tier contract (prompt/verdict);
+//!   * [`feedback`] — the (pure) feedback-reviewer prompt;
+//!   * [`robot_web`] — relay + headless host so the robot tier works on a web
+//!     build (used by the fast-follow `live` step).
+//!
+//! The CLI (`bin/arena.rs`) exposes the deterministic steps —
+//! `scaffold` / `build` / `score` — that the skill stitches together around the
+//! subagent spawns.
 
 pub mod agent;
-pub mod bench;
 pub mod feedback;
 pub mod locate;
-pub mod run;
+pub mod robot_web;
 pub mod scaffold;

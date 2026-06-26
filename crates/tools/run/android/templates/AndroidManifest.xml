@@ -36,6 +36,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Robot bridge relay URL, baked by `idealyst dev` (empty otherwise).
+             MainActivity reads it and hands it to Rust before `attach` so the
+             app dials the host relay (reached via `adb reverse`) instead of
+             self-hosting an on-device TCP bridge. -->
+        <meta-data android:name="IdealystRobotRelayUrl" android:value="{{ROBOT_RELAY_URL}}" />
         <!-- Capability-derived services (e.g. the screen_capture
              mediaProjection foreground service), injected from SDKs in the
              dependency graph the same way `{{USES_PERMISSIONS}}` is. -->

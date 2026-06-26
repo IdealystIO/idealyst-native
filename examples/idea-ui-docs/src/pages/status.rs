@@ -45,7 +45,7 @@ pub fn spinner() -> Element {
         ui! {
             Section(title = "With label".to_string()) {
                 P(content = "Pair a spinner with a short status line by laying them out in a \
-                    row. The spinner says \"something is happening\"; the label says what.".to_string())
+                    row. The spinner signals that work is in progress; the label says what.".to_string())
                 DemoSurface {
                     Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
                         Spinner(size = SpinnerSize::Small)

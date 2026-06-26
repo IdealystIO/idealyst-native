@@ -65,6 +65,13 @@ fn label_color_only(color: Tokenized<Color>) -> Rc<StyleSheet> {
     }))
 }
 
+// Reactive-by-default: `#[props]` wraps `tone`/`variant` → `Reactive<…>`;
+// `label` is already reactive and `on_remove` (an `Rc<dyn Fn()>` handler) is
+// auto-skipped. Bare markers (`tone = tone::Primary`) coerce to
+// `Reactive<ToneRef>` via the marker's generated `From`. The style-driving
+// props route into the container-style sink, read `.get()` INSIDE so the
+// apply-style Effect subscribes to whichever are live.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct TagProps {
@@ -97,17 +104,37 @@ pub fn Tag(props: &TagProps) -> Element {
     let tone = props.tone.clone();
     let variant = props.variant.clone();
 
-    let appearance_key = format!("{}_{}", tone.key(), variant.key());
+    // The container style is REACTIVE when tone/variant is live; else the
+    // build-time fast path (no flicker — see Button). The closure reads each
+    // prop's `.get()` INSIDE so the apply-style Effect subscribes to whichever
+    // are dynamic. The `hug` layer keeps the tag sized to content instead of
+    // stretching to a flex parent's row height (see `components::hug_self`).
+    let style_is_reactive = !tone.is_static() || !variant.is_static();
+    let make_container_style = {
+        let tone = tone.clone();
+        let variant = variant.clone();
+        move || {
+            let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
+            StyleApplication::new(installed_tag_sheet())
+                .with("appearance", appearance_key)
+                .with_computed("hug", crate::components::hug_self)
+        }
+    };
 
-    // Static style — build-time apply, no flicker (see Button). The `hug`
-    // layer keeps the tag sized to content instead of stretching to a flex
-    // parent's row height (see `components::hug_self`).
-    let container_style = StyleApplication::new(installed_tag_sheet())
-        .with("appearance", appearance_key)
-        .with_computed("hug", crate::components::hug_self);
-
-    // Resolve the fill's foreground so the label + close glyph carry it
-    // on their own text nodes (native doesn't inherit text color).
+    // Build-time container style: also used to resolve the fill's foreground
+    // so the label + close glyph carry it on their OWN text nodes (native
+    // doesn't inherit text color). Reads the tone/variant snapshot.
+    //
+    // TODO(reactive-sweep): the label/close foreground COLOR is a coupled
+    // sink — it's resolved from the container fill at build time and stamped
+    // onto the separate text nodes. When tone/variant are reactive the
+    // container border/fill re-styles in place (the closure above), but the
+    // label/close text color is snapshotted here and won't track a live
+    // tone/variant change. Routing it needs the label color resolved INSIDE a
+    // reactive style closure on the label node (read tone/variant `.get()`
+    // there too) — same shape as Typography's color sink. Left as a follow-on
+    // because it's a derived-from-resolved-style coupling, not a plain prop.
+    let container_style = make_container_style();
     let fg = resolve_style(&container_style).color.clone();
 
     let label_style: Rc<StyleSheet> = match fg.clone() {
@@ -116,32 +143,31 @@ pub fn Tag(props: &TagProps) -> Element {
     };
     let close_style = TagClose();
 
-    match props.on_remove.clone() {
-        Some(on_remove) => {
-            // The `×` is a bare text node inside the pressable; color it on
-            // its own node so it's visible on native (TagClose only sizes
-            // the affordance and "inherits" foreground — which native won't).
-            let close_text = match fg.clone() {
-                Some(c) => runtime_core::text("×".to_string())
-                    .with_style(label_color_only(c))
-                    .into_element(),
-                None => runtime_core::text("×".to_string()).into_element(),
-            };
-            let close = runtime_core::pressable(vec![close_text], move || (on_remove)())
-                .with_style(close_style)
-                .into_element();
-            ui! {
-                view(style = container_style) {
-                    text(style = label_style) { label }
-                    close
-                }
-            }
-        }
-        None => ui! {
-            view(style = container_style) {
-                text(style = label_style) { label }
-            }
-        },
+    let label_el: Element = ui! { text(style = label_style) { label } };
+
+    let mut children: Vec<Element> = Vec::with_capacity(2);
+    children.push(label_el);
+    if let Some(on_remove) = props.on_remove.clone() {
+        // The `×` is a bare text node inside the pressable; color it on
+        // its own node so it's visible on native (TagClose only sizes
+        // the affordance and "inherits" foreground — which native won't).
+        let close_text = match fg.clone() {
+            Some(c) => runtime_core::text("×".to_string())
+                .with_style(label_color_only(c))
+                .into_element(),
+            None => runtime_core::text("×".to_string()).into_element(),
+        };
+        let close = runtime_core::pressable(vec![close_text], move || (on_remove)())
+            .with_style(close_style)
+            .into_element();
+        children.push(close);
+    }
+
+    let node = runtime_core::view(children);
+    if style_is_reactive {
+        node.with_style(make_container_style).into_element()
+    } else {
+        node.with_style(container_style).into_element()
     }
 }
 

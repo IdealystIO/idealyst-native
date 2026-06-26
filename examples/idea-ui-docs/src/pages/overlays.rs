@@ -258,7 +258,7 @@ ui! {
             }
 
             Callout(label = "Dismissal is delegated".to_string()) {
-                P(content = "idea-ui's Modal doesn't decide what \"dismiss\" means — it routes \
+                P(content = "idea-ui's Modal leaves the meaning of \"dismiss\" to you: it routes \
                     the gesture to your on_dismiss and lets the host close. That keeps the \
                     backdrop tap, Escape, and an explicit Close button all flowing through one \
                     signal, and lets you intercept (confirm-before-close) without fighting the \

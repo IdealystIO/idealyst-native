@@ -49,8 +49,8 @@ use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
     component, each_keyed, memo, on_defer, pressable, signal, text, text_input, ui, view, when,
-    EachKey, EachRowBuild, Element, IdealystSchema, IntoElement, Ref, Signal, StyleApplication,
-    TextInputHandle, VariantEnum, ViewHandle,
+    EachKey, EachRowBuild, Element, IdealystSchema, IntoElement, Reactive, Ref, Signal,
+    StyleApplication, TextInputHandle, VariantEnum, ViewHandle,
 };
 
 use idea_theme::theme::IdeaThemeRef;
@@ -67,6 +67,13 @@ const CHEVRON: &str = "\u{25BE}";
 /// Default text shown in the menu when nothing matches the query.
 const DEFAULT_EMPTY_TEXT: &str = "No results";
 
+// Reactive-by-default: `#[props]` rewrites each scalar-DATA field `T` →
+// `Reactive<T>`. AUTO-SKIPPED: `value` (a `Signal` reactive source),
+// `on_change` (an `Rc` handler), and `options` (a `Vec` LIST). `size` routes
+// into the reactive `input_style` sink; `placeholder` routes to the
+// `text_input`'s reactive placeholder. `empty_text` feeds the dropdown's
+// empty-state row — structural list content (see the TODO in the body).
+#[runtime_core::props]
 #[derive(IdealystSchema)]
 pub struct AutocompleteProps {
     /// Controlled selected value — the `id` of the chosen [`SelectOption`].
@@ -80,7 +87,7 @@ pub struct AutocompleteProps {
     pub options: Vec<SelectOption>,
     /// Input height/density. Default `Md`. Shared with [`Select`](crate::Select).
     pub size: SelectSize,
-    /// Placeholder shown when the input is empty.
+    /// Placeholder shown when the input is empty. `Reactive<Option<String>>`.
     pub placeholder: Option<String>,
     /// Text shown in the menu when no option matches the query. Defaults to
     /// "No results".
@@ -93,9 +100,9 @@ impl Default for AutocompleteProps {
             value: Signal::new(String::new()),
             on_change: Rc::new(|_| {}),
             options: Vec::new(),
-            size: SelectSize::default(),
-            placeholder: None,
-            empty_text: None,
+            size: Reactive::Static(SelectSize::default()),
+            placeholder: Reactive::Static(None),
+            empty_text: Reactive::Static(None),
         }
     }
 }
@@ -137,11 +144,16 @@ pub(crate) fn filter_indices(
 pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
-    let size = props.size;
+    let size = props.size.clone();
     let placeholder = props.placeholder.clone();
+    // TODO(reactive-sweep): `empty_text` is snapshotted here and moved into the
+    // `when`/`each_keyed` dropdown closures that build the empty-state row
+    // (structural list content). Routing a live `empty_text` would need the
+    // empty row to read it from a `Reactive` source inside the `each_keyed`
+    // build — flagged, not routed.
     let empty_text = props
         .empty_text
-        .clone()
+        .get()
         .unwrap_or_else(|| DEFAULT_EMPTY_TEXT.to_string());
     let options = Rc::new(props.options);
 
@@ -222,8 +234,17 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     };
 
     // --- input --------------------------------------------------------------
-    let input_style =
-        StyleApplication::new(AutocompleteInput::sheet()).with("size", size.as_variant_str().to_string());
+    // `size` is read LIVE inside the style closure so a reactive `size`
+    // re-resolves the input height in place; a `Static` one keeps the
+    // build-time fast path (no per-input apply-style Effect).
+    let size_is_reactive = !size.is_static();
+    let make_input_style = {
+        let size = size.clone();
+        move || {
+            StyleApplication::new(AutocompleteInput::sheet())
+                .with("size", size.get().as_variant_str().to_string())
+        }
+    };
 
     let key_commit = commit.clone();
     let key_revert = revert.clone();
@@ -232,11 +253,11 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         open.set(true);
         highlight.set(0);
     })
-    .bind(input_ref);
-    if let Some(p) = placeholder {
-        input = input.placeholder(p);
-    }
-    let input_node = input
+    .bind(input_ref)
+    // `placeholder` is routed LIVE: a reactive source updates the native
+    // placeholder in place; a `Static` one sets it once.
+    .placeholder_reactive(placeholder);
+    let input = input
         .on_key_down(move |e: &KeyEvent| match e.key.as_str() {
             "ArrowDown" => {
                 open.set(true);
@@ -272,9 +293,14 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                 }
             }
             _ => KeyOutcome::Default,
-        })
-        .with_style(input_style)
-        .into_element();
+        });
+    // Reactive when `size` is live (re-resolves the input height in place);
+    // else the build-time fast path.
+    let input_node = if size_is_reactive {
+        input.with_style(make_input_style).into_element()
+    } else {
+        input.with_style(make_input_style()).into_element()
+    };
 
     // --- chevron ------------------------------------------------------------
     let chevron = pressable(vec![text(CHEVRON.to_string()).into_element()], move || {
@@ -444,7 +470,7 @@ mod tests {
                 SelectOption::new("apple", "Apple"),
                 SelectOption::new("pear", "Pear"),
             ],
-            placeholder: Some("Search…".to_string()),
+            placeholder: Reactive::Static(Some("Search…".to_string())),
             ..Default::default()
         };
         let tree = Autocomplete(props);

@@ -93,6 +93,12 @@ const EXIT_MS: u64 = 150;
 /// How far below its resting position the card starts before sliding up.
 const CARD_SLIDE_PX: f32 = 14.0;
 
+// Reactive-by-default: `#[props]` wraps the scalar data props (`dismissable`,
+// `width`) → `Reactive<…>`. `open` is already `Reactive<bool>` (structural —
+// drives presence mount/unmount, untouched); `content` is a custom
+// element-builder newtype (`#[prop(static)]`); the `Rc<dyn Fn>` handlers and
+// the `Option<Rc<StyleSheet>>` backdrop are auto-skipped (Rc).
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct ModalProps {
@@ -109,6 +115,7 @@ pub struct ModalProps {
     /// Author it as `content = move || ui! { … }` (a `move` closure; multiple
     /// nodes → a `Vec<Element>`). State inside is rebuilt fresh on each open.
     #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
     pub content: ModalContent,
     /// Fires when the user dismisses (backdrop tap — unless
     /// `on_backdrop_press` overrides it — or Escape / back). The host is
@@ -161,8 +168,8 @@ impl Default for ModalProps {
             content: ModalContent::default(),
             on_dismiss: None,
             on_backdrop_press: None,
-            dismissable: true,
-            width: DEFAULT_MODAL_WIDTH,
+            dismissable: Reactive::Static(true),
+            width: Reactive::Static(DEFAULT_MODAL_WIDTH),
             backdrop_style: None,
         }
     }
@@ -335,8 +342,17 @@ pub fn Modal(props: ModalProps) -> Element {
     let content = props.content;
     let on_dismiss = props.on_dismiss;
     let on_backdrop_press = props.on_backdrop_press;
-    let dismissable = props.dismissable;
-    let desired = props.width;
+    // TODO(reactive-sweep): route `dismissable`/`width` reactively into the
+    // overlay structure. Both thread through `build_overlay` →
+    // `assemble_overlay` as plain `bool`/`f32` and drive STRUCTURE: `width`
+    // feeds the viewport-cap closure that sizes the surface (already reactive
+    // on viewport, but the *desired* width is captured by value), and
+    // `dismissable` selects the backdrop handler. A live signal would need the
+    // surface width closure and the backdrop-handler wiring rebuilt on change.
+    // Snapshot here (presence rebuilds `build` per open, so a value change
+    // between opens is still picked up).
+    let dismissable = props.dismissable.get();
+    let desired = props.width.get();
     let backdrop_style = props.backdrop_style;
 
     // `presence` keeps the portal mounted through the EXIT window, then truly
@@ -623,10 +639,10 @@ mod tests {
     #[test]
     fn props_default_is_dismissable_with_default_width() {
         let p = ModalProps::default();
-        assert!(p.dismissable);
+        assert!(p.dismissable.get());
         assert!(p.backdrop_style.is_none());
         assert!(p.on_backdrop_press.is_none());
-        assert_eq!(p.width, DEFAULT_MODAL_WIDTH);
+        assert_eq!(p.width.get(), DEFAULT_MODAL_WIDTH);
     }
 
     #[test]

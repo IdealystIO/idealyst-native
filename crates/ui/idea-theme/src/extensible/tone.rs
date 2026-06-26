@@ -59,6 +59,16 @@ macro_rules! builtin_tone {
                 theme.colors().focus_ring.clone()
             }
         }
+
+        // Reactive-prop coercion: `tone = tone::Primary` into a
+        // `#[props]`-wrapped `Reactive<ToneRef>` field. The marker → ref →
+        // `Reactive` chain can't go through one `.into()`. See the matching
+        // note in `extensible/typography.rs::builtin_kind!`.
+        impl ::core::convert::From<$name> for ::runtime_core::Reactive<super::ToneRef> {
+            fn from(marker: $name) -> Self {
+                ::runtime_core::Reactive::Static(super::ToneRef::from(marker))
+            }
+        }
     };
 }
 

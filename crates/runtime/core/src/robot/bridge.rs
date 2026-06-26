@@ -497,6 +497,175 @@ fn resolve_requested_port(default_port: u16) -> u16 {
         .unwrap_or(default_port)
 }
 
+/// The relay URL (`ws://host:port`) to dial, if one is configured via
+/// `IDEALYST_ROBOT_RELAY_URL`. When set, the app dials a `robot-relay` instead
+/// of self-hosting a TCP bridge — the web-style universal transport. Injected
+/// by the dev tooling (`idealyst dev --robot` hosts the relay and sets this for
+/// the launched native app, or the build injects it for a device).
+pub fn relay_url_from_env() -> Option<String> {
+    std::env::var("IDEALYST_ROBOT_RELAY_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Native **dial-out** transport. Connect to a `robot-relay` over WebSocket and
+/// serve the exact same dispatch the TCP bridge does — reusing the UI-thread
+/// [`BridgeHandle`]/[`schedule_periodic_poll`] machinery verbatim, swapping only
+/// the transport (a WS client instead of a TCP listener). The relay exposes the
+/// ordinary TCP bridge + `~/.idealyst/apps` registration to the MCP server, so
+/// the evaluator side is unchanged. This is the native implementation of the
+/// relay's canonical protocol — the peer of `backend-web`'s browser client.
+///
+/// Idempotent (like [`start_auto_polling`]); reconnects for the process
+/// lifetime so the app survives the relay starting late or restarting.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn start_relay_client(url: String) {
+    AUTO_POLLED_BRIDGE.with(|slot| {
+        if slot.borrow().is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel::<BridgeCommand>();
+        std::thread::spawn(move || run_relay_client(url, tx));
+        // No `~/.idealyst/apps` registration here — the relay writes it on the
+        // app's behalf (a browser app can't, and uniformity beats per-platform
+        // special-casing).
+        *slot.borrow_mut() = Some(BridgeHandle { rx });
+    });
+    schedule_periodic_poll();
+}
+
+/// Reconnecting dial loop. Runs on a background thread for the process lifetime.
+#[cfg(not(target_arch = "wasm32"))]
+fn run_relay_client(url: String, tx: mpsc::Sender<BridgeCommand>) {
+    use tungstenite::stream::MaybeTlsStream;
+    use tungstenite::Message;
+
+    loop {
+        match tungstenite::connect(url.as_str()) {
+            Ok((mut ws, _resp)) => {
+                eprintln!("[robot-bridge] dialed relay {url}");
+                // Announce identity (informational; the relay does registration).
+                let identity = current_identity();
+                let hello = format!(
+                    "{{\"hello\":{{\"name\":{},\"project_root\":{},\"platform\":\"native\"}}}}",
+                    serde_json::to_string(&identity.name).unwrap_or_else(|_| "\"app\"".into()),
+                    identity
+                        .project_root
+                        .as_deref()
+                        .and_then(|s| serde_json::to_string(s).ok())
+                        .unwrap_or_else(|| "null".into()),
+                );
+                let _ = ws.send(Message::Text(hello.into()));
+                let _ = ws.flush();
+                // Bound read blocking so the push check runs even when idle.
+                if let MaybeTlsStream::Plain(s) = ws.get_ref() {
+                    let _ = s.set_read_timeout(Some(Duration::from_millis(PUSH_POLL_MS)));
+                }
+                relay_session(&mut ws, &tx);
+            }
+            Err(_) => {} // relay not up yet / went away — retry below
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+}
+
+/// Serve one connected relay session until the socket closes/errors. Mirrors
+/// the TCP [`handle_connection`] loop (forward-to-UI-thread + subscribe/push),
+/// generic over the WS stream.
+#[cfg(not(target_arch = "wasm32"))]
+fn relay_session<S: std::io::Read + std::io::Write>(
+    ws: &mut tungstenite::WebSocket<S>,
+    tx: &mpsc::Sender<BridgeCommand>,
+) {
+    use tungstenite::Message;
+    let mut subscribed = false;
+    let mut last_rev = super::current_revision();
+    loop {
+        match ws.read() {
+            Ok(Message::Text(t)) => {
+                if !serve_relay_frame(t.as_str(), ws, tx, &mut subscribed) {
+                    return;
+                }
+            }
+            Ok(Message::Binary(b)) => {
+                if let Ok(s) = std::str::from_utf8(&b) {
+                    if !serve_relay_frame(s, ws, tx, &mut subscribed) {
+                        return;
+                    }
+                }
+            }
+            Ok(Message::Close(_)) => return,
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(e))
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => return,
+        }
+        if subscribed {
+            let rev = super::current_revision();
+            if rev != last_rev {
+                last_rev = rev;
+                let push = format!("{{\"event\":\"changed\",\"rev\":{}}}", rev);
+                if ws.send(Message::Text(push.into())).is_err() || ws.flush().is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Handle one request frame from the relay. Returns `false` when the socket
+/// should be torn down (write failed / UI thread gone).
+#[cfg(not(target_arch = "wasm32"))]
+fn serve_relay_frame<S: std::io::Read + std::io::Write>(
+    text: &str,
+    ws: &mut tungstenite::WebSocket<S>,
+    tx: &mpsc::Sender<BridgeCommand>,
+    subscribed: &mut bool,
+) -> bool {
+    use tungstenite::Message;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let parsed: serde_json::Value = match serde_json::from_str(trimmed) {
+        Ok(v) => v,
+        Err(_) => return true,
+    };
+    let id = parsed["id"].as_u64().unwrap_or(0);
+    let cmd = parsed["cmd"].as_str().unwrap_or("").to_string();
+    let args = parsed.get("args").cloned().unwrap_or(serde_json::Value::Null);
+
+    // `subscribe` is connection-local (same as the TCP handler): flip into push
+    // mode and ack; the relay fans our pushes out to its subscribers.
+    if cmd == "subscribe" {
+        *subscribed = true;
+        let reply = format!("{{\"id\":{},\"ok\":\"subscribed\"}}", id);
+        return ws.send(Message::Text(reply.into())).is_ok() && ws.flush().is_ok();
+    }
+
+    let (reply_tx, reply_rx) = mpsc::channel();
+    let command = BridgeCommand {
+        id,
+        cmd,
+        args,
+        reply: reply_tx,
+    };
+    if tx.send(command).is_err() {
+        return false;
+    }
+    let response = match reply_rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(r) => r,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            format!("{{\"id\":{},\"err\":\"timeout: UI thread polling not running\"}}", id)
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+    };
+    ws.send(Message::Text(response.into())).is_ok() && ws.flush().is_ok()
+}
+
 /// 16ms ≈ 60Hz — fast enough that interactive MCP calls feel
 /// snappy without burning CPU when the queue is empty.
 const POLL_INTERVAL_MS: i32 = 16;

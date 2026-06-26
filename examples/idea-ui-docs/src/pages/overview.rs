@@ -39,8 +39,8 @@ pub fn overview() -> Element {
         Grid(columns = 2u32, gap = StackGap::Md) {
             feature(
                 STAR, FeatureIconBoxTone::Primary, tone::Primary.into(),
-                "Tone × variant, not hard-coded color",
-                "A component never asks to be indigo — it asks for intent-primary-solid-bg. \
+                "Tone × variant drives color",
+                "A component asks for intent-primary-solid-bg rather than a literal indigo. \
                  Tones and variants stay theme-agnostic.",
             )
             feature(

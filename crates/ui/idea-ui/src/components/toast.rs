@@ -50,7 +50,7 @@ use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
     after_ms_detached, component, presence, ui, unscope, AlignItems, Easing, FlexDirection,
     IdealystSchema, IntoElement, JustifyContent, Length, PresenceAnim, PresenceState, Element,
-    Signal, StyleRules, StyleSheet, Tokenized, VariantSet,
+    Reactive, Signal, StyleRules, StyleSheet, Tokenized, VariantSet,
 };
 
 use idea_theme::extensible::{ToneRef, VariantRef};
@@ -330,12 +330,18 @@ fn remove_toast(id: u64) {
 // ToastCard
 // =============================================================================
 
+// Reactive-by-default: the one field is a `ToastEntry` (a custom
+// element-builder + flag struct, NOT scalar data) — `#[prop(static)]` so the
+// macro leaves it as-is. The entry's `leaving` flag is read reactively out of
+// the global queue inside `ToastCard`, not via prop reactivity.
+#[runtime_core::props]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ToastCardProps {
     /// The queued toast this card renders. Supplied by [`ToastHost`]'s
     /// reactive list, not authored directly.
     #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
     pub entry: ToastEntry,
 }
 
@@ -492,6 +498,9 @@ impl ToastPlacement {
     }
 }
 
+// Reactive-by-default: `#[props]` wraps the scalar data props (`placement`
+// enum, `edge_gap`) → `Reactive<…>`.
+#[runtime_core::props]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ToastHostProps {
@@ -505,7 +514,10 @@ pub struct ToastHostProps {
 
 impl Default for ToastHostProps {
     fn default() -> Self {
-        Self { placement: ToastPlacement::default(), edge_gap: TOAST_EDGE_GAP }
+        Self {
+            placement: Reactive::Static(ToastPlacement::default()),
+            edge_gap: Reactive::Static(TOAST_EDGE_GAP),
+        }
     }
 }
 
@@ -516,8 +528,15 @@ impl Default for ToastHostProps {
 #[component]
 pub fn ToastHost(props: &ToastHostProps) -> Element {
     let q = queue();
-    let placement = props.placement;
-    let gap = props.edge_gap;
+    // TODO(reactive-sweep): route `placement`/`edge_gap` reactively into the
+    // portal `placement()` + the positioner sheet. Both drive STRUCTURE — the
+    // viewport strip the portal anchors to and the positioner's flex rules —
+    // captured by value into the portal builder + the (static) positioner
+    // StyleSheet closure, not a reactive style sink. A live signal would need
+    // the overlay rebuilt / the sheet re-derived on change. The host is mounted
+    // once with fixed placement in practice, so snapshotting matches usage.
+    let placement = props.placement.get();
+    let gap = props.edge_gap.get();
 
     // The fixed-width stack of cards.
     let stack = ui! {

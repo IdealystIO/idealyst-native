@@ -300,6 +300,8 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     runtime_server_port: port,
                     source,
                     user_features: Vec::new(),
+                    // `idealyst run android` doesn't host a dev relay.
+                    robot_relay_url: None,
                 },
             )?;
             eprintln!();

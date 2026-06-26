@@ -62,6 +62,9 @@ members = [
     "crates/dev/mock-backend",
     "crates/dev/headless-screenshot",
     "crates/dev/robot-e2e",
+    "crates/dev/robot-relay",
+    "crates/dev/robot-test",
+    "crates/dev/robot-test-macros",
 
     # MCP — project-aware catalog + stdio server (catalog + Robot tools).
     "crates/mcp/catalog",
@@ -289,6 +292,9 @@ dev-server = { path = "crates/dev/server" }
 mock-backend = { path = "crates/dev/mock-backend" }
 headless-screenshot = { path = "crates/dev/headless-screenshot" }
 robot-e2e = { path = "crates/dev/robot-e2e" }
+robot-relay = { path = "crates/dev/robot-relay" }
+robot-test = { path = "crates/dev/robot-test" }
+robot-test-macros = { path = "crates/dev/robot-test-macros" }
 dev-http = { path = "crates/dev/http" }
 dev-reload = { path = "crates/dev/reload" }
 web-dev-host = { path = "crates/dev/web-host" }

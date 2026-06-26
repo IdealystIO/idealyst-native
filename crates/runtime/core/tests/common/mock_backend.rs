@@ -128,9 +128,12 @@ pub enum Event {
     UpdateButtonLabel { node: NodeId, label: String },
     UpdateImageSrc { node: NodeId, src: String },
     UpdateIconColor { node: NodeId, color: Color },
+    UpdateIconData { node: NodeId, paths: Vec<String> },
     UpdateIconStroke { node: NodeId, progress: f32 },
     AnimateIconStroke { node: NodeId, from: f32, to: f32, duration_ms: u32 },
     UpdateTextInputValue { node: NodeId, value: String },
+    UpdateTextInputSecure { node: NodeId, secure: bool },
+    UpdateTextInputPlaceholder { node: NodeId, placeholder: Option<String> },
     UpdateToggleValue { node: NodeId, value: bool },
     UpdateSliderValue { node: NodeId, value: f32 },
 
@@ -713,6 +716,13 @@ impl Backend for MockBackend {
         self.core.record(Event::UpdateIconColor { node: *node, color: color.clone() });
     }
 
+    fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
+        self.core.record(Event::UpdateIconData {
+            node: *node,
+            paths: data.paths.iter().map(|s| s.to_string()).collect(),
+        });
+    }
+
     fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
         self.core.record(Event::UpdateIconStroke { node: *node, progress });
     }
@@ -787,6 +797,17 @@ impl Backend for MockBackend {
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
         self.core.record(Event::UpdateTextInputValue { node: *node, value: value.to_string() });
+    }
+
+    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+        self.core.record(Event::UpdateTextInputSecure { node: *node, secure });
+    }
+
+    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
+        self.core.record(Event::UpdateTextInputPlaceholder {
+            node: *node,
+            placeholder: placeholder.map(|s| s.to_string()),
+        });
     }
 
     fn create_toggle(

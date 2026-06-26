@@ -100,6 +100,29 @@ impl<T: Clone> Reactive<T> {
             Reactive::Dynamic(f) => f,
         }
     }
+
+    /// Drive a `sink` from this prop value — the uniform "bind a prop to
+    /// an element attribute" seam. `Static` applies the snapshot once with
+    /// no effect (zero overhead); `Dynamic` installs a scope-owned effect
+    /// that re-runs `sink` whenever the signals the source reads change.
+    ///
+    /// Must be called inside a reactive scope (a component body or the
+    /// render walker): the dynamic arm's effect is owned by that scope and
+    /// freed on teardown, exactly like the controlled-`value` effect in
+    /// `walker/text_input.rs`. Outside a scope the effect would have no
+    /// owner — [`Effect::scoped`](crate::reactive::Effect::scoped)
+    /// debug-asserts against that.
+    pub fn bind(self, mut sink: impl FnMut(T) + 'static)
+    where
+        T: 'static,
+    {
+        match self {
+            Reactive::Static(v) => sink(v),
+            Reactive::Dynamic(f) => {
+                crate::reactive::Effect::scoped(move || sink(f()))
+            }
+        }
+    }
 }
 
 impl<T: Clone> Clone for Reactive<T> {
@@ -169,6 +192,23 @@ impl From<&str> for Reactive<String> {
 impl<T: Clone + 'static> From<Signal<T>> for Reactive<T> {
     fn from(sig: Signal<T>) -> Self {
         Reactive::Dynamic(Rc::new(move || sig.get()))
+    }
+}
+
+/// `String`/`&str` → `Reactive<Option<String>>` as `Static(Some(...))`.
+/// Optional-text props (`placeholder`, `label`, `help`, …) are typed
+/// `Reactive<Option<String>>`; these let a call site pass a bare string
+/// without writing `Some(...)`. (`From<Option<String>>` is already covered
+/// by the blanket above; these add the un-`Some`d shorthand the `ui!`
+/// `.into()` lowering and `#[props]` auto-wrap rely on.)
+impl From<String> for Reactive<Option<String>> {
+    fn from(s: String) -> Self {
+        Reactive::Static(Some(s))
+    }
+}
+impl From<&str> for Reactive<Option<String>> {
+    fn from(s: &str) -> Self {
+        Reactive::Static(Some(s.to_string()))
     }
 }
 
@@ -289,5 +329,43 @@ mod tests {
         let f = r.into_closure();
         assert_eq!(f(), 9);
         assert_eq!(f(), 9);
+    }
+
+    #[test]
+    fn bind_static_applies_once_no_subscription() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        // A `Static` prop binds its snapshot exactly once and installs no
+        // effect — the zero-overhead fast path.
+        let seen = Rc::new(RefCell::new(Vec::<bool>::new()));
+        let sink_seen = seen.clone();
+        let r: Reactive<bool> = Reactive::Static(true);
+        r.bind(move |v| sink_seen.borrow_mut().push(v));
+        assert_eq!(*seen.borrow(), vec![true]);
+    }
+
+    #[test]
+    fn bind_dynamic_reruns_sink_on_change() {
+        use crate::reactive::{with_scope, Scope};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        // A `Dynamic` prop (here from a `Signal`) drives the sink on the
+        // initial run and again on every change — the reactive arm. The
+        // effect is owned by the scope we create, so it stays live after
+        // `with_scope` returns and is freed when the scope drops.
+        let sig = Signal::new(false);
+        let seen = Rc::new(RefCell::new(Vec::<bool>::new()));
+        let sink_seen = seen.clone();
+        let r: Reactive<bool> = sig.into();
+        let mut scope = Scope::new();
+        with_scope(&mut scope, || {
+            r.bind(move |v| sink_seen.borrow_mut().push(v));
+        });
+        assert_eq!(*seen.borrow(), vec![false], "initial run captures current value");
+        sig.set(true);
+        assert_eq!(*seen.borrow(), vec![false, true], "re-runs on change");
+        sig.set(false);
+        assert_eq!(*seen.borrow(), vec![false, true, false]);
+        drop(scope);
     }
 }

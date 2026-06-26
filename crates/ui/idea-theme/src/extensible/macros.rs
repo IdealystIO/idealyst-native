@@ -211,6 +211,21 @@ macro_rules! tone {
             }
         }
 
+        // Reactive-prop coercion: lets a `ui!` call site pass a bare tone
+        // marker (`tone = tone::Primary`) to a `#[props]`-wrapped
+        // `Reactive<ToneRef>` field — the marker → ref → `Reactive` chain
+        // can't go through a single `.into()`. See the matching note in
+        // `extensible/typography.rs::builtin_kind!`.
+        impl ::core::convert::From<$name>
+            for ::runtime_core::Reactive<$crate::extensible::ToneRef>
+        {
+            fn from(marker: $name) -> Self {
+                ::runtime_core::Reactive::Static(
+                    $crate::extensible::ToneRef::from(marker),
+                )
+            }
+        }
+
         // Optional inherent `tokens()` — emitted only when the
         // `tokens = [...]` block is present. Returns the token
         // entries this tone introduces, so they can be aggregated by
@@ -365,6 +380,19 @@ macro_rules! variant {
                 $ctx: &$crate::extensible::ResolutionCtx,
             ) -> ::runtime_core::StyleRules {
                 $body
+            }
+        }
+
+        // Reactive-prop coercion: `variant = variant::Filled` into a
+        // `#[props]`-wrapped `Reactive<VariantRef>` field. See the matching
+        // note in `extensible/typography.rs::builtin_kind!`.
+        impl ::core::convert::From<$name>
+            for ::runtime_core::Reactive<$crate::extensible::VariantRef>
+        {
+            fn from(marker: $name) -> Self {
+                ::runtime_core::Reactive::Static(
+                    $crate::extensible::VariantRef::from(marker),
+                )
             }
         }
     };

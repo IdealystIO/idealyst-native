@@ -18,6 +18,11 @@ use runtime_core::{component, IdealystSchema, IntoElement, Element, Reactive};
 
 use crate::stylesheets::LinkText;
 
+// Reactive-by-default: `#[props]` wraps `url` → `Reactive<String>`; `label` is
+// already reactive. `label` routes to the `text()` sink (live); `url` is
+// snapshotted at build (the `external_link` primitive fixes the href at
+// construction — see the TODO in the body).
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct LinkProps {
@@ -25,12 +30,16 @@ pub struct LinkProps {
     #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub label: Reactive<String>,
     /// Destination URL (`https:`, `mailto:`, `tel:`, …).
-    pub url: String,
+    #[schema(constraint = "reactive: static String or Signal/rx!")]
+    pub url: Reactive<String>,
 }
 
 impl Default for LinkProps {
     fn default() -> Self {
-        Self { label: Reactive::Static(String::new()), url: String::new() }
+        Self {
+            label: Reactive::Static(String::new()),
+            url: Reactive::Static(String::new()),
+        }
     }
 }
 
@@ -39,8 +48,16 @@ impl Default for LinkProps {
 /// web, the platform URL opener on native).
 #[component]
 pub fn Link(props: &LinkProps) -> Element {
+    // `label` routes live to the `text()` sink — a `Signal`/`rx!` re-renders
+    // the link text in place.
     let text = runtime_core::text(props.label.clone())
         .with_style(LinkText())
         .into_element();
-    runtime_core::external_link(props.url.clone(), vec![text]).into_element()
+    // TODO(reactive-sweep): route `url` to the `external_link` href reactively.
+    // The primitive fixes the href at construction (it takes a plain `String`,
+    // no reactive setter), so a live `url` signal is snapshotted here and won't
+    // update the destination in place. A reactive href setter on the
+    // `external_link` builder is the fix; until then `url` reads its initial
+    // value.
+    runtime_core::external_link(props.url.get(), vec![text]).into_element()
 }

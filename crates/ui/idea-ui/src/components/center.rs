@@ -9,6 +9,11 @@ use runtime_core::{component, ui, ChildList, Element, IdealystSchema};
 
 use crate::stylesheets::Center as CenterStyle;
 
+// Reactive-by-default: `#[props]` wraps scalar-DATA fields → `Reactive<T>`.
+// `Center` has only `children` (the children category — left bare), so this is
+// a no-op for reactivity; the attribute keeps the component uniform with its
+// siblings and ready for future data props.
+#[runtime_core::props]
 #[derive(Default)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]

@@ -169,6 +169,24 @@ pub(crate) fn update_value(node: &Node, value: &str) {
     }
 }
 
+pub(crate) fn update_secure(node: &Node, secure: bool) {
+    if let Ok(input) = node.clone().dyn_into::<web_sys::HtmlInputElement>() {
+        // Swap the input type to toggle masking. Browsers preserve the
+        // value across a type change; guard against a needless write so a
+        // no-op toggle doesn't perturb the field.
+        let want = if secure { "password" } else { "text" };
+        if input.type_() != want {
+            input.set_type(want);
+        }
+    }
+}
+
+pub(crate) fn update_placeholder(node: &Node, placeholder: Option<&str>) {
+    if let Ok(input) = node.clone().dyn_into::<web_sys::HtmlInputElement>() {
+        input.set_placeholder(placeholder.unwrap_or(""));
+    }
+}
+
 pub(crate) fn make_handle(node: &Node) -> TextInputHandle {
     let input: web_sys::HtmlInputElement = node
         .clone()

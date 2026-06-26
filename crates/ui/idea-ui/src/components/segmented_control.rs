@@ -81,6 +81,11 @@ impl SegmentOption {
     }
 }
 
+// Reactive-by-default: `#[props]` auto-skips EVERY field here — `value` is
+// already `Reactive<String>`, `on_change` is a handler (`Rc`), and `options`
+// is a `Vec`. No scalar-DATA prop to wrap, so the struct/Default/body are
+// unchanged; the attribute is added for uniformity with the other controls.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct SegmentedControlProps {

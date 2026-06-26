@@ -160,3 +160,18 @@ impl Variant for Ghost {
         s
     }
 }
+
+// Reactive-prop coercion for the built-in variants: lets a `ui!` call site
+// pass a bare marker (`variant = variant::Filled`) to a `#[props]`-wrapped
+// `Reactive<VariantRef>` field. The marker → ref → `Reactive` chain can't go
+// through one `.into()`; see `extensible/typography.rs::builtin_kind!`.
+macro_rules! variant_reactive_coercion {
+    ($($name:ident),* $(,)?) => { $(
+        impl ::core::convert::From<$name> for ::runtime_core::Reactive<super::VariantRef> {
+            fn from(marker: $name) -> Self {
+                ::runtime_core::Reactive::Static(super::VariantRef::from(marker))
+            }
+        }
+    )* };
+}
+variant_reactive_coercion!(Filled, Soft, Outlined, Ghost);

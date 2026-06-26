@@ -19,6 +19,7 @@
 //! The two epistemologies the arena keeps strictly separate:
 //!   * **Robot** = the framework's self-report (what the agent can see).
 //!   * **Playwright** = platform truth (what the evaluator can see).
+//!
 //! When they disagree, the agent isn't penalized — the gap is surfaced as a
 //! framework finding for the feedback pass.
 

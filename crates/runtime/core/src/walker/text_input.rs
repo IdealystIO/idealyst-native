@@ -13,6 +13,7 @@ use crate::primitives::key::{KeyEvent, KeyOutcome};
 use crate::primitives::text_input::BlurHandler;
 use crate::reactive::{Effect, Signal};
 use crate::sources::StyleSource;
+use crate::Reactive;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -22,21 +23,27 @@ pub(super) fn build_text_input<B: Backend + 'static>(
     on_change: Rc<dyn Fn(String)>,
     on_key_down: Option<Rc<dyn Fn(&KeyEvent) -> KeyOutcome>>,
     on_blur: Option<BlurHandler>,
-    placeholder: Option<String>,
-    secure: bool,
+    placeholder: Reactive<Option<String>>,
+    secure: Reactive<bool>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     a11y: AccessibilityProps,
 ) -> B::Node {
     let initial = value.get();
+    // The create-time mask state. Backends pick the right native widget
+    // up front (notably AppKit, where secure entry is a distinct cell
+    // class), so the input is born correct; the effect below only runs
+    // for a *live* source.
+    let initial_secure = secure.get();
+    let initial_placeholder = placeholder.get();
     let n = time_backend_create(pkind!(TextInput), || {
         backend.borrow_mut().create_text_input(
             &initial,
-            placeholder.as_deref(),
+            initial_placeholder.as_deref(),
             on_change,
             on_key_down,
             on_blur,
-            secure,
+            initial_secure,
             &a11y,
         )
     });
@@ -53,6 +60,29 @@ pub(super) fn build_text_input<B: Backend + 'static>(
         let _e = Effect::new(move || {
             let v = value.get();
             backend.borrow_mut().update_text_input_value(&node, &v);
+        });
+    }
+    // Reactive `secure`: only a *live* source installs an effect. When the
+    // source changes, toggle the native secure-entry mode in place (e.g. a
+    // password show/hide) without rebuilding the input — the controlled
+    // `value` carries the typed text across the toggle. A `Static` mask
+    // stays on the create-time value with no effect (the common case).
+    if let Reactive::Dynamic(_) = &secure {
+        let backend = backend.clone();
+        let node = n.clone();
+        let _e = Effect::new(move || {
+            let s = secure.get();
+            backend.borrow_mut().update_text_input_secure(&node, s);
+        });
+    }
+    // Reactive `placeholder`: same shape — a live source updates the native
+    // placeholder in place; a `Static` placeholder installs no effect.
+    if let Reactive::Dynamic(_) = &placeholder {
+        let backend = backend.clone();
+        let node = n.clone();
+        let _e = Effect::new(move || {
+            let p = placeholder.get();
+            backend.borrow_mut().update_text_input_placeholder(&node, p.as_deref());
         });
     }
     if let Some(RefFill::TextInput(fill)) = ref_fill {

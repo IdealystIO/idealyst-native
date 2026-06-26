@@ -26,9 +26,9 @@ mod layout_policy;
 
 #[cfg(target_os = "macos")]
 pub use imp::{
-    install_global_self, private_layer_window_ids, schedule_layout_pass, set_animated_color,
-    set_animated_f32, with_global_backend, MacosBackend, MacosExternalRegistrar,
-    MacosNavigatorRegistrar, MacosNode,
+    coalesce_layout_passes, install_global_self, private_layer_window_ids, schedule_layout_pass,
+    set_animated_color, set_animated_f32, with_global_backend, LayoutCoalesceGuard, MacosBackend,
+    MacosExternalRegistrar, MacosNavigatorRegistrar, MacosNode,
 };
 
 #[cfg(not(target_os = "macos"))]

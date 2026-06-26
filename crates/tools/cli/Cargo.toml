@@ -35,6 +35,11 @@ ctrlc = { version = "3", features = ["termination"] }
 # `dev-reload` for the watch+wasm-pack loop. The CLI is the wiring.
 dev-http = { workspace = true }
 dev-reload = { workspace = true }
+# Robot bridge relay for `dev --web --local --robot`: the dev process hosts a
+# relay the browser app dials, exposing its Robot bridge to the MCP server.
+robot-relay = { workspace = true }
+# Declarative cross-platform Robot test runner behind `idealyst test`.
+robot-test = { workspace = true }
 # Platform-specific build orchestration. Each platform's pipeline
 # is its own crate so the CLI's `build` and `run` commands stay thin.
 build-ios = { workspace = true }

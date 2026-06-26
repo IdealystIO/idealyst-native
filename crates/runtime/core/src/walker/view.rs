@@ -259,6 +259,27 @@ fn splice_children<B: Backend + 'static>(
                     backend, parent, *inserted, cond, then, otherwise,
                 );
             }
+            // Anchorless reactive switch: same rationale as `When` above — a
+            // style-less `Switch` whose backend supports child splicing mounts
+            // the active arm DIRECTLY into `parent`, so a full-width arm fills
+            // the parent (matching web's `display:contents` anchor) instead of
+            // collapsing inside an auto-sized wrapper view. See
+            // `when_switch::build_switch_spliced`.
+            Element::Switch { discriminant, arms, default, style }
+                if style.is_none()
+                    && backend.borrow().supports_child_splice()
+                    && !backend.borrow().is_hydrating() =>
+            {
+                // NB: gated on `!is_hydrating` (unlike `When`): the anchored
+                // `build_switch_closure` carries SSR-adoption logic that the
+                // synchronous splice omits. During web hydration the anchored
+                // `display:contents` path already lets the arm fill, so we only
+                // need the splice off the hydration path — native (never
+                // hydrates) and web-CSR.
+                *inserted += super::when_switch::build_switch_spliced(
+                    backend, parent, *inserted, discriminant, arms, default,
+                );
+            }
             // Layout-transparent fragment: splice its children DIRECTLY into
             // `parent` as flat siblings — no wrapper node — recursing through
             // this same loop so nested Repeat/Each/When/Fragment keep their

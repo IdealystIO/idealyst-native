@@ -1212,6 +1212,14 @@ impl Backend for TerminalBackend {
         }
     }
 
+    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+        // Flip the stored mask flag; the next render bullet-masks (or reveals)
+        // the value. No rebuild — the cursor/value state is untouched.
+        let Some(d) = self.nodes.get_mut(&node.id) else { return };
+        let Some(input) = d.input.as_mut() else { return };
+        input.secure = secure;
+    }
+
     fn create_activity_indicator(
         &mut self,
         size: ActivityIndicatorSize,

@@ -22,8 +22,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, ChildList, Easing, IdealystSchema, Length, Element, StyleApplication, StyleRules,
-    StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
+    component, ui, ChildList, Easing, IdealystSchema, Length, Element, Reactive, StyleApplication,
+    StyleRules, StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
 };
 
 use idea_theme::active_theme;
@@ -36,8 +36,22 @@ pub use crate::stylesheets::CardPadding;
 /// surface container isn't intent-colored) — they read the theme's
 /// surface colors directly via `ctx.theme.colors()`.
 pub mod variant {
-    use idea_theme::extensible::{ResolutionCtx, Variant};
+    use idea_theme::extensible::{ResolutionCtx, Variant, VariantRef};
     use runtime_core::{Color, StyleRules};
+
+    // Reactive-prop coercion for the card-local variants, so a bare marker
+    // (`variant = variant::Flat`) coerces into a `#[props]`-wrapped
+    // `Reactive<VariantRef>` field. Hand-written markers don't go through the
+    // `variant!` macro, so they emit it here (see idea-theme's `variant!`).
+    macro_rules! card_variant_reactive {
+        ($($name:ident),*) => { $(
+            impl ::core::convert::From<$name> for ::runtime_core::Reactive<VariantRef> {
+                fn from(marker: $name) -> Self {
+                    ::runtime_core::Reactive::Static(VariantRef::from(marker))
+                }
+            }
+        )* };
+    }
 
     /// Flat — page-surface background, no shadow.
     #[derive(Copy, Clone, Default)]
@@ -78,6 +92,8 @@ pub mod variant {
             }
         }
     }
+
+    card_variant_reactive!(Flat, Elevated);
 }
 
 thread_local! {
@@ -192,6 +208,13 @@ pub fn build_card_sheet(variants: Vec<VariantRef>) -> Rc<StyleSheet> {
     Rc::new(sheet)
 }
 
+// Reactive-by-default: `#[props]` wraps each scalar-DATA field → `Reactive<…>`
+// (`variant`/`padding`/`tone`). All three drive the Card surface style, so they
+// route into the style sink reading `.get()` live; `children` is the children
+// category and stays bare. A bare value stays a zero-cost `Static` snapshot (the
+// fast path — keeps the build-time `StyleSource::Static`); a `Signal`/`rx!`
+// re-styles in place.
+#[runtime_core::props]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct CardProps {
@@ -217,8 +240,8 @@ impl Default for CardProps {
     fn default() -> Self {
         Self {
             variant: variant::Flat.into(),
-            padding: CardPadding::default(),
-            tone: None,
+            padding: Reactive::Static(CardPadding::default()),
+            tone: Reactive::Static(None),
             children: Vec::new(),
         }
     }
@@ -229,46 +252,63 @@ impl Default for CardProps {
 /// and `padding` the inner spacing.
 #[component(children)]
 pub fn Card(props: CardProps) -> Element {
-    let variant_key = props.variant.key().to_string();
-    let padding_key = props.padding.as_variant_str().to_string();
+    // The style is REACTIVE when any style-driving prop is live; otherwise it's
+    // the build-time fast path (one `StyleSource::Static`, no flicker — see
+    // Button). The closure reads each prop's `.get()` INSIDE so the apply-style
+    // Effect subscribes to whichever are dynamic.
+    let style_is_reactive =
+        !props.variant.is_static() || !props.padding.is_static() || !props.tone.is_static();
 
-    // Static style — build-time apply, no flicker (see Button).
-    let mut style = StyleApplication::new(card_sheet())
-        .with("variant", variant_key)
-        .with("padding", padding_key);
+    let make_style = {
+        let variant = props.variant.clone();
+        let padding = props.padding.clone();
+        let tone = props.tone.clone();
+        move || -> StyleApplication {
+            let variant_key = variant.get().key().to_string();
+            let padding_key = padding.get().as_variant_str().to_string();
+            let mut style = StyleApplication::new(card_sheet())
+                .with("variant", variant_key)
+                .with("padding", padding_key);
 
-    // Intent tint — when a tone is set, overlay the variant's surface
-    // bg/border with the tone's Soft slots (the same tint Alert's Soft
-    // variant uses). Rides a computed layer keyed on the tone so the
-    // framework caches one resolved StyleRules per tone. Without a tone
-    // the layer is absent and Flat/Elevated keep their surface look.
-    if let Some(tone) = props.tone.clone() {
-        let tone_for_key = tone.clone();
-        style = style.with_computed(format!("tone_{}", tone_for_key.key()), move || {
-            let theme_rc = active_theme();
-            let theme_ref = theme_rc
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("idea-ui: no IdeaTheme installed");
-            let bg = tone.soft_bg(theme_ref);
-            let border = tone.stroke_color(theme_ref);
-            let fg = tone.soft_fg(theme_ref);
-            StyleRules {
-                background: Some(bg),
-                color: Some(fg),
-                border_top_color: Some(border.clone()),
-                border_right_color: Some(border.clone()),
-                border_bottom_color: Some(border.clone()),
-                border_left_color: Some(border),
-                ..Default::default()
+            // Intent tint — when a tone is set, overlay the variant's surface
+            // bg/border with the tone's Soft slots (the same tint Alert's Soft
+            // variant uses). Rides a computed layer keyed on the tone so the
+            // framework caches one resolved StyleRules per tone. Without a tone
+            // the layer is absent and Flat/Elevated keep their surface look.
+            if let Some(tone) = tone.get() {
+                let tone_for_key = tone.clone();
+                style = style.with_computed(format!("tone_{}", tone_for_key.key()), move || {
+                    let theme_rc = active_theme();
+                    let theme_ref = theme_rc
+                        .downcast_ref::<IdeaThemeRef>()
+                        .expect("idea-ui: no IdeaTheme installed");
+                    let bg = tone.soft_bg(theme_ref);
+                    let border = tone.stroke_color(theme_ref);
+                    let fg = tone.soft_fg(theme_ref);
+                    StyleRules {
+                        background: Some(bg),
+                        color: Some(fg),
+                        border_top_color: Some(border.clone()),
+                        border_right_color: Some(border.clone()),
+                        border_bottom_color: Some(border.clone()),
+                        border_left_color: Some(border),
+                        ..Default::default()
+                    }
+                });
             }
-        });
-    }
+            style
+        }
+    };
 
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut children);
     }
-    ui! { view(style = style) { children } }
+    if style_is_reactive {
+        ui! { view(style = make_style) { children } }
+    } else {
+        ui! { view(style = make_style()) { children } }
+    }
 }
 
 #[cfg(test)]
@@ -298,7 +338,7 @@ mod tests {
     fn tone_tints_background_distinct_from_surface() {
         theme();
         let toned = CardProps {
-            tone: Some(tone::Danger.into()),
+            tone: Reactive::Static(Some(tone::Danger.into())),
             ..Default::default()
         };
         let toned_bg = resolve_style(&view_style(Card(toned)))

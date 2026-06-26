@@ -13,11 +13,20 @@
 //! equal width/height for a round avatar).
 
 use runtime_core::{
-    component, IdealystSchema, IntoElement, Length, Element, StyleApplication, StyleRules, Tokenized,
+    component, IdealystSchema, IntoElement, Length, Element, Reactive, StyleApplication, StyleRules,
+    Tokenized,
 };
 
 use crate::stylesheets::ImageBox;
 
+// Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
+// `Reactive<T>`. `src` routes to the framework `image` primitive's reactive
+// source (it accepts a `Fn() -> String`), so a `Signal`/`rx!` URL repaints the
+// image in place. `width`/`height`/`rounded` drive the style sink (`.get()`
+// read INSIDE the closure). `alt` has no reactive sink yet (the primitive's
+// `.alt()` is a one-shot setter) — read once at build (see the TODO in
+// `Image`). A bare value stays a zero-cost `Static` snapshot.
+#[runtime_core::props]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ImageProps {
@@ -36,7 +45,13 @@ pub struct ImageProps {
 
 impl Default for ImageProps {
     fn default() -> Self {
-        Self { src: String::new(), alt: None, width: None, height: None, rounded: false }
+        Self {
+            src: Reactive::Static(String::new()),
+            alt: Reactive::Static(None),
+            width: Reactive::Static(None),
+            height: Reactive::Static(None),
+            rounded: Reactive::Static(false),
+        }
     }
 }
 
@@ -45,36 +60,63 @@ impl Default for ImageProps {
 /// top of the raw image.
 #[component]
 pub fn Image(props: &ImageProps) -> Element {
-    let w = props.width;
-    let h = props.height;
-    let rounded = props.rounded;
+    // The style is REACTIVE when any style-driving dim prop is live; otherwise
+    // the build-time fast path. The closure reads each prop's `.get()` INSIDE so
+    // the apply-style Effect subscribes to whichever are dynamic, and the cache
+    // key tracks the live values.
+    let style_is_reactive =
+        !props.width.is_static() || !props.height.is_static() || !props.rounded.is_static();
 
-    let key = format!(
-        "img-{}-{}-{}",
-        w.map(|x| x as i32).unwrap_or(-1),
-        h.map(|x| x as i32).unwrap_or(-1),
-        rounded as u8
-    );
-    let style = StyleApplication::new(ImageBox::sheet()).with_computed(key, move || {
-        let mut r = StyleRules::default();
-        if let Some(w) = w {
-            r.width = Some(Tokenized::Literal(Length::Px(w)));
+    let make_style = {
+        let width = props.width.clone();
+        let height = props.height.clone();
+        let rounded = props.rounded.clone();
+        move || -> StyleApplication {
+            let w = width.get();
+            let h = height.get();
+            let rounded = rounded.get();
+            let key = format!(
+                "img-{}-{}-{}",
+                w.map(|x| x as i32).unwrap_or(-1),
+                h.map(|x| x as i32).unwrap_or(-1),
+                rounded as u8
+            );
+            StyleApplication::new(ImageBox::sheet()).with_computed(key, move || {
+                let mut r = StyleRules::default();
+                if let Some(w) = w {
+                    r.width = Some(Tokenized::Literal(Length::Px(w)));
+                }
+                if let Some(h) = h {
+                    r.height = Some(Tokenized::Literal(Length::Px(h)));
+                }
+                if rounded {
+                    let pill = Tokenized::token("radius-pill", Length::Px(999.0));
+                    r.border_top_left_radius = Some(pill.clone());
+                    r.border_top_right_radius = Some(pill.clone());
+                    r.border_bottom_left_radius = Some(pill.clone());
+                    r.border_bottom_right_radius = Some(pill);
+                }
+                r
+            })
         }
-        if let Some(h) = h {
-            r.height = Some(Tokenized::Literal(Length::Px(h)));
-        }
-        if rounded {
-            let pill = Tokenized::token("radius-pill", Length::Px(999.0));
-            r.border_top_left_radius = Some(pill.clone());
-            r.border_top_right_radius = Some(pill.clone());
-            r.border_bottom_left_radius = Some(pill.clone());
-            r.border_bottom_right_radius = Some(pill);
-        }
-        r
-    });
+    };
 
-    let mut img = runtime_core::image(props.src.clone()).with_style(style);
-    if let Some(alt) = props.alt.clone() {
+    // `src` routes to the framework `image` primitive's reactive source: a
+    // `Reactive::Static` URL is a constant, a `Signal`/`rx!` URL repaints the
+    // image in place (the primitive's walker re-runs `update_image_src`).
+    let src = props.src.clone();
+    let img = runtime_core::image(move || src.get());
+    let mut img = if style_is_reactive {
+        img.with_style(make_style)
+    } else {
+        img.with_style(make_style())
+    };
+
+    // TODO(reactive-sweep): route `alt` to a reactive sink. The primitive's
+    // `.alt()` is a one-shot setter (`Element::Image.alt: Option<String>` is a
+    // plain value with no reactive walker path), so a live `alt` is read once
+    // here. Wire a reactive alt sink on the image primitive to make it live.
+    if let Some(alt) = props.alt.get() {
         img = img.alt(alt);
     }
     img.into_element()

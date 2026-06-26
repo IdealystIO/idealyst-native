@@ -20,6 +20,12 @@ use runtime_core::{
 
 use idea_theme::extensible::{installed_typography_sheet, ToneRef, TypographyKindRef};
 
+// Reactive-by-default: `#[props]` wraps each data field `T` → `Reactive<T>`.
+// `content` routes to the `text()` sink; the style-driving props (kind/tone/
+// muted/font/align) route to the style sink. A bare value stays a zero-cost
+// `Static` snapshot (the no-flicker fast path); a `Signal`/`rx!` re-styles in
+// place.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct TypographyProps {
@@ -60,11 +66,11 @@ impl Default for TypographyProps {
     fn default() -> Self {
         Self {
             content: Reactive::Static(String::new()),
-            kind: TypographyKindRef::default(),
-            tone: None,
-            muted: false,
-            font: None,
-            align: TextAlign::Left,
+            kind: Reactive::Static(TypographyKindRef::default()),
+            tone: Reactive::Static(None),
+            muted: Reactive::Static(false),
+            font: Reactive::Static(None),
+            align: Reactive::Static(TextAlign::Left),
         }
     }
 }
@@ -75,49 +81,64 @@ impl Default for TypographyProps {
 #[component]
 pub fn Typography(props: &TypographyProps) -> Element {
     let content = props.content.clone();
-    let kind_key = props.kind.key().to_string();
-    let color_key = match (&props.tone, props.muted) {
-        (Some(t), _) => t.key().to_string(),
-        (None, true) => "muted".to_string(),
-        (None, false) => "default".to_string(),
+
+    // The style is REACTIVE when any style-driving prop is live; otherwise it
+    // stays the build-time fast path (applied before first paint, theme-swapped
+    // in bulk — no per-node Effect, no first-paint color flicker). The
+    // closure reads each prop live INSIDE, so the apply-style Effect subscribes
+    // to whichever are dynamic.
+    let style_is_reactive = !props.kind.is_static()
+        || !props.tone.is_static()
+        || !props.muted.is_static()
+        || !props.font.is_static()
+        || !props.align.is_static();
+
+    let make_style = {
+        let kind = props.kind.clone();
+        let tone = props.tone.clone();
+        let muted = props.muted.clone();
+        let font = props.font.clone();
+        let align = props.align.clone();
+        move || -> StyleApplication {
+            let kind_key = kind.get().key().to_string();
+            // Color precedence: tone wins, then muted, then default.
+            let color_key = match (tone.get(), muted.get()) {
+                (Some(t), _) => t.key().to_string(),
+                (None, true) => "muted".to_string(),
+                (None, false) => "default".to_string(),
+            };
+            let align_key = match align.get() {
+                TextAlign::Left => "left",
+                TextAlign::Center => "center",
+                TextAlign::Right => "right",
+                TextAlign::Justify => "justify",
+            }
+            .to_string();
+
+            let mut style = StyleApplication::new(installed_typography_sheet())
+                .with("kind", kind_key)
+                .with("color", color_key)
+                .with("align", align_key);
+
+            // Per-instance font override, layered over the sheet base. The
+            // cache key encodes the family identity so identical faces share
+            // one resolved class.
+            if let Some(font) = font.get() {
+                let key = format!("font:{}", font_override_key(&font));
+                style = style.with_computed(key, move || StyleRules {
+                    font_family: Some(font.clone()),
+                    ..Default::default()
+                });
+            }
+            style
+        }
     };
-    let align_key = match props.align {
-        TextAlign::Left => "left",
-        TextAlign::Center => "center",
-        TextAlign::Right => "right",
-        TextAlign::Justify => "justify",
+
+    if style_is_reactive {
+        text(content).with_style(make_style).into_element()
+    } else {
+        text(content).with_style(make_style()).into_element()
     }
-    .to_string();
-
-    // Static style — applied at build time (before first paint), with
-    // theme swaps handled in bulk by the theme cohort. A reactive
-    // closure would defer the apply to a per-node Effect, letting the
-    // text paint once in the browser-default color before the themed
-    // class lands — which the `color` transition then animates (the
-    // on-load / on-navigation text flicker). The axis keys are fixed
-    // per instance, so nothing needs to be reactive.
-    let mut style = StyleApplication::new(installed_typography_sheet())
-        .with("kind", kind_key)
-        .with("color", color_key)
-        .with("align", align_key);
-
-    // Per-instance font override. The theme's default font already
-    // lands on the sheet base; when an author names a face on this
-    // instance, layer it on via `with_computed` so it overrides the
-    // base. The cache key encodes the family identity (a `Typeface`'s
-    // id, or the system stack string) so two instances naming the same
-    // face share one resolved class, and two different faces don't
-    // collide.
-    if let Some(font) = &props.font {
-        let font = font.clone();
-        let key = format!("font:{}", font_override_key(&font));
-        style = style.with_computed(key, move || StyleRules {
-            font_family: Some(font.clone()),
-            ..Default::default()
-        });
-    }
-
-    text(content).with_style(style).into_element()
 }
 
 /// Stable cache-key fragment for a font override. A `System` family is
@@ -175,7 +196,7 @@ mod tests {
     fn font_prop_override_carries_into_resolved_style() {
         install_idea_theme(light_theme());
         let props = TypographyProps {
-            font: Some(FontFamily::System("Courier New, monospace".to_string())),
+            font: Reactive::Static(Some(FontFamily::System("Courier New, monospace".to_string()))),
             ..Default::default()
         };
         let rules = resolve(Typography(&props));
@@ -199,7 +220,7 @@ mod tests {
             fallback: runtime_core::SystemFallback::SansSerif,
         };
         let props = TypographyProps {
-            font: Some(FontFamily::Typeface(tf)),
+            font: Reactive::Static(Some(FontFamily::Typeface(tf))),
             ..Default::default()
         };
         let rules = resolve(Typography(&props));

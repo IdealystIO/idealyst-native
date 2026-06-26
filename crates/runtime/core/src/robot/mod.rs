@@ -885,7 +885,12 @@ pub(crate) fn bump_revision() {
 }
 
 /// The current change-revision (read by the bridge's subscribed connections).
-pub(crate) fn current_revision() -> u64 {
+///
+/// Public so an **external transport** (the web `robot-relay` dial-out client in
+/// `backend-web`) can implement the same `subscribe`→`{event:changed,rev}` push
+/// the native TCP bridge does — it watches this and emits a push when it
+/// advances. Native and web share one revision source.
+pub fn current_revision() -> u64 {
     ROBOT_REVISION.load(std::sync::atomic::Ordering::Relaxed)
 }
 

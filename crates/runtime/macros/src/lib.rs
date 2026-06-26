@@ -47,6 +47,7 @@ mod scope_emit;
 mod methods_block;
 mod path_analysis;
 mod primitives;
+mod props_attr;
 mod reactivity;
 mod stylesheet;
 mod text_fmt;
@@ -256,6 +257,27 @@ pub fn text_fmt(input: TokenStream) -> TokenStream {
 ///   invocation macro fills in when the caller omits them.
 /// - `children` — mark this component as a container (informational; the
 ///   invocation macro is unchanged).
+/// `#[props]` — reactive-by-default props struct. Rewrites each scalar-data
+/// field `T` → `Reactive<T>` so a `ui!` call site can pass a `Signal`/`rx!`
+/// and have it carry through live, while plain values stay zero-overhead
+/// `Static` snapshots. Handlers, children, refs, and existing reactive
+/// sources are left alone (see [`props_attr`]); per-field `#[prop(static)]`
+/// / `#[prop(reactive)]` override the heuristic. Place ABOVE the derives:
+///
+/// ```ignore
+/// #[props]
+/// #[derive(IdealystSchema)]
+/// pub struct FooProps {
+///     content: String,                 // → Reactive<String>
+///     #[prop(static)] size: FooSize,   // stays FooSize
+///     on_change: Rc<dyn Fn(String)>,   // left alone (handler)
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn props(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    props_attr::emit(item.into()).into()
+}
+
 #[proc_macro_attribute]
 pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = match component_attr::parse_component_attr(attr.into()) {

@@ -18,7 +18,7 @@
 //! }
 //! ```
 
-use runtime_core::{component, ui, IdealystSchema, Length, Element, StyleApplication};
+use runtime_core::{component, ui, IdealystSchema, Length, Element, Reactive, StyleApplication};
 
 use crate::stylesheets::Skeleton as SkeletonStyle;
 use crate::theme::IdeaThemeRef;
@@ -37,6 +37,12 @@ pub enum SkeletonWidth {
     Px(f32),
 }
 
+// Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
+// `Reactive<T>`. All three (width/height/radius) drive the placeholder's
+// style, so they route into the style sink; a bare value stays a zero-cost
+// `Static` snapshot (the no-flicker fast path), a `Signal`/`rx!` re-styles
+// the block in place.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct SkeletonProps {
@@ -54,9 +60,9 @@ pub struct SkeletonProps {
 impl Default for SkeletonProps {
     fn default() -> Self {
         Self {
-            width: SkeletonWidth::Full,
-            height: 16.0,
-            radius: 4.0,
+            width: Reactive::Static(SkeletonWidth::Full),
+            height: Reactive::Static(16.0),
+            radius: Reactive::Static(4.0),
         }
     }
 }
@@ -65,30 +71,42 @@ impl Default for SkeletonProps {
 /// loading content (no animation; avoids layout shift on arrival).
 #[component]
 pub fn Skeleton(props: &SkeletonProps) -> Element {
-    let height = props.height;
-    let radius = props.radius;
-    let width = match props.width {
-        SkeletonWidth::Full => Length::pct(100.0),
-        SkeletonWidth::Half => Length::pct(50.0),
-        SkeletonWidth::ThreeQuarter => Length::pct(75.0),
-        SkeletonWidth::Px(v) => Length::Px(v),
+    // The style is REACTIVE when any dimension prop is live; otherwise it's
+    // the build-time fast path. The closure reads each prop's `.get()` INSIDE
+    // so the apply-style Effect subscribes to whichever are dynamic.
+    let style_is_reactive =
+        !props.width.is_static() || !props.height.is_static() || !props.radius.is_static();
+
+    let make_style = {
+        let width = props.width.clone();
+        let height = props.height.clone();
+        let radius = props.radius.clone();
+        move || {
+            let length = match width.get() {
+                SkeletonWidth::Full => Length::pct(100.0),
+                SkeletonWidth::Half => Length::pct(50.0),
+                SkeletonWidth::ThreeQuarter => Length::pct(75.0),
+                SkeletonWidth::Px(v) => Length::Px(v),
+            };
+            // Ensure the active theme is wrapped in IdeaThemeRef; the
+            // background comes from the stylesheet's base closure
+            // against that theme.
+            let _ = crate::theme_runtime::active_theme_untracked()
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
+            let mut app = StyleApplication::new(SkeletonStyle::sheet())
+                .override_border_radius(Length::Px(radius.get()));
+            // No `override_width` / `override_height` builders yet —
+            // poke `overrides` directly. (Framework follow-up.)
+            app.overrides.width = Some(runtime_core::Tokenized::Literal(length));
+            app.overrides.height = Some(runtime_core::Tokenized::Literal(Length::Px(height.get())));
+            app
+        }
     };
 
-    let style = move || {
-        // Ensure the active theme is wrapped in IdeaThemeRef; the
-        // background comes from the stylesheet's base closure
-        // against that theme.
-        let _ = crate::theme_runtime::active_theme_untracked()
-            .downcast_ref::<IdeaThemeRef>()
-            .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-        let mut app = StyleApplication::new(SkeletonStyle::sheet())
-            .override_border_radius(Length::Px(radius));
-        // No `override_width` / `override_height` builders yet —
-        // poke `overrides` directly. (Framework follow-up.)
-        app.overrides.width = Some(runtime_core::Tokenized::Literal(width.clone()));
-        app.overrides.height = Some(runtime_core::Tokenized::Literal(Length::Px(height)));
-        app
-    };
-
-    ui! { view(style = style) {} }
+    if style_is_reactive {
+        ui! { view(style = make_style) {} }
+    } else {
+        ui! { view(style = make_style()) {} }
+    }
 }

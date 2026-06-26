@@ -122,7 +122,14 @@ pub enum CollapsibleTransition {
 // Collapsible
 // =============================================================================
 
+// Reactive-by-default: `#[props]` wraps the scalar-DATA fields `transition`/
+// `duration_ms` → `Reactive<…>`; `title` is already `Reactive`, `value` is a
+// `Signal` source, `on_change` a handler, and `children` the children category
+// — all auto-skipped. `transition`/`duration_ms` drive STRUCTURE/animation (the
+// Snap-vs-Measured body branch and the tween timing inside an Effect), not a
+// style sink, so they're snapshotted at build with flagged TODOs below.
 /// Props for [`Collapsible`].
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct CollapsibleProps {
@@ -160,8 +167,8 @@ impl Default for CollapsibleProps {
             title: Reactive::Static(String::new()),
             value: Signal::new(false),
             on_change: Rc::new(|_| {}),
-            transition: CollapsibleTransition::default(),
-            duration_ms: COLLAPSIBLE_DURATION_DEFAULT_MS,
+            transition: Reactive::Static(CollapsibleTransition::default()),
+            duration_ms: Reactive::Static(COLLAPSIBLE_DURATION_DEFAULT_MS),
             children: Vec::new(),
         }
     }
@@ -173,7 +180,19 @@ impl Default for CollapsibleProps {
 pub fn Collapsible(props: CollapsibleProps) -> Element {
     let container = CollapsibleContainer();
     let header = collapsible_header(props.title, props.value, props.on_change);
-    let body = collapsible_body(props.value, props.transition, props.duration_ms, props.children);
+    // TODO(reactive-sweep): route `transition`/`duration_ms` into the body. Both
+    // are STRUCTURAL/animation inputs — `transition` selects the Snap-vs-Measured
+    // body construction (a tree-shape branch) and `duration_ms` feeds the tween
+    // timing baked into the Measured effect — so neither rides a style sink.
+    // Making them live needs the body rebuilt on `transition.get()` (a `switch`)
+    // and the tween effect re-reading `duration_ms.get()` inside its closure.
+    // For now both are snapshotted at build.
+    let body = collapsible_body(
+        props.value,
+        props.transition.get(),
+        props.duration_ms.get(),
+        props.children,
+    );
     ui! {
         view(style = container) {
             header
@@ -424,7 +443,14 @@ pub struct AccordionItem {
     pub body: Element,
 }
 
+// Reactive-by-default: `#[props]` wraps the scalar-DATA fields `expand`/
+// `transition`/`duration_ms` → `Reactive<…>`; `items` (children category),
+// `open` (Signal source), and `on_change` (Option<handler>) are auto-skipped.
+// All three wrapped props drive STRUCTURE — they're consumed in the per-item
+// build loop (expansion policy, body strategy, tween timing) — so they're
+// snapshotted at build with a flagged TODO in the body.
 /// Props for [`Accordion`].
+#[runtime_core::props]
 #[derive(IdealystSchema)]
 pub struct AccordionProps {
     /// Items rendered in order.
@@ -464,9 +490,9 @@ impl Default for AccordionProps {
         Self {
             items: Vec::new(),
             open: Signal::new(Vec::new()),
-            expand: AccordionExpand::default(),
-            transition: CollapsibleTransition::default(),
-            duration_ms: COLLAPSIBLE_DURATION_DEFAULT_MS,
+            expand: Reactive::Static(AccordionExpand::default()),
+            transition: Reactive::Static(CollapsibleTransition::default()),
+            duration_ms: Reactive::Static(COLLAPSIBLE_DURATION_DEFAULT_MS),
             on_change: None,
         }
     }
@@ -479,9 +505,14 @@ impl Default for AccordionProps {
 pub fn Accordion(props: AccordionProps) -> Element {
     let container_style = AccordionContainer();
     let open_state = props.open;
-    let expand = props.expand;
-    let transition = props.transition;
-    let duration_ms = props.duration_ms;
+    // TODO(reactive-sweep): route `expand`/`transition`/`duration_ms` into the
+    // per-item build. All three are STRUCTURAL — consumed in the item loop below
+    // to pick the expansion policy, the body strategy, and the tween timing — so
+    // a live source would need the item subtree rebuilt (a `switch`), not a style
+    // sink. For now each is snapshotted at build.
+    let expand = props.expand.get();
+    let transition = props.transition.get();
+    let duration_ms = props.duration_ms.get();
     let on_change = props.on_change;
     let n = props.items.len();
 

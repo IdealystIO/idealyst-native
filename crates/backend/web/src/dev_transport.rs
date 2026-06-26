@@ -413,6 +413,8 @@ fn command_kind(c: &wire::Command) -> &'static str {
         UpdateIconStroke { .. } => "UpdateIconStroke",
         AnimateIconStroke { .. } => "AnimateIconStroke",
         UpdateTextInputValue { .. } => "UpdateTextInputValue",
+        UpdateTextInputSecure { .. } => "UpdateTextInputSecure",
+        UpdateTextInputPlaceholder { .. } => "UpdateTextInputPlaceholder",
         UpdateTextAreaValue { .. } => "UpdateTextAreaValue",
         UpdateToggleValue { .. } => "UpdateToggleValue",
         UpdateSliderValue { .. } => "UpdateSliderValue",

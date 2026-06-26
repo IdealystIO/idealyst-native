@@ -24,4 +24,10 @@ public class NativeBridge {
     /// BEFORE `attach`. `path` is the URI's path component
     /// (e.g. "/encounters/abc"), or null/empty for no deep link.
     public static native void setLaunchPath(String path);
+
+    /// Robot bridge: export the relay URL (baked into the manifest meta-data
+    /// by `idealyst dev`) so the app DIALS the host relay instead of
+    /// self-hosting an on-device TCP bridge. Call BEFORE `attach`. Only
+    /// resolved in dev builds; MainActivity guards on the meta-data presence.
+    public static native void setRobotRelayUrl(String url);
 }

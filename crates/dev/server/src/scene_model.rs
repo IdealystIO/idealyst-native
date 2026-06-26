@@ -269,6 +269,22 @@ impl SceneModel {
                     *v = value.clone();
                 }
             }
+            Command::UpdateTextInputSecure { node, secure } => {
+                // Fold the live mask into the snapshot create so a late-joining
+                // AAS client renders the input in its current secure state.
+                if let Some(Command::CreateTextInput { secure: s, .. }) =
+                    self.node_create.get_mut(node)
+                {
+                    *s = *secure;
+                }
+            }
+            Command::UpdateTextInputPlaceholder { node, placeholder } => {
+                if let Some(Command::CreateTextInput { placeholder: p, .. }) =
+                    self.node_create.get_mut(node)
+                {
+                    *p = placeholder.clone();
+                }
+            }
             Command::UpdateTextAreaValue { node, value } => {
                 if let Some(Command::CreateTextArea { initial_value: v, .. }) =
                     self.node_create.get_mut(node)

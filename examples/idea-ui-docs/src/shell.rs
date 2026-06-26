@@ -10,22 +10,24 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, derived, fragment, pressable, switch, ui, viewport_size, when, Color, Element,
-    IntoElement, SafeAreaSides, Signal, StyleApplication, Tokenized,
+    component, derived, effect, fragment, pressable, signal, switch, ui, viewport_size, when, Color,
+    Element, IntoElement, SafeAreaSides, Signal, StyleApplication, Tokenized,
 };
 use runtime_core::primitives::navigator::ambient_drawer;
 use drawer_navigator::SlotProps;
 use idea_ui::{
-    dark_theme, light_theme, set_idea_theme, typography_kind, Spacer, Stack, StackGap, Switch,
-    Table, TableCell, TableRow, Typography,
+    dark_theme, light_theme, set_idea_theme, typography_kind, Icon, Modal, Spacer, Stack, StackGap,
+    Switch, Table, TableCell, TableRow, Typography,
 };
+use icons_lucide::SEARCH;
 
 use crate::routes::{Entry, Status, CATALOG};
 use crate::styles::{
     BrandName, Callout as CalloutBox, CodePanel as CodePanelBox, CodeText, ControlsBox, DemoRow,
-    DemoSurface as DemoSurfaceBox, DocHeader, GroupOverline, HeaderBrand, HeaderMono, HeaderSpacer,
+    DemoSurface as DemoSurfaceBox, DemoSurfaceContent, DocHeader, GroupOverline, HeaderBrand, HeaderMono, HeaderSpacer,
     LogoBox, LogoGlyph, MenuButton, MenuGlyph, NavDot, NavDotReady, NavItem, NavItemActive, PagePad, PreviewBox,
-    PreviewSlot, ScreenScroll, SearchInput, SegBtn, SegBtnActive, SegBtnText, SegBtnTextActive,
+    PreviewSlot, ScreenScroll, SearchDialogBody, SearchFieldRow, SearchInputBare, SearchResultsScroll,
+    SearchTrigger, SearchTriggerText, SegBtn, SegBtnActive, SegBtnText, SegBtnTextActive,
     SegToggle, SidebarBody, SidebarScroll, SidebarSection, StatusBadge, StatusBadgeDetailed, StatusBadgeText,
     StatusBadgeTextDetailed, TitleRow, UsageLabel, VersionPill,
 };
@@ -144,32 +146,121 @@ fn seg_button(
 
 pub fn sidebar(slot: SlotProps, q: Signal<String>) -> Element {
     let active_route = slot.active_route;
-    let on_search_q = q;
-    let search = runtime_core::text_input(q, move |v: String| on_search_q.set(v))
-        .placeholder("Search".to_string())
-        .with_style(move || StyleApplication::new(SearchInput::sheet()))
-        .into_element();
 
-    // Reactive nav: rebuilt whenever the query changes.
-    let nav = switch(
-        move || q.get(),
-        move |query: &String| build_nav(query, active_route),
-    );
+    // The search now lives in a dialog. This open-state drives the modal; the
+    // sidebar shows a button that opens it.
+    let open: Signal<bool> = signal!(false);
+
+    // Search TRIGGER — a button styled like a search field. Opening clears any
+    // prior query so each search starts fresh.
+    let open_q = q;
+    let open_set = open;
+    let search_button: Element = pressable(
+        vec![ui! { text(style = SearchTriggerText()) { "Search components…".to_string() } }],
+        move || {
+            open_q.set(String::new());
+            open_set.set(true);
+        },
+    )
+    .with_style(StyleApplication::new(SearchTrigger::sheet()))
+    .into();
+
+    // The full nav list (search/filtering moved into the dialog).
+    let nav = build_nav("", active_route);
+
+    let close: Rc<dyn Fn()> = {
+        let o = open;
+        Rc::new(move || o.set(false))
+    };
 
     // A scroll view (not a plain view): the drawer SDK gives the leading
     // slot a fixed full-height panel and leaves scrolling to the author, so
     // a nav list taller than the viewport must scroll here. The
     // `scroll_view` seed (`flex_grow:1 / flex_basis:0`) fills the panel's
     // height, bounding the scroller so its content overflows and scrolls.
+    //
+    // The Modal is always-mounted (it animates its own exit via `presence`)
+    // but renders into a screen-covering overlay, so it sits inertly in the
+    // tree here and portals out when open.
     ui! {
         scroll_view(style = SidebarScroll()) {
             view(style = SidebarBody()) {
-                search
+                search_button
                 nav
+                Modal(
+                    open = open,
+                    on_dismiss = Some(close),
+                    content = move || search_dialog(q, active_route, open),
+                )
             }
         }
         .safe_area(SafeAreaSides::VERTICAL)
     }
+}
+
+/// The search dialog body: a live text input over the reactive result list.
+/// Selecting a result navigates (the `link` in `nav_item`) AND closes the
+/// dialog — we watch `active_route` and flip `open` off on the first change.
+fn search_dialog(
+    q: Signal<String>,
+    active_route: Signal<&'static str>,
+    open: Signal<bool>,
+) -> Element {
+    let on_q = q;
+    let input = runtime_core::text_input(q, move |v: String| on_q.set(v))
+        .placeholder("Search components…".to_string())
+        .with_style(move || StyleApplication::new(SearchInputBare::sheet()))
+        .into_element();
+
+    let results = switch(
+        move || q.get(),
+        move |query: &String| build_search_results(query, active_route),
+    );
+
+    // Close-on-navigate. `content` is rebuilt per open, so this arms fresh each
+    // time: the first run (mount) only arms; the next run — fired when a result
+    // link changes `active_route` — closes the dialog.
+    let armed = std::cell::Cell::new(false);
+    effect!({
+        let _ = active_route.get();
+        if armed.get() {
+            open.set(false);
+        } else {
+            armed.set(true);
+        }
+    });
+
+    ui! {
+        view(style = SearchDialogBody()) {
+            view(style = SearchFieldRow()) {
+                Icon(data = SEARCH, size = 16.0, color = Some(Color("#64748b".into())))
+                input
+            }
+            scroll_view(style = SearchResultsScroll()) {
+                results
+            }
+        }
+    }
+}
+
+/// Flat, filtered result list for the search dialog — reuses `nav_item` so a
+/// result is the same navigating link as the sidebar.
+fn build_search_results(query: &str, active_route: Signal<&'static str>) -> Element {
+    let q = query.trim().to_lowercase();
+    let mut items: Vec<Element> = Vec::new();
+    for group in CATALOG {
+        for entry in group
+            .entries
+            .iter()
+            .filter(|e| q.is_empty() || e.name.to_lowercase().contains(&q))
+        {
+            items.push(nav_item(entry, active_route));
+        }
+    }
+    if items.is_empty() {
+        items.push(ui! { text(style = SidebarSection()) { "No matches".to_string() } });
+    }
+    ui! { Stack(gap = StackGap::None) { items } }
 }
 
 fn build_nav(query: &str, active_route: Signal<&'static str>) -> Element {
@@ -463,9 +554,14 @@ pub struct DemoSurfaceProps {
 #[component]
 pub fn DemoSurface(props: DemoSurfaceProps) -> Element {
     let style = DemoSurfaceBox();
+    let content = DemoSurfaceContent();
     let children = props.children;
+    // Card spans the page; an inner max-width column caps + centers the content
+    // so a full-width component (Field) renders at a sensible width.
     ui! {
-        view(style = style) { children }
+        view(style = style) {
+            view(style = content) { children }
+        }
     }
 }
 

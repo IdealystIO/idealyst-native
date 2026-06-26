@@ -1217,6 +1217,148 @@ mod tests {
         );
     }
 
+    /// Reproduction for the idea-ui adorned `Field` not filling its column on
+    /// macOS. Structure: a definite-width surface > FieldGroup (default column,
+    /// `align_items: stretch`) > shell (flex ROW, `width: 100%`) > [icon leaf,
+    /// input leaf with a ~100pt intrinsic measure + `flex_grow: 1`]. The shell
+    /// must stretch to the full surface width and the input must grow to fill
+    /// the row; the symptom was the shell hugging the lone icon (~24pt).
+    ///
+    /// Control: a NON-adorned input (leaf directly in FieldGroup) fills via the
+    /// seed's cross-axis stretch — so whatever's wrong is specific to the
+    /// flex-row shell, not the column stretch in general.
+    #[derive(Clone, Copy)]
+    enum Fill {
+        None,
+        WidthPct,
+        AlignSelfStretch,
+    }
+
+    fn field_widths(fill: Fill, scroll_wrapped: bool) -> (f32, f32, f32) {
+        let intrinsic: MeasureFn = Rc::new(|known: Size<Option<f32>>, _avail| Size {
+            width: known.width.unwrap_or(100.0),
+            height: known.height.unwrap_or(17.0),
+        });
+
+        let mut t = LayoutTree::new();
+        let root = t.new_node(); // window; compute() fills it to 600 wide
+
+        // Optional vertical scroll wrapper (the docs page lives in one). A
+        // vertical scroller seeds grow:1/basis:0 and overflow.y scroll; its
+        // content width is the viewport width — the question is whether that
+        // width stays *definite* for a percent-width grandchild.
+        let host = if scroll_wrapped {
+            let sc = t.new_node();
+            t.set_overflow_scroll(sc, false);
+            t.add_child(root, sc);
+            sc
+        } else {
+            root
+        };
+
+        // The DemoSurface the docs page wraps every preview in: a column that
+        // *centers* its children (`align_items: center`). This is the actual
+        // reason the Field doesn't fill — a centering parent sizes a child to
+        // its content and centers it, rather than stretching it. Modeling this
+        // is what my first test omitted.
+        let surface = t.new_node();
+        let mut surf = StyleRules::default();
+        surf.align_items = Some(runtime_core::AlignItems::Center);
+        surf.justify_content = Some(runtime_core::JustifyContent::Center);
+        t.set_style(surface, &surf);
+        t.add_child(host, surface);
+
+        let group = t.new_node(); // FieldGroup
+        let mut gr = StyleRules::default();
+        // The fix under test: a Field must fill its container width even when
+        // the container centers. Two candidate strategies on the FieldGroup:
+        //   - align_self: stretch — overrides the parent's `align_items: center`
+        //     for this child (the Divider precedent), keeps width auto.
+        //   - width: 100% — a definite full width the centering can't shrink.
+        match fill {
+            Fill::None => {}
+            Fill::AlignSelfStretch => {
+                gr.align_self = Some(runtime_core::AlignSelf::Stretch)
+            }
+            Fill::WidthPct => gr.width = Some(Tokenized::Literal(FwLength::Percent(100.0))),
+        }
+        t.set_style(group, &gr);
+        t.add_child(surface, group);
+
+        // Shell: flex row with the shipped `width: 100%` (resolves against the
+        // FieldGroup; only fills once the group itself fills).
+        let shell = t.new_node();
+        let mut sr = StyleRules::default();
+        sr.flex_direction = Some(FwFlexDirection::Row);
+        sr.align_items = Some(runtime_core::AlignItems::Center);
+        sr.width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
+        t.set_style(shell, &sr);
+        t.add_child(group, shell);
+
+        // Icon leaf: fixed 24×24.
+        let icon = t.new_node();
+        let mut ir = StyleRules::default();
+        ir.width = Some(px(24.0));
+        ir.height = Some(px(24.0));
+        t.set_style(icon, &ir);
+        t.add_child(shell, icon);
+
+        // Input leaf: flex_grow 1, intrinsic ~100 measure (mimics NSTextField).
+        let input = t.new_node();
+        let mut inr = StyleRules::default();
+        inr.flex_grow = Some(f32t(1.0));
+        t.set_style(input, &inr);
+        t.set_measure_fn(input, intrinsic.clone());
+        t.add_child(shell, input);
+
+        t.compute(root, 600.0, 800.0);
+        (
+            t.frame_of(group).width,
+            t.frame_of(shell).width,
+            t.frame_of(input).width,
+        )
+    }
+
+    #[test]
+    fn adorned_field_shell_fills_column() {
+        for scroll in [false, true] {
+            for (name, fill) in [
+                ("none", Fill::None),
+                ("width:100%", Fill::WidthPct),
+                ("align_self:stretch", Fill::AlignSelfStretch),
+            ] {
+                let (group, shell, input) = field_widths(fill, scroll);
+                eprintln!(
+                    "[field-dbg] scroll={scroll:<5} fill={name:<18} group={group:.0} shell={shell:.0} input={input:.0}"
+                );
+            }
+        }
+        // Bug repro: under a CENTERING parent (DemoSurface), a Field with no
+        // cross-axis fill hugs its content and gets centered — the icon-only
+        // adorned field collapsed this way on macOS.
+        let (group_n, _shell_n, _input_n) = field_widths(Fill::None, true);
+        assert!(
+            group_n < 200.0,
+            "WITHOUT the fix a centering parent collapses the field to its \
+             content width, got {group_n} (this is the bug)"
+        );
+
+        // The fix we ship — `align_self: stretch` on FieldGroup — must fill in
+        // BOTH the plain and the scroll-wrapped tree (the docs page scrolls).
+        for scroll in [false, true] {
+            let (group_s, shell_s, input_s) = field_widths(Fill::AlignSelfStretch, scroll);
+            assert!(
+                (group_s - 600.0).abs() < 1.0,
+                "align_self:stretch field must fill the 600px surface (scroll={scroll}), got {group_s}"
+            );
+            assert!(
+                (shell_s - 600.0).abs() < 1.0,
+                "shell fills once the group fills (scroll={scroll}), got {shell_s}"
+            );
+            assert!(input_s > 500.0, "input grows to fill the row (scroll={scroll}), got {input_s}");
+        }
+    }
+
     /// Regression: a VERTICAL scroll view's content extent must clip its
     /// CROSS axis to the scroll view's frame — an over-wide child (a
     /// non-wrapping button row, a wide table) must NOT turn it into a
@@ -1844,6 +1986,79 @@ mod tests {
             (t.frame_of(child).width - 500.0).abs() < 0.5,
             "author max_width:500 must win over the 100% default clamp, got {}",
             t.frame_of(child).width
+        );
+    }
+
+    /// Regression: a single-axis scroller (e.g. the codeblock external) must
+    /// report ~0 for its MIN-content size — it scrolls, so it can shrink to
+    /// nothing. Reporting its full CONTENT width for the MinContent query floors
+    /// every flex ancestor at that width (Taffy's flex `min-width:auto`), so a
+    /// navigator outlet couldn't shrink to its allotment and the page overflowed
+    /// the window — the macOS "screen renders too wide until you resize" bug
+    /// (only pages WITH a wide codeblock hit it; resize re-queried with a
+    /// Definite width and it fit). Pins the layout principle behind the backends'
+    /// `install_external_content_measure` fix (the ObjC `cellSizeForBounds`
+    /// measure itself needs a live cell, so can't be unit-tested directly).
+    #[test]
+    fn scroller_min_content_zero_lets_flex_outlet_shrink() {
+        use std::rc::Rc;
+        // Content wider than the outlet's flex allotment (1024 - 252 = 772).
+        const CONTENT_W: f32 = 900.0;
+
+        // Build Row[ sidebar(fixed 252, no shrink), outlet(grow 1, basis 0) ]
+        // → scroller(measure fn). `min_content_w` is the value under test.
+        let outlet_width = |min_content_w: f32| -> f32 {
+            let mut t = LayoutTree::new();
+            let root = t.new_node();
+            let mut rr = StyleRules::default();
+            rr.flex_direction = Some(FwFlexDirection::Row);
+            t.set_style(root, &rr);
+
+            let sidebar = t.new_node();
+            let mut sr = StyleRules::default();
+            sr.width = Some(px(252.0));
+            sr.flex_shrink = Some(Tokenized::Literal(0.0));
+            t.set_style(sidebar, &sr);
+
+            let outlet = t.new_node();
+            let mut or = StyleRules::default();
+            or.flex_grow = Some(Tokenized::Literal(1.0));
+            or.flex_basis = Some(px(0.0));
+            or.flex_direction = Some(FwFlexDirection::Column);
+            t.set_style(outlet, &or);
+
+            let scroller = t.new_node();
+            t.set_measure_fn(
+                scroller,
+                Rc::new(move |known: Size<Option<f32>>, avail: Size<AvailableSpace>| {
+                    let w = known.width.unwrap_or(match avail.width {
+                        AvailableSpace::Definite(w) => w,
+                        AvailableSpace::MinContent => min_content_w,
+                        AvailableSpace::MaxContent => CONTENT_W,
+                    });
+                    Size { width: w, height: known.height.unwrap_or(40.0) }
+                }),
+            );
+
+            t.add_child(root, sidebar);
+            t.add_child(root, outlet);
+            t.add_child(outlet, scroller);
+            t.compute(root, 1024.0, 768.0);
+            t.frame_of(outlet).width
+        };
+
+        // BUG: min-content = content width → outlet floored at 900, overflows
+        // its 772 allotment.
+        let buggy = outlet_width(CONTENT_W);
+        assert!(
+            buggy > 772.5,
+            "with content-width min-content the outlet can't shrink (overflows), got {buggy}"
+        );
+        // FIX: min-content 0 → outlet shrinks to its 772 flex allotment.
+        let fixed = outlet_width(0.0);
+        assert!(
+            (fixed - 772.0).abs() < 0.5,
+            "with min-content 0 the outlet fits its 772 allotment, got {fixed}"
         );
     }
 }

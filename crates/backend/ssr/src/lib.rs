@@ -750,6 +750,12 @@ impl Backend for SsrBackend {
         set_attr(node,"value", value.to_string());
     }
 
+    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+        // Mirror the create-time `type` so a reactive `secure` resolved during
+        // the server render emits the right input type for hydration.
+        set_attr(node, "type", if secure { "password" } else { "text" }.to_string());
+    }
+
     fn create_text_area(
         &mut self,
         initial_value: &str,

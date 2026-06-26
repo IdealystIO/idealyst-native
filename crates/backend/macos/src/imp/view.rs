@@ -884,6 +884,13 @@ declare_class!(
                     event: event
                 ]
             };
+            // Kill the SQUARE focus ring drawn during editing on top of our
+            // rounded framework border. The field's `focusRingType` is None, but
+            // a scrollable single-line field hosts its field editor inside an
+            // NSScrollView, and the scroll view (and editor) draw their own ring.
+            // None them both. 1 = NSFocusRingTypeNone — leaves only the themed
+            // `focused` border (the cross-platform focus indicator).
+            suppress_editor_focus_ring(editor);
             // The field editor just engaged → the field is focused.
             self.fire_focus(true);
         }
@@ -910,6 +917,9 @@ declare_class!(
                     length: length
                 ]
             };
+            // Suppress the square editing focus ring (see `editWithFrame:`) so
+            // only the rounded themed border shows.
+            suppress_editor_focus_ring(editor);
             // Click-to-edit installs the field editor here → focused.
             self.fire_focus(true);
         }
@@ -1036,6 +1046,24 @@ pub(crate) fn set_text_field_insets(field: &NSView, insets: LabelInsets) {
     cell.set_insets(insets);
 }
 
+/// Suppress the SQUARE focus ring AppKit draws while a field is editing. The
+/// field's `focusRingType` is None, but the field editor (an NSTextView) is
+/// hosted in an `_NSKeyboardFocusClipView` (the editor's superview) whose
+/// `focusRingType` defaults to 0 (Default) — THAT draws the square ring around
+/// its rectangular bounds, fighting the rounded framework `focused` border.
+/// None the editor AND its clip-view superview (1 = NSFocusRingTypeNone),
+/// leaving only the themed border as the focus indicator. Confirmed culprit via
+/// a subtree dump — `_NSKeyboardFocusClipView frt=0`, everything else frt=1.
+fn suppress_editor_focus_ring(editor: &NSText) {
+    unsafe {
+        let _: () = msg_send![editor, setFocusRingType: 1usize];
+        let clip: *mut AnyObject = msg_send![editor, superview];
+        if !clip.is_null() {
+            let _: () = msg_send![clip, setFocusRingType: 1usize];
+        }
+    }
+}
+
 /// Swap `field`'s cell for a [`VCenterTextFieldCell`] so its text/placeholder
 /// vertically centers, and standardize the field to FRAMEWORK-controlled chrome
 /// — exactly like [`IdealystLabel::label_with_string`]: no native bezel/border
@@ -1063,5 +1091,111 @@ pub(crate) fn vertically_center_text_field(mtm: MainThreadMarker, field: &NSText
         // Single-line, horizontally scrolling editable text (the search-box shape).
         let _: () = msg_send![&centered, setScrollable: true];
         let _: () = msg_send![&centered, setUsesSingleLineMode: true];
+    }
+}
+
+/// Toggle an editable `NSTextField`'s secure-entry (password masking) mode
+/// IN PLACE, preserving the `NSView` node identity the render walker holds.
+///
+/// INVARIANT: secure entry on AppKit is a property of the *cell class*, not
+/// a settable flag — `NSSecureTextField` is just an `NSTextField` whose cell
+/// is an `NSSecureTextFieldCell`. Toggling at runtime therefore means a cell
+/// swap, NOT a new view: the field's `NSView` is unchanged, so the walker's
+/// `MacosNode::View` handle stays valid and the controlled `value` carries
+/// across the toggle. (Recreating the field would strand the walker's node.)
+///
+/// The cell swap blanks the new cell, so the string value, placeholder,
+/// themed colors, and font are read off the field first and written back
+/// after. If the field is mid-edit (its window's first responder is the
+/// field editor), first-responder is re-established so the field editor is
+/// rebuilt in the right (secure / plain) mode and masking engages live.
+///
+/// KNOWN GAP (identical to a field *created* secure): the secure side uses
+/// AppKit's stock `NSSecureTextFieldCell`, not the framework
+/// `VCenterTextFieldCell`, so a field toggled INTO secure mode loses
+/// vertical-centering, author insets, and the focus/blur-event wiring those
+/// carry. Closing it needs a `VCenterSecureTextFieldCell` subclass — out of
+/// scope here; the create-time secure path has the same limitation today.
+///
+/// DEVICE-VERIFY: the live field-editor re-establishment is AppKit behavior
+/// that must be confirmed on a real Mac (toggle while the field is focused
+/// and mid-typing).
+pub(crate) fn set_text_field_secure(mtm: MainThreadMarker, field: &NSView, secure: bool) {
+    unsafe {
+        // Current mode = is the cell an NSSecureTextFieldCell?
+        let secure_cls = objc2::class!(NSSecureTextFieldCell);
+        let cell: *mut AnyObject = msg_send![field, cell];
+        let is_secure: bool =
+            !cell.is_null() && msg_send![cell, isKindOfClass: secure_cls];
+        if is_secure == secure {
+            return; // idempotent — already in the requested mode
+        }
+
+        // Save state the cell swap would drop (it lives on the cell).
+        let value: *mut AnyObject = msg_send![field, stringValue];
+        let placeholder: *mut AnyObject = msg_send![field, placeholderString];
+        let text_color: *mut AnyObject = msg_send![field, textColor];
+        let bg_color: *mut AnyObject = msg_send![field, backgroundColor];
+        let draws_bg: bool = msg_send![field, drawsBackground];
+        let font: *mut AnyObject = msg_send![field, font];
+
+        // Is the field currently being edited? The window's first responder
+        // is the shared field editor; its delegate is the field while it
+        // owns editing.
+        let window: *mut AnyObject = msg_send![field, window];
+        let was_editing: bool = if window.is_null() {
+            false
+        } else {
+            let fr: *mut AnyObject = msg_send![window, firstResponder];
+            !fr.is_null() && {
+                let deleg: *mut AnyObject = msg_send![fr, delegate];
+                std::ptr::eq(deleg as *const AnyObject, field as *const NSView as *const AnyObject)
+            }
+        };
+
+        if secure {
+            // Stock secure cell. Match the chrome the VCenter cell applies so
+            // the field keeps the framework's borderless, ring-suppressed,
+            // single-line shape.
+            let empty = NSString::from_str("");
+            let scell: Retained<AnyObject> =
+                msg_send_id![msg_send_id![secure_cls, alloc], initTextCell: &*empty];
+            let _: () = msg_send![field, setCell: &*scell];
+            let _: () = msg_send![field, setBordered: false];
+            let _: () = msg_send![field, setBezeled: false];
+            let _: () = msg_send![field, setFocusRingType: 1usize];
+            let _: () = msg_send![field, setEditable: true];
+            let _: () = msg_send![field, setSelectable: true];
+            let _: () = msg_send![&*scell, setScrollable: true];
+            let _: () = msg_send![&*scell, setUsesSingleLineMode: true];
+        } else {
+            // Re-install the centering cell (also re-applies the chrome). The
+            // node IS an NSTextField, so the reinterpret is sound.
+            let tf: &NSTextField = &*(field as *const NSView as *const NSTextField);
+            vertically_center_text_field(mtm, tf);
+        }
+
+        // Restore the carried-over state onto the new cell.
+        if !placeholder.is_null() {
+            let _: () = msg_send![field, setPlaceholderString: placeholder];
+        }
+        if !font.is_null() {
+            let _: () = msg_send![field, setFont: font];
+        }
+        if !text_color.is_null() {
+            let _: () = msg_send![field, setTextColor: text_color];
+        }
+        let _: () = msg_send![field, setDrawsBackground: draws_bg];
+        if !bg_color.is_null() {
+            let _: () = msg_send![field, setBackgroundColor: bg_color];
+        }
+        if !value.is_null() {
+            let _: () = msg_send![field, setStringValue: value];
+        }
+
+        // Rebuild the field editor in the new mode if we were editing.
+        if was_editing && !window.is_null() {
+            let _: () = msg_send![window, makeFirstResponder: field];
+        }
     }
 }

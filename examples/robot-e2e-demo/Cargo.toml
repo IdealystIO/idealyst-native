@@ -31,6 +31,11 @@ runtime-core = { workspace = true }
 idea-ui = { workspace = true }
 dev-server = { workspace = true, optional = true }
 
+# Host-side E2E suite (`tests/robot.rs`), run by `idealyst test` or `cargo test`.
+# A dev-dependency so it never enters the wasm/native app build.
+[dev-dependencies]
+robot-test = { workspace = true }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
 

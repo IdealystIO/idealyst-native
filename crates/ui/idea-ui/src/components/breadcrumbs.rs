@@ -47,6 +47,13 @@ impl Crumb {
     }
 }
 
+// Reactive-by-default: `#[props]` wraps the scalar `separator`/`separator_icon`
+// → `Reactive<…>`; `items` (a `Vec<Crumb>`) is auto-skipped (collections aren't
+// sink-consumed — the trail drives the imperative child build). `Crumb.label`
+// is already reactive and routes live to its `text()` sink. The separator props
+// are snapshotted at build (they drive the imperative separator structure — see
+// the TODO in the body).
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct BreadcrumbsProps {
@@ -66,7 +73,11 @@ pub struct BreadcrumbsProps {
 
 impl Default for BreadcrumbsProps {
     fn default() -> Self {
-        Self { items: Vec::new(), separator: "/".to_string(), separator_icon: None }
+        Self {
+            items: Vec::new(),
+            separator: Reactive::Static("/".to_string()),
+            separator_icon: Reactive::Static(None),
+        }
     }
 }
 
@@ -82,8 +93,14 @@ fn crumb_style(is_current: bool) -> impl Fn() -> StyleApplication + Clone + 'sta
 #[component]
 pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
     let n = props.items.len();
-    let sep = props.separator;
-    let sep_icon = props.separator_icon;
+    // TODO(reactive-sweep): route `separator`/`separator_icon` reactively. They
+    // drive the imperative separator STRUCTURE woven between crumbs (a text
+    // glyph vs an icon element), which a live signal can't swap in place
+    // without a `switch`/`when` per separator. Snapshotted at build; a live
+    // separator won't update. (`Crumb.label` is already routed live to `text()`
+    // below.)
+    let sep = props.separator.get();
+    let sep_icon = props.separator_icon.get();
 
     let mut kids: Vec<Element> = Vec::with_capacity(n * 2);
     for (i, crumb) in props.items.into_iter().enumerate() {

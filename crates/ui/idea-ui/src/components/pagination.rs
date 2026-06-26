@@ -18,13 +18,20 @@
 
 use std::rc::Rc;
 
-use runtime_core::{component, ui, IdealystSchema, IntoElement, Element, Signal, StyleApplication};
+use runtime_core::{
+    component, ui, IdealystSchema, IntoElement, Element, Reactive, Signal, StyleApplication,
+};
 
 use crate::stylesheets::{PageButton, PaginationRow};
 
 /// Pages shown without collapsing. Above this, the middle ellipsizes.
 const WINDOW_FULL: usize = 7;
 
+// Reactive-by-default: `#[props]` wraps the scalar `total` → `Reactive<usize>`;
+// `page` (`Signal`) and `on_change` (Rc handler) are auto-skipped. `total`
+// drives the windowed cell STRUCTURE (built imperatively in `build_row`); it's
+// snapshotted at build — see the TODO in the body.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct PaginationProps {
@@ -39,7 +46,7 @@ pub struct PaginationProps {
 
 impl Default for PaginationProps {
     fn default() -> Self {
-        Self { page: Signal::new(1), total: 1, on_change: Rc::new(|_| {}) }
+        Self { page: Signal::new(1), total: Reactive::Static(1), on_change: Rc::new(|_| {}) }
     }
 }
 
@@ -100,7 +107,12 @@ fn nav_button(glyph: &str, target: Option<usize>, on_change: Rc<dyn Fn(usize)>) 
 #[component]
 pub fn Pagination(props: PaginationProps) -> Element {
     let page = props.page;
-    let total = props.total.max(1);
+    // TODO(reactive-sweep): route `total` reactively. It drives the windowed
+    // cell STRUCTURE (the count + which cells ellipsize, rebuilt in
+    // `build_row`). The row is already `switch`-keyed on `page`, not `total`, so
+    // a live `total` signal won't slide the window in place; switching on
+    // `(page, total)` is the fix. Snapshotted at build for now.
+    let total = props.total.get().max(1);
     let on_change = props.on_change.clone();
     runtime_core::switch(
         move || page.get(),
@@ -165,7 +177,7 @@ mod tests {
     fn pagination_is_reactive_switch_not_static_row() {
         let el = Pagination(PaginationProps {
             page: Signal::new(3),
-            total: 20,
+            total: Reactive::Static(20),
             on_change: Rc::new(|_| {}),
         });
         assert!(

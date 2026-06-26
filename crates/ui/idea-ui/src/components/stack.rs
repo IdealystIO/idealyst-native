@@ -6,7 +6,7 @@
 //! card bodies). Use `axis = StackAxis::Row` for row layouts (toolbars,
 //! button groups, badge rows).
 
-use runtime_core::{component, ui, ChildList, Element, IdealystSchema};
+use runtime_core::{component, derived, ui, ChildList, Element, IdealystSchema, Reactive};
 
 use crate::stylesheets::Stack as StackStyle;
 use crate::stylesheets::StackWrap;
@@ -14,6 +14,13 @@ use crate::stylesheets::StackWrap;
 // Re-export the stylesheet-generated variant enums.
 pub use crate::stylesheets::{StackAlign, StackAxis, StackGap, StackJustify, StackPadding};
 
+// Reactive-by-default: `#[props]` wraps each scalar-DATA field → `Reactive<…>`
+// (`gap`/`padding`/`axis`/`align`/`justify`/`wrap`). All drive the Stack
+// stylesheet, so they route into the style sink reading `.get()` live;
+// `children` is the children category and stays bare. A bare value stays a
+// zero-cost `Static` snapshot (keeps the build-time `StyleSource::Static` fast
+// path); a `Signal`/`rx!` re-styles in place.
+#[runtime_core::props]
 #[derive(Default, IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct StackProps {
@@ -45,13 +52,42 @@ pub struct StackProps {
 /// driven `gap`/`padding` and the chosen `align`/`justify`.
 #[component(children)]
 pub fn Stack(props: StackProps) -> Element {
-    let style = StackStyle()
-        .gap(props.gap)
-        .padding(props.padding)
-        .axis(props.axis)
-        .align(props.align)
-        .justify(props.justify)
-        .wrap(if props.wrap { StackWrap::On } else { StackWrap::Off });
+    // Route each prop into the stylesheet's own variant sink (mirrors
+    // `Divider`): a `Static` value takes the build-time fast path, a live one is
+    // passed via `derived(...)` so the generated builder emits
+    // `StyleSource::Reactive` and re-resolves that variant on change. Reading
+    // `prop.get()` INSIDE the `derived` closure is what subscribes the
+    // apply-style Effect to the source.
+    let mut style = StackStyle();
+    style = match props.gap.clone() {
+        Reactive::Static(v) => style.gap(v),
+        dynamic => style.gap(derived(move || dynamic.get())),
+    };
+    style = match props.padding.clone() {
+        Reactive::Static(v) => style.padding(v),
+        dynamic => style.padding(derived(move || dynamic.get())),
+    };
+    style = match props.axis.clone() {
+        Reactive::Static(v) => style.axis(v),
+        dynamic => style.axis(derived(move || dynamic.get())),
+    };
+    style = match props.align.clone() {
+        Reactive::Static(v) => style.align(v),
+        dynamic => style.align(derived(move || dynamic.get())),
+    };
+    style = match props.justify.clone() {
+        Reactive::Static(v) => style.justify(v),
+        dynamic => style.justify(derived(move || dynamic.get())),
+    };
+    style = match props.wrap.clone() {
+        Reactive::Static(v) => {
+            style.wrap(if v { StackWrap::On } else { StackWrap::Off })
+        }
+        dynamic => style.wrap(derived(move || {
+            if dynamic.get() { StackWrap::On } else { StackWrap::Off }
+        })),
+    };
+
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut children);
@@ -73,10 +109,10 @@ mod tests {
     fn align_center_resolves_to_align_items_center() {
         install_idea_theme(light_theme());
         let el = Stack(StackProps {
-            axis: StackAxis::Row,
-            gap: StackGap::Lg,
-            align: StackAlign::Center,
-            justify: StackJustify::Start,
+            axis: Reactive::Static(StackAxis::Row),
+            gap: Reactive::Static(StackGap::Lg),
+            align: Reactive::Static(StackAlign::Center),
+            justify: Reactive::Static(StackJustify::Start),
             ..Default::default()
         });
         let app = match el {

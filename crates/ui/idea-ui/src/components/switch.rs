@@ -51,6 +51,13 @@ fn travel_for(size: ControlSize) -> f32 {
     }
 }
 
+// Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
+// `Reactive<T>` (tone/variant/size/icon). The controlled `value` `Signal`
+// stays bare (a reactive *source*), `on_change` is a handler, `label` is
+// already `Reactive`. NOTE `size` ALSO drives structure (thumb travel
+// distance + icon px feed the animation/layout), read once at build — only
+// the track *style* re-resolves on a live tone/variant; see the body TODO.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct SwitchProps {
@@ -84,10 +91,10 @@ impl Default for SwitchProps {
             label: Reactive::Static(None),
             value: Signal::new(false),
             on_change: Rc::new(|_| {}),
-            tone: ToneRef::default(),
-            variant: VariantRef::default(),
-            size: ControlSize::default(),
-            icon: None,
+            tone: Reactive::Static(ToneRef::default()),
+            variant: Reactive::Static(VariantRef::default()),
+            size: Reactive::Static(ControlSize::default()),
+            icon: Reactive::Static(None),
             test_id: None,
         }
     }
@@ -100,12 +107,20 @@ impl Default for SwitchProps {
 pub fn Switch(props: &SwitchProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
-    let size = props.size;
+    // TODO(reactive-sweep): `size` drives STRUCTURE here — the thumb travel
+    // distance + icon px feed the animation (`AnimatedValue`) and thumb
+    // layout, which can't re-derive without rebuilding those. Read once at
+    // build; only the track *style* re-resolves on a live size below.
+    let size = props.size.get();
 
-    // Per-instance appearance/size keys (static). The `checked` axis is
-    // the only reactive piece — it flips the track between the tone
+    // The track appearance is read LIVE so a reactive tone/variant re-styles
+    // the track in place; the `checked` axis flips the track between the tone
     // fill and the muted off-track.
-    let appearance = format!("{}_{}", props.tone.key(), props.variant.key());
+    let appearance_for = {
+        let tone = props.tone.clone();
+        let variant = props.variant.clone();
+        move || format!("{}_{}", tone.get().key(), variant.get().key())
+    };
     let size_key = size.as_variant_str().to_string();
 
     // --- thumb: a white puck whose TranslateX animates the slide ---
@@ -130,7 +145,10 @@ pub fn Switch(props: &SwitchProps) -> Element {
         ControlSize::Md => 11.0,
         ControlSize::Lg => 14.0,
     };
-    let thumb_kids: Vec<Element> = match props.icon {
+    // TODO(reactive-sweep): a custom thumb `icon` is read once at build (it's
+    // baked into the thumb's children); a reactive icon swap would need a
+    // `switch` around the thumb contents. The common case is a fixed icon.
+    let thumb_kids: Vec<Element> = match props.icon.get() {
         Some(data) => vec![icon(data)
             .size(icon_px)
             .color(|| Tokenized::token("color-text", Color("#1a1a1f".into())).resolve())
@@ -147,7 +165,7 @@ pub fn Switch(props: &SwitchProps) -> Element {
     // --- track: a pressable that toggles, styled by the checked axis ---
     let track_style = move || {
         StyleApplication::new(installed_switch_sheet())
-            .with("appearance", appearance.clone())
+            .with("appearance", appearance_for())
             .with("checked", if value.get() { "on" } else { "off" }.to_string())
             .with("size", size_key.clone())
     };

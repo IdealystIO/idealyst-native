@@ -216,6 +216,7 @@ pub trait IconOps {
 pub fn icon(data: IconData) -> Bound<IconHandle> {
     Bound::new(Element::Icon {
         data,
+        data_fn: None,
         color: None,
         stroke: None,
         draw_in: None,
@@ -234,6 +235,18 @@ impl Bound<IconHandle> {
     pub fn color<F: Fn() -> crate::style::Color + 'static>(mut self, f: F) -> Self {
         if let Element::Icon { color, .. } = &mut self.primitive {
             *color = Some(Box::new(f));
+        }
+        self
+    }
+
+    /// Set a reactive icon geometry. When the closure's signals change, the
+    /// rendered glyph swaps in place (no node rebuild) — e.g. an icon that
+    /// toggles between two glyphs. The icon mounts at the closure's initial
+    /// value. Static icons just pass `data` to [`icon`] and skip this.
+    pub fn data<F: Fn() -> IconData + 'static>(mut self, f: F) -> Self {
+        if let Element::Icon { data, data_fn, .. } = &mut self.primitive {
+            *data = f();
+            *data_fn = Some(Box::new(f));
         }
         self
     }

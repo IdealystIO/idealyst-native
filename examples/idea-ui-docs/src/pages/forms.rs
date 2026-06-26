@@ -9,11 +9,12 @@
 
 use std::rc::Rc;
 
-use icons_lucide::{CHECK, HEART, STAR};
-use runtime_core::{signal, ui, Element};
+use icons_lucide::{CHECK, EYE, EYE_OFF, HEART, SEARCH, STAR};
+use runtime_core::{pressable, rx, signal, ui, Element, IntoElement};
 use idea_ui::{
-    tone, Checkbox, ControlSize, Field, RadioGroup, RadioOption, SegmentOption, SegmentedControl,
-    Select, SelectOption, Slider, Stack, StackGap, Switch, Textarea, Typography,
+    tone, Adornment, Checkbox, ControlSize, Field, FieldSize, Icon, RadioGroup, RadioOption,
+    SegmentOption, SegmentedControl, Select, SelectOption, Slider, Stack, StackGap, Switch,
+    Textarea, Typography,
 };
 
 use crate::pages::body;
@@ -210,8 +211,8 @@ pub fn switch() -> Element {
 
     body(vec![ui! {
         Section(title = "Sizes & states".to_string()) {
-            P(content = "A styled slide-toggle (a pressable track + an animated thumb), not \
-                the platform-native checkbox. The thumb's travel animates via \
+            P(content = "A styled slide-toggle (a pressable track + an animated thumb) drawn by \
+                the framework rather than the platform-native checkbox. The thumb's travel animates via \
                 `AnimProp::TranslateX`, so it looks and moves identically on every \
                 backend. `size` scales the track + thumb.".to_string())
             DemoSurface {
@@ -343,6 +344,40 @@ pub fn field() -> Element {
     let email = signal!(String::new());
     let on_email: Rc<dyn Fn(String)> = Rc::new(move |s| email.set(s));
 
+    let query = signal!(String::new());
+    let on_query: Rc<dyn Fn(String)> = Rc::new(move |s| query.set(s));
+
+    // Size demo — one shared value across the three densities.
+    let sized = signal!(String::new());
+    let on_sized: Rc<dyn Fn(String)> = Rc::new(move |s| sized.set(s));
+
+    // Password + visibility toggle. `secure` is now reactive, so there is NO
+    // `switch` around the Field: the mask flips in place (on macOS, an
+    // in-place secure-cell swap), the input is never rebuilt, and the typed
+    // `pw` is never disturbed. Only the tiny eye icon swaps, in its own
+    // reactive scope inside the trailing adornment.
+    let pw = signal!(String::new());
+    let visible = signal!(false);
+    let on_pw: Rc<dyn Fn(String)> = Rc::new(move |s| pw.set(s));
+    let pw_field = ui! {
+        Field(
+            label = Some("Password".to_string()),
+            value = pw,
+            on_change = on_pw,
+            placeholder = Some("••••••••".to_string()),
+            secure = rx!(!visible.get()),
+            trailing = Adornment::element(move || {
+                let glyph = runtime_core::switch(
+                    move || visible.get(),
+                    move |&shown| ui! {
+                        Icon(data = if shown { EYE_OFF } else { EYE }, size = 16.0)
+                    },
+                );
+                pressable(vec![glyph], move || visible.set(!visible.get())).into_element()
+            }),
+        )
+    };
+
     let validated = signal!(String::new());
     let on_validated: Rc<dyn Fn(String)> = Rc::new(move |s| validated.set(s));
     // Live validation: the Field flips to the Danger tone automatically when
@@ -407,6 +442,77 @@ ui! {
 }"##.to_string())
         }
     }, ui! {
+        Section(title = "Adornments".to_string()) {
+            P(content = "Drop an `Adornment` into the `leading` or `trailing` slot — \
+                `Adornment::Icon(data)` renders a vector icon (muted, auto-sized to the field) and \
+                `Adornment::element(|| ui! { … })` renders any element (a clear button, a unit \
+                suffix, a password-visibility toggle). Adornments lay out in a flex row inside the \
+                field box, so any width works.".to_string())
+            DemoSurface {
+                Field(
+                    value = query,
+                    on_change = on_query,
+                    placeholder = Some("Search components…".to_string()),
+                    leading = Adornment::Icon(SEARCH),
+                )
+            }
+            CodePanel(src = r##"Field(
+    value = query,
+    on_change = on_query,
+    placeholder = Some("Search components…".into()),
+    leading = Adornment::Icon(icons_lucide::SEARCH),
+    // trailing = Adornment::element(move || ui! { IconButton(...) }),
+)"##.to_string())
+            Callout(label = "Focus ring".to_string()) {
+                P(content = "Adorned fields don't show the focus ring yet: it's driven by the \
+                    input's focus state, which the row wrapper can't receive until a text-input \
+                    on_focus event lands. Plain (un-adorned) fields keep their ring.".to_string())
+            }
+        }
+    }, ui! {
+        Section(title = "Sizes".to_string()) {
+            P(content = "`size = FieldSize::Sm | Md | Lg` scales padding + font; a leading \
+                `Adornment::Icon` auto-sizes to match.".to_string())
+            // Fields go DIRECTLY in DemoSurface (not a Stack): DemoSurface
+            // centers its children (`align_items: center`), which collapses a
+            // wrapping Stack to its content width. A Field fills the surface on
+            // its own (`align_self: stretch` on FieldGroup) and DemoSurface's
+            // own `gap` spaces them.
+            DemoSurface {
+                Field(value = sized, on_change = on_sized.clone(), placeholder = Some("Small".to_string()), size = FieldSize::Sm, leading = Adornment::Icon(SEARCH))
+                Field(value = sized, on_change = on_sized.clone(), placeholder = Some("Medium".to_string()), size = FieldSize::Md, leading = Adornment::Icon(SEARCH))
+                Field(value = sized, on_change = on_sized.clone(), placeholder = Some("Large".to_string()), size = FieldSize::Lg, leading = Adornment::Icon(SEARCH))
+            }
+            CodePanel(src = r##"Field(value = v, on_change = on_v, size = FieldSize::Lg, leading = Adornment::Icon(icons_lucide::SEARCH))"##.to_string())
+        }
+    }, ui! {
+        Section(title = "Password + visibility toggle".to_string()) {
+            P(content = "`secure` is a reactive prop, so `secure = rx!(!visible.get())` flips the \
+                mask in place — no `switch` around the Field, the input is never rebuilt, and the \
+                typed value is never disturbed (on macOS the backend swaps the secure cell in \
+                place). Only the tiny eye icon swaps, in its own reactive scope.".to_string())
+            DemoSurface {
+                pw_field
+            }
+            CodePanel(src = r##"let pw = signal!("".to_string());
+let visible = signal!(false);
+
+ui! {
+    Field(
+        value = pw,
+        on_change = on_pw,
+        // Reactive mask — toggles in place, no Field rebuild.
+        secure = rx!(!visible.get()),
+        trailing = Adornment::element(move || {
+            let glyph = switch(move || visible.get(), move |&shown| ui! {
+                Icon(data = if shown { EYE_OFF } else { EYE }, size = 16.0)
+            });
+            pressable(vec![glyph], move || visible.set(!visible.get())).into_element()
+        }),
+    )
+}"##.to_string())
+        }
+    }, ui! {
         Section(title = "Props".to_string()) {
             PropsTable(rows = vec![
                 Prop { name: "label",       ty: "Reactive<Option<String>>", desc: "Optional label above the input." },
@@ -419,6 +525,8 @@ ui! {
                 Prop { name: "size",        ty: "FieldSize",                 desc: "Sm / Md / Lg density." },
                 Prop { name: "variant",     ty: "FieldAppearance",           desc: "Outline (default) / Contained / Bare." },
                 Prop { name: "secure",      ty: "bool",                      desc: "Mask the entered text (password entry)." },
+                Prop { name: "leading",     ty: "Adornment",                 desc: "Icon/element before the input (Adornment::Icon / ::element). Default None." },
+                Prop { name: "trailing",    ty: "Adornment",                 desc: "Icon/element after the input — e.g. a clear button or password-visibility toggle." },
             ])
         }
     }])

@@ -36,6 +36,14 @@ const PULSE_MS: u64 = 800;
 /// Opacity floor of the indeterminate pulse.
 const PULSE_MIN: f32 = 0.4;
 
+// Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
+// `Reactive<T>`. `value` is already `Reactive<f32>` (idempotent skip).
+// `tone`/`variant` build the fill's appearance key; `size` the track key —
+// both route into their style sinks (`.get()` read INSIDE the closure).
+// `indeterminate` selects the WHOLE fill subtree (animated pulse vs value
+// track), i.e. structural reactivity — read once at build for now (see the
+// TODO in `Progress`).
+#[runtime_core::props]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ProgressProps {
@@ -57,10 +65,10 @@ impl Default for ProgressProps {
     fn default() -> Self {
         Self {
             value: Reactive::Static(0.0),
-            indeterminate: false,
-            tone: ToneRef::default(),
-            variant: VariantRef::default(),
-            size: ControlSize::default(),
+            indeterminate: Reactive::Static(false),
+            tone: Reactive::Static(ToneRef::default()),
+            variant: Reactive::Static(VariantRef::default()),
+            size: Reactive::Static(ControlSize::default()),
         }
     }
 }
@@ -71,14 +79,26 @@ impl Default for ProgressProps {
 /// unknown-duration work.
 #[component]
 pub fn Progress(props: &ProgressProps) -> Element {
-    let appearance = format!("{}_{}", props.tone.key(), props.variant.key());
-    let size_key = props.size.as_variant_str().to_string();
     let sheets = installed_progress_sheets();
 
     let fill_sheet = sheets.fill_sheet.clone();
     let track_sheet = sheets.track_sheet.clone();
 
-    let fill: Element = if props.indeterminate {
+    // The fill appearance (tone × variant) is read LIVE inside each fill style
+    // closure, so the apply-style Effect subscribes to a reactive tone/variant
+    // and re-resolves the fill color in place (a bare value just snapshots).
+    let appearance_for = {
+        let tone = props.tone.clone();
+        let variant = props.variant.clone();
+        move || format!("{}_{}", tone.get().key(), variant.get().key())
+    };
+
+    // TODO(reactive-sweep): route `indeterminate` to a structural sink. It
+    // selects the WHOLE fill subtree (an opacity-pulsing animated view vs a
+    // value-tracking view), so making it live needs a `switch`/`when` to swap
+    // the subtree — not a style-sink read. Read once at build for now; a live
+    // `indeterminate` won't flip the mode in place.
+    let fill: Element = if props.indeterminate.get() {
         // Full-width fill, opacity pulsing forever.
         let fill_ref: Ref<ViewHandle> = Ref::new();
         let av: AnimatedValue<f32> = AnimatedValue::new(1.0);
@@ -89,11 +109,11 @@ pub fn Progress(props: &ProgressProps) -> Element {
                 .then(TweenTo::new(1.0_f32, Duration::from_millis(PULSE_MS)).ease_in_out()),
             Repeat::Forever,
         ));
-        let app = appearance.clone();
+        let appearance_for = appearance_for.clone();
         runtime_core::view(Vec::new())
             .with_style(move || {
                 StyleApplication::new(fill_sheet.clone())
-                    .with("appearance", app.clone())
+                    .with("appearance", appearance_for())
                     .with_computed("progress-w-100", || StyleRules {
                         width: Some(Tokenized::Literal(Length::pct(100.0))),
                         ..Default::default()
@@ -104,12 +124,12 @@ pub fn Progress(props: &ProgressProps) -> Element {
     } else {
         // Determinate — width follows the value, cached per whole percent.
         let value = props.value.clone();
-        let app = appearance.clone();
+        let appearance_for = appearance_for.clone();
         runtime_core::view(Vec::new())
             .with_style(move || {
                 let pct = (value.get().clamp(0.0, 1.0)) * 100.0;
                 StyleApplication::new(fill_sheet.clone())
-                    .with("appearance", app.clone())
+                    .with("appearance", appearance_for())
                     .with_computed(format!("progress-w-{}", pct.round() as i32), move || {
                         StyleRules {
                             width: Some(Tokenized::Literal(Length::pct(pct))),
@@ -120,7 +140,14 @@ pub fn Progress(props: &ProgressProps) -> Element {
             .into_element()
     };
 
-    let track_style = move || StyleApplication::new(track_sheet.clone()).with("size", size_key.clone());
+    // Track thickness follows `size`, read LIVE inside the style closure.
+    let track_style = {
+        let size = props.size.clone();
+        move || {
+            StyleApplication::new(track_sheet.clone())
+                .with("size", size.get().as_variant_str().to_string())
+        }
+    };
     let track = runtime_core::view(vec![fill]).with_style(track_style).into_element();
     ui! { view { track } }
 }

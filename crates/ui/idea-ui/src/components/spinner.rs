@@ -52,6 +52,12 @@ impl VariantEnum for SpinnerSize {
     }
 }
 
+// Reactive-by-default: `#[props]` wraps `size` → `Reactive<SpinnerSize>` so a
+// `ui!` call site can pass a `Signal`/`rx!` (a bare value stays a zero-cost
+// `Static` snapshot). See the TODO in `Spinner` — the framework's
+// `activity_indicator` primitive has no reactive `size` sink yet, so a live
+// `size` is read once at build for now.
+#[runtime_core::props]
 #[derive(Default)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
@@ -64,7 +70,12 @@ pub struct SpinnerProps {
 /// framework's `activity_indicator` primitive with a small/large size knob.
 #[component]
 pub fn Spinner(props: &SpinnerProps) -> Element {
-    let native = match props.size {
+    // TODO(reactive-sweep): route `size` to the activity_indicator size sink.
+    // The `Element::ActivityIndicator` `size` field is a plain (non-reactive)
+    // value and `.size()` is a one-shot setter — there's no reactive walker
+    // path to re-apply a native indicator size in place. A live `size` is read
+    // once here; wire a reactive size sink on the primitive to make it live.
+    let native = match props.size.get() {
         SpinnerSize::Small => ActivityIndicatorSize::Small,
         SpinnerSize::Large => ActivityIndicatorSize::Large,
     };

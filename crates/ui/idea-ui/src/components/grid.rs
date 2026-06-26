@@ -20,12 +20,20 @@
 //! than flex-growing to fill the row width).
 
 use runtime_core::{
-    component, ChildList, IdealystSchema, IntoElement, Element, StyleApplication, VariantEnum,
+    component, ChildList, IdealystSchema, IntoElement, Element, Reactive, StyleApplication,
+    VariantEnum,
 };
 
 use crate::components::stack::StackGap;
 use crate::stylesheets::{GridCell, GridContainer, GridRow};
 
+// Reactive-by-default: `#[props]` wraps `columns`/`gap` → `Reactive<…>`. `gap`
+// routes into the GridRow/GridContainer style sinks reading `.get()` live (the
+// closures already return `StyleApplication`). `columns` is STRUCTURAL — it
+// controls how children are chunked into rows, which a style sink can't express
+// — so it's snapshotted at build with a flagged TODO. `children` is the
+// children category and stays bare.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct GridProps {
@@ -40,7 +48,11 @@ pub struct GridProps {
 
 impl Default for GridProps {
     fn default() -> Self {
-        Self { columns: 2, gap: StackGap::default(), children: Vec::new() }
+        Self {
+            columns: Reactive::Static(2),
+            gap: Reactive::Static(StackGap::default()),
+            children: Vec::new(),
+        }
     }
 }
 
@@ -48,8 +60,13 @@ impl Default for GridProps {
 /// rows, with `gap` spacing between rows and columns.
 #[component(children)]
 pub fn Grid(props: GridProps) -> Element {
-    let cols = props.columns.max(1) as usize;
-    let gap_key = props.gap.as_variant_str().to_string();
+    // TODO(reactive-sweep): route `columns` to the row-chunking structure. A
+    // live `columns` changes how many cells fill each row (and the partial-row
+    // padding) — that's a tree-shape change, not a style sink, so it can't ride
+    // a style closure. It needs the body wrapped in a `switch`/keyed rebuild on
+    // `columns.get()`. For now `columns` is snapshotted at build (a live source
+    // sets the initial column count but won't re-chunk on change).
+    let cols = props.columns.get().max(1) as usize;
 
     let mut flat: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
@@ -78,17 +95,25 @@ pub fn Grid(props: GridProps) -> Element {
         for _ in n..cols {
             cells.push(cell(vec![]));
         }
-        let row_gap = gap_key.clone();
+        // `gap` routes into the GridRow style sink: read `.get()` INSIDE the
+        // closure so a live `gap` re-resolves the row spacing in place (a
+        // static one collapses to one build-time resolution).
+        let row_gap = props.gap.clone();
         let row = runtime_core::view(cells)
-            .with_style(move || StyleApplication::new(GridRow::sheet()).with("gap", row_gap.clone()))
+            .with_style(move || {
+                StyleApplication::new(GridRow::sheet())
+                    .with("gap", row_gap.get().as_variant_str().to_string())
+            })
             .into_element();
         rows.push(row);
     }
 
-    let container_gap = gap_key;
+    // Same sink for the container's between-rows gap.
+    let container_gap = props.gap.clone();
     runtime_core::view(rows)
         .with_style(move || {
-            StyleApplication::new(GridContainer::sheet()).with("gap", container_gap.clone())
+            StyleApplication::new(GridContainer::sheet())
+                .with("gap", container_gap.get().as_variant_str().to_string())
         })
         .into_element()
 }
@@ -118,8 +143,8 @@ mod tests {
         // 4 cells across 3 columns → rows of [3, 1]; the partial row is
         // padded up to 3 cells (1 real + 2 empty fillers).
         let props = GridProps {
-            columns: 3,
-            gap: StackGap::Md,
+            columns: Reactive::Static(3),
+            gap: Reactive::Static(StackGap::Md),
             children: vec![leaf(), leaf(), leaf(), leaf()],
         };
         let grid = Grid(props);

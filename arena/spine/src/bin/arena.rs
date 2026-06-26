@@ -1,23 +1,20 @@
-//! `arena` CLI. The deterministic-spine entry point AND the live-run driver.
+//! `arena` CLI — the deterministic spine, exposed as granular steps the
+//! `arena-bench` skill stitches together around its subagent spawns.
 //!
-//!   arena verify <scenario_dir> <project_dir>     score an existing tree (source tiers)
-//!   arena metrics <transcript.jsonl>              transcript pathology report
-//!   arena run   <scenario_dir> <framework_path> [opts]   one full live run
-//!   arena bench <scenario_dir> <framework_path> [opts]   N runs + aggregate + feedback
+//!   arena verify   <scenario_dir> <project_dir>     score an existing tree (source tiers)
+//!   arena metrics  <transcript.jsonl>               transcript pathology report
+//!   arena scaffold <scenario_dir> <framework_path> --run-dir <dir> [--index <n>]
+//!                                                   isolated project + idealyst-only .mcp.json
+//!   arena build    <project_dir> [--robot]          best-effort `idealyst build --web`
+//!   arena score    <scenario_dir> <project_dir> --run-dir <dir> [--impl-transcript <jsonl>]
+//!                                                   verify every tier, score, write report.md + scored.json
 //!
-//! Live-run options:
-//!   --runs-root <dir>   where run artifacts go (default ./runs)
-//!   --budget <usd>      per-agent dollar cap (default 5)
-//!   --index <n>         run index for `run` (default 0)
-//!   --no-locate         skip the Playwright locator pass
-//!   --no-feedback       skip the feedback agent
+//! The agent roles are subagents the orchestrating session runs (see
+//! `.claude/skills/arena-bench`); this binary never spawns `claude`.
 
-use arena_spine::harness::bench::run_bench;
-use arena_spine::harness::run::{run_once, RunOptions};
+use arena_spine::harness::{agent, scaffold};
 use arena_spine::{metrics, report, rubric::Rubric, score::score_run, verify::RunContext, Scenario};
 use std::path::PathBuf;
-
-const DEFAULT_PREAMBLE: &str = "idealyst MCP available, use it.";
 
 fn main() {
     if let Err(e) = run() {
@@ -50,41 +47,90 @@ fn run() -> anyhow::Result<()> {
             print!("{}", report::render_pathologies(&metrics::analyze(&t)));
             Ok(())
         }
-        "run" => {
+        "scaffold" => {
             let scenario_dir = PathBuf::from(pos(&args, 0, "scenario_dir")?);
             let framework_path = PathBuf::from(pos(&args, 1, "framework_path")?);
-            let (scenario, rubric) = load(&scenario_dir)?;
-            let opts = run_options(&scenario_dir, framework_path, &args)?;
-            let index = opt(&args, "--index").and_then(|s| s.parse().ok()).unwrap_or(0);
-            let out = run_once(&scenario, &rubric, &opts, index)?;
-            println!(
-                "\n{} → {} / {} pts (final {:.3}) — artifacts: {}",
-                scenario.id,
-                out.scored.rubric_points,
-                out.scored.max_points,
-                out.scored.final_score,
-                out.run_dir.display()
+            let (scenario, _rubric) = load(&scenario_dir)?;
+            let run_dir = PathBuf::from(
+                opt(&args, "--run-dir").ok_or_else(|| anyhow::anyhow!("missing --run-dir"))?,
             );
+            let index: u32 = opt(&args, "--index").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let name = format!("{}_{}", sanitize(&scenario.id), index);
+            std::fs::create_dir_all(&run_dir)?;
+            let scaffolded = scaffold::create(&name, &run_dir, &framework_path)?;
+            // The project dir on stdout is the skill's handle for every later step.
+            println!("{}", scaffolded.project_dir.display());
             Ok(())
         }
-        "bench" => {
+        "build" => {
+            let project_dir = PathBuf::from(pos(&args, 0, "project_dir")?);
+            let robot = args.iter().any(|a| a == "--robot");
+            let dist = scaffold::build_web(&project_dir, robot)?;
+            println!("{}", dist.display());
+            Ok(())
+        }
+        "score" => {
             let scenario_dir = PathBuf::from(pos(&args, 0, "scenario_dir")?);
-            let framework_path = PathBuf::from(pos(&args, 1, "framework_path")?);
+            let project_dir = PathBuf::from(pos(&args, 1, "project_dir")?);
             let (scenario, rubric) = load(&scenario_dir)?;
-            let opts = run_options(&scenario_dir, framework_path, &args)?;
-            let out = run_bench(&scenario, &rubric, &opts)?;
+            let run_dir = PathBuf::from(
+                opt(&args, "--run-dir").ok_or_else(|| anyhow::anyhow!("missing --run-dir"))?,
+            );
+            std::fs::create_dir_all(&run_dir)?;
+
+            // Parse the implementation subagent's transcript, if the skill
+            // captured one. Without it, the source tiers still score; only the
+            // token bonus + pathologies go to zero.
+            let agent_run = match opt(&args, "--impl-transcript") {
+                Some(p) => Some(agent::load_session_jsonl(&PathBuf::from(p))?),
+                None => None,
+            };
+            let (total_tokens, mcp_payload, transcript_path) = match &agent_run {
+                Some(a) => (a.total_tokens(), a.mcp_payload_tokens, Some(a.transcript_path.clone())),
+                None => (0, 0, None),
+            };
+
+            let locate_dir = opt(&args, "--locate-dir").map(PathBuf::from);
+            let ctx = RunContext {
+                project_dir: project_dir.clone(),
+                transcript_path,
+                locate_dir,
+            };
+            let scored = score_run(&rubric, &ctx, total_tokens, mcp_payload, scenario.token_budget);
+
+            // Pathologies + doc-bypass come from the parsed transcript (empty
+            // when none was supplied).
+            let transcript = agent_run.map(|a| a.transcript).unwrap_or_default();
+            let pathologies = metrics::analyze(&transcript);
+            let doc_bypass = metrics::doc_bypass_reads(&transcript, &project_dir);
+
+            let mut md = report::render_markdown(&scenario.id, &scored);
+            md.push_str(&report::render_pathologies(&pathologies));
+            if doc_bypass > 0 {
+                md.push_str(&format!(
+                    "\n> ⚠️ {doc_bypass} doc-bypass read(s): the agent read framework source instead of asking the MCP.\n"
+                ));
+            }
+            std::fs::write(run_dir.join("report.md"), &md)?;
+            std::fs::write(run_dir.join("scored.json"), serde_json::to_string_pretty(&scored)?)?;
+
             println!(
-                "\n{}: {}/{} runs completed · mean {:.1} pts · report: {}",
+                "{} → {} / {} pts (final {:.3}) — artifacts: {}",
                 scenario.id,
-                out.completed,
-                out.requested,
-                out.aggregate.mean_points,
-                out.bench_report.display()
+                scored.rubric_points,
+                scored.max_points,
+                scored.final_score,
+                run_dir.display()
             );
             Ok(())
         }
         other => anyhow::bail!(
-            "unknown command `{other}`\nusage:\n  arena verify <scenario_dir> <project_dir>\n  arena metrics <transcript.jsonl>\n  arena run   <scenario_dir> <framework_path> [opts]\n  arena bench <scenario_dir> <framework_path> [opts]"
+            "unknown command `{other}`\nusage:\n  \
+             arena verify   <scenario_dir> <project_dir>\n  \
+             arena metrics  <transcript.jsonl>\n  \
+             arena scaffold <scenario_dir> <framework_path> --run-dir <dir> [--index <n>]\n  \
+             arena build    <project_dir> [--robot]\n  \
+             arena score    <scenario_dir> <project_dir> --run-dir <dir> [--impl-transcript <jsonl>] [--locate-dir <dir>]"
         ),
     }
 }
@@ -101,48 +147,10 @@ fn load(scenario_dir: &std::path::Path) -> anyhow::Result<(Scenario, Rubric)> {
     Ok((scenario, rubric))
 }
 
-fn run_options(
-    scenario_dir: &std::path::Path,
-    framework_path: PathBuf,
-    args: &[String],
-) -> anyhow::Result<RunOptions> {
-    // The preamble is the one identical-across-runs artifact. Load it from
-    // <arena>/agents/preamble.md (scenario_dir is <arena>/scenarios/<id>).
-    let preamble_path = scenario_dir
-        .join("..")
-        .join("..")
-        .join("agents")
-        .join("preamble.md");
-    let preamble = std::fs::read_to_string(&preamble_path)
-        .map(|s| preamble_body(&s))
-        .unwrap_or_else(|_| DEFAULT_PREAMBLE.to_string());
-
-    Ok(RunOptions {
-        framework_path,
-        runs_root: opt(args, "--runs-root")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("runs")),
-        preamble,
-        budget_usd: opt(args, "--budget").and_then(|s| s.parse().ok()).unwrap_or(5.0),
-        locate: !args.iter().any(|a| a == "--no-locate"),
-        feedback: !args.iter().any(|a| a == "--no-feedback"),
-    })
-}
-
-/// Strip a leading Markdown comment/heading block from the preamble file, using
-/// the first non-heading, non-empty line onward — so the file can carry a note
-/// for humans without it reaching the agent.
-fn preamble_body(s: &str) -> String {
-    let body: Vec<&str> = s
-        .lines()
-        .skip_while(|l| l.trim().is_empty() || l.trim_start().starts_with('#'))
-        .collect();
-    let joined = body.join("\n");
-    if joined.trim().is_empty() {
-        DEFAULT_PREAMBLE.to_string()
-    } else {
-        joined.trim().to_string()
-    }
+fn sanitize(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 fn pos<'a>(args: &'a [String], i: usize, what: &str) -> anyhow::Result<&'a String> {
@@ -154,6 +162,9 @@ fn pos<'a>(args: &'a [String], i: usize, what: &str) -> anyhow::Result<&'a Strin
         .ok_or_else(|| anyhow::anyhow!("missing argument: {what}"))
 }
 
+/// Flags that take a value (so the value isn't mistaken for a positional).
+const VALUE_FLAGS: &[&str] = &["--run-dir", "--index", "--impl-transcript", "--locate-dir"];
+
 fn positionals(args: &[String]) -> Vec<&String> {
     let mut out = Vec::new();
     let mut skip_next = false;
@@ -163,8 +174,7 @@ fn positionals(args: &[String]) -> Vec<&String> {
             continue;
         }
         if a.starts_with("--") {
-            // Flags that take a value consume the next arg.
-            if matches!(a.as_str(), "--runs-root" | "--budget" | "--index") {
+            if VALUE_FLAGS.contains(&a.as_str()) {
                 skip_next = i + 1 < args.len();
             }
             continue;

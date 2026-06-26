@@ -55,6 +55,9 @@ use crate::stylesheets::{
 /// Themed table container. Wraps the `table` SDK's `<table>` with
 /// idea-ui's surface tokens (rounded corners + hairline border + theme
 /// background). Pass `TableRow`s as children.
+// Reactive-by-default: only field is `children` (a LIST, auto-skipped);
+// `#[props]` is a no-op here but kept for uniformity with the family.
+#[runtime_core::props]
 #[derive(Default, IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableProps {
@@ -88,6 +91,9 @@ pub fn Table(props: TableProps) -> Element {
 /// component so future row-level affordances (hover highlight, zebra
 /// striping, density variants) have a place to land without changing
 /// call sites.
+// Reactive-by-default: only field is `children` (a LIST, auto-skipped);
+// `#[props]` is a no-op here but kept for uniformity with the family.
+#[runtime_core::props]
 #[derive(Default, IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableRowProps {
@@ -120,11 +126,21 @@ pub fn TableRow(props: TableRowProps) -> Element {
 /// using the header/body typography token. To compose richer content
 /// (links, badges, multiple inline pieces) pass `text = None` and
 /// use the `children` block instead.
+// Reactive-by-default: `text` is already reactive and `children` is a LIST
+// (auto-skipped). `header` is STRUCTURAL — it selects the `<th>`/`<td>` SDK
+// element AND the head/body style + text branch; it can't be a single style
+// sink, so it stays bare via `#[prop(static)]` (TODO below) rather than a
+// guessed reactive route.
+#[runtime_core::props]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableCellProps {
     /// When `true`, render as `<th>` (and use the head-cell surface +
     /// uppercase muted text style). When `false`, render as `<td>`.
+    // TODO(reactive-sweep): route `header` to the `<th>`/`<td>` element +
+    // head/body style branch (structural: changes the SDK element tag, needs a
+    // `when`/rebuild, not a style closure). Kept bare for now.
+    #[prop(static)]
     pub header: bool,
     /// Convenience text content. The themed `TableHeadText` /
     /// `TableBodyText` styling lands on the inner text node so the

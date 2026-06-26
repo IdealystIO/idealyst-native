@@ -50,6 +50,11 @@ runtime-server = ["dep:dev-client", "dep:wire", "dev-client/dev-hot-reload"]
 # `WeakMap` is the source of truth either way); this just mirrors
 # the id outwards for inspection.
 debug-node-ids = []
+# Compile in the web Robot transport (`install_robot_relay_client`): a
+# WebSocket dial-out to a `robot-relay` so a browser app exposes the Robot
+# bridge it can't host itself. Forwards to `runtime-core/robot` for the
+# dispatch core. Off by default; `idealyst dev --web` enables it.
+robot = ["runtime-core/robot"]
 
 [dependencies]
 runtime-core = { workspace = true }
@@ -103,6 +108,18 @@ features = [
     "HtmlElement",
     "HtmlHeadElement",
     "HtmlCanvasElement",
+    # Robot DOM screenshot: serialize #app → SVG <foreignObject> → <img> →
+    # <canvas> 2d → PNG. `CanvasRenderingContext2d` draws the snapshot image,
+    # `HtmlImageElement` loads the SVG, `XmlSerializer` serializes the subtree,
+    # `StyleSheet`/`CssStyleSheet` read the class rules to embed inline.
+    "CanvasRenderingContext2d",
+    "HtmlImageElement",
+    "XmlSerializer",
+    "StyleSheet",
+    # Fetch + inline @font-face fonts as data URLs (a foreignObject SVG renders
+    # in an isolated context without the page's loaded web fonts → falls back to
+    # a default). Synchronous XHR keeps this inside the non-async capture path.
+    "XmlHttpRequest",
     "HtmlIFrameElement",
     "HtmlInputElement",
     "HtmlStyleElement",

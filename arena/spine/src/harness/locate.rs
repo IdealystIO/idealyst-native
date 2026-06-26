@@ -1,21 +1,23 @@
-//! The locator pass that feeds the Playwright tier. For each `outcome` item
-//! whose tier is `playwright`, we run a headless `claude` agent equipped with
-//! ONLY the Playwright MCP, pointed at the running web build. The agent
-//! performs the item's action and asserts the expected observable, then returns
-//! a strict JSON verdict that we persist to `<locate_dir>/<item_id>.json` for
-//! the deterministic [`crate::verify::playwright`] verifier to consume.
+//! Helpers for the Playwright (platform-truth) tier.
 //!
-//! The agent locates by accessibility role/name — which doubles as a check that
-//! the produced UI is actually accessible. It is a *locator*, not a *judge*:
-//! the prompt forces a binary `{passed, evidence}` result, never an opinion.
+//! The locator is no longer a `claude` subprocess this crate spawns — it's an
+//! `arena-locator` **subagent** the orchestrating session runs against the
+//! served web build (see `.claude/skills/arena-bench`). That keeps it on the
+//! subscription and lets it be hard-isolated to the Playwright MCP via the
+//! subagent's `mcpServers:` frontmatter.
+//!
+//! What stays here is the deterministic contract both sides agree on: how to
+//! phrase an item's locator task ([`build_prompt`]), how to parse the binary
+//! `{passed, evidence}` verdict the locator must return ([`parse_verdict`]), and
+//! how to persist it ([`write_verdict`]) so [`crate::verify::playwright`] can
+//! read it. The locator is a *locator*, not a *judge*: the prompt forces a
+//! binary observable, never an opinion.
 
 use crate::rubric::RubricItem;
 use crate::verify::playwright::Verdict;
-use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-/// Write the one-server Playwright MCP config used by the locator agent.
+/// Write the one-server Playwright MCP config the locator subagent can reference.
 pub fn write_playwright_mcp_config(run_dir: &Path) -> anyhow::Result<PathBuf> {
     let cfg = serde_json::json!({
         "mcpServers": {
@@ -27,55 +29,9 @@ pub fn write_playwright_mcp_config(run_dir: &Path) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-/// Drive one outcome item against `base_url`. Always writes a verdict file
-/// (even on failure) so the verifier has something deterministic to read;
-/// returns the parsed verdict, or `Err` only when the agent couldn't be run at
-/// all (caller treats that as "tier skipped").
-pub fn run_item(
-    base_url: &str,
-    item: &RubricItem,
-    mcp_config: &Path,
-    locate_dir: &Path,
-    budget_usd: f64,
-) -> anyhow::Result<Verdict> {
-    std::fs::create_dir_all(locate_dir)?;
-    let prompt = build_prompt(base_url, item);
-
-    let output = Command::new("claude")
-        .arg("--print")
-        .args(["--output-format", "json"])
-        .args(["--mcp-config", &mcp_config.to_string_lossy()])
-        .arg("--strict-mcp-config")
-        .arg("--no-session-persistence")
-        .args(["--max-budget-usd", &format!("{budget_usd}")])
-        .arg("--allowed-tools")
-        .arg("mcp__playwright")
-        .arg(&prompt)
-        .output()
-        .map_err(|e| anyhow::anyhow!("running locator `claude`: {e}"))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let result_text = extract_result_text(&stdout).unwrap_or_else(|| stdout.to_string());
-    let verdict = parse_verdict(&result_text).unwrap_or(Verdict {
-        passed: false,
-        evidence: format!(
-            "locator produced no parseable verdict; raw: {}",
-            truncate(&result_text, 200)
-        ),
-    });
-
-    let verdict_path = locate_dir.join(format!("{}.json", item.id));
-    std::fs::write(
-        &verdict_path,
-        serde_json::to_string_pretty(&serde_json::json!({
-            "passed": verdict.passed,
-            "evidence": verdict.evidence,
-        }))?,
-    )?;
-    Ok(verdict)
-}
-
-fn build_prompt(base_url: &str, item: &RubricItem) -> String {
+/// Phrase one outcome item as a locator task against `base_url`. The orchestrator
+/// hands this to the `arena-locator` subagent verbatim.
+pub fn build_prompt(base_url: &str, item: &RubricItem) -> String {
     let a = &item.assertion;
     let mut checks = Vec::new();
     if let Some(role) = &a.expect_role {
@@ -104,27 +60,40 @@ fn build_prompt(base_url: &str, item: &RubricItem) -> String {
     )
 }
 
-/// `claude --output-format json` wraps the agent's final text in a `result`
-/// field. Pull it out; fall back to the raw stdout otherwise.
-fn extract_result_text(stdout: &str) -> Option<String> {
-    let v: Value = serde_json::from_str(stdout.trim()).ok()?;
-    v.get("result")
-        .and_then(|r| r.as_str())
-        .map(|s| s.to_string())
+/// Persist a parsed verdict to `<locate_dir>/<item_id>.json` for the
+/// deterministic [`crate::verify::playwright`] verifier to consume. Always
+/// writes something (even a failure) so the verifier has a file to read.
+pub fn write_verdict(locate_dir: &Path, item_id: &str, verdict: &Verdict) -> anyhow::Result<PathBuf> {
+    std::fs::create_dir_all(locate_dir)?;
+    let verdict_path = locate_dir.join(format!("{item_id}.json"));
+    std::fs::write(
+        &verdict_path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "passed": verdict.passed,
+            "evidence": verdict.evidence,
+        }))?,
+    )?;
+    Ok(verdict_path)
 }
 
 /// Parse a `{passed, evidence}` verdict, tolerating prose around the JSON by
-/// falling back to the first `{`…`}` span.
-fn parse_verdict(text: &str) -> Option<Verdict> {
+/// falling back to the first `{`…`}` span. Returns a deterministic failure
+/// verdict if nothing parseable is present, so a flaky locator can't crash the run.
+pub fn parse_verdict(text: &str) -> Verdict {
     if let Ok(v) = serde_json::from_str::<Verdict>(text.trim()) {
-        return Some(v);
+        return v;
     }
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    if end <= start {
-        return None;
+    if let (Some(start), Some(end)) = (text.find('{'), text.rfind('}')) {
+        if end > start {
+            if let Ok(v) = serde_json::from_str::<Verdict>(&text[start..=end]) {
+                return v;
+            }
+        }
     }
-    serde_json::from_str::<Verdict>(&text[start..=end]).ok()
+    Verdict {
+        passed: false,
+        evidence: format!("locator produced no parseable verdict; raw: {}", truncate(text, 200)),
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -141,24 +110,21 @@ mod tests {
 
     #[test]
     fn parses_a_clean_verdict() {
-        let v = parse_verdict(r#"{"passed": true, "evidence": "listitem visible"}"#).unwrap();
+        let v = parse_verdict(r#"{"passed": true, "evidence": "listitem visible"}"#);
         assert!(v.passed);
         assert_eq!(v.evidence, "listitem visible");
     }
 
     #[test]
     fn parses_a_verdict_wrapped_in_prose() {
-        let v =
-            parse_verdict("Here is my result:\n{\"passed\": false, \"evidence\": \"not found\"}\nDone")
-                .unwrap();
+        let v = parse_verdict("Here is my result:\n{\"passed\": false, \"evidence\": \"not found\"}\nDone");
         assert!(!v.passed);
     }
 
     #[test]
-    fn extracts_result_from_claude_json_envelope() {
-        let env = r#"{"type":"result","result":"{\"passed\": true, \"evidence\": \"ok\"}","total_cost_usd":0.01}"#;
-        let inner = extract_result_text(env).unwrap();
-        let v = parse_verdict(&inner).unwrap();
-        assert!(v.passed);
+    fn unparseable_text_yields_a_failure_verdict() {
+        let v = parse_verdict("the page looked fine to me, trust me");
+        assert!(!v.passed);
+        assert!(v.evidence.contains("no parseable verdict"));
     }
 }

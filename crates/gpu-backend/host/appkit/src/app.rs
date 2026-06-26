@@ -319,7 +319,17 @@ where
     // which kills the entrance/animation timers before they ever
     // fire and the welcome example renders zero-opacity, static.
     // See `runtime_core::walker::mount` docs for the rationale.
+    //
+    // Buffer microtasks across the mount so the navigator SDK's deferred chrome
+    // (drawer header / sidebar, scheduled via `schedule_microtask` to escape the
+    // `init` backend borrow) drains synchronously inside `mount` BEFORE `finish`
+    // — landing in the first layout/paint instead of dispatching a run-loop turn
+    // later (which paints once without the header, then pops it in: the "top
+    // toolbar renders after the initial cycle" bug). `mount` calls
+    // `drain_buffered_microtasks` before `finish`; we close the window after.
+    backend_apple_core::scheduler::begin_mount_buffering();
     let owner = runtime_core::mount(backend.clone(), app);
+    backend_apple_core::scheduler::end_mount_buffering();
     std::mem::forget(owner);
 
     // ── Show window + start run loop ──────────────────────────────

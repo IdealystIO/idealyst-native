@@ -4643,6 +4643,8 @@ dependencies = [
  "mcp-server",
  "pathdiff",
  "rmcp",
+ "robot-relay",
+ "robot-test",
  "run-android",
  "run-ios",
  "run-macos",
@@ -7660,7 +7662,37 @@ dependencies = [
  "backend-web",
  "dev-server",
  "idea-ui",
+ "robot-test",
  "runtime-core",
+]
+
+[[package]]
+name = "robot-relay"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "base64",
+ "serde_json",
+ "tungstenite 0.24.0",
+]
+
+[[package]]
+name = "robot-test"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "robot-test-macros",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "robot-test-macros"
+version = "0.0.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -7745,6 +7777,7 @@ dependencies = [
  "rustc-hash 2.1.2",
  "serde",
  "serde_json",
+ "tungstenite 0.24.0",
  "wasm-splitter",
 ]
 

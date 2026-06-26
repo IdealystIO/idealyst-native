@@ -1,9 +1,16 @@
-//! Run a headless `claude` agent and capture what it did.
+//! Distill a subagent's transcript into what the spine scores over.
 //!
-//! The implementation agent runs with `--strict-mcp-config` against the
-//! scenario's isolated `.mcp.json`, so the **only** MCP server it can reach is
-//! idealyst (docs + Robot). Web search / fetch are denied. We capture the full
-//! `stream-json` event log and distill it into:
+//! The implementation agent is no longer a `claude --print` subprocess this
+//! crate spawns — it's a **subagent** the orchestrating Claude Code session
+//! runs (see `.claude/agents/arena-implementer.md` + `.claude/skills/arena-bench`).
+//! Driving it that way keeps the run on the subscription instead of pay-as-you-go
+//! API billing, and lets the agent be hard-isolated to the idealyst MCP via the
+//! subagent's `mcpServers:` frontmatter (the equivalent of
+//! `claude -p --strict-mcp-config`).
+//!
+//! Claude Code writes every subagent's event log to
+//! `~/.claude/projects/<proj>/<session-id>/subagents/agent-<agentId>.jsonl`.
+//! This module parses one of those files into:
 //!   * a [`crate::metrics::Transcript`] (tool calls) for the pathology pass, and
 //!   * token totals, including an estimate of MCP **payload** tokens — the
 //!     doc-bloat dial, measured as the size of idealyst tool *results*.
@@ -12,12 +19,16 @@ use crate::metrics::{ToolCall, Transcript};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-/// What an agent run produced.
+/// What a parsed subagent transcript yields.
 #[derive(Debug, Clone)]
 pub struct AgentRun {
     pub transcript: Transcript,
+    /// Input-side tokens (uncached input + cache creation + cache reads), summed
+    /// across the agent's assistant turns. Not a billing figure — a *consistent*
+    /// effort proxy. Mid-2026 subagent jsonl token counts are known to undercount
+    /// (~2×); fine for the token-bonus tiebreaker, which is relative and strictly
+    /// smaller than the smallest rubric item.
     pub input_tokens: u64,
     pub output_tokens: u64,
     /// Estimated tokens of idealyst-MCP tool *results* pulled into context —
@@ -33,68 +44,27 @@ impl AgentRun {
     }
 }
 
-/// Tools the implementation agent may use: code editing, the idealyst CLI +
-/// cargo via Bash, and every idealyst MCP tool. Everything else (notably web
-/// access and any other MCP server) is denied or excluded by
-/// `--strict-mcp-config`.
-const ALLOWED_TOOLS: &[&str] = &[
-    "Edit",
-    "Write",
-    "Read",
-    "Bash",
-    "Glob",
-    "Grep",
-    "mcp__idealyst",
-];
-const DENIED_TOOLS: &[&str] = &["WebSearch", "WebFetch"];
-
-/// Drive the implementation agent. `prompt` is the full instruction (preamble +
-/// scenario prompt). The agent works in `project_dir`; its event log is written
-/// to `<run_dir>/transcript.jsonl`.
-pub fn implement(
-    prompt: &str,
-    project_dir: &Path,
-    mcp_config: &Path,
-    run_dir: &Path,
-    max_budget_usd: f64,
-) -> anyhow::Result<AgentRun> {
-    std::fs::create_dir_all(run_dir)?;
-    let transcript_path = run_dir.join("transcript.jsonl");
-
-    let output = Command::new("claude")
-        .arg("--print")
-        .args(["--output-format", "stream-json"])
-        .arg("--verbose") // stream-json requires verbose to emit per-event lines
-        .args(["--mcp-config", &mcp_config.to_string_lossy()])
-        .arg("--strict-mcp-config")
-        .arg("--no-session-persistence")
-        .args(["--max-budget-usd", &format!("{max_budget_usd}")])
-        .arg("--allowed-tools")
-        .arg(ALLOWED_TOOLS.join(" "))
-        .arg("--disallowed-tools")
-        .arg(DENIED_TOOLS.join(" "))
-        .arg(prompt)
-        .current_dir(project_dir)
-        .output()
-        .map_err(|e| anyhow::anyhow!("running `claude`: {e} (is `claude` on PATH?)"))?;
-
-    std::fs::write(&transcript_path, &output.stdout)?;
-    if !output.status.success() && output.stdout.is_empty() {
-        anyhow::bail!(
-            "`claude` exited {:?} with no output:\n{}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let mut run = parse_stream(&output.stdout);
-    run.transcript_path = transcript_path;
+/// Parse a subagent transcript file (`agent-<id>.jsonl`) from disk.
+pub fn load_session_jsonl(path: &Path) -> anyhow::Result<AgentRun> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| anyhow::anyhow!("reading subagent transcript {}: {e}", path.display()))?;
+    let mut run = parse_session_jsonl(&bytes);
+    run.transcript_path = path.to_path_buf();
     Ok(run)
 }
 
-/// Parse a `stream-json` event log into a transcript + token totals. Defensive
-/// throughout: the schema is broad and we only pull the fields we understand.
-pub fn parse_stream(bytes: &[u8]) -> AgentRun {
+/// Parse a Claude Code subagent JSONL log into a transcript + token totals.
+/// Defensive throughout: the schema is broad and we only pull the fields we
+/// understand, so unrelated event types (`queue-operation`, `attachment`,
+/// `file-history-snapshot`, …) are simply ignored.
+///
+/// Schema (per line, one JSON object): an `assistant` event carries
+/// `message.content[]` blocks (a `tool_use` block has `name`/`id`/`input`) and a
+/// `message.usage` (`input_tokens`/`cache_*`/`output_tokens`); a `user` event
+/// carries `tool_result` blocks (`tool_use_id` + `content`, string or array).
+/// Unlike `claude -p`'s `stream-json` there is no terminal `result` event with
+/// cumulative usage, so token totals are summed over the assistant turns.
+pub fn parse_session_jsonl(bytes: &[u8]) -> AgentRun {
     let text = String::from_utf8_lossy(bytes);
     let mut calls: Vec<ToolCall> = Vec::new();
     let mut tool_names: HashMap<String, String> = HashMap::new(); // tool_use_id -> name
@@ -113,26 +83,38 @@ pub fn parse_stream(bytes: &[u8]) -> AgentRun {
         };
         match ev.get("type").and_then(|t| t.as_str()) {
             Some("assistant") => {
-                accumulate_usage(&ev, &mut input_tokens, &mut output_tokens);
-                if let Some(content) = ev
-                    .get("message")
+                let msg = ev.get("message");
+                accumulate_usage(msg.and_then(|m| m.get("usage")), &mut input_tokens, &mut output_tokens);
+                if let Some(content) = msg
                     .and_then(|m| m.get("content"))
                     .and_then(|c| c.as_array())
                 {
                     for block in content {
-                        if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                            let name = block
-                                .get("name")
-                                .and_then(|n| n.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            if let Some(id) = block.get("id").and_then(|i| i.as_str()) {
-                                tool_names.insert(id.to_string(), name.clone());
+                        match block.get("type").and_then(|t| t.as_str()) {
+                            Some("tool_use") => {
+                                let name = block
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                if let Some(id) = block.get("id").and_then(|i| i.as_str()) {
+                                    tool_names.insert(id.to_string(), name.clone());
+                                }
+                                calls.push(ToolCall {
+                                    tool: name,
+                                    args: block.get("input").cloned().unwrap_or(Value::Null),
+                                });
                             }
-                            calls.push(ToolCall {
-                                tool: name,
-                                args: block.get("input").cloned().unwrap_or(Value::Null),
-                            });
+                            Some("text") => {
+                                // The agent's last prose is its final message —
+                                // keep the most recent so callers can surface it.
+                                if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
+                                    if !t.trim().is_empty() {
+                                        final_text = t.to_string();
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -161,12 +143,6 @@ pub fn parse_stream(bytes: &[u8]) -> AgentRun {
                     }
                 }
             }
-            Some("result") => {
-                accumulate_usage(&ev, &mut input_tokens, &mut output_tokens);
-                if let Some(r) = ev.get("result").and_then(|r| r.as_str()) {
-                    final_text = r.to_string();
-                }
-            }
             _ => {}
         }
     }
@@ -182,22 +158,16 @@ pub fn parse_stream(bytes: &[u8]) -> AgentRun {
     }
 }
 
-/// Pull `usage.{input_tokens,output_tokens}` from an event if present. The
-/// final `result` event carries cumulative totals; assistant events carry
-/// per-turn usage — we take the max so a missing `result` still yields a
-/// sensible number without double-counting.
-fn accumulate_usage(ev: &Value, input: &mut u64, output: &mut u64) {
-    let usage = ev
-        .get("usage")
-        .or_else(|| ev.get("message").and_then(|m| m.get("usage")));
-    if let Some(u) = usage {
-        if let Some(i) = u.get("input_tokens").and_then(|v| v.as_u64()) {
-            *input = (*input).max(i);
-        }
-        if let Some(o) = u.get("output_tokens").and_then(|v| v.as_u64()) {
-            *output = (*output).max(o);
-        }
-    }
+/// Add one assistant turn's `usage` to the running totals. Input side folds in
+/// cache creation + cache reads so a thrashing agent (which re-reads a large
+/// cached context every turn) costs more in the proxy — exactly the behavior the
+/// token bonus should penalize. There is no cumulative `result` event in the
+/// subagent log, so summation is the only way to total it.
+fn accumulate_usage(usage: Option<&Value>, input: &mut u64, output: &mut u64) {
+    let Some(u) = usage else { return };
+    let get = |k: &str| u.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+    *input += get("input_tokens") + get("cache_creation_input_tokens") + get("cache_read_input_tokens");
+    *output += get("output_tokens");
 }
 
 /// Length (in chars) of a tool_result's content, which may be a string or an
@@ -219,23 +189,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_tool_calls_tokens_and_mcp_payload() {
-        // A minimal stream: one idealyst MCP call + its result, a plain Bash
-        // call, and a final result event with cumulative usage.
+    fn parses_tool_calls_summed_tokens_and_mcp_payload() {
+        // A trimmed subagent log: two assistant turns (one idealyst MCP call,
+        // one Bash call) with per-turn usage, the idealyst result returned as a
+        // user tool_result, and a final text block.
         let stream = r#"
-{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__idealyst__list_components","input":{}}],"usage":{"input_tokens":10,"output_tokens":3}}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__idealyst__list_components","input":{}}],"usage":{"input_tokens":10,"cache_creation_input_tokens":100,"cache_read_input_tokens":0,"output_tokens":3}}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"AAAAAAAA"}]}]}}
-{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"idealyst build --web"}}]}}
-{"type":"result","result":"done","usage":{"input_tokens":120,"output_tokens":45}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"idealyst build --web"}}],"usage":{"input_tokens":5,"cache_read_input_tokens":200,"output_tokens":42}}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"a long bash result that is NOT idealyst docs"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"done"}],"usage":{"input_tokens":1,"output_tokens":0}}}
 "#;
-        let run = parse_stream(stream.as_bytes());
+        let run = parse_session_jsonl(stream.as_bytes());
         assert_eq!(run.transcript.calls.len(), 2);
         assert_eq!(run.transcript.calls[0].tool, "mcp__idealyst__list_components");
-        assert_eq!(run.input_tokens, 120);
+        // input = (10+100+0) + (5+0+200) + (1+0+0) = 316
+        assert_eq!(run.input_tokens, 316);
+        // output = 3 + 42 + 0 = 45
         assert_eq!(run.output_tokens, 45);
-        assert_eq!(run.total_tokens(), 165);
+        assert_eq!(run.total_tokens(), 361);
         // 8 chars of idealyst result / 4 = 2 payload tokens; the Bash result
-        // (none here) must not count.
+        // (a plain string, non-idealyst) must NOT count.
         assert_eq!(run.mcp_payload_tokens, 2);
         assert_eq!(run.final_text, "done");
     }
@@ -243,11 +217,25 @@ mod tests {
     #[test]
     fn non_idealyst_tool_results_dont_count_as_payload() {
         let stream = r#"
-{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}],"usage":{"input_tokens":5,"output_tokens":1}}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"this is a long bash result that is not docs"}]}]}}
-{"type":"result","result":"ok","usage":{"input_tokens":5,"output_tokens":1}}
 "#;
-        let run = parse_stream(stream.as_bytes());
+        let run = parse_session_jsonl(stream.as_bytes());
         assert_eq!(run.mcp_payload_tokens, 0);
+    }
+
+    #[test]
+    fn ignores_unrelated_event_types() {
+        // Real subagent logs interleave queue-operation/attachment/etc lines.
+        let stream = r#"
+{"type":"queue-operation","foo":1}
+{"type":"file-history-snapshot","bar":2}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/x"}}],"usage":{"input_tokens":2,"output_tokens":1}}}
+{"type":"ai-title","title":"whatever"}
+"#;
+        let run = parse_session_jsonl(stream.as_bytes());
+        assert_eq!(run.transcript.calls.len(), 1);
+        assert_eq!(run.transcript.calls[0].tool, "Read");
+        assert_eq!(run.total_tokens(), 3);
     }
 }

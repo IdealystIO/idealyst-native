@@ -6,13 +6,17 @@
 //!      repeated doc fetches, doc-bypass reads) into concrete MCP-doc fixes.
 //!
 //! Pass 2's *detection* is already done in pure code ([`crate::metrics`]); the
-//! agent only has to cluster and explain it. We hand it the transcript + the
-//! scored results + the computed pathologies and let it write Markdown.
+//! agent only has to cluster and explain it.
+//!
+//! The reviewer is an `arena-feedback` **subagent** the orchestrating session
+//! runs (see `.claude/skills/arena-bench`) — not a `claude` subprocess this
+//! crate spawns — so it stays on the subscription. What lives here is the pure
+//! prompt the orchestrator hands that subagent ([`build_feedback_prompt`]); the
+//! orchestrator writes the returned Markdown to `<run_dir>/feedback.md`.
 
 use crate::metrics::Pathologies;
 use crate::score::ScoredRun;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 /// Inputs the feedback agent reasons over for one run.
 pub struct FeedbackInputs<'a> {
@@ -24,10 +28,9 @@ pub struct FeedbackInputs<'a> {
     pub transcript_path: &'a Path,
 }
 
-/// Run the feedback agent over a single run's artifacts. Best-effort: returns
-/// the produced Markdown, or `Err` if `claude` couldn't run. Writes
-/// `<run_dir>/feedback.md`.
-pub fn synthesize(inputs: &FeedbackInputs, run_dir: &Path) -> anyhow::Result<PathBuf> {
+/// Build the (LLM-free) prompt for the feedback reviewer. Pure: no spawning, no
+/// I/O — the orchestrator passes the result to the `arena-feedback` subagent.
+pub fn build_feedback_prompt(inputs: &FeedbackInputs) -> String {
     let lost: Vec<String> = inputs
         .scored
         .outcomes
@@ -46,7 +49,7 @@ pub fn synthesize(inputs: &FeedbackInputs, run_dir: &Path) -> anyhow::Result<Pat
         .map(|(d, n)| format!("- {d} ×{n}"))
         .collect();
 
-    let prompt = format!(
+    format!(
         "You are the arena's FEEDBACK reviewer. Your job is NOT to score — it is to \
          improve the idealyst MCP server's documentation and tools so a future agent does \
          better. Read the transcript at `{transcript}` (a JSONL stream of the implementation \
@@ -72,24 +75,5 @@ pub fn synthesize(inputs: &FeedbackInputs, run_dir: &Path) -> anyhow::Result<Pat
         dupes = inputs.pathologies.duplicate_calls,
         bypass = inputs.doc_bypass_reads,
         repeated = if repeated.is_empty() { "(none)".into() } else { repeated.join("\n") },
-    );
-
-    let output = Command::new("claude")
-        .arg("--print")
-        .args(["--output-format", "text"])
-        .arg("--allowed-tools")
-        .arg("Read")
-        .arg(&prompt)
-        .current_dir(run_dir)
-        .output()
-        .map_err(|e| anyhow::anyhow!("running feedback `claude`: {e}"))?;
-
-    let body = String::from_utf8_lossy(&output.stdout);
-    let header = format!(
-        "# Feedback — `{}`\n\n_Diagnostic only; does not affect the score._\n\n",
-        inputs.scenario_id
-    );
-    let path = run_dir.join("feedback.md");
-    std::fs::write(&path, format!("{header}{body}"))?;
-    Ok(path)
+    )
 }

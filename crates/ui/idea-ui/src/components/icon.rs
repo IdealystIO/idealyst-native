@@ -17,7 +17,7 @@
 //! inherits the ambient text color — matching the primitive's default.
 
 use runtime_core::{
-    component, icon, Color, Element, IconData, IdealystSchema, IntoElement,
+    component, icon, Color, Element, IconData, IdealystSchema, IntoElement, Reactive,
 };
 
 use idea_theme::extensible::ToneRef;
@@ -28,6 +28,13 @@ use idea_theme::theme::IdeaThemeRef;
 /// sits comfortably beside a label.
 pub const ICON_DEFAULT_PX: f32 = 20.0;
 
+// Reactive-by-default: `#[props]` wraps each data field `T` → `Reactive<T>`.
+// `tone`/`color` route to the primitive's reactive `.color()` closure (read
+// `.get()` inside, so the override re-tints on a live tone/color). `data` and
+// `size` are snapshotted: the `icon` primitive has no reactive `data`/`size`
+// setter (`data` is fixed at construction, `.size(f32)` applies a static
+// sheet) — see the TODO in the body.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct IconProps {
@@ -49,10 +56,10 @@ pub struct IconProps {
 impl Default for IconProps {
     fn default() -> Self {
         Self {
-            data: EMPTY_ICON,
-            size: ICON_DEFAULT_PX,
-            tone: None,
-            color: None,
+            data: Reactive::Static(EMPTY_ICON),
+            size: Reactive::Static(ICON_DEFAULT_PX),
+            tone: Reactive::Static(None),
+            color: Reactive::Static(None),
         }
     }
 }
@@ -72,28 +79,42 @@ const EMPTY_ICON: IconData = IconData {
 /// the raw primitive.
 #[component]
 pub fn Icon(props: &IconProps) -> Element {
-    let data = props.data;
-    let size = props.size;
+    // `size` is a `.size()` sizing-sheet pin (a plain `f32`); a live `size`
+    // is snapshotted here. TODO(reactive-sweep): a reactive `.size()` setter
+    // on `Bound<IconHandle>` would route it (same shape as `.data()` below).
+    let size = props.size.get();
     let tone = props.tone.clone();
     let explicit = props.color.clone();
 
-    // `.size()` pins the square (the primitive owns the cached sizing
-    // sheet so every icon at the same size shares one registration).
-    let mut node = icon(data).size(size);
+    // `data` is routed LIVE: a reactive source swaps the rendered glyph in
+    // place via the primitive's reactive `.data()` setter (no node rebuild).
+    // A `Static` data installs no effect (the create-time glyph).
+    let mut node = icon(props.data.get()).size(size);
+    if !props.data.is_static() {
+        let data = props.data.clone();
+        node = node.data(move || data.get());
+    }
 
-    if let Some(tone) = tone {
-        // Tone wins: resolve the tone's intent (ghost) color through the
-        // active theme. `Tokenized::resolve()` subscribes to the token,
-        // so the icon re-tints reactively on a theme swap.
+    // `tone`/`color` are routed to the primitive's reactive `.color()` closure.
+    // Reading `.get()` INSIDE the closure subscribes the icon's color Effect to
+    // a live tone/color, so it re-tints in place (and the tone path already
+    // re-tints on a theme swap via `Tokenized::resolve()`). A static tone/color
+    // resolves once. Tone wins over the explicit color (matches the snapshot
+    // precedence below).
+    let has_tone = matches!(tone.get(), Some(_));
+    let has_color = matches!(explicit.get(), Some(_));
+    if has_tone {
         node = node.color(move || {
             let theme_rc = idea_theme::active_theme();
             let theme_ref = theme_rc
                 .downcast_ref::<IdeaThemeRef>()
                 .expect("idea-ui: no IdeaTheme installed");
-            tone.ghost_fg(theme_ref).resolve()
+            // Tone is live here: read it inside so a reactive tone re-resolves.
+            let t = tone.get().expect("tone present (checked above)");
+            t.ghost_fg(theme_ref).resolve()
         });
-    } else if let Some(c) = explicit {
-        node = node.color(move || c.clone());
+    } else if has_color {
+        node = node.color(move || explicit.get().expect("color present (checked above)"));
     }
 
     node.into_element()
@@ -137,8 +158,8 @@ mod tests {
     fn tone_sets_a_color_override() {
         theme();
         let props = IconProps {
-            data: DOT,
-            tone: Some(tone::Primary.into()),
+            data: Reactive::Static(DOT),
+            tone: Reactive::Static(Some(tone::Primary.into())),
             ..Default::default()
         };
         let (has_color, _) = icon_parts(Icon(&props));
@@ -150,7 +171,7 @@ mod tests {
     #[test]
     fn no_tint_inherits_ambient_color() {
         theme();
-        let props = IconProps { data: DOT, ..Default::default() };
+        let props = IconProps { data: Reactive::Static(DOT), ..Default::default() };
         let (has_color, _) = icon_parts(Icon(&props));
         assert!(!has_color, "an untinted Icon leaves color to inherit");
     }
@@ -160,7 +181,11 @@ mod tests {
     #[test]
     fn size_pins_an_explicit_square() {
         theme();
-        let props = IconProps { data: DOT, size: 28.0, ..Default::default() };
+        let props = IconProps {
+            data: Reactive::Static(DOT),
+            size: Reactive::Static(28.0),
+            ..Default::default()
+        };
         let (_, app) = icon_parts(Icon(&props));
         let rules = resolve_style(&app);
         assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(28.0))));

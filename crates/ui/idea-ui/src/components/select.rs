@@ -86,6 +86,14 @@ impl SelectOption {
     }
 }
 
+// Reactive-by-default: `#[props]` rewrites each scalar-DATA field `T` →
+// `Reactive<T>`. AUTO-SKIPPED: `value` (a `Signal` reactive source),
+// `on_change` (an `Rc` handler), and `options` (a `Vec` LIST — its per-row
+// `label` reactivity lives on `SelectOption::label`, already `Reactive`).
+// `size` routes into the reactive `trigger_style` sink; `placeholder` is read
+// live inside the trigger's label text source. `icon` is structural (the
+// chevron is built once into a bound view) — see the TODO in the body.
+#[runtime_core::props]
 #[derive(IdealystSchema)]
 pub struct SelectProps {
     /// Controlled selected value — the `id` of the chosen
@@ -99,6 +107,7 @@ pub struct SelectProps {
     /// Trigger height. Default Md.
     pub size: SelectSize,
     /// Text shown on the trigger when no option matches `value`.
+    /// `Reactive<Option<String>>`.
     pub placeholder: Option<String>,
     /// Trailing affordance icon, rotated 180° while the menu is open.
     /// Defaults to a chevron when `None`; pass `Some(icons_lucide::…)` to
@@ -112,9 +121,9 @@ impl Default for SelectProps {
             value: Signal::new(String::new()),
             on_change: Rc::new(|_| {}),
             options: Vec::new(),
-            size: SelectSize::default(),
-            placeholder: None,
-            icon: None,
+            size: Reactive::Static(SelectSize::default()),
+            placeholder: Reactive::Static(None),
+            icon: Reactive::Static(None),
         }
     }
 }
@@ -127,23 +136,29 @@ impl Default for SelectProps {
 pub fn Select(props: SelectProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
-    let size = props.size;
+    let size = props.size.clone();
     let placeholder = props.placeholder.clone();
     let options = Rc::new(props.options);
-    let icon_data = props.icon.unwrap_or(CHEVRON_DOWN);
+    // TODO(reactive-sweep): `icon` is read once to build the chevron glyph +
+    // bound rotation view (structural). A live `icon` source would need the
+    // chevron rebuilt — route it once the trigger affordance is restructured
+    // to swap the glyph reactively. Snapshot for now.
+    let icon_data = props.icon.get().unwrap_or(CHEVRON_DOWN);
 
     let open: Signal<bool> = signal!(false);
     let trigger_ref: Ref<PressableHandle> = Ref::new();
 
     let label_options = options.clone();
     let label_placeholder = placeholder.clone();
+    // `placeholder` is read LIVE inside the trigger's label source, so a
+    // reactive placeholder re-paints the empty-trigger text in place.
     let label_source: runtime_core::TextSource = runtime_core::IntoTextSource::into_text_source(
         move || {
             label_options
                 .iter()
                 .find(|o| o.id == value.get())
                 .map(|o| o.label.get())
-                .or_else(|| label_placeholder.clone())
+                .or_else(|| label_placeholder.get())
                 .unwrap_or_default()
         },
     );
@@ -164,14 +179,21 @@ pub fn Select(props: SelectProps) -> Element {
         .into_element();
     let chevron = runtime_core::view(vec![chevron_glyph]).bind(chevron_ref).into_element();
 
-    let trigger_style = move || {
-        let _ = idea_theme::active_theme_untracked()
-            .downcast_ref::<IdeaThemeRef>()
-            .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-        StyleApplication::new(SelectTrigger::sheet())
-            .with("size", size.as_variant_str().to_string())
-            // Highlight (focus-ring border) while the menu is open.
-            .with("open", if open.get() { "on" } else { "off" }.to_string())
+    // `size` is read LIVE inside the trigger style closure so a reactive
+    // `size` re-resolves the trigger height in place (the apply-style Effect
+    // subscribes to it). The closure is always reactive here (it reads the
+    // `open` signal regardless), so no static fast-path gate is needed.
+    let trigger_style = {
+        let size = size.clone();
+        move || {
+            let _ = idea_theme::active_theme_untracked()
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
+            StyleApplication::new(SelectTrigger::sheet())
+                .with("size", size.get().as_variant_str().to_string())
+                // Highlight (focus-ring border) while the menu is open.
+                .with("open", if open.get() { "on" } else { "off" }.to_string())
+        }
     };
     // Open on press; the menu's dismiss backdrop handles close — clicking
     // away OR clicking the trigger again lands on the (invisible) backdrop

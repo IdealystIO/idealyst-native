@@ -578,6 +578,29 @@ pub extern "system" fn Java_{jni}_NativeBridge_setLaunchPath<'local>(
         }}
     }}));
 }}
+
+/// Export the robot relay URL (baked into the manifest meta-data by
+/// `idealyst dev` + reached via `adb reverse`) so the Robot bridge's walker
+/// DIALS the host relay instead of self-hosting a device-local TCP listener.
+/// Called from MainActivity BEFORE `attach`, so it's set before `mount` runs
+/// the walker. NOT gated on the wrapper's `dev` feature (dev mode enables
+/// `runtime-core/dev`, not the wrapper feature) — it just sets an env var, a
+/// no-op in release where the meta-data is absent so Java never calls it.
+#[no_mangle]
+pub extern "system" fn Java_{jni}_NativeBridge_setRobotRelayUrl<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    url: JString<'local>,
+) {{
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{
+        if let Ok(js) = env.get_string(&url) {{
+            let s = js.to_str().unwrap_or("").to_string();
+            if !s.is_empty() {{
+                ::std::env::set_var("IDEALYST_ROBOT_RELAY_URL", s);
+            }}
+        }}
+    }}));
+}}
 "#,
             lib = manifest.lib_name,
             jni = jni_package,

@@ -1656,6 +1656,19 @@ impl Backend for WireRecordingBackend {
         });
     }
 
+    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::UpdateTextInputSecure { node: *node, secure });
+    }
+
+    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::UpdateTextInputPlaceholder {
+            node: *node,
+            placeholder: placeholder.map(|s| s.to_string()),
+        });
+    }
+
     fn create_text_area(
         &mut self,
         initial_value: &str,

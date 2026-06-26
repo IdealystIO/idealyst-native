@@ -587,6 +587,34 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
+    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+        // Flip the stored mask flag and re-render the displayed glyphs from
+        // the (cleartext) stored value — bullets when secure, plain otherwise.
+        let layout = node.borrow().layout;
+        let visible = {
+            let mut data = node.borrow_mut();
+            if let NodeKind::TextInput { value, placeholder, secure: stored, .. } = &mut data.kind {
+                *stored = secure;
+                if value.is_empty() {
+                    placeholder.clone().unwrap_or_default()
+                } else if secure {
+                    mask_value(value)
+                } else {
+                    value.clone()
+                }
+            } else {
+                return;
+            }
+        };
+        {
+            let mut text = self.text.borrow_mut();
+            let mut fs = self.font_system.borrow_mut();
+            text.set_text(&mut fs, layout, &visible);
+        }
+        self.layout.mark_dirty(layout);
+        request_redraw();
+    }
+
     fn create_text_area(
         &mut self,
         initial_value: &str,

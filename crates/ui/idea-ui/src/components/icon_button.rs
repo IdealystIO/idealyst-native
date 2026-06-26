@@ -25,7 +25,7 @@ use std::rc::Rc;
 
 use runtime_core::{
     component, icon, text, AlignSelf, Color, Element, IconData, IdealystSchema, IntoElement, Length,
-    StyleApplication, StyleRules, StyleSheet, Tokenized, VariantEnum,
+    Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized, VariantEnum,
 };
 
 use idea_theme::extensible::{installed_icon_button_sheet, tone, variant, ToneRef, VariantRef};
@@ -70,6 +70,13 @@ fn icon_button_icon_sheet(px: f32) -> Rc<StyleSheet> {
     })
 }
 
+// Reactive-by-default: `#[props]` wraps each data field `T` → `Reactive<T>`;
+// `on_click` (Rc handler) is skipped. The style-driving props (tone/variant/
+// size/disabled/selected/size_px/radius/color) route to the `make_style`
+// sink reading `.get()` INSIDE; `glyph`/`icon`/`size_px`/`size` route to the
+// child sink. A bare value stays a zero-cost `Static` snapshot (the
+// no-flicker fast path); a `Signal`/`rx!` re-styles in place.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct IconButtonProps {
@@ -117,17 +124,17 @@ pub struct IconButtonProps {
 impl Default for IconButtonProps {
     fn default() -> Self {
         Self {
-            glyph: String::new(),
-            icon: None,
+            glyph: Reactive::Static(String::new()),
+            icon: Reactive::Static(None),
             on_click: Rc::new(|| {}),
             tone: tone::Neutral.into(),
             variant: variant::Filled.into(),
-            size: IconButtonSize::default(),
-            disabled: false,
-            selected: false,
-            size_px: None,
-            radius: None,
-            color: None,
+            size: Reactive::Static(IconButtonSize::default()),
+            disabled: Reactive::Static(false),
+            selected: Reactive::Static(false),
+            size_px: Reactive::Static(None),
+            radius: Reactive::Static(None),
+            color: Reactive::Static(None),
         }
     }
 }
@@ -136,47 +143,77 @@ impl Default for IconButtonProps {
 /// × size axes of the installed IconButton sheet.
 #[component]
 pub fn IconButton(props: &IconButtonProps) -> Element {
-    let glyph = props.glyph.clone();
-    let icon_data = props.icon;
     let on_click = props.on_click.clone();
-    let tone = props.tone.clone();
-    let variant = props.variant.clone();
-    let size = props.size;
-    let disabled = props.disabled;
-    let selected = props.selected;
-    let size_px = props.size_px;
-    let radius = props.radius;
 
-    let appearance_key = format!("{}_{}", tone.key(), variant.key());
-    let size_key = size.as_variant_str().to_string();
+    // TODO(reactive-sweep): route the child-structure props (`glyph`, `icon`,
+    // and the `size`/`size_px`-derived icon pixel size) reactively. Which child
+    // is rendered (vector `icon` vs text `glyph`) and the icon's pinned square
+    // are STRUCTURAL — switching them on a live signal needs a `switch`/`when`
+    // wrapper, not an in-place sink. These are snapshotted at build; a live
+    // `glyph`/`icon`/`size`/`size_px` won't swap the child in place.
+    let icon_data = props.icon.get();
+    let glyph = props.glyph.get();
+    let size_snapshot = props.size.get();
+    let size_px_snapshot = props.size_px.get();
 
-    // Static style — build-time apply, no flicker (see Button). `selected`
-    // drives the accent-fill toggle overlay (the active tool-button look).
-    let mut style = StyleApplication::new(installed_icon_button_sheet())
-        .with("appearance", appearance_key)
-        .with("size", size_key)
-        .with("selected", if selected { "on" } else { "off" });
-    // One computed layer (the StyleApplication has a single slot): hug +
-    // center on the cross axis, plus an optional custom square size. Without
-    // `align_self: Center` a flex parent's default `align-items: stretch`
-    // top-aligns the square in a row of mixed sizes (the IconButton "Sizes"
-    // row). Keyed by `size_px` so distinct sizes don't share a cache entry.
-    let sp = size_px;
-    let layer_key = format!("ib-layout-{}", sp.map(|p| (p * 100.0).round() as i32).unwrap_or(-1));
-    style = style.with_computed(layer_key, move || {
-        let mut rules = StyleRules { align_self: Some(AlignSelf::Center), ..Default::default() };
-        if let Some(px) = sp {
-            rules.width = Some(Tokenized::Literal(Length::Px(px)));
-            rules.height = Some(Tokenized::Literal(Length::Px(px)));
+    // The style is REACTIVE when any style-driving prop is live; otherwise it
+    // stays the build-time fast path (applied before first paint, theme-swapped
+    // in bulk — no per-node Effect, no first-paint flicker). The closure reads
+    // each prop live INSIDE, so the apply-style Effect subscribes to whichever
+    // are dynamic. `selected` drives the accent-fill toggle overlay (the active
+    // tool-button look).
+    let style_is_reactive = !props.tone.is_static()
+        || !props.variant.is_static()
+        || !props.size.is_static()
+        || !props.selected.is_static()
+        || !props.size_px.is_static()
+        || !props.radius.is_static()
+        || !props.color.is_static();
+
+    let make_style = {
+        let tone = props.tone.clone();
+        let variant = props.variant.clone();
+        let size = props.size.clone();
+        let selected = props.selected.clone();
+        let size_px = props.size_px.clone();
+        let radius = props.radius.clone();
+        let color = props.color.clone();
+        move || -> StyleApplication {
+            let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
+            let size_key = size.get().as_variant_str().to_string();
+
+            let mut style = StyleApplication::new(installed_icon_button_sheet())
+                .with("appearance", appearance_key)
+                .with("size", size_key)
+                .with("selected", if selected.get() { "on" } else { "off" });
+
+            // One computed layer (the StyleApplication has a single slot): hug +
+            // center on the cross axis, plus an optional custom square size.
+            // Without `align_self: Center` a flex parent's default `align-items:
+            // stretch` top-aligns the square in a row of mixed sizes (the
+            // IconButton "Sizes" row). Keyed by `size_px` so distinct sizes
+            // don't share a cache entry.
+            let sp = size_px.get();
+            let layer_key =
+                format!("ib-layout-{}", sp.map(|p| (p * 100.0).round() as i32).unwrap_or(-1));
+            style = style.with_computed(layer_key, move || {
+                let mut rules =
+                    StyleRules { align_self: Some(AlignSelf::Center), ..Default::default() };
+                if let Some(px) = sp {
+                    rules.width = Some(Tokenized::Literal(Length::Px(px)));
+                    rules.height = Some(Tokenized::Literal(Length::Px(px)));
+                }
+                rules
+            });
+            if let Some(r) = radius.get() {
+                style = style.override_border_radius(Length::Px(r));
+            }
+            if let Some(c) = color.get() {
+                style = style.override_color(Tokenized::Literal(c));
+            }
+            style
         }
-        rules
-    });
-    if let Some(r) = radius {
-        style = style.override_border_radius(Length::Px(r));
-    }
-    if let Some(c) = props.color.clone() {
-        style = style.override_color(Tokenized::Literal(c));
-    }
+    };
 
     // A vector `icon` wins over the text `glyph`. The icon inherits the
     // button's tone text color (the primitive defaults to the ambient
@@ -184,18 +221,29 @@ pub fn IconButton(props: &IconButtonProps) -> Element {
     // explicit color. Sized to the square's content box per size step.
     // Icon scales with the square: half the side for a custom `size_px`,
     // otherwise the per-step default.
-    let icon_px = size_px
+    let icon_px = size_px_snapshot
         .map(|s| (s * 0.5).round())
-        .unwrap_or_else(|| icon_px_for(size));
+        .unwrap_or_else(|| icon_px_for(size_snapshot));
     let child = match icon_data {
         Some(data) => icon(data)
             .with_style(icon_button_icon_sheet(icon_px))
             .into_element(),
         None => text(glyph).into_element(),
     };
-    let mut bound = runtime_core::pressable(vec![child], move || (on_click)())
-        .with_style(style);
-    if disabled {
+    let mut bound = runtime_core::pressable(vec![child], move || (on_click)());
+    bound = if style_is_reactive {
+        bound.with_style(make_style)
+    } else {
+        bound.with_style(make_style())
+    };
+
+    // `disabled` routes reactively: `.disabled()` accepts a `Fn() -> bool`, so
+    // reading `.get()` inside subscribes the disabled state to a live signal
+    // (it dims + blocks the press in place). A static value reads once.
+    if !props.disabled.is_static() {
+        let disabled = props.disabled.clone();
+        bound = bound.disabled(move || disabled.get());
+    } else if props.disabled.get() {
         bound = bound.disabled(true);
     }
     bound.into_element()
@@ -234,8 +282,8 @@ mod tests {
     fn icon_data_renders_an_icon_child() {
         theme();
         let props = IconButtonProps {
-            icon: Some(TRASH),
-            glyph: "×".into(), // present but overridden by `icon`
+            icon: Reactive::Static(Some(TRASH)),
+            glyph: Reactive::Static("×".into()), // present but overridden by `icon`
             ..Default::default()
         };
         assert!(
@@ -249,7 +297,7 @@ mod tests {
     fn glyph_falls_back_to_text() {
         theme();
         let props = IconButtonProps {
-            glyph: "×".into(),
+            glyph: Reactive::Static("×".into()),
             ..Default::default()
         };
         assert!(

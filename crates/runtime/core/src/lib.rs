@@ -327,7 +327,7 @@ pub use text_defaults::{
 };
 
 pub use runtime_macros::{
-    component, doc_scope, jsx, lazy, recipe, stylesheet, text_fmt, ui,
+    component, doc_scope, jsx, lazy, props, recipe, stylesheet, text_fmt, ui,
 };
 
 /// `#[idealyst_tool]` and `#[derive(IdealystSchema)]` — the

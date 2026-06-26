@@ -10,16 +10,24 @@
 //! aren't reachable from a host test — but they all consult exactly this
 //! handler, so proving it threads end-to-end pins the contract they share.
 
-mod common;
+// Include only the harness pieces we need, NOT the whole `common` module —
+// `common/counted.rs` currently fails to compile against the now-`pub(crate)`
+// `Effect::new` (a separate, pre-existing harness breakage), which would
+// otherwise block this file. `mock_backend` is self-contained and `runtime`
+// only needs `super::mock_backend`, so both resolve as crate-root siblings.
+#[path = "common/mock_backend.rs"]
+mod mock_backend;
+#[path = "common/runtime.rs"]
+mod runtime;
 
-use common::TestRuntime;
+use runtime::TestRuntime;
 use runtime_core::primitives::text_input::BlurOutcome;
-use runtime_core::{text_input, IntoElement, Signal};
+use runtime_core::{signal, text_input, IntoElement};
 
 #[test]
 fn on_blur_keep_threads_to_backend() {
     let rt = TestRuntime::new();
-    let q = Signal::new(String::new());
+    let q = signal!(String::new());
     let _owner =
         rt.render(text_input(q, |_| {}).on_blur(|| BlurOutcome::Keep).into_element());
 
@@ -34,7 +42,7 @@ fn on_blur_keep_threads_to_backend() {
 #[test]
 fn on_blur_allow_threads_to_backend() {
     let rt = TestRuntime::new();
-    let q = Signal::new(String::new());
+    let q = signal!(String::new());
     let _owner =
         rt.render(text_input(q, |_| {}).on_blur(|| BlurOutcome::Allow).into_element());
 
@@ -51,7 +59,7 @@ fn on_blur_allow_threads_to_backend() {
 #[test]
 fn no_on_blur_registers_no_handler() {
     let rt = TestRuntime::new();
-    let q = Signal::new(String::new());
+    let q = signal!(String::new());
     let _owner = rt.render(text_input(q, |_| {}).into_element());
 
     let core = rt.backend().inspector();

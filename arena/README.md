@@ -16,7 +16,7 @@ arena/
     todo-app/
       scenario.toml   PUBLIC: the prompt the agent receives
       rubric.toml     SECRET: atomic, tiered, objectively-checkable items
-  skills/             the LLM-driven half (not yet implemented)
+  agents/             the LLM-driven half: implementation / locator / feedback
   runs/               per-run artifacts (gitignored)
 ```
 

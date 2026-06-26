@@ -14,7 +14,7 @@
 //! can be added later if a real need arises.
 
 use crate::primitives::key::{KeyEvent, KeyOutcome};
-use crate::{Bound, Element, Ref, RefFill, Signal};
+use crate::{Bound, Element, Reactive, Ref, RefFill, Signal};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -120,8 +120,8 @@ pub fn text_input<F: Fn(String) + 'static>(
         on_change: Rc::new(move |s: String| crate::cycle(|| on_change(s))),
         on_key_down: None,
         on_blur: None,
-        placeholder: None,
-        secure: false,
+        placeholder: Reactive::Static(None),
+        secure: Reactive::Static(false),
         style: None,
         ref_fill: None,
         accessibility: crate::accessibility::AccessibilityProps::default(),
@@ -131,10 +131,25 @@ pub fn text_input<F: Fn(String) + 'static>(
 }
 
 impl Bound<TextInputHandle> {
-    /// Placeholder text shown when the input is empty.
+    /// Placeholder text shown when the input is empty. Takes a `String` for
+    /// the common static case (`Static(Some(text))`); for a live placeholder
+    /// use [`placeholder_reactive`](Self::placeholder_reactive).
     pub fn placeholder(mut self, text: String) -> Self {
         if let Element::TextInput { placeholder, .. } = &mut self.primitive {
-            *placeholder = Some(text);
+            *placeholder = Reactive::Static(Some(text));
+        }
+        self
+    }
+
+    /// Placeholder from anything coercing into `Reactive<Option<String>>` — a
+    /// `Signal`/`rx!` makes the placeholder live (updated in place, no
+    /// rebuild). `None` shows no placeholder.
+    pub fn placeholder_reactive(
+        mut self,
+        placeholder_src: impl Into<Reactive<Option<String>>>,
+    ) -> Self {
+        if let Element::TextInput { placeholder, .. } = &mut self.primitive {
+            *placeholder = placeholder_src.into();
         }
         self
     }
@@ -142,9 +157,14 @@ impl Bound<TextInputHandle> {
     /// Mask the entered text (password entry). Maps to each backend's native
     /// secure-entry mode; the masked-character behaviour is identical
     /// everywhere. Default `false`.
-    pub fn secure(mut self, is_secure: bool) -> Self {
+    ///
+    /// Accepts anything that coerces into `Reactive<bool>`: a bare `bool`
+    /// (`Static`, the common case), a `Signal<bool>`, or `rx!(…)` — a live
+    /// source lets the mask toggle at runtime (password show/hide) without
+    /// rebuilding the input.
+    pub fn secure(mut self, is_secure: impl Into<Reactive<bool>>) -> Self {
         if let Element::TextInput { secure, .. } = &mut self.primitive {
-            *secure = is_secure;
+            *secure = is_secure.into();
         }
         self
     }

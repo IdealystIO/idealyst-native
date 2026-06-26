@@ -133,6 +133,16 @@ pub struct Args {
     /// (~30 KB gzip on a large app); has no effect on non-web targets.
     #[arg(long)]
     pub strip_panics: bool,
+
+    /// Web only: enable the Robot bridge in the bundle (`robot` feature →
+    /// `backend-web/robot` → `runtime-core/robot`). A browser app can't host
+    /// the bridge itself, so it dials a `robot-relay` whose URL it reads from
+    /// `window.IDEALYST_ROBOT_RELAY_URL`; the relay exposes the ordinary TCP
+    /// bridge to the MCP server / an evaluator. Off by default; the MCP Arena
+    /// and `idealyst dev --web --local --robot` pass it. No effect on non-web
+    /// targets.
+    #[arg(long)]
+    pub robot: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -290,7 +300,13 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
             // just slow the build for no benefit).
             release: args.release || args.strip_panics,
             source: source.clone(),
-            user_features: Vec::new(),
+            // `robot` is a wrapper-local feature → `backend-web/robot`; the
+            // build/web feature filter skips forwarding it to the user crate.
+            user_features: if args.robot {
+                vec!["robot".to_string()]
+            } else {
+                Vec::new()
+            },
             bundle_out_dir: bundle_out_dir.clone(),
             gzip: args.gzip,
             strip_panics: args.strip_panics,

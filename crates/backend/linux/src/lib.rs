@@ -440,6 +440,14 @@ impl Backend for LinuxBackend {
         self.wrap(entry.upcast::<gtk4::Widget>())
     }
 
+    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+        // GTK masks by hiding the entry's characters; `visibility = !secure`
+        // toggles it in place on the same Entry.
+        if let Some(entry) = node.widget.downcast_ref::<gtk4::Entry>() {
+            entry.set_visibility(!secure);
+        }
+    }
+
     fn create_text_area(
         &mut self,
         initial_value: &str,

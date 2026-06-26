@@ -801,10 +801,18 @@ fn install_app(udid: &str, app: &Path) -> Result<()> {
 
 fn launch_app(udid: &str, bundle_id: &str) -> Result<()> {
     eprintln!("[run-ios] simctl launch {bundle_id} on {udid}");
-    let status = Command::new("xcrun")
-        .args(["simctl", "launch", udid, bundle_id])
-        .status()
-        .with_context(|| "spawn xcrun simctl launch")?;
+    let mut cmd = Command::new("xcrun");
+    cmd.args(["simctl", "launch", udid, bundle_id]);
+    // Deliver the robot relay URL to the sim app: `simctl` forwards env vars
+    // prefixed `SIMCTL_CHILD_` to the launched process (stripping the prefix).
+    // The iOS simulator shares the host network stack, so the dev-process relay
+    // URL (loopback) is reachable as-is; the app's walker reads
+    // `IDEALYST_ROBOT_RELAY_URL` and dials out. Inherited from the dev process
+    // (`idealyst dev --local` exports it).
+    if let Ok(url) = std::env::var("IDEALYST_ROBOT_RELAY_URL") {
+        cmd.env("SIMCTL_CHILD_IDEALYST_ROBOT_RELAY_URL", url);
+    }
+    let status = cmd.status().with_context(|| "spawn xcrun simctl launch")?;
     if !status.success() {
         anyhow::bail!("xcrun simctl launch exited with {status}");
     }

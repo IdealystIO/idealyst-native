@@ -57,7 +57,7 @@ use runtime_core::primitives::overlay::{overlay, BackdropMode};
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{
     component, ui, ChildList, Color, Element, IdealystSchema, IntoElement, Length, Position,
-    StyleApplication, StyleRules, StyleSheet, Tokenized, VariantSet,
+    Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized, VariantSet,
 };
 
 use crate::stylesheets::Popover as PopoverStyle;
@@ -96,12 +96,18 @@ fn transparent_backdrop_sheet() -> Rc<StyleSheet> {
     }))
 }
 
+// Reactive-by-default: `#[props]` wraps the scalar data props (`side`/`align`
+// enums, `offset`) → `Reactive<…>`. `target` is an anchor handle
+// (`#[prop(static)]`, ref-like — like `Ref`), `on_dismiss` is an `Rc` handler
+// (auto-skipped), and `children` is a `Vec<Element>` (auto-skipped).
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct PopoverProps {
     /// The element to anchor against. Construct via
     /// `AnchorTarget::from(some_ref)` where `some_ref` is a `Ref<H>`
     /// to any primitive whose handle implements `AnchorableHandle`.
+    #[prop(static)]
     pub target: Option<AnchorTarget>,
     /// Which side of the target the popover sits on. Default:
     /// `ElementSide::Below`.
@@ -126,9 +132,9 @@ impl Default for PopoverProps {
     fn default() -> Self {
         Self {
             target: None,
-            side: ElementSide::Below,
-            align: ElementAlign::Start,
-            offset: 4.0,
+            side: Reactive::Static(ElementSide::Below),
+            align: Reactive::Static(ElementAlign::Start),
+            offset: Reactive::Static(4.0),
             on_dismiss: None,
             children: Vec::new(),
         }
@@ -193,11 +199,17 @@ pub fn Popover(props: PopoverProps) -> Element {
     // The anchored surface sits ABOVE the catcher (same layer, rendered
     // after). Its own backdrop is None — the catcher owns outside-click
     // dismissal; Escape still closes via this `on_dismiss`.
+    // TODO(reactive-sweep): route `side`/`align`/`offset` reactively into the
+    // `anchored_overlay` placement. They're consumed by value as builder args
+    // (`.side()/.align()/.offset()`) that drive STRUCTURE (portal anchoring),
+    // not a style closure — a live signal would need the anchored overlay
+    // rebuilt on change. The host gates the popover behind an open-signal and
+    // rebuilds it on toggle, so a value change between opens is picked up.
     let anchored = {
         let mut a = runtime_core::anchored_overlay(target, vec![surface])
-            .side(props.side)
-            .align(props.align)
-            .offset(props.offset)
+            .side(props.side.get())
+            .align(props.align.get())
+            .offset(props.offset.get())
             .backdrop(BackdropMode::None)
             .trap_focus(false);
         if let Some(d) = dismiss {

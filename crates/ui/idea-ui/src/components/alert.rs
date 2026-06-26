@@ -90,6 +90,11 @@ impl Default for AlertClose {
     }
 }
 
+// Reactive-by-default: `#[props]` wraps the scalar data props (`tone`/`variant`)
+// → `Reactive<…>`; `title`/`body` are already `Reactive`. `action` (an
+// `Option<Element>`) is skipped (Element isn't wrapped), and `close`
+// (`AlertClose`, a custom element-builder enum) is `#[prop(static)]`.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct AlertProps {
@@ -111,6 +116,7 @@ pub struct AlertProps {
     pub action: Option<Element>,
     /// Close affordance at the trailing edge. See [`AlertClose`]. Default
     /// [`AlertClose::None`] (no close).
+    #[prop(static)]
     pub close: AlertClose,
 }
 
@@ -125,6 +131,8 @@ impl Default for AlertProps {
             variant: variant::Soft.into(),
             action: None,
             close: AlertClose::None,
+            // (tone/variant: marker `.into()` → `Reactive<…>`; title/body
+            // already `Reactive::Static`; action/close unwrapped.)
         }
     }
 }
@@ -134,7 +142,15 @@ impl Default for AlertProps {
 /// tone × variant axes.
 #[component]
 pub fn Alert(props: AlertProps) -> Element {
-    let appearance_key = format!("{}_{}", props.tone.key(), props.variant.key());
+    // TODO(reactive-sweep): route `tone`/`variant` reactively to the
+    // appearance/foreground sinks. They drive a COUPLED, eager structure here —
+    // the container appearance key, the resolved foreground color, and the
+    // per-node text-color stamping on title/body/`×` (native doesn't inherit
+    // color) all derive from tone × variant at build time. A live signal would
+    // need every one of those re-resolved in a style closure (the badge.rs
+    // make_style/style_is_reactive gate), which is a structural rewrite of the
+    // color-stamping path. Snapshotting here keeps tone/variant static-correct.
+    let appearance_key = format!("{}_{}", props.tone.get().key(), props.variant.get().key());
 
     // Static style — build-time apply, no flicker (see Button).
     let container_style =

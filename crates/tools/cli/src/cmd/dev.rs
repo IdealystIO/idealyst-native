@@ -188,6 +188,20 @@ pub struct Args {
     #[arg(long)]
     pub web: bool,
 
+    /// Disable the Robot bridge in dev mode. By DEFAULT `idealyst dev` hosts a
+    /// `robot-relay` and wires the launched app to dial it (web-local injects
+    /// the URL; desktop-native apps inherit it), so the MCP server / inspector /
+    /// evaluators can introspect the running app on every platform the same way.
+    /// Pass this for a leaner dev session with no robot transport.
+    #[arg(long)]
+    pub no_robot: bool,
+
+    /// Where the Robot `screenshot` verb saves PNGs (the relay writes them
+    /// host-side; a browser tab / device can't). Default:
+    /// `<project>/.idealyst/screenshots/`.
+    #[arg(long, value_name = "PATH")]
+    pub screenshot_dir: Option<PathBuf>,
+
     /// Build and run on the iOS simulator.
     #[arg(long)]
     pub ios: bool,
@@ -347,6 +361,51 @@ pub fn run(args: Args) -> Result<()> {
     // a follow-up.
     let _stderr_guard = if interactive {
         Some(EarlyStderrRedirect::install(&dir.join(".idealyst").join("dev.log")))
+    } else {
+        None
+    };
+
+    // Robot is ON by default in dev (opt out with --no-robot): host ONE
+    // `robot-relay` the launched app(s) dial, so every platform reaches the MCP
+    // server / inspector / evaluators the same way. Web-local injects the URL
+    // into served HTML; desktop-native apps inherit IDEALYST_ROBOT_RELAY_URL
+    // from our process env (run-macos / run-terminal don't clear it), so the
+    // walker dials the relay instead of self-hosting. The relay registers in
+    // ~/.idealyst/apps, so discovery is unchanged. Held for the whole session;
+    // if it can't start, native apps fall back to self-hosting a TCP bridge.
+    let robot_relay = if !args.no_robot && wants_robot_relay(&args, &active_targets) {
+        match robot_relay::start(robot_relay::RelayConfig {
+            ws_port: 0,
+            tcp_port: 0,
+            register: true,
+            identity: Some(robot_relay::Identity {
+                name: manifest.app.name.clone(),
+                bundle_id: None,
+                project_root: Some(dir.to_string_lossy().to_string()),
+            }),
+            // Save `screenshot` PNGs into the project by default (discoverable,
+            // gitignorable), overridable with `--screenshot-dir`.
+            screenshot_dir: Some(
+                args.screenshot_dir
+                    .clone()
+                    .unwrap_or_else(|| dir.join(".idealyst").join("screenshots")),
+            ),
+        }) {
+            Ok(relay) => {
+                let url = format!("ws://127.0.0.1:{}", relay.ws_addr.port());
+                std::env::set_var("IDEALYST_ROBOT_RELAY_URL", &url);
+                crate::dlog!(
+                    "dev",
+                    "robot relay {url} (tcp bridge :{}) — apps dial it; MCP discovers via ~/.idealyst/apps (--no-robot to disable)",
+                    relay.tcp_addr.port()
+                );
+                Some(relay)
+            }
+            Err(e) => {
+                crate::dlog!("dev", "robot relay unavailable ({e}); native apps self-host instead");
+                None
+            }
+        }
     } else {
         None
     };
@@ -678,6 +737,16 @@ pub fn run(args: Args) -> Result<()> {
                 let _ = child.wait();
             }
         }
+    } else if robot_relay.is_some() {
+        // A local-mode iOS/Android session launches-and-returns with nothing to
+        // wait on, but the dev-process-hosted robot relay must outlive the
+        // launch so the sim/emulator app can dial in and stay introspectable.
+        // Park until Ctrl-C (the handler drains children + exits, dropping the
+        // relay and its registration).
+        eprintln!("[dev] robot relay active — holding the session; Ctrl-C to quit");
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        }
     }
 
     Ok(())
@@ -836,6 +905,29 @@ fn build_runtime_server_host(dir: &Path) -> Result<PathBuf> {
 /// CLI has already waited for the host's port-file to land); each
 /// per-platform launcher uses it to bake `IDEALYST_DEV_ENDPOINT` into
 /// the wrapper build / spawn env.
+/// Whether to host the dev robot relay for this target set. Only in `--local`
+/// mode — that's when the framework runs IN the app, so it must dial out; in
+/// runtime-server mode the framework runs in the host sidecar where robot is
+/// already native. Delivery of the URL differs per platform: desktop natives
+/// inherit our process env, iOS-sim gets it via `simctl`, web-local gets it
+/// injected into served HTML. Android is handled in run-android (manifest
+/// placeholder + `adb reverse`), so it's excluded from the env path here.
+fn wants_robot_relay(args: &Args, targets: &[Target]) -> bool {
+    if !args.local {
+        return false;
+    }
+    targets.iter().any(|t| {
+        matches!(
+            t,
+            Target::Macos
+                | Target::Terminal
+                | Target::Ios
+                | Target::Web
+                | Target::Android
+        )
+    })
+}
+
 fn launch_target(
     target: Target,
     dir: &Path,
@@ -951,7 +1043,7 @@ fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
     // (its hot-patch loop is separate; favicon updates wait for a
     // manual reload, which is a rare-edge concern).
     let local_signal = (args.local).then(dev_reload::ReloadSignal::new);
-    let (overlay_ctx, head_ctx) = sync_dev_web_overlay(dir, local_signal.clone())?;
+    let (overlay_ctx, mut head_ctx) = sync_dev_web_overlay(dir, local_signal.clone())?;
 
     if !args.local {
         // ── 1. wasm shim that connects to the runtime-server host ────────────
@@ -1053,7 +1145,16 @@ fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
                 signal.clone(),
                 dev_reload::BuildOptions {
                     source: source.clone(),
-                    features: vec!["runtime-core/dev".to_string()],
+                    // Robot is on by default in dev → add the wrapper-local
+                    // `robot` feature (→ `backend-web/robot`) so the local web
+                    // bundle dials the relay run() hosts. --no-robot opts out.
+                    features: {
+                        let mut f = vec!["runtime-core/dev".to_string()];
+                        if !args.no_robot {
+                            f.push("robot".to_string());
+                        }
+                        f
+                    },
                     bundle_out_dir: None,
                 },
             )?;
@@ -1065,6 +1166,23 @@ fn launch_web(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
             // <project>/pkg/. Mirrors the build path; coming up next.
         }
         let ctx = ReloadContext { signal };
+
+        // ── Robot-on-web: run() hosts the relay and exported
+        //    IDEALYST_ROBOT_RELAY_URL; inject it so the browser app dials in.
+        //    (Default on; --no-robot leaves the env unset and skips this.)
+        if let Ok(url) = std::env::var("IDEALYST_ROBOT_RELAY_URL") {
+            let script = format!("<script>window.IDEALYST_ROBOT_RELAY_URL=\"{url}\";</script>");
+            head_ctx = Some(match head_ctx.take() {
+                Some(mut h) => {
+                    h.html.push('\n');
+                    h.html.push_str(&script);
+                    h
+                }
+                None => dev_http::HeadInjectionContext { html: script },
+            });
+            crate::dlog!("dev web", "robot relay URL injected ({url})");
+        }
+
         crate::dlog!(
             "dev web",
             "livereload HTTP at http://{}:{}",
@@ -1631,6 +1749,9 @@ fn launch_android(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> 
             runtime_server_port,
             source,
             user_features: dev_user_features_other(),
+            // The dev process hosts the relay and exported its URL; pass it so
+            // run-android bakes it into the manifest + sets up `adb reverse`.
+            robot_relay_url: std::env::var("IDEALYST_ROBOT_RELAY_URL").ok(),
         },
     )
     .context("Android dev launch failed")?;
@@ -1851,6 +1972,8 @@ impl Args {
             dir: self.dir.clone(),
             local: self.local,
             web: self.web,
+            no_robot: self.no_robot,
+            screenshot_dir: self.screenshot_dir.clone(),
             ios: self.ios,
             android: self.android,
             macos: self.macos,

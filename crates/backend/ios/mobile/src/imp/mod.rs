@@ -1006,12 +1006,16 @@ impl IosBackend {
                 let content_w = (fit.width as f32).max(0.0).ceil();
                 let content_h = (fit.height as f32).max(0.0).ceil();
                 // Fill the parent's offered width (so the scroller spans
-                // the column and scrolls content wider than it); fall back
-                // to the content's own width when the parent leaves it
-                // unconstrained.
+                // the column and scrolls content wider than it); report ~0 for
+                // MIN-content (a single-axis scroller can shrink to nothing —
+                // its content scrolls — so it must NOT floor its flex ancestors
+                // at its content width, the macOS "page overflows the outlet
+                // until you resize" bug); fall back to the content's own width
+                // for MAX-content.
                 let avail_w = match available_space.width {
                     runtime_layout::AvailableSpace::Definite(w) => Some(w),
-                    _ => None,
+                    runtime_layout::AvailableSpace::MinContent => Some(0.0),
+                    runtime_layout::AvailableSpace::MaxContent => None,
                 };
                 runtime_layout::Size {
                     width: known_dimensions
@@ -1647,6 +1651,17 @@ impl Backend for IosBackend {
             if current_str != value {
                 let ns = NSString::from_str(value);
                 unsafe { field.setText(Some(&ns)) };
+            }
+        }
+    }
+
+    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+        // Live mask toggle — `isSecureTextEntry` flips in place on the same
+        // UITextField, so the controlled value survives (password show/hide).
+        if let IosNode::TextField(field) = node {
+            unsafe {
+                let _: () =
+                    msg_send![field, setSecureTextEntry: objc2::runtime::Bool::new(secure)];
             }
         }
     }

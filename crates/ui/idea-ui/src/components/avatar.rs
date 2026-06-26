@@ -25,6 +25,14 @@ use crate::theme::IdeaThemeRef;
 
 pub use crate::stylesheets::{AvatarColor, AvatarSize};
 
+// Reactive-by-default: `#[props]` wraps `color`/`size` → `Reactive<…>` (and
+// would wrap `src`, but it's `Option<ImageSource>` — see below); `initials` is
+// already reactive. The style-driving props (`color`/`size`) route into the
+// container/text style sinks, read `.get()` INSIDE so the apply-style Effect
+// subscribes to whichever are live. `src` selects WHICH subtree renders
+// (image vs initials) — a structural branch — so it's read once at build to
+// pick the branch (see the TODO in the body).
+#[runtime_core::props]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct AvatarProps {
@@ -49,10 +57,10 @@ pub struct AvatarProps {
 impl Default for AvatarProps {
     fn default() -> Self {
         Self {
-            src: None,
+            src: Reactive::Static(None),
             initials: Reactive::Static(String::new()),
-            color: AvatarColor::default(),
-            size: AvatarSize::default(),
+            color: Reactive::Static(AvatarColor::default()),
+            size: Reactive::Static(AvatarSize::default()),
         }
     }
 }
@@ -61,33 +69,48 @@ impl Default for AvatarProps {
 /// otherwise the `initials` on a `color`-tinted placeholder background.
 #[component]
 pub fn Avatar(props: &AvatarProps) -> Element {
-    let size = props.size;
-    let color = props.color;
-
-    let container_style = move || {
-        let _ = crate::theme_runtime::active_theme_untracked()
-            .downcast_ref::<IdeaThemeRef>()
-            .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-        StyleApplication::new(AvatarStyle::sheet())
-            .with("size", size.as_variant_str().to_string())
-            .with("color", color.as_variant_str().to_string())
-            // Hug + center on the cross axis so a row of mixed-size avatars
-            // centers instead of top-aligning under the parent's default
-            // align-items: stretch (see `components::hug_self`).
-            .with_computed("hug", crate::components::hug_self)
+    // Style-driving props route into the style sinks below, read `.get()`
+    // INSIDE each closure so the apply-style Effect subscribes to whichever
+    // of `size`/`color` is live. When all are `Static` the closures collapse
+    // to a build-time resolution (no per-node Effect, no first-paint flicker).
+    let container_style = {
+        let size = props.size.clone();
+        let color = props.color.clone();
+        move || {
+            let _ = crate::theme_runtime::active_theme_untracked()
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
+            StyleApplication::new(AvatarStyle::sheet())
+                .with("size", size.get().as_variant_str().to_string())
+                .with("color", color.get().as_variant_str().to_string())
+                // Hug + center on the cross axis so a row of mixed-size avatars
+                // centers instead of top-aligning under the parent's default
+                // align-items: stretch (see `components::hug_self`).
+                .with_computed("hug", crate::components::hug_self)
+        }
     };
 
-    let text_style = move || {
-        let _ = crate::theme_runtime::active_theme_untracked()
-            .downcast_ref::<IdeaThemeRef>()
-            .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-        StyleApplication::new(AvatarText::sheet())
-            .with("size", size.as_variant_str().to_string())
+    let text_style = {
+        let size = props.size.clone();
+        move || {
+            let _ = crate::theme_runtime::active_theme_untracked()
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
+            StyleApplication::new(AvatarText::sheet())
+                .with("size", size.get().as_variant_str().to_string())
+        }
     };
 
     let initials = props.initials.clone();
 
-    match props.src.clone() {
+    // TODO(reactive-sweep): `src` selects WHICH subtree renders (image vs
+    // initials). It's read once here to pick the branch, so a live `src`
+    // flipping between `Some`/`None` won't swap the subtree without a parent
+    // rebuild. Routing it needs a `when`/`switch` on `src.get().is_some()` so
+    // the image↔initials swap happens in place — a structural-reactivity
+    // change, not a plain style sink. Left as a follow-on. (`size`/`color`
+    // DO re-style in place via the closures above.)
+    match props.src.get() {
         Some(source) => {
             // Build the image from the unified source (URL or Asset) and
             // splat it into the circular container.

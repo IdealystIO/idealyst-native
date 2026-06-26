@@ -56,6 +56,15 @@ fn norm_pos(v: f32, min: f32, max: f32) -> f32 {
     }
 }
 
+// Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
+// `Reactive<T>` (tone/variant/size/disabled + min/max/step/width + the icon
+// slots). `value` is already `Reactive<f32>` (auto-skipped), `on_change` is a
+// handler. NOTE min/max/step/width/size feed the DRAG MATH + the fixed
+// container dims (the divisor `x / width` must stay stable — see the module
+// docs); those are read once at build and not re-tracked. tone/variant/size
+// re-style the fill/track/thumb in place; `disabled`'s DIM rides the reactive
+// container style, its press-BLOCK is read once in `on_touch`.
+#[runtime_core::props]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct SliderProps {
@@ -97,16 +106,16 @@ impl Default for SliderProps {
         Self {
             value: Reactive::Static(0.0),
             on_change: Rc::new(|_| {}),
-            min: 0.0,
-            max: 1.0,
-            step: 0.0,
-            width: 184.0,
-            tone: ToneRef::default(),
-            variant: VariantRef::default(),
-            size: ControlSize::default(),
-            disabled: false,
-            leading_icon: None,
-            trailing_icon: None,
+            min: Reactive::Static(0.0),
+            max: Reactive::Static(1.0),
+            step: Reactive::Static(0.0),
+            width: Reactive::Static(184.0),
+            tone: Reactive::Static(ToneRef::default()),
+            variant: Reactive::Static(VariantRef::default()),
+            size: Reactive::Static(ControlSize::default()),
+            disabled: Reactive::Static(false),
+            leading_icon: Reactive::Static(None),
+            trailing_icon: Reactive::Static(None),
         }
     }
 }
@@ -116,26 +125,41 @@ impl Default for SliderProps {
 pub fn Slider(props: &SliderProps) -> Element {
     let value = props.value.clone();
     let on_change = props.on_change.clone();
-    let (min, max, step) = (props.min, props.max, props.step);
-    let w = props.width;
-    let size = props.size;
-    let disabled = props.disabled;
+    // STRUCTURAL: the drag divisor (`x / width`) + the fixed container dims
+    // must stay stable across renders, so min/max/step/width/size are read
+    // once at build (see the module docs / props comment). A live one re-reads
+    // only on a parent rebuild, not in place.
+    let (min, max, step) = (props.min.get(), props.max.get(), props.step.get());
+    let w = props.width.get();
+    let size = props.size.get();
+    // The press-BLOCK is read once (the `on_touch` closure captures it); the
+    // DIM rides the reactive container style below.
+    let disabled = props.disabled.get();
     let dia = thumb_diameter(size);
 
-    let appearance = format!("{}_{}", props.tone.key(), props.variant.key());
-    let size_key = size.as_variant_str().to_string();
+    // Style keys as live closures so a reactive tone/variant/size re-styles the
+    // fill/track/thumb in place; bare props collapse to a static resolution.
+    let appearance_for = {
+        let tone = props.tone.clone();
+        let variant = props.variant.clone();
+        move || format!("{}_{}", tone.get().key(), variant.get().key())
+    };
+    let size_key_for = {
+        let size_prop = props.size.clone();
+        move || size_prop.get().as_variant_str().to_string()
+    };
     let sheets = installed_slider_sheets();
 
     // --- fill: width tracks the value%, cached per whole percent ---
     let fill = {
         let fill_sheet = sheets.fill_sheet.clone();
-        let app = appearance.clone();
+        let app = appearance_for.clone();
         let value = value.clone();
         runtime_core::view(Vec::new())
             .with_style(move || {
                 let pct = norm_pos(value.get(), min, max) * 100.0;
                 StyleApplication::new(fill_sheet.clone())
-                    .with("appearance", app.clone())
+                    .with("appearance", app())
                     .with_computed(format!("slider-fill-{}", pct.round() as i32), move || {
                         StyleRules {
                             width: Some(Tokenized::Literal(Length::pct(pct))),
@@ -149,10 +173,10 @@ pub fn Slider(props: &SliderProps) -> Element {
     // --- track: the muted rail, holding the fill ---
     let track = {
         let track_sheet = sheets.track_sheet.clone();
-        let size_key = size_key.clone();
+        let size_key = size_key_for.clone();
         runtime_core::view(vec![fill])
             .with_style(move || {
-                StyleApplication::new(track_sheet.clone()).with("size", size_key.clone())
+                StyleApplication::new(track_sheet.clone()).with("size", size_key())
             })
             .into_element()
     };
@@ -160,15 +184,15 @@ pub fn Slider(props: &SliderProps) -> Element {
     // --- thumb: round handle, `left` tracks the value (center on the point) ---
     let thumb = {
         let thumb_sheet = sheets.thumb_sheet.clone();
-        let app = appearance.clone();
-        let size_key = size_key.clone();
+        let app = appearance_for.clone();
+        let size_key = size_key_for.clone();
         let value = value.clone();
         runtime_core::view(Vec::new())
             .with_style(move || {
                 let left = norm_pos(value.get(), min, max) * w - dia / 2.0;
                 StyleApplication::new(thumb_sheet.clone())
-                    .with("appearance", app.clone())
-                    .with("size", size_key.clone())
+                    .with("appearance", app())
+                    .with("size", size_key())
                     .with_computed(format!("slider-thumb-{}", left.round() as i32), move || {
                         StyleRules {
                             left: Some(Tokenized::Literal(Length::Px(left))),
@@ -179,18 +203,32 @@ pub fn Slider(props: &SliderProps) -> Element {
             .into_element()
     };
 
-    // --- container: fixed-width relative box with the drag handler ---
-    let container_style = Rc::new(StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+    // --- container: fixed-width relative box with the drag handler. The fixed
+    // layout/dims live on a static base sheet; the DIM (cursor + opacity) rides
+    // a `with_computed` layer read LIVE inside the style closure, so a reactive
+    // `disabled` dims/uncurses in place (the apply-style Effect subscribes to
+    // it). When `disabled` is static this collapses to one resolution. ---
+    let container_base = Rc::new(StyleSheet::new(move |_vs: &VariantSet| StyleRules {
         position: Some(Position::Relative),
         width: Some(Tokenized::Literal(Length::Px(w))),
         height: Some(Tokenized::Literal(Length::Px(dia))),
         flex_direction: Some(FlexDirection::Column),
         justify_content: Some(JustifyContent::Center),
         align_items: Some(AlignItems::Stretch),
-        cursor: Some(if disabled { Cursor::Default } else { Cursor::Pointer }),
-        opacity: disabled.then(|| Tokenized::Literal(0.45)),
         ..Default::default()
     }));
+    let disabled_dim = props.disabled.clone();
+    let container_style = move || {
+        let disabled = disabled_dim.get();
+        StyleApplication::new(container_base.clone()).with_computed(
+            if disabled { "slider-disabled" } else { "slider-enabled" },
+            move || StyleRules {
+                cursor: Some(if disabled { Cursor::Default } else { Cursor::Pointer }),
+                opacity: disabled.then(|| Tokenized::Literal(0.45)),
+                ..Default::default()
+            },
+        )
+    };
 
     let slider = runtime_core::view(vec![track, thumb])
         .with_style(container_style)
@@ -219,15 +257,21 @@ pub fn Slider(props: &SliderProps) -> Element {
             .color(|| Tokenized::token("color-text-muted", Color("#6b7280".into())).resolve())
             .into_element()
     };
-    if props.leading_icon.is_none() && props.trailing_icon.is_none() {
+    // TODO(reactive-sweep): the leading/trailing icons drive STRUCTURE (whether
+    // the wrapping row + icon nodes exist), so they're read once at build; a
+    // reactive icon swap would need a `when()`/`switch` around the row. The
+    // common case is fixed presence.
+    let leading_icon = props.leading_icon.get();
+    let trailing_icon = props.trailing_icon.get();
+    if leading_icon.is_none() && trailing_icon.is_none() {
         return slider;
     }
     let mut kids: Vec<Element> = Vec::with_capacity(3);
-    if let Some(d) = props.leading_icon {
+    if let Some(d) = leading_icon {
         kids.push(mk_icon(d));
     }
     kids.push(slider);
-    if let Some(d) = props.trailing_icon {
+    if let Some(d) = trailing_icon {
         kids.push(mk_icon(d));
     }
     let row_style = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
@@ -266,8 +310,8 @@ mod tests {
     fn icons_flank_the_track_outside_the_drag_container() {
         install_idea_theme(light_theme());
         let kids = view_children(Slider(&SliderProps {
-            leading_icon: Some(DOT),
-            trailing_icon: Some(DOT),
+            leading_icon: Reactive::Static(Some(DOT)),
+            trailing_icon: Reactive::Static(Some(DOT)),
             ..Default::default()
         }));
         assert_eq!(kids.len(), 3, "leading icon + slider + trailing icon");

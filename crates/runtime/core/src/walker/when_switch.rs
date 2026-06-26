@@ -265,6 +265,111 @@ pub(super) fn build_when_spliced<B: Backend + 'static>(
     1
 }
 
+/// Anchorless `Element::Switch` — the [`build_when_spliced`] analogue for a
+/// multi-arm switch. Splices the active arm's node DIRECTLY into `parent` (no
+/// `create_reactive_anchor` wrapper) on backends that report
+/// [`supports_child_splice`](crate::Backend::supports_child_splice).
+///
+/// Why this exists: the anchored path wraps the active arm in a real native
+/// box that AUTO-sizes to its in-flow child. Under a parent that centers its
+/// cross axis (`align_items: center`), that wrapper hugs the arm's content and
+/// centers it — so a full-width-intended arm (e.g. an idea-ui `Field`) collapses
+/// to its content width instead of filling, while web's `display: contents`
+/// anchor lets the same arm fill. The "password Field inside a `switch` rebuild
+/// stayed icon-width on macOS/iOS/Android but filled on web" divergence. Splicing
+/// the arm into the real parent removes the wrapper, so the arm participates in
+/// the parent's layout exactly as web's transparent anchor does.
+///
+/// Mirrors the synchronous shape of [`build_when_spliced`] rather than
+/// [`build_switch_closure`]'s deferred-microtask path: the splice path is
+/// native-only (web takes the `display: contents` anchor, and only web hydrates),
+/// so the hydration handling and microtask deferral are unnecessary here. Each
+/// arm returns exactly one `Element`, so the region contributes one node.
+///
+/// Dedup matches `build_switch_closure`: an *opaque* discriminant (the typed
+/// `switch()` builder, whose `compute` always returns `Null` and whose `default`
+/// closure does the real typed dispatch) rebuilds on every fire; a non-opaque
+/// (declarative, literal-key arms) discriminant skips the rebuild when the JSON
+/// key is unchanged.
+pub(super) fn build_switch_spliced<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    parent: &B::Node,
+    base_index: usize,
+    discriminant: crate::derive::Derived<crate::__serde_json::Value>,
+    arms: Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Element>)>,
+    default: Box<dyn Fn() -> Element>,
+) -> usize {
+    let parent = parent.clone();
+    let backend_for_effect = backend.clone();
+
+    let branch_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> = Rc::new(RefCell::new(None));
+    let current_node: Rc<RefCell<Option<B::Node>>> = Rc::new(RefCell::new(None));
+    let branch_scope_for_effect = branch_scope.clone();
+    let current_node_for_effect = current_node.clone();
+
+    // Re-key dedup. Opaque (closure-driven `switch()`) can't dedup on the
+    // always-`Null` key, so it rebuilds whenever the scrutinee's signals fire
+    // — same as `build_switch_closure`. `None` = not yet built.
+    let last_key: Rc<RefCell<Option<crate::__serde_json::Value>>> = Rc::new(RefCell::new(None));
+    let last_key_for_effect = last_key.clone();
+
+    let nav_ctx = crate::primitives::navigator::shared::capture_ambient_nav_context();
+
+    let opaque = discriminant.is_opaque();
+    let compute = discriminant.compute.clone();
+    let arms: Rc<Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Element>)>> = Rc::new(arms);
+    let default: Rc<dyn Fn() -> Element> = default.into();
+
+    let _e = Effect::new(move || {
+        let new_key = (compute)();
+        if !opaque {
+            let same = last_key_for_effect
+                .borrow()
+                .as_ref()
+                .map(|prev| prev == &new_key)
+                .unwrap_or(false);
+            if same {
+                return;
+            }
+        }
+        *last_key_for_effect.borrow_mut() = Some(new_key.clone());
+
+        // Unmount the prior arm (native view first, then its scope) before
+        // building the new one — same ordering rationale as build_when_spliced.
+        if let Some(old) = current_node_for_effect.borrow_mut().take() {
+            backend_for_effect.borrow_mut().remove_child(&parent, &old);
+        }
+        *branch_scope_for_effect.borrow_mut() = None;
+
+        let mut new_scope = Box::new(reactive::Scope::new());
+        untrack(|| {
+            let _nav_restore = nav_ctx.enter();
+            reactive::with_scope(&mut new_scope, || {
+                // Empty `arms` (the typed `switch()` shape) → always `default()`,
+                // which dispatches against the cached typed scrutinee. Declarative
+                // arms → match the JSON key, else `default()`.
+                let branch = arms
+                    .iter()
+                    .find(|(pat, _)| pat == &new_key)
+                    .map(|(_, builder)| builder())
+                    .unwrap_or_else(|| (default)());
+                let child_node = super::build(&backend_for_effect, 0, branch);
+                let mut parent_mut = parent.clone();
+                backend_for_effect.borrow_mut().insert_at(
+                    &mut parent_mut,
+                    child_node.clone(),
+                    base_index,
+                );
+                *current_node_for_effect.borrow_mut() = Some(child_node);
+            });
+        });
+        *branch_scope_for_effect.borrow_mut() = Some(new_scope);
+    });
+
+    // The Effect ran once synchronously, so exactly one arm node is spliced.
+    1
+}
+
 /// Build a `Element::When` for backends that opt into
 /// declarative conditional rendering via
 /// `handles_when_natively()`. Both branches are constructed

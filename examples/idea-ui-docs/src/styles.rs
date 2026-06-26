@@ -332,6 +332,23 @@ stylesheet! {
     }
 }
 
+// Inner content column for a DemoSurface. The card spans the page, but its
+// content is capped and centered so a FULL-WIDTH component (a `Field` fills its
+// container by design) renders at a sensible width instead of sprawling the
+// whole card. `align_items: center` keeps content-sized previews (Button, Badge)
+// centered; a Field's own `align_self: stretch` fills this capped column.
+stylesheet! {
+    pub DemoSurfaceContent<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            gap: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            width: Length::pct(100.0),
+            max_width: 480.0,
+        }
+    }
+}
+
 // Side-by-side wrapping row: preview on the left, controls on the right.
 stylesheet! {
     pub DemoRow<()> {
@@ -613,6 +630,103 @@ stylesheet! {
             border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
         }
         transitions { background: 250ms EaseInOut, border_color: 150ms EaseOut, }
+    }
+}
+
+// Search TRIGGER — a button styled like the old search field that opens the
+// search dialog. The actual text input now lives inside the modal.
+stylesheet! {
+    pub SearchTrigger<()> {
+        base(_t) {
+            width: Length::pct(100.0),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding_horizontal: 12.0,
+            padding_vertical: 9.0,
+            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_radius: 8.0,
+            margin_bottom: 12.0,
+        }
+        state hovered(_t) {
+            border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
+        }
+        transitions { border_color: 150ms EaseOut, }
+    }
+}
+
+stylesheet! {
+    pub SearchTriggerText<()> {
+        base(_t) {
+            font_size: 13.0,
+            color: Tokenized::token("color-text-muted", Color("#64748b".into())),
+        }
+    }
+}
+
+// Search DIALOG body — a fixed-feeling palette: the input stays pinned at the
+// top while the result list scrolls. `min_height` keeps the dialog from
+// collapsing to a sliver on few/no matches; `max_height` clamps it so a long
+// list scrolls inside instead of stretching the modal. (The modal's own
+// viewport cap clamps these further on a short screen.)
+stylesheet! {
+    pub SearchDialogBody<()> {
+        base(_t) {
+            width: Length::pct(100.0),
+            flex_direction: FlexDirection::Column,
+            gap: 8.0,
+            min_height: 360.0,
+            max_height: 560.0,
+        }
+    }
+}
+
+// The scrolling result region — takes the height left under the input
+// (`flex_grow` is seeded on every scroll_view) and scrolls its overflow.
+// `min_height: 0` lets it actually shrink inside the flex column so the
+// scroller bounds (without it a flex child's implicit min-content floor can
+// push past the parent and break the inner scroll).
+stylesheet! {
+    pub SearchResultsScroll<()> {
+        base(_t) {
+            width: Length::pct(100.0),
+            min_height: 0.0,
+        }
+    }
+}
+
+// Search field with a leading icon: the ROW carries the chrome (bg + border +
+// radius + padding); the icon sits left and the input fills the rest
+// borderless. The input can't host a leading slot itself, so we compose.
+stylesheet! {
+    pub SearchFieldRow<()> {
+        base(_t) {
+            width: Length::pct(100.0),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: 8.0,
+            padding_horizontal: 12.0,
+            padding_vertical: 8.0,
+            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e3e8ef".into())),
+            border_radius: 8.0,
+        }
+    }
+}
+
+// The borderless input inside `SearchFieldRow` — fills the remaining width;
+// the row draws the visible chrome, so this is transparent with no border.
+stylesheet! {
+    pub SearchInputBare<()> {
+        base(_t) {
+            flex_grow: 1.0,
+            font_size: 13.0,
+            color: Tokenized::token("color-text", Color("#0f172a".into())),
+            background: Color("transparent".into()),
+            border_width: 0.0,
+        }
     }
 }
 

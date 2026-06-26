@@ -27,8 +27,8 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, AlignItems, ChildList, Color, Element, FlexDirection, Length, StyleRules,
-    StyleSheet, Tokenized, VariantSet,
+    component, ui, AlignItems, ChildList, Color, Element, FlexDirection, Length, Reactive,
+    StyleApplication, StyleRules, StyleSheet, Tokenized, VariantSet,
 };
 
 pub use crate::stylesheets::StackPadding;
@@ -80,6 +80,12 @@ fn padding_token(p: StackPadding) -> Option<Tokenized<Length>> {
     Some(Tokenized::token(token, Length::Px(px)))
 }
 
+// Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
+// `Reactive<T>` (`background`/`grow`/`padding`). They all drive the surface's
+// style, so they route into the style sink; `children` is the children
+// category and is left bare. A bare value stays a zero-cost `Static`
+// snapshot (the fast path); a `Signal`/`rx!` re-styles in place.
+#[runtime_core::props]
 #[derive(Default)]
 pub struct SurfaceProps {
     /// Which themed neutral fills the surface. Default
@@ -99,24 +105,37 @@ pub struct SurfaceProps {
 /// A themed background container. See the module docs.
 #[component(children)]
 pub fn Surface(props: SurfaceProps) -> Element {
-    let (token, fallback) = props.background.token();
-    let grow = props.grow;
-    let pad = padding_token(props.padding);
+    // The style is REACTIVE when any style-driving prop is live; otherwise it's
+    // the build-time fast path. The closure reads each prop's `.get()` INSIDE so
+    // the apply-style Effect subscribes to whichever are dynamic.
+    let style_is_reactive =
+        !props.background.is_static() || !props.grow.is_static() || !props.padding.is_static();
 
-    let style = Rc::new(StyleSheet::new(move |_vs: &VariantSet| StyleRules {
-        background: Some(Tokenized::token(token, Color(fallback.to_string()))),
-        flex_direction: Some(FlexDirection::Column),
-        // Children fill the cross axis so inner content spans the surface.
-        align_items: Some(AlignItems::Stretch),
-        flex_grow: (grow > 0.0).then(|| Tokenized::Literal(grow)),
-        flex_basis: (grow > 0.0).then(|| Tokenized::Literal(Length::Px(0.0))),
-        min_width: (grow > 0.0).then(|| Tokenized::Literal(Length::Px(0.0))),
-        padding_top: pad.clone(),
-        padding_right: pad.clone(),
-        padding_bottom: pad.clone(),
-        padding_left: pad.clone(),
-        ..Default::default()
-    }));
+    let make_style = {
+        let background = props.background.clone();
+        let grow_r = props.grow.clone();
+        let padding = props.padding.clone();
+        move || -> StyleApplication {
+            let (token, fallback) = background.get().token();
+            let grow = grow_r.get();
+            let pad = padding_token(padding.get());
+            let sheet = Rc::new(StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+                background: Some(Tokenized::token(token, Color(fallback.to_string()))),
+                flex_direction: Some(FlexDirection::Column),
+                // Children fill the cross axis so inner content spans the surface.
+                align_items: Some(AlignItems::Stretch),
+                flex_grow: (grow > 0.0).then(|| Tokenized::Literal(grow)),
+                flex_basis: (grow > 0.0).then(|| Tokenized::Literal(Length::Px(0.0))),
+                min_width: (grow > 0.0).then(|| Tokenized::Literal(Length::Px(0.0))),
+                padding_top: pad.clone(),
+                padding_right: pad.clone(),
+                padding_bottom: pad.clone(),
+                padding_left: pad.clone(),
+                ..Default::default()
+            }));
+            StyleApplication::new(sheet)
+        }
+    };
 
     // Flatten incoming fragments (mirrors `Card`/`Center`).
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
@@ -124,5 +143,9 @@ pub fn Surface(props: SurfaceProps) -> Element {
         ChildList::append_to(c, &mut children);
     }
 
-    ui! { view(style = style) { children } }
+    if style_is_reactive {
+        ui! { view(style = make_style) { children } }
+    } else {
+        ui! { view(style = make_style()) { children } }
+    }
 }

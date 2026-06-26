@@ -66,13 +66,18 @@ pub fn write_isolated_mcp_config(project_dir: &Path) -> anyhow::Result<PathBuf> 
     Ok(path)
 }
 
-/// Best-effort `idealyst build --web`. Returns `Ok(())` on a successful build,
+/// Best-effort `idealyst build --web`. Returns the `dist/web` path on success,
 /// `Err` with the build-error tail otherwise. Used both as the compile-tier
 /// signal and as the prerequisite for the locator pass (which serves the
-/// produced `dist/web/`).
-pub fn build_web(project_dir: &Path) -> anyhow::Result<PathBuf> {
+/// produced `dist/web/`). `robot = true` adds `--robot` so the bundle dials a
+/// relay — required when the rubric has `robot`-tier items on web.
+pub fn build_web(project_dir: &Path, robot: bool) -> anyhow::Result<PathBuf> {
+    let mut args = vec!["build", "--web"];
+    if robot {
+        args.push("--robot");
+    }
     let output = Command::new("idealyst")
-        .args(["build", "--web"])
+        .args(&args)
         .current_dir(project_dir)
         .output()
         .map_err(|e| anyhow::anyhow!("running `idealyst build --web`: {e}"))?;

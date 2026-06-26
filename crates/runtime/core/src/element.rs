@@ -12,7 +12,7 @@ use crate::handles::RefFill;
 use crate::primitives;
 use crate::sources::{IntoStyleSource, StyleSource, TextSource};
 use crate::style::Color;
-use crate::Signal;
+use crate::{Reactive, Signal};
 use std::any::Any;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -248,6 +248,11 @@ pub enum Element {
     /// or a fire-once `draw_in` animation on mount.
     Icon {
         data: primitives::icon::IconData,
+        /// Optional reactive icon geometry. `None` = fixed `data`. When
+        /// `Some`, the walker installs an Effect that calls `update_icon_data`
+        /// so the rendered glyph swaps in place (e.g. a reactive toggle icon)
+        /// without rebuilding the node.
+        data_fn: Option<Box<dyn Fn() -> primitives::icon::IconData>>,
         /// Optional reactive color override. `None` means inherit
         /// (currentColor on web, label color on native).
         color: Option<Box<dyn Fn() -> crate::style::Color>>,
@@ -287,14 +292,20 @@ pub enum Element {
         /// vetoes the blur (focus + mobile keyboard stay). `None` = always
         /// allow. Focus-transfer to another input is never vetoed.
         on_blur: Option<crate::primitives::text_input::BlurHandler>,
-        placeholder: Option<String>,
+        /// Placeholder shown when empty. `Reactive<Option<String>>` — a
+        /// `Static` snapshot (the common case, no effect) or a live source so
+        /// the placeholder can change at runtime without rebuilding the input.
+        placeholder: Reactive<Option<String>>,
         /// Mask the entered text (password entry). Each backend maps this to
         /// its native secure-entry mode — web `type="password"`, UIKit
         /// `isSecureTextEntry`, Android `TYPE_TEXT_VARIATION_PASSWORD`, AppKit
         /// `NSSecureTextField`, GTK `Entry::set_visibility(false)`, terminal
         /// bullet-masking. The observable behaviour (characters render masked)
-        /// is identical across backends.
-        secure: bool,
+        /// is identical across backends. `Reactive<bool>` — a `Static`
+        /// snapshot (the common case, no per-input effect) or a live source
+        /// (`Signal`/`rx!`) the framework binds so the mask can toggle at
+        /// runtime (e.g. a password show/hide) without rebuilding the input.
+        secure: Reactive<bool>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,

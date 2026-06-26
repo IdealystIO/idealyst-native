@@ -1,0 +1,15 @@
+[package]
+name = "robot-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform end-to-end tests authored in Rust. A `#[robot_test]` function drives a relay-connected `App` (Playwright-flavoured locate → act → assert) and runs as a standard `#[test]` — the relay makes web, macOS, iOS, and Android apps reachable as the same bridge. Powers `idealyst test`."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+robot-test-macros = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"

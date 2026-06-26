@@ -47,6 +47,13 @@ use idea_theme::extensible::{installed_tag_sheet, tone, variant, ToneRef, Varian
 use crate::components::ControlSize;
 use crate::stylesheets::TagLabel;
 
+// Reactive-by-default: `#[props]` wraps `selected`/`tone`/`variant`/`size` →
+// `Reactive<…>`; `label` is already reactive, and `on_select` (an
+// `Rc<dyn Fn()>` handler) is auto-skipped. Bare markers (`tone =
+// tone::Primary`) coerce to `Reactive<ToneRef>` via the marker's generated
+// `From`. The style-driving props route into the container-style sink, read
+// `.get()` INSIDE so the apply-style Effect subscribes to whichever are live.
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct ChipProps {
@@ -80,11 +87,11 @@ impl Default for ChipProps {
     fn default() -> Self {
         Self {
             label: Reactive::Static(String::new()),
-            selected: false,
+            selected: Reactive::Static(false),
             on_select: None,
             tone: tone::Neutral.into(),
             variant: variant::Soft.into(),
-            size: ControlSize::Md,
+            size: Reactive::Static(ControlSize::Md),
         }
     }
 }
@@ -95,36 +102,47 @@ impl Default for ChipProps {
 #[component]
 pub fn Chip(props: &ChipProps) -> Element {
     let label = props.label.clone();
-    let tone = props.tone.clone();
-    let variant = props.variant.clone();
     let on_select = props.on_select.clone();
-
-    // Selected → caller's variant (lit); unselected → Ghost (muted) of
-    // the same tone. Both arms resolve from the installed Tag sheet, so a
-    // chip looks like a tag of the matching tone/variant — no separate
-    // stylesheet needed.
-    let variant_key = if props.selected {
-        variant.key()
-    } else {
-        variant::Ghost.key()
-    };
-    let appearance_key = format!("{}_{}", tone.key(), variant_key);
-    // `hug` keeps the chip sized to content instead of stretching to a flex
-    // parent's cross axis (see `components::hug_self`); a clickable chip also
-    // gets a pointer cursor so it reads as selectable (the "anything
-    // selectable shows a pointer" rule). Both ride one computed slot
-    // (`StyleApplication` has a single computed layer) — a second
-    // `with_computed` would overwrite, not stack.
     let clickable = on_select.is_some();
-    let container_style = StyleApplication::new(installed_tag_sheet())
-        .with("appearance", appearance_key)
-        .with_computed("chip-box", move || {
-            let mut r = crate::components::hug_self();
-            if clickable {
-                r.cursor = Some(Cursor::Pointer);
-            }
-            r
-        });
+
+    // The container style is REACTIVE when any of selected/tone/variant is
+    // live; else the build-time fast path (no first-paint flicker). The
+    // closure reads each prop's `.get()` INSIDE so the apply-style Effect
+    // subscribes to whichever are dynamic.
+    let style_is_reactive =
+        !props.selected.is_static() || !props.tone.is_static() || !props.variant.is_static();
+    let make_style = {
+        let selected = props.selected.clone();
+        let tone = props.tone.clone();
+        let variant = props.variant.clone();
+        move || {
+            // Selected → caller's variant (lit); unselected → Ghost (muted) of
+            // the same tone. Both arms resolve from the installed Tag sheet, so
+            // a chip looks like a tag of the matching tone/variant — no
+            // separate stylesheet needed.
+            let variant_key = if selected.get() {
+                variant.get().key()
+            } else {
+                variant::Ghost.key()
+            };
+            let appearance_key = format!("{}_{}", tone.get().key(), variant_key);
+            // `hug` keeps the chip sized to content instead of stretching to a
+            // flex parent's cross axis (see `components::hug_self`); a clickable
+            // chip also gets a pointer cursor so it reads as selectable (the
+            // "anything selectable shows a pointer" rule). Both ride one
+            // computed slot (`StyleApplication` has a single computed layer) — a
+            // second `with_computed` would overwrite, not stack.
+            StyleApplication::new(installed_tag_sheet())
+                .with("appearance", appearance_key)
+                .with_computed("chip-box", move || {
+                    let mut r = crate::components::hug_self();
+                    if clickable {
+                        r.cursor = Some(Cursor::Pointer);
+                    }
+                    r
+                })
+        }
+    };
 
     let label_style = TagLabel();
     let label_el: Element = ui! { text(style = label_style) { label } };
@@ -133,13 +151,14 @@ pub fn Chip(props: &ChipProps) -> Element {
     // `pressable` always needs *a* handler, so the inert case gets a
     // no-op — but we keep the conditional shape so the intent reads
     // clearly and matches the rest of the library.
-    match on_select {
-        Some(cb) => pressable(vec![label_el], move || (cb)())
-            .with_style(container_style)
-            .into_element(),
-        None => pressable(vec![label_el], || {})
-            .with_style(container_style)
-            .into_element(),
+    let node = match on_select {
+        Some(cb) => pressable(vec![label_el], move || (cb)()),
+        None => pressable(vec![label_el], || {}),
+    };
+    if style_is_reactive {
+        node.with_style(make_style).into_element()
+    } else {
+        node.with_style(make_style()).into_element()
     }
 }
 
@@ -176,9 +195,9 @@ mod tests {
     #[test]
     fn defaults_are_unselected_and_inert() {
         let p = ChipProps::default();
-        assert!(!p.selected);
+        assert!(!p.selected.get());
         assert!(p.on_select.is_none());
-        assert_eq!(p.size, ControlSize::Md);
+        assert_eq!(p.size.get(), ControlSize::Md);
     }
 
     /// A chip with no `on_select` still renders (it just doesn't react to

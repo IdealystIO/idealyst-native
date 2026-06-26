@@ -291,6 +291,17 @@ impl Backend for IosBackend {
         }
     }
 
+    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+        // Live mask toggle — same UITextField, `isSecureTextEntry` flips in
+        // place so the controlled value carries across (password show/hide).
+        if let IosNode::TextField(field) = node {
+            unsafe {
+                let _: () =
+                    msg_send![field, setSecureTextEntry: objc2::runtime::Bool::new(secure)];
+            }
+        }
+    }
+
     fn create_toggle(
         &mut self,
         initial_value: bool,

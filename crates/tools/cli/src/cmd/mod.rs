@@ -20,6 +20,7 @@ pub mod scaffold;
 pub mod scaffold_template;
 pub mod serve;
 pub mod sync;
+pub mod test;
 
 /// Shorthand for the "not implemented yet" stub each command returns
 /// while the CLI is being fleshed out. Centralizing it keeps the

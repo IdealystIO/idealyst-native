@@ -1202,6 +1202,15 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Swap an icon's geometry (paths/viewbox) in place reactively. Called by
+    /// the walker's Effect when a reactive `data` source re-fires — re-renders
+    /// the glyph on the existing node. Default no-op so backends without
+    /// live-geometry support keep compiling (they keep the create-time glyph).
+    #[allow(unused_variables)]
+    fn update_icon_data(&mut self, node: &Self::Node, data: &primitives::icon::IconData) {
+        // default: no-op
+    }
+
     /// Set the icon's stroke progress immediately (no animation).
     /// `progress` is 0.0 (nothing drawn) to 1.0 (fully drawn).
     /// Called by the walker's reactive Effect when the `stroke`
@@ -1318,6 +1327,23 @@ pub trait Backend {
     }
     #[allow(unused_variables)]
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {}
+
+    /// Toggle an existing text input's secure-entry (mask) mode in place.
+    /// The framework calls this from a reactive effect only when `secure`
+    /// is a live source — most inputs have a `Static` mask set once at
+    /// `create_text_input` and never call this. Backends map it to the
+    /// same native mechanism as the `secure` create flag (web input type,
+    /// UIKit `isSecureTextEntry`, AppKit secure cell, …). Default no-op so
+    /// backends that don't yet support a live toggle keep compiling.
+    #[allow(unused_variables)]
+    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {}
+
+    /// Update an existing text input's placeholder in place. Called from a
+    /// reactive effect only when `placeholder` is a live source; a `Static`
+    /// placeholder is set once at `create_text_input`. `None` clears it.
+    /// Default no-op so backends without live-placeholder support compile.
+    #[allow(unused_variables)]
+    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {}
 
     /// Create a multi-line text editor. Same controlled pattern as
     /// `create_text_input` (the framework wraps `value` in an effect

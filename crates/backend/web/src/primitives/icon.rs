@@ -98,6 +98,48 @@ pub(crate) fn create(b: &mut WebBackend, data: &IconData, color: Option<&Color>)
     node
 }
 
+/// Swap the icon geometry in place: update the viewBox, re-pick fill-vs-stroke
+/// for the new `filled` flag (preserving the live paint color), and replace the
+/// `<path>` children from the new data. Mirrors `create`'s path-building.
+pub(crate) fn update_data(b: &WebBackend, node: &Node, data: &IconData) {
+    let Ok(svg) = node.clone().dyn_into::<web_sys::Element>() else { return };
+    let (vw, vh) = data.view_box;
+    let _ = svg.set_attribute("viewBox", &format!("0 0 {} {}", vw, vh));
+
+    // Preserve whatever color is live (the `.color()` Effect may have set it).
+    let is_filled_now = svg.get_attribute("stroke").as_deref() == Some("none");
+    let color = if is_filled_now { svg.get_attribute("fill") } else { svg.get_attribute("stroke") }
+        .unwrap_or_else(|| "currentColor".to_string());
+    if data.filled {
+        let _ = svg.set_attribute("fill", &color);
+        let _ = svg.set_attribute("stroke", "none");
+    } else {
+        let _ = svg.set_attribute("fill", "none");
+        let _ = svg.set_attribute("stroke", &color);
+        let _ = svg.set_attribute("stroke-width", "2");
+        let _ = svg.set_attribute("stroke-linecap", "round");
+        let _ = svg.set_attribute("stroke-linejoin", "round");
+    }
+
+    // Replace the path children.
+    while let Some(child) = svg.first_child() {
+        let _ = svg.remove_child(&child);
+    }
+    let fill_rule_str = match data.fill_rule {
+        FillRule::NonZero => "nonzero",
+        FillRule::EvenOdd => "evenodd",
+    };
+    for path_d in data.paths {
+        let Ok(path) = b.doc.create_element_ns(Some(SVG_NS), "path") else { continue };
+        let _ = path.set_attribute("d", path_d);
+        let _ = path.set_attribute("fill-rule", fill_rule_str);
+        let _ = path.set_attribute("pathLength", "1");
+        let _ = path.set_attribute("stroke-dasharray", "1");
+        let _ = path.set_attribute("stroke-dashoffset", "0");
+        let _ = svg.append_child(&path);
+    }
+}
+
 pub(crate) fn update_color(node: &Node, color: &Color) {
     if let Ok(el) = node.clone().dyn_into::<web_sys::Element>() {
         // A filled icon set `stroke="none"` at create time, so the live

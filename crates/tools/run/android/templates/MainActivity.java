@@ -68,6 +68,26 @@ public class MainActivity extends FragmentActivity {
             }
         }
 
+        // Robot bridge relay (dev only): `idealyst dev` bakes the relay URL
+        // into the manifest as `IdealystRobotRelayUrl` meta-data and sets up an
+        // `adb reverse` tunnel. Hand it to Rust BEFORE `attach` so the bridge's
+        // walker dials the host relay instead of self-hosting. Absent in
+        // release builds, so this is a no-op there.
+        try {
+            android.os.Bundle meta = getPackageManager()
+                .getApplicationInfo(getPackageName(),
+                    android.content.pm.PackageManager.GET_META_DATA)
+                .metaData;
+            if (meta != null) {
+                String robotUrl = meta.getString("IdealystRobotRelayUrl");
+                if (robotUrl != null && !robotUrl.isEmpty()) {
+                    NativeBridge.setRobotRelayUrl(robotUrl);
+                }
+            }
+        } catch (Throwable t) {
+            Log.w("idealyst", "robot relay meta-data read failed: " + t);
+        }
+
         FrameLayout root = new FrameLayout(this);
         root.setLayoutParams(new ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
